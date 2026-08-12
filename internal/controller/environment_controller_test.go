@@ -21,9 +21,14 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -31,57 +36,171 @@ import (
 )
 
 var _ = Describe("Environment Controller", func() {
-	Context("When reconciling a resource", func() {
-		const resourceName = "test-resource"
+	Context("When reconciling a production environment", func() {
+		const (
+			projectName = "shop"
+			envName     = "shop-production"
+			releaseName = "shop-rel-000001"
+			namespace   = "default"
+			image       = "registry.example.com/kitchen/shop@sha256:0123456789abcdef"
+		)
 
 		ctx := context.Background()
 
-		typeNamespacedName := types.NamespacedName{
-			Name:      resourceName,
-			Namespace: "default", // TODO(user):Modify as needed
+		envKey := types.NamespacedName{Name: envName, Namespace: namespace}
+		appNS := "kitchen-" + projectName
+
+		var reconciler *EnvironmentReconciler
+
+		reconcileOnce := func() {
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: envKey})
+			ExpectWithOffset(1, err).NotTo(HaveOccurred())
 		}
-		environment := &kitchenv1alpha1.Environment{}
 
 		BeforeEach(func() {
-			By("creating the custom resource for the Kind Environment")
-			err := k8sClient.Get(ctx, typeNamespacedName, environment)
-			if err != nil && errors.IsNotFound(err) {
-				resource := &kitchenv1alpha1.Environment{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      resourceName,
-						Namespace: "default",
-					},
-					Spec: kitchenv1alpha1.EnvironmentSpec{
-						ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: "test-project"},
-						ReleaseRef: kitchenv1alpha1.LocalObjectReference{Name: "test-release"},
-					},
-				}
-				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
+			reconciler = &EnvironmentReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+
+			kitchen := &kitchenv1alpha1.Kitchen{
+				ObjectMeta: metav1.ObjectMeta{Name: KitchenSingletonName},
+				Spec:       kitchenv1alpha1.KitchenSpec{BaseDomain: "apps.example.com"},
 			}
+			Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, kitchen))).To(Succeed())
+
+			project := &kitchenv1alpha1.Project{
+				ObjectMeta: metav1.ObjectMeta{Name: projectName, Namespace: namespace},
+				Spec: kitchenv1alpha1.ProjectSpec{
+					Source: kitchenv1alpha1.GitSourceSpec{
+						ConnectionRef: kitchenv1alpha1.LocalObjectReference{Name: "gh"},
+						Repo:          "acme/shop",
+					},
+					Registry: kitchenv1alpha1.RegistrySpec{
+						ConnectionRef: kitchenv1alpha1.LocalObjectReference{Name: "registry"},
+					},
+				},
+			}
+			Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, project))).To(Succeed())
+
+			release := &kitchenv1alpha1.Release{
+				ObjectMeta: metav1.ObjectMeta{Name: releaseName, Namespace: namespace},
+				Spec: kitchenv1alpha1.ReleaseSpec{
+					ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: projectName},
+					BuildRef:   kitchenv1alpha1.LocalObjectReference{Name: "shop-bld-1"},
+					Image:      image,
+					ConfigSnapshot: kitchenv1alpha1.ConfigSnapshot{
+						Env: []kitchenv1alpha1.EnvVar{
+							{Name: "PUBLIC_API", Value: "https://api.example.com", PreviewValue: "https://api-staging.example.com"},
+							{Name: "SESSION_SECRET", SecretRef: &kitchenv1alpha1.SecretKeySelector{Name: "shop-secrets", Key: "session"}},
+						},
+						Runtime: kitchenv1alpha1.RuntimeSpec{Port: 8080, Replicas: ptr.To(int32(2))},
+					},
+				},
+			}
+			Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, release))).To(Succeed())
+
+			env := &kitchenv1alpha1.Environment{
+				ObjectMeta: metav1.ObjectMeta{Name: envName, Namespace: namespace},
+				Spec: kitchenv1alpha1.EnvironmentSpec{
+					ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: projectName},
+					Type:       kitchenv1alpha1.EnvironmentProduction,
+					ReleaseRef: kitchenv1alpha1.LocalObjectReference{Name: releaseName},
+				},
+			}
+			Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, env))).To(Succeed())
 		})
 
 		AfterEach(func() {
-			// TODO(user): Cleanup logic after each test, like removing the resource instance.
-			resource := &kitchenv1alpha1.Environment{}
-			err := k8sClient.Get(ctx, typeNamespacedName, resource)
-			Expect(err).NotTo(HaveOccurred())
-
-			By("Cleanup the specific resource instance Environment")
-			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
-		})
-		It("should successfully reconcile the resource", func() {
-			By("Reconciling the created resource")
-			controllerReconciler := &EnvironmentReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+			env := &kitchenv1alpha1.Environment{}
+			if err := k8sClient.Get(ctx, envKey, env); err == nil {
+				Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, env))).To(Succeed())
+				// Run the finalizer so the object actually goes away.
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: envKey})
+				Expect(err).NotTo(HaveOccurred())
 			}
+			for _, obj := range []client.Object{
+				&kitchenv1alpha1.Release{ObjectMeta: metav1.ObjectMeta{Name: releaseName, Namespace: namespace}},
+				&kitchenv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: projectName, Namespace: namespace}},
+				&kitchenv1alpha1.Kitchen{ObjectMeta: metav1.ObjectMeta{Name: KitchenSingletonName}},
+			} {
+				Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, obj))).To(Succeed())
+			}
+		})
 
-			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: typeNamespacedName,
-			})
-			Expect(err).NotTo(HaveOccurred())
-			// TODO(user): Add more specific assertions depending on your controller's reconciliation logic.
-			// Example: If you expect a certain status condition after reconciliation, verify it here.
+		It("materializes the release as Deployment, Service and HTTPRoute", func() {
+			By("reconciling until the finalizer and children are in place")
+			reconcileOnce()
+			reconcileOnce()
+
+			By("checking the Deployment")
+			deploy := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: envName, Namespace: appNS}, deploy)).To(Succeed())
+			Expect(deploy.Spec.Template.Spec.Containers).To(HaveLen(1))
+			container := deploy.Spec.Template.Spec.Containers[0]
+			Expect(container.Image).To(Equal(image))
+			Expect(container.Ports[0].ContainerPort).To(Equal(int32(8080)))
+			Expect(*deploy.Spec.Replicas).To(Equal(int32(2)))
+			Expect(container.Env).To(ContainElement(corev1.EnvVar{Name: "PUBLIC_API", Value: "https://api.example.com"}))
+			Expect(container.Env[1].ValueFrom.SecretKeyRef.Name).To(Equal("shop-secrets"))
+
+			By("checking the Service")
+			svc := &corev1.Service{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: envName, Namespace: appNS}, svc)).To(Succeed())
+			Expect(svc.Spec.Ports[0].Port).To(Equal(int32(80)))
+			Expect(svc.Spec.Ports[0].TargetPort.IntValue()).To(Equal(8080))
+
+			By("checking the HTTPRoute")
+			route := &gatewayv1.HTTPRoute{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: envName, Namespace: appNS}, route)).To(Succeed())
+			Expect(route.Spec.Hostnames).To(ConsistOf(gatewayv1.Hostname("shop.apps.example.com")))
+			Expect(string(route.Spec.ParentRefs[0].Name)).To(Equal(SharedGatewayName))
+			Expect(string(*route.Spec.ParentRefs[0].Namespace)).To(Equal(PlatformNamespace))
+
+			By("checking the Environment status")
+			env := &kitchenv1alpha1.Environment{}
+			Expect(k8sClient.Get(ctx, envKey, env)).To(Succeed())
+			Expect(env.Status.URL).To(Equal("https://shop.apps.example.com"))
+			Expect(env.Status.ObservedRelease).To(Equal(releaseName))
+			Expect(env.Status.Phase).To(Equal(kitchenv1alpha1.EnvironmentDeploying))
+		})
+
+		It("uses preview overlays and a preview hostname for preview environments", func() {
+			env := &kitchenv1alpha1.Environment{}
+			Expect(k8sClient.Get(ctx, envKey, env)).To(Succeed())
+			env.Spec.Type = kitchenv1alpha1.EnvironmentPreview
+			env.Spec.Preview = &kitchenv1alpha1.PreviewInfo{PullRequest: 42, Branch: "feat/checkout"}
+			Expect(k8sClient.Update(ctx, env)).To(Succeed())
+
+			reconcileOnce()
+			reconcileOnce()
+
+			deploy := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: envName, Namespace: appNS}, deploy)).To(Succeed())
+			Expect(*deploy.Spec.Replicas).To(Equal(int32(1)), "previews always run a single replica")
+			Expect(deploy.Spec.Template.Spec.Containers[0].Env).To(
+				ContainElement(corev1.EnvVar{Name: "PUBLIC_API", Value: "https://api-staging.example.com"}))
+
+			route := &gatewayv1.HTTPRoute{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: envName, Namespace: appNS}, route)).To(Succeed())
+			Expect(route.Spec.Hostnames).To(ConsistOf(gatewayv1.Hostname("shop-pr-42.apps.example.com")))
+		})
+
+		It("cleans up children when the environment is deleted", func() {
+			reconcileOnce()
+			reconcileOnce()
+
+			env := &kitchenv1alpha1.Environment{}
+			Expect(k8sClient.Get(ctx, envKey, env)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, env)).To(Succeed())
+			reconcileOnce()
+
+			err := k8sClient.Get(ctx, envKey, &kitchenv1alpha1.Environment{})
+			Expect(errors.IsNotFound(err)).To(BeTrue(), "environment should be gone after finalization")
+
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: envName, Namespace: appNS}, &appsv1.Deployment{})
+			Expect(errors.IsNotFound(err)).To(BeTrue(), "deployment should be deleted")
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: envName, Namespace: appNS}, &corev1.Service{})
+			Expect(errors.IsNotFound(err)).To(BeTrue(), "service should be deleted")
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: envName, Namespace: appNS}, &gatewayv1.HTTPRoute{})
+			Expect(errors.IsNotFound(err)).To(BeTrue(), "httproute should be deleted")
 		})
 	})
 })
