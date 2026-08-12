@@ -1,6 +1,6 @@
 # Kitchen — CRD Schema (draft)
 
-API group: `kitchen.bermos.dev/v1alpha1` (group domain TBD — should be a domain we own; placeholder until then).
+API group: `kitchen.bermos.dev/v1alpha1`.
 
 All Kitchen CRs live in the platform namespace (`kitchen-system`). The operator materializes
 workloads (apps/v1 Deployments, Services, HTTPRoutes, Secrets) into per-project namespaces
