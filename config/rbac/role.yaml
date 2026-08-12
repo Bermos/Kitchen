@@ -1,0 +1,53 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: manager-role
+rules:
+- apiGroups:
+  - kitchen.bermos.dev
+  resources:
+  - builds
+  - connections
+  - domains
+  - environments
+  - kitchens
+  - projects
+  - releases
+  - resourceclaims
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - kitchen.bermos.dev
+  resources:
+  - builds/finalizers
+  - connections/finalizers
+  - domains/finalizers
+  - environments/finalizers
+  - kitchens/finalizers
+  - projects/finalizers
+  - releases/finalizers
+  - resourceclaims/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - kitchen.bermos.dev
+  resources:
+  - builds/status
+  - connections/status
+  - domains/status
+  - environments/status
+  - kitchens/status
+  - projects/status
+  - releases/status
+  - resourceclaims/status
+  verbs:
+  - get
+  - patch
+  - update
