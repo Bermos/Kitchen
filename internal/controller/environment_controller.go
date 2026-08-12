@@ -114,7 +114,7 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	appNS := appNamespace(project.Name)
-	if err := r.ensureNamespace(ctx, appNS, project.Name); err != nil {
+	if err := ensureNamespace(ctx, r.Client, appNS, project.Name); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -169,9 +169,9 @@ func (r *EnvironmentReconciler) finalize(ctx context.Context, env *kitchenv1alph
 	return ctrl.Result{}, r.Update(ctx, env)
 }
 
-func (r *EnvironmentReconciler) ensureNamespace(ctx context.Context, name, projectName string) error {
+func ensureNamespace(ctx context.Context, c client.Client, name, projectName string) error {
 	ns := &corev1.Namespace{}
-	err := r.Get(ctx, types.NamespacedName{Name: name}, ns)
+	err := c.Get(ctx, types.NamespacedName{Name: name}, ns)
 	if err == nil {
 		return nil
 	}
@@ -185,7 +185,7 @@ func (r *EnvironmentReconciler) ensureNamespace(ctx context.Context, name, proje
 			labelManagedByKey: labelManagedByValue,
 		},
 	}}
-	if err := r.Create(ctx, ns); err != nil && !apierrors.IsAlreadyExists(err) {
+	if err := c.Create(ctx, ns); err != nil && !apierrors.IsAlreadyExists(err) {
 		return err
 	}
 	return nil
