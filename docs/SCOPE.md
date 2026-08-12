@@ -19,7 +19,7 @@
 | **Management UI (Vue)** | Dashboard: projects, deployments, logs, metrics, settings | Talks only to the operator API |
 | **ClickHouse** | Storage for **all** telemetry: metrics, logs, traces, build logs, mesh flow data | Observability store — *not* the system of record (that's CRDs/etcd) |
 | **Collectors** | Cluster + application monitoring | OTel Collector (or Vector) shipping into ClickHouse — logs, metrics, and traces, all of it |
-| **Service mesh + ingress** | Ingress into apps + **traffic observability** | Mesh is for monitoring traffic only — no mTLS/policy enforcement goals. Implementation choice still open (see below) |
+| **Cilium (assumed present)** | Traffic observability (Hubble) + ingress (Gateway API) | Kitchen does **not** install Cilium — it assumes the cluster runs it as its CNI (missing-Cilium handling ignored for now). No separate ingress controller: Cilium's built-in Gateway API implementation is the ingress |
 | **cloudflared** (optional) | Tunnel-based ingress, no public IP / LB needed | Configured via the operator |
 | **cert-manager** (semi-optional) | TLS for public ingress | Still wanted even with cloudflared — the operator's admission webhooks need certs (see gaps) |
 | **Infisical** | Secret management | Synced into app namespaces as k8s Secrets |
@@ -71,17 +71,16 @@ These aren't nice-to-haves — the first three are the product.
 - **CRDs are the system of record** for all operator config/management. ClickHouse is analytics-only.
 - **ClickHouse gets everything analytical**: logs, metrics, traces, build logs, mesh traffic data — one store, one query surface for the UI.
 - **Mesh purpose: traffic observability only.** No mTLS or policy-enforcement goals. The mesh exists so you can see per-service traffic (rates, errors, latency, who-talks-to-whom) for troubleshooting, without touching app code — and export it all to ClickHouse.
+- **Mesh implementation: Cilium.** Assumed to already be the cluster's CNI (e.g. a Talos cluster configured with Cilium) — Kitchen does not install it, and handling its absence is out of scope for now. Hubble provides the traffic observability (eBPF flow logs, service map, L7 visibility), exported into ClickHouse.
+- **No separate ingress controller.** The operator programs **Gateway API** resources (`Gateway`/`HTTPRoute`), and Cilium's built-in Gateway API implementation (embedded Envoy) serves them. Gateway API is the abstraction, so another implementation (Envoy Gateway, Istio) could slot in later without touching the operator's routing logic. When cloudflared is enabled, the tunnel points at the Gateway service — cloudflared is the edge, but all traffic still flows through one routing layer with uniform telemetry.
+  - Documented cluster prerequisites this implies: Cilium with `gatewayAPI.enabled=true` + kube-proxy replacement, Gateway API CRDs installed, and a way to give the Gateway a reachable address on bare metal — Cilium L2 announcements or BGP for a LoadBalancer IP, or skip that entirely by fronting with cloudflared.
 
 ## Open decisions
 
-1. **Mesh implementation.** With the goal narrowed to observability-only, the candidates are:
-   - **Istio ambient**: no sidecars, per-node ztunnel gives L4 telemetry by default; optional waypoints add L7 metrics only where wanted. Doesn't replace the CNI — friendliest for BYO clusters. Pairs with its own ingress gateway. Likely default.
-   - **Cilium + Hubble**: the best traffic-visibility story (eBPF flow logs, service map, L7 visibility) with zero proxies — but it must own the CNI, which is invasive on a bring-your-own cluster. Great *optional* mode for clusters already running Cilium.
-   - **Linkerd**: lightest full mesh, excellent golden metrics, but sidecar-per-pod for what is here an observability-only goal.
-2. **Buildpacks vs. nixpacks vs. Dockerfile-first** for zero-config builds.
-3. **Scale-to-zero** (Knative/KEDA) in v1, or plain Deployments + HPA with scale-to-zero later.
-4. **Neon plugin scope**: Neon is a managed cloud service — fine as a first-party plugin, but the plugin interface should be a generic "database provisioner" so CloudNativePG (fully self-hosted) can slot in.
-5. **cert-manager optionality**: keep it always-installed (operator webhook certs + internal CA), with only the *public ACME issuer* part optional when cloudflared handles edge TLS.
+1. **Buildpacks vs. nixpacks vs. Dockerfile-first** for zero-config builds.
+2. **Scale-to-zero** (Knative/KEDA) in v1, or plain Deployments + HPA with scale-to-zero later.
+3. **Neon plugin scope**: Neon is a managed cloud service — fine as a first-party plugin, but the plugin interface should be a generic "database provisioner" so CloudNativePG (fully self-hosted) can slot in.
+4. **cert-manager optionality**: keep it always-installed (operator webhook certs + internal CA), with only the *public ACME issuer* part optional when cloudflared handles edge TLS.
 
 ---
 
