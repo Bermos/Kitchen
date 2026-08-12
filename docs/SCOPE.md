@@ -17,9 +17,9 @@
 |---|---|---|
 | **Operator (Go)** | Control plane: reconciles all Kitchen resources, exposes the public API | CRD-driven; the API the UI/CLI talk to |
 | **Management UI (Vue)** | Dashboard: projects, deployments, logs, metrics, settings | Talks only to the operator API |
-| **ClickHouse** | Storage for metrics, logs, traces, build logs | Observability store — *not* the system of record |
-| **Collectors** | Cluster + application monitoring | OTel Collector (or Vector) shipping into ClickHouse — must ship **logs** too, not just metrics (see gaps) |
-| **Service mesh + ingress** | Traffic routing, mTLS, ingress into apps | Choice is an open decision (see below) |
+| **ClickHouse** | Storage for **all** telemetry: metrics, logs, traces, build logs, mesh flow data | Observability store — *not* the system of record (that's CRDs/etcd) |
+| **Collectors** | Cluster + application monitoring | OTel Collector (or Vector) shipping into ClickHouse — logs, metrics, and traces, all of it |
+| **Service mesh + ingress** | Ingress into apps + **traffic observability** | Mesh is for monitoring traffic only — no mTLS/policy enforcement goals. Implementation choice still open (see below) |
 | **cloudflared** (optional) | Tunnel-based ingress, no public IP / LB needed | Configured via the operator |
 | **cert-manager** (semi-optional) | TLS for public ingress | Still wanted even with cloudflared — the operator's admission webhooks need certs (see gaps) |
 | **Infisical** | Secret management | Synced into app namespaces as k8s Secrets |
@@ -33,7 +33,7 @@ These aren't nice-to-haves — the first three are the product.
    - In-cluster build execution: BuildKit (or Kaniko/buildah) build pods with a build queue managed by the operator.
    - Framework auto-detection for zero-config deploys: Cloud Native Buildpacks or nixpacks (Next.js, Nuxt, Vite, static, plain Dockerfile fallback).
    - Build caching: BuildKit cache exported to the connected registry, so rebuilds are fast.
-   - Build isolation: builds run arbitrary user code — dedicated node pool and/or gVisor/Kata, resource quotas per build.
+   - Build isolation: **deprioritized.** Kitchen is fully open source and self-hosted by a team that trusts its own code — no multi-tenant SaaS threat model. Resource quotas per build are enough for now; hard isolation (gVisor/Kata, dedicated node pools) can come later if someone runs it for untrusted users.
 
 2. **Git integration.** The `git push` in the one-liner: GitHub/GitLab/Gitea app + webhook receiver in the operator, commit-triggered builds, deploy status checks posted back on commits/PRs. Fits the connection-plugin model (git providers as a plugin family alongside registry/db).
 
@@ -49,9 +49,9 @@ These aren't nice-to-haves — the first three are the product.
 
 8. **Runtime scaling.** Decide the story: plain Deployments + HPA (simple) vs. scale-to-zero via Knative/KEDA (serverless feel, big dependency). See open decisions.
 
-9. **Operator state.** Source of truth should be CRDs (etcd) — no extra database for the control plane. ClickHouse stays analytics-only. Anything that doesn't fit CRDs well (users/sessions/tokens) may need a small embedded store — decide early.
+9. **Operator state.** ✅ Decided: CRDs (etcd) are the source of truth for all config and management state — no extra database for the control plane. ClickHouse stays analytics-only. Anything that genuinely doesn't fit CRDs (sessions, tokens) gets a small embedded store, not a new dependency.
 
-10. **Self-hosting hygiene.** Helm upgrade path incl. CRD migrations, backup/restore of platform state, NetworkPolicies isolating tenant apps from each other and from the platform namespace.
+10. **Self-hosting hygiene.** Helm upgrade path incl. CRD migrations, backup/restore of platform state. NetworkPolicies between app namespaces are lower priority given the trusted-team model, but keep the platform namespace protected.
 
 ### Nice-to-haves (later)
 
@@ -63,12 +63,21 @@ These aren't nice-to-haves — the first three are the product.
 
 ---
 
+## Decisions made
+
+- **Not a SaaS.** Fully open source, self-hosted by teams that trust their own code. No multi-tenant threat model → build isolation and inter-app NetworkPolicies are deprioritized.
+- **Git integration is in.** Webhook-triggered builds, status checks back on commits — core to the product.
+- **Preview deployments are in.** Designed for from day one.
+- **CRDs are the system of record** for all operator config/management. ClickHouse is analytics-only.
+- **ClickHouse gets everything analytical**: logs, metrics, traces, build logs, mesh traffic data — one store, one query surface for the UI.
+- **Mesh purpose: traffic observability only.** No mTLS or policy-enforcement goals. The mesh exists so you can see per-service traffic (rates, errors, latency, who-talks-to-whom) for troubleshooting, without touching app code — and export it all to ClickHouse.
+
 ## Open decisions
 
-1. **Mesh choice — or no mesh at all.** "Service mesh with ingress" is the heaviest line in the list. Options:
-   - **Cilium**: CNI + network policy + Hubble observability + Gateway API ingress + optional mesh — one dependency, but assumes it can own the CNI (invasive on a BYO cluster).
-   - **Istio (ambient)**: full mesh + ingress, well-trodden, heavy.
-   - **No mesh**: Envoy Gateway (Gateway API) for ingress only. Honest question: what does Kitchen actually need a *mesh* for? mTLS between tenant apps is nice; Gateway API + NetworkPolicies may cover 90% at a fraction of the weight.
+1. **Mesh implementation.** With the goal narrowed to observability-only, the candidates are:
+   - **Istio ambient**: no sidecars, per-node ztunnel gives L4 telemetry by default; optional waypoints add L7 metrics only where wanted. Doesn't replace the CNI — friendliest for BYO clusters. Pairs with its own ingress gateway. Likely default.
+   - **Cilium + Hubble**: the best traffic-visibility story (eBPF flow logs, service map, L7 visibility) with zero proxies — but it must own the CNI, which is invasive on a bring-your-own cluster. Great *optional* mode for clusters already running Cilium.
+   - **Linkerd**: lightest full mesh, excellent golden metrics, but sidecar-per-pod for what is here an observability-only goal.
 2. **Buildpacks vs. nixpacks vs. Dockerfile-first** for zero-config builds.
 3. **Scale-to-zero** (Knative/KEDA) in v1, or plain Deployments + HPA with scale-to-zero later.
 4. **Neon plugin scope**: Neon is a managed cloud service — fine as a first-party plugin, but the plugin interface should be a generic "database provisioner" so CloudNativePG (fully self-hosted) can slot in.
