@@ -1,0 +1,237 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.17.2
+  name: releases.kitchen.bermos.dev
+spec:
+  group: kitchen.bermos.dev
+  names:
+    kind: Release
+    listKind: ReleaseList
+    plural: releases
+    singular: release
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.projectRef.name
+      name: Project
+      type: string
+    - jsonPath: .spec.buildRef.name
+      name: Build
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Release is the Schema for the releases API.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              ReleaseSpec is an immutable snapshot: an image digest plus the configuration
+              it should run with. Named Release (not Deployment) to avoid colliding with
+              apps/v1 Deployment.
+            properties:
+              buildRef:
+                description: |-
+                  LocalObjectReference references another Kitchen object by name within the
+                  platform namespace. Cross-namespace references are not supported in v1alpha1.
+                properties:
+                  name:
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+              configSnapshot:
+                description: |-
+                  ConfigSnapshot is a frozen copy of a Project's deployable configuration at
+                  build time. Old Releases do not drift when the Project spec changes later,
+                  which is what makes rollback exact.
+                properties:
+                  env:
+                    items:
+                      description: |-
+                        EnvVar is a single environment variable for an application. Exactly one of
+                        Value, SecretRef, or FromResourceClaim should be set. PreviewValue, when set,
+                        replaces Value in preview environments.
+                      properties:
+                        fromResourceClaim:
+                          description: Value taken from a ResourceClaim binding (e.g.
+                            a provisioned database URL).
+                          properties:
+                            key:
+                              minLength: 1
+                              type: string
+                            name:
+                              minLength: 1
+                              type: string
+                          required:
+                          - key
+                          - name
+                          type: object
+                        name:
+                          minLength: 1
+                          type: string
+                        previewValue:
+                          description: Literal value used in preview environments
+                            instead of Value.
+                          type: string
+                        secretRef:
+                          description: Value taken from a Secret (typically synced
+                            from Infisical).
+                          properties:
+                            key:
+                              minLength: 1
+                              type: string
+                            name:
+                              minLength: 1
+                              type: string
+                          required:
+                          - key
+                          - name
+                          type: object
+                        value:
+                          description: Literal value.
+                          type: string
+                      required:
+                      - name
+                      type: object
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - name
+                    x-kubernetes-list-type: map
+                  runtime:
+                    description: RuntimeSpec describes how an application runs.
+                    properties:
+                      port:
+                        default: 3000
+                        description: Container port the application listens on.
+                        format: int32
+                        maximum: 65535
+                        minimum: 1
+                        type: integer
+                      replicas:
+                        default: 1
+                        description: Replica count for production environments. Previews
+                          always run 1.
+                        format: int32
+                        type: integer
+                      resources:
+                        description: Compute resources per replica.
+                        properties:
+                          claims:
+                            description: |-
+                              Claims lists the names of resources, defined in spec.resourceClaims,
+                              that are used by this container.
+
+                              This is an alpha field and requires enabling the
+                              DynamicResourceAllocation feature gate.
+
+                              This field is immutable. It can only be set for containers.
+                            items:
+                              description: ResourceClaim references one entry in PodSpec.ResourceClaims.
+                              properties:
+                                name:
+                                  description: |-
+                                    Name must match the name of one entry in pod.spec.resourceClaims of
+                                    the Pod where this field is used. It makes that resource available
+                                    inside a container.
+                                  type: string
+                                request:
+                                  description: |-
+                                    Request is the name chosen for a request in the referenced claim.
+                                    If empty, everything from the claim is made available, otherwise
+                                    only the result of this request.
+                                  type: string
+                              required:
+                              - name
+                              type: object
+                            type: array
+                            x-kubernetes-list-map-keys:
+                            - name
+                            x-kubernetes-list-type: map
+                          limits:
+                            additionalProperties:
+                              anyOf:
+                              - type: integer
+                              - type: string
+                              pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                              x-kubernetes-int-or-string: true
+                            description: |-
+                              Limits describes the maximum amount of compute resources allowed.
+                              More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                            type: object
+                          requests:
+                            additionalProperties:
+                              anyOf:
+                              - type: integer
+                              - type: string
+                              pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                              x-kubernetes-int-or-string: true
+                            description: |-
+                              Requests describes the minimum amount of compute resources required.
+                              If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
+                              otherwise to an implementation-defined value. Requests cannot exceed Limits.
+                              More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                            type: object
+                        type: object
+                    type: object
+                type: object
+              image:
+                description: Image reference by digest, never by tag.
+                minLength: 1
+                type: string
+              projectRef:
+                description: |-
+                  LocalObjectReference references another Kitchen object by name within the
+                  platform namespace. Cross-namespace references are not supported in v1alpha1.
+                properties:
+                  name:
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+            required:
+            - buildRef
+            - image
+            - projectRef
+            type: object
+            x-kubernetes-validations:
+            - message: Release spec is immutable
+              rule: self == oldSelf
+          status:
+            description: ReleaseStatus defines the observed state of a Release.
+            properties:
+              environments:
+                description: Environments currently running this Release (informational).
+                items:
+                  type: string
+                type: array
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

@@ -1,0 +1,23 @@
+# This kustomization.yaml is not intended to be run by itself,
+# since it depends on service name and namespace that are out of this kustomize package.
+# It should be run by config/default
+resources:
+- bases/kitchen.bermos.dev_kitchens.yaml
+- bases/kitchen.bermos.dev_connections.yaml
+- bases/kitchen.bermos.dev_projects.yaml
+- bases/kitchen.bermos.dev_builds.yaml
+- bases/kitchen.bermos.dev_releases.yaml
+- bases/kitchen.bermos.dev_environments.yaml
+- bases/kitchen.bermos.dev_domains.yaml
+- bases/kitchen.bermos.dev_resourceclaims.yaml
+# +kubebuilder:scaffold:crdkustomizeresource
+
+patches:
+# [WEBHOOK] To enable webhook, uncomment all the sections with [WEBHOOK] prefix.
+# patches here are for enabling the conversion webhook for each CRD
+# +kubebuilder:scaffold:crdkustomizewebhookpatch
+
+# [WEBHOOK] To enable webhook, uncomment the following section
+# the following config is for teaching kustomize how to do kustomization for CRDs.
+#configurations:
+#- kustomizeconfig.yaml

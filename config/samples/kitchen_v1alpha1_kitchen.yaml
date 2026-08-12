@@ -1,0 +1,9 @@
+apiVersion: kitchen.bermos.dev/v1alpha1
+kind: Kitchen
+metadata:
+  labels:
+    app.kubernetes.io/name: kitchen
+    app.kubernetes.io/managed-by: kustomize
+  name: kitchen-sample
+spec:
+  # TODO(user): Add fields here
