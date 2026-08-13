@@ -77,6 +77,7 @@ Connections.
 | Default IdP | better-auth + OAuth/OIDC provider plugin | Excellent DX; the provider plugin is its youngest part — accepted risk, mitigated by the contract above |
 | Auth storage | Chart-managed single-node Postgres (external override) | OLTP; SQLite would cap replicas at 1; mirrors the ClickHouse pattern |
 | App auth surface | `ResourceClaim` type `oidcClient` | Reuses the existing claim → binding-secret → env flow |
+| API tokens for CI | better-auth's api-key plugin, exchanged for a JWT at the issuer | The plugin already holds the operator's credential; the operator stays stateless and revocation stays in one place |
 | Sequencing | auth service → REST API behind it → UI → app claims → forward-auth | The API should never exist without auth; the provider is the hard part, claims are known plumbing |
 
 ## What the chart deploys today
@@ -114,12 +115,40 @@ nothing has to remember whether the token was used. Public sign-up stays off;
 later accounts arrive through an upstream provider or an organization
 invitation.
 
+### The operator API (settled)
+
+The REST API is served by the operator behind this issuer — it has never
+existed without it. It validates bearer JWTs against the JWKS and keeps no
+session; the issuer and the audiences it accepts both come off the `Kitchen`
+object, so there is nothing to configure twice. The endpoints, the token flows
+and the decisions behind them are in [API.md](API.md).
+
+Two things fall out of the API being a **resource server of its own**:
+
+- `validAudiences` on the provider is an explicit two-entry list — the issuer
+  and `spec.api.externalURL` — so a client can ask for a token *for the API*
+  (`resource=https://kitchen.<baseDomain>`) rather than one for everything.
+  That is also what makes the access token a signed JWT: the provider issues
+  opaque tokens when no resource is named.
+- **CI tokens are the api-key plugin** (the open item below is closed). A key
+  is a credential at the issuer, exchanged there for a short-lived JWT
+  (`GET /token` with `x-api-key`); the operator only ever sees the JWT. Keeping
+  key lookup at the identity provider is what keeps the operator's request path
+  stateless, and revocation in one place.
+
+The **Kitchen UI is the first OIDC client**, seeded on start with the client id
+`kitchen-ui` and the redirect URI `<spec.api.externalURL>/auth/callback`. It is
+public — a browser application keeps no secret — so PKCE is mandatory, and
+consent is skipped for the platform's own dashboard. It is seeded rather than
+dynamically registered because the UI is built with its client id; apps, whose
+clients nobody has to know the id of, still get theirs through dynamic
+registration.
+
 ## Open items
 
-- **CI/API tokens**: the api-key plugin is enabled and already carries the
-  operator's credential. Whether user-facing CI tokens are the same mechanism
-  is still open, but the plugin is in place either way.
-- **Token shape for the operator API**: scopes/claims for teams and RBAC are
-  deferred until the organizations plugin is wired up.
+- **Token shape for the operator API**: scopes and claims for teams and RBAC
+  are deferred until the organizations plugin is wired up. Tokens carry their
+  scopes today and the API records who asked for what, but nothing is enforced
+  beyond the issuer vouching for the caller.
 - **Sign-in pages**: the service ships its own minimal login and consent
   pages. The Vue UI takes them over when it lands.

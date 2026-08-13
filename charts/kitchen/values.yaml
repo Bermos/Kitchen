@@ -90,6 +90,37 @@ kitchen:
       # -- Days to retain logs, metrics, traces and flow data.
       retentionDays: 30
 
+# The operator's REST API: what the Kitchen UI, the CLI and CI talk to. Every
+# endpoint sits behind the platform's identity provider, so the API is only
+# useful with `auth.enabled` — the operator resolves the issuer, and the
+# audience it accepts, from the Kitchen object at request time.
+api:
+  # -- Container port the API binds to.
+  port: 8092
+  service:
+    type: ClusterIP
+    # -- Service port fronting the API.
+    port: 80
+    annotations: {}
+  route:
+    # -- Publish the API on the shared Gateway with an HTTPRoute. Requires the
+    # Kitchen object (the Gateway is created by its reconciler).
+    enabled: true
+    # -- Hostname for the API. Defaults to the host of
+    # `kitchen.api.externalURL`, or `kitchen.<baseDomain>` — the same name the
+    # git webhook receiver answers on, under the path prefix `/api/`.
+    host: ""
+    gateway:
+      # -- Name of the shared Gateway. Must match the operator's constant.
+      name: kitchen
+      # -- Namespace of the shared Gateway.
+      namespace: kitchen-system
+    annotations: {}
+  # -- Token audiences the API accepts on top of the issuer and the API's own
+  # external URL. Only needed when tokens are minted for another name than the
+  # one the platform generates.
+  extraAudiences: []
+
 # The git webhook receiver: the endpoint providers deliver push and
 # pull_request events to. It has to be reachable from the internet for
 # `git push` to trigger anything.
@@ -369,6 +400,19 @@ auth:
     enabled: true
     # -- Use this token instead of a generated one.
     token: ""
+  # The Kitchen UI as an OAuth client: the platform's own front end, seeded on
+  # start so its client id is a constant the UI can be built with. A browser
+  # application keeps no secret, so it is a public client and the provider
+  # requires PKCE.
+  ui:
+    # -- Register the Kitchen UI as an OAuth client.
+    enabled: true
+    # -- Client id the UI authenticates with.
+    clientId: kitchen-ui
+    # -- Redirect URIs the issuer will send people back to. Defaults to
+    # `<kitchen.api.externalURL>/auth/callback`. Add a `http://localhost:…`
+    # entry to run the UI against this installation while developing it.
+    redirectURIs: []
   # Upstream GitHub OAuth app, so people sign in to Kitchen with the same
   # account they push from. Callback URL: https://<auth host>/callback/github
   github:

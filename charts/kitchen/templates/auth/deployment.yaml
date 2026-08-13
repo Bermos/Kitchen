@@ -60,6 +60,20 @@ spec:
                   key: serviceKey
             - name: KITCHEN_AUTH_SERVICE_ACCOUNT_EMAIL
               value: {{ .Values.auth.serviceAccountEmail | quote }}
+            {{- with include "kitchen.apiExternalURL" . }}
+            # The operator API is a resource server of its own: clients may ask
+            # for a token whose audience is the API rather than the issuer.
+            - name: KITCHEN_AUTH_API_URL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- if .Values.auth.ui.enabled }}
+            {{- with include "kitchen.authUIRedirectURIs" . }}
+            - name: KITCHEN_AUTH_UI_CLIENT_ID
+              value: {{ $.Values.auth.ui.clientId | quote }}
+            - name: KITCHEN_AUTH_UI_REDIRECT_URIS
+              value: {{ . | quote }}
+            {{- end }}
+            {{- end }}
             {{- if .Values.auth.bootstrap.enabled }}
             - name: KITCHEN_AUTH_BOOTSTRAP_TOKEN
               valueFrom:

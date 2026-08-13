@@ -5,7 +5,7 @@ import { randomBytes } from "node:crypto";
 import { authOptions, createAuth, type Auth } from "../src/auth.js";
 import type { Config } from "../src/config.js";
 import { createPool, runMigrations, waitForDatabase } from "../src/db.js";
-import { seedServiceCredential } from "../src/seed.js";
+import { seedServiceCredential, seedUIClient } from "../src/seed.js";
 import { createServer } from "../src/server.js";
 import type { Pool } from "pg";
 
@@ -70,6 +70,7 @@ export async function startHarness(overrides: Partial<Config> = {}): Promise<Har
 
 	const auth = createAuth(config, pool);
 	await seedServiceCredential(auth, config);
+	await seedUIClient(auth, config);
 
 	const server: Server = createServer(auth, config, pool);
 	await new Promise<void>((resolve) => server.listen(port, "127.0.0.1", resolve));

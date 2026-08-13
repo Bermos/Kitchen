@@ -45,6 +45,15 @@ const (
 	SecretKeyPassword = "password"
 )
 
+const (
+	// maxErrorBytes bounds how much of a failed query's diagnostic is kept.
+	maxErrorBytes = 8 << 10
+	// maxResponseBytes bounds a successful answer. Schema queries return a
+	// handful of bytes; a page of log lines is the large case, and 16 MiB
+	// is far past the ceiling the log query enforces on its own.
+	maxResponseBytes = 16 << 20
+)
+
 // identifierPattern is what may appear unquoted in the DDL the operator
 // builds. The database name comes from a Secret, so it is checked rather
 // than trusted.
@@ -118,9 +127,19 @@ func (c *Client) Exec(ctx context.Context, query string) error {
 // operator asks for are single values or a handful of rows, so they are read
 // whole.
 func (c *Client) Query(ctx context.Context, query string) (string, error) {
-	endpoint := c.cfg.endpoint() + "?" + url.Values{
-		"database": {c.cfg.Database},
-	}.Encode()
+	return c.QueryWithParams(ctx, query, nil)
+}
+
+// QueryWithParams runs a statement whose `{name:Type}` placeholders are filled
+// in by ClickHouse itself. Anything that reaches a query from a request — a
+// project name, a search term, a row limit — goes through here rather than
+// into the query text.
+func (c *Client) QueryWithParams(ctx context.Context, query string, params map[string]string) (string, error) {
+	values := url.Values{"database": {c.cfg.Database}}
+	for name, value := range params {
+		values.Set("param_"+name, value)
+	}
+	endpoint := c.cfg.endpoint() + "?" + values.Encode()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(query))
 	if err != nil {
@@ -136,15 +155,27 @@ func (c *Client) Query(ctx context.Context, query string) (string, error) {
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	// ClickHouse reports errors as the body of a non-2xx response; it is the
-	// only useful diagnostic, so a bounded prefix of it goes into the error.
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		// ClickHouse reports errors as the body of a non-2xx response; it
+		// is the only useful diagnostic, so a bounded prefix of it goes
+		// into the error.
+		body, err := io.ReadAll(io.LimitReader(resp.Body, maxErrorBytes))
+		if err != nil {
+			return "", err
+		}
+		return "", fmt.Errorf("clickhouse returned %s: %s",
+			resp.Status, strings.TrimSpace(string(body)))
+	}
+
+	// Answers are read whole, so the size of one is the operator's memory:
+	// bounded, and loudly rather than by handing back a truncated answer as
+	// if it were the whole thing.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 	if err != nil {
 		return "", err
 	}
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return "", fmt.Errorf("clickhouse returned %s: %s",
-			resp.Status, strings.TrimSpace(string(body)))
+	if len(body) > maxResponseBytes {
+		return "", fmt.Errorf("clickhouse returned more than %d bytes; ask for less at a time", maxResponseBytes)
 	}
 	return strings.TrimSpace(string(body)), nil
 }

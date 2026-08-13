@@ -21,6 +21,7 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"strings"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -39,6 +40,7 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/api"
 	"github.com/Bermos/Kitchen/internal/controller"
 	"github.com/Bermos/Kitchen/internal/receiver"
 	// +kubebuilder:scaffold:imports
@@ -65,6 +67,8 @@ func main() {
 	var enableLeaderElection bool
 	var probeAddr string
 	var gitWebhookAddr string
+	var apiAddr string
+	var apiAudiences string
 	var secureMetrics bool
 	var enableHTTP2 bool
 	var tlsOpts []func(*tls.Config)
@@ -72,6 +76,11 @@ func main() {
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
 	flag.StringVar(&gitWebhookAddr, "git-webhook-bind-address", ":8090",
 		"The address the git webhook receiver binds to.")
+	flag.StringVar(&apiAddr, "api-bind-address", ":8092",
+		"The address the REST API binds to.")
+	flag.StringVar(&apiAudiences, "api-audiences", "",
+		"Comma-separated token audiences the API accepts on top of the identity provider's issuer "+
+			"and the API's own external URL, both of which come from the Kitchen object.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
@@ -279,6 +288,20 @@ func main() {
 		os.Exit(1)
 	}
 
+	// The REST API. It authenticates every request against the platform's
+	// identity provider, which it resolves from the Kitchen object at
+	// request time — so it can be added here without waiting for the
+	// platform to be configured.
+	if err := mgr.Add(&api.Server{
+		Client:         mgr.GetClient(),
+		Namespace:      operatorNamespace,
+		BindAddr:       apiAddr,
+		ExtraAudiences: splitList(apiAudiences),
+	}); err != nil {
+		setupLog.Error(err, "unable to add the api server to manager")
+		os.Exit(1)
+	}
+
 	if metricsCertWatcher != nil {
 		setupLog.Info("Adding metrics certificate watcher to manager")
 		if err := mgr.Add(metricsCertWatcher); err != nil {
@@ -309,4 +332,16 @@ func main() {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)
 	}
+}
+
+// splitList reads a comma-separated flag, ignoring the empty entries a
+// generated command line tends to produce.
+func splitList(value string) []string {
+	var out []string
+	for _, item := range strings.Split(value, ",") {
+		if item = strings.TrimSpace(item); item != "" {
+			out = append(out, item)
+		}
+	}
+	return out
 }

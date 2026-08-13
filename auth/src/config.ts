@@ -8,6 +8,16 @@ export interface GitHubConfig {
 	clientSecret: string;
 }
 
+/**
+ * The Kitchen UI: the platform's own OAuth client, seeded rather than
+ * registered at runtime so that the client id is a known constant the UI can
+ * be configured with.
+ */
+export interface UIClientConfig {
+	clientId: string;
+	redirectURIs: string[];
+}
+
 export interface Config {
 	/** Port the HTTP server binds to. */
 	port: number;
@@ -31,6 +41,15 @@ export interface Config {
 	 * while no account exists — see src/bootstrap.ts.
 	 */
 	bootstrapToken?: string;
+	/**
+	 * Public base URL of the operator's REST API, e.g.
+	 * https://kitchen.apps.example.com. The API is a resource server of its
+	 * own: a client that asks for a token for this URL gets one whose
+	 * audience is the API rather than the issuer.
+	 */
+	apiURL?: string;
+	/** The Kitchen UI's OAuth client, when redirect URIs are configured. */
+	ui?: UIClientConfig;
 	/** Upstream GitHub OAuth app, when one is configured. */
 	github?: GitHubConfig;
 	/** Extra origins allowed to call the API from a browser. */
@@ -83,6 +102,22 @@ function boolean(env: NodeJS.ProcessEnv, name: string, fallback: boolean): boole
 	throw new ConfigError(`${name} must be a boolean (got ${raw})`);
 }
 
+/** Splits a comma-separated list, dropping the empties. */
+function list(raw: string | undefined): string[] {
+	return (raw ?? "")
+		.split(",")
+		.map((item) => item.trim())
+		.filter(Boolean);
+}
+
+function isAbsoluteURL(value: string): boolean {
+	try {
+		return Boolean(new URL(value).protocol);
+	} catch {
+		return false;
+	}
+}
+
 /**
  * Reads the configuration, collecting every problem before failing so a
  * misconfigured Deployment reports all of them in one crash loop.
@@ -123,6 +158,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 		problems.push("GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET must be set together");
 	}
 
+	const apiURL = optional(env, "KITCHEN_AUTH_API_URL")?.replace(/\/$/, "");
+	if (apiURL && !isAbsoluteURL(apiURL)) {
+		problems.push(`KITCHEN_AUTH_API_URL must be an absolute URL (got ${apiURL})`);
+	}
+
+	const redirectURIs = list(optional(env, "KITCHEN_AUTH_UI_REDIRECT_URIS"));
+	const invalidRedirects = redirectURIs.filter((uri) => !isAbsoluteURL(uri));
+	if (invalidRedirects.length > 0) {
+		problems.push(`KITCHEN_AUTH_UI_REDIRECT_URIS must be absolute URLs (got ${invalidRedirects.join(", ")})`);
+	}
+
 	const config: Config = {
 		port: collect(() => number(env, "PORT", 8080), 8080),
 		baseURL: baseURL.replace(/\/$/, ""),
@@ -132,11 +178,18 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 		serviceKey: optional(env, "KITCHEN_AUTH_SERVICE_KEY"),
 		serviceAccountEmail: optional(env, "KITCHEN_AUTH_SERVICE_ACCOUNT_EMAIL") ?? "operator@kitchen.local",
 		bootstrapToken: optional(env, "KITCHEN_AUTH_BOOTSTRAP_TOKEN"),
+		apiURL,
+		// Without a redirect URI there is nowhere to send anyone back to, so
+		// there is no client worth creating.
+		ui:
+			redirectURIs.length > 0
+				? {
+						clientId: optional(env, "KITCHEN_AUTH_UI_CLIENT_ID") ?? "kitchen-ui",
+						redirectURIs,
+					}
+				: undefined,
 		github: clientId && clientSecret ? { clientId, clientSecret } : undefined,
-		trustedOrigins: (optional(env, "KITCHEN_AUTH_TRUSTED_ORIGINS") ?? "")
-			.split(",")
-			.map((origin) => origin.trim())
-			.filter(Boolean),
+		trustedOrigins: list(optional(env, "KITCHEN_AUTH_TRUSTED_ORIGINS")),
 		allowSocialSignUp: collect(() => boolean(env, "KITCHEN_AUTH_ALLOW_SOCIAL_SIGNUP", false), false),
 	};
 

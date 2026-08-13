@@ -306,3 +306,198 @@ describe("the authorization code flow", () => {
 		assert.equal(((await userinfo.json()) as { email: string }).email, admin.email);
 	});
 });
+
+describe("the Kitchen UI client and the operator API's audience", () => {
+	let kitchen: Harness;
+	let cookie = "";
+
+	const apiURL = "https://kitchen.apps.example.com";
+	const redirectURI = `${apiURL}/auth/callback`;
+	const admin = {
+		name: "Ada",
+		email: "ada@example.com",
+		password: "correct horse battery staple",
+	};
+
+	/** The claims of a JWT, without checking a signature the tests do not own. */
+	const claimsOf = (token: string): Record<string, unknown> =>
+		JSON.parse(Buffer.from(token.split(".")[1] ?? "", "base64url").toString("utf8")) as Record<string, unknown>;
+
+	before(async () => {
+		kitchen = await startHarness({
+			apiURL,
+			ui: { clientId: "kitchen-ui", redirectURIs: [redirectURI] },
+		});
+
+		await kitchen.fetch("/bootstrap", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ token: kitchen.bootstrapToken, ...admin }),
+		});
+		const signIn = await kitchen.fetch("/sign-in/email", {
+			method: "POST",
+			headers: { "content-type": "application/json", origin: kitchen.url },
+			body: JSON.stringify({ email: admin.email, password: admin.password }),
+		});
+		cookie = signIn.headers
+			.getSetCookie()
+			.map((value) => value.split(";")[0])
+			.join("; ");
+	});
+
+	after(async () => {
+		await kitchen.stop();
+	});
+
+	it("issues the UI a token for the operator API, with PKCE and no client secret", async () => {
+		const verifier = randomBytes(32).toString("base64url");
+		const challenge = createHash("sha256").update(verifier).digest("base64url");
+
+		// The seeded client skips consent, so authorize hands back the
+		// callback directly instead of routing through the consent screen.
+		const authorize = await kitchen.fetch(
+			`/oauth2/authorize?${new URLSearchParams({
+				response_type: "code",
+				client_id: "kitchen-ui",
+				redirect_uri: redirectURI,
+				scope: "openid profile email",
+				state: "opaque",
+				code_challenge: challenge,
+				code_challenge_method: "S256",
+			})}`,
+			{ headers: { cookie }, redirect: "manual" },
+		);
+		const target =
+			authorize.status === 302
+				? (authorize.headers.get("location") ?? "")
+				: ((await authorize.clone().json().catch(() => ({}))) as { url?: string }).url;
+		assert.ok(target, `authorize did not redirect: ${authorize.status} ${await authorize.text()}`);
+
+		const callbackURL = new URL(target, kitchen.url);
+		assert.equal(`${callbackURL.origin}${callbackURL.pathname}`, redirectURI);
+		const code = callbackURL.searchParams.get("code");
+		assert.ok(code, `the redirect carries an authorization code: ${callbackURL.search}`);
+
+		const token = await kitchen.fetch("/oauth2/token", {
+			method: "POST",
+			headers: { "content-type": "application/x-www-form-urlencoded" },
+			body: new URLSearchParams({
+				grant_type: "authorization_code",
+				// A public client authenticates with nothing but its id and
+				// the verifier for the challenge it sent.
+				client_id: "kitchen-ui",
+				code,
+				redirect_uri: redirectURI,
+				code_verifier: verifier,
+				// The resource indicator: "a token for the operator API,
+				// please", which is what makes the access token a JWT the
+				// operator can validate against the JWKS.
+				resource: apiURL,
+			}),
+		});
+		assert.equal(token.status, 200, await token.clone().text());
+
+		const tokens = (await token.json()) as { access_token: string };
+		const claims = claimsOf(tokens.access_token);
+		assert.equal(claims.iss, kitchen.url);
+		// With `openid` in the scopes the provider adds the userinfo endpoint
+		// to the audience, so this is a list. The operator accepts a token
+		// whose audience *contains* the API or the issuer.
+		const audience = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
+		assert.ok(
+			audience.includes(apiURL),
+			`the operator API only accepts tokens minted for it or for the issuer: ${JSON.stringify(audience)}`,
+		);
+		assert.equal(claims.azp, "kitchen-ui");
+		assert.ok(claims.sub, "the token names the account it belongs to");
+	});
+
+	it("refuses a token without the PKCE verifier the client committed to", async () => {
+		const challenge = createHash("sha256").update(randomBytes(32).toString("base64url")).digest("base64url");
+		const authorize = await kitchen.fetch(
+			`/oauth2/authorize?${new URLSearchParams({
+				response_type: "code",
+				client_id: "kitchen-ui",
+				redirect_uri: redirectURI,
+				scope: "openid",
+				state: "opaque",
+				code_challenge: challenge,
+				code_challenge_method: "S256",
+			})}`,
+			{ headers: { cookie }, redirect: "manual" },
+		);
+		const target =
+			authorize.status === 302
+				? (authorize.headers.get("location") ?? "")
+				: ((await authorize.clone().json().catch(() => ({}))) as { url?: string }).url;
+		const code = new URL(target ?? "", kitchen.url).searchParams.get("code");
+		assert.ok(code);
+
+		const token = await kitchen.fetch("/oauth2/token", {
+			method: "POST",
+			headers: { "content-type": "application/x-www-form-urlencoded" },
+			body: new URLSearchParams({
+				grant_type: "authorization_code",
+				client_id: "kitchen-ui",
+				code,
+				redirect_uri: redirectURI,
+				code_verifier: randomBytes(32).toString("base64url"),
+			}),
+		});
+		assert.equal(token.ok, false, "a stolen code must be useless without the verifier");
+	});
+
+	it("refuses a token for a resource that is not the API or the issuer", async () => {
+		const verifier = randomBytes(32).toString("base64url");
+		const challenge = createHash("sha256").update(verifier).digest("base64url");
+		const authorize = await kitchen.fetch(
+			`/oauth2/authorize?${new URLSearchParams({
+				response_type: "code",
+				client_id: "kitchen-ui",
+				redirect_uri: redirectURI,
+				scope: "openid",
+				state: "opaque",
+				code_challenge: challenge,
+				code_challenge_method: "S256",
+			})}`,
+			{ headers: { cookie }, redirect: "manual" },
+		);
+		const target =
+			authorize.status === 302
+				? (authorize.headers.get("location") ?? "")
+				: ((await authorize.clone().json().catch(() => ({}))) as { url?: string }).url;
+		const code = new URL(target ?? "", kitchen.url).searchParams.get("code");
+		assert.ok(code);
+
+		const response = await kitchen.fetch("/oauth2/token", {
+			method: "POST",
+			headers: { "content-type": "application/x-www-form-urlencoded" },
+			body: new URLSearchParams({
+				grant_type: "authorization_code",
+				client_id: "kitchen-ui",
+				code,
+				redirect_uri: redirectURI,
+				code_verifier: verifier,
+				resource: "https://somewhere-else.example.com",
+			}),
+		});
+		assert.equal(response.ok, false, "any audience a client asks for would otherwise be minted");
+		assert.match(JSON.stringify(await response.json()), /resource/i);
+	});
+
+	it("exchanges an API key for a token the operator API accepts", async () => {
+		// How CI authenticates: the key is a credential at the issuer, and
+		// the issuer turns it into the short-lived JWT the operator
+		// validates. The operator never sees the key, and keeps no session.
+		const response = await kitchen.fetch("/token", {
+			headers: { "x-api-key": kitchen.serviceKey },
+		});
+		assert.equal(response.status, 200, await response.clone().text());
+
+		const { token } = (await response.json()) as { token: string };
+		const claims = claimsOf(token);
+		assert.equal(claims.iss, kitchen.url);
+		assert.equal(claims.aud, kitchen.url, "a session token is minted for the issuer itself");
+		assert.ok(claims.exp, "the token expires");
+	});
+});

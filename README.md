@@ -14,12 +14,14 @@ flow data — lands in ClickHouse.
 - [Project scope](docs/SCOPE.md) — components, decisions, phasing
 - [CRD schema](docs/CRDS.md) — the operator's data model and reconcile flows
 - [Auth architecture](docs/AUTH.md) — the platform's identity provider
+- [REST API](docs/API.md) — the endpoints, and how to get a token for them
 
 ## Layout
 
 - `api/v1alpha1/` — CRD types (`kitchen.bermos.dev/v1alpha1`): Kitchen, Connection,
   Project, Build, Release, Environment, Domain, ResourceClaim
 - `internal/controller/` — one reconciler per CRD (stubs for now)
+- `internal/api/` — the REST API, behind the platform's identity provider
 - `config/crd/bases/` — generated CRD manifests
 - `cmd/` — operator entrypoint
 - `auth/` — the identity provider (better-auth) served at `auth.<baseDomain>`
@@ -33,9 +35,10 @@ helm install kitchen oci://ghcr.io/bermos/charts/kitchen \
   --set kitchen.baseDomain=apps.example.com
 ```
 
-That brings up the operator, its CRDs, the git webhook receiver, a single-node
-ClickHouse for telemetry with the collector that fills it, and the identity
-provider at `auth.apps.example.com` with its Postgres.
+That brings up the operator, its CRDs, the git webhook receiver, the REST API
+at `kitchen.apps.example.com/api/v1/`, a single-node ClickHouse for telemetry
+with the collector that fills it, and the identity provider at
+`auth.apps.example.com` with its Postgres.
 
 Then point `*.apps.example.com` at the shared Gateway:
 
@@ -48,6 +51,13 @@ Create the first administrator with the one-time link `helm install` prints:
 ```sh
 echo "https://auth.apps.example.com/bootstrap?token=$(kubectl -n kitchen-system \
   get secret kitchen-auth -o jsonpath='{.data.bootstrapToken}' | base64 -d)"
+```
+
+Everything the API serves is behind that login. With a token:
+
+```sh
+curl -H "authorization: Bearer $TOKEN" \
+  https://kitchen.apps.example.com/api/v1/projects
 ```
 
 Cluster prerequisites (Cilium with Gateway API, wildcard DNS, cert-manager or

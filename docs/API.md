@@ -1,0 +1,193 @@
+# Kitchen — Operator REST API
+
+The surface the Kitchen UI, the CLI and CI talk to, served by the operator
+alongside the git webhook receiver and published on the shared Gateway at
+`https://kitchen.<baseDomain>/api/v1/`.
+
+It is a view onto the same custom resources the controllers reconcile — there
+is no second copy of the platform's state. Listing projects reads `Project`
+objects; rolling an environment back writes one field of an `Environment`.
+
+## Authentication
+
+Every endpoint is behind the platform's identity provider ([AUTH.md](AUTH.md)).
+There is no unauthenticated mode, no local-admin escape hatch, and no
+read-only exception: a request without a valid bearer token gets `401` with a
+`WWW-Authenticate: Bearer` challenge. An installation running with
+`auth.enabled=false` has no issuer, so every endpoint answers 401 — the API
+does not fall open when the thing that guards it is missing.
+
+Validation is stateless. The operator fetches the issuer's JWKS once, verifies
+the signature, the issuer, the expiry and the audience, and keeps no session.
+Key rotation needs no restart: an unknown key id refetches the JWKS.
+
+Both the issuer and the accepted audiences come from the `Kitchen` singleton,
+so nothing has to be configured twice:
+
+| | |
+|---|---|
+| Issuer | `spec.auth.host`, defaulting to `auth.<baseDomain>` |
+| Accepted audiences | the issuer, and `spec.api.externalURL` (defaulting to `https://kitchen.<baseDomain>`) |
+
+`--api-audiences` adds more, for installations that mint tokens under another
+name.
+
+### Getting a token
+
+**A person, through the UI.** The UI is an OAuth client (Authorization Code +
+PKCE, client id `kitchen-ui`), registered by the chart on the first start of
+the auth service. It asks the token endpoint for a token for the API by name:
+
+```
+POST https://auth.<baseDomain>/oauth2/token
+grant_type=authorization_code&client_id=kitchen-ui&code=…&code_verifier=…
+&resource=https://kitchen.<baseDomain>
+```
+
+The `resource` parameter is what makes the access token a JWT with the API as
+its audience. Without it the provider issues an opaque token, which the
+operator cannot validate and will refuse.
+
+**CI, with an API key.** API keys are the identity provider's (better-auth's
+api-key plugin) — see the decision below. The key is exchanged for a
+short-lived JWT at the issuer, and the API sees only the JWT:
+
+```sh
+TOKEN=$(curl -sS -H "x-api-key: $KITCHEN_API_KEY" \
+  https://auth.apps.example.com/token | jq -r .token)
+
+curl -sS -H "authorization: Bearer $TOKEN" \
+  https://kitchen.apps.example.com/api/v1/projects
+```
+
+That token's audience is the issuer, which the API accepts. The key itself
+never reaches the operator, so a leaked API key is revoked in one place and
+the operator has nothing to invalidate.
+
+## Endpoints
+
+All paths are relative to `/api/v1`. Collections answer `{"items": [...]}`;
+errors answer `{"error": "..."}` with a message meant to be read by whoever
+sent the request.
+
+| Method | Path | Does |
+|---|---|---|
+| GET | `/projects` | List projects |
+| GET | `/projects/{name}` | One project |
+| GET | `/projects/{name}/builds` | That project's builds, newest first |
+| POST | `/projects/{name}/builds` | Build a commit — a rebuild |
+| GET | `/projects/{name}/releases` | That project's releases, newest first |
+| GET | `/projects/{name}/environments` | That project's environments |
+| GET | `/builds` | Every build. `?project=` filters |
+| GET | `/builds/{name}` | One build |
+| GET | `/builds/{name}/logs` | That build's output |
+| GET | `/releases` | Every release. `?project=` filters |
+| GET | `/releases/{name}` | One release |
+| GET | `/environments` | Every environment. `?project=` filters |
+| GET | `/environments/{name}` | One environment |
+| PATCH | `/environments/{name}` | Move it to another release — promotion and rollback |
+| GET | `/environments/{name}/logs` | That environment's runtime logs |
+| GET | `/connections` | Every connection (never their credentials) |
+| GET | `/connections/{name}` | One connection |
+| GET | `/domains` | Every custom domain. `?environment=` filters |
+| GET | `/domains/{name}` | One domain |
+| GET | `/claims` | Every resource claim. `?project=` filters |
+| GET | `/claims/{name}` | One claim |
+
+Creating projects, connections, domains and claims is not here yet: those are
+the flows the UI will drive, and they are worth designing against a UI rather
+than ahead of one. Until then they are `kubectl apply`, the same as they were.
+
+### Triggering a build
+
+```sh
+curl -sS -X POST -H "authorization: Bearer $TOKEN" \
+  https://kitchen.apps.example.com/api/v1/projects/shop/builds
+```
+
+An empty body rebuilds the commit the project built last — a rerun after a
+flaky build or a changed secret. To build a particular commit:
+
+```json
+{"sha": "abc123def456789", "branch": "main"}
+```
+
+The branch may be left out for a commit that has been built before; for one
+that has not, it falls back to the project's production branch. Builds are
+immutable, so a rebuild is always a new `Build` with a generated name
+(`shop-bld-abc123def456-xk2p9`) rather than a mutation of the old one.
+
+Answers `201` with the new build.
+
+### Rolling back
+
+Rollback is not a special operation. A `Release` is an immutable snapshot of an
+image digest and the configuration it runs with, so pointing an `Environment`
+at an older one puts back exactly what was running:
+
+```sh
+curl -sS -X PATCH -H "authorization: Bearer $TOKEN" \
+  -d '{"release": "shop-rel-41"}' \
+  https://kitchen.apps.example.com/api/v1/environments/shop-production
+```
+
+The release has to belong to the same project as the environment; anything else
+is a `400`. Promotion is the same call with a newer release.
+
+### Logs
+
+Build and runtime logs come from ClickHouse, where the collector has been
+shipping them since the log pipeline landed — so a build's output survives the
+build pod, and a preview's logs outlive the preview.
+
+```
+GET /builds/{name}/logs?limit=200&search=error&since=2026-08-13T10:00:00Z
+GET /environments/{name}/logs?limit=200&container=app
+```
+
+| Parameter | Meaning |
+|---|---|
+| `limit` | Lines to return, default 200, capped at 5000. The *newest* lines are kept |
+| `since` / `until` | RFC 3339 bounds |
+| `search` | Case-insensitive substring of the message |
+| `container` | One container of the pod |
+
+Lines come back oldest first — a log reads forwards — as
+`{timestamp, source, project, environment, build, pod, container, stream, message}`.
+
+An installation without a telemetry store answers `503`: there are no logs to
+read, which is a missing capability rather than a bad request.
+
+## Status codes
+
+| Code | When |
+|---|---|
+| `200` / `201` | Fine |
+| `400` | The request cannot be carried out as written |
+| `401` | No valid token — including when the platform has no identity provider |
+| `403` | The operator's own service account may not do this |
+| `404` | No such object, or no such endpoint |
+| `409` | Someone else changed the object first |
+| `503` | A capability this endpoint needs is not installed |
+
+## Decisions
+
+| Decision | Choice | Why |
+|---|---|---|
+| Token validation | Stateless, against the issuer's JWKS | No session state in the operator; the identity provider stays swappable |
+| Token audience | The API's own URL (`resource=`), or the issuer | A resource server should be able to tell a token meant for it from a token meant for everything |
+| CI tokens | better-auth's api-key plugin, exchanged for a JWT at the issuer | The plugin already holds the operator's own credential; keeping key lookup at the issuer keeps the operator's request path stateless |
+| Response shapes | The API's own vocabulary, not raw custom resources | A stable contract for the UI, and freedom to change how state is stored |
+| Write surface | Rebuild and promote/rollback | The two writes that are meaningful before a UI exists; the rest wait for the flows they belong to |
+| Webhook receiver | Stays signature-authenticated, not OIDC | A provider proving a payload is genuine is a different question from a caller proving who they are |
+
+## Open
+
+- **Scopes and RBAC.** Tokens carry their scopes and the API records who asked
+  for what, but nothing is enforced beyond "the issuer vouches for you". Teams
+  and per-organisation roles land with the organizations plugin, and the token
+  shape follows them.
+- **Streaming logs.** Log reads are bounded queries. Following a build live
+  wants Server-Sent Events on the same endpoints.
+- **Paging.** Collections answer in full. `{"items": …}` is an object rather
+  than a bare array so a cursor can be added without breaking clients.

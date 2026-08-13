@@ -181,6 +181,12 @@ registration). Rotate either by setting it explicitly and upgrading. As with
 ClickHouse, `helm template` cannot read the existing secret, so rendering
 offline invents new values every time.
 
+The Kitchen UI is registered as an OAuth client on start, with the client id
+`kitchen-ui` and the redirect URI `<kitchen.api.externalURL>/auth/callback`. It
+is a public client — a browser application keeps no secret — so the provider
+requires PKCE. Point it somewhere else, or add a development callback, with
+`auth.ui.redirectURIs`; turn it off with `auth.ui.enabled=false`.
+
 Accounts, sessions, OAuth clients and consents live in Postgres, with
 connection details in `<release>-postgres` (`host`, `port`, `database`,
 `username`, `password`, `dsn`). Point at an existing Postgres instead:
@@ -300,6 +306,9 @@ kubectl delete namespace kitchen-system
 | `auth.serviceKey` | `""` | Operator API key for client registration, ≥64 characters. |
 | `auth.serviceAccountEmail` | `operator@kitchen.local` | Machine account owning that key. |
 | `auth.bootstrap.enabled` / `.token` | `true` / `""` | One-time first-administrator link. |
+| `auth.ui.enabled` | `true` | Register the Kitchen UI as an OAuth client (PKCE, no secret). |
+| `auth.ui.clientId` | `kitchen-ui` | Client id the UI authenticates with. |
+| `auth.ui.redirectURIs` | `[]` | Defaults to `<kitchen.api.externalURL>/auth/callback`. |
 | `auth.github.clientId` / `.clientSecret` | `""` | Upstream GitHub OAuth app. |
 | `auth.github.existingSecret` / `.existingSecretKey` | `""` / `clientSecret` | Read the client secret from an existing secret. |
 | `auth.allowSocialSignUp` | `false` | Let an unknown GitHub account create a Kitchen account. |
@@ -311,6 +320,12 @@ kubectl delete namespace kitchen-system
 | `auth.route.gateway.name` / `.namespace` | `kitchen` / `kitchen-system` | Must match the operator's constants. |
 | `auth.resources` | 50m/128Mi → 512Mi | |
 | `auth.logLevel` | `info` | `debug`, `info`, `warn`, `error`. |
+| `api.port` | `8092` | Container port for the REST API. |
+| `api.service.type` / `.port` / `.annotations` | `ClusterIP` / `80` / `{}` | |
+| `api.route.enabled` | `true` | Publish the API on the shared Gateway under `/api/`. |
+| `api.route.host` | `""` | Defaults to the host of `kitchen.api.externalURL`. |
+| `api.route.gateway.name` / `.namespace` | `kitchen` / `kitchen-system` | Must match the operator's constants. |
+| `api.extraAudiences` | `[]` | Token audiences accepted beyond the issuer and the API's own URL. |
 | `webhookReceiver.port` | `8090` | Container port for the receiver. |
 | `webhookReceiver.service.type` / `.port` / `.annotations` | `ClusterIP` / `80` / `{}` | |
 | `webhookReceiver.route.enabled` | `true` | Publish the receiver on the shared Gateway. |
@@ -333,6 +348,31 @@ kubectl delete namespace kitchen-system
 
 Scraping metrics from outside the mesh needs the
 `<release>-metrics-reader` ClusterRole bound to the scraper's ServiceAccount.
+
+## REST API
+
+With `api.route.enabled=true` (the default), the operator's API answers next to
+the webhook receiver on the same public name, split by path:
+
+```
+https://<kitchen.api.externalURL host>/api/v1/...
+```
+
+Every endpoint is behind the identity provider — there is no unauthenticated
+mode, and an installation with `auth.enabled=false` answers 401 everywhere.
+Tokens are validated statelessly against the issuer's JWKS, so the operator
+keeps no sessions. A token for CI:
+
+```sh
+TOKEN=$(curl -sS -H "x-api-key: $KITCHEN_API_KEY" \
+  https://auth.apps.example.com/token | jq -r .token)
+
+curl -sS -H "authorization: Bearer $TOKEN" \
+  https://kitchen.apps.example.com/api/v1/projects
+```
+
+The endpoints and the token flows are documented in
+[docs/API.md](../../docs/API.md).
 
 ## Git webhooks
 

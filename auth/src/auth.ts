@@ -65,9 +65,14 @@ export function authOptions(config: Config, database: Pool): BetterAuthOptions {
 				// operator gets from its API key.
 				allowDynamicClientRegistration: true,
 				allowUnauthenticatedClientRegistration: false,
-				// Leaving `validAudiences` unset pins every token's audience to
-				// this issuer, which is also the documented mitigation for
-				// GHSA-p2fr-6hmx-4528 in the 1.6 line.
+				// The audiences a client may ask for a token for
+				// (`resource=`), and nothing else — an unconstrained list is
+				// the audience-confusion problem GHSA-p2fr-6hmx-4528 warns
+				// about in the 1.6 line. The issuer is always one of them;
+				// the operator API is added because it is a resource server
+				// of its own, and a token for the API should say so rather
+				// than be a token for everything.
+				validAudiences: config.apiURL ? [config.baseURL, config.apiURL] : undefined,
 				//
 				// Registration is rate limited per minute; the operator creates
 				// a client per environment, so the plugin's default of five is
