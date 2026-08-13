@@ -42,6 +42,17 @@ creates the first administrator. The endpoint then closes: it works only while
 the installation has no account, so the link is one-time without any state of
 its own. The operator's own service account does not count as an account.
 
+### The Kitchen UI's OAuth client
+
+The UI is the platform's own front end, so its client is seeded on start rather
+than registered at runtime: the client id is a constant the UI is built with,
+where a generated one would have to be discovered from somewhere. It is a
+public client — a browser application keeps no secret — which makes PKCE
+mandatory, and consent is skipped, because asking someone to authorise the
+dashboard of the platform they just signed in to has one sensible answer.
+Clients registered later, including apps that claim one, still get the consent
+screen.
+
 ### The operator's service credential
 
 The chart generates an API key into the same Secret and the service seeds it on
@@ -61,6 +72,9 @@ the previous one is dropped.
 | `KITCHEN_AUTH_SERVICE_KEY` | no | Operator API key, exactly the key the operator sends (≥64 characters) |
 | `KITCHEN_AUTH_SERVICE_ACCOUNT_EMAIL` | no | Machine account owning that key, default `operator@kitchen.local` |
 | `KITCHEN_AUTH_BOOTSTRAP_TOKEN` | no | Token for the first-administrator link |
+| `KITCHEN_AUTH_API_URL` | no | Public URL of the operator API, accepted as a token audience |
+| `KITCHEN_AUTH_UI_CLIENT_ID` | no | Client id for the Kitchen UI, default `kitchen-ui` |
+| `KITCHEN_AUTH_UI_REDIRECT_URIS` | no | The UI's redirect URIs, comma separated. Without them no UI client is seeded |
 | `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` | no | Upstream GitHub OAuth app; set both or neither |
 | `KITCHEN_AUTH_ALLOW_SOCIAL_SIGNUP` | no | Let an unknown GitHub account create an account, default `false` |
 | `KITCHEN_AUTH_TRUSTED_ORIGINS` | no | Extra browser origins, comma separated |
@@ -96,6 +110,13 @@ docker build -t ghcr.io/bermos/kitchen-auth:dev .
 - The OIDC provider is `@better-auth/oauth-provider`. It supersedes the
   `oidc-provider` plugin, which better-auth deprecated in 1.6 and drops in the
   next major; both implement the same OpenID Connect surface.
-- `validAudiences` is deliberately left unset so every token's audience is this
-  issuer. That is the documented mitigation for GHSA-p2fr-6hmx-4528, which is
-  only fixed in the 1.7 prereleases.
+- `validAudiences` is an explicit, closed list: this issuer, plus the operator
+  API when `KITCHEN_AUTH_API_URL` is set. Leaving it open is the
+  audience-confusion problem GHSA-p2fr-6hmx-4528 describes, which is only fixed
+  in the 1.7 prereleases; a two-entry allow-list is the same mitigation with
+  the API able to be an audience of its own.
+- Access tokens are opaque unless the client asks for one with a `resource`
+  parameter, in which case they are JWTs signed with the JWKS. That is why the
+  operator API's callers request `resource=<api url>`, and why a token minted
+  from a session at `GET /token` — what an API key is exchanged for — carries
+  the issuer as its audience.

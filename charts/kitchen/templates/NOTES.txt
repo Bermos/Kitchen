@@ -49,6 +49,21 @@ The git webhook receiver is only reachable in-cluster
 webhookReceiver.route.enabled=true, before connecting a git provider.
 {{- end }}
 
+{{ if .Values.api.route.enabled -}}
+The operator's REST API answers at:
+
+  https://{{ include "kitchen.apiHost" . }}/api/v1/projects
+
+Every endpoint needs a bearer token from the identity provider. Exchange an API
+key for one, then call the API with it:
+
+  TOKEN=$(curl -sS -H "x-api-key: $KITCHEN_API_KEY" {{ include "kitchen.authIssuer" . }}/token | jq -r .token)
+  curl -sS -H "authorization: Bearer $TOKEN" https://{{ include "kitchen.apiHost" . }}/api/v1/projects
+{{- else -}}
+The REST API is only reachable in-cluster (svc/{{ include "kitchen.fullname" . }}-api). Expose it,
+or set api.route.enabled=true, before pointing a UI or a CLI at it.
+{{- end }}
+
 {{ if .Values.auth.enabled -}}
 Sign-in for the platform — and for apps that opt in — is served by
 {{ include "kitchen.authIssuer" . }}:
@@ -75,8 +90,9 @@ Set auth.github.clientId/clientSecret with the callback URL
 {{- end }}
 {{- else }}
 The identity provider is disabled (auth.enabled=false): there is no login for
-the UI, no issuer for the operator API to validate tokens against, and apps
-cannot claim OAuth clients.
+the UI, and apps cannot claim OAuth clients. The REST API has no issuer to
+validate tokens against either, so every one of its endpoints answers 401 until
+an identity provider exists.
 {{- end }}
 
 {{ if .Values.clickhouse.enabled -}}

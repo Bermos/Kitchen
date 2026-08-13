@@ -78,15 +78,35 @@ https://kitchen.<baseDomain>.
 {{- end }}
 
 {{/*
+Hostname derived from the API's public base URL, without scheme or port.
+*/}}
+{{- define "kitchen.externalHost" -}}
+{{- $url := include "kitchen.apiExternalURL" . }}
+{{- $hostPort := $url | replace "https://" "" | replace "http://" "" | splitList "/" | first }}
+{{- $hostPort | splitList ":" | first }}
+{{- end }}
+
+{{/*
 Hostname the git webhook receiver is published under.
 */}}
 {{- define "kitchen.webhookHost" -}}
 {{- if .Values.webhookReceiver.route.host }}
 {{- .Values.webhookReceiver.route.host }}
 {{- else }}
-{{- $url := include "kitchen.apiExternalURL" . }}
-{{- $hostPort := $url | replace "https://" "" | replace "http://" "" | splitList "/" | first }}
-{{- $hostPort | splitList ":" | first }}
+{{- include "kitchen.externalHost" . }}
+{{- end }}
+{{- end }}
+
+{{/*
+Hostname the REST API is published under. It shares the receiver's name by
+default — one public name for the operator, split by path — which is also what
+`spec.api.externalURL` describes.
+*/}}
+{{- define "kitchen.apiHost" -}}
+{{- if .Values.api.route.host }}
+{{- .Values.api.route.host }}
+{{- else }}
+{{- include "kitchen.externalHost" . }}
 {{- end }}
 {{- end }}
 
@@ -231,6 +251,21 @@ operator API, deployed apps — starts from this URL.
 {{- define "kitchen.authIssuer" -}}
 {{- with include "kitchen.authHost" . }}
 {{- printf "https://%s" . }}
+{{- end }}
+{{- end }}
+
+{{/*
+Where the identity provider may send someone back to after they sign in to the
+Kitchen UI. The UI is served from the operator's public name, so its callback
+follows from the same URL the API answers on.
+*/}}
+{{- define "kitchen.authUIRedirectURIs" -}}
+{{- if .Values.auth.ui.redirectURIs }}
+{{- join "," .Values.auth.ui.redirectURIs }}
+{{- else }}
+{{- with include "kitchen.apiExternalURL" . }}
+{{- printf "%s/auth/callback" . }}
+{{- end }}
 {{- end }}
 {{- end }}
 

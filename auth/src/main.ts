@@ -3,7 +3,7 @@ import { loadConfig } from "./config.js";
 import { createPool, runMigrations, waitForDatabase } from "./db.js";
 import { isBootstrapped } from "./bootstrap.js";
 import { log } from "./log.js";
-import { seedServiceCredential } from "./seed.js";
+import { seedServiceCredential, seedUIClient } from "./seed.js";
 import { createServer } from "./server.js";
 
 async function main(): Promise<void> {
@@ -15,6 +15,7 @@ async function main(): Promise<void> {
 
 	const auth = createAuth(config, pool);
 	await seedServiceCredential(auth, config);
+	await seedUIClient(auth, config);
 
 	if (config.bootstrapToken && !(await isBootstrapped(auth, config))) {
 		log.info("waiting for the first administrator", { url: `${config.baseURL}/bootstrap?token=<token>` });

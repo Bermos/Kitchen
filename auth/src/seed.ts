@@ -78,3 +78,76 @@ export async function seedServiceCredential(auth: Auth, config: Config): Promise
 	});
 	log.info("seeded the operator's service credential", { name: SERVICE_KEY_NAME, email });
 }
+
+/**
+ * The Kitchen UI's OAuth client.
+ *
+ * It is the platform's own front end, so it is seeded rather than registered
+ * through the dynamic-registration endpoint: the UI is configured with its
+ * client id at build time, and a generated one would have to be discovered
+ * from somewhere. Everything else about it follows from being a browser
+ * application — no client secret it could not keep, and therefore PKCE, which
+ * the provider enforces for public clients without being asked.
+ *
+ * Consent is skipped. Asking someone to authorise the dashboard of the
+ * platform they just signed in to is a dialog with one sensible answer;
+ * third-party clients registered later still get the consent screen.
+ *
+ * Seeding is idempotent, and the redirect URIs are refreshed on every start,
+ * because they follow the platform's base domain — which is the chart's to
+ * change.
+ */
+export async function seedUIClient(auth: Auth, config: Config): Promise<void> {
+	if (!config.ui) {
+		log.debug("no redirect URIs configured for the Kitchen UI: no client seeded", {
+			env: "KITCHEN_AUTH_UI_REDIRECT_URIS",
+		});
+		return;
+	}
+
+	const { clientId, redirectURIs } = config.ui;
+	const ctx = await auth.$context;
+	const now = new Date();
+
+	const existing = await ctx.adapter.findOne<{ id: string; redirectUris?: string[] | string }>({
+		model: "oauthClient",
+		where: [{ field: "clientId", value: clientId }],
+	});
+
+	if (existing) {
+		const current = Array.isArray(existing.redirectUris)
+			? existing.redirectUris
+			: String(existing.redirectUris ?? "").split(",").filter(Boolean);
+		if (current.length === redirectURIs.length && current.every((uri, i) => uri === redirectURIs[i])) {
+			log.debug("the Kitchen UI client is already registered", { clientId });
+			return;
+		}
+		await ctx.adapter.update({
+			model: "oauthClient",
+			where: [{ field: "id", value: existing.id }],
+			update: { redirectUris: redirectURIs, updatedAt: now },
+		});
+		log.info("updated the Kitchen UI client's redirect URIs", { clientId, redirectURIs });
+		return;
+	}
+
+	await ctx.adapter.create({
+		model: "oauthClient",
+		data: {
+			clientId,
+			name: "Kitchen",
+			redirectUris: redirectURIs,
+			grantTypes: ["authorization_code", "refresh_token"],
+			responseTypes: ["code"],
+			// A public client: no secret, so PKCE is mandatory.
+			tokenEndpointAuthMethod: "none",
+			public: true,
+			type: "user-agent-based",
+			skipConsent: true,
+			disabled: false,
+			createdAt: now,
+			updatedAt: now,
+		},
+	});
+	log.info("registered the Kitchen UI as an OAuth client", { clientId, redirectURIs });
+}
