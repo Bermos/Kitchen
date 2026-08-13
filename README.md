@@ -35,4 +35,12 @@ make install              # install CRDs into the cluster
 
 ## Status
 
-Early days: scaffolding + API types. No reconcile logic yet.
+The core pipeline is implemented end to end:
+`git push` → webhook receiver → Build (BuildKit job) → Release → Environment
+→ Deployment + Service + HTTPRoute on the shared Gateway, with per-PR preview
+environments and instant rollbacks by design.
+
+Reconcilers: Kitchen (shared Gateway + optional cloudflared), Project
+(webhook registration, namespace, connection validation), Build, Environment.
+Still missing: Connection/Domain/ResourceClaim reconcilers, the Helm chart,
+ClickHouse + collectors, Infisical sync, the operator REST API and the Vue UI.
