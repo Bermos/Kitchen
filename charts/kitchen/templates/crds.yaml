@@ -774,9 +774,10 @@ spec:
                     type: string
                 type: object
               auth:
+                default: {}
                 description: |-
-                  AuthSpec configures the platform's identity provider: the OIDC issuer the
-                  UI, the operator API and opted-in apps all authenticate against.
+                  An installation with no auth block at all still has an identity
+                  provider: the defaults inside it only apply once the object is there.
                 properties:
                   enabled:
                     default: true
@@ -789,6 +790,58 @@ spec:
                       Hostname the identity provider is served on, and therefore the OIDC
                       issuer (https://<host>). Defaults to auth.<baseDomain>.
                     type: string
+                  previewGate:
+                    default: {}
+                    description: |-
+                      PreviewGateSpec configures the forward-auth gate that protected preview
+                      environments are served through: an in-path component that turns an
+                      anonymous request into a platform login and only then proxies to the app.
+                    properties:
+                      enabled:
+                        default: true
+                        description: |-
+                          Whether the platform runs a gate at all. A Project asking for protected
+                          previews without one gets no route rather than a public one.
+                        type: boolean
+                      host:
+                        description: |-
+                          Hostname the gate serves its OAuth callback on. It is the only redirect
+                          URI registered with the identity provider, which is what lets previews
+                          come and go without touching the OAuth client.
+                          Defaults to previews.<baseDomain>.
+                        type: string
+                      replicas:
+                        default: 2
+                        description: |-
+                          Replicas of the gate. It is in the request path of every protected
+                          preview, so it is worth more than one.
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      sessionTTL:
+                        default: 8h
+                        description: |-
+                          How long a visitor's session on a preview lasts before the gate sends
+                          them back to the identity provider — which, if they are still signed in
+                          there, costs them a redirect and no interaction.
+                        type: string
+                    type: object
+                  secretRef:
+                    description: |-
+                      SecretRef names the Secret in the platform namespace holding the
+                      operator's view of the identity provider: the keys issuer, serviceKey
+                      and, optionally, internalURL — a cluster-internal address for the same
+                      issuer, for clusters that cannot resolve their own base domain from the
+                      inside. The chart writes it as <release>-auth. Without it the operator
+                      cannot register OAuth clients, so nothing that depends on one — the
+                      preview gate, later the oidcClient claims — can be reconciled.
+                    properties:
+                      name:
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    type: object
                 type: object
               baseDomain:
                 description: |-
@@ -1098,6 +1151,20 @@ spec:
                 properties:
                   enabled:
                     default: true
+                    type: boolean
+                  protected:
+                    default: true
+                    description: |-
+                      Protected gates preview URLs behind platform login: the Environment's
+                      route goes through the forward-auth gate, which sends anonymous
+                      requests to the identity provider and only proxies signed-in ones to
+                      the application. The application itself needs no changes. Production
+                      environments are never gated.
+
+                      It defaults to on, so unreleased work is not published to anyone who
+                      guesses the URL. With no gate on the platform the Environment gets no
+                      route at all rather than a public one — set this to false to serve
+                      previews openly on purpose.
                     type: boolean
                   ttlAfterClosed:
                     description: |-

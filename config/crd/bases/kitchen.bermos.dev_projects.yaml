@@ -136,6 +136,20 @@ spec:
                   enabled:
                     default: true
                     type: boolean
+                  protected:
+                    default: true
+                    description: |-
+                      Protected gates preview URLs behind platform login: the Environment's
+                      route goes through the forward-auth gate, which sends anonymous
+                      requests to the identity provider and only proxies signed-in ones to
+                      the application. The application itself needs no changes. Production
+                      environments are never gated.
+
+                      It defaults to on, so unreleased work is not published to anyone who
+                      guesses the URL. With no gate on the platform the Environment gets no
+                      route at all rather than a public one — set this to false to serve
+                      previews openly on purpose.
+                    type: boolean
                   ttlAfterClosed:
                     description: |-
                       Grace period before a preview Environment is torn down after its

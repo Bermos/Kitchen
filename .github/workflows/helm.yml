@@ -52,7 +52,8 @@ jobs:
           # explicitly, or its route turned off.
           render --set kitchen.create=false --set webhookReceiver.route.enabled=false \
                  --set api.route.host=kitchen.example.com \
-                 --set auth.route.host=login.example.com
+                 --set auth.route.host=login.example.com \
+                 --set previewGate.host=previews.example.com
           render --set kitchen.baseDomain=apps.example.com \
                  --set clickhouse.persistence.enabled=false \
                  --set clickhouse.extraConfig.logger\\.xml='<clickhouse><logger><level>debug</level></logger></clickhouse>'
@@ -67,7 +68,8 @@ jobs:
                  --set logs.extraLabelSelector=app.kubernetes.io/part-of=kitchen \
                  --set logs.extraFieldSelector=metadata.namespace!=kube-system
           render --set kitchen.baseDomain=apps.example.com \
-                 --set auth.enabled=false --set postgres.enabled=false
+                 --set auth.enabled=false --set postgres.enabled=false \
+                 --set previewGate.enabled=false
           render --set kitchen.baseDomain=apps.example.com \
                  --set auth.replicaCount=2 --set auth.bootstrap.enabled=false
           render --set kitchen.baseDomain=apps.example.com \
@@ -78,6 +80,12 @@ jobs:
                  --set auth.route.host=login.example.com
           render --set kitchen.baseDomain=apps.example.com \
                  --set postgres.persistence.enabled=false
+          # The forward-auth gate for protected previews.
+          render --set kitchen.baseDomain=apps.example.com \
+                 --set previewGate.enabled=false
+          render --set kitchen.baseDomain=apps.example.com \
+                 --set previewGate.host=gate.example.com \
+                 --set previewGate.replicas=1 --set previewGate.sessionTTL=1h
           render --set kitchen.baseDomain=apps.example.com \
                  --set postgres.enabled=false \
                  --set postgres.external.host=postgres.databases.svc \
@@ -142,6 +150,18 @@ jobs:
           # External Postgres without a password.
           expect_failure kitchen-system --set kitchen.baseDomain=apps.example.com \
             --set postgres.enabled=false --set postgres.external.host=postgres.databases.svc
+          # The preview gate without an identity provider to sign visitors in.
+          expect_failure kitchen-system --set kitchen.baseDomain=apps.example.com \
+            --set auth.enabled=false --set postgres.enabled=false
+          # The preview gate with nowhere to bring logins back to: every other
+          # hostname is given, so only the gate's is missing.
+          expect_failure kitchen-system --set kitchen.create=false \
+            --set webhookReceiver.route.enabled=false \
+            --set api.route.host=kitchen.example.com \
+            --set auth.route.host=login.example.com
+          # A gate with no replicas is a preview with no URL.
+          expect_failure kitchen-system --set kitchen.baseDomain=apps.example.com \
+            --set previewGate.replicas=0
           # A GitHub OAuth app with no secret to go with the client id.
           expect_failure kitchen-system --set kitchen.baseDomain=apps.example.com \
             --set auth.github.clientId=Iv1.deadbeef
@@ -402,6 +422,71 @@ jobs:
             echo "::error::the identity provider did not serve a usable OIDC issuer"
             exit 1
           }
+
+      - name: Verify the preview gate
+        run: |
+          set -euo pipefail
+          # The gate is deployed by the operator, not by the chart, so
+          # `helm install --wait` did not wait for it: it only exists once an
+          # OAuth client has been registered for it at the identity provider.
+          kubectl -n kitchen-system rollout status deploy/kitchen-preview-gate --timeout=5m || {
+            kubectl get kitchen default -o jsonpath='{.status.conditions}'
+            kubectl -n kitchen-system describe deploy kitchen-preview-gate
+            kubectl -n kitchen-system logs -l control-plane=controller-manager --tail=100
+            exit 1
+          }
+          kubectl -n kitchen-system get httproute kitchen-preview-gate
+          client_id=$(kubectl -n kitchen-system get secret kitchen-preview-gate-oidc \
+            -o jsonpath='{.data.clientId}' | base64 -d)
+          [ -n "${client_id}" ] || {
+            echo "::error::the operator registered no OAuth client for the gate"
+            exit 1
+          }
+          echo "gate client: ${client_id}"
+
+          # The acceptance criterion, from inside the cluster: an anonymous
+          # request to a protected preview is sent to the platform login, and
+          # never to the application. The upstream header is the one the
+          # Environment reconciler puts on the route.
+          base="http://kitchen-preview-gate.kitchen-system.svc"
+          kubectl -n kitchen-system run gate-probe \
+            --image="${PROBE_IMAGE}" --restart=Never --command -- sh -ec "
+              anonymous=\$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' \
+                -H 'Host: shop-pr-42.apps.example.com' \
+                -H 'X-Kitchen-Upstream: shop-pr-42.kitchen-shop.svc.cluster.local:80' \
+                ${base}/orders)
+              echo \"anonymous: \${anonymous}\"
+              case \"\${anonymous}\" in
+                '302 https://previews.apps.example.com/_kitchen/gate/start?rd='*) ;;
+                *) echo 'not sent to the platform login'; exit 1 ;;
+              esac
+
+              # A sign-in link nobody signed: the gate host must not redirect
+              # anywhere it was merely asked to.
+              forged=\$(curl -s -o /dev/null -w '%{http_code}' \
+                -H 'Host: previews.apps.example.com' \
+                '${base}/_kitchen/gate/start?rd=https://evil.example.com/')
+              echo \"forged: \${forged}\"
+              [ \"\${forged}\" = 400 ]
+              echo gate-ok
+            "
+          phase=""
+          for _ in $(seq 60); do
+            phase=$(kubectl -n kitchen-system get pod gate-probe -o jsonpath='{.status.phase}' 2>/dev/null || true)
+            case "${phase}" in Succeeded|Failed) break ;; esac
+            sleep 2
+          done
+          probe_output=$(kubectl -n kitchen-system logs gate-probe 2>&1 || true)
+          echo "probe phase=${phase} output=${probe_output}"
+          kubectl -n kitchen-system delete pod gate-probe --wait=false
+          case "${probe_output}" in
+            *gate-ok) ;;
+            *)
+              kubectl -n kitchen-system logs deploy/kitchen-preview-gate --tail=100 || true
+              echo "::error::the preview gate did not turn an anonymous request into a login"
+              exit 1
+              ;;
+          esac
 
       - name: Verify the log pipeline
         run: |

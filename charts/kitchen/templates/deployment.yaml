@@ -58,6 +58,11 @@ spec:
             - --metrics-bind-address=0
             {{- end }}
             - --zap-devel={{ .Values.developmentLogging }}
+            {{- if (include "kitchen.previewGateEnabled" .) }}
+            # The gate is a second binary in this same image, deployed by the
+            # operator once it has registered an OAuth client for it.
+            - --preview-gate-image={{ include "kitchen.image" . }}
+            {{- end }}
             {{- with .Values.extraArgs }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

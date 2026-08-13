@@ -57,6 +57,7 @@ const (
 	condGatewayProgrammed = "GatewayProgrammed"
 	condTunnelConnected   = "TunnelConnected"
 	condTelemetrySchema   = "TelemetrySchemaReady"
+	condPreviewGateReady  = "PreviewGateReady"
 
 	// defaultRetentionDays matches the CRD default, for Kitchen objects
 	// written before the field existed.
@@ -71,6 +72,12 @@ const (
 type KitchenReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+
+	// PreviewGateImage is the image the forward-auth gate runs. It is the
+	// operator's own image — the gate is a second binary in it — and the
+	// chart passes it in, because a pod cannot read its own image back.
+	// Without it, protected previews have nothing to route through.
+	PreviewGateImage string
 }
 
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=kitchens,verbs=get;list;watch;create;update;patch;delete
@@ -79,7 +86,7 @@ type KitchenReconciler struct {
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;create
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch
 
 // Reconcile drives the platform's shared infrastructure.
 func (r *KitchenReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -119,14 +126,18 @@ func (r *KitchenReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	r.reconcileCloudflared(ctx, kitchen, setCond)
 
 	schemaReady := r.reconcileTelemetrySchema(ctx, kitchen, setCond)
+	gateReady := r.reconcilePreviewGate(ctx, kitchen, setCond)
 	programmed := r.observeGateway(ctx, kitchen, setCond)
 	setCond(condReady, metav1.ConditionTrue, "Reconciled", "platform infrastructure is in place")
 
 	if err := r.Status().Update(ctx, kitchen); err != nil {
 		return ctrl.Result{}, err
 	}
-	log.Info("reconciled kitchen", "gatewayProgrammed", programmed, "telemetrySchemaReady", schemaReady)
-	if !programmed || !schemaReady {
+	log.Info("reconciled kitchen",
+		"gatewayProgrammed", programmed,
+		"telemetrySchemaReady", schemaReady,
+		"previewGateReady", gateReady)
+	if !programmed || !schemaReady || !gateReady {
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 	return ctrl.Result{}, nil

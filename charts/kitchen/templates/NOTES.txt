@@ -88,11 +88,29 @@ No GitHub OAuth app is configured, so email and password is the only way in.
 Set auth.github.clientId/clientSecret with the callback URL
 {{ include "kitchen.authIssuer" . }}/callback/github to sign in with GitHub.
 {{- end }}
+{{- if (include "kitchen.previewGateEnabled" .) }}
+
+Preview URLs are gated behind that login. The operator registers an OAuth client
+and runs the gate at {{ include "kitchen.previewGateHost" . }}:
+
+  kubectl -n {{ .Release.Namespace }} rollout status deploy/kitchen-preview-gate
+  kubectl get kitchen default -o jsonpath='{.status.conditions[?(@.type=="PreviewGateReady")].message}'
+
+Point {{ include "kitchen.previewGateHost" . }} at the Gateway as well — the wildcard record covers it.
+Projects opt out one at a time with spec.previews.protected=false; a project that
+keeps protection while the gate is off gets no preview URL at all.
+{{- else }}
+
+The preview gate is off (previewGate.enabled=false): projects that keep
+spec.previews.protected get no preview URL at all. Set it to false per project
+to serve previews openly.
+{{- end }}
 {{- else }}
 The identity provider is disabled (auth.enabled=false): there is no login for
 the UI, and apps cannot claim OAuth clients. The REST API has no issuer to
 validate tokens against either, so every one of its endpoints answers 401 until
-an identity provider exists.
+an identity provider exists. Preview protection needs it too, so projects that
+keep spec.previews.protected get no preview URL at all.
 {{- end }}
 
 {{ if .Values.clickhouse.enabled -}}

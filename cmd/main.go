@@ -38,6 +38,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/api"
@@ -56,6 +57,9 @@ func init() {
 
 	utilruntime.Must(kitchenv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(gatewayv1.Install(scheme))
+	// ReferenceGrant is v1beta1: it is what lets a protected preview's route
+	// point at the forward-auth gate in another namespace.
+	utilruntime.Must(gatewayv1beta1.Install(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 
@@ -67,6 +71,7 @@ func main() {
 	var enableLeaderElection bool
 	var probeAddr string
 	var gitWebhookAddr string
+	var previewGateImage string
 	var apiAddr string
 	var apiAudiences string
 	var secureMetrics bool
@@ -76,6 +81,10 @@ func main() {
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
 	flag.StringVar(&gitWebhookAddr, "git-webhook-bind-address", ":8090",
 		"The address the git webhook receiver binds to.")
+	flag.StringVar(&previewGateImage, "preview-gate-image", "",
+		"Image the forward-auth gate for protected previews runs. It is this operator's own image — "+
+			"the gate is a second binary in it — and a pod cannot read its own image back, so the chart passes it in. "+
+			"Without it, previews that ask to be protected get no route at all.")
 	flag.StringVar(&apiAddr, "api-bind-address", ":8092",
 		"The address the REST API binds to.")
 	flag.StringVar(&apiAudiences, "api-audiences", "",
@@ -218,8 +227,9 @@ func main() {
 	}
 
 	if err = (&controller.KitchenReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:           mgr.GetClient(),
+		Scheme:           mgr.GetScheme(),
+		PreviewGateImage: previewGateImage,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Kitchen")
 		os.Exit(1)

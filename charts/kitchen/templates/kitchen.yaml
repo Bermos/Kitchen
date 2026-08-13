@@ -42,6 +42,19 @@ spec:
     {{- with include "kitchen.authHost" . }}
     host: {{ . | quote }}
     {{- end }}
+    {{- if .Values.auth.enabled }}
+    # How the operator reaches the identity provider to register OAuth
+    # clients — the preview gate's today, per-app clients later.
+    secretRef:
+      name: {{ include "kitchen.authSecretName" . }}
+    {{- end }}
+    previewGate:
+      enabled: {{ and .Values.auth.enabled .Values.previewGate.enabled }}
+      {{- with include "kitchen.previewGateHost" . }}
+      host: {{ . | quote }}
+      {{- end }}
+      replicas: {{ int .Values.previewGate.replicas }}
+      sessionTTL: {{ .Values.previewGate.sessionTTL | quote }}
   builds:
     defaultStrategy: {{ .Values.kitchen.builds.defaultStrategy | quote }}
     concurrency: {{ int .Values.kitchen.builds.concurrency }}

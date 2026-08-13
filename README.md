@@ -25,6 +25,8 @@ flow data — lands in ClickHouse.
 - `config/crd/bases/` — generated CRD manifests
 - `cmd/` — operator entrypoint
 - `auth/` — the identity provider (better-auth) served at `auth.<baseDomain>`
+- `cmd/gate/`, `internal/previewgate/` — the forward-auth gate protected preview
+  URLs are served through
 - `charts/kitchen/` — the Helm chart that deploys all of it
 
 ## Install
@@ -94,17 +96,24 @@ The core pipeline is implemented end to end:
 → Deployment + Service + HTTPRoute on the shared Gateway, with per-PR preview
 environments and instant rollbacks by design.
 
-Reconcilers: Kitchen (shared Gateway, optional cloudflared, telemetry schema),
-Project (webhook registration, namespace, connection validation), Build,
-Environment. The Helm chart ships the operator, its CRDs, the git webhook
-route, ClickHouse with a Vector DaemonSet shipping container and build logs
-into it, and the identity provider with its Postgres; tagged releases publish
-both images and the chart to GHCR.
+Preview URLs are gated behind platform login by default: a protected preview's
+route goes through the operator-run forward-auth gate, which sends anonymous
+visitors to the identity provider and proxies the ones that come back — the
+deployed app needs no changes. Turn it off per project with
+`spec.previews.protected: false`.
+
+Reconcilers: Kitchen (shared Gateway, optional cloudflared, telemetry schema,
+the preview gate and its OAuth client), Project (webhook registration,
+namespace, connection validation), Build, Environment. The Helm chart ships the
+operator, its CRDs, the git webhook route, the REST API, ClickHouse with a
+Vector DaemonSet shipping container and build logs into it, and the identity
+provider with its Postgres; tagged releases publish both images and the chart
+to GHCR.
 
 The identity provider serves OIDC discovery, JWKS and dynamic client
 registration, and hands the operator a service credential to register clients
-with. Logs are queryable by project, environment and build as soon as a build
-runs or an app deploys. Still missing: Connection/Domain/ResourceClaim
-reconcilers (including `oidcClient` claims), metrics/traces/flow collection,
-Infisical sync, the operator REST API and the Vue UI — none of which the chart
-deploys yet.
+with — which is how the preview gate gets its own OAuth client. Logs are
+queryable by project, environment and build as soon as a build runs or an app
+deploys. Still missing: Connection/Domain/ResourceClaim reconcilers (including
+`oidcClient` claims), metrics/traces/flow collection, Infisical sync and the
+Vue UI — none of which the chart deploys yet.

@@ -64,10 +64,135 @@ Connections.
    it keeps each OIDC client's redirect list in sync as previews come and go —
    the OAuth chore nobody wants to do by hand, automated by the component that
    owns the URLs.
-2. **Preview protection (forward-auth).** Preview URLs are currently public.
-   With a central IdP, a forward-auth middleware at the Gateway can gate
-   previews behind platform login Cloudflare-Access-style — the app doesn't
-   change at all. Planned as a follow-up, not part of the first cut.
+2. **Preview protection (forward-auth).** ✅ Shipped: previews are gated
+   behind platform login Cloudflare-Access-style, and the app doesn't change
+   at all. See [Preview protection](#preview-protection-forward-auth) below.
+
+## Preview protection (forward-auth)
+
+Preview URLs used to be public: anyone who guessed `shop-pr-42.apps.example.com`
+saw unreleased work. Now a preview is only useful to someone signed in to the
+platform, and the deployed application is not involved in that at all — it is
+not told to authenticate anything, and it never sees the platform's session.
+
+### Why an in-path proxy and not a Gateway filter
+
+The Cloudflare-Access shape people picture is an *external authorization*
+filter: the proxy asks an auth service about each request and forwards it if
+the answer is yes. Envoy implements exactly that (`ext_authz`), but nothing in
+Gateway API exposes it: the specification has core filters (header rewriting,
+redirects, mirroring) plus `ExtensionRef` for implementation-specific ones, and
+Cilium's Gateway API implementation ships no such extension — its "mutual
+authentication" is workload-to-workload mTLS, a different thing entirely.
+Reaching for `CiliumEnvoyConfig` to inject an `ext_authz` filter by hand would
+tie Kitchen's routing to Cilium, which is precisely what
+[choosing Gateway API](SCOPE.md) was meant to avoid.
+
+So the gate sits **in** the request path rather than beside it. A protected
+Environment's `HTTPRoute` keeps its hostname and its place on the shared
+Gateway; only its backend changes, from the application's Service to the gate's.
+Every Gateway API implementation can do that, so preview protection works the
+same on Cilium, Envoy Gateway or Istio.
+
+### The component
+
+`kitchen-preview-gate` is a small Go reverse proxy — a second binary in the
+operator's own image, so there is no third image to build or pin. The
+**operator** deploys it, not the chart: it cannot start before an OAuth client
+has been registered for it, and only the operator can register one (the chart
+would be waiting on a reconcile it has no way to wait for). Same reasoning, and
+the same shape, as the cloudflared tunnel.
+
+The `Kitchen` singleton carries the switch:
+
+```yaml
+spec:
+  auth:
+    secretRef: { name: kitchen-auth }    # issuer + the operator's registration credential
+    previewGate:
+      enabled: true
+      host: previews.apps.example.com    # defaults to previews.<baseDomain>
+      sessionTTL: 8h
+```
+
+### How a request goes through it
+
+```
+  GET https://shop-pr-42.apps.example.com/orders          (no session)
+        │
+        ▼  Gateway → gate (backend of the preview's HTTPRoute,
+        │             carrying X-Kitchen-Upstream: <app service>)
+  302 → https://previews.<baseDomain>/_kitchen/gate/start?rd=<signed return URL>
+        │
+        ▼  the gate's own host: sets a short-lived flow cookie (state + PKCE verifier)
+  302 → https://auth.<baseDomain>/oauth2/authorize?…  (platform login)
+        │
+        ▼  the visitor signs in — or is already signed in, and never sees a form
+  302 → https://previews.<baseDomain>/_kitchen/gate/callback?code=…&state=…
+        │
+        ▼  code → ID token, over the back channel
+  302 → https://shop-pr-42.apps.example.com/_kitchen/gate/session?token=<hand-off>
+        │
+        ▼  sets the session cookie for *that* hostname
+  302 → https://shop-pr-42.apps.example.com/orders        (and now it proxies)
+```
+
+Three details carry most of the design:
+
+- **One redirect URI, forever.** The login finishes on the platform's own
+  `previews.<baseDomain>`, so the gate's OAuth client is registered once with
+  one redirect URI. Previews appear and disappear all day without touching it.
+  (The alternative — a redirect URI per preview host — would mean rewriting the
+  client's redirect list on every pull request.)
+- **Host-scoped sessions.** The cookie is set on the preview's own hostname with
+  no `Domain` attribute, which is why the last hop exists: only a request to
+  that host can set a cookie for it. A cookie scoped to `.<baseDomain>` would
+  be sent to every application the platform hosts, handing each of them a
+  platform session — so the gate does not use one, and strips its own cookie
+  before proxying anyway.
+- **The routing header is not trusted.** The Gateway sets `X-Kitchen-Upstream`
+  with a `RequestHeaderModifier` filter, which overwrites whatever the client
+  sent. The gate still checks it is an in-cluster Service address before
+  forwarding, because a proxy that forwards wherever it is told is a way out of
+  the cluster.
+
+The application receives the request with `X-Kitchen-User` and
+`X-Kitchen-User-Email` and nothing else new. `/_kitchen/gate/*` is reserved on
+protected hostnames, and `/_kitchen/gate/signout` drops the session on one.
+
+### Per-project, and fail-closed
+
+Protection is a Project field, on by default:
+
+```yaml
+spec:
+  previews:
+    protected: true      # the default; production environments are never gated
+```
+
+If a Project asks for protection on a platform that runs no gate — no identity
+provider, or `previewGate.enabled: false` — the Environment gets **no route at
+all** rather than a public one. The workload still deploys; it is the URL that
+is withheld, with the way out stated in the `PreviewProtected` condition
+(`spec.previews.protected: false` serves previews openly, on purpose). Publishing
+unreleased work to whoever guesses the URL is the one outcome the Project
+explicitly did not ask for, so it is not the failure mode.
+
+### What the operator keeps
+
+| Object (in `kitchen-system`) | What it is |
+|---|---|
+| `kitchen-preview-gate` (Deployment, Service, HTTPRoute) | The gate and its own hostname |
+| `kitchen-preview-gate-oidc` (Secret) | The registered OAuth client: issuer, client id and secret, callback |
+| `kitchen-preview-gate` (Secret) | The key sessions are signed with — delete it to sign everyone out |
+| `kitchen-preview-gate-<app namespace>` (ReferenceGrant) | Lets that namespace's routes point at the gate |
+
+The client is registered through dynamic client registration with the service
+credential from `<release>-auth`, so it is the same contract the rest of this
+document rests on — a different issuer that supports DCR works without the
+operator learning anything new. The stored Secret is the source of truth: a
+client is registered again only when it is missing, or was registered for a
+different issuer or callback.
 
 ## Decisions
 
@@ -78,7 +203,9 @@ Connections.
 | Auth storage | Chart-managed single-node Postgres (external override) | OLTP; SQLite would cap replicas at 1; mirrors the ClickHouse pattern |
 | App auth surface | `ResourceClaim` type `oidcClient` | Reuses the existing claim → binding-secret → env flow |
 | API tokens for CI | better-auth's api-key plugin, exchanged for a JWT at the issuer | The plugin already holds the operator's credential; the operator stays stateless and revocation stays in one place |
-| Sequencing | auth service → REST API behind it → UI → app claims → forward-auth | The API should never exist without auth; the provider is the hard part, claims are known plumbing |
+| Preview protection | An in-path gate the routes pass through | Gateway API has no external-auth filter, and Cilium exposes none of Envoy's |
+| Gate's OAuth client | One client, one redirect URI, registered by the operator | Previews come and go without touching the client |
+| Sequencing | auth service → REST API behind it → forward-auth for previews → UI → app claims | The API should never exist without auth; the provider is the hard part, claims are known plumbing |
 
 ## What the chart deploys today
 

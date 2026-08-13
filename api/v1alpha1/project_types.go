@@ -60,10 +60,32 @@ type PreviewsSpec struct {
 	// +kubebuilder:default=true
 	Enabled bool `json:"enabled,omitempty"`
 
+	// Protected gates preview URLs behind platform login: the Environment's
+	// route goes through the forward-auth gate, which sends anonymous
+	// requests to the identity provider and only proxies signed-in ones to
+	// the application. The application itself needs no changes. Production
+	// environments are never gated.
+	//
+	// It defaults to on, so unreleased work is not published to anyone who
+	// guesses the URL. With no gate on the platform the Environment gets no
+	// route at all rather than a public one — set this to false to serve
+	// previews openly on purpose.
+	// +kubebuilder:default=true
+	// +optional
+	Protected *bool `json:"protected,omitempty"`
+
 	// Grace period before a preview Environment is torn down after its
 	// pull request closes.
 	// +optional
 	TTLAfterClosed *metav1.Duration `json:"ttlAfterClosed,omitempty"`
+}
+
+// IsProtected reports whether previews of this Project are gated behind
+// platform login. Previews written before the field existed are protected: it
+// is the safe reading of an absent value, and the API server defaults it to
+// true on the next write anyway.
+func (p PreviewsSpec) IsProtected() bool {
+	return p.Protected == nil || *p.Protected
 }
 
 // ProjectSpec defines the desired state of a Project: a repository that
