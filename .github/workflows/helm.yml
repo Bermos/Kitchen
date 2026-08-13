@@ -51,6 +51,7 @@ jobs:
           # No base domain: every hostname the chart publishes has to be given
           # explicitly, or its route turned off.
           render --set kitchen.create=false --set webhookReceiver.route.enabled=false \
+                 --set api.route.host=kitchen.example.com \
                  --set auth.route.host=login.example.com
           render --set kitchen.baseDomain=apps.example.com \
                  --set clickhouse.persistence.enabled=false \
@@ -144,9 +145,14 @@ jobs:
           # A GitHub OAuth app with no secret to go with the client id.
           expect_failure kitchen-system --set kitchen.baseDomain=apps.example.com \
             --set auth.github.clientId=Iv1.deadbeef
+          # The REST API with nowhere to be published.
+          expect_failure kitchen-system --set kitchen.create=false \
+            --set webhookReceiver.route.enabled=false \
+            --set auth.route.host=login.example.com
           # The identity provider with nowhere to be published, so no issuer.
           expect_failure kitchen-system --set kitchen.create=false \
-            --set webhookReceiver.route.enabled=false
+            --set webhookReceiver.route.enabled=false \
+            --set api.route.enabled=false
 
   install:
     name: Chart install on kind
@@ -254,8 +260,8 @@ jobs:
             echo "::error::Kitchen singleton has baseDomain '${base_domain}'"
             exit 1
           }
-          kubectl -n kitchen-system get httproute kitchen-git-webhook
-          kubectl -n kitchen-system get svc kitchen-git-webhook kitchen-metrics
+          kubectl -n kitchen-system get httproute kitchen-git-webhook kitchen-api
+          kubectl -n kitchen-system get svc kitchen-git-webhook kitchen-api kitchen-metrics
           # The operator creates the shared Gateway from the Kitchen object.
           # kind runs no Gateway controller, so it never gets programmed — it
           # only has to exist, which proves the operator's RBAC is complete.
@@ -284,6 +290,40 @@ jobs:
           # receiver answering and not something else on that address.
           [ "${phase}" = Succeeded ] && [ "${probe_output}" = pong ] || {
             echo "::error::the git webhook receiver did not answer a ping"
+            exit 1
+          }
+
+      - name: Verify the REST API is shut without a token
+        run: |
+          set -euo pipefail
+          base="http://kitchen-api.kitchen-system.svc"
+          # The acceptance criterion the API was built to: nothing answers a
+          # caller who cannot prove who they are. A token the platform did not
+          # mint is no better than none.
+          kubectl -n kitchen-system run api-probe \
+            --image="${PROBE_IMAGE}" --restart=Never --command -- sh -ec "
+              set -eu
+              for path in /api/v1/projects /api/v1/builds /api/v1/environments /api/v1/connections; do
+                status=\$(curl -s -o /dev/null -w '%{http_code}' ${base}\${path})
+                [ \"\${status}\" = 401 ] || { echo \"\${path} answered \${status}\"; exit 1; }
+              done
+              status=\$(curl -s -o /dev/null -w '%{http_code}' \
+                -H 'authorization: Bearer not-a-real-token' ${base}/api/v1/projects)
+              [ \"\${status}\" = 401 ] || { echo \"a forged token answered \${status}\"; exit 1; }
+              echo api-ok
+            "
+          phase=""
+          for _ in $(seq 60); do
+            phase=$(kubectl -n kitchen-system get pod api-probe -o jsonpath='{.status.phase}' 2>/dev/null || true)
+            case "${phase}" in Succeeded|Failed) break ;; esac
+            sleep 2
+          done
+          probe_output=$(kubectl -n kitchen-system logs api-probe 2>&1 || true)
+          echo "probe phase=${phase} output=${probe_output}"
+          kubectl -n kitchen-system delete pod api-probe --wait=false
+          [ "${phase}" = Succeeded ] && [ "${probe_output}" = api-ok ] || {
+            kubectl -n kitchen-system logs -l control-plane=controller-manager --tail=100 || true
+            echo "::error::the REST API did not refuse an unauthenticated caller"
             exit 1
           }
 
