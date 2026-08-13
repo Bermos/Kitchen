@@ -81,6 +81,21 @@ type APISpec struct {
 	ExternalURL string `json:"externalURL,omitempty"`
 }
 
+// AuthSpec configures the platform's identity provider: the OIDC issuer the
+// UI, the operator API and opted-in apps all authenticate against.
+type AuthSpec struct {
+	// Whether the platform has an identity provider at all. Without one there
+	// is no login for the UI and no issuer for apps to claim clients from.
+	// +kubebuilder:default=true
+	// +optional
+	Enabled bool `json:"enabled"`
+
+	// Hostname the identity provider is served on, and therefore the OIDC
+	// issuer (https://<host>). Defaults to auth.<baseDomain>.
+	// +optional
+	Host string `json:"host,omitempty"`
+}
+
 // KitchenSpec defines platform-wide configuration. There is exactly one
 // Kitchen object per cluster; it is the operator's runtime configuration and
 // is editable from the management UI.
@@ -98,6 +113,9 @@ type KitchenSpec struct {
 
 	// +optional
 	TLS TLSSpec `json:"tls,omitempty"`
+
+	// +optional
+	Auth AuthSpec `json:"auth,omitempty"`
 
 	// +optional
 	Builds BuildsSpec `json:"builds,omitempty"`

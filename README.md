@@ -13,6 +13,7 @@ flow data — lands in ClickHouse.
 
 - [Project scope](docs/SCOPE.md) — components, decisions, phasing
 - [CRD schema](docs/CRDS.md) — the operator's data model and reconcile flows
+- [Auth architecture](docs/AUTH.md) — the platform's identity provider
 
 ## Layout
 
@@ -21,6 +22,7 @@ flow data — lands in ClickHouse.
 - `internal/controller/` — one reconciler per CRD (stubs for now)
 - `config/crd/bases/` — generated CRD manifests
 - `cmd/` — operator entrypoint
+- `auth/` — the identity provider (better-auth) served at `auth.<baseDomain>`
 - `charts/kitchen/` — the Helm chart that deploys all of it
 
 ## Install
@@ -31,13 +33,21 @@ helm install kitchen oci://ghcr.io/bermos/charts/kitchen \
   --set kitchen.baseDomain=apps.example.com
 ```
 
-That brings up the operator, its CRDs, the git webhook receiver and a
-single-node ClickHouse for telemetry.
+That brings up the operator, its CRDs, the git webhook receiver, a single-node
+ClickHouse for telemetry, and the identity provider at `auth.apps.example.com`
+with its Postgres.
 
 Then point `*.apps.example.com` at the shared Gateway:
 
 ```sh
 kubectl get kitchen default -o jsonpath='{.status.gatewayAddress}'
+```
+
+Create the first administrator with the one-time link `helm install` prints:
+
+```sh
+echo "https://auth.apps.example.com/bootstrap?token=$(kubectl -n kitchen-system \
+  get secret kitchen-auth -o jsonpath='{.data.bootstrapToken}' | base64 -d)"
 ```
 
 Cluster prerequisites (Cilium with Gateway API, wildcard DNS, cert-manager or
@@ -58,6 +68,15 @@ make helm-lint            # lint the chart
 make helm-install BASE_DOMAIN=apps.example.com IMG=ghcr.io/bermos/kitchen:dev
 ```
 
+The auth service is a Node project of its own:
+
+```sh
+cd auth
+npm install
+npm run typecheck
+npm test                  # integration tests, need a Postgres
+```
+
 ## Status
 
 The core pipeline is implemented end to end:
@@ -67,8 +86,12 @@ environments and instant rollbacks by design.
 
 Reconcilers: Kitchen (shared Gateway + optional cloudflared), Project
 (webhook registration, namespace, connection validation), Build, Environment.
-The Helm chart ships the operator, its CRDs, the git webhook route and
-ClickHouse; tagged releases publish the image and the chart to GHCR.
-Still missing: Connection/Domain/ResourceClaim reconcilers, the collectors that
-fill ClickHouse, Infisical sync, the operator REST API and the Vue UI — none of
-which the chart deploys yet.
+The Helm chart ships the operator, its CRDs, the git webhook route, ClickHouse
+and the identity provider with its Postgres; tagged releases publish both
+images and the chart to GHCR.
+
+The identity provider serves OIDC discovery, JWKS and dynamic client
+registration, and hands the operator a service credential to register clients
+with. Still missing: Connection/Domain/ResourceClaim reconcilers (including
+`oidcClient` claims), the collectors that fill ClickHouse, Infisical sync, the
+operator REST API and the Vue UI — none of which the chart deploys yet.

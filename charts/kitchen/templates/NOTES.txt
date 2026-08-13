@@ -49,6 +49,36 @@ The git webhook receiver is only reachable in-cluster
 webhookReceiver.route.enabled=true, before connecting a git provider.
 {{- end }}
 
+{{ if .Values.auth.enabled -}}
+Sign-in for the platform — and for apps that opt in — is served by
+{{ include "kitchen.authIssuer" . }}:
+
+  {{ include "kitchen.authIssuer" . }}/.well-known/openid-configuration
+
+{{ if .Values.auth.bootstrap.enabled -}}
+Create the first administrator with this one-time link. It stops working as
+soon as this installation has an account:
+
+  echo "{{ include "kitchen.authIssuer" . }}/bootstrap?token=$(kubectl -n {{ .Release.Namespace }} get secret {{ include "kitchen.authSecretName" . }} -o jsonpath='{.data.bootstrapToken}' | base64 -d)"
+{{ else -}}
+Bootstrap is disabled (auth.bootstrap.enabled=false), so no first-run link was
+generated. Create the first account another way before anyone can sign in.
+{{ end }}
+The operator's credential for registering OAuth clients lives in the secret
+{{ include "kitchen.authSecretName" . }} under `serviceKey`; accounts and clients live in Postgres
+({{ include "kitchen.postgresHost" . }}).
+{{- if not .Values.auth.github.clientId }}
+
+No GitHub OAuth app is configured, so email and password is the only way in.
+Set auth.github.clientId/clientSecret with the callback URL
+{{ include "kitchen.authIssuer" . }}/callback/github to sign in with GitHub.
+{{- end }}
+{{- else }}
+The identity provider is disabled (auth.enabled=false): there is no login for
+the UI, no issuer for the operator API to validate tokens against, and apps
+cannot claim OAuth clients.
+{{- end }}
+
 {{ if .Values.clickhouse.enabled -}}
 Telemetry lands in the ClickHouse this release runs:
 

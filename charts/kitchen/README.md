@@ -1,8 +1,9 @@
 # Kitchen Helm chart
 
 Deploys the Kitchen operator — CRDs, RBAC, the controller manager, the git
-webhook receiver and its route on the shared Gateway — plus the `Kitchen`
-singleton that holds platform configuration.
+webhook receiver and its route on the shared Gateway — the platform's identity
+provider with its Postgres, and the `Kitchen` singleton that holds platform
+configuration.
 
 ## Prerequisites
 
@@ -30,10 +31,10 @@ helm install kitchen oci://ghcr.io/bermos/charts/kitchen \
 ```
 
 Releases are published to GHCR by `.github/workflows/publish.yml` when a `v*`
-tag is pushed: the multi-arch operator image as `ghcr.io/bermos/kitchen`, and
-the chart as `oci://ghcr.io/bermos/charts/kitchen` with matching version and
-appVersion. Use `./charts/kitchen` in place of the OCI reference to install
-from a checkout.
+tag is pushed: the multi-arch operator image as `ghcr.io/bermos/kitchen`, the
+auth image as `ghcr.io/bermos/kitchen-auth`, and the chart as
+`oci://ghcr.io/bermos/charts/kitchen` with matching version and appVersion. Use
+`./charts/kitchen` in place of the OCI reference to install from a checkout.
 
 Then point `*.apps.example.com` at the Gateway:
 
@@ -84,6 +85,59 @@ Point at an existing ClickHouse instead:
 Or install without a store at all — logs, metrics and traces then have nowhere
 to land — with `--set clickhouse.enabled=false --set
 clickhouse.acknowledgeNoStore=true`.
+
+## Identity provider
+
+The chart runs Kitchen's identity provider at `auth.<baseDomain>` — better-auth
+with its OAuth/OIDC provider plugin — backed by a single-node Postgres
+StatefulSet. It is the login for the Kitchen UI and the operator API, and the
+issuer apps get OAuth clients from. The architecture is in
+[docs/AUTH.md](../../docs/AUTH.md), the service in [auth/](../../auth).
+
+Because the service is mounted at the root of that hostname, the issuer is the
+origin itself:
+
+```
+https://auth.apps.example.com/.well-known/openid-configuration
+```
+
+**Create the first administrator.** `helm install` prints a one-time link; it
+stops working as soon as the installation has an account:
+
+```sh
+echo "https://auth.apps.example.com/bootstrap?token=$(kubectl -n kitchen-system \
+  get secret kitchen-auth -o jsonpath='{.data.bootstrapToken}' | base64 -d)"
+```
+
+Public sign-up is off. To let people in with the GitHub account they push
+from, register an OAuth app with the callback URL
+`https://auth.<baseDomain>/callback/github` and pass it in:
+
+```sh
+--set auth.github.clientId=Iv1.… \
+--set auth.github.existingSecret=github-oauth \
+--set auth.allowSocialSignUp=true
+```
+
+Two credentials are generated into `<release>-auth` on install and read back on
+upgrade, so they stay stable: `secret` (signs sessions and tokens — changing it
+signs everyone out) and `serviceKey` (the operator's API key for dynamic client
+registration). Rotate either by setting it explicitly and upgrading. As with
+ClickHouse, `helm template` cannot read the existing secret, so rendering
+offline invents new values every time.
+
+Accounts, sessions, OAuth clients and consents live in Postgres, with
+connection details in `<release>-postgres` (`host`, `port`, `database`,
+`username`, `password`, `dsn`). Point at an existing Postgres instead:
+
+```sh
+--set postgres.enabled=false \
+--set postgres.external.host=postgres.databases.svc \
+--set postgres.auth.password=<password>
+```
+
+Install without an identity provider — no login for the UI, no issuer for apps
+— with `--set auth.enabled=false --set postgres.enabled=false`.
 
 ## Upgrade
 
@@ -147,6 +201,7 @@ kubectl delete namespace kitchen-system
 | `kitchen.ingress.cloudflared.enabled` | `false` | Run a cloudflared tunnel as the edge. |
 | `kitchen.ingress.cloudflared.tunnelSecretName` | `""` | Secret with the tunnel token under `token`. |
 | `kitchen.tls.mode` | `acme` | `acme`, `cloudflared` or `none`. |
+| `kitchen.auth` | from `auth.*` | The singleton's `auth` block mirrors `auth.enabled` and the resolved host. |
 | `kitchen.builds.defaultStrategy` | `auto` | `auto`, `dockerfile` or `buildpacks`. |
 | `kitchen.builds.concurrency` | `2` | Builds running at once. |
 | `kitchen.observability.clickhouse.retentionDays` | `30` | Telemetry retention. |
@@ -161,6 +216,33 @@ kubectl delete namespace kitchen-system
 | `clickhouse.extraConfig` | `{}` | Filename → XML for `config.d`, passed through `tpl`. |
 | `clickhouse.external.host` / `.httpPort` / `.nativePort` | `""` / `8123` / `9000` | Point at an existing ClickHouse. |
 | `clickhouse.acknowledgeNoStore` | `false` | Install with no telemetry store at all. |
+| `postgres.enabled` | `true` | Run a single-node Postgres for the identity provider. |
+| `postgres.image.repository` / `.tag` | `postgres` / `17.6-alpine` | |
+| `postgres.auth.database` / `.username` | `kitchen_auth` / `kitchen` | Created on first start. |
+| `postgres.auth.password` | `""` | Generated on install, preserved on upgrade. |
+| `postgres.service.type` / `.port` | `ClusterIP` / `5432` | |
+| `postgres.persistence.enabled` | `true` | PVC for the data directory. Accounts die with the pod without it. |
+| `postgres.persistence.size` / `.storageClass` / `.accessModes` | `8Gi` / cluster default / `[ReadWriteOnce]` | |
+| `postgres.resources` | 100m/256Mi → 1Gi | |
+| `postgres.external.host` / `.port` | `""` / `5432` | Point at an existing Postgres. |
+| `auth.enabled` | `true` | Deploy the identity provider. Needs a Postgres. |
+| `auth.image.repository` / `.tag` / `.digest` | `ghcr.io/bermos/kitchen-auth` / `""` / `""` | Tag defaults to `appVersion`. |
+| `auth.replicaCount` | `1` | Stateless; state lives in Postgres. |
+| `auth.secret` | `""` | Signing secret. Generated on install, preserved on upgrade. |
+| `auth.serviceKey` | `""` | Operator API key for client registration, ≥64 characters. |
+| `auth.serviceAccountEmail` | `operator@kitchen.local` | Machine account owning that key. |
+| `auth.bootstrap.enabled` / `.token` | `true` / `""` | One-time first-administrator link. |
+| `auth.github.clientId` / `.clientSecret` | `""` | Upstream GitHub OAuth app. |
+| `auth.github.existingSecret` / `.existingSecretKey` | `""` / `clientSecret` | Read the client secret from an existing secret. |
+| `auth.allowSocialSignUp` | `false` | Let an unknown GitHub account create a Kitchen account. |
+| `auth.trustedOrigins` | `[]` | Extra browser origins. |
+| `auth.port` | `8080` | Container port. |
+| `auth.service.type` / `.port` | `ClusterIP` / `80` | |
+| `auth.route.enabled` | `true` | Publish the issuer on the shared Gateway. |
+| `auth.route.host` | `""` | Defaults to `auth.<baseDomain>`. This is the OIDC issuer. |
+| `auth.route.gateway.name` / `.namespace` | `kitchen` / `kitchen-system` | Must match the operator's constants. |
+| `auth.resources` | 50m/128Mi → 512Mi | |
+| `auth.logLevel` | `info` | `debug`, `info`, `warn`, `error`. |
 | `webhookReceiver.port` | `8090` | Container port for the receiver. |
 | `webhookReceiver.service.type` / `.port` / `.annotations` | `ClusterIP` / `80` / `{}` | |
 | `webhookReceiver.route.enabled` | `true` | Publish the receiver on the shared Gateway. |

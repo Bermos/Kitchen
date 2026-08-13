@@ -48,7 +48,10 @@ jobs:
                  --set kitchen.tls.mode=cloudflared \
                  --set kitchen.ingress.cloudflared.enabled=true \
                  --set kitchen.ingress.cloudflared.tunnelSecretName=kitchen-tunnel
-          render --set kitchen.create=false --set webhookReceiver.route.enabled=false
+          # No base domain: every hostname the chart publishes has to be given
+          # explicitly, or its route turned off.
+          render --set kitchen.create=false --set webhookReceiver.route.enabled=false \
+                 --set auth.route.host=login.example.com
           render --set kitchen.baseDomain=apps.example.com \
                  --set clickhouse.persistence.enabled=false \
                  --set clickhouse.extraConfig.logger\\.xml='<clickhouse><logger><level>debug</level></logger></clickhouse>'
@@ -58,6 +61,22 @@ jobs:
                  --set clickhouse.auth.password=hunter2
           render --set kitchen.baseDomain=apps.example.com \
                  --set clickhouse.enabled=false --set clickhouse.acknowledgeNoStore=true
+          render --set kitchen.baseDomain=apps.example.com \
+                 --set auth.enabled=false --set postgres.enabled=false
+          render --set kitchen.baseDomain=apps.example.com \
+                 --set auth.replicaCount=2 --set auth.bootstrap.enabled=false
+          render --set kitchen.baseDomain=apps.example.com \
+                 --set auth.github.clientId=Iv1.deadbeef --set auth.github.clientSecret=hunter2
+          render --set kitchen.baseDomain=apps.example.com \
+                 --set auth.github.clientId=Iv1.deadbeef --set auth.github.existingSecret=github-oauth
+          render --set kitchen.baseDomain=apps.example.com \
+                 --set auth.route.host=login.example.com
+          render --set kitchen.baseDomain=apps.example.com \
+                 --set postgres.persistence.enabled=false
+          render --set kitchen.baseDomain=apps.example.com \
+                 --set postgres.enabled=false \
+                 --set postgres.external.host=postgres.databases.svc \
+                 --set postgres.auth.password=hunter2
 
       - name: Reject unsupported value combinations
         run: |
@@ -87,6 +106,21 @@ jobs:
           # No telemetry store at all, unacknowledged.
           expect_failure kitchen-system --set kitchen.baseDomain=apps.example.com \
             --set clickhouse.enabled=false
+          # The identity provider without a database to keep accounts in.
+          expect_failure kitchen-system --set kitchen.baseDomain=apps.example.com \
+            --set postgres.enabled=false
+          # Both a bundled and an external Postgres.
+          expect_failure kitchen-system --set kitchen.baseDomain=apps.example.com \
+            --set postgres.external.host=postgres.databases.svc
+          # External Postgres without a password.
+          expect_failure kitchen-system --set kitchen.baseDomain=apps.example.com \
+            --set postgres.enabled=false --set postgres.external.host=postgres.databases.svc
+          # A GitHub OAuth app with no secret to go with the client id.
+          expect_failure kitchen-system --set kitchen.baseDomain=apps.example.com \
+            --set auth.github.clientId=Iv1.deadbeef
+          # The identity provider with nowhere to be published, so no issuer.
+          expect_failure kitchen-system --set kitchen.create=false \
+            --set webhookReceiver.route.enabled=false
 
   install:
     name: Chart install on kind
@@ -121,18 +155,33 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Build the auth image
+        uses: docker/build-push-action@v6
+        with:
+          context: auth
+          load: true
+          tags: kitchen-auth:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
       - name: Load the images into kind
         run: |
           set -euo pipefail
           kind load docker-image kitchen:ci
-          # Pull ClickHouse on the runner, where a failed pull can be retried,
-          # rather than inside the node where it surfaces as ImagePullBackOff.
-          clickhouse_image=$(helm template kitchen charts/kitchen \
-            --namespace kitchen-system --set kitchen.baseDomain=apps.example.com \
-            -s templates/clickhouse/statefulset.yaml \
-            | awk '$1 == "image:" { print $2; exit }')
+          kind load docker-image kitchen-auth:ci
+          # Pull the dependencies on the runner, where a failed pull can be
+          # retried, rather than inside the node where it surfaces as
+          # ImagePullBackOff.
+          template() {
+            helm template kitchen charts/kitchen \
+              --namespace kitchen-system --set kitchen.baseDomain=apps.example.com \
+              -s "$1" | awk '$1 == "image:" { print $2; exit }'
+          }
+          clickhouse_image=$(template templates/clickhouse/statefulset.yaml)
+          postgres_image=$(template templates/postgres/statefulset.yaml)
           echo "ClickHouse image: ${clickhouse_image}"
-          for image in "${clickhouse_image}" "${PROBE_IMAGE}"; do
+          echo "Postgres image: ${postgres_image}"
+          for image in "${clickhouse_image}" "${postgres_image}" "${PROBE_IMAGE}"; do
             for i in 1 2 3; do
               docker pull "${image}" && break
               [ "$i" = 3 ] && exit 1
@@ -153,13 +202,18 @@ jobs:
           helm install kitchen charts/kitchen \
             --namespace kitchen-system --create-namespace \
             --set image.repository=kitchen --set image.tag=ci \
+            --set auth.image.repository=kitchen-auth --set auth.image.tag=ci \
             --set kitchen.baseDomain=apps.example.com \
             --wait --timeout 8m || {
               kubectl -n kitchen-system get pods -o wide
               kubectl -n kitchen-system describe deploy kitchen-controller-manager
               kubectl -n kitchen-system describe sts kitchen-clickhouse
+              kubectl -n kitchen-system describe sts kitchen-postgres
+              kubectl -n kitchen-system describe deploy kitchen-auth
               kubectl -n kitchen-system logs -l control-plane=controller-manager --tail=100
               kubectl -n kitchen-system logs sts/kitchen-clickhouse --tail=100 || true
+              kubectl -n kitchen-system logs sts/kitchen-postgres --tail=100 || true
+              kubectl -n kitchen-system logs deploy/kitchen-auth --tail=100 || true
               exit 1
             }
 
@@ -224,6 +278,62 @@ jobs:
             echo "::error::the default ClickHouse user still accepts passwordless logins"
             exit 1
           fi
+
+      - name: Verify the identity provider
+        run: |
+          set -euo pipefail
+          secret() {
+            kubectl -n kitchen-system get secret kitchen-auth -o jsonpath="{.data.$1}" | base64 -d
+          }
+          service_key=$(secret serviceKey)
+          bootstrap_token=$(secret bootstrapToken)
+          issuer="https://auth.apps.example.com"
+          # Reach the service directly, with the Host the Gateway would set.
+          base="http://kitchen-auth.kitchen-system.svc"
+
+          # One pod runs the whole check: discovery, then dynamic client
+          # registration with the credential the operator is given, then the
+          # first-run bootstrap link. Its log is the report.
+          kubectl -n kitchen-system run auth-probe \
+            --image="${PROBE_IMAGE}" --restart=Never --command -- sh -ec "
+              set -eu
+              discovery=\$(curl -fsS -H 'Host: auth.apps.example.com' \
+                ${base}/.well-known/openid-configuration)
+              echo \"\${discovery}\" | grep -q '\"issuer\":\"${issuer}\"'
+              echo \"\${discovery}\" | grep -q '\"registration_endpoint\":\"${issuer}/oauth2/register\"'
+              echo \"\${discovery}\" | grep -q '\"jwks_uri\":\"${issuer}/jwks\"'
+
+              client=\$(curl -fsS -X POST -H 'Host: auth.apps.example.com' \
+                -H 'content-type: application/json' -H 'x-api-key: ${service_key}' \
+                -d '{\"client_name\":\"ci\",\"redirect_uris\":[\"https://ci.apps.example.com/callback\"]}' \
+                ${base}/oauth2/register)
+              echo \"\${client}\" | grep -q '\"client_secret\"'
+
+              # The same call without the credential must be refused.
+              status=\$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+                -H 'Host: auth.apps.example.com' -H 'content-type: application/json' \
+                -d '{\"client_name\":\"anon\",\"redirect_uris\":[\"https://anon.example.com/cb\"]}' \
+                ${base}/oauth2/register)
+              [ \"\${status}\" != 200 ]
+
+              curl -fsS -o /dev/null -H 'Host: auth.apps.example.com' \
+                '${base}/bootstrap?token=${bootstrap_token}'
+              echo auth-ok
+            "
+          phase=""
+          for _ in $(seq 60); do
+            phase=$(kubectl -n kitchen-system get pod auth-probe -o jsonpath='{.status.phase}' 2>/dev/null || true)
+            case "${phase}" in Succeeded|Failed) break ;; esac
+            sleep 2
+          done
+          probe_output=$(kubectl -n kitchen-system logs auth-probe 2>&1 || true)
+          echo "probe phase=${phase} output=${probe_output}"
+          kubectl -n kitchen-system delete pod auth-probe --wait=false
+          [ "${phase}" = Succeeded ] && [ "${probe_output}" = auth-ok ] || {
+            kubectl -n kitchen-system logs deploy/kitchen-auth --tail=100 || true
+            echo "::error::the identity provider did not serve a usable OIDC issuer"
+            exit 1
+          }
 
       - name: Upgrade the release
         run: |

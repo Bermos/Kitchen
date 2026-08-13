@@ -49,6 +49,9 @@ spec:
       tunnelSecretRef: { name: cloudflared-creds }   # tunnel fronts the Gateway service
   tls:
     mode: cloudflared                   # cloudflared | acme | none
+  auth:
+    enabled: true                       # the platform's identity provider
+    host: auth.apps.example.com         # also the OIDC issuer; defaults to auth.<baseDomain>
   builds:
     defaultStrategy: auto               # auto (detect) | dockerfile | buildpacks
     concurrency: 2
