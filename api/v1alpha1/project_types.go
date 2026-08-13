@@ -101,6 +101,10 @@ type ProjectStatus struct {
 	// Most recently created Build.
 	// +optional
 	LatestBuildRef *LocalObjectReference `json:"latestBuildRef,omitempty"`
+
+	// Provider-side identifier of the registered git webhook.
+	// +optional
+	WebhookID string `json:"webhookId,omitempty"`
 }
 
 // +kubebuilder:object:root=true

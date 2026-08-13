@@ -340,6 +340,9 @@ spec:
                 required:
                 - name
                 type: object
+              webhookId:
+                description: Provider-side identifier of the registered git webhook.
+                type: string
             type: object
         type: object
     served: true

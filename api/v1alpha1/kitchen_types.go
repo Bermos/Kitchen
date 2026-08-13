@@ -72,6 +72,15 @@ type ObservabilitySpec struct {
 	ClickHouse ClickHouseSpec `json:"clickhouse,omitempty"`
 }
 
+// APISpec configures how the operator's API is exposed.
+type APISpec struct {
+	// ExternalURL is the base URL the operator API (including the git
+	// webhook receiver) is reachable at from outside the cluster.
+	// Defaults to https://kitchen.<baseDomain>.
+	// +optional
+	ExternalURL string `json:"externalURL,omitempty"`
+}
+
 // KitchenSpec defines platform-wide configuration. There is exactly one
 // Kitchen object per cluster; it is the operator's runtime configuration and
 // is editable from the management UI.
@@ -80,6 +89,9 @@ type KitchenSpec struct {
 	// DNS (and wildcard TLS unless cloudflared is enabled).
 	// +kubebuilder:validation:MinLength=1
 	BaseDomain string `json:"baseDomain"`
+
+	// +optional
+	API APISpec `json:"api,omitempty"`
 
 	// +optional
 	Ingress IngressSpec `json:"ingress,omitempty"`
