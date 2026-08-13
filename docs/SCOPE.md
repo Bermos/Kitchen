@@ -43,13 +43,13 @@ These aren't nice-to-haves — the first three are the product.
 
 5. **Log pipeline.** ClickHouse is listed for "monitoring" but Vercel's DX depends on *logs*: live build logs and runtime log streaming/search in the UI. Collectors ship container logs + build logs into ClickHouse; operator API exposes tail/search.
 
-6. **Auth & tenancy.** The UI and API need login: OIDC (bring your own IdP) + local admin fallback, teams/projects, RBAC, API tokens for CI and the CLI.
+6. **Auth & tenancy.** ✅ Decided and shipped as the platform IdP: the chart runs better-auth at `auth.<baseDomain>` — OIDC issuer with dynamic client registration, upstream SSO/social login, organizations, passkeys, 2FA and API keys, on its own Postgres. See [AUTH.md](AUTH.md). Teams/RBAC and app-level claims build on it.
 
 7. **Rollbacks & revision history.** Deployments as immutable revisions (image digest + config snapshot) → instant rollback comes for free. Vercel-table-stakes.
 
 8. **Runtime scaling.** Decide the story: plain Deployments + HPA (simple) vs. scale-to-zero via Knative/KEDA (serverless feel, big dependency). See open decisions.
 
-9. **Operator state.** ✅ Decided: CRDs (etcd) are the source of truth for all config and management state — no extra database for the control plane. ClickHouse stays analytics-only. Anything that genuinely doesn't fit CRDs (sessions, tokens) gets a small embedded store, not a new dependency.
+9. **Operator state.** ✅ Decided: CRDs (etcd) are the source of truth for all config and management state — no extra database for the control plane. ClickHouse stays analytics-only. The things that genuinely don't fit CRDs — accounts, sessions, OAuth clients — belong to the identity provider and live in its Postgres, not in the operator.
 
 10. **Self-hosting hygiene.** Helm upgrade path incl. CRD migrations, backup/restore of platform state. NetworkPolicies between app namespaces are lower priority given the trusted-team model, but keep the platform namespace protected.
 

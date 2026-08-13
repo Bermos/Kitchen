@@ -37,6 +37,11 @@ spec:
       {{- end }}
   tls:
     mode: {{ .Values.kitchen.tls.mode | quote }}
+  auth:
+    enabled: {{ .Values.auth.enabled }}
+    {{- with include "kitchen.authHost" . }}
+    host: {{ . | quote }}
+    {{- end }}
   builds:
     defaultStrategy: {{ .Values.kitchen.builds.defaultStrategy | quote }}
     concurrency: {{ int .Values.kitchen.builds.concurrency }}

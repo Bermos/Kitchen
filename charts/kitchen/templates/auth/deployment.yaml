@@ -1,0 +1,144 @@
+{{- if .Values.auth.enabled }}
+# The identity provider. Stateless: accounts, sessions, OAuth clients and
+# consents all live in Postgres, so replicas are free to come and go. The
+# schema is migrated by the service itself on start, under an advisory lock.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "kitchen.authFullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kitchen.labels" . | nindent 4 }}
+    app.kubernetes.io/component: auth
+spec:
+  replicas: {{ .Values.auth.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "kitchen.authSelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "kitchen.authSelectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: auth
+      {{- with .Values.auth.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.auth.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.auth.podSecurityContext | nindent 8 }}
+      containers:
+        - name: auth
+          image: {{ include "kitchen.authImage" . }}
+          imagePullPolicy: {{ .Values.auth.image.pullPolicy }}
+          env:
+            - name: PORT
+              value: {{ .Values.auth.port | quote }}
+            - name: KITCHEN_AUTH_BASE_URL
+              value: {{ include "kitchen.authIssuer" . | quote }}
+            - name: BETTER_AUTH_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "kitchen.authSecretName" . }}
+                  key: secret
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "kitchen.postgresSecretName" . }}
+                  key: dsn
+            - name: KITCHEN_AUTH_SERVICE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "kitchen.authSecretName" . }}
+                  key: serviceKey
+            - name: KITCHEN_AUTH_SERVICE_ACCOUNT_EMAIL
+              value: {{ .Values.auth.serviceAccountEmail | quote }}
+            {{- if .Values.auth.bootstrap.enabled }}
+            - name: KITCHEN_AUTH_BOOTSTRAP_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "kitchen.authSecretName" . }}
+                  key: bootstrapToken
+            {{- end }}
+            {{- if .Values.auth.github.clientId }}
+            - name: GITHUB_CLIENT_ID
+              value: {{ .Values.auth.github.clientId | quote }}
+            - name: GITHUB_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  {{- if .Values.auth.github.existingSecret }}
+                  name: {{ .Values.auth.github.existingSecret | quote }}
+                  key: {{ .Values.auth.github.existingSecretKey | quote }}
+                  {{- else }}
+                  name: {{ include "kitchen.authSecretName" . }}
+                  key: githubClientSecret
+                  {{- end }}
+            {{- end }}
+            - name: KITCHEN_AUTH_ALLOW_SOCIAL_SIGNUP
+              value: {{ .Values.auth.allowSocialSignUp | quote }}
+            {{- with .Values.auth.trustedOrigins }}
+            - name: KITCHEN_AUTH_TRUSTED_ORIGINS
+              value: {{ join "," . | quote }}
+            {{- end }}
+            - name: LOG_LEVEL
+              value: {{ .Values.auth.logLevel | quote }}
+            {{- with .Values.auth.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.auth.port }}
+              protocol: TCP
+          # The service waits for Postgres on start, so the first rollout can
+          # take as long as the database takes to initialise.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+            failureThreshold: 60
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 10
+          securityContext:
+            {{- toYaml .Values.auth.securityContext | nindent 12 }}
+          resources:
+            {{- toYaml .Values.auth.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        # The root filesystem is read-only; Node still wants somewhere to write.
+        - name: tmp
+          emptyDir: {}
+      {{- with .Values.auth.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.auth.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.auth.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.auth.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

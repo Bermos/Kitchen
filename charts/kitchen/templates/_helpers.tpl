@@ -151,6 +151,126 @@ lock the collectors out of their own store.
 {{- end }}
 
 {{/*
+Postgres: the auth service's system of record. Same shape as the ClickHouse
+helpers — one secret describes the connection whether the chart runs Postgres
+or points at an existing one.
+*/}}
+{{- define "kitchen.postgresFullname" -}}
+{{- printf "%s-postgres" (include "kitchen.fullname" .) }}
+{{- end }}
+
+{{- define "kitchen.postgresSecretName" -}}
+{{- printf "%s-postgres" (include "kitchen.fullname" .) }}
+{{- end }}
+
+{{- define "kitchen.postgresSelectorLabels" -}}
+app.kubernetes.io/name: {{ include "kitchen.name" . }}-postgres
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end }}
+
+{{- define "kitchen.postgresHost" -}}
+{{- if .Values.postgres.enabled }}
+{{- printf "%s.%s.svc" (include "kitchen.postgresFullname" .) .Release.Namespace }}
+{{- else }}
+{{- .Values.postgres.external.host }}
+{{- end }}
+{{- end }}
+
+{{- define "kitchen.postgresPort" -}}
+{{- if .Values.postgres.enabled }}
+{{- .Values.postgres.service.port }}
+{{- else }}
+{{- .Values.postgres.external.port }}
+{{- end }}
+{{- end }}
+
+{{- define "kitchen.postgresPassword" -}}
+{{- if .Values.postgres.auth.password }}
+{{- .Values.postgres.auth.password }}
+{{- else }}
+{{- $existing := lookup "v1" "Secret" .Release.Namespace (include "kitchen.postgresSecretName" .) }}
+{{- if and $existing $existing.data (index (default dict $existing.data) "password") }}
+{{- index $existing.data "password" | b64dec }}
+{{- else }}
+{{- randAlphaNum 32 }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{/*
+Auth service: names, the hostname it is published under and the two generated
+credentials. Both are read back from the cluster on upgrade — regenerating the
+signing secret would invalidate every session, and regenerating the service key
+would lock the operator out of client registration.
+*/}}
+{{- define "kitchen.authFullname" -}}
+{{- printf "%s-auth" (include "kitchen.fullname" .) }}
+{{- end }}
+
+{{- define "kitchen.authSecretName" -}}
+{{- printf "%s-auth" (include "kitchen.fullname" .) }}
+{{- end }}
+
+{{- define "kitchen.authSelectorLabels" -}}
+app.kubernetes.io/name: {{ include "kitchen.name" . }}-auth
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end }}
+
+{{- define "kitchen.authHost" -}}
+{{- if .Values.auth.route.host }}
+{{- .Values.auth.route.host }}
+{{- else if .Values.kitchen.baseDomain }}
+{{- printf "auth.%s" .Values.kitchen.baseDomain }}
+{{- end }}
+{{- end }}
+
+{{/*
+The OIDC issuer. Everything that speaks to the identity provider — the UI, the
+operator API, deployed apps — starts from this URL.
+*/}}
+{{- define "kitchen.authIssuer" -}}
+{{- with include "kitchen.authHost" . }}
+{{- printf "https://%s" . }}
+{{- end }}
+{{- end }}
+
+{{- define "kitchen.authImage" -}}
+{{- if .Values.auth.image.digest }}
+{{- printf "%s@%s" .Values.auth.image.repository .Values.auth.image.digest }}
+{{- else }}
+{{- printf "%s:%s" .Values.auth.image.repository (default .Chart.AppVersion .Values.auth.image.tag) }}
+{{- end }}
+{{- end }}
+
+{{- define "kitchen.authSecretValue" -}}
+{{- $key := index . 1 }}
+{{- $length := index . 2 }}
+{{- $root := index . 0 }}
+{{- $existing := lookup "v1" "Secret" $root.Release.Namespace (include "kitchen.authSecretName" $root) }}
+{{- if and $existing $existing.data (index (default dict $existing.data) $key) }}
+{{- index $existing.data $key | b64dec }}
+{{- else }}
+{{- randAlphaNum (int $length) }}
+{{- end }}
+{{- end }}
+
+{{- define "kitchen.authSigningSecret" -}}
+{{- default (include "kitchen.authSecretValue" (list . "secret" 48)) .Values.auth.secret }}
+{{- end }}
+
+{{/*
+The operator's credential for dynamic client registration. 64 characters is the
+minimum the auth service's api-key plugin accepts.
+*/}}
+{{- define "kitchen.authServiceKey" -}}
+{{- default (include "kitchen.authSecretValue" (list . "serviceKey" 64)) .Values.auth.serviceKey }}
+{{- end }}
+
+{{- define "kitchen.authBootstrapToken" -}}
+{{- default (include "kitchen.authSecretValue" (list . "bootstrapToken" 32)) .Values.auth.bootstrap.token }}
+{{- end }}
+
+{{/*
 Guard rails. The operator resolves the platform namespace from a compiled-in
 constant, so a chart installed elsewhere would reconcile into a namespace it
 does not run in.
@@ -182,5 +302,28 @@ does not run in.
 {{- end }}
 {{- if and (not .Values.clickhouse.enabled) (not .Values.clickhouse.external.host) (not .Values.clickhouse.acknowledgeNoStore) }}
 {{- fail "no telemetry store: enable clickhouse.enabled, set clickhouse.external.host, or set clickhouse.acknowledgeNoStore=true to install without one (logs, metrics and traces then have nowhere to land)." }}
+{{- end }}
+{{- if and .Values.postgres.enabled .Values.postgres.external.host }}
+{{- fail "postgres.enabled and postgres.external.host are mutually exclusive: either the chart runs Postgres or it points at yours." }}
+{{- end }}
+{{- if and .Values.postgres.external.host (not .Values.postgres.auth.password) }}
+{{- fail "postgres.auth.password is required with an external Postgres: the chart would otherwise hand the auth service a password it invented." }}
+{{- end }}
+{{- if .Values.auth.enabled }}
+{{- if and (not .Values.postgres.enabled) (not .Values.postgres.external.host) }}
+{{- fail "auth.enabled needs a database: enable postgres.enabled or set postgres.external.host. The identity provider keeps accounts, sessions and OAuth clients in Postgres." }}
+{{- end }}
+{{- if and .Values.auth.route.enabled (not (include "kitchen.authHost" .)) }}
+{{- fail "auth.route.enabled needs a hostname: set kitchen.baseDomain or auth.route.host. The hostname is also the OIDC issuer, so clients cannot be configured without it." }}
+{{- end }}
+{{- if and (not .Values.auth.route.enabled) (not (include "kitchen.authHost" .)) }}
+{{- fail "auth.enabled needs a hostname even without a route: set kitchen.baseDomain or auth.route.host. The identity provider signs tokens with its issuer URL." }}
+{{- end }}
+{{- if and .Values.auth.github.clientId (not (or .Values.auth.github.clientSecret .Values.auth.github.existingSecret)) }}
+{{- fail "auth.github.clientId needs a secret: set auth.github.clientSecret or auth.github.existingSecret." }}
+{{- end }}
+{{- if and .Values.auth.github.existingSecret (not .Values.auth.github.clientId) }}
+{{- fail "auth.github.existingSecret needs auth.github.clientId as well: the client id is not read from the secret." }}
+{{- end }}
 {{- end }}
 {{- end }}

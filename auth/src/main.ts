@@ -1,0 +1,43 @@
+import { createAuth, authOptions } from "./auth.js";
+import { loadConfig } from "./config.js";
+import { createPool, runMigrations, waitForDatabase } from "./db.js";
+import { isBootstrapped } from "./bootstrap.js";
+import { log } from "./log.js";
+import { seedServiceCredential } from "./seed.js";
+import { createServer } from "./server.js";
+
+async function main(): Promise<void> {
+	const config = loadConfig();
+	const pool = createPool(config.databaseURL);
+
+	await waitForDatabase(pool, config.databaseWaitSeconds);
+	await runMigrations(authOptions(config, pool), pool);
+
+	const auth = createAuth(config, pool);
+	await seedServiceCredential(auth, config);
+
+	if (config.bootstrapToken && !(await isBootstrapped(auth, config))) {
+		log.info("waiting for the first administrator", { url: `${config.baseURL}/bootstrap?token=<token>` });
+	}
+
+	const server = createServer(auth, config, pool);
+	await new Promise<void>((resolve) => server.listen(config.port, resolve));
+	log.info("listening", { port: config.port, issuer: config.baseURL, github: Boolean(config.github) });
+
+	const shutdown = (signal: string) => {
+		log.info("shutting down", { signal });
+		server.close(() => {
+			void pool.end().finally(() => process.exit(0));
+		});
+		// Kubernetes sends SIGKILL after terminationGracePeriodSeconds anyway;
+		// this only keeps a stuck connection from holding the pod open.
+		setTimeout(() => process.exit(0), 10_000).unref();
+	};
+	process.on("SIGTERM", () => shutdown("SIGTERM"));
+	process.on("SIGINT", () => shutdown("SIGINT"));
+}
+
+main().catch((error) => {
+	log.error("failed to start", { error: error instanceof Error ? error.stack : String(error) });
+	process.exit(1);
+});

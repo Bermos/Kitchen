@@ -207,6 +207,165 @@ clickhouse:
   # clickhouse.enabled=false and no external host.
   acknowledgeNoStore: false
 
+# Postgres: the auth service's system of record — accounts, sessions, OAuth
+# clients and consents. Platform-critical OLTP, which is why it is Postgres and
+# not ClickHouse or CRDs. Connection details always land in the secret
+# `<release>-postgres`, whether the chart runs Postgres or points at yours.
+postgres:
+  # -- Run a single-node Postgres as part of the release.
+  enabled: true
+  image:
+    repository: postgres
+    tag: 17.6-alpine
+    pullPolicy: IfNotPresent
+  auth:
+    database: kitchen_auth
+    username: kitchen
+    # -- Password for that user. Generated on install and preserved across
+    # upgrades when empty. Set it explicitly if you render manifests with
+    # `helm template`, which cannot read the existing secret back.
+    password: ""
+  service:
+    type: ClusterIP
+    port: 5432
+    annotations: {}
+  persistence:
+    # -- Back the data directory with a PVC. Disabling it means every account
+    # and OAuth client dies with the pod; only sensible for tests.
+    enabled: true
+    size: 8Gi
+    # -- StorageClass for the data volume. Empty uses the cluster default.
+    storageClass: ""
+    accessModes:
+      - ReadWriteOnce
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+  podSecurityContext:
+    runAsNonRoot: true
+    # The image's postgres user.
+    runAsUser: 70
+    runAsGroup: 70
+    fsGroup: 70
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+  # -- Extra environment variables for the Postgres container.
+  extraEnv: []
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  priorityClassName: ""
+  # Point at a Postgres that already exists instead of running one. Requires
+  # postgres.enabled=false and a password in postgres.auth.password.
+  external:
+    host: ""
+    port: 5432
+
+# The identity provider: better-auth with its OAuth/OIDC provider plugin,
+# served at `auth.<baseDomain>`. One login for the Kitchen UI, the operator API
+# and — for projects that opt in — the apps Kitchen deploys.
+auth:
+  # -- Deploy the identity provider. Requires a Postgres (see above).
+  enabled: true
+  image:
+    repository: ghcr.io/bermos/kitchen-auth
+    # -- Image tag. Defaults to the chart's appVersion.
+    tag: ""
+    # -- Pin by digest instead of tag (takes precedence over tag when set).
+    digest: ""
+    pullPolicy: IfNotPresent
+  # -- Number of auth replicas. The service is stateless; state lives in
+  # Postgres.
+  replicaCount: 1
+  # -- Signing secret for sessions and tokens. Generated on install and
+  # preserved across upgrades when empty; changing it signs everyone out.
+  secret: ""
+  # -- API key the operator uses to register OAuth clients. Generated when
+  # empty, at least 64 characters when set. Lands in the secret
+  # `<release>-auth` under `serviceKey`.
+  serviceKey: ""
+  # -- Email of the machine account that owns the service key.
+  serviceAccountEmail: operator@kitchen.local
+  bootstrap:
+    # -- Generate a one-time link for creating the first administrator. The
+    # link stops working as soon as the installation has an account.
+    enabled: true
+    # -- Use this token instead of a generated one.
+    token: ""
+  # Upstream GitHub OAuth app, so people sign in to Kitchen with the same
+  # account they push from. Callback URL: https://<auth host>/callback/github
+  github:
+    # -- OAuth app client id. Enables the "Continue with GitHub" button.
+    clientId: ""
+    # -- OAuth app client secret. Stored in the release's auth secret.
+    clientSecret: ""
+    # -- Read the client secret from an existing secret instead.
+    existingSecret: ""
+    # -- Key holding the client secret in `existingSecret`.
+    existingSecretKey: clientSecret
+  # -- Let an unknown upstream account create a Kitchen account. Off by
+  # default: everyone with a GitHub account would otherwise be a platform user.
+  allowSocialSignUp: false
+  # -- Extra browser origins allowed to call the identity provider.
+  trustedOrigins: []
+  # -- Container port the service binds to.
+  port: 8080
+  service:
+    type: ClusterIP
+    # -- Service port fronting the identity provider.
+    port: 80
+    annotations: {}
+  route:
+    # -- Publish the identity provider on the shared Gateway with an HTTPRoute.
+    enabled: true
+    # -- Hostname for the identity provider, which is also the OIDC issuer.
+    # Defaults to `auth.<baseDomain>`.
+    host: ""
+    gateway:
+      # -- Name of the shared Gateway. Must match the operator's constant.
+      name: kitchen
+      # -- Namespace of the shared Gateway.
+      namespace: kitchen-system
+    annotations: {}
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+  podSecurityContext:
+    runAsNonRoot: true
+    # The node image's unprivileged user.
+    runAsUser: 1000
+    runAsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop:
+        - ALL
+  # -- Log level: debug, info, warn, error.
+  logLevel: info
+  # -- Extra environment variables for the auth container.
+  extraEnv: []
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  topologySpreadConstraints: []
+  priorityClassName: ""
+
 healthProbe:
   # -- Port the /healthz and /readyz endpoints bind to.
   port: 8081
