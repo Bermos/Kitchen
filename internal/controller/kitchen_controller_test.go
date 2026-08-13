@@ -18,10 +18,16 @@ package controller
 
 import (
 	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/types"
@@ -33,6 +39,10 @@ import (
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 )
+
+// telemetrySecretName mirrors what the chart writes for the release named
+// "kitchen".
+const telemetrySecretName = "kitchen-clickhouse"
 
 var _ = Describe("Kitchen Controller", func() {
 	Context("When reconciling the singleton", func() {
@@ -65,6 +75,7 @@ var _ = Describe("Kitchen Controller", func() {
 				&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "kitchen-cloudflared", Namespace: PlatformNamespace}},
 				&kitchenv1alpha1.Kitchen{ObjectMeta: metav1.ObjectMeta{Name: KitchenSingletonName}},
 				&kitchenv1alpha1.Kitchen{ObjectMeta: metav1.ObjectMeta{Name: "other"}},
+				&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: telemetrySecretName, Namespace: PlatformNamespace}},
 			} {
 				Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, obj))).To(Succeed())
 			}
@@ -149,6 +160,77 @@ var _ = Describe("Kitchen Controller", func() {
 			Expect(cond).NotTo(BeNil())
 			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 			Expect(cond.Reason).To(Equal("TunnelSecretMissing"))
+		})
+
+		It("applies the telemetry schema with the configured retention", func() {
+			By("standing in for ClickHouse's HTTP interface")
+			var statements []string
+			store := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, _ := io.ReadAll(r.Body)
+				statements = append(statements, string(body))
+				// No table exists yet, so system.tables answers nothing.
+			}))
+			defer store.Close()
+			endpoint, err := url.Parse(store.URL)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Create(ctx, &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: telemetrySecretName, Namespace: PlatformNamespace},
+				StringData: map[string]string{
+					"host":     endpoint.Hostname(),
+					"httpPort": endpoint.Port(),
+					"database": "kitchen",
+					"username": "kitchen",
+					"password": "hunter2",
+				},
+			})).To(Succeed())
+
+			kitchen := &kitchenv1alpha1.Kitchen{}
+			Expect(k8sClient.Get(ctx, singletonKey, kitchen)).To(Succeed())
+			kitchen.Spec.Observability.ClickHouse = kitchenv1alpha1.ClickHouseSpec{
+				RetentionDays: 7,
+				SecretRef:     &kitchenv1alpha1.LocalObjectReference{Name: telemetrySecretName},
+			}
+			Expect(k8sClient.Update(ctx, kitchen)).To(Succeed())
+
+			reconcileOnce(KitchenSingletonName)
+
+			Expect(strings.Join(statements, "\n")).To(ContainSubstring("CREATE TABLE IF NOT EXISTS `kitchen`.`logs`"))
+			Expect(strings.Join(statements, "\n")).To(ContainSubstring("toIntervalDay(7)"))
+
+			Expect(k8sClient.Get(ctx, singletonKey, kitchen)).To(Succeed())
+			cond := meta.FindStatusCondition(kitchen.Status.Conditions, condTelemetrySchema)
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+			Expect(cond.Message).To(ContainSubstring("7 days"))
+		})
+
+		It("reports an unreachable telemetry store without failing the reconcile", func() {
+			kitchen := &kitchenv1alpha1.Kitchen{}
+			Expect(k8sClient.Get(ctx, singletonKey, kitchen)).To(Succeed())
+			kitchen.Spec.Observability.ClickHouse.SecretRef = &kitchenv1alpha1.LocalObjectReference{
+				Name: telemetrySecretName,
+			}
+			Expect(k8sClient.Update(ctx, kitchen)).To(Succeed())
+
+			// The secret the chart writes is not there — the reconcile still
+			// has to program the gateway.
+			reconcileOnce(KitchenSingletonName)
+
+			Expect(k8sClient.Get(ctx, gatewayKey, &gatewayv1.Gateway{})).To(Succeed())
+			Expect(k8sClient.Get(ctx, singletonKey, kitchen)).To(Succeed())
+			cond := meta.FindStatusCondition(kitchen.Status.Conditions, condTelemetrySchema)
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(cond.Reason).To(Equal("ConnectionSecretMissing"))
+		})
+
+		It("says nothing about telemetry when there is no store", func() {
+			reconcileOnce(KitchenSingletonName)
+
+			kitchen := &kitchenv1alpha1.Kitchen{}
+			Expect(k8sClient.Get(ctx, singletonKey, kitchen)).To(Succeed())
+			Expect(meta.FindStatusCondition(kitchen.Status.Conditions, condTelemetrySchema)).To(BeNil())
 		})
 
 		It("refuses to reconcile a second Kitchen object", func() {

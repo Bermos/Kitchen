@@ -144,6 +144,21 @@ spec:
                         format: int32
                         minimum: 1
                         type: integer
+                      secretRef:
+                        description: |-
+                          SecretRef names the Secret in the platform namespace holding the
+                          connection details for the store: the keys host, httpPort, database,
+                          username and password. The chart writes it as
+                          <release>-clickhouse, whether it runs ClickHouse itself or points at
+                          an external one. Without it the operator manages no telemetry schema
+                          and the collectors have nowhere to ship to.
+                        properties:
+                          name:
+                            minLength: 1
+                            type: string
+                        required:
+                        - name
+                        type: object
                     type: object
                 type: object
               tls:

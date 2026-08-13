@@ -1,0 +1,123 @@
+{{- if eq (include "kitchen.logsEnabled" .) "true" }}
+# The log pipeline: one Vector per node, tailing every container log file the
+# kubelet writes and shipping the lines into ClickHouse, enriched with the
+# Kitchen labels that make them queryable by project, environment and build.
+#
+# It runs as a DaemonSet rather than a sidecar per app so that build jobs —
+# which the operator creates and the cluster reclaims — are collected too,
+# without the build pod having to know anything about telemetry.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "kitchen.logsFullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kitchen.labels" . | nindent 4 }}
+    app.kubernetes.io/component: logs
+spec:
+  selector:
+    matchLabels:
+      {{- include "kitchen.logsSelectorLabels" . | nindent 6 }}
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        {{- include "kitchen.logsSelectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: logs
+      annotations:
+        # Vector reads its configuration once, at startup.
+        checksum/config: {{ include (print $.Template.BasePath "/logs/configmap.yaml") . | sha256sum }}
+        {{- with .Values.logs.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "kitchen.logsServiceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.logs.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      terminationGracePeriodSeconds: {{ int .Values.logs.terminationGracePeriodSeconds }}
+      containers:
+        - name: vector
+          image: {{ printf "%s:%s" .Values.logs.image.repository .Values.logs.image.tag }}
+          imagePullPolicy: {{ .Values.logs.image.pullPolicy }}
+          args:
+            - --config
+            - /etc/vector/vector.yaml
+          env:
+            - name: VECTOR_SELF_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: VECTOR_SELF_POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: VECTOR_SELF_POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            {{- with .Values.logs.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.logs.resources | nindent 12 }}
+          securityContext:
+            # The kubelet writes container logs root-owned; reading them is
+            # the whole job. Nothing is written back to the host except the
+            # collector's own read offsets.
+            runAsUser: 0
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: config
+              mountPath: /etc/vector
+              readOnly: true
+            - name: data
+              mountPath: /vector-data-dir
+            # The store's password, read by Vector's directory secret
+            # backend rather than passed through the environment. It sits
+            # outside /etc/vector so the config mount stays a flat mount.
+            - name: clickhouse
+              mountPath: /etc/kitchen/clickhouse
+              readOnly: true
+            - name: var-log
+              mountPath: {{ .Values.logs.hostLogsPath | quote }}
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "kitchen.logsFullname" . }}
+        - name: clickhouse
+          secret:
+            secretName: {{ include "kitchen.clickhouseSecretName" . }}
+        # Read offsets, kept on the node so a restarted collector resumes
+        # where it left off instead of re-shipping every file it can see.
+        - name: data
+          hostPath:
+            path: {{ .Values.logs.hostDataPath | quote }}
+            type: DirectoryOrCreate
+        - name: var-log
+          hostPath:
+            path: {{ .Values.logs.hostLogsPath | quote }}
+            type: Directory
+      {{- with .Values.logs.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.logs.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.logs.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

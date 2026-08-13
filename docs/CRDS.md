@@ -56,9 +56,11 @@ spec:
     defaultStrategy: auto               # auto (detect) | dockerfile | buildpacks
     concurrency: 2
   observability:
-    clickhouse: { retentionDays: 30 }
+    clickhouse:
+      retentionDays: 30                 # TTL the operator keeps on the telemetry tables
+      secretRef: { name: kitchen-clickhouse }   # written by the chart; the store's connection details
 status:
-  conditions: [...]                     # Ready, GatewayProgrammed, TunnelConnected
+  conditions: [...]                     # Ready, GatewayProgrammed, TunnelConnected, TelemetrySchemaReady
   gatewayAddress: 203.0.113.7
 ```
 
@@ -161,9 +163,13 @@ status:
   conditions: [...]
 ```
 
-Reconcile: run a BuildKit job in the project namespace, stream logs to ClickHouse,
-push to the registry Connection, post a status check back on the commit, and on success
-**create a Release**. Retention: keep the last N Builds per project (configurable).
+Reconcile: run a BuildKit job in the project namespace, push to the registry Connection,
+post a status check back on the commit, and on success **create a Release**.
+Retention: keep the last N Builds per project (configurable).
+
+The job's output reaches ClickHouse the same way every other container's does — the
+node's collector tails it — so the build pod is labelled `kitchen.bermos.dev/build`
+and kept for an hour after it finishes, long enough for the last lines to ship.
 
 ## `Release` (namespaced: kitchen-system)
 

@@ -1,0 +1,126 @@
+{{- if eq (include "kitchen.logsEnabled" .) "true" }}
+{{- /*
+The collector's configuration. One source (every container log file on the
+node), one transform (lift the Kitchen labels into columns), one sink (the
+telemetry store).
+
+Where the store is and who connects to it is chart configuration and is
+rendered here; the password is not. Vector resolves `SECRET[...]` at startup
+from the mounted connection secret, so the credential never lands in a
+ConfigMap. Environment interpolation is deliberately not used — Vector
+disables it unless run with --dangerously-allow-env-var-interpolation, which
+would expose every variable in the pod to the config.
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "kitchen.logsFullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kitchen.labels" . | nindent 4 }}
+    app.kubernetes.io/component: logs
+data:
+  vector.yaml: |
+    data_dir: /vector-data-dir
+
+    secret:
+      clickhouse:
+        type: directory
+        # The connection secret, mounted key by key.
+        path: /etc/kitchen/clickhouse
+        remove_trailing_whitespace: true
+
+    sources:
+      containers:
+        type: kubernetes_logs
+        # self_node_name is left at its default, which reads
+        # VECTOR_SELF_NODE_NAME from the pod's downward API environment.
+        #
+        # Kitchen's own workloads come and go with every build and deploy, so
+        # new log files are picked up far more eagerly than Vector's default
+        # minute.
+        glob_minimum_cooldown_ms: {{ int .Values.logs.globCooldownMs }}
+        {{- with .Values.logs.extraLabelSelector }}
+        extra_label_selector: {{ . | quote }}
+        {{- end }}
+        {{- with .Values.logs.extraFieldSelector }}
+        extra_field_selector: {{ . | quote }}
+        {{- end }}
+        exclude_paths_glob_patterns:
+          - "**/*.gz"
+          - "**/*.tmp"
+          # Shipping the collector's own output would feed every failed
+          # insert back into the batch that failed.
+          - "/var/log/pods/{{ .Release.Namespace }}_{{ include "kitchen.logsFullname" . }}-*/**"
+          {{- range .Values.logs.excludePathsGlobPatterns }}
+          - {{ . | quote }}
+          {{- end }}
+
+    transforms:
+      kitchen:
+        type: remap
+        inputs: [containers]
+        source: |
+          labels = object(.kubernetes.pod_labels) ?? {}
+
+          .project = to_string(get(labels, ["kitchen.bermos.dev/project"]) ?? "") ?? ""
+          .environment = to_string(get(labels, ["kitchen.bermos.dev/environment"]) ?? "") ?? ""
+          .build = to_string(get(labels, ["kitchen.bermos.dev/build"]) ?? "") ?? ""
+
+          # What produced the line, so the UI can ask for one kind without
+          # knowing which labels imply it: a build job, a deployed app, or a
+          # platform component.
+          .source = if .build != "" {
+            "build"
+          } else if .environment != "" {
+            "runtime"
+          } else {
+            "platform"
+          }
+
+          .namespace = to_string(.kubernetes.pod_namespace) ?? ""
+          .pod = to_string(.kubernetes.pod_name) ?? ""
+          .container = to_string(.kubernetes.container_name) ?? ""
+          .node = to_string(.kubernetes.pod_node_name) ?? ""
+          .stream = to_string(.stream) ?? ""
+          .message = to_string(.message) ?? ""
+          .labels = labels
+
+          # Everything the table has no column for. The sink skips unknown
+          # fields anyway; dropping them here keeps the wire small.
+          del(.kubernetes)
+          del(.file)
+          del(.source_type)
+
+    sinks:
+      clickhouse:
+        type: clickhouse
+        inputs: [kitchen]
+        endpoint: {{ printf "http://%s:%s" (include "kitchen.clickhouseHost" .) (include "kitchen.clickhouseHTTPPort" .) | quote }}
+        database: {{ .Values.clickhouse.auth.database | quote }}
+        # Created, and kept in step with the retention policy, by the
+        # operator from Kitchen.spec.observability.clickhouse.
+        table: logs
+        auth:
+          strategy: basic
+          user: {{ .Values.clickhouse.auth.username | quote }}
+          password: SECRET[clickhouse.password]
+        skip_unknown_fields: true
+        date_time_best_effort: true
+        # The store is a StatefulSet in the same release and the schema is
+        # applied by the operator afterwards, so on a fresh install the sink
+        # is unusable for a moment. Failing the healthcheck at boot would
+        # only crash-loop the collector while it waits.
+        healthcheck:
+          enabled: false
+        batch:
+          max_events: {{ int .Values.logs.batch.maxEvents }}
+          # Build logs are watched live, so latency matters more here than
+          # insert efficiency.
+          timeout_secs: {{ int .Values.logs.batch.timeoutSeconds }}
+        buffer:
+          type: memory
+          max_events: {{ int .Values.logs.buffer.maxEvents }}
+          # A wedged store must not stall the node's log collection.
+          when_full: drop_newest
+{{- end }}
