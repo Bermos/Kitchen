@@ -1,0 +1,35 @@
+{{- include "kitchen.validate" . -}}
+{{- if .Values.webhookReceiver.route.enabled }}
+{{- if not (include "kitchen.webhookHost" .) }}
+{{- fail "webhookReceiver.route.enabled needs a hostname: set kitchen.baseDomain, kitchen.api.externalURL or webhookReceiver.route.host." }}
+{{- end }}
+# Publishes the git webhook receiver on the shared Gateway, so providers can
+# reach https://<host>/webhooks/git/<connection>. The Gateway itself is created
+# by the Kitchen reconciler, so this route stays unaccepted until the operator
+# has programmed it.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "kitchen.fullname" . }}-git-webhook
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kitchen.labels" . | nindent 4 }}
+  {{- with .Values.webhookReceiver.route.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  parentRefs:
+    - name: {{ .Values.webhookReceiver.route.gateway.name }}
+      namespace: {{ .Values.webhookReceiver.route.gateway.namespace }}
+  hostnames:
+    - {{ include "kitchen.webhookHost" . | quote }}
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /webhooks/git/
+      backendRefs:
+        - name: {{ include "kitchen.fullname" . }}-git-webhook
+          port: {{ .Values.webhookReceiver.service.port }}
+{{- end }}

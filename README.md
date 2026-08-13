@@ -21,6 +21,25 @@ flow data — lands in ClickHouse.
 - `internal/controller/` — one reconciler per CRD (stubs for now)
 - `config/crd/bases/` — generated CRD manifests
 - `cmd/` — operator entrypoint
+- `charts/kitchen/` — the Helm chart that deploys all of it
+
+## Install
+
+```sh
+helm install kitchen ./charts/kitchen \
+  --namespace kitchen-system --create-namespace \
+  --set kitchen.baseDomain=apps.example.com
+```
+
+Then point `*.apps.example.com` at the shared Gateway:
+
+```sh
+kubectl get kitchen default -o jsonpath='{.status.gatewayAddress}'
+```
+
+Cluster prerequisites (Cilium with Gateway API, wildcard DNS, cert-manager or
+cloudflared), every value, and the upgrade/uninstall semantics are documented
+in [the chart's README](charts/kitchen/README.md).
 
 ## Development
 
@@ -28,9 +47,12 @@ Standard kubebuilder project:
 
 ```sh
 make generate manifests   # regenerate deepcopy + CRDs after editing api/
+make helm-manifests       # sync the chart's CRD + RBAC templates with config/
 make test                 # unit + envtest suite
 make run                  # run the operator against the current kubecontext
 make install              # install CRDs into the cluster
+make helm-lint            # lint the chart
+make helm-install BASE_DOMAIN=apps.example.com IMG=ghcr.io/bermos/kitchen:dev
 ```
 
 ## Status
@@ -42,5 +64,7 @@ environments and instant rollbacks by design.
 
 Reconcilers: Kitchen (shared Gateway + optional cloudflared), Project
 (webhook registration, namespace, connection validation), Build, Environment.
-Still missing: Connection/Domain/ResourceClaim reconcilers, the Helm chart,
-ClickHouse + collectors, Infisical sync, the operator REST API and the Vue UI.
+The Helm chart ships the operator, its CRDs and the git webhook route.
+Still missing: Connection/Domain/ResourceClaim reconcilers, ClickHouse +
+collectors, Infisical sync, the operator REST API and the Vue UI — none of
+which the chart deploys yet.

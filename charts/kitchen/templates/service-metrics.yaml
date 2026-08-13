@@ -1,0 +1,21 @@
+{{- if .Values.metrics.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "kitchen.fullname" . }}-metrics
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kitchen.labels" . | nindent 4 }}
+  {{- with .Values.metrics.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  selector:
+    {{- include "kitchen.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: {{ if .Values.metrics.secure }}https{{ else }}http{{ end }}
+      port: {{ .Values.metrics.port }}
+      targetPort: {{ if .Values.metrics.secure }}https{{ else }}http{{ end }}
+      protocol: TCP
+{{- end }}

@@ -1,0 +1,179 @@
+# Default values for the Kitchen chart.
+
+# -- Override the chart name used in resource names.
+nameOverride: ""
+# -- Override the fully qualified resource name prefix.
+fullnameOverride: ""
+
+# The operator hardcodes `kitchen-system` as the platform namespace: the shared
+# Gateway, the Kitchen CRs and the webhook secrets all live there. Installing
+# the chart anywhere else produces a control plane that cannot see its own
+# resources, so the templates refuse to render. Set this to false only if you
+# know what you are doing.
+namespaceCheck: true
+
+image:
+  repository: ghcr.io/bermos/kitchen
+  # -- Image tag. Defaults to the chart's appVersion.
+  tag: ""
+  # -- Pin by digest instead of tag (takes precedence over tag when set).
+  digest: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+# -- Number of manager replicas. Leader election keeps a single active
+# reconciler; extra replicas serve git webhooks and fail over faster.
+replicaCount: 1
+
+# -- Enable leader election. Required when replicaCount > 1.
+leaderElection: true
+
+# -- Run the manager's logger in development mode (console encoder, debug level).
+developmentLogging: false
+
+serviceAccount:
+  create: true
+  # -- Name of the service account. Generated when empty.
+  name: ""
+  annotations: {}
+
+rbac:
+  # -- Create the ClusterRole/Role and their bindings for the manager.
+  create: true
+
+crds:
+  # -- Install the kitchen.bermos.dev CRDs. Disable when they are managed
+  # out of band (GitOps, cluster bootstrap).
+  install: true
+  # -- Annotate CRDs with `helm.sh/resource-policy: keep` so `helm uninstall`
+  # leaves them (and the custom resources they hold) in place.
+  keep: true
+
+# The Kitchen singleton: the operator's runtime configuration. It is created as
+# a post-install hook, after the CRDs exist. It is *not* re-applied on upgrade
+# by default, because it is also editable from the management UI — see
+# `applyOnUpgrade`.
+kitchen:
+  # -- Create the cluster-wide Kitchen object. Requires `kitchen.baseDomain`.
+  create: true
+  # -- Also re-apply the Kitchen object on `helm upgrade`, making Helm the
+  # source of truth for platform config. Any change made through the UI or
+  # kubectl is overwritten on the next upgrade.
+  applyOnUpgrade: false
+  # -- Base domain for generated URLs: `<slug>.<baseDomain>`. Requires wildcard
+  # DNS, and wildcard TLS unless cloudflared terminates at the edge.
+  baseDomain: ""
+  api:
+    # -- Public base URL of the operator API and git webhook receiver.
+    # Defaults to `https://kitchen.<baseDomain>`.
+    externalURL: ""
+  ingress:
+    # -- GatewayClass backing the shared Gateway.
+    gatewayClassName: cilium
+    cloudflared:
+      # -- Front the Gateway with a cloudflared tunnel instead of a
+      # LoadBalancer address.
+      enabled: false
+      # -- Existing secret holding the tunnel token under the key `token`.
+      tunnelSecretName: ""
+  tls:
+    # -- Edge TLS mode: acme | cloudflared | none.
+    mode: acme
+  builds:
+    # -- Default build strategy: auto | dockerfile | buildpacks.
+    defaultStrategy: auto
+    # -- Maximum number of builds running at once.
+    concurrency: 2
+  observability:
+    clickhouse:
+      # -- Days to retain logs, metrics, traces and flow data.
+      retentionDays: 30
+
+# The git webhook receiver: the endpoint providers deliver push and
+# pull_request events to. It has to be reachable from the internet for
+# `git push` to trigger anything.
+webhookReceiver:
+  # -- Container port the receiver binds to.
+  port: 8090
+  service:
+    type: ClusterIP
+    # -- Service port fronting the receiver.
+    port: 80
+    annotations: {}
+  route:
+    # -- Publish the receiver on the shared Gateway with an HTTPRoute. Requires
+    # the Kitchen object (the Gateway is created by its reconciler).
+    enabled: true
+    # -- Hostname for the receiver. Defaults to the host of
+    # `kitchen.api.externalURL`, or `kitchen.<baseDomain>`.
+    host: ""
+    gateway:
+      # -- Name of the shared Gateway. Must match the operator's constant.
+      name: kitchen
+      # -- Namespace of the shared Gateway.
+      namespace: kitchen-system
+    annotations: {}
+
+metrics:
+  # -- Serve controller-runtime metrics.
+  enabled: true
+  # -- Port the metrics endpoint binds to.
+  port: 8443
+  # -- Serve metrics over HTTPS, protected by TokenReview/SubjectAccessReview.
+  # Scrapers need the `<release>-metrics-reader` ClusterRole.
+  secure: true
+  service:
+    annotations: {}
+  serviceMonitor:
+    # -- Create a Prometheus Operator ServiceMonitor for the metrics endpoint.
+    enabled: false
+    interval: ""
+    scrapeTimeout: ""
+    # -- Extra labels, e.g. the `release: kube-prometheus-stack` selector.
+    labels: {}
+    # -- Skip verification of the metrics server's certificate. The operator
+    # serves a self-signed certificate unless one is mounted in.
+    insecureSkipVerify: true
+
+healthProbe:
+  # -- Port the /healthz and /readyz endpoints bind to.
+  port: 8081
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 10m
+    memory: 128Mi
+
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+# -- Extra arguments appended to the manager's command line.
+extraArgs: []
+# -- Extra environment variables for the manager container.
+extraEnv: []
+# -- Extra volumes for the manager pod.
+extraVolumes: []
+# -- Extra volume mounts for the manager container.
+extraVolumeMounts: []
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+topologySpreadConstraints: []
+priorityClassName: ""
+terminationGracePeriodSeconds: 10
