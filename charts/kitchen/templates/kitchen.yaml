@@ -1,0 +1,46 @@
+{{- include "kitchen.validate" . -}}
+{{- if .Values.kitchen.create }}
+# The Kitchen singleton is the operator's runtime configuration. It is applied
+# as a Helm hook so that it lands after the CRDs are registered — a custom
+# resource rendered as a normal template would fail to build on a fresh install.
+#
+# By default it is created once, on install: the same object is editable from
+# the management UI, and re-applying it on every upgrade would overwrite those
+# edits. Set kitchen.applyOnUpgrade=true to make Helm the source of truth.
+apiVersion: kitchen.bermos.dev/v1alpha1
+kind: Kitchen
+metadata:
+  # The reconciler only acts on the singleton named "default".
+  name: default
+  labels:
+    {{- include "kitchen.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: post-install{{ if .Values.kitchen.applyOnUpgrade }},post-upgrade{{ end }}
+    helm.sh/hook-weight: "5"
+    {{- if .Values.kitchen.applyOnUpgrade }}
+    # Re-applying a hook means deleting and recreating it. Nothing is
+    # owned by the Kitchen object, so the Gateway and the tunnel survive;
+    # only its status is rebuilt on the next reconcile.
+    helm.sh/hook-delete-policy: before-hook-creation
+    {{- end }}
+spec:
+  baseDomain: {{ .Values.kitchen.baseDomain | quote }}
+  api:
+    externalURL: {{ include "kitchen.apiExternalURL" . | quote }}
+  ingress:
+    gatewayClassName: {{ .Values.kitchen.ingress.gatewayClassName | quote }}
+    cloudflared:
+      enabled: {{ .Values.kitchen.ingress.cloudflared.enabled }}
+      {{- with .Values.kitchen.ingress.cloudflared.tunnelSecretName }}
+      tunnelSecretRef:
+        name: {{ . | quote }}
+      {{- end }}
+  tls:
+    mode: {{ .Values.kitchen.tls.mode | quote }}
+  builds:
+    defaultStrategy: {{ .Values.kitchen.builds.defaultStrategy | quote }}
+    concurrency: {{ int .Values.kitchen.builds.concurrency }}
+  observability:
+    clickhouse:
+      retentionDays: {{ int .Values.kitchen.observability.clickhouse.retentionDays }}
+{{- end }}

@@ -1,0 +1,54 @@
+Kitchen {{ .Chart.AppVersion }} is installed in namespace {{ .Release.Namespace }}.
+
+Watch the operator come up:
+
+  kubectl -n {{ .Release.Namespace }} rollout status deploy/{{ include "kitchen.fullname" . }}-controller-manager
+
+{{ if .Values.kitchen.create -}}
+Platform configuration lives in the Kitchen singleton:
+
+  kubectl get kitchen default
+
+  Base domain:   {{ .Values.kitchen.baseDomain }}
+  Generated URLs: <slug>.{{ .Values.kitchen.baseDomain }}   (needs wildcard DNS)
+  API / webhooks: {{ include "kitchen.apiExternalURL" . }}
+
+Once the shared Gateway is programmed, point *.{{ .Values.kitchen.baseDomain }} at:
+
+  kubectl get kitchen default -o jsonpath='{.status.gatewayAddress}'
+{{- if eq .Values.kitchen.tls.mode "acme" }}
+
+TLS mode is "acme": the Gateway's HTTPS listener expects a wildcard certificate
+in the secret "kitchen-wildcard-tls" in {{ .Release.Namespace }}. Issue it with cert-manager
+(a Certificate for *.{{ .Values.kitchen.baseDomain }}) before serving traffic.
+{{- end }}
+{{- if .Values.kitchen.ingress.cloudflared.enabled }}
+
+cloudflared is enabled: the operator runs the tunnel from the secret
+"{{ .Values.kitchen.ingress.cloudflared.tunnelSecretName }}". Point the tunnel's public hostnames at the Gateway service.
+{{- end }}
+{{- if not .Values.kitchen.applyOnUpgrade }}
+
+The Kitchen object was created on install only. Later `helm upgrade` runs leave
+it alone so UI edits survive; set kitchen.applyOnUpgrade=true to have Helm own it.
+{{- end }}
+{{- else }}
+No Kitchen object was created (kitchen.create=false). The operator idles until
+one named "default" exists:
+
+  kubectl apply -f config/samples/kitchen_v1alpha1_kitchen.yaml
+{{- end }}
+
+{{ if .Values.webhookReceiver.route.enabled -}}
+Git providers deliver events to:
+
+  https://{{ include "kitchen.webhookHost" . }}/webhooks/git/<connection>
+{{- else -}}
+The git webhook receiver is only reachable in-cluster
+(svc/{{ include "kitchen.fullname" . }}-git-webhook). Expose it, or set
+webhookReceiver.route.enabled=true, before connecting a git provider.
+{{- end }}
+
+Cluster prerequisites Kitchen assumes: Cilium as the CNI with
+gatewayAPI.enabled=true, the Gateway API CRDs, and a reachable address for the
+Gateway (L2 announcements/BGP, or cloudflared).

@@ -4,6 +4,20 @@ metadata:
   labels:
     app.kubernetes.io/name: kitchen
     app.kubernetes.io/managed-by: kustomize
-  name: kitchen-sample
+  # Only the singleton named "default" is reconciled.
+  name: default
 spec:
-  # TODO(user): Add fields here
+  # Generated URLs are <slug>.<baseDomain>; needs wildcard DNS.
+  baseDomain: apps.example.com
+  ingress:
+    gatewayClassName: cilium
+    cloudflared:
+      enabled: false
+  tls:
+    mode: acme
+  builds:
+    defaultStrategy: auto
+    concurrency: 2
+  observability:
+    clickhouse:
+      retentionDays: 30

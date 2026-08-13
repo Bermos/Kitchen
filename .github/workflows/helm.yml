@@ -1,0 +1,160 @@
+name: Helm Chart
+
+on:
+  push:
+  pull_request:
+
+env:
+  GATEWAY_API_VERSION: v1.2.1
+
+jobs:
+  lint:
+    name: Lint and render
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@v4
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+
+      - name: Check generated templates are in sync
+        run: |
+          ./hack/gen-helm-manifests.sh
+          git diff --exit-code -- charts/ || {
+            echo "::error::charts/kitchen templates are stale. Run 'make helm-manifests' and commit the result."
+            exit 1
+          }
+
+      - name: Lint the chart
+        run: helm lint charts/kitchen --namespace kitchen-system --set kitchen.baseDomain=apps.example.com
+
+      - name: Render the supported value combinations
+        run: |
+          set -euo pipefail
+          render() {
+            echo "--- helm template $*"
+            helm template kitchen charts/kitchen --namespace kitchen-system "$@" >/dev/null
+          }
+          render --set kitchen.baseDomain=apps.example.com
+          render --set kitchen.baseDomain=apps.example.com --set replicaCount=3
+          render --set kitchen.baseDomain=apps.example.com --set kitchen.applyOnUpgrade=true
+          render --set kitchen.baseDomain=apps.example.com --set metrics.serviceMonitor.enabled=true
+          render --set kitchen.baseDomain=apps.example.com --set metrics.enabled=false
+          render --set kitchen.baseDomain=apps.example.com --set crds.install=false --set rbac.create=false
+          render --set kitchen.baseDomain=apps.example.com \
+                 --set kitchen.tls.mode=cloudflared \
+                 --set kitchen.ingress.cloudflared.enabled=true \
+                 --set kitchen.ingress.cloudflared.tunnelSecretName=kitchen-tunnel
+          render --set kitchen.create=false --set webhookReceiver.route.enabled=false
+
+      - name: Reject unsupported value combinations
+        run: |
+          set -uo pipefail
+          expect_failure() {
+            if helm template kitchen charts/kitchen --namespace "$1" "${@:2}" >/dev/null 2>&1; then
+              echo "::error::expected rendering to fail: namespace=$1 ${*:2}"
+              exit 1
+            fi
+          }
+          # No base domain for the Kitchen singleton.
+          expect_failure kitchen-system
+          # Installed outside the operator's platform namespace.
+          expect_failure default --set kitchen.baseDomain=apps.example.com
+          # cloudflared without tunnel credentials.
+          expect_failure kitchen-system --set kitchen.baseDomain=apps.example.com \
+            --set kitchen.ingress.cloudflared.enabled=true
+          # Multiple replicas without leader election.
+          expect_failure kitchen-system --set kitchen.baseDomain=apps.example.com \
+            --set replicaCount=3 --set leaderElection=false
+
+  install:
+    name: Install on kind
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+
+      - name: Install the latest version of kind
+        run: |
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/latest/kind-linux-amd64
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+
+      - name: Create kind cluster
+        run: kind create cluster
+
+      - name: Build and load the operator image
+        run: |
+          make docker-build IMG=kitchen:ci
+          kind load docker-image kitchen:ci
+
+      - name: Install the Gateway API CRDs
+        run: |
+          kubectl apply -f \
+            https://github.com/kubernetes-sigs/gateway-api/releases/download/${GATEWAY_API_VERSION}/standard-install.yaml
+
+      # The chart carries its CRDs as templates, so a fresh install has to
+      # register them and create the Kitchen singleton in the same release.
+      - name: Install the chart
+        run: |
+          helm install kitchen charts/kitchen \
+            --namespace kitchen-system --create-namespace \
+            --set image.repository=kitchen --set image.tag=ci \
+            --set kitchen.baseDomain=apps.example.com \
+            --wait --timeout 5m || {
+              kubectl -n kitchen-system get pods -o wide
+              kubectl -n kitchen-system describe deploy kitchen-controller-manager
+              kubectl -n kitchen-system logs -l control-plane=controller-manager --tail=100
+              exit 1
+            }
+
+      - name: Verify the installed release
+        run: |
+          set -euo pipefail
+          kubectl get crd kitchens.kitchen.bermos.dev
+          kubectl get kitchen default -o jsonpath='{.spec.baseDomain}' | grep -qx apps.example.com
+          kubectl -n kitchen-system get httproute kitchen-git-webhook
+          kubectl -n kitchen-system get svc kitchen-git-webhook kitchen-metrics
+          # The operator creates the shared Gateway from the Kitchen object.
+          # kind runs no Gateway controller, so it never gets programmed — it
+          # only has to exist, which proves the operator's RBAC is complete.
+          for i in $(seq 30); do
+            kubectl -n kitchen-system get gateway kitchen >/dev/null 2>&1 && break
+            [ "$i" = 30 ] && { kubectl -n kitchen-system logs -l control-plane=controller-manager --tail=50; exit 1; }
+            sleep 2
+          done
+          # The receiver answers webhook deliveries on every replica.
+          kubectl -n kitchen-system run curl --rm -i --restart=Never --image=curlimages/curl:8.11.1 -- \
+            -sS -o /dev/null -w '%{http_code}\n' -X POST \
+            -H 'X-GitHub-Event: ping' \
+            http://kitchen-git-webhook.kitchen-system.svc/webhooks/git/none | grep -qx 200
+
+      - name: Upgrade the release
+        run: |
+          set -euo pipefail
+          helm upgrade kitchen charts/kitchen \
+            --namespace kitchen-system \
+            --set image.repository=kitchen --set image.tag=ci \
+            --set kitchen.baseDomain=apps.example.com \
+            --set replicaCount=2 \
+            --wait --timeout 5m
+          kubectl -n kitchen-system get deploy kitchen-controller-manager \
+            -o jsonpath='{.spec.replicas}' | grep -qx 2
+          # The singleton is left alone by upgrades unless applyOnUpgrade is set.
+          kubectl get kitchen default
+
+      - name: Uninstall the release
+        run: |
+          set -euo pipefail
+          helm uninstall kitchen --namespace kitchen-system
+          # CRDs are annotated keep, so custom resources survive an uninstall.
+          kubectl get crd kitchens.kitchen.bermos.dev

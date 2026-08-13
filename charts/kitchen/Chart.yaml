@@ -1,0 +1,23 @@
+apiVersion: v2
+name: kitchen
+description: |
+  Self-hosted Vercel alternative for people who bring their own Kubernetes
+  cluster: git push -> build -> deploy -> URL.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+kubeVersion: ">=1.30.0-0"
+home: https://github.com/Bermos/Kitchen
+sources:
+  - https://github.com/Bermos/Kitchen
+keywords:
+  - paas
+  - operator
+  - gateway-api
+  - cilium
+  - preview-deployments
+annotations:
+  # Cluster prerequisites Kitchen assumes but does not install.
+  kitchen.bermos.dev/requires: |
+    Cilium as the cluster CNI with gatewayAPI.enabled=true,
+    Gateway API CRDs (gateway.networking.k8s.io/v1)

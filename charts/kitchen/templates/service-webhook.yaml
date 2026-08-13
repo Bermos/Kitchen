@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "kitchen.fullname" . }}-git-webhook
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kitchen.labels" . | nindent 4 }}
+  {{- with .Values.webhookReceiver.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.webhookReceiver.service.type }}
+  selector:
+    {{- include "kitchen.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.webhookReceiver.service.port }}
+      targetPort: git-webhook
+      protocol: TCP

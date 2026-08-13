@@ -156,6 +156,51 @@ deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in
 undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
 	$(KUSTOMIZE) build config/default | $(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -f -
 
+##@ Helm
+
+CHART_DIR ?= charts/kitchen
+# Base domain for the Helm targets: generated URLs are <slug>.$(BASE_DOMAIN).
+BASE_DOMAIN ?= apps.example.com
+# Extra flags passed to helm install/upgrade, e.g. HELM_ARGS="--set replicaCount=2".
+HELM_ARGS ?=
+
+.PHONY: helm-manifests
+helm-manifests: manifests ## Regenerate the chart's CRD and manager ClusterRole templates from config/.
+	./hack/gen-helm-manifests.sh
+
+.PHONY: helm-lint
+helm-lint: helm ## Lint the Helm chart.
+	$(HELM) lint $(CHART_DIR) --namespace kitchen-system --set kitchen.baseDomain=$(BASE_DOMAIN)
+
+.PHONY: helm-template
+helm-template: helm ## Render the Helm chart locally.
+	$(HELM) template kitchen $(CHART_DIR) --namespace kitchen-system --set kitchen.baseDomain=$(BASE_DOMAIN) $(HELM_ARGS)
+
+.PHONY: helm-verify
+helm-verify: helm-manifests helm-lint ## Fail if the generated chart templates are out of date.
+	@git diff --exit-code -- $(CHART_DIR) || { \
+		echo "Chart templates are out of date. Run 'make helm-manifests' and commit the result."; \
+		exit 1; \
+	}
+
+.PHONY: helm-package
+helm-package: helm ## Package the chart into dist/.
+	mkdir -p dist
+	$(HELM) package $(CHART_DIR) --destination dist
+
+.PHONY: helm-install
+helm-install: helm ## Install or upgrade the chart in the current kubecontext. Set BASE_DOMAIN and IMG.
+	$(HELM) upgrade --install kitchen $(CHART_DIR) \
+		--namespace kitchen-system --create-namespace \
+		--set kitchen.baseDomain=$(BASE_DOMAIN) \
+		--set image.repository=$(firstword $(subst :, ,$(IMG))) \
+		--set image.tag=$(word 2,$(subst :, ,$(IMG))) \
+		$(HELM_ARGS)
+
+.PHONY: helm-uninstall
+helm-uninstall: helm ## Uninstall the chart. CRDs and the Kitchen object are left behind by design.
+	$(HELM) uninstall kitchen --namespace kitchen-system
+
 ##@ Dependencies
 
 ## Location to install dependencies to
@@ -170,6 +215,7 @@ KUSTOMIZE ?= $(LOCALBIN)/kustomize
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 ENVTEST ?= $(LOCALBIN)/setup-envtest
 GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
+HELM ?= $(LOCALBIN)/helm
 
 ## Tool Versions
 KUSTOMIZE_VERSION ?= v5.6.0
@@ -179,6 +225,7 @@ ENVTEST_VERSION ?= $(shell go list -m -f "{{ .Version }}" sigs.k8s.io/controller
 #ENVTEST_K8S_VERSION is the version of Kubernetes to use for setting up ENVTEST binaries (i.e. 1.31)
 ENVTEST_K8S_VERSION ?= $(shell go list -m -f "{{ .Version }}" k8s.io/api | awk -F'[v.]' '{printf "1.%d", $$3}')
 GOLANGCI_LINT_VERSION ?= v1.63.4
+HELM_VERSION ?= v3.16.4
 
 .PHONY: kustomize
 kustomize: $(KUSTOMIZE) ## Download kustomize locally if necessary.
@@ -207,6 +254,19 @@ $(ENVTEST): $(LOCALBIN)
 golangci-lint: $(GOLANGCI_LINT) ## Download golangci-lint locally if necessary.
 $(GOLANGCI_LINT): $(LOCALBIN)
 	$(call go-install-tool,$(GOLANGCI_LINT),github.com/golangci/golangci-lint/cmd/golangci-lint,$(GOLANGCI_LINT_VERSION))
+
+.PHONY: helm
+helm: $(HELM) ## Download helm locally if necessary.
+$(HELM): $(LOCALBIN)
+	@{ test -x $(HELM) && $(HELM) version --short | grep -q $(HELM_VERSION); } || { \
+		set -e ;\
+		OS=$$(go env GOOS); ARCH=$$(go env GOARCH) ;\
+		echo "Downloading helm $(HELM_VERSION) for $${OS}/$${ARCH}" ;\
+		TMPDIR=$$(mktemp -d) ;\
+		curl -fsSL https://get.helm.sh/helm-$(HELM_VERSION)-$${OS}-$${ARCH}.tar.gz | tar -xz -C $${TMPDIR} ;\
+		mv $${TMPDIR}/$${OS}-$${ARCH}/helm $(HELM) ;\
+		rm -rf $${TMPDIR} ;\
+	}
 
 # go-install-tool will 'go install' any package with custom target and name of binary, if it doesn't exist
 # $1 - target path with name of binary
