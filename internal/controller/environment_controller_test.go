@@ -38,11 +38,11 @@ import (
 var _ = Describe("Environment Controller", func() {
 	Context("When reconciling a production environment", func() {
 		const (
-			projectName = "shop"
-			envName     = "shop-production"
-			releaseName = "shop-rel-000001"
+			projectName = "envshop"
+			envName     = "envshop-production"
+			releaseName = "envshop-rel-000001"
 			namespace   = "default"
-			image       = "registry.example.com/kitchen/shop@sha256:0123456789abcdef"
+			image       = "registry.example.com/kitchen/envshop@sha256:0123456789abcdef"
 		)
 
 		ctx := context.Background()
@@ -150,14 +150,14 @@ var _ = Describe("Environment Controller", func() {
 			By("checking the HTTPRoute")
 			route := &gatewayv1.HTTPRoute{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: envName, Namespace: appNS}, route)).To(Succeed())
-			Expect(route.Spec.Hostnames).To(ConsistOf(gatewayv1.Hostname("shop.apps.example.com")))
+			Expect(route.Spec.Hostnames).To(ConsistOf(gatewayv1.Hostname("envshop.apps.example.com")))
 			Expect(string(route.Spec.ParentRefs[0].Name)).To(Equal(SharedGatewayName))
 			Expect(string(*route.Spec.ParentRefs[0].Namespace)).To(Equal(PlatformNamespace))
 
 			By("checking the Environment status")
 			env := &kitchenv1alpha1.Environment{}
 			Expect(k8sClient.Get(ctx, envKey, env)).To(Succeed())
-			Expect(env.Status.URL).To(Equal("https://shop.apps.example.com"))
+			Expect(env.Status.URL).To(Equal("https://envshop.apps.example.com"))
 			Expect(env.Status.ObservedRelease).To(Equal(releaseName))
 			Expect(env.Status.Phase).To(Equal(kitchenv1alpha1.EnvironmentDeploying))
 		})
@@ -180,7 +180,7 @@ var _ = Describe("Environment Controller", func() {
 
 			route := &gatewayv1.HTTPRoute{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: envName, Namespace: appNS}, route)).To(Succeed())
-			Expect(route.Spec.Hostnames).To(ConsistOf(gatewayv1.Hostname("shop-pr-42.apps.example.com")))
+			Expect(route.Spec.Hostnames).To(ConsistOf(gatewayv1.Hostname("envshop-pr-42.apps.example.com")))
 		})
 
 		It("cleans up children when the environment is deleted", func() {

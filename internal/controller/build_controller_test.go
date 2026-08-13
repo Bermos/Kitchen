@@ -38,8 +38,8 @@ import (
 var _ = Describe("Build Controller", func() {
 	Context("When reconciling a build", func() {
 		const (
-			projectName = "shop"
-			buildName   = "shop-bld-8f3a2c1d0abc"
+			projectName = "bldshop"
+			buildName   = "bldshop-bld-8f3a2c1d0abc"
 			sha         = "8f3a2c1d0abc456789ab"
 			namespace   = "default"
 			registryURL = "harbor.example.com/kitchen"
