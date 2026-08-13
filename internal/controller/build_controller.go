@@ -314,8 +314,23 @@ func (r *BuildReconciler) succeed(
 		return ctrl.Result{}, err
 	}
 
-	if build.Spec.Git.Branch == project.Spec.Source.ProductionBranch {
-		if err := r.promote(ctx, build, project, release.Name); err != nil {
+	switch {
+	case build.Spec.Git.PullRequest != nil:
+		if previewsEnabled(project) {
+			preview := &kitchenv1alpha1.PreviewInfo{
+				PullRequest: *build.Spec.Git.PullRequest,
+				Branch:      build.Spec.Git.Branch,
+			}
+			envName := fmt.Sprintf("%s-pr-%d", project.Name, *build.Spec.Git.PullRequest)
+			if err := r.ensureEnvironment(ctx, build.Namespace, project, envName,
+				kitchenv1alpha1.EnvironmentPreview, preview, release.Name); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+	case build.Spec.Git.Branch == project.Spec.Source.ProductionBranch:
+		envName := project.Name + "-production"
+		if err := r.ensureEnvironment(ctx, build.Namespace, project, envName,
+			kitchenv1alpha1.EnvironmentProduction, nil, release.Name); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
@@ -338,27 +353,31 @@ func (r *BuildReconciler) succeed(
 	return ctrl.Result{}, r.Status().Update(ctx, build)
 }
 
-// promote points the production Environment at the Release, creating the
-// Environment on the first production build.
-func (r *BuildReconciler) promote(
+// ensureEnvironment points the named Environment at the Release, creating it
+// on the first build for its target (the first production build, or a
+// pull request's first preview build).
+func (r *BuildReconciler) ensureEnvironment(
 	ctx context.Context,
-	build *kitchenv1alpha1.Build,
+	namespace string,
 	project *kitchenv1alpha1.Project,
+	envName string,
+	envType kitchenv1alpha1.EnvironmentType,
+	preview *kitchenv1alpha1.PreviewInfo,
 	releaseName string,
 ) error {
-	envName := project.Name + "-production"
 	env := &kitchenv1alpha1.Environment{}
-	err := r.Get(ctx, types.NamespacedName{Namespace: build.Namespace, Name: envName}, env)
+	err := r.Get(ctx, types.NamespacedName{Namespace: namespace, Name: envName}, env)
 	if apierrors.IsNotFound(err) {
 		env = &kitchenv1alpha1.Environment{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      envName,
-				Namespace: build.Namespace,
+				Namespace: namespace,
 				Labels:    map[string]string{labelProject: project.Name, labelManagedByKey: labelManagedByValue},
 			},
 			Spec: kitchenv1alpha1.EnvironmentSpec{
 				ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: project.Name},
-				Type:       kitchenv1alpha1.EnvironmentProduction,
+				Type:       envType,
+				Preview:    preview,
 				ReleaseRef: kitchenv1alpha1.LocalObjectReference{Name: releaseName},
 			},
 		}
@@ -372,6 +391,12 @@ func (r *BuildReconciler) promote(
 	}
 	env.Spec.ReleaseRef = kitchenv1alpha1.LocalObjectReference{Name: releaseName}
 	return r.Update(ctx, env)
+}
+
+// previewsEnabled reports whether the project wants preview environments.
+// The API server defaults spec.previews.enabled to true.
+func previewsEnabled(project *kitchenv1alpha1.Project) bool {
+	return project.Spec.Previews.Enabled
 }
 
 // imageWithDigest reads BuildKit's metadata from the build pod's termination

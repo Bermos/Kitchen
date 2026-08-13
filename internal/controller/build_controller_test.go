@@ -227,6 +227,46 @@ var _ = Describe("Build Controller", func() {
 			Expect(env.Spec.ReleaseRef.Name).To(Equal(release.Name))
 		})
 
+		It("creates a preview environment for pull request builds", func() {
+			build := &kitchenv1alpha1.Build{}
+			Expect(k8sClient.Get(ctx, buildKey, build)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, build)).To(Succeed())
+			build = &kitchenv1alpha1.Build{
+				ObjectMeta: metav1.ObjectMeta{Name: buildName, Namespace: namespace},
+				Spec: kitchenv1alpha1.BuildSpec{
+					ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: projectName},
+					Git: kitchenv1alpha1.GitRevision{
+						SHA:         sha,
+						Branch:      "feat/checkout",
+						PullRequest: ptr.To(int32(42)),
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, build)).To(Succeed())
+			DeferCleanup(func() {
+				env := &kitchenv1alpha1.Environment{
+					ObjectMeta: metav1.ObjectMeta{Name: projectName + "-pr-42", Namespace: namespace},
+				}
+				Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, env))).To(Succeed())
+			})
+
+			reconcileOnce()
+			completeJob()
+			createBuildPod(`{"containerimage.digest":"sha256:feedface"}`)
+			reconcileOnce()
+
+			env := &kitchenv1alpha1.Environment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: projectName + "-pr-42", Namespace: namespace}, env)).To(Succeed())
+			Expect(env.Spec.Type).To(Equal(kitchenv1alpha1.EnvironmentPreview))
+			Expect(env.Spec.Preview).NotTo(BeNil())
+			Expect(env.Spec.Preview.PullRequest).To(Equal(int32(42)))
+			Expect(env.Spec.Preview.Branch).To(Equal("feat/checkout"))
+			Expect(env.Spec.ReleaseRef.Name).To(Equal(releaseName(projectName, sha)))
+
+			err := k8sClient.Get(ctx, types.NamespacedName{Name: projectName + "-production", Namespace: namespace}, &kitchenv1alpha1.Environment{})
+			Expect(err).To(HaveOccurred(), "a PR build must not touch production")
+		})
+
 		It("marks the build failed when the job fails", func() {
 			reconcileOnce()
 
