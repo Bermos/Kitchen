@@ -90,6 +90,38 @@ type APISpec struct {
 	ExternalURL string `json:"externalURL,omitempty"`
 }
 
+// PreviewGateSpec configures the forward-auth gate that protected preview
+// environments are served through: an in-path component that turns an
+// anonymous request into a platform login and only then proxies to the app.
+type PreviewGateSpec struct {
+	// Whether the platform runs a gate at all. A Project asking for protected
+	// previews without one gets no route rather than a public one.
+	// +kubebuilder:default=true
+	// +optional
+	Enabled bool `json:"enabled"`
+
+	// Hostname the gate serves its OAuth callback on. It is the only redirect
+	// URI registered with the identity provider, which is what lets previews
+	// come and go without touching the OAuth client.
+	// Defaults to previews.<baseDomain>.
+	// +optional
+	Host string `json:"host,omitempty"`
+
+	// Replicas of the gate. It is in the request path of every protected
+	// preview, so it is worth more than one.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:default=2
+	// +optional
+	Replicas int32 `json:"replicas,omitempty"`
+
+	// How long a visitor's session on a preview lasts before the gate sends
+	// them back to the identity provider — which, if they are still signed in
+	// there, costs them a redirect and no interaction.
+	// +kubebuilder:default="8h"
+	// +optional
+	SessionTTL *metav1.Duration `json:"sessionTTL,omitempty"`
+}
+
 // AuthSpec configures the platform's identity provider: the OIDC issuer the
 // UI, the operator API and opted-in apps all authenticate against.
 type AuthSpec struct {
@@ -103,6 +135,20 @@ type AuthSpec struct {
 	// issuer (https://<host>). Defaults to auth.<baseDomain>.
 	// +optional
 	Host string `json:"host,omitempty"`
+
+	// SecretRef names the Secret in the platform namespace holding the
+	// operator's view of the identity provider: the keys issuer, serviceKey
+	// and, optionally, internalURL — a cluster-internal address for the same
+	// issuer, for clusters that cannot resolve their own base domain from the
+	// inside. The chart writes it as <release>-auth. Without it the operator
+	// cannot register OAuth clients, so nothing that depends on one — the
+	// preview gate, later the oidcClient claims — can be reconciled.
+	// +optional
+	SecretRef *LocalObjectReference `json:"secretRef,omitempty"`
+
+	// +kubebuilder:default={}
+	// +optional
+	PreviewGate PreviewGateSpec `json:"previewGate,omitempty"`
 }
 
 // KitchenSpec defines platform-wide configuration. There is exactly one
@@ -123,6 +169,9 @@ type KitchenSpec struct {
 	// +optional
 	TLS TLSSpec `json:"tls,omitempty"`
 
+	// An installation with no auth block at all still has an identity
+	// provider: the defaults inside it only apply once the object is there.
+	// +kubebuilder:default={}
 	// +optional
 	Auth AuthSpec `json:"auth,omitempty"`
 

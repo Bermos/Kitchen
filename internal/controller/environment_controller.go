@@ -36,8 +36,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/previewgate"
 )
 
 const (
@@ -59,6 +61,7 @@ const (
 	condReady             = "Ready"
 	condWorkloadAvailable = "WorkloadAvailable"
 	condRouteProgrammed   = "RouteProgrammed"
+	condPreviewProtected  = "PreviewProtected"
 )
 
 // EnvironmentReconciler reconciles an Environment: it materializes the
@@ -78,6 +81,7 @@ type EnvironmentReconciler struct {
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=referencegrants,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile drives an Environment towards its Release.
 func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -135,13 +139,32 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	if err := r.applyService(ctx, env, release, appNS, labels); err != nil {
 		return ctrl.Result{}, err
 	}
+
+	// Only previews are ever gated: a production environment is the
+	// application's public address.
+	protected := env.Spec.Type == kitchenv1alpha1.EnvironmentPreview && project.Spec.Previews.IsProtected()
+	gate := previewGate(kitchen)
+	if protected && gate == nil {
+		// Asked to protect a preview on a platform with no gate. Publishing
+		// it anyway would be the one outcome the Project explicitly did not
+		// ask for, so it gets no route at all until the platform grows a gate
+		// or the Project opts out of protection.
+		if err := r.deleteRoute(ctx, appNS, env.Name); err != nil {
+			return ctrl.Result{}, err
+		}
+		return r.unprotectable(ctx, env)
+	}
+	if !protected {
+		gate = nil
+	}
+
 	host := hostname(project.Name, env, kitchen.Spec.BaseDomain)
-	if err := r.applyHTTPRoute(ctx, env, appNS, labels, host); err != nil {
+	if err := r.applyHTTPRoute(ctx, env, appNS, labels, host, gate); err != nil {
 		return ctrl.Result{}, err
 	}
 
-	log.Info("reconciled environment", "namespace", appNS, "host", host)
-	return r.updateStatus(ctx, env, release, kitchen, appNS, host)
+	log.Info("reconciled environment", "namespace", appNS, "host", host, "protected", protected)
+	return r.updateStatus(ctx, env, release, kitchen, appNS, host, protected)
 }
 
 // finalize deletes the Environment's children and releases the finalizer. The
@@ -304,13 +327,27 @@ func (r *EnvironmentReconciler) applyService(
 	return err
 }
 
+// applyHTTPRoute publishes the Environment on the shared Gateway. A gate
+// turns the same route into a protected one: traffic goes to the gate
+// instead, carrying the application's address in a header the Gateway sets —
+// so one gate serves every preview on the platform without knowing about any
+// of them in advance.
 func (r *EnvironmentReconciler) applyHTTPRoute(
 	ctx context.Context,
 	env *kitchenv1alpha1.Environment,
 	appNS string,
 	labels map[string]string,
 	host string,
+	gate *previewGateBackend,
 ) error {
+	if gate != nil {
+		// The route and the gate live in different namespaces, and Gateway
+		// API only allows that with the target namespace's permission.
+		if err := r.allowGateBackend(ctx, appNS, gate); err != nil {
+			return err
+		}
+	}
+
 	route := &gatewayv1.HTTPRoute{ObjectMeta: metav1.ObjectMeta{Name: env.Name, Namespace: appNS}}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, route, func() error {
 		route.Labels = labels
@@ -321,7 +358,8 @@ func (r *EnvironmentReconciler) applyHTTPRoute(
 			}},
 		}
 		route.Spec.Hostnames = []gatewayv1.Hostname{gatewayv1.Hostname(host)}
-		route.Spec.Rules = []gatewayv1.HTTPRouteRule{{
+
+		rule := gatewayv1.HTTPRouteRule{
 			BackendRefs: []gatewayv1.HTTPBackendRef{{
 				BackendRef: gatewayv1.BackendRef{
 					BackendObjectReference: gatewayv1.BackendObjectReference{
@@ -330,10 +368,81 @@ func (r *EnvironmentReconciler) applyHTTPRoute(
 					},
 				},
 			}},
+		}
+		if gate != nil {
+			rule.Filters = []gatewayv1.HTTPRouteFilter{{
+				Type: gatewayv1.HTTPRouteFilterRequestHeaderModifier,
+				RequestHeaderModifier: &gatewayv1.HTTPHeaderFilter{
+					// Set, not Add: whatever the client sent under this name
+					// is overwritten before the gate ever sees it.
+					Set: []gatewayv1.HTTPHeader{{
+						Name:  previewgate.UpstreamHeader,
+						Value: upstreamAddress(appNS, env.Name, 80),
+					}},
+				},
+			}}
+			rule.BackendRefs = []gatewayv1.HTTPBackendRef{{
+				BackendRef: gatewayv1.BackendRef{
+					BackendObjectReference: gatewayv1.BackendObjectReference{
+						Name:      gatewayv1.ObjectName(gate.Service),
+						Namespace: ptr.To(gatewayv1.Namespace(PlatformNamespace)),
+						Port:      ptr.To(gatewayv1.PortNumber(gate.Port)),
+					},
+				},
+			}}
+		}
+		route.Spec.Rules = []gatewayv1.HTTPRouteRule{rule}
+		return nil
+	})
+	return err
+}
+
+// allowGateBackend grants the project's namespace permission to route to the
+// gate. One grant covers every protected Environment of that namespace, and
+// it names the single Service — a cross-namespace reference is exactly as
+// wide as it has to be.
+//
+// It outlives the Environments that needed it, like the application namespace
+// itself does: a project whose previews are all closed will want it again on
+// the next pull request.
+func (r *EnvironmentReconciler) allowGateBackend(ctx context.Context, appNS string, gate *previewGateBackend) error {
+	grant := &gatewayv1beta1.ReferenceGrant{ObjectMeta: metav1.ObjectMeta{
+		Name:      referenceGrantName(appNS),
+		Namespace: PlatformNamespace,
+	}}
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, grant, func() error {
+		grant.Labels = map[string]string{
+			labelComponentKey: "kitchen-preview-gate",
+			labelManagedByKey: labelManagedByValue,
+		}
+		grant.Spec.From = []gatewayv1beta1.ReferenceGrantFrom{{
+			Group:     gatewayv1.GroupName,
+			Kind:      "HTTPRoute",
+			Namespace: gatewayv1beta1.Namespace(appNS),
+		}}
+		grant.Spec.To = []gatewayv1beta1.ReferenceGrantTo{{
+			Group: "",
+			Kind:  "Service",
+			Name:  ptr.To(gatewayv1beta1.ObjectName(gate.Service)),
 		}}
 		return nil
 	})
 	return err
+}
+
+// referenceGrantName is stable per application namespace, so the grant is
+// created once and found again by every Environment in it.
+func referenceGrantName(appNS string) string {
+	return "kitchen-preview-gate-" + appNS
+}
+
+// deleteRoute takes an Environment off the Gateway.
+func (r *EnvironmentReconciler) deleteRoute(ctx context.Context, appNS, name string) error {
+	route := &gatewayv1.HTTPRoute{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: appNS}}
+	if err := r.Delete(ctx, route); err != nil && !apierrors.IsNotFound(err) {
+		return err
+	}
+	return nil
 }
 
 func (r *EnvironmentReconciler) updateStatus(
@@ -343,11 +452,9 @@ func (r *EnvironmentReconciler) updateStatus(
 	kitchen *kitchenv1alpha1.Kitchen,
 	appNS string,
 	host string,
+	protected bool,
 ) (ctrl.Result, error) {
-	scheme := "https"
-	if kitchen.Spec.TLS.Mode == kitchenv1alpha1.TLSModeNone {
-		scheme = "http"
-	}
+	scheme := platformScheme(kitchen)
 
 	deploy := &appsv1.Deployment{}
 	available := false
@@ -377,6 +484,18 @@ func (r *EnvironmentReconciler) updateStatus(
 		})
 	}
 	setCond(condRouteProgrammed, metav1.ConditionTrue, "Applied", "HTTPRoute applied")
+	switch {
+	case protected:
+		setCond(condPreviewProtected, metav1.ConditionTrue, "GatedByPlatformLogin",
+			fmt.Sprintf("requests are gated behind platform login at %s", previewGateHost(kitchen)))
+	case env.Spec.Type == kitchenv1alpha1.EnvironmentPreview:
+		setCond(condPreviewProtected, metav1.ConditionFalse, "Public",
+			"spec.previews.protected is off for this Project: anyone with the URL can reach this preview")
+	default:
+		// Production environments are public by definition; the condition
+		// would only ever be noise on them.
+		meta.RemoveStatusCondition(&env.Status.Conditions, condPreviewProtected)
+	}
 	if available {
 		setCond(condWorkloadAvailable, metav1.ConditionTrue, "DeploymentAvailable", "workload is available")
 		setCond(condReady, metav1.ConditionTrue, "Reconciled", "environment is live")
@@ -392,6 +511,33 @@ func (r *EnvironmentReconciler) updateStatus(
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 	return ctrl.Result{}, nil
+}
+
+// unprotectable records a preview that asked to be gated on a platform with
+// no gate to route it through. The workload is deployed either way — it is
+// the URL that is withheld, and only until the platform can protect it.
+func (r *EnvironmentReconciler) unprotectable(
+	ctx context.Context,
+	env *kitchenv1alpha1.Environment,
+) (ctrl.Result, error) {
+	const message = "the Project asks for protected previews, but the platform runs no forward-auth gate " +
+		"(spec.auth.enabled and spec.auth.previewGate.enabled on the Kitchen object). " +
+		"No route is published: set spec.previews.protected=false on the Project to serve this preview openly."
+
+	env.Status.Phase = kitchenv1alpha1.EnvironmentPending
+	env.Status.URL = ""
+	for _, condition := range []metav1.Condition{
+		{Type: condPreviewProtected, Status: metav1.ConditionFalse, Reason: "PreviewGateUnavailable", Message: message},
+		{Type: condRouteProgrammed, Status: metav1.ConditionFalse, Reason: "PreviewGateUnavailable", Message: message},
+		{Type: condReady, Status: metav1.ConditionFalse, Reason: "PreviewGateUnavailable", Message: message},
+	} {
+		condition.ObservedGeneration = env.Generation
+		meta.SetStatusCondition(&env.Status.Conditions, condition)
+	}
+	if err := r.Status().Update(ctx, env); err != nil {
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{RequeueAfter: time.Minute}, nil
 }
 
 // notReady records a Ready=False condition with the given reason and retries.

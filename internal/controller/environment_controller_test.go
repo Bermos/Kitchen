@@ -24,15 +24,18 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/previewgate"
 )
 
 var _ = Describe("Environment Controller", func() {
@@ -60,9 +63,24 @@ var _ = Describe("Environment Controller", func() {
 		BeforeEach(func() {
 			reconciler = &EnvironmentReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 
+			// The platform namespace is where the shared Gateway and the
+			// forward-auth gate live. Kitchen is installed into it, so it
+			// exists before any Environment does.
+			Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{Name: PlatformNamespace},
+			}))).To(Succeed())
+
 			kitchen := &kitchenv1alpha1.Kitchen{
 				ObjectMeta: metav1.ObjectMeta{Name: KitchenSingletonName},
-				Spec:       kitchenv1alpha1.KitchenSpec{BaseDomain: "apps.example.com"},
+				Spec: kitchenv1alpha1.KitchenSpec{
+					BaseDomain: "apps.example.com",
+					// As the chart writes it: an identity provider, and a gate
+					// for previews to be protected by.
+					Auth: kitchenv1alpha1.AuthSpec{
+						Enabled:     true,
+						PreviewGate: kitchenv1alpha1.PreviewGateSpec{Enabled: true},
+					},
+				},
 			}
 			Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, kitchen))).To(Succeed())
 
@@ -181,6 +199,127 @@ var _ = Describe("Environment Controller", func() {
 			route := &gatewayv1.HTTPRoute{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: envName, Namespace: appNS}, route)).To(Succeed())
 			Expect(route.Spec.Hostnames).To(ConsistOf(gatewayv1.Hostname("envshop-pr-42.apps.example.com")))
+		})
+
+		It("routes a protected preview through the forward-auth gate", func() {
+			env := &kitchenv1alpha1.Environment{}
+			Expect(k8sClient.Get(ctx, envKey, env)).To(Succeed())
+			env.Spec.Type = kitchenv1alpha1.EnvironmentPreview
+			env.Spec.Preview = &kitchenv1alpha1.PreviewInfo{PullRequest: 42, Branch: "feat/checkout"}
+			Expect(k8sClient.Update(ctx, env)).To(Succeed())
+
+			reconcileOnce()
+			reconcileOnce()
+
+			By("sending the preview's traffic to the gate instead of the application")
+			route := &gatewayv1.HTTPRoute{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: envName, Namespace: appNS}, route)).To(Succeed())
+			Expect(route.Spec.Hostnames).To(ConsistOf(gatewayv1.Hostname("envshop-pr-42.apps.example.com")))
+			backend := route.Spec.Rules[0].BackendRefs[0]
+			Expect(string(backend.Name)).To(Equal(PreviewGateName))
+			Expect(string(*backend.Namespace)).To(Equal(PlatformNamespace))
+
+			By("telling the gate which application the request belongs to")
+			filters := route.Spec.Rules[0].Filters
+			Expect(filters).To(HaveLen(1))
+			Expect(filters[0].Type).To(Equal(gatewayv1.HTTPRouteFilterRequestHeaderModifier))
+			Expect(filters[0].RequestHeaderModifier.Set).To(ConsistOf(gatewayv1.HTTPHeader{
+				Name:  previewgate.UpstreamHeader,
+				Value: envName + "." + appNS + ".svc.cluster.local:80",
+			}), "and with Set, so a client cannot choose it")
+
+			By("granting the project's namespace permission to route there")
+			grant := &gatewayv1beta1.ReferenceGrant{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: referenceGrantName(appNS), Namespace: PlatformNamespace,
+			}, grant)).To(Succeed())
+			Expect(string(grant.Spec.From[0].Namespace)).To(Equal(appNS))
+			Expect(string(grant.Spec.From[0].Kind)).To(Equal("HTTPRoute"))
+			Expect(string(*grant.Spec.To[0].Name)).To(Equal(PreviewGateName))
+
+			By("saying so on the Environment")
+			Expect(k8sClient.Get(ctx, envKey, env)).To(Succeed())
+			Expect(meta.IsStatusConditionTrue(env.Status.Conditions, condPreviewProtected)).To(BeTrue())
+			Expect(env.Status.URL).To(Equal("https://envshop-pr-42.apps.example.com"))
+		})
+
+		It("serves a preview openly when the project turns protection off", func() {
+			project := &kitchenv1alpha1.Project{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: projectName, Namespace: namespace}, project)).To(Succeed())
+			project.Spec.Previews.Protected = ptr.To(false)
+			Expect(k8sClient.Update(ctx, project)).To(Succeed())
+
+			env := &kitchenv1alpha1.Environment{}
+			Expect(k8sClient.Get(ctx, envKey, env)).To(Succeed())
+			env.Spec.Type = kitchenv1alpha1.EnvironmentPreview
+			env.Spec.Preview = &kitchenv1alpha1.PreviewInfo{PullRequest: 42, Branch: "feat/checkout"}
+			Expect(k8sClient.Update(ctx, env)).To(Succeed())
+
+			reconcileOnce()
+			reconcileOnce()
+
+			route := &gatewayv1.HTTPRoute{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: envName, Namespace: appNS}, route)).To(Succeed())
+			Expect(string(route.Spec.Rules[0].BackendRefs[0].Name)).To(Equal(envName),
+				"an unprotected preview goes straight at the application")
+			Expect(route.Spec.Rules[0].Filters).To(BeEmpty())
+
+			Expect(k8sClient.Get(ctx, envKey, env)).To(Succeed())
+			cond := meta.FindStatusCondition(env.Status.Conditions, condPreviewProtected)
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(cond.Reason).To(Equal("Public"))
+		})
+
+		It("publishes no route for a protected preview when the platform has no gate", func() {
+			By("starting from a preview that is routed through the gate")
+			env := &kitchenv1alpha1.Environment{}
+			Expect(k8sClient.Get(ctx, envKey, env)).To(Succeed())
+			env.Spec.Type = kitchenv1alpha1.EnvironmentPreview
+			env.Spec.Preview = &kitchenv1alpha1.PreviewInfo{PullRequest: 42, Branch: "feat/checkout"}
+			Expect(k8sClient.Update(ctx, env)).To(Succeed())
+			reconcileOnce()
+			reconcileOnce()
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: envName, Namespace: appNS},
+				&gatewayv1.HTTPRoute{})).To(Succeed())
+
+			By("turning the identity provider off underneath it")
+			kitchen := &kitchenv1alpha1.Kitchen{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: KitchenSingletonName}, kitchen)).To(Succeed())
+			kitchen.Spec.Auth.Enabled = false
+			Expect(k8sClient.Update(ctx, kitchen)).To(Succeed())
+
+			reconcileOnce()
+
+			By("withdrawing the URL rather than publishing an unprotected one")
+			err := k8sClient.Get(ctx, types.NamespacedName{Name: envName, Namespace: appNS}, &gatewayv1.HTTPRoute{})
+			Expect(errors.IsNotFound(err)).To(BeTrue())
+
+			Expect(k8sClient.Get(ctx, envKey, env)).To(Succeed())
+			Expect(env.Status.URL).To(BeEmpty())
+			cond := meta.FindStatusCondition(env.Status.Conditions, condPreviewProtected)
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Reason).To(Equal("PreviewGateUnavailable"))
+			Expect(cond.Message).To(ContainSubstring("spec.previews.protected=false"),
+				"the way out has to be in the message")
+			Expect(meta.IsStatusConditionFalse(env.Status.Conditions, condReady)).To(BeTrue())
+
+			By("leaving the workload alone: it is the URL that is withheld")
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: envName, Namespace: appNS},
+				&appsv1.Deployment{})).To(Succeed())
+		})
+
+		It("never gates a production environment", func() {
+			reconcileOnce()
+			reconcileOnce()
+
+			route := &gatewayv1.HTTPRoute{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: envName, Namespace: appNS}, route)).To(Succeed())
+			Expect(string(route.Spec.Rules[0].BackendRefs[0].Name)).To(Equal(envName))
+
+			env := &kitchenv1alpha1.Environment{}
+			Expect(k8sClient.Get(ctx, envKey, env)).To(Succeed())
+			Expect(meta.FindStatusCondition(env.Status.Conditions, condPreviewProtected)).To(BeNil())
 		})
 
 		It("cleans up children when the environment is deleted", func() {

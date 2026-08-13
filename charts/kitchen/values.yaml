@@ -478,6 +478,30 @@ auth:
   topologySpreadConstraints: []
   priorityClassName: ""
 
+# The forward-auth gate: what makes a preview URL useless to anyone who has
+# not signed in to the platform. Protected previews route through it, it sends
+# anonymous visitors to the identity provider and proxies the ones that come
+# back — the deployed application needs no changes and never sees the session.
+#
+# The operator deploys it (it needs an OAuth client registered first, which
+# only the operator can do), from the same image as the manager. What lives
+# here is the switch and the hostname; per-Project protection is
+# `spec.previews.protected`, which defaults to on.
+previewGate:
+  # -- Run the forward-auth gate. Requires the identity provider. With it off,
+  # Projects that ask for protected previews get no route at all rather than a
+  # public one — turn protection off per Project to serve previews openly.
+  enabled: true
+  # -- Hostname the gate finishes logins on, and the only redirect URI its
+  # OAuth client is registered with. Defaults to `previews.<baseDomain>`.
+  host: ""
+  # -- Number of gate replicas. It is in the request path of every protected
+  # preview.
+  replicas: 2
+  # -- How long a visitor stays signed in to a preview before being sent back
+  # to the identity provider.
+  sessionTTL: 8h
+
 healthProbe:
   # -- Port the /healthz and /readyz endpoints bind to.
   port: 8081

@@ -80,6 +80,7 @@ rules:
   resources:
   - gateways
   - httproutes
+  - referencegrants
   verbs:
   - create
   - delete

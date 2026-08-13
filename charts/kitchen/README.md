@@ -200,6 +200,52 @@ connection details in `<release>-postgres` (`host`, `port`, `database`,
 Install without an identity provider — no login for the UI, no issuer for apps
 — with `--set auth.enabled=false --set postgres.enabled=false`.
 
+## Preview protection
+
+Preview URLs are gated behind platform login by default: an anonymous request
+to `shop-pr-42.<baseDomain>` lands on the identity provider and only a
+signed-in platform user reaches the application, which needs no changes and
+never sees the platform's session. The design is in
+[docs/AUTH.md](../../docs/AUTH.md#preview-protection-forward-auth).
+
+The gate is deployed by the **operator**, not by this chart — it cannot start
+before an OAuth client has been registered for it, and only the operator can
+register one. What the chart contributes is the switch, the hostname and the
+image (the gate is a second binary in the operator's image, so there is nothing
+extra to pull):
+
+```sh
+--set previewGate.enabled=true \
+--set previewGate.host=previews.apps.example.com \
+--set previewGate.sessionTTL=8h
+```
+
+`previews.<baseDomain>` needs to resolve like every other generated URL, which
+the wildcard DNS record already covers. Watch it come up:
+
+```sh
+kubectl -n kitchen-system rollout status deploy/kitchen-preview-gate
+kubectl get kitchen default -o jsonpath='{.status.conditions[?(@.type=="PreviewGateReady")].message}'
+```
+
+Protection is per project, on by default:
+
+```yaml
+spec:
+  previews:
+    protected: false     # serve this project's previews openly, on purpose
+```
+
+A project that asks for protection when the platform runs no gate gets **no
+route at all** rather than a public one — the workload deploys, the URL is
+withheld, and the Environment's `PreviewProtected` condition says why.
+
+The operator keeps the gate's OAuth client in `kitchen-preview-gate-oidc` and
+its session signing key in `kitchen-preview-gate`. Deleting the signing key
+rotates it, which signs every preview visitor out; deleting the client secret
+makes the operator register a new client on the next reconcile (the old one is
+then orphaned at the identity provider).
+
 ## Upgrade
 
 ```sh
@@ -262,7 +308,7 @@ kubectl delete namespace kitchen-system
 | `kitchen.ingress.cloudflared.enabled` | `false` | Run a cloudflared tunnel as the edge. |
 | `kitchen.ingress.cloudflared.tunnelSecretName` | `""` | Secret with the tunnel token under `token`. |
 | `kitchen.tls.mode` | `acme` | `acme`, `cloudflared` or `none`. |
-| `kitchen.auth` | from `auth.*` | The singleton's `auth` block mirrors `auth.enabled` and the resolved host. |
+| `kitchen.auth` | from `auth.*` / `previewGate.*` | The singleton's `auth` block mirrors `auth.enabled`, the resolved host, the secret the operator registers clients with, and the preview gate. |
 | `kitchen.builds.defaultStrategy` | `auto` | `auto`, `dockerfile` or `buildpacks`. |
 | `kitchen.builds.concurrency` | `2` | Builds running at once. |
 | `kitchen.observability.clickhouse.retentionDays` | `30` | Telemetry retention. |
@@ -320,6 +366,10 @@ kubectl delete namespace kitchen-system
 | `auth.route.gateway.name` / `.namespace` | `kitchen` / `kitchen-system` | Must match the operator's constants. |
 | `auth.resources` | 50m/128Mi → 512Mi | |
 | `auth.logLevel` | `info` | `debug`, `info`, `warn`, `error`. |
+| `previewGate.enabled` | `true` | Gate protected previews behind platform login. Needs `auth.enabled`. |
+| `previewGate.host` | `""` | Where logins come back to. Defaults to `previews.<baseDomain>`. |
+| `previewGate.replicas` | `2` | The gate is in the request path of every protected preview. |
+| `previewGate.sessionTTL` | `8h` | How long a visitor stays signed in to a preview. |
 | `api.port` | `8092` | Container port for the REST API. |
 | `api.service.type` / `.port` / `.annotations` | `ClusterIP` / `80` / `{}` | |
 | `api.route.enabled` | `true` | Publish the API on the shared Gateway under `/api/`. |

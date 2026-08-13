@@ -1,4 +1,4 @@
-# Build the manager binary
+# Build the manager and gate binaries
 FROM docker.io/golang:1.23 AS builder
 ARG TARGETOS
 ARG TARGETARCH
@@ -12,7 +12,7 @@ COPY go.sum go.sum
 RUN go mod download
 
 # Copy the go source
-COPY cmd/main.go cmd/main.go
+COPY cmd/ cmd/
 COPY api/ api/
 COPY internal/ internal/
 
@@ -22,12 +22,17 @@ COPY internal/ internal/
 # the docker BUILDPLATFORM arg will be linux/arm64 when for Apple x86 it will be linux/amd64. Therefore,
 # by leaving it empty we can ensure that the container and binary shipped on it will have the same platform.
 RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o manager cmd/main.go
+# The forward-auth gate protected previews are routed through. It is a
+# separate process with a separate Deployment, but the same source tree and
+# the same release, so it rides along in this image.
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o gate cmd/gate/main.go
 
 # Use distroless as minimal base image to package the manager binary
 # Refer to https://github.com/GoogleContainerTools/distroless for more details
 FROM gcr.io/distroless/static:nonroot
 WORKDIR /
 COPY --from=builder /workspace/manager .
+COPY --from=builder /workspace/gate .
 USER 65532:65532
 
 ENTRYPOINT ["/manager"]

@@ -306,6 +306,38 @@ minimum the auth service's api-key plugin accepts.
 {{- end }}
 
 {{/*
+Where the operator and the preview gate reach the identity provider from
+inside the cluster. It is the service when the chart runs one, and the public
+issuer otherwise — an external identity provider is reached the same way from
+everywhere.
+*/}}
+{{- define "kitchen.authInternalURL" -}}
+{{- if .Values.auth.enabled }}
+{{- printf "http://%s.%s.svc:%v" (include "kitchen.authFullname" .) .Release.Namespace .Values.auth.service.port }}
+{{- else }}
+{{- include "kitchen.authIssuer" . }}
+{{- end }}
+{{- end }}
+
+{{/*
+The forward-auth gate protected previews are served through. It is deployed by
+the operator, not by the chart: it cannot start before an OAuth client has
+been registered for it, and only the operator can do that. What the chart
+contributes is the switch, the hostname and the image.
+*/}}
+{{- define "kitchen.previewGateEnabled" -}}
+{{- if and .Values.auth.enabled .Values.previewGate.enabled }}true{{ end }}
+{{- end }}
+
+{{- define "kitchen.previewGateHost" -}}
+{{- if .Values.previewGate.host }}
+{{- .Values.previewGate.host }}
+{{- else if .Values.kitchen.baseDomain }}
+{{- printf "previews.%s" .Values.kitchen.baseDomain }}
+{{- end }}
+{{- end }}
+
+{{/*
 Whether there is a telemetry store to talk to at all — one the chart runs, or
 one it was pointed at. Both cases produce the same connection secret.
 */}}
@@ -400,6 +432,17 @@ does not run in.
 {{- end }}
 {{- if and .Values.auth.github.existingSecret (not .Values.auth.github.clientId) }}
 {{- fail "auth.github.existingSecret needs auth.github.clientId as well: the client id is not read from the secret." }}
+{{- end }}
+{{- end }}
+{{- if .Values.previewGate.enabled }}
+{{- if not .Values.auth.enabled }}
+{{- fail "previewGate.enabled needs auth.enabled: the gate signs visitors in against the platform's identity provider. Set previewGate.enabled=false to serve previews without one — Projects then have to set spec.previews.protected=false as well." }}
+{{- end }}
+{{- if not (include "kitchen.previewGateHost" .) }}
+{{- fail "previewGate.enabled needs a hostname: set kitchen.baseDomain or previewGate.host. It is the redirect URI every protected preview's login comes back to." }}
+{{- end }}
+{{- if lt (int .Values.previewGate.replicas) 1 }}
+{{- fail "previewGate.replicas must be at least 1: protected previews route through the gate, so none running means none reachable." }}
 {{- end }}
 {{- end }}
 {{- end }}

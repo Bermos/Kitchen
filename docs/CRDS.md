@@ -52,6 +52,12 @@ spec:
   auth:
     enabled: true                       # the platform's identity provider
     host: auth.apps.example.com         # also the OIDC issuer; defaults to auth.<baseDomain>
+    secretRef: { name: kitchen-auth }   # written by the chart; issuer + the operator's registration credential
+    previewGate:                        # forward-auth for protected previews
+      enabled: true
+      host: previews.apps.example.com   # where logins come back to; defaults to previews.<baseDomain>
+      replicas: 2
+      sessionTTL: 8h
   builds:
     defaultStrategy: auto               # auto (detect) | dockerfile | buildpacks
     concurrency: 2
@@ -60,7 +66,8 @@ spec:
       retentionDays: 30                 # TTL the operator keeps on the telemetry tables
       secretRef: { name: kitchen-clickhouse }   # written by the chart; the store's connection details
 status:
-  conditions: [...]                     # Ready, GatewayProgrammed, TunnelConnected, TelemetrySchemaReady
+  conditions: [...]                     # Ready, GatewayProgrammed, TunnelConnected,
+                                        # TelemetrySchemaReady, PreviewGateReady
   gatewayAddress: 203.0.113.7
 ```
 
@@ -111,6 +118,7 @@ spec:
     connectionRef: { name: harbor }
   previews:
     enabled: true
+    protected: true                     # gate preview URLs behind platform login (default)
     ttlAfterClosed: 1h                  # grace period before teardown
   env:                                  # env vars with per-environment-type overlay
     - name: DATABASE_URL
@@ -219,7 +227,8 @@ status:
   phase: Live                           # Pending | Deploying | Live | Degraded | Terminating
   url: https://my-shop-pr-42.apps.example.com
   observedRelease: my-shop-rel-000042
-  conditions: [...]                     # Ready, RouteProgrammed, WorkloadAvailable
+  conditions: [...]                     # Ready, RouteProgrammed, WorkloadAvailable,
+                                        # PreviewProtected (previews only)
 ```
 
 Reconcile (the heart of the operator): in the project namespace, ensure an apps/v1
@@ -228,6 +237,14 @@ the shared Cilium `Gateway` (host = generated or custom domain), and synced Secr
 Auto-promotion: a successful Build on `productionBranch` → new Release → the operator
 updates the production Environment's `releaseRef`. Preview lifecycle: PR opened →
 Environment created; PR closed/merged → deleted after `ttlAfterClosed`.
+
+A preview whose Project has `previews.protected` (the default) is routed through the
+platform's forward-auth gate instead of straight at its Service: same HTTPRoute, gate as
+the backend, and the application's address in a header the Gateway sets. Anonymous
+requests land on the platform login and only signed-in ones reach the application, which
+needs no changes — see [AUTH.md](AUTH.md). Production environments are never gated. If
+protection is asked for on a platform that runs no gate, the Environment gets **no route
+at all** rather than a public one, and says so in `PreviewProtected`.
 
 ## `Domain` (namespaced: kitchen-system)
 
