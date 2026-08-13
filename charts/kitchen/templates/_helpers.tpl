@@ -271,6 +271,41 @@ minimum the auth service's api-key plugin accepts.
 {{- end }}
 
 {{/*
+Whether there is a telemetry store to talk to at all — one the chart runs, or
+one it was pointed at. Both cases produce the same connection secret.
+*/}}
+{{- define "kitchen.hasTelemetryStore" -}}
+{{- if or .Values.clickhouse.enabled .Values.clickhouse.external.host }}true{{ end }}
+{{- end }}
+
+{{/*
+The log collector. It is only rendered when there is somewhere to ship to:
+`clickhouse.acknowledgeNoStore` is an explicit choice to install without
+telemetry, and a DaemonSet crash-looping against a store that does not exist
+is not a useful way to report that.
+*/}}
+{{- define "kitchen.logsEnabled" -}}
+{{- if and .Values.logs.enabled (eq (include "kitchen.hasTelemetryStore" .) "true") }}true{{ end }}
+{{- end }}
+
+{{- define "kitchen.logsFullname" -}}
+{{- printf "%s-logs" (include "kitchen.fullname" .) }}
+{{- end }}
+
+{{- define "kitchen.logsSelectorLabels" -}}
+app.kubernetes.io/name: {{ include "kitchen.name" . }}-logs
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end }}
+
+{{- define "kitchen.logsServiceAccountName" -}}
+{{- if .Values.logs.serviceAccount.create }}
+{{- default (include "kitchen.logsFullname" .) .Values.logs.serviceAccount.name }}
+{{- else }}
+{{- default "default" .Values.logs.serviceAccount.name }}
+{{- end }}
+{{- end }}
+
+{{/*
 Guard rails. The operator resolves the platform namespace from a compiled-in
 constant, so a chart installed elsewhere would reconcile into a namespace it
 does not run in.
@@ -302,6 +337,12 @@ does not run in.
 {{- end }}
 {{- if and (not .Values.clickhouse.enabled) (not .Values.clickhouse.external.host) (not .Values.clickhouse.acknowledgeNoStore) }}
 {{- fail "no telemetry store: enable clickhouse.enabled, set clickhouse.external.host, or set clickhouse.acknowledgeNoStore=true to install without one (logs, metrics and traces then have nowhere to land)." }}
+{{- end }}
+{{- if and .Values.logs.enabled (lt (int .Values.logs.batch.maxEvents) 1) }}
+{{- fail "logs.batch.maxEvents must be at least 1: a batch of nothing never ships." }}
+{{- end }}
+{{- if and .Values.logs.enabled (lt (int .Values.logs.buffer.maxEvents) (int .Values.logs.batch.maxEvents)) }}
+{{- fail "logs.buffer.maxEvents must be at least logs.batch.maxEvents, otherwise the collector drops events it could never batch up." }}
 {{- end }}
 {{- if and .Values.postgres.enabled .Values.postgres.external.host }}
 {{- fail "postgres.enabled and postgres.external.host are mutually exclusive: either the chart runs Postgres or it points at yours." }}

@@ -190,7 +190,15 @@ var _ = Describe("Build Controller", func() {
 			joined := strings.Join(container.Args, " ")
 			Expect(joined).To(ContainSubstring("context=https://github.com/acme/shop.git#" + sha))
 			Expect(joined).To(ContainSubstring("name=" + wantTag + ",push=true"))
+			// Plain progress keeps the build log readable once the collector
+			// has shipped it into ClickHouse.
+			Expect(joined).To(ContainSubstring("--progress plain"))
 			Expect(*job.Spec.BackoffLimit).To(Equal(int32(0)))
+			// The finished pod has to outlive the last log flush.
+			Expect(job.Spec.TTLSecondsAfterFinished).NotTo(BeNil())
+			Expect(*job.Spec.TTLSecondsAfterFinished).To(Equal(int32(buildJobTTLSeconds)))
+			Expect(job.Labels).To(HaveKeyWithValue(labelBuild, buildName))
+			Expect(job.Spec.Template.Labels).To(HaveKeyWithValue(labelProject, projectName))
 
 			synced := &corev1.Secret{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "kitchen-registry-registry", Namespace: appNS}, synced)).To(Succeed())

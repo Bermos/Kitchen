@@ -34,8 +34,8 @@ helm install kitchen oci://ghcr.io/bermos/charts/kitchen \
 ```
 
 That brings up the operator, its CRDs, the git webhook receiver, a single-node
-ClickHouse for telemetry, and the identity provider at `auth.apps.example.com`
-with its Postgres.
+ClickHouse for telemetry with the collector that fills it, and the identity
+provider at `auth.apps.example.com` with its Postgres.
 
 Then point `*.apps.example.com` at the shared Gateway:
 
@@ -84,14 +84,17 @@ The core pipeline is implemented end to end:
 → Deployment + Service + HTTPRoute on the shared Gateway, with per-PR preview
 environments and instant rollbacks by design.
 
-Reconcilers: Kitchen (shared Gateway + optional cloudflared), Project
-(webhook registration, namespace, connection validation), Build, Environment.
-The Helm chart ships the operator, its CRDs, the git webhook route, ClickHouse
-and the identity provider with its Postgres; tagged releases publish both
-images and the chart to GHCR.
+Reconcilers: Kitchen (shared Gateway, optional cloudflared, telemetry schema),
+Project (webhook registration, namespace, connection validation), Build,
+Environment. The Helm chart ships the operator, its CRDs, the git webhook
+route, ClickHouse with a Vector DaemonSet shipping container and build logs
+into it, and the identity provider with its Postgres; tagged releases publish
+both images and the chart to GHCR.
 
 The identity provider serves OIDC discovery, JWKS and dynamic client
 registration, and hands the operator a service credential to register clients
-with. Still missing: Connection/Domain/ResourceClaim reconcilers (including
-`oidcClient` claims), the collectors that fill ClickHouse, Infisical sync, the
-operator REST API and the Vue UI — none of which the chart deploys yet.
+with. Logs are queryable by project, environment and build as soon as a build
+runs or an app deploys. Still missing: Connection/Domain/ResourceClaim
+reconcilers (including `oidcClient` claims), metrics/traces/flow collection,
+Infisical sync, the operator REST API and the Vue UI — none of which the chart
+deploys yet.

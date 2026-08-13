@@ -41,7 +41,7 @@ These aren't nice-to-haves — the first three are the product.
 
 4. **Domains & DNS.** Custom domain attachment with validation, a wildcard base domain for generated URLs (`*.apps.example.com`), optionally ExternalDNS for clusters that manage their own zones.
 
-5. **Log pipeline.** ClickHouse is listed for "monitoring" but Vercel's DX depends on *logs*: live build logs and runtime log streaming/search in the UI. Collectors ship container logs + build logs into ClickHouse; operator API exposes tail/search.
+5. **Log pipeline.** ✅ Shipped for logs: a Vector DaemonSet tails every container on the node and ships the lines into ClickHouse, with `project`, `environment` and `build` lifted out of the Kitchen labels into columns, so build output and runtime logs are one query away. The operator owns the schema and its TTL (`Kitchen.spec.observability.clickhouse.retentionDays`). Metrics, traces and Hubble flow data reuse the same store and are still to come, as is the operator API's tail/search on top.
 
 6. **Auth & tenancy.** ✅ Decided and shipped as the platform IdP: the chart runs better-auth at `auth.<baseDomain>` — OIDC issuer with dynamic client registration, upstream SSO/social login, organizations, passkeys, 2FA and API keys, on its own Postgres. See [AUTH.md](AUTH.md). Teams/RBAC and app-level claims build on it.
 

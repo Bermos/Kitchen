@@ -86,6 +86,61 @@ Or install without a store at all — logs, metrics and traces then have nowhere
 to land — with `--set clickhouse.enabled=false --set
 clickhouse.acknowledgeNoStore=true`.
 
+## Logs
+
+A Vector DaemonSet tails every container log file the kubelet writes and ships
+the lines into ClickHouse. Kitchen's labels become columns, so a line can be
+traced back to what produced it:
+
+| Column | From |
+|---|---|
+| `source` | `build`, `runtime` or `platform`, derived from the labels below |
+| `project` | `kitchen.bermos.dev/project` |
+| `environment` | `kitchen.bermos.dev/environment` (production or a preview) |
+| `build` | `kitchen.bermos.dev/build` |
+| `namespace`, `pod`, `container`, `node`, `stream` | the pod that wrote the line |
+| `message` | the line |
+| `labels` | every pod label, for anything the columns miss |
+
+The table (`logs`) is created by the operator, not the chart — it is applied
+from `Kitchen.spec.observability.clickhouse`, and its TTL follows
+`retentionDays`, so changing retention in the UI or with `kubectl` is enough:
+
+```sh
+kubectl patch kitchen default --type=merge \
+  -p '{"spec":{"observability":{"clickhouse":{"retentionDays":7}}}}'
+```
+
+Watch it take: `kubectl get kitchen default -o jsonpath='{.status.conditions}'`
+carries a `TelemetrySchemaReady` condition.
+
+Ask the store what a build did:
+
+```sql
+SELECT timestamp, message FROM logs
+WHERE build = 'shop-bld-8f3a2c1d0abc' ORDER BY timestamp
+```
+
+or what an app is doing right now:
+
+```sql
+SELECT timestamp, container, message FROM logs
+WHERE project = 'shop' AND environment = 'shop-production'
+  AND timestamp > now() - INTERVAL 15 MINUTE
+ORDER BY timestamp DESC
+```
+
+Build logs outlive the pods that wrote them: the build Job keeps its finished
+pod for an hour so the collector can catch up, and the lines are in ClickHouse
+long before that.
+
+By default every pod on every node is collected, including the platform's own
+components — that is what makes the store useful when Kitchen itself
+misbehaves. Narrow it with `logs.extraLabelSelector` (for example
+`app.kubernetes.io/part-of=kitchen`) or `logs.extraFieldSelector`, or turn the
+collector off entirely with `logs.enabled=false`. With no telemetry store
+configured the collector is not rendered at all.
+
 ## Identity provider
 
 The chart runs Kitchen's identity provider at `auth.<baseDomain>` — better-auth
@@ -216,6 +271,19 @@ kubectl delete namespace kitchen-system
 | `clickhouse.extraConfig` | `{}` | Filename → XML for `config.d`, passed through `tpl`. |
 | `clickhouse.external.host` / `.httpPort` / `.nativePort` | `""` / `8123` / `9000` | Point at an existing ClickHouse. |
 | `clickhouse.acknowledgeNoStore` | `false` | Install with no telemetry store at all. |
+| `logs.enabled` | `true` | Run the Vector collector. Skipped when there is no store. |
+| `logs.image.repository` / `.tag` | `timberio/vector` / `0.57.0-alpine` | |
+| `logs.extraLabelSelector` / `.extraFieldSelector` | `""` | Narrow which pods are collected. |
+| `logs.excludePathsGlobPatterns` | `[]` | Extra log file globs to skip. |
+| `logs.globCooldownMs` | `5000` | How often the node is rescanned for new log files. |
+| `logs.batch.maxEvents` / `.timeoutSeconds` | `5000` / `5` | Insert batching; the timeout is log latency. |
+| `logs.buffer.maxEvents` | `20000` | Events held per node while the store is unreachable. |
+| `logs.serviceAccount.create` / `.name` / `.annotations` | `true` / `""` / `{}` | |
+| `logs.rbac.create` | `true` | ClusterRole to read pod/namespace/node metadata. |
+| `logs.hostLogsPath` / `.hostDataPath` | `/var/log` / `/var/lib/kitchen/logs` | Node paths for logs and read offsets. |
+| `logs.resources` | 100m/128Mi → 512Mi | |
+| `logs.tolerations` | `[{operator: Exists}]` | Collect from tainted nodes too. |
+| `logs.terminationGracePeriodSeconds` | `60` | Time to flush the buffer on shutdown. |
 | `postgres.enabled` | `true` | Run a single-node Postgres for the identity provider. |
 | `postgres.image.repository` / `.tag` | `postgres` / `17.6-alpine` | |
 | `postgres.auth.database` / `.username` | `kitchen_auth` / `kitchen` | Created on first start. |

@@ -64,6 +64,15 @@ type ClickHouseSpec struct {
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:default=30
 	RetentionDays int32 `json:"retentionDays,omitempty"`
+
+	// SecretRef names the Secret in the platform namespace holding the
+	// connection details for the store: the keys host, httpPort, database,
+	// username and password. The chart writes it as
+	// <release>-clickhouse, whether it runs ClickHouse itself or points at
+	// an external one. Without it the operator manages no telemetry schema
+	// and the collectors have nowhere to ship to.
+	// +optional
+	SecretRef *LocalObjectReference `json:"secretRef,omitempty"`
 }
 
 // ObservabilitySpec configures the telemetry pipeline.

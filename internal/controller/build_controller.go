@@ -46,6 +46,13 @@ const (
 	// BuildkitImage runs the in-cluster builds.
 	BuildkitImage = "moby/buildkit:v0.23.2-rootless"
 
+	// buildJobTTLSeconds is how long a finished build Job (and its pod)
+	// sticks around. It is a collection window, not a retention policy:
+	// the collector tails the pod's log file, so the pod has to outlive
+	// the last flush. An hour is far past the seconds it actually takes
+	// and still keeps finished jobs from piling up in the namespace.
+	buildJobTTLSeconds = 3600
+
 	defaultBuildConcurrency = 2
 )
 
@@ -224,6 +231,10 @@ func (r *BuildReconciler) createJob(
 		// to the termination log so the reconciler can read it from the
 		// pod status without any extra plumbing.
 		"--metadata-file", "/dev/termination-log",
+		// One log line per step, no cursor tricks: the collector ships
+		// these lines into ClickHouse, and the interactive renderer would
+		// arrive there as a wall of escape codes.
+		"--progress", "plain",
 	}
 
 	labels := map[string]string{
@@ -238,6 +249,11 @@ func (r *BuildReconciler) createJob(
 		Spec: batchv1.JobSpec{
 			// A rebuild is a new Build object, never a pod retry.
 			BackoffLimit: ptr.To(int32(0)),
+			// Keep the finished pod around long enough for the log
+			// collector to catch up with its output — the build log only
+			// exists on disk while the pod does — then let the cluster
+			// reclaim it. The logs themselves live on in ClickHouse.
+			TTLSecondsAfterFinished: ptr.To(int32(buildJobTTLSeconds)),
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: labels,

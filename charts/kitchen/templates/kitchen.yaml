@@ -48,4 +48,10 @@ spec:
   observability:
     clickhouse:
       retentionDays: {{ int .Values.kitchen.observability.clickhouse.retentionDays }}
+      {{- if eq (include "kitchen.hasTelemetryStore" .) "true" }}
+      # The operator applies the telemetry schema and its retention through
+      # this secret. Without it there is no store, and it manages none.
+      secretRef:
+        name: {{ include "kitchen.clickhouseSecretName" . }}
+      {{- end }}
 {{- end }}

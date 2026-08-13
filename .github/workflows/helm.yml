@@ -61,6 +61,10 @@ jobs:
                  --set clickhouse.auth.password=hunter2
           render --set kitchen.baseDomain=apps.example.com \
                  --set clickhouse.enabled=false --set clickhouse.acknowledgeNoStore=true
+          render --set kitchen.baseDomain=apps.example.com --set logs.enabled=false
+          render --set kitchen.baseDomain=apps.example.com \
+                 --set logs.extraLabelSelector=app.kubernetes.io/part-of=kitchen \
+                 --set logs.extraFieldSelector=metadata.namespace!=kube-system
           render --set kitchen.baseDomain=apps.example.com \
                  --set auth.enabled=false --set postgres.enabled=false
           render --set kitchen.baseDomain=apps.example.com \
@@ -77,6 +81,25 @@ jobs:
                  --set postgres.enabled=false \
                  --set postgres.external.host=postgres.databases.svc \
                  --set postgres.auth.password=hunter2
+
+      - name: Check the collector is only rendered with somewhere to ship to
+        run: |
+          set -euo pipefail
+          collector() {
+            helm template kitchen charts/kitchen --namespace kitchen-system "$@" \
+              | grep -c 'kind: DaemonSet' || true
+          }
+          [ "$(collector --set kitchen.baseDomain=apps.example.com)" = 1 ] || {
+            echo "::error::the log collector should be installed by default"
+            exit 1
+          }
+          # Acknowledging no telemetry store must not leave a DaemonSet
+          # crash-looping against a ClickHouse that was never installed.
+          [ "$(collector --set kitchen.baseDomain=apps.example.com \
+                 --set clickhouse.enabled=false --set clickhouse.acknowledgeNoStore=true)" = 0 ] || {
+            echo "::error::the log collector was rendered without a telemetry store"
+            exit 1
+          }
 
       - name: Reject unsupported value combinations
         run: |
@@ -106,6 +129,9 @@ jobs:
           # No telemetry store at all, unacknowledged.
           expect_failure kitchen-system --set kitchen.baseDomain=apps.example.com \
             --set clickhouse.enabled=false
+          # A collector buffer too small to hold a single batch.
+          expect_failure kitchen-system --set kitchen.baseDomain=apps.example.com \
+            --set logs.batch.maxEvents=5000 --set logs.buffer.maxEvents=100
           # The identity provider without a database to keep accounts in.
           expect_failure kitchen-system --set kitchen.baseDomain=apps.example.com \
             --set postgres.enabled=false
@@ -179,9 +205,11 @@ jobs:
           }
           clickhouse_image=$(template templates/clickhouse/statefulset.yaml)
           postgres_image=$(template templates/postgres/statefulset.yaml)
+          collector_image=$(template templates/logs/daemonset.yaml)
           echo "ClickHouse image: ${clickhouse_image}"
           echo "Postgres image: ${postgres_image}"
-          for image in "${clickhouse_image}" "${postgres_image}" "${PROBE_IMAGE}"; do
+          echo "Collector image: ${collector_image}"
+          for image in "${clickhouse_image}" "${postgres_image}" "${collector_image}" "${PROBE_IMAGE}"; do
             for i in 1 2 3; do
               docker pull "${image}" && break
               [ "$i" = 3 ] && exit 1
@@ -334,6 +362,65 @@ jobs:
             echo "::error::the identity provider did not serve a usable OIDC issuer"
             exit 1
           }
+
+      - name: Verify the log pipeline
+        run: |
+          set -euo pipefail
+          password=$(kubectl -n kitchen-system get secret kitchen-clickhouse \
+            -o jsonpath='{.data.password}' | base64 -d)
+          ch() {
+            kubectl -n kitchen-system exec sts/kitchen-clickhouse -- \
+              clickhouse-client --user kitchen --password "${password}" \
+              --database kitchen --query "$1"
+          }
+
+          kubectl -n kitchen-system rollout status ds/kitchen-logs --timeout=5m
+
+          # The operator applies the schema from the Kitchen object, so the
+          # table carries the chart's default retention.
+          engine=$(ch "SELECT engine_full FROM system.tables WHERE database = 'kitchen' AND name = 'logs'")
+          echo "logs engine: ${engine}"
+          case "${engine}" in
+            *"toIntervalDay(30)"*) ;;
+            *) echo "::error::the logs table is missing the 30 day TTL"; exit 1 ;;
+          esac
+
+          # The whole point: lines written by a pod turn up in the store,
+          # labelled with what produced them. The operator is the pod that is
+          # certain to be running and logging here.
+          collected=0
+          for _ in $(seq 60); do
+            collected=$(ch "SELECT count() FROM logs WHERE namespace = 'kitchen-system' AND source = 'platform' AND container = 'manager'")
+            [ "${collected}" -gt 0 ] && break
+            sleep 5
+          done
+          [ "${collected}" -gt 0 ] || {
+            echo "::error::no operator logs reached ClickHouse"
+            kubectl -n kitchen-system logs ds/kitchen-logs --tail=100
+            ch "SELECT count() FROM logs" || true
+            exit 1
+          }
+          echo "collected ${collected} operator log lines"
+
+          # Retention is runtime configuration: changing it on the Kitchen
+          # object has to reach the table.
+          kubectl patch kitchen default --type=merge \
+            -p '{"spec":{"observability":{"clickhouse":{"retentionDays":7}}}}'
+          for _ in $(seq 30); do
+            engine=$(ch "SELECT engine_full FROM system.tables WHERE database = 'kitchen' AND name = 'logs'")
+            case "${engine}" in *"toIntervalDay(7)"*) break ;; esac
+            sleep 5
+          done
+          case "${engine}" in
+            *"toIntervalDay(7)"*) ;;
+            *)
+              echo "::error::the retention change did not reach the logs table: ${engine}"
+              kubectl get kitchen default -o jsonpath='{.status.conditions}'
+              exit 1
+              ;;
+          esac
+          kubectl patch kitchen default --type=merge \
+            -p '{"spec":{"observability":{"clickhouse":{"retentionDays":30}}}}'
 
       - name: Upgrade the release
         run: |

@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -36,6 +37,7 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/clickhouse"
 )
 
 const (
@@ -54,6 +56,11 @@ const (
 
 	condGatewayProgrammed = "GatewayProgrammed"
 	condTunnelConnected   = "TunnelConnected"
+	condTelemetrySchema   = "TelemetrySchemaReady"
+
+	// defaultRetentionDays matches the CRD default, for Kitchen objects
+	// written before the field existed.
+	defaultRetentionDays = 30
 
 	labelComponentKey = "app.kubernetes.io/name"
 )
@@ -72,6 +79,7 @@ type KitchenReconciler struct {
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;create
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 
 // Reconcile drives the platform's shared infrastructure.
 func (r *KitchenReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -110,17 +118,63 @@ func (r *KitchenReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 	r.reconcileCloudflared(ctx, kitchen, setCond)
 
+	schemaReady := r.reconcileTelemetrySchema(ctx, kitchen, setCond)
 	programmed := r.observeGateway(ctx, kitchen, setCond)
 	setCond(condReady, metav1.ConditionTrue, "Reconciled", "platform infrastructure is in place")
 
 	if err := r.Status().Update(ctx, kitchen); err != nil {
 		return ctrl.Result{}, err
 	}
-	log.Info("reconciled kitchen", "gatewayProgrammed", programmed)
-	if !programmed {
+	log.Info("reconciled kitchen", "gatewayProgrammed", programmed, "telemetrySchemaReady", schemaReady)
+	if !programmed || !schemaReady {
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 	return ctrl.Result{}, nil
+}
+
+// reconcileTelemetrySchema creates the telemetry tables in ClickHouse and
+// keeps their TTL in step with spec.observability.clickhouse.retentionDays.
+// The store is where the collectors ship to and where the operator API reads
+// logs from, but nothing in the request path depends on it, so a store that
+// is still starting up (or gone) surfaces as a condition and a retry rather
+// than a failed reconcile.
+func (r *KitchenReconciler) reconcileTelemetrySchema(
+	ctx context.Context,
+	kitchen *kitchenv1alpha1.Kitchen,
+	setCond func(string, metav1.ConditionStatus, string, string),
+) bool {
+	ref := kitchen.Spec.Observability.ClickHouse.SecretRef
+	if ref == nil {
+		// Installed without a telemetry store. Nothing to manage, and
+		// nothing to complain about on every reconcile.
+		meta.RemoveStatusCondition(&kitchen.Status.Conditions, condTelemetrySchema)
+		return true
+	}
+
+	secret := &corev1.Secret{}
+	key := types.NamespacedName{Namespace: PlatformNamespace, Name: ref.Name}
+	if err := r.Get(ctx, key, secret); err != nil {
+		setCond(condTelemetrySchema, metav1.ConditionFalse, "ConnectionSecretMissing", err.Error())
+		return false
+	}
+	cfg, err := clickhouse.ConfigFromSecret(secret)
+	if err != nil {
+		setCond(condTelemetrySchema, metav1.ConditionFalse, "ConnectionSecretInvalid", err.Error())
+		return false
+	}
+
+	retention := kitchen.Spec.Observability.ClickHouse.RetentionDays
+	if retention < 1 {
+		retention = defaultRetentionDays
+	}
+	if err := clickhouse.New(cfg).EnsureLogsSchema(ctx, retention); err != nil {
+		setCond(condTelemetrySchema, metav1.ConditionFalse, "SchemaNotApplied", err.Error())
+		return false
+	}
+
+	setCond(condTelemetrySchema, metav1.ConditionTrue, "SchemaApplied",
+		fmt.Sprintf("telemetry schema is in place, retaining %d days", retention))
+	return true
 }
 
 func (r *KitchenReconciler) ensurePlatformNamespace(ctx context.Context) error {

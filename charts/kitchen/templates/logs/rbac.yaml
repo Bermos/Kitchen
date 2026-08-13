@@ -1,0 +1,55 @@
+{{- if eq (include "kitchen.logsEnabled" .) "true" }}
+{{- if .Values.logs.serviceAccount.create }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "kitchen.logsServiceAccountName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kitchen.labels" . | nindent 4 }}
+    app.kubernetes.io/component: logs
+  {{- with .Values.logs.serviceAccount.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}
+{{- if .Values.logs.rbac.create }}
+---
+# The collector enriches every log line with the metadata of the pod that
+# produced it, which it can only do by watching pods, namespaces and nodes
+# cluster-wide. It never reads anything else.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "kitchen.logsFullname" . }}
+  labels:
+    {{- include "kitchen.labels" . | nindent 4 }}
+    app.kubernetes.io/component: logs
+rules:
+  - apiGroups: [""]
+    resources:
+      - pods
+      - namespaces
+      - nodes
+    verbs:
+      - get
+      - list
+      - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "kitchen.logsFullname" . }}
+  labels:
+    {{- include "kitchen.labels" . | nindent 4 }}
+    app.kubernetes.io/component: logs
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "kitchen.logsFullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "kitchen.logsServiceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
+{{- end }}

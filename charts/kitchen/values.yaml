@@ -207,6 +207,74 @@ clickhouse:
   # clickhouse.enabled=false and no external host.
   acknowledgeNoStore: false
 
+# The log pipeline: a Vector DaemonSet tailing every container log file the
+# kubelet writes and shipping the lines into ClickHouse. Kitchen's labels
+# (`kitchen.bermos.dev/project`, `/environment`, `/build`) become columns, so
+# the operator API and the UI can ask for one project's runtime logs or one
+# build's output. Nothing is rendered when there is no store to ship to.
+logs:
+  # -- Collect container logs.
+  enabled: true
+  image:
+    repository: timberio/vector
+    tag: 0.57.0-alpine
+    pullPolicy: IfNotPresent
+  # -- Collect only from pods matching this label selector, e.g.
+  # `app.kubernetes.io/part-of=kitchen`. Empty collects every pod on the node,
+  # which is what makes cluster-wide troubleshooting possible.
+  extraLabelSelector: ""
+  # -- Collect only from pods matching this field selector, e.g.
+  # `metadata.namespace!=kube-system`.
+  extraFieldSelector: ""
+  # -- Extra log file globs to skip, on top of the collector's own output.
+  excludePathsGlobPatterns: []
+  # -- How often the node is rescanned for new log files. Builds and preview
+  # deployments are short-lived, so this is far below Vector's own default.
+  globCooldownMs: 5000
+  batch:
+    maxEvents: 5000
+    # -- How long a partial batch waits before it ships. Build logs are
+    # watched live, so this is latency, not throughput.
+    timeoutSeconds: 5
+  buffer:
+    # -- In-memory events held per node while the store is unreachable.
+    # Beyond this the newest lines are dropped rather than stalling
+    # collection.
+    maxEvents: 20000
+  serviceAccount:
+    create: true
+    # -- Name of the collector's service account. Generated when empty.
+    name: ""
+    annotations: {}
+  rbac:
+    # -- Create the ClusterRole/Binding letting the collector read pod,
+    # namespace and node metadata for enrichment.
+    create: true
+  # -- Where the kubelet writes container logs on the node.
+  hostLogsPath: /var/log
+  # -- Where the collector keeps its read offsets, so a restart resumes
+  # instead of re-shipping.
+  hostDataPath: /var/lib/kitchen/logs
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+  # -- Run on every node, including tainted ones: a control-plane node's logs
+  # are exactly the ones wanted when the platform itself misbehaves.
+  tolerations:
+    - operator: Exists
+  # -- Time Vector gets to flush its buffer on shutdown.
+  terminationGracePeriodSeconds: 60
+  # -- Extra environment variables for the collector, interpolatable into the
+  # Vector configuration as `${NAME}`.
+  extraEnv: []
+  podAnnotations: {}
+  nodeSelector: {}
+  affinity: {}
+  priorityClassName: ""
+
 # Postgres: the auth service's system of record — accounts, sessions, OAuth
 # clients and consents. Platform-critical OLTP, which is why it is Postgres and
 # not ClickHouse or CRDs. Connection details always land in the secret
