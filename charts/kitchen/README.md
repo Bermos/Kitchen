@@ -221,11 +221,15 @@ extra to pull):
 ```
 
 `previews.<baseDomain>` needs to resolve like every other generated URL, which
-the wildcard DNS record already covers. Watch it come up:
+the wildcard DNS record already covers.
+
+The gate appears a reconcile after the identity provider starts answering, not
+with the rest of the release — `helm install --wait` cannot wait for something
+the operator has not created yet — so the condition is the thing to watch:
 
 ```sh
-kubectl -n kitchen-system rollout status deploy/kitchen-preview-gate
 kubectl get kitchen default -o jsonpath='{.status.conditions[?(@.type=="PreviewGateReady")].message}'
+kubectl -n kitchen-system rollout status deploy/kitchen-preview-gate
 ```
 
 Protection is per project, on by default:

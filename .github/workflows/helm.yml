@@ -429,9 +429,17 @@ jobs:
           # The gate is deployed by the operator, not by the chart, so
           # `helm install --wait` did not wait for it: it only exists once an
           # OAuth client has been registered for it at the identity provider.
+          # The first reconcile can land before the identity provider accepts
+          # connections — the operator then retries every 30 seconds — so wait
+          # for the Deployment to appear rather than asking about one that is
+          # not there yet, which `rollout status` refuses immediately.
+          for _ in $(seq 60); do
+            kubectl -n kitchen-system get deploy kitchen-preview-gate >/dev/null 2>&1 && break
+            sleep 5
+          done
           kubectl -n kitchen-system rollout status deploy/kitchen-preview-gate --timeout=5m || {
             kubectl get kitchen default -o jsonpath='{.status.conditions}'
-            kubectl -n kitchen-system describe deploy kitchen-preview-gate
+            kubectl -n kitchen-system describe deploy kitchen-preview-gate || true
             kubectl -n kitchen-system logs -l control-plane=controller-manager --tail=100
             exit 1
           }

@@ -91,10 +91,11 @@ Set auth.github.clientId/clientSecret with the callback URL
 {{- if (include "kitchen.previewGateEnabled" .) }}
 
 Preview URLs are gated behind that login. The operator registers an OAuth client
-and runs the gate at {{ include "kitchen.previewGateHost" . }}:
+and runs the gate at {{ include "kitchen.previewGateHost" . }} — it appears a reconcile after the
+identity provider starts answering, not with the rest of the release:
 
-  kubectl -n {{ .Release.Namespace }} rollout status deploy/kitchen-preview-gate
   kubectl get kitchen default -o jsonpath='{.status.conditions[?(@.type=="PreviewGateReady")].message}'
+  kubectl -n {{ .Release.Namespace }} rollout status deploy/kitchen-preview-gate
 
 Point {{ include "kitchen.previewGateHost" . }} at the Gateway as well — the wildcard record covers it.
 Projects opt out one at a time with spec.previews.protected=false; a project that
