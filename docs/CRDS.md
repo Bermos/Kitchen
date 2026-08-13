@@ -40,6 +40,8 @@ metadata:
   name: default
 spec:
   baseDomain: apps.example.com          # generated URLs: <slug>.apps.example.com
+  api:
+    externalURL: https://kitchen.apps.example.com   # operator API + webhook receiver; defaults to kitchen.<baseDomain>
   ingress:
     gatewayClassName: cilium
     cloudflared:
@@ -123,8 +125,10 @@ status:
   latestBuildRef: { name: my-shop-bld-8f3a2c1 }
 ```
 
-Reconcile: ensure per-project namespace, register the git webhook via the Connection,
-create the production Environment.
+Reconcile: ensure per-project namespace, register the git webhook via the Connection
+(signing secret generated per project), validate that the referenced Connections carry
+the required capabilities. The production Environment is created by the first
+production-branch Build — an Environment cannot exist before there is a Release to run.
 
 ## `Build` (namespaced: kitchen-system)
 

@@ -52,6 +52,16 @@ spec:
               Kitchen object per cluster; it is the operator's runtime configuration and
               is editable from the management UI.
             properties:
+              api:
+                description: APISpec configures how the operator's API is exposed.
+                properties:
+                  externalURL:
+                    description: |-
+                      ExternalURL is the base URL the operator API (including the git
+                      webhook receiver) is reachable at from outside the cluster.
+                      Defaults to https://kitchen.<baseDomain>.
+                    type: string
+                type: object
               baseDomain:
                 description: |-
                   Base domain for generated URLs: <slug>.<baseDomain>. Requires wildcard
