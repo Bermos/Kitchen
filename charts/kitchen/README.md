@@ -24,10 +24,16 @@ The operator resolves its platform namespace from a compiled-in constant, so
 the chart must be installed into `kitchen-system`:
 
 ```sh
-helm install kitchen ./charts/kitchen \
+helm install kitchen oci://ghcr.io/bermos/charts/kitchen \
   --namespace kitchen-system --create-namespace \
   --set kitchen.baseDomain=apps.example.com
 ```
+
+Releases are published to GHCR by `.github/workflows/publish.yml` when a `v*`
+tag is pushed: the multi-arch operator image as `ghcr.io/bermos/kitchen`, and
+the chart as `oci://ghcr.io/bermos/charts/kitchen` with matching version and
+appVersion. Use `./charts/kitchen` in place of the OCI reference to install
+from a checkout.
 
 Then point `*.apps.example.com` at the Gateway:
 
@@ -47,6 +53,37 @@ helm install kitchen ./charts/kitchen \
   --set kitchen.ingress.cloudflared.enabled=true \
   --set kitchen.ingress.cloudflared.tunnelSecretName=kitchen-tunnel
 ```
+
+## Telemetry store
+
+The chart runs a single-node ClickHouse — the store for logs, metrics, traces,
+build logs and Hubble flow data. It is not the system of record; the CRDs are.
+
+Connection details always land in the secret `<release>-clickhouse` (`host`,
+`httpPort`, `nativePort`, `database`, `username`, `password`, `dsn`), whether
+ClickHouse runs here or elsewhere, so the collectors have one place to look.
+
+The password is generated on install and read back from the cluster on upgrade,
+so it stays stable. Two consequences worth knowing:
+
+- `helm template` can't read the existing secret, so rendering offline invents
+  a fresh password every time. Set `clickhouse.auth.password` if you render
+  manifests instead of installing.
+- The bundled `default` user is dropped at startup, because
+  `clickhouse.auth.username` is not `default`. Don't set it back to `default`
+  unless you want a passwordless superuser on the network.
+
+Point at an existing ClickHouse instead:
+
+```sh
+--set clickhouse.enabled=false \
+--set clickhouse.external.host=clickhouse.telemetry.svc \
+--set clickhouse.auth.password=<password>
+```
+
+Or install without a store at all — logs, metrics and traces then have nowhere
+to land — with `--set clickhouse.enabled=false --set
+clickhouse.acknowledgeNoStore=true`.
 
 ## Upgrade
 
@@ -113,6 +150,17 @@ kubectl delete namespace kitchen-system
 | `kitchen.builds.defaultStrategy` | `auto` | `auto`, `dockerfile` or `buildpacks`. |
 | `kitchen.builds.concurrency` | `2` | Builds running at once. |
 | `kitchen.observability.clickhouse.retentionDays` | `30` | Telemetry retention. |
+| `clickhouse.enabled` | `true` | Run a single-node ClickHouse in the release. |
+| `clickhouse.image.repository` / `.tag` | `clickhouse/clickhouse-server` / `26.3.17.110-alpine` | Current LTS line. |
+| `clickhouse.auth.database` / `.username` | `kitchen` / `kitchen` | Created on first start. |
+| `clickhouse.auth.password` | `""` | Generated on install, preserved on upgrade. |
+| `clickhouse.service.type` / `.httpPort` / `.nativePort` | `ClusterIP` / `8123` / `9000` | |
+| `clickhouse.persistence.enabled` | `true` | PVC for the data directory. |
+| `clickhouse.persistence.size` / `.storageClass` / `.accessModes` | `20Gi` / cluster default / `[ReadWriteOnce]` | |
+| `clickhouse.resources` | 200m/1Gi → 4Gi | |
+| `clickhouse.extraConfig` | `{}` | Filename → XML for `config.d`, passed through `tpl`. |
+| `clickhouse.external.host` / `.httpPort` / `.nativePort` | `""` / `8123` / `9000` | Point at an existing ClickHouse. |
+| `clickhouse.acknowledgeNoStore` | `false` | Install with no telemetry store at all. |
 | `webhookReceiver.port` | `8090` | Container port for the receiver. |
 | `webhookReceiver.service.type` / `.port` / `.annotations` | `ClusterIP` / `80` / `{}` | |
 | `webhookReceiver.route.enabled` | `true` | Publish the receiver on the shared Gateway. |

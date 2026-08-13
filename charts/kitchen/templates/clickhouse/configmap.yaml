@@ -1,0 +1,17 @@
+{{- if and .Values.clickhouse.enabled .Values.clickhouse.extraConfig }}
+# Dropped into /etc/clickhouse-server/config.d, where ClickHouse merges every
+# file over its bundled defaults.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "kitchen.clickhouseFullname" . }}-config
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kitchen.labels" . | nindent 4 }}
+    app.kubernetes.io/component: clickhouse
+data:
+  {{- range $filename, $content := .Values.clickhouse.extraConfig }}
+  {{ $filename }}: |
+    {{- tpl $content $ | nindent 4 }}
+  {{- end }}
+{{- end }}

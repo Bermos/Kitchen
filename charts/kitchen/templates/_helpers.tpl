@@ -91,6 +91,66 @@ Hostname the git webhook receiver is published under.
 {{- end }}
 
 {{/*
+ClickHouse: names, selector labels and connection details. The same secret
+shape is produced whether the chart runs ClickHouse or points at an external
+one, so consumers never have to care which.
+*/}}
+{{- define "kitchen.clickhouseFullname" -}}
+{{- printf "%s-clickhouse" (include "kitchen.fullname" .) }}
+{{- end }}
+
+{{- define "kitchen.clickhouseSecretName" -}}
+{{- printf "%s-clickhouse" (include "kitchen.fullname" .) }}
+{{- end }}
+
+{{- define "kitchen.clickhouseSelectorLabels" -}}
+app.kubernetes.io/name: {{ include "kitchen.name" . }}-clickhouse
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end }}
+
+{{- define "kitchen.clickhouseHost" -}}
+{{- if .Values.clickhouse.enabled }}
+{{- printf "%s.%s.svc" (include "kitchen.clickhouseFullname" .) .Release.Namespace }}
+{{- else }}
+{{- .Values.clickhouse.external.host }}
+{{- end }}
+{{- end }}
+
+{{- define "kitchen.clickhouseHTTPPort" -}}
+{{- if .Values.clickhouse.enabled }}
+{{- .Values.clickhouse.service.httpPort }}
+{{- else }}
+{{- .Values.clickhouse.external.httpPort }}
+{{- end }}
+{{- end }}
+
+{{- define "kitchen.clickhouseNativePort" -}}
+{{- if .Values.clickhouse.enabled }}
+{{- .Values.clickhouse.service.nativePort }}
+{{- else }}
+{{- .Values.clickhouse.external.nativePort }}
+{{- end }}
+{{- end }}
+
+{{/*
+The password: explicit if given, otherwise the one already in the cluster, and
+only generated when there is neither. Regenerating it on every upgrade would
+lock the collectors out of their own store.
+*/}}
+{{- define "kitchen.clickhousePassword" -}}
+{{- if .Values.clickhouse.auth.password }}
+{{- .Values.clickhouse.auth.password }}
+{{- else }}
+{{- $existing := lookup "v1" "Secret" .Release.Namespace (include "kitchen.clickhouseSecretName" .) }}
+{{- if and $existing $existing.data (index (default dict $existing.data) "password") }}
+{{- index $existing.data "password" | b64dec }}
+{{- else }}
+{{- randAlphaNum 32 }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{/*
 Guard rails. The operator resolves the platform namespace from a compiled-in
 constant, so a chart installed elsewhere would reconcile into a namespace it
 does not run in.
@@ -113,5 +173,14 @@ does not run in.
 {{- end }}
 {{- if and (gt (int .Values.replicaCount) 1) (not .Values.leaderElection) }}
 {{- fail "leaderElection must stay enabled when replicaCount > 1, otherwise every replica reconciles concurrently." }}
+{{- end }}
+{{- if and .Values.clickhouse.enabled .Values.clickhouse.external.host }}
+{{- fail "clickhouse.enabled and clickhouse.external.host are mutually exclusive: either the chart runs ClickHouse or it points at yours." }}
+{{- end }}
+{{- if and .Values.clickhouse.external.host (not .Values.clickhouse.auth.password) }}
+{{- fail "clickhouse.auth.password is required with an external ClickHouse: the chart would otherwise hand the collectors a password it invented." }}
+{{- end }}
+{{- if and (not .Values.clickhouse.enabled) (not .Values.clickhouse.external.host) (not .Values.clickhouse.acknowledgeNoStore) }}
+{{- fail "no telemetry store: enable clickhouse.enabled, set clickhouse.external.host, or set clickhouse.acknowledgeNoStore=true to install without one (logs, metrics and traces then have nowhere to land)." }}
 {{- end }}
 {{- end }}

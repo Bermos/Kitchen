@@ -1,0 +1,51 @@
+{{- if .Values.clickhouse.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "kitchen.clickhouseFullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kitchen.labels" . | nindent 4 }}
+    app.kubernetes.io/component: clickhouse
+  {{- with .Values.clickhouse.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.clickhouse.service.type }}
+  selector:
+    {{- include "kitchen.clickhouseSelectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.clickhouse.service.httpPort }}
+      targetPort: http
+      protocol: TCP
+    - name: native
+      port: {{ .Values.clickhouse.service.nativePort }}
+      targetPort: native
+      protocol: TCP
+---
+# Governing service for the StatefulSet: stable per-pod DNS.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "kitchen.clickhouseFullname" . }}-headless
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kitchen.labels" . | nindent 4 }}
+    app.kubernetes.io/component: clickhouse
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    {{- include "kitchen.clickhouseSelectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.clickhouse.service.httpPort }}
+      targetPort: http
+      protocol: TCP
+    - name: native
+      port: {{ .Values.clickhouse.service.nativePort }}
+      targetPort: native
+      protocol: TCP
+{{- end }}

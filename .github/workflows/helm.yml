@@ -47,6 +47,15 @@ jobs:
                  --set kitchen.ingress.cloudflared.enabled=true \
                  --set kitchen.ingress.cloudflared.tunnelSecretName=kitchen-tunnel
           render --set kitchen.create=false --set webhookReceiver.route.enabled=false
+          render --set kitchen.baseDomain=apps.example.com \
+                 --set clickhouse.persistence.enabled=false \
+                 --set clickhouse.extraConfig.logger\\.xml='<clickhouse><logger><level>debug</level></logger></clickhouse>'
+          render --set kitchen.baseDomain=apps.example.com \
+                 --set clickhouse.enabled=false \
+                 --set clickhouse.external.host=clickhouse.telemetry.svc \
+                 --set clickhouse.auth.password=hunter2
+          render --set kitchen.baseDomain=apps.example.com \
+                 --set clickhouse.enabled=false --set clickhouse.acknowledgeNoStore=true
 
       - name: Reject unsupported value combinations
         run: |
@@ -67,6 +76,15 @@ jobs:
           # Multiple replicas without leader election.
           expect_failure kitchen-system --set kitchen.baseDomain=apps.example.com \
             --set replicaCount=3 --set leaderElection=false
+          # Both a bundled and an external ClickHouse.
+          expect_failure kitchen-system --set kitchen.baseDomain=apps.example.com \
+            --set clickhouse.external.host=clickhouse.telemetry.svc
+          # External ClickHouse without a password.
+          expect_failure kitchen-system --set kitchen.baseDomain=apps.example.com \
+            --set clickhouse.enabled=false --set clickhouse.external.host=clickhouse.telemetry.svc
+          # No telemetry store at all, unacknowledged.
+          expect_failure kitchen-system --set kitchen.baseDomain=apps.example.com \
+            --set clickhouse.enabled=false
 
   install:
     name: Install on kind
@@ -75,13 +93,11 @@ jobs:
       - name: Clone the code
         uses: actions/checkout@v4
 
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-
       - name: Install Helm
         uses: azure/setup-helm@v4
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
 
       - name: Install the latest version of kind
         run: |
@@ -92,10 +108,34 @@ jobs:
       - name: Create kind cluster
         run: kind create cluster
 
-      - name: Build and load the operator image
+      # Layer-cached across runs, so `go mod download` only pays the network
+      # cost when go.mod or go.sum actually change.
+      - name: Build the operator image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: kitchen:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Load the images into kind
         run: |
-          make docker-build IMG=kitchen:ci
+          set -euo pipefail
           kind load docker-image kitchen:ci
+          # Pull ClickHouse on the runner, where a failed pull can be retried,
+          # rather than inside the node where it surfaces as ImagePullBackOff.
+          clickhouse_image=$(helm template kitchen charts/kitchen \
+            --namespace kitchen-system --set kitchen.baseDomain=apps.example.com \
+            -s templates/clickhouse/statefulset.yaml \
+            | awk '$1 == "image:" { print $2; exit }')
+          echo "ClickHouse image: ${clickhouse_image}"
+          for i in 1 2 3; do
+            docker pull "${clickhouse_image}" && break
+            [ "$i" = 3 ] && exit 1
+            sleep $((i * 15))
+          done
+          kind load docker-image "${clickhouse_image}"
 
       - name: Install the Gateway API CRDs
         run: |
@@ -110,10 +150,12 @@ jobs:
             --namespace kitchen-system --create-namespace \
             --set image.repository=kitchen --set image.tag=ci \
             --set kitchen.baseDomain=apps.example.com \
-            --wait --timeout 5m || {
+            --wait --timeout 8m || {
               kubectl -n kitchen-system get pods -o wide
               kubectl -n kitchen-system describe deploy kitchen-controller-manager
+              kubectl -n kitchen-system describe sts kitchen-clickhouse
               kubectl -n kitchen-system logs -l control-plane=controller-manager --tail=100
+              kubectl -n kitchen-system logs sts/kitchen-clickhouse --tail=100 || true
               exit 1
             }
 
@@ -138,19 +180,44 @@ jobs:
             -H 'X-GitHub-Event: ping' \
             http://kitchen-git-webhook.kitchen-system.svc/webhooks/git/none | grep -qx 200
 
+      - name: Verify the telemetry store
+        run: |
+          set -euo pipefail
+          password=$(kubectl -n kitchen-system get secret kitchen-clickhouse \
+            -o jsonpath='{.data.password}' | base64 -d)
+          # The credentials in the secret are the ones ClickHouse actually took.
+          kubectl -n kitchen-system exec sts/kitchen-clickhouse -- \
+            clickhouse-client --user kitchen --password "${password}" \
+            --database kitchen --query 'SELECT 1' | grep -qx 1
+          # The image's passwordless `default` user must be gone.
+          if kubectl -n kitchen-system exec sts/kitchen-clickhouse -- \
+            clickhouse-client --user default --query 'SELECT 1' >/dev/null 2>&1; then
+            echo "::error::the default ClickHouse user still accepts passwordless logins"
+            exit 1
+          fi
+
       - name: Upgrade the release
         run: |
           set -euo pipefail
+          before=$(kubectl -n kitchen-system get secret kitchen-clickhouse \
+            -o jsonpath='{.data.password}')
           helm upgrade kitchen charts/kitchen \
             --namespace kitchen-system \
             --set image.repository=kitchen --set image.tag=ci \
             --set kitchen.baseDomain=apps.example.com \
             --set replicaCount=2 \
-            --wait --timeout 5m
+            --wait --timeout 8m
           kubectl -n kitchen-system get deploy kitchen-controller-manager \
             -o jsonpath='{.spec.replicas}' | grep -qx 2
           # The singleton is left alone by upgrades unless applyOnUpgrade is set.
           kubectl get kitchen default
+          # A regenerated password would lock the collectors out of the store.
+          after=$(kubectl -n kitchen-system get secret kitchen-clickhouse \
+            -o jsonpath='{.data.password}')
+          [ "${before}" = "${after}" ] || {
+            echo "::error::the ClickHouse password changed on upgrade"
+            exit 1
+          }
 
       - name: Uninstall the release
         run: |

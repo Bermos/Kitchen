@@ -1,0 +1,179 @@
+name: Publish
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish, without the leading v (e.g. 0.2.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    name: Resolve version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      image: ${{ steps.resolve.outputs.image }}
+      chart_repo: ${{ steps.resolve.outputs.chart_repo }}
+    steps:
+      - name: Resolve the version and image names
+        id: resolve
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = workflow_dispatch ]; then
+            version='${{ inputs.version }}'
+          else
+            version="${GITHUB_REF_NAME#v}"
+          fi
+          # Chart and image versions are SemVer; Helm rejects anything else.
+          if ! [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::'${version}' is not a SemVer version"
+            exit 1
+          fi
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          {
+            echo "version=${version}"
+            echo "image=ghcr.io/${owner}/kitchen"
+            echo "chart_repo=oci://ghcr.io/${owner}/charts"
+          } >>"$GITHUB_OUTPUT"
+
+  image:
+    name: Operator image
+    runs-on: ubuntu-latest
+    needs: version
+    permissions:
+      contents: read
+      packages: write
+      # Lets the build attach a signed provenance attestation to the image.
+      id-token: write
+      attestations: write
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Collect image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ needs.version.outputs.image }}
+          tags: |
+            type=semver,pattern={{version}},value=v${{ needs.version.outputs.version }}
+            type=semver,pattern={{major}}.{{minor}},value=v${{ needs.version.outputs.version }}
+          labels: |
+            org.opencontainers.image.title=Kitchen
+            org.opencontainers.image.description=Self-hosted Vercel alternative for your own Kubernetes cluster
+            org.opencontainers.image.version=${{ needs.version.outputs.version }}
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: mode=max
+          sbom: true
+
+      - name: Attest the build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ needs.version.outputs.image }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+  chart:
+    name: Helm chart
+    runs-on: ubuntu-latest
+    # The chart's appVersion is the image tag it deploys, so the image has to
+    # exist before the chart that points at it is published.
+    needs: [version, image]
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@v4
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+
+      - name: Verify the chart's generated templates are in sync
+        run: |
+          ./hack/gen-helm-manifests.sh
+          git diff --exit-code -- charts/ || {
+            echo "::error::charts/kitchen templates are stale; publishing them would ship the wrong CRDs."
+            exit 1
+          }
+
+      - name: Package the chart
+        run: |
+          set -euo pipefail
+          version='${{ needs.version.outputs.version }}'
+          # The chart pins the image it was published with; image.tag defaults
+          # to appVersion, so the two can never drift apart in a release.
+          helm package charts/kitchen \
+            --version "${version}" \
+            --app-version "${version}" \
+            --destination dist
+          helm lint "dist/kitchen-${version}.tgz" \
+            --namespace kitchen-system --set kitchen.baseDomain=apps.example.com
+
+      - name: Log in to GHCR
+        run: |
+          echo '${{ secrets.GITHUB_TOKEN }}' \
+            | helm registry login ghcr.io --username '${{ github.actor }}' --password-stdin
+
+      - name: Push the chart
+        run: |
+          set -euo pipefail
+          version='${{ needs.version.outputs.version }}'
+          helm push "dist/kitchen-${version}.tgz" '${{ needs.version.outputs.chart_repo }}'
+
+      - name: Upload the chart as a build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kitchen-chart-${{ needs.version.outputs.version }}
+          path: dist/*.tgz
+
+      - name: Summarize the release
+        run: |
+          version='${{ needs.version.outputs.version }}'
+          {
+            echo "## Kitchen ${version} published"
+            echo
+            echo '```sh'
+            echo "helm install kitchen ${{ needs.version.outputs.chart_repo }}/kitchen --version ${version} \\"
+            echo "  --namespace kitchen-system --create-namespace \\"
+            echo "  --set kitchen.baseDomain=apps.example.com"
+            echo '```'
+            echo
+            echo "Image: \`${{ needs.version.outputs.image }}:${version}\` (linux/amd64, linux/arm64)"
+          } >>"$GITHUB_STEP_SUMMARY"
