@@ -340,12 +340,22 @@ jobs:
           set -euo pipefail
           before=$(kubectl -n kitchen-system get secret kitchen-clickhouse \
             -o jsonpath='{.data.password}')
+          auth_before=$(kubectl -n kitchen-system get secret kitchen-auth \
+            -o jsonpath='{.data.secret}{" "}{.data.serviceKey}')
+          # Both images have to be pinned again: an upgrade without
+          # --reuse-values resets every value, and the published tags do not
+          # exist on this runner.
           helm upgrade kitchen charts/kitchen \
             --namespace kitchen-system \
             --set image.repository=kitchen --set image.tag=ci \
+            --set auth.image.repository=kitchen-auth --set auth.image.tag=ci \
             --set kitchen.baseDomain=apps.example.com \
             --set replicaCount=2 \
-            --wait --timeout 8m
+            --wait --timeout 8m || {
+              kubectl -n kitchen-system get pods -o wide
+              kubectl -n kitchen-system describe deploy kitchen-auth
+              exit 1
+            }
           replicas=$(kubectl -n kitchen-system get deploy kitchen-controller-manager \
             -o jsonpath='{.spec.replicas}')
           [ "${replicas}" = 2 ] || {
@@ -361,6 +371,16 @@ jobs:
             echo "::error::the ClickHouse password changed on upgrade"
             exit 1
           }
+          # Regenerating these would sign every session out and lock the
+          # operator out of client registration.
+          auth_after=$(kubectl -n kitchen-system get secret kitchen-auth \
+            -o jsonpath='{.data.secret}{" "}{.data.serviceKey}')
+          [ "${auth_before}" = "${auth_after}" ] || {
+            echo "::error::the identity provider's credentials changed on upgrade"
+            exit 1
+          }
+          # `helm upgrade --wait` already required the auth Deployment to go
+          # ready again, and readiness means it reached Postgres.
 
       - name: Uninstall the release
         run: |
