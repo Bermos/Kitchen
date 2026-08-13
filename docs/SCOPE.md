@@ -72,15 +72,33 @@ These aren't nice-to-haves — the first three are the product.
 - **ClickHouse gets everything analytical**: logs, metrics, traces, build logs, mesh traffic data — one store, one query surface for the UI.
 - **Mesh purpose: traffic observability only.** No mTLS or policy-enforcement goals. The mesh exists so you can see per-service traffic (rates, errors, latency, who-talks-to-whom) for troubleshooting, without touching app code — and export it all to ClickHouse.
 - **Mesh implementation: Cilium.** Assumed to already be the cluster's CNI (e.g. a Talos cluster configured with Cilium) — Kitchen does not install it, and handling its absence is out of scope for now. Hubble provides the traffic observability (eBPF flow logs, service map, L7 visibility), exported into ClickHouse.
+- **Scale-to-zero via KEDA** (when it lands): KEDA's HTTP add-on parks an interceptor
+  in front of idle apps, scales them to zero, and cold-starts on the next request —
+  which makes open preview environments nearly free. Chosen over Knative because it
+  only manages replica counts on our existing Deployments instead of taking over the
+  serving model. Touches the Environment reconciler's routing (interceptor sits
+  between Gateway and Service).
 - **No separate ingress controller.** The operator programs **Gateway API** resources (`Gateway`/`HTTPRoute`), and Cilium's built-in Gateway API implementation (embedded Envoy) serves them. Gateway API is the abstraction, so another implementation (Envoy Gateway, Istio) could slot in later without touching the operator's routing logic. When cloudflared is enabled, the tunnel points at the Gateway service — cloudflared is the edge, but all traffic still flows through one routing layer with uniform telemetry.
   - Documented cluster prerequisites this implies: Cilium with `gatewayAPI.enabled=true` + kube-proxy replacement, Gateway API CRDs installed, and a way to give the Gateway a reachable address on bare metal — Cilium L2 announcements or BGP for a LoadBalancer IP, or skip that entirely by fronting with cloudflared.
 
 ## Open decisions
 
 1. **Buildpacks vs. nixpacks vs. Dockerfile-first** for zero-config builds.
-2. **Scale-to-zero** (Knative/KEDA) in v1, or plain Deployments + HPA with scale-to-zero later.
-3. **Neon plugin scope**: Neon is a managed cloud service — fine as a first-party plugin, but the plugin interface should be a generic "database provisioner" so CloudNativePG (fully self-hosted) can slot in.
-4. **cert-manager optionality**: keep it always-installed (operator webhook certs + internal CA), with only the *public ACME issuer* part optional when cloudflared handles edge TLS.
+2. **Neon plugin scope**: Neon is a managed cloud service — fine as a first-party plugin, but the plugin interface should be a generic "database provisioner" so CloudNativePG (fully self-hosted) can slot in.
+3. **cert-manager optionality**: keep it always-installed (operator webhook certs + internal CA), with only the *public ACME issuer* part optional when cloudflared handles edge TLS.
+
+## The future corner
+
+Ideas we like, deliberately parked — with the reasoning preserved so future-us doesn't
+have to rediscover it:
+
+- **Kargo-style promotion pipelines.** Kargo (Akuity) models artifacts ("Freight" ≈ our
+  Release) flowing through Stages (≈ our Environments) with verification gates and
+  automatic promotion policies. Our one-field promotion is deliberately simpler and we
+  keep it — but multi-stage pipelines (dev → staging → prod), pre-promotion validation
+  (smoke tests, SLO checks against ClickHouse data), and auto-promotion-on-green are the
+  natural SRE-grade evolution of our Release/Environment model. Steal the model, or
+  integrate Kargo outright, when the demand shows up.
 
 ---
 
