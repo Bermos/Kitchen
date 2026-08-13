@@ -6,7 +6,7 @@ on:
 
 jobs:
   test:
-    name: Run on Ubuntu
+    name: Unit and envtest
     runs-on: ubuntu-latest
     steps:
       - name: Clone the code
