@@ -6,6 +6,8 @@ on:
 
 env:
   GATEWAY_API_VERSION: v1.2.1
+  # Used to poke the git webhook receiver from inside the cluster.
+  PROBE_IMAGE: curlimages/curl:8.11.1
 
 jobs:
   lint:
@@ -130,12 +132,14 @@ jobs:
             -s templates/clickhouse/statefulset.yaml \
             | awk '$1 == "image:" { print $2; exit }')
           echo "ClickHouse image: ${clickhouse_image}"
-          for i in 1 2 3; do
-            docker pull "${clickhouse_image}" && break
-            [ "$i" = 3 ] && exit 1
-            sleep $((i * 15))
+          for image in "${clickhouse_image}" "${PROBE_IMAGE}"; do
+            for i in 1 2 3; do
+              docker pull "${image}" && break
+              [ "$i" = 3 ] && exit 1
+              sleep $((i * 15))
+            done
+            kind load docker-image "${image}"
           done
-          kind load docker-image "${clickhouse_image}"
 
       - name: Install the Gateway API CRDs
         run: |
@@ -163,7 +167,11 @@ jobs:
         run: |
           set -euo pipefail
           kubectl get crd kitchens.kitchen.bermos.dev
-          kubectl get kitchen default -o jsonpath='{.spec.baseDomain}' | grep -qx apps.example.com
+          base_domain=$(kubectl get kitchen default -o jsonpath='{.spec.baseDomain}')
+          [ "${base_domain}" = apps.example.com ] || {
+            echo "::error::Kitchen singleton has baseDomain '${base_domain}'"
+            exit 1
+          }
           kubectl -n kitchen-system get httproute kitchen-git-webhook
           kubectl -n kitchen-system get svc kitchen-git-webhook kitchen-metrics
           # The operator creates the shared Gateway from the Kitchen object.
@@ -174,11 +182,28 @@ jobs:
             [ "$i" = 30 ] && { kubectl -n kitchen-system logs -l control-plane=controller-manager --tail=50; exit 1; }
             sleep 2
           done
-          # The receiver answers webhook deliveries on every replica.
-          kubectl -n kitchen-system run curl --rm -i --restart=Never --image=curlimages/curl:8.11.1 -- \
-            -sS -o /dev/null -w '%{http_code}\n' -X POST \
-            -H 'X-GitHub-Event: ping' \
-            http://kitchen-git-webhook.kitchen-system.svc/webhooks/git/none | grep -qx 200
+          # The receiver answers webhook deliveries. Run it as a plain pod and
+          # read the result afterwards: attaching to a pod that exits this fast
+          # is a race, and `curl | grep -q` dies of SIGPIPE under pipefail.
+          kubectl -n kitchen-system run webhook-probe \
+            --image="${PROBE_IMAGE}" --restart=Never --command -- \
+            curl -fsS -X POST -H 'X-GitHub-Event: ping' \
+            http://kitchen-git-webhook.kitchen-system.svc/webhooks/git/none
+          phase=""
+          for _ in $(seq 60); do
+            phase=$(kubectl -n kitchen-system get pod webhook-probe -o jsonpath='{.status.phase}' 2>/dev/null || true)
+            case "${phase}" in Succeeded|Failed) break ;; esac
+            sleep 2
+          done
+          probe_output=$(kubectl -n kitchen-system logs webhook-probe 2>&1 || true)
+          echo "probe phase=${phase} output=${probe_output}"
+          kubectl -n kitchen-system delete pod webhook-probe --wait=false
+          # curl -f already rejected any non-2xx; the body proves it was the
+          # receiver answering and not something else on that address.
+          [ "${phase}" = Succeeded ] && [ "${probe_output}" = pong ] || {
+            echo "::error::the git webhook receiver did not answer a ping"
+            exit 1
+          }
 
       - name: Verify the telemetry store
         run: |
@@ -186,9 +211,13 @@ jobs:
           password=$(kubectl -n kitchen-system get secret kitchen-clickhouse \
             -o jsonpath='{.data.password}' | base64 -d)
           # The credentials in the secret are the ones ClickHouse actually took.
-          kubectl -n kitchen-system exec sts/kitchen-clickhouse -- \
+          answer=$(kubectl -n kitchen-system exec sts/kitchen-clickhouse -- \
             clickhouse-client --user kitchen --password "${password}" \
-            --database kitchen --query 'SELECT 1' | grep -qx 1
+            --database kitchen --query 'SELECT 1')
+          [ "${answer}" = 1 ] || {
+            echo "::error::ClickHouse rejected the credentials in the secret"
+            exit 1
+          }
           # The image's passwordless `default` user must be gone.
           if kubectl -n kitchen-system exec sts/kitchen-clickhouse -- \
             clickhouse-client --user default --query 'SELECT 1' >/dev/null 2>&1; then
@@ -207,8 +236,12 @@ jobs:
             --set kitchen.baseDomain=apps.example.com \
             --set replicaCount=2 \
             --wait --timeout 8m
-          kubectl -n kitchen-system get deploy kitchen-controller-manager \
-            -o jsonpath='{.spec.replicas}' | grep -qx 2
+          replicas=$(kubectl -n kitchen-system get deploy kitchen-controller-manager \
+            -o jsonpath='{.spec.replicas}')
+          [ "${replicas}" = 2 ] || {
+            echo "::error::the upgrade did not scale the manager to 2 replicas"
+            exit 1
+          }
           # The singleton is left alone by upgrades unless applyOnUpgrade is set.
           kubectl get kitchen default
           # A regenerated password would lock the collectors out of the store.
