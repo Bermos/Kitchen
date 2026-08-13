@@ -26,10 +26,13 @@ flow data — lands in ClickHouse.
 ## Install
 
 ```sh
-helm install kitchen ./charts/kitchen \
+helm install kitchen oci://ghcr.io/bermos/charts/kitchen \
   --namespace kitchen-system --create-namespace \
   --set kitchen.baseDomain=apps.example.com
 ```
+
+That brings up the operator, its CRDs, the git webhook receiver and a
+single-node ClickHouse for telemetry.
 
 Then point `*.apps.example.com` at the shared Gateway:
 
@@ -64,7 +67,8 @@ environments and instant rollbacks by design.
 
 Reconcilers: Kitchen (shared Gateway + optional cloudflared), Project
 (webhook registration, namespace, connection validation), Build, Environment.
-The Helm chart ships the operator, its CRDs and the git webhook route.
-Still missing: Connection/Domain/ResourceClaim reconcilers, ClickHouse +
-collectors, Infisical sync, the operator REST API and the Vue UI — none of
+The Helm chart ships the operator, its CRDs, the git webhook route and
+ClickHouse; tagged releases publish the image and the chart to GHCR.
+Still missing: Connection/Domain/ResourceClaim reconcilers, the collectors that
+fill ClickHouse, Infisical sync, the operator REST API and the Vue UI — none of
 which the chart deploys yet.

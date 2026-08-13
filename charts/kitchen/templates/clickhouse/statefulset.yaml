@@ -1,0 +1,141 @@
+{{- if .Values.clickhouse.enabled }}
+# Single-node ClickHouse: the store for every kind of telemetry Kitchen
+# collects — logs, metrics, traces, build logs and Hubble flow data. It is
+# deliberately not the system of record; the CRDs are.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "kitchen.clickhouseFullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kitchen.labels" . | nindent 4 }}
+    app.kubernetes.io/component: clickhouse
+spec:
+  replicas: 1
+  serviceName: {{ include "kitchen.clickhouseFullname" . }}-headless
+  selector:
+    matchLabels:
+      {{- include "kitchen.clickhouseSelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "kitchen.clickhouseSelectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: clickhouse
+      {{- if or .Values.clickhouse.extraConfig .Values.clickhouse.podAnnotations }}
+      annotations:
+        {{- with .Values.clickhouse.extraConfig }}
+        checksum/config: {{ toYaml . | sha256sum }}
+        {{- end }}
+        {{- with .Values.clickhouse.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.clickhouse.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.clickhouse.podSecurityContext | nindent 8 }}
+      containers:
+        - name: clickhouse
+          image: {{ printf "%s:%s" .Values.clickhouse.image.repository .Values.clickhouse.image.tag }}
+          imagePullPolicy: {{ .Values.clickhouse.image.pullPolicy }}
+          env:
+            # The entrypoint creates this database and user on first start, and
+            # drops the image's passwordless `default` user as long as the
+            # username is not "default".
+            - name: CLICKHOUSE_DB
+              value: {{ .Values.clickhouse.auth.database | quote }}
+            - name: CLICKHOUSE_USER
+              value: {{ .Values.clickhouse.auth.username | quote }}
+            - name: CLICKHOUSE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "kitchen.clickhouseSecretName" . }}
+                  key: password
+            {{- with .Values.clickhouse.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: 8123
+              protocol: TCP
+            - name: native
+              containerPort: 9000
+              protocol: TCP
+          startupProbe:
+            httpGet:
+              path: /ping
+              port: http
+            periodSeconds: 5
+            failureThreshold: 60
+          livenessProbe:
+            httpGet:
+              path: /ping
+              port: http
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /ping
+              port: http
+            periodSeconds: 10
+          securityContext:
+            {{- toYaml .Values.clickhouse.securityContext | nindent 12 }}
+          resources:
+            {{- toYaml .Values.clickhouse.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/clickhouse
+            # The entrypoint writes the user definition here on every start.
+            - name: users
+              mountPath: /etc/clickhouse-server/users.d
+            {{- if .Values.clickhouse.extraConfig }}
+            - name: config
+              mountPath: /etc/clickhouse-server/config.d
+            {{- end }}
+      volumes:
+        - name: users
+          emptyDir: {}
+        {{- if .Values.clickhouse.extraConfig }}
+        - name: config
+          configMap:
+            name: {{ include "kitchen.clickhouseFullname" . }}-config
+        {{- end }}
+        {{- if not .Values.clickhouse.persistence.enabled }}
+        - name: data
+          emptyDir: {}
+        {{- end }}
+      {{- with .Values.clickhouse.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.clickhouse.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.clickhouse.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  {{- if .Values.clickhouse.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "kitchen.labels" . | nindent 10 }}
+          app.kubernetes.io/component: clickhouse
+      spec:
+        accessModes:
+          {{- toYaml .Values.clickhouse.persistence.accessModes | nindent 10 }}
+        resources:
+          requests:
+            storage: {{ .Values.clickhouse.persistence.size | quote }}
+        {{- with .Values.clickhouse.persistence.storageClass }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+  {{- end }}
+{{- end }}

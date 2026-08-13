@@ -49,6 +49,24 @@ The git webhook receiver is only reachable in-cluster
 webhookReceiver.route.enabled=true, before connecting a git provider.
 {{- end }}
 
+{{ if .Values.clickhouse.enabled -}}
+Telemetry lands in the ClickHouse this release runs:
+
+  kubectl -n {{ .Release.Namespace }} exec -it sts/{{ include "kitchen.clickhouseFullname" . }} -- \
+    clickhouse-client --user {{ .Values.clickhouse.auth.username }} --database {{ .Values.clickhouse.auth.database }} \
+    --password "$(kubectl -n {{ .Release.Namespace }} get secret {{ include "kitchen.clickhouseSecretName" . }} -o jsonpath='{.data.password}' | base64 -d)"
+{{- else if .Values.clickhouse.external.host }}
+Telemetry lands in the external ClickHouse at {{ include "kitchen.clickhouseHost" . }}.
+{{- else }}
+No telemetry store is configured: logs, metrics, traces and flow data have
+nowhere to land. Set clickhouse.enabled=true or clickhouse.external.host.
+{{- end }}
+{{- if or .Values.clickhouse.enabled .Values.clickhouse.external.host }}
+
+Connection details for the collectors live in the secret
+{{ include "kitchen.clickhouseSecretName" . }} (host, ports, database, username, password, dsn).
+{{- end }}
+
 Cluster prerequisites Kitchen assumes: Cilium as the CNI with
 gatewayAPI.enabled=true, the Gateway API CRDs, and a reachable address for the
 Gateway (L2 announcements/BGP, or cloudflared).
