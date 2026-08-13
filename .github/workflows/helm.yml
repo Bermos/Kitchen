@@ -417,12 +417,24 @@ jobs:
           kubectl -n kitchen-system rollout status ds/kitchen-logs --timeout=5m
 
           # The operator applies the schema from the Kitchen object, so the
-          # table carries the chart's default retention.
-          engine=$(ch "SELECT engine_full FROM system.tables WHERE database = 'kitchen' AND name = 'logs'")
+          # table carries the chart's default retention. The Kitchen object is
+          # a post-install hook and the reconcile that follows it takes as long
+          # as ClickHouse takes to accept a connection, so wait for the table
+          # rather than reading once and calling an empty answer a failure.
+          engine=""
+          for _ in $(seq 30); do
+            engine=$(ch "SELECT engine_full FROM system.tables WHERE database = 'kitchen' AND name = 'logs'")
+            case "${engine}" in *"toIntervalDay(30)"*) break ;; esac
+            sleep 5
+          done
           echo "logs engine: ${engine}"
           case "${engine}" in
             *"toIntervalDay(30)"*) ;;
-            *) echo "::error::the logs table is missing the 30 day TTL"; exit 1 ;;
+            *)
+              echo "::error::the logs table is missing the 30 day TTL"
+              kubectl get kitchen default -o jsonpath='{.status.conditions}'
+              exit 1
+              ;;
           esac
 
           # The whole point: lines written by a pod turn up in the store,
