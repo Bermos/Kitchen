@@ -89,6 +89,9 @@ sent the request.
 | PATCH | `/environments/{name}` | Move it to another release — promotion and rollback |
 | GET | `/environments/{name}/logs` | That environment's runtime logs |
 | GET | `/logs` | The whole logs table, filtered by a ClickHouse expression |
+| GET | `/events` | The platform's recent activity, newest first. `?project=` and `?limit=` filter |
+| GET | `/metrics/overview` | The dashboard's numbers, pre-aggregated. `?project=` narrows |
+| GET | `/traffic` | The service map: aggregated flow edges. `?project=`, `?since=`, `?until=` |
 | GET | `/settings` | The platform's settings — the `Kitchen` singleton |
 | PATCH | `/settings` | Change the build and telemetry defaults |
 | GET | `/connections` | Every connection (never their credentials) |
@@ -217,10 +220,30 @@ GET /environments/{name}/logs?limit=200&container=app
 | `container` | One container of the pod |
 
 Lines come back oldest first — a log reads forwards — as
-`{timestamp, source, project, environment, build, pod, container, stream, message}`.
+`{timestamp, source, project, environment, build, pod, container, stream, level, message}`.
+`level` is the collector's best-effort read of the line's severity
+(`trace`/`debug`/`info`/`warn`/`error`/`fatal`, parsed out of JSON logs and the
+common text spellings), empty when the line says neither.
 
 An installation without a telemetry store answers `503`: there are no logs to
 read, which is a missing capability rather than a bad request.
+
+### Following logs live
+
+The same endpoints stream when asked to, negotiated by Accept:
+
+```
+GET /builds/{name}/logs
+Accept: text/event-stream
+```
+
+The answer is Server-Sent Events: the query's current page first, then every
+line that arrives after it as its own `data:` event (the same JSON shape as
+above), until the client closes the connection. `/logs` streams too, with its
+`where` expression applied to every new line. A plain GET on the same URL
+still answers the bounded page, so nothing changes for callers that do not
+ask. The UI tails builds and the observability view this way and falls back
+to polling when the stream drops.
 
 ### Querying logs with ClickHouse syntax
 
@@ -243,6 +266,63 @@ it runs pinned read-only (`readonly=2`: no writes, no DDL) under an execution
 cap, as the operator's own database user. What that user can read is the
 telemetry database; per-caller scoping arrives with scopes and RBAC
 ([open item](#open)).
+
+### The activity feed
+
+`GET /events` answers what the platform did recently, newest first: builds
+finishing, releases moving, previews coming and going.
+
+```
+GET /events?project=shop&limit=50&since=2026-08-13T00:00:00Z
+```
+
+Entries are
+`{timestamp, type, project, environment, build, release, claim, message, actor, value}` —
+the object fields name what the entry is about so a client can link to it,
+`actor` is the authenticated caller for API-driven changes and `operator` for
+things the reconcilers decided on their own, and `value` carries the one
+number some events have (a finished build's duration in seconds). Types:
+`build.succeeded`, `build.failed`, `release.promoted`, `release.rolledBack`,
+`preview.created`, `preview.removed`, `project.created` (plus `claim.bound` /
+`claim.failed` once claims bind).
+
+The feed is written by the reconcilers and the API into the events table of
+the telemetry store, under the same retention as the logs. Kubernetes Events
+were deliberately not the source of truth: they expire in an hour and carry
+machinery noise the feed would have to filter back out.
+
+### Metrics
+
+`GET /metrics/overview` answers the dashboard's numbers pre-aggregated, in
+one shape:
+
+- deploys over 7 days and a per-day series, plus the median build time, from
+  the activity feed
+- requests, error rate and p95 latency over 24 hours with per-hour series,
+  from the flow pipeline — zeroes when no flow collector is configured
+- log volume over 24 hours with a per-hour series
+- the store's own size and ingest rate
+- `projects`: per-project 24h traffic (requests, 5xx, p95, hourly series)
+
+`?project=` narrows everything to one project and drops the `projects` join.
+There is deliberately no raw metrics query surface: the raw material is the
+logs, events and flows tables, and `/logs` already exposes the store's own
+syntax for ad-hoc questions.
+
+### Traffic
+
+`GET /traffic` answers the service map: one edge per (source workload,
+destination workload) pair the flow collector saw in the window
+(`?since=`/`?until=`, defaulting to the last hour; `?project=` narrows to
+edges touching the project's namespace).
+
+Edges are
+`{source, sourceNamespace, destination, destinationNamespace, protocol, flows, rps, errors, drops, p95Ms}`.
+HTTP edges carry status-derived `errors` and `p95Ms`; edges without L7
+visibility carry connection counts and drops alone. The data comes from
+Cilium's Hubble Relay, which the operator follows when
+`Kitchen.spec.observability.hubble.relayAddress` names it; without that the
+endpoint answers an empty list and the traffic view explains what to enable.
 
 ## Status codes
 
@@ -274,7 +354,5 @@ telemetry database; per-caller scoping arrives with scopes and RBAC
   for what, but nothing is enforced beyond "the issuer vouches for you". Teams
   and per-organisation roles land with the organizations plugin, and the token
   shape follows them.
-- **Streaming logs.** Log reads are bounded queries. Following a build live
-  wants Server-Sent Events on the same endpoints.
 - **Paging.** Collections answer in full. `{"items": …}` is an object rather
   than a bare array so a cursor can be added without breaking clients.

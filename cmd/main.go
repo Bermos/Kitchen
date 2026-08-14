@@ -41,8 +41,10 @@ import (
 	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/activity"
 	"github.com/Bermos/Kitchen/internal/api"
 	"github.com/Bermos/Kitchen/internal/controller"
+	"github.com/Bermos/Kitchen/internal/flows"
 	"github.com/Bermos/Kitchen/internal/receiver"
 	"github.com/Bermos/Kitchen/internal/ui"
 	// +kubebuilder:scaffold:imports
@@ -231,6 +233,20 @@ func main() {
 		os.Exit(1)
 	}
 
+	operatorNamespace := os.Getenv("POD_NAMESPACE")
+	if operatorNamespace == "" {
+		operatorNamespace = "kitchen-system"
+	}
+
+	// The activity recorder feeds the dashboard's recent-activity feed.
+	// It is shared by the reconcilers and the API, writes into the telemetry
+	// store best-effort, and costs nothing on installations without one.
+	recorder := &activity.Recorder{
+		Client:    mgr.GetClient(),
+		Namespace: controller.PlatformNamespace,
+		Singleton: controller.KitchenSingletonName,
+	}
+
 	if err = (&controller.KitchenReconciler{
 		Client:           mgr.GetClient(),
 		Scheme:           mgr.GetScheme(),
@@ -254,8 +270,9 @@ func main() {
 		os.Exit(1)
 	}
 	if err = (&controller.BuildReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Activity: recorder,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Build")
 		os.Exit(1)
@@ -268,8 +285,9 @@ func main() {
 		os.Exit(1)
 	}
 	if err = (&controller.EnvironmentReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Activity: recorder,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Environment")
 		os.Exit(1)
@@ -290,10 +308,6 @@ func main() {
 	}
 	// +kubebuilder:scaffold:builder
 
-	operatorNamespace := os.Getenv("POD_NAMESPACE")
-	if operatorNamespace == "" {
-		operatorNamespace = "kitchen-system"
-	}
 	if err := mgr.Add(&receiver.GitWebhookReceiver{
 		Client:    mgr.GetClient(),
 		Namespace: operatorNamespace,
@@ -314,8 +328,19 @@ func main() {
 		BindAddr:       apiAddr,
 		ExtraAudiences: splitList(apiAudiences),
 		UI:             ui.Handler(api.UIConfig(mgr.GetClient(), uiClientID)),
+		Activity:       recorder,
 	}); err != nil {
 		setupLog.Error(err, "unable to add the api server to manager")
+		os.Exit(1)
+	}
+
+	// The flow collector follows Hubble Relay and ships flow observations
+	// into the telemetry store — the traffic view's data. It idles until the
+	// Kitchen object names a relay address, so it can be added unconditionally.
+	if err := mgr.Add(&flows.Collector{
+		Client: mgr.GetClient(),
+	}); err != nil {
+		setupLog.Error(err, "unable to add the flow collector to manager")
 		os.Exit(1)
 	}
 

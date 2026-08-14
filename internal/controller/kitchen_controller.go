@@ -228,7 +228,7 @@ func (r *KitchenReconciler) reconcileTelemetrySchema(
 	if retention < 1 {
 		retention = defaultRetentionDays
 	}
-	if err := clickhouse.New(cfg).EnsureLogsSchema(ctx, retention); err != nil {
+	if err := clickhouse.New(cfg).EnsureTelemetrySchema(ctx, retention); err != nil {
 		setCond(condTelemetrySchema, metav1.ConditionFalse, "SchemaNotApplied", err.Error())
 		return false
 	}

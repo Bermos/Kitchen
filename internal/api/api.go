@@ -46,6 +46,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/activity"
 	"github.com/Bermos/Kitchen/internal/clickhouse"
 	"github.com/Bermos/Kitchen/internal/controller"
 )
@@ -71,17 +72,26 @@ type Server struct {
 	// behind the token check.
 	UI http.Handler
 
+	// Activity records the writes this API carries out — a project created,
+	// a release promoted — into the platform's activity feed. May be nil.
+	Activity *activity.Recorder
+
 	auth *authenticator
 
-	// logStore builds the client the log endpoints read through. It is a
-	// field so tests can serve logs without a ClickHouse.
+	// logStore builds the client the telemetry endpoints read through. It is
+	// a field so tests can serve telemetry without a ClickHouse.
 	logStore func(ctx context.Context) (logReader, error)
 }
 
-// logReader is the slice of the telemetry store the API depends on.
+// logReader is the slice of the telemetry store the API depends on: logs, the
+// activity feed, traffic edges and the pre-aggregated metrics all live in the
+// same ClickHouse.
 type logReader interface {
 	SearchLogs(ctx context.Context, query clickhouse.LogQuery) ([]clickhouse.LogLine, error)
 	FilterLogs(ctx context.Context, filter clickhouse.LogFilter) ([]clickhouse.LogLine, error)
+	QueryEvents(ctx context.Context, query clickhouse.EventQuery) ([]clickhouse.Event, error)
+	TrafficEdges(ctx context.Context, query clickhouse.TrafficQuery) ([]clickhouse.TrafficEdge, error)
+	MetricsOverview(ctx context.Context, query clickhouse.MetricsQuery) (clickhouse.MetricsOverview, error)
 }
 
 // Start implements manager.Runnable.
@@ -143,6 +153,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/environments/{name}/logs", s.environmentLogs)
 
 	mux.HandleFunc("GET /api/v1/logs", s.queryLogs)
+
+	mux.HandleFunc("GET /api/v1/events", s.listEvents)
+	mux.HandleFunc("GET /api/v1/metrics/overview", s.metricsOverview)
+	mux.HandleFunc("GET /api/v1/traffic", s.traffic)
 
 	mux.HandleFunc("GET /api/v1/settings", s.getSettings)
 	mux.HandleFunc("PATCH /api/v1/settings", s.patchSettings)

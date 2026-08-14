@@ -218,6 +218,22 @@ spec:
                         - name
                         type: object
                     type: object
+                  hubble:
+                    description: |-
+                      HubbleSpec configures the network flow pipeline. Cilium is the platform's
+                      CNI (a prerequisite, not something Kitchen installs), and Hubble Relay is
+                      its cluster-wide flow API; when an address is given, the operator follows
+                      it and ships flow observations into the telemetry store, which is what the
+                      dashboard's traffic view draws.
+                    properties:
+                      relayAddress:
+                        description: |-
+                          RelayAddress is the host:port of Hubble Relay's gRPC endpoint,
+                          typically "hubble-relay.kube-system.svc.cluster.local:80" once Hubble
+                          is enabled in Cilium. Empty means no flow collection — the traffic
+                          view stays empty and says why.
+                        type: string
+                    type: object
                 type: object
               tls:
                 description: TLSSpec configures platform-wide TLS defaults.

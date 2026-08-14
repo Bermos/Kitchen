@@ -80,4 +80,10 @@ spec:
       secretRef:
         name: {{ include "kitchen.clickhouseSecretName" . }}
       {{- end }}
+    {{- with .Values.kitchen.observability.hubble.relayAddress }}
+    hubble:
+      # The operator follows Hubble Relay from here and ships flow
+      # observations into the telemetry store.
+      relayAddress: {{ . | quote }}
+    {{- end }}
 {{- end }}
