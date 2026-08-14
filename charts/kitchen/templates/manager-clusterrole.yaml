@@ -13,18 +13,19 @@ rules:
 - apiGroups:
   - ""
   resources:
-  - namespaces
+  - events
+  - pods
   verbs:
-  - create
-  - delete
   - get
   - list
   - watch
 - apiGroups:
   - ""
   resources:
-  - pods
+  - namespaces
   verbs:
+  - create
+  - delete
   - get
   - list
   - watch
@@ -50,6 +51,15 @@ rules:
   - list
   - patch
   - update
+  - watch
+- apiGroups:
+  - apps
+  resources:
+  - daemonsets
+  - statefulsets
+  verbs:
+  - get
+  - list
   - watch
 - apiGroups:
   - apps

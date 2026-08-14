@@ -6,6 +6,9 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "kitchen.labels" . | nindent 4 }}
+    # Names the operator in the Kitchen's component survey. Not in the
+    # selector, which is immutable and stays as it was.
+    app.kubernetes.io/component: controller
 spec:
   replicas: {{ .Values.replicaCount }}
   selector:

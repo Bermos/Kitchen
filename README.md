@@ -39,7 +39,7 @@ things a cluster needs before it can run anything at all.
 
 ### 1. Cluster prerequisites
 
-Four things, none of which the chart installs:
+Five things, none of which the chart installs:
 
 - **Cilium as the CNI**, with `gatewayAPI.enabled=true` and kube-proxy
   replacement. Its Gateway API implementation *is* the ingress; there is no
@@ -55,6 +55,11 @@ Four things, none of which the chart installs:
   L2 announcements or BGP. cloudflared sidesteps needing a routable address,
   but not needing an address: Cilium will not mark a Gateway `Programmed`
   without one.
+- **A platform namespace that admits `hostPath`.** The log collector reads
+  container logs off each node, which Pod Security only permits at the
+  `privileged` level. Where the cluster default is `baseline` or stricter —
+  Talos is one — the collector's pods are refused at admission and it never
+  starts. See step 2 for the labels.
 
 ### 2. Wildcard DNS and a Cloudflare token
 
@@ -65,11 +70,22 @@ reachable your cluster is.
 
 ```sh
 kubectl create namespace kitchen-system
+kubectl label namespace kitchen-system \
+  pod-security.kubernetes.io/enforce=privileged \
+  pod-security.kubernetes.io/audit=privileged \
+  pod-security.kubernetes.io/warn=privileged
 kubectl -n kitchen-system create secret generic cloudflare-api-token \
   --from-literal=api-token=<token>
 ```
 
 The token needs `Zone:DNS:Edit` on the zone and `Zone:Zone:Read` to find it.
+
+The labels are for the log collector, which mounts the node's `/var/log`.
+`privileged` is the only Pod Security level that admits `hostPath` at all, so
+there is no narrower setting that still lets logs be collected — install with
+`--set logs.enabled=false` if you would rather not grant it. Creating the
+namespace with `helm install --create-namespace` instead leaves it unlabelled
+and inheriting the cluster default, which on Talos means no collector.
 
 > Note: Cloudflare's Universal SSL only covers one level of subdomain. If your
 > base domain is itself a subdomain — `apps.example.com`, so app URLs are
@@ -138,6 +154,32 @@ curl -H "authorization: Bearer $TOKEN" \
 
 Every value, and the upgrade/uninstall semantics, are documented in
 [the chart's README](charts/kitchen/README.md).
+
+### Checking what is running
+
+The operator surveys every platform workload each reconcile and reports what it
+finds on the singleton:
+
+```sh
+kubectl get kitchen default
+```
+
+```
+NAME      BASEDOMAIN         GATEWAY        COMPONENTS   AGE
+default   apps.example.com   203.0.113.10   6/6 healthy  5h
+```
+
+For the breakdown, including why anything is short of pods:
+
+```sh
+kubectl get kitchen default -o jsonpath='{range .status.components[*]}{.name}{"\t"}{.available}/{.desired}{"\t"}{.message}{"\n"}{end}'
+```
+
+This is worth checking on a first install, because the interesting failures are
+invisible in the obvious places. A workload whose pods are refused at admission
+has no pods at all — `kubectl get pods` shows nothing wrong, because there is
+nothing there to be wrong — so it is the counts, and the warning event the
+survey attaches to them, that tell you.
 
 ## Development
 
