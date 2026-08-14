@@ -18,8 +18,14 @@ package controller
 
 import (
 	"context"
+	"fmt"
+	"time"
 
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -27,7 +33,23 @@ import (
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 )
 
-// ConnectionReconciler reconciles a Connection object
+const condConnected = "Connected"
+
+// providerCapabilities is what each first-party provider implements. Everything
+// else in the operator matches on the capability, never the provider name —
+// this table is the one place the mapping lives.
+var providerCapabilities = map[string][]kitchenv1alpha1.Capability{
+	"github":         {kitchenv1alpha1.CapabilityGitSource, kitchenv1alpha1.CapabilityStatusChecks},
+	"gitlab":         {kitchenv1alpha1.CapabilityGitSource, kitchenv1alpha1.CapabilityStatusChecks},
+	"gitea":          {kitchenv1alpha1.CapabilityGitSource, kitchenv1alpha1.CapabilityStatusChecks},
+	"dockerRegistry": {kitchenv1alpha1.CapabilityImageStore},
+	"neon":           {kitchenv1alpha1.CapabilityDatabase},
+	"infisical":      {kitchenv1alpha1.CapabilitySecretStore},
+}
+
+// ConnectionReconciler reconciles a Connection: it publishes the provider's
+// capabilities (which is what Projects match on) and verifies the credentials
+// secret exists.
 type ConnectionReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
@@ -37,20 +59,51 @@ type ConnectionReconciler struct {
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=connections/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=connections/finalizers,verbs=update
 
-// Reconcile is part of the main kubernetes reconciliation loop which aims to
-// move the current state of the cluster closer to the desired state.
-// TODO(user): Modify the Reconcile function to compare the state specified by
-// the Connection object against the actual cluster state, and then
-// perform operations to make the cluster state reflect the state specified by
-// the user.
-//
-// For more details, check Reconcile and its Result here:
-// - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.20.4/pkg/reconcile
+// Reconcile publishes what a Connection can do and whether its credentials
+// are in place. It does not probe the provider's API — that is the plugin's
+// job once plugins do more than declare capabilities.
 func (r *ConnectionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_ = logf.FromContext(ctx)
+	log := logf.FromContext(ctx)
 
-	// TODO(user): your logic here
+	conn := &kitchenv1alpha1.Connection{}
+	if err := r.Get(ctx, req.NamespacedName, conn); err != nil {
+		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
 
+	setCond := func(status metav1.ConditionStatus, reason, message string) {
+		meta.SetStatusCondition(&conn.Status.Conditions, metav1.Condition{
+			Type:               condConnected,
+			Status:             status,
+			Reason:             reason,
+			Message:            message,
+			ObservedGeneration: conn.Generation,
+		})
+	}
+
+	capabilities, known := providerCapabilities[conn.Spec.Provider]
+	conn.Status.Capabilities = capabilities
+	if !known {
+		setCond(metav1.ConditionFalse, "ProviderUnknown",
+			fmt.Sprintf("no plugin implements provider %q", conn.Spec.Provider))
+		return ctrl.Result{}, r.Status().Update(ctx, conn)
+	}
+
+	creds := &corev1.Secret{}
+	key := types.NamespacedName{Namespace: conn.Namespace, Name: conn.Spec.CredentialsSecretRef.Name}
+	if err := r.Get(ctx, key, creds); err != nil {
+		setCond(metav1.ConditionFalse, "CredentialsMissing", err.Error())
+		if err := r.Status().Update(ctx, conn); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+	}
+
+	setCond(metav1.ConditionTrue, "CredentialsPresent",
+		fmt.Sprintf("credentials secret %q is in place (not probed against the provider)", key.Name))
+	if err := r.Status().Update(ctx, conn); err != nil {
+		return ctrl.Result{}, err
+	}
+	log.Info("reconciled connection", "provider", conn.Spec.Provider, "capabilities", capabilities)
 	return ctrl.Result{}, nil
 }
 

@@ -56,8 +56,11 @@ spec:
                 type: object
                 x-kubernetes-preserve-unknown-fields: true
               credentialsSecretRef:
-                description: Secret holding the provider credentials (typically synced
-                  from Infisical).
+                description: |-
+                  Secret holding the provider credentials (typically synced from
+                  Infisical — except for the infisical provider itself, whose machine
+                  identity under the keys clientId/clientSecret is what everything else
+                  bootstraps from).
                 properties:
                   name:
                     minLength: 1
@@ -73,6 +76,7 @@ spec:
                 - gitea
                 - dockerRegistry
                 - neon
+                - infisical
                 type: string
             required:
             - credentialsSecretRef
@@ -94,6 +98,7 @@ spec:
                   - statusChecks
                   - imageStore
                   - database
+                  - secretStore
                   type: string
                 type: array
               conditions:

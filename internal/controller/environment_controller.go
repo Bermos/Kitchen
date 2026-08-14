@@ -246,10 +246,22 @@ func (r *EnvironmentReconciler) resolveEnv(
 				}},
 			})
 		case v.SecretRef != nil:
+			// The alias "kitchen-secrets" means the project's synced secrets
+			// for whichever environment type this is — the one place where
+			// production and previews deliberately read the same name and get
+			// different values.
+			secretName := v.SecretRef.Name
+			if secretName == ProjectSecretsAlias {
+				if isPreview {
+					secretName = syncedSecretName(kitchenv1alpha1.EnvironmentPreview)
+				} else {
+					secretName = syncedSecretName(kitchenv1alpha1.EnvironmentProduction)
+				}
+			}
 			out = append(out, corev1.EnvVar{
 				Name: v.Name,
 				ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: v.SecretRef.Name},
+					LocalObjectReference: corev1.LocalObjectReference{Name: secretName},
 					Key:                  v.SecretRef.Key,
 				}},
 			})

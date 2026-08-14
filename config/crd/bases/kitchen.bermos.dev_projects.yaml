@@ -106,8 +106,13 @@ spec:
                         of Value.
                       type: string
                     secretRef:
-                      description: Value taken from a Secret (typically synced from
-                        Infisical).
+                      description: |-
+                        Value taken from a Secret in the application namespace. The name
+                        "kitchen-secrets" resolves per environment type to the Secret the
+                        project's secret store syncs into (see Project spec.secrets):
+                        kitchen-secrets-production or kitchen-secrets-preview — which is how the
+                        same key gets production values in production and preview values in
+                        previews. Any other name is used as written.
                       properties:
                         key:
                           minLength: 1
@@ -246,6 +251,48 @@ spec:
                           More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                         type: object
                     type: object
+                type: object
+              secrets:
+                description: |-
+                  Secrets synced from a secret store into the application namespace,
+                  scoped per environment type.
+                properties:
+                  connectionRef:
+                    description: Connection with the secretStore capability.
+                    properties:
+                      name:
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  previewEnv:
+                    default: staging
+                    description: |-
+                      PreviewEnv is the store environment previews sync from. All previews
+                      share it: a preview is unreleased code, not unreleased credentials.
+                    type: string
+                  productionEnv:
+                    default: prod
+                    description: |-
+                      ProductionEnv is the store environment production syncs from. The
+                      default matches Infisical's built-in environments.
+                    type: string
+                  projectSlug:
+                    description: |-
+                      ProjectSlug names the project in the secret store to sync from (for
+                      Infisical, the project slug).
+                    minLength: 1
+                    type: string
+                  secretsPath:
+                    default: /
+                    description: |-
+                      SecretsPath is the folder within the store's project to sync,
+                      recursively.
+                    type: string
+                required:
+                - connectionRef
+                - projectSlug
                 type: object
               source:
                 description: GitSourceSpec links a Project to a repository via a gitSource

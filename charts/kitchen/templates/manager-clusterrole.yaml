@@ -149,4 +149,16 @@ rules:
   - get
   - patch
   - update
+- apiGroups:
+  - secrets.infisical.com
+  resources:
+  - infisicalsecrets
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
 {{- end }}

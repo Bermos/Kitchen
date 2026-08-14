@@ -25,10 +25,13 @@ import (
 // as a git provider, an image registry, or a database provisioner.
 type ConnectionSpec struct {
 	// Provider selects the plugin implementation.
-	// +kubebuilder:validation:Enum=github;gitlab;gitea;dockerRegistry;neon
+	// +kubebuilder:validation:Enum=github;gitlab;gitea;dockerRegistry;neon;infisical
 	Provider string `json:"provider"`
 
-	// Secret holding the provider credentials (typically synced from Infisical).
+	// Secret holding the provider credentials (typically synced from
+	// Infisical — except for the infisical provider itself, whose machine
+	// identity under the keys clientId/clientSecret is what everything else
+	// bootstraps from).
 	CredentialsSecretRef LocalObjectReference `json:"credentialsSecretRef"`
 
 	// Provider-specific configuration, validated by the plugin.

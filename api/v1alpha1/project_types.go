@@ -55,6 +55,41 @@ type RegistrySpec struct {
 	ConnectionRef LocalObjectReference `json:"connectionRef"`
 }
 
+// ProjectSecretsSpec syncs secrets from a secret store into the project's
+// application namespace as native k8s Secrets, one per environment type:
+// kitchen-secrets-production and kitchen-secrets-preview. Environment
+// variables reference them by the alias "kitchen-secrets" in
+// spec.env[].secretRef, which resolves to the right one per environment —
+// production and previews read the same key from different store
+// environments.
+type ProjectSecretsSpec struct {
+	// Connection with the secretStore capability.
+	ConnectionRef LocalObjectReference `json:"connectionRef"`
+
+	// ProjectSlug names the project in the secret store to sync from (for
+	// Infisical, the project slug).
+	// +kubebuilder:validation:MinLength=1
+	ProjectSlug string `json:"projectSlug"`
+
+	// SecretsPath is the folder within the store's project to sync,
+	// recursively.
+	// +kubebuilder:default="/"
+	// +optional
+	SecretsPath string `json:"secretsPath,omitempty"`
+
+	// ProductionEnv is the store environment production syncs from. The
+	// default matches Infisical's built-in environments.
+	// +kubebuilder:default=prod
+	// +optional
+	ProductionEnv string `json:"productionEnv,omitempty"`
+
+	// PreviewEnv is the store environment previews sync from. All previews
+	// share it: a preview is unreleased code, not unreleased credentials.
+	// +kubebuilder:default=staging
+	// +optional
+	PreviewEnv string `json:"previewEnv,omitempty"`
+}
+
 // PreviewsSpec configures preview environments for pull requests.
 type PreviewsSpec struct {
 	// +kubebuilder:default=true
@@ -100,6 +135,11 @@ type ProjectSpec struct {
 
 	// +optional
 	Previews PreviewsSpec `json:"previews,omitempty"`
+
+	// Secrets synced from a secret store into the application namespace,
+	// scoped per environment type.
+	// +optional
+	Secrets *ProjectSecretsSpec `json:"secrets,omitempty"`
 
 	// Environment variables, overlaid per environment type.
 	// +optional

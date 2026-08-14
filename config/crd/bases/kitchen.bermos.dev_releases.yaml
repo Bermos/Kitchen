@@ -98,8 +98,13 @@ spec:
                             instead of Value.
                           type: string
                         secretRef:
-                          description: Value taken from a Secret (typically synced
-                            from Infisical).
+                          description: |-
+                            Value taken from a Secret in the application namespace. The name
+                            "kitchen-secrets" resolves per environment type to the Secret the
+                            project's secret store syncs into (see Project spec.secrets):
+                            kitchen-secrets-production or kitchen-secrets-preview — which is how the
+                            same key gets production values in production and preview values in
+                            previews. Any other name is used as written.
                           properties:
                             key:
                               minLength: 1

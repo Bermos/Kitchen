@@ -338,6 +338,24 @@ contributes is the switch, the hostname and the image.
 {{- end }}
 
 {{/*
+Infisical: the secret store's machine identity. The chart writes it as
+<release>-infisical unless an existing secret (keys clientId/clientSecret) is
+named instead; either way the Connection references one secret in the platform
+namespace and the InfisicalSecret CRs the operator creates point back at it.
+*/}}
+{{- define "kitchen.infisicalSecretName" -}}
+{{- printf "%s-infisical" (include "kitchen.fullname" .) }}
+{{- end }}
+
+{{- define "kitchen.infisicalCredentialsSecretName" -}}
+{{- if .Values.infisical.connection.existingSecret }}
+{{- .Values.infisical.connection.existingSecret }}
+{{- else }}
+{{- include "kitchen.infisicalSecretName" . }}
+{{- end }}
+{{- end }}
+
+{{/*
 Whether there is a telemetry store to talk to at all — one the chart runs, or
 one it was pointed at. Both cases produce the same connection secret.
 */}}
@@ -453,6 +471,21 @@ does not run in.
 {{- if and .Values.auth.github.existingSecret (not .Values.auth.github.clientId) }}
 {{- fail "auth.github.existingSecret needs auth.github.clientId as well: the client id is not read from the secret." }}
 {{- end }}
+{{- end }}
+{{- $infisical := .Values.infisical.connection }}
+{{- if $infisical.create }}
+{{- if not $infisical.host }}
+{{- fail "infisical.connection.host must not be empty when infisical.connection.create is true: the operator needs an instance to sync from. The default is Infisical Cloud (https://app.infisical.com); set your own URL for a self-hosted instance." }}
+{{- end }}
+{{- if and (not $infisical.existingSecret) (not (and $infisical.clientId $infisical.clientSecret)) }}
+{{- fail "infisical.connection.create needs machine identity credentials: set infisical.connection.clientId and clientSecret, or name an existing secret (keys clientId/clientSecret) in infisical.connection.existingSecret. Create a machine identity with universal auth in Infisical and grant it read on the projects to sync." }}
+{{- end }}
+{{- if and $infisical.existingSecret (or $infisical.clientId $infisical.clientSecret) }}
+{{- fail "infisical.connection.existingSecret and infisical.connection.clientId/clientSecret are mutually exclusive: either the chart stores the machine identity or it reads yours." }}
+{{- end }}
+{{- end }}
+{{- if and (or $infisical.clientId $infisical.clientSecret) (not (and $infisical.clientId $infisical.clientSecret)) }}
+{{- fail "infisical.connection.clientId and infisical.connection.clientSecret are only useful together: universal auth needs both halves of the machine identity." }}
 {{- end }}
 {{- if .Values.previewGate.enabled }}
 {{- if not .Values.auth.enabled }}

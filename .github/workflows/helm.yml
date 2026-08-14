@@ -90,6 +90,19 @@ jobs:
                  --set postgres.enabled=false \
                  --set postgres.external.host=postgres.databases.svc \
                  --set postgres.auth.password=hunter2
+          # Secret management: the Infisical Connection from values, against
+          # Cloud and a self-hosted instance, and without the bundled sync
+          # operator for a cluster that already runs one.
+          render --set kitchen.baseDomain=apps.example.com \
+                 --set infisical.connection.create=true \
+                 --set infisical.connection.clientId=machine-id \
+                 --set infisical.connection.clientSecret=hunter2
+          render --set kitchen.baseDomain=apps.example.com \
+                 --set infisical.connection.create=true \
+                 --set infisical.connection.host=https://infisical.example.com \
+                 --set infisical.connection.existingSecret=infisical-machine-identity
+          render --set kitchen.baseDomain=apps.example.com \
+                 --set infisical-operator.enabled=false
 
       - name: Check the collector is only rendered with somewhere to ship to
         run: |
@@ -165,6 +178,18 @@ jobs:
           # A GitHub OAuth app with no secret to go with the client id.
           expect_failure kitchen-system --set kitchen.baseDomain=apps.example.com \
             --set auth.github.clientId=Iv1.deadbeef
+          # The Infisical Connection without machine identity credentials.
+          expect_failure kitchen-system --set kitchen.baseDomain=apps.example.com \
+            --set infisical.connection.create=true
+          # Half a machine identity.
+          expect_failure kitchen-system --set kitchen.baseDomain=apps.example.com \
+            --set infisical.connection.clientId=machine-id
+          # Both stored and existing credentials.
+          expect_failure kitchen-system --set kitchen.baseDomain=apps.example.com \
+            --set infisical.connection.create=true \
+            --set infisical.connection.clientId=machine-id \
+            --set infisical.connection.clientSecret=hunter2 \
+            --set infisical.connection.existingSecret=infisical-machine-identity
           # The REST API with nowhere to be published.
           expect_failure kitchen-system --set kitchen.create=false \
             --set webhookReceiver.route.enabled=false \

@@ -571,6 +571,61 @@ topologySpreadConstraints: []
 priorityClassName: ""
 terminationGracePeriodSeconds: 10
 
+# Secret management. Infisical is the platform's secret store: secrets defined
+# there sync into app namespaces as native k8s Secrets, which
+# `Project.spec.env[].secretRef` and Connection `credentialsSecretRef` then
+# point at. Two halves, split deliberately:
+#
+#   - The *sync engine* — Infisical's secrets operator — ships with the chart
+#     (see `infisical-operator` below), like cert-manager does.
+#   - The *instance* stays external: Infisical Cloud by default, or a
+#     self-hosted installation via `infisical.connection.host`. It is not
+#     bundled because it brings its own Postgres and Redis; the platform's
+#     Postgres is a single-database instance owned by the auth service.
+#
+# The InfisicalSecret CRs themselves are created by the Kitchen operator, per
+# Project and per environment type, from `Project.spec.secrets` — they have to
+# wait for projects and namespaces to exist, which a Helm release cannot.
+infisical:
+  # A Connection with the secretStore capability is how the operator knows
+  # where to sync from: it carries the instance URL and the machine identity
+  # (universal auth) the sync authenticates with. Create it here from values,
+  # or manage it yourself — see docs/SECRETS.md.
+  connection:
+    # -- Create a `secretStore` Connection for Infisical. Requires machine
+    # identity credentials: `clientId`+`clientSecret`, or `existingSecret`.
+    create: false
+    # -- Name of the Connection object, which is what
+    # `Project.spec.secrets.connectionRef` points at.
+    name: infisical
+    # -- URL of the Infisical instance. The default is Infisical Cloud; point
+    # it at your own installation to keep secrets on your infrastructure.
+    host: https://app.infisical.com
+    # -- Machine identity client id (universal auth). Stored in the secret
+    # `<release>-infisical` together with the client secret.
+    clientId: ""
+    # -- Machine identity client secret.
+    clientSecret: ""
+    # -- Read the machine identity from an existing secret with the keys
+    # `clientId` and `clientSecret` instead of storing it from values.
+    existingSecret: ""
+
+# Infisical's secrets operator, as a sub-chart. It watches InfisicalSecret CRs
+# (which the Kitchen operator creates per project) and keeps the synced k8s
+# Secrets current — rotation in Infisical propagates on its resync interval
+# without anything being redeployed. Bundling is safe for the same reason
+# cert-manager's is: its CRDs are ordinary templates, so `helm upgrade`
+# applies schema changes, and it ships no admission webhook.
+#
+# The keys below belong to the secrets-operator chart; see its values for the
+# rest.
+infisical-operator:
+  # -- Install the Infisical secrets operator with the platform. Turn off for
+  # a cluster that already runs one.
+  enabled: true
+  # -- Install the secrets.infisical.com CRDs alongside it.
+  installCRDs: true
+
 # cert-manager ships with the platform rather than being a prerequisite:
 # Kitchen owns the cluster it is installed into, so there is no other workload
 # to collide with. Its CRDs are plain templates in the sub-chart — not files in

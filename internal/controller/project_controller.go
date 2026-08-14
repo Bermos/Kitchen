@@ -70,6 +70,7 @@ type ProjectReconciler struct {
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=connections;kitchens;builds;environments,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;create;delete
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch
+// +kubebuilder:rbac:groups=secrets.infisical.com,resources=infisicalsecrets,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile prepares everything a Project needs before its first build.
 func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -115,18 +116,21 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		r.ensureWebhook(ctx, project, sourceConn, setCond)
 	}
 
+	secretsOK := r.reconcileSecrets(ctx, project, setCond)
+
 	r.updateReferences(ctx, project)
 
-	if sourceOK && registryOK {
+	if sourceOK && registryOK && secretsOK {
 		setCond(condReady, metav1.ConditionTrue, "Reconciled", "project is ready")
 	} else {
-		setCond(condReady, metav1.ConditionFalse, "ConnectionsNotReady", "one or more connections are not ready")
+		setCond(condReady, metav1.ConditionFalse, "ConnectionsNotReady",
+			"one or more connections, or the secret sync, are not ready — see the other conditions")
 	}
 
 	if err := r.Status().Update(ctx, project); err != nil {
 		return ctrl.Result{}, err
 	}
-	if !sourceOK || !registryOK {
+	if !sourceOK || !registryOK || !secretsOK {
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 	log.Info("reconciled project", "project", project.Name)

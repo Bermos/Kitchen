@@ -1,0 +1,32 @@
+{{- include "kitchen.validate" . -}}
+{{- if .Values.infisical.connection.create }}
+# The platform's secret store, as a Connection with the secretStore
+# capability. Projects opt in through `spec.secrets.connectionRef`, and the
+# operator then materializes InfisicalSecret CRs into their app namespaces.
+#
+# Applied as a Helm hook so it lands after the CRDs are registered — a custom
+# resource rendered as a normal template would fail on a fresh install. Unlike
+# the Kitchen singleton it is re-applied on upgrade: everything in it comes
+# from values, so values stay the source of truth.
+apiVersion: kitchen.bermos.dev/v1alpha1
+kind: Connection
+metadata:
+  name: {{ .Values.infisical.connection.name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kitchen.labels" . | nindent 4 }}
+    app.kubernetes.io/component: infisical
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-weight: "5"
+    # Re-applying a hook means deleting and recreating it. Nothing owns the
+    # Connection, and the InfisicalSecret CRs reference the credentials secret
+    # directly, so a running sync never notices.
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  provider: infisical
+  credentialsSecretRef:
+    name: {{ include "kitchen.infisicalCredentialsSecretName" . }}
+  config:
+    host: {{ .Values.infisical.connection.host | quote }}
+{{- end }}

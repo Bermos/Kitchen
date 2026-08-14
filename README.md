@@ -14,6 +14,7 @@ flow data — lands in ClickHouse.
 - [Project scope](docs/SCOPE.md) — components, decisions, phasing
 - [CRD schema](docs/CRDS.md) — the operator's data model and reconcile flows
 - [Auth architecture](docs/AUTH.md) — the platform's identity provider
+- [Secret management](docs/SECRETS.md) — Infisical, synced per environment type
 - [REST API](docs/API.md) — the endpoints, and how to get a token for them
 
 ## Layout
@@ -200,7 +201,8 @@ The Vue dashboard is served by the operator at `kitchen.<baseDomain>`, behind
 the platform login (OIDC Authorization Code + PKCE): projects, builds with
 their logs, environments with one-click rollback, connections and the editable
 platform settings, with an operator mode that surfaces `status.conditions` on
-everything. Still missing: Connection/Domain/ResourceClaim reconcilers
-(including `oidcClient` claims), metrics/traces/flow collection, Infisical
-sync, and create flows in the UI (projects and connections are still
-`kubectl apply`).
+everything. Secrets sync from Infisical into each app namespace as native k8s
+Secrets, per environment type — see [docs/SECRETS.md](docs/SECRETS.md). Still
+missing: Domain/ResourceClaim reconcilers (including `oidcClient` claims),
+metrics/traces/flow collection, and create flows in the UI (projects and
+connections are still `kubectl apply`).

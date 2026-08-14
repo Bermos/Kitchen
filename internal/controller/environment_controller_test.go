@@ -108,6 +108,7 @@ var _ = Describe("Environment Controller", func() {
 						Env: []kitchenv1alpha1.EnvVar{
 							{Name: "PUBLIC_API", Value: "https://api.example.com", PreviewValue: "https://api-staging.example.com"},
 							{Name: "SESSION_SECRET", SecretRef: &kitchenv1alpha1.SecretKeySelector{Name: "shop-secrets", Key: "session"}},
+							{Name: "DATABASE_URL", SecretRef: &kitchenv1alpha1.SecretKeySelector{Name: ProjectSecretsAlias, Key: "DATABASE_URL"}},
 						},
 						Runtime: kitchenv1alpha1.RuntimeSpec{Port: 8080, Replicas: ptr.To(int32(2))},
 					},
@@ -157,7 +158,10 @@ var _ = Describe("Environment Controller", func() {
 			Expect(container.Ports[0].ContainerPort).To(Equal(int32(8080)))
 			Expect(*deploy.Spec.Replicas).To(Equal(int32(2)))
 			Expect(container.Env).To(ContainElement(corev1.EnvVar{Name: "PUBLIC_API", Value: "https://api.example.com"}))
-			Expect(container.Env[1].ValueFrom.SecretKeyRef.Name).To(Equal("shop-secrets"))
+			Expect(container.Env[1].ValueFrom.SecretKeyRef.Name).To(Equal("shop-secrets"),
+				"an explicit secret name is used as written")
+			Expect(container.Env[2].ValueFrom.SecretKeyRef.Name).To(Equal("kitchen-secrets-production"),
+				"the kitchen-secrets alias resolves to the production synced secret")
 
 			By("checking the Service")
 			svc := &corev1.Service{}
@@ -195,6 +199,9 @@ var _ = Describe("Environment Controller", func() {
 			Expect(*deploy.Spec.Replicas).To(Equal(int32(1)), "previews always run a single replica")
 			Expect(deploy.Spec.Template.Spec.Containers[0].Env).To(
 				ContainElement(corev1.EnvVar{Name: "PUBLIC_API", Value: "https://api-staging.example.com"}))
+			Expect(deploy.Spec.Template.Spec.Containers[0].Env[2].ValueFrom.SecretKeyRef.Name).To(
+				Equal("kitchen-secrets-preview"),
+				"the kitchen-secrets alias resolves to the preview synced secret in previews")
 
 			route := &gatewayv1.HTTPRoute{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: envName, Namespace: appNS}, route)).To(Succeed())

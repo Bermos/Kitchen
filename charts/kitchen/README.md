@@ -277,6 +277,42 @@ rotates it, which signs every preview visitor out; deleting the client secret
 makes the operator register a new client on the next reconcile (the old one is
 then orphaned at the identity provider).
 
+## Secret management
+
+Infisical is the platform's secret store: a secret defined there shows up as a
+native k8s Secret in the project's app namespace, and
+`Project.spec.env[].secretRef` points at it — no kubectl involved. The design
+and the full walkthrough are in [docs/SECRETS.md](../../docs/SECRETS.md).
+
+The chart ships the **sync engine** — Infisical's secrets operator, as a
+sub-chart (`infisical-operator.enabled`, on by default) — the same way it ships
+cert-manager. The **instance** stays external: Infisical Cloud by default, or a
+self-hosted installation, selected per Connection. It is not bundled because it
+brings its own Postgres and Redis; the platform's Postgres belongs to the auth
+service.
+
+Wiring it up takes a machine identity (universal auth) created in Infisical
+and a Connection carrying it, which the chart can create from values:
+
+```sh
+--set infisical.connection.create=true \
+--set infisical.connection.host=https://app.infisical.com \
+--set infisical.connection.clientId=... \
+--set infisical.connection.clientSecret=...
+```
+
+(or `infisical.connection.existingSecret=<name>` with the keys `clientId` and
+`clientSecret`.)
+
+Projects then opt in with `spec.secrets`, naming that Connection and an
+Infisical project. The operator — not this chart — materializes the
+InfisicalSecret CRs per project and environment type: they live in namespaces
+that only exist once the Project does. Production and preview environments
+sync from different Infisical environments (`prod` and `staging` by default),
+so the same secret name resolves to different values per environment type, and
+rotation in Infisical propagates on the operator's resync interval without
+anything being redeployed.
+
 ## Upgrade
 
 ```sh
@@ -407,6 +443,13 @@ kubectl delete namespace kitchen-system
 | `previewGate.host` | `""` | Where logins come back to. Defaults to `previews.<baseDomain>`. |
 | `previewGate.replicas` | `2` | The gate is in the request path of every protected preview. |
 | `previewGate.sessionTTL` | `8h` | How long a visitor stays signed in to a preview. |
+| `infisical.connection.create` | `false` | Create a `secretStore` Connection for Infisical. Needs credentials. |
+| `infisical.connection.name` | `infisical` | Connection name Projects reference in `spec.secrets.connectionRef`. |
+| `infisical.connection.host` | `https://app.infisical.com` | The Infisical instance. Set your own URL for self-hosted. |
+| `infisical.connection.clientId` / `.clientSecret` | `""` | Machine identity (universal auth), stored as `<release>-infisical`. |
+| `infisical.connection.existingSecret` | `""` | Read the machine identity from an existing secret (`clientId`/`clientSecret`) instead. |
+| `infisical-operator.enabled` | `true` | Install Infisical's secrets operator with the platform. Disable if the cluster already runs one. |
+| `infisical-operator.installCRDs` | `true` | Install the `secrets.infisical.com` CRDs alongside it. |
 | `api.port` | `8092` | Container port for the REST API. |
 | `api.service.type` / `.port` / `.annotations` | `ClusterIP` / `80` / `{}` | |
 | `api.route.enabled` | `true` | Publish the API on the shared Gateway under `/api/`. |

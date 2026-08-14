@@ -18,6 +18,17 @@ dependencies:
     version: v1.21.1
     repository: https://charts.jetstack.io
     condition: cert-manager.enabled
+  # Infisical's secrets operator: the sync engine that turns InfisicalSecret
+  # CRs into native k8s Secrets in app namespaces. Bundled for the same reason
+  # cert-manager is — its CRDs are templates, not crds/ files, and it ships no
+  # admission webhook. The Infisical *instance* stays external (Cloud or
+  # self-hosted): it needs its own Postgres and Redis, which the platform does
+  # not run. The InfisicalSecret CRs are created by the operator per Project.
+  - name: secrets-operator
+    version: v0.11.8
+    repository: https://dl.cloudsmith.io/public/infisical/helm-charts/helm/charts/
+    condition: infisical-operator.enabled
+    alias: infisical-operator
 home: https://github.com/Bermos/Kitchen
 sources:
   - https://github.com/Bermos/Kitchen

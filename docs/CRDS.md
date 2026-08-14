@@ -93,7 +93,8 @@ status:
 ```
 
 First-party providers: `github`/`gitlab`/`gitea` (capability `gitSource`), `dockerRegistry`
-(capability `imageStore`), `neon` (capability `database`). The operator matches on
+(capability `imageStore`), `neon` (capability `database`), `infisical` (capability
+`secretStore` — see [SECRETS.md](SECRETS.md)). The operator matches on
 **capabilities**, not provider names, so CloudNativePG can later implement `database` too.
 
 ## `Project` (namespaced: kitchen-system)
@@ -120,6 +121,12 @@ spec:
     enabled: true
     protected: true                     # gate preview URLs behind platform login (default)
     ttlAfterClosed: 1h                  # grace period before teardown
+  secrets:                              # sync from the secret store, per environment type
+    connectionRef: { name: infisical }  # a secretStore Connection
+    projectSlug: my-shop                # the Infisical project
+    secretsPath: /                      # folder to sync, recursively
+    productionEnv: prod                 # Infisical env for production (default)
+    previewEnv: staging                 # Infisical env for previews (default)
   env:                                  # env vars with per-environment-type overlay
     - name: DATABASE_URL
       fromResourceClaim: { name: shop-db, key: url }   # injected by claim binding
@@ -127,21 +134,25 @@ spec:
       value: https://api.example.com
       previewValue: https://api-staging.example.com    # previews get this instead
     - name: SESSION_SECRET
-      secretRef: { name: shop-secrets, key: session }  # Infisical-synced
+      secretRef: { name: kitchen-secrets, key: session }  # alias: resolves per env type
+                                        # to kitchen-secrets-production / -preview
   runtime:
     port: 3000
     replicas: 2                         # previews always get 1
     resources: { cpu: 500m, memory: 512Mi }
 status:
-  conditions: [...]                     # Ready, SourceConnected, WebhookRegistered
+  conditions: [...]                     # Ready, SourceConnected, WebhookRegistered,
+                                        # SecretStoreConnected, SecretsSynced
   productionEnvironmentRef: { name: my-shop-production }
   latestBuildRef: { name: my-shop-bld-8f3a2c1 }
 ```
 
 Reconcile: ensure per-project namespace, register the git webhook via the Connection
 (signing secret generated per project), validate that the referenced Connections carry
-the required capabilities. The production Environment is created by the first
-production-branch Build — an Environment cannot exist before there is a Release to run.
+the required capabilities, and materialize the secret sync (one InfisicalSecret CR per
+environment type in the app namespace — see [SECRETS.md](SECRETS.md)). The production
+Environment is created by the first production-branch Build — an Environment cannot
+exist before there is a Release to run.
 
 ## `Build` (namespaced: kitchen-system)
 

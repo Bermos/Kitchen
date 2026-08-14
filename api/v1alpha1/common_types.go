@@ -58,7 +58,12 @@ type EnvVar struct {
 	// +optional
 	PreviewValue string `json:"previewValue,omitempty"`
 
-	// Value taken from a Secret (typically synced from Infisical).
+	// Value taken from a Secret in the application namespace. The name
+	// "kitchen-secrets" resolves per environment type to the Secret the
+	// project's secret store syncs into (see Project spec.secrets):
+	// kitchen-secrets-production or kitchen-secrets-preview — which is how the
+	// same key gets production values in production and preview values in
+	// previews. Any other name is used as written.
 	// +optional
 	SecretRef *SecretKeySelector `json:"secretRef,omitempty"`
 
@@ -113,7 +118,7 @@ const (
 
 // Capability is an abstract feature a Connection provider implements. The
 // operator matches on capabilities, never on provider names.
-// +kubebuilder:validation:Enum=gitSource;statusChecks;imageStore;database
+// +kubebuilder:validation:Enum=gitSource;statusChecks;imageStore;database;secretStore
 type Capability string
 
 const (
@@ -121,4 +126,7 @@ const (
 	CapabilityStatusChecks Capability = "statusChecks"
 	CapabilityImageStore   Capability = "imageStore"
 	CapabilityDatabase     Capability = "database"
+	// CapabilitySecretStore syncs secrets from an external store into app
+	// namespaces as native k8s Secrets (first provider: infisical).
+	CapabilitySecretStore Capability = "secretStore"
 )
