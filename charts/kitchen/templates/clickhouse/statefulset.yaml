@@ -123,11 +123,15 @@ spec:
       {{- end }}
   {{- if .Values.clickhouse.persistence.enabled }}
   volumeClaimTemplates:
+    # Stable labels only — see the note on the Postgres StatefulSet.
+    # `volumeClaimTemplates` is immutable, so a label that moves with the chart
+    # version turns every version bump into a rejected upgrade.
     - metadata:
         name: data
         labels:
-          {{- include "kitchen.labels" . | nindent 10 }}
+          {{- include "kitchen.clickhouseSelectorLabels" . | nindent 10 }}
           app.kubernetes.io/component: clickhouse
+          app.kubernetes.io/part-of: kitchen
       spec:
         accessModes:
           {{- toYaml .Values.clickhouse.persistence.accessModes | nindent 10 }}

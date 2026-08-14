@@ -105,11 +105,21 @@ spec:
       {{- end }}
   {{- if .Values.postgres.persistence.enabled }}
   volumeClaimTemplates:
+    # Stable labels only. `volumeClaimTemplates` is immutable, so anything
+    # embedded here that moves with the chart version — `helm.sh/chart`,
+    # `app.kubernetes.io/version` — makes every upgrade to a new version an
+    # attempt to mutate an immutable field, which the API server rejects. The
+    # StatefulSet and the pod template carry the full set; the claim template
+    # carries what never changes. No loss either way: a PVC created by a
+    # StatefulSet keeps the labels it was created with and is never relabelled,
+    # so a version stamped here only ever named the version that made the
+    # volume.
     - metadata:
         name: data
         labels:
-          {{- include "kitchen.labels" . | nindent 10 }}
+          {{- include "kitchen.postgresSelectorLabels" . | nindent 10 }}
           app.kubernetes.io/component: postgres
+          app.kubernetes.io/part-of: kitchen
       spec:
         accessModes:
           {{- toYaml .Values.postgres.persistence.accessModes | nindent 10 }}
