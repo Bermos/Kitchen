@@ -39,6 +39,13 @@ kitchen.tls.acme.dns01.cloudflare.apiTokenSecretName, or choose another
 kitchen.tls.mode.
 {{- end }}
 {{- end }}
+{{- if eq .Values.kitchen.tls.mode "none" }}
+
+TLS mode is "none": the shared Gateway listens on HTTP alone, so every URL this
+release publishes — the OIDC issuer among them — is http://. Logins work, but
+over plain HTTP: fine for bringing a cluster up before DNS and certificates
+exist, not for running one.
+{{- end }}
 {{- if .Values.kitchen.ingress.cloudflared.enabled }}
 
 cloudflared is enabled: the operator runs the tunnel from the secret
@@ -59,7 +66,7 @@ one named "default" exists:
 {{ if .Values.webhookReceiver.route.enabled -}}
 Git providers deliver events to:
 
-  https://{{ include "kitchen.webhookHost" . }}/webhooks/git/<connection>
+  {{ include "kitchen.scheme" . }}://{{ include "kitchen.webhookHost" . }}/webhooks/git/<connection>
 {{- else -}}
 The git webhook receiver is only reachable in-cluster
 (svc/{{ include "kitchen.fullname" . }}-git-webhook). Expose it, or set
@@ -69,13 +76,13 @@ webhookReceiver.route.enabled=true, before connecting a git provider.
 {{ if .Values.api.route.enabled -}}
 The operator's REST API answers at:
 
-  https://{{ include "kitchen.apiHost" . }}/api/v1/projects
+  {{ include "kitchen.scheme" . }}://{{ include "kitchen.apiHost" . }}/api/v1/projects
 
 Every endpoint needs a bearer token from the identity provider. Exchange an API
 key for one, then call the API with it:
 
   TOKEN=$(curl -sS -H "x-api-key: $KITCHEN_API_KEY" {{ include "kitchen.authIssuer" . }}/token | jq -r .token)
-  curl -sS -H "authorization: Bearer $TOKEN" https://{{ include "kitchen.apiHost" . }}/api/v1/projects
+  curl -sS -H "authorization: Bearer $TOKEN" {{ include "kitchen.scheme" . }}://{{ include "kitchen.apiHost" . }}/api/v1/projects
 {{- else -}}
 The REST API is only reachable in-cluster (svc/{{ include "kitchen.fullname" . }}-api). Expose it,
 or set api.route.enabled=true, before pointing a UI or a CLI at it.

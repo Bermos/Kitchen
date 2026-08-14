@@ -92,7 +92,10 @@ ClickHouse for telemetry with the collector that fills it, and the identity
 provider at `auth.apps.example.com` with its Postgres.
 
 Set `kitchen.tls.mode=none` to start without TLS, or `cert-manager.enabled=false`
-if your cluster already runs one.
+if your cluster already runs one. In `none` mode the Gateway listens on HTTP
+alone, and every URL the platform publishes — the OIDC issuer, the API's
+external URL, preview and app URLs — is `http://` to match, so logins and the
+API still work before DNS and certificates exist.
 
 ### 4. Point DNS at the Gateway
 

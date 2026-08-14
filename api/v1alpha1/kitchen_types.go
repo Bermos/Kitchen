@@ -127,7 +127,8 @@ type ObservabilitySpec struct {
 type APISpec struct {
 	// ExternalURL is the base URL the operator API (including the git
 	// webhook receiver) is reachable at from outside the cluster.
-	// Defaults to https://kitchen.<baseDomain>.
+	// Defaults to kitchen.<baseDomain>, under the scheme tls.mode serves:
+	// https, or http when tls.mode is none.
 	// +optional
 	ExternalURL string `json:"externalURL,omitempty"`
 }
@@ -174,7 +175,8 @@ type AuthSpec struct {
 	Enabled bool `json:"enabled"`
 
 	// Hostname the identity provider is served on, and therefore the OIDC
-	// issuer (https://<host>). Defaults to auth.<baseDomain>.
+	// issuer — under the scheme tls.mode serves, so https://<host> unless
+	// tls.mode is none. Defaults to auth.<baseDomain>.
 	// +optional
 	Host string `json:"host,omitempty"`
 

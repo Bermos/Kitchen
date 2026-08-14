@@ -111,12 +111,14 @@ func issuerFor(kitchen *kitchenv1alpha1.Kitchen) (issuerConfig, error) {
 		}
 		host = "auth." + kitchen.Spec.BaseDomain
 	}
-	// The host is a hostname, but an installation pointed at an identity
-	// provider that speaks plain HTTP — a local one during development —
-	// may spell the scheme out.
+	// The host is a hostname, so the scheme comes from the platform's TLS
+	// mode: in mode "none" the Gateway only listens on HTTP, and an issuer
+	// advertised as https there is one nothing serves. An installation
+	// pointed at an external identity provider may spell the scheme out
+	// instead, and then it is taken as given.
 	issuer := strings.TrimSuffix(host, "/")
 	if !strings.Contains(issuer, "://") {
-		issuer = "https://" + issuer
+		issuer = kitchen.Spec.TLS.Mode.Scheme() + "://" + issuer
 	}
 
 	// The API is a resource server of its own: a client that asks the
@@ -132,7 +134,8 @@ func issuerFor(kitchen *kitchenv1alpha1.Kitchen) (issuerConfig, error) {
 }
 
 // externalURL is the base URL the operator API answers on from outside the
-// cluster, mirroring the chart's default of https://kitchen.<baseDomain>.
+// cluster, mirroring the chart's default of kitchen.<baseDomain> under the
+// scheme the platform's TLS mode serves.
 func externalURL(kitchen *kitchenv1alpha1.Kitchen) string {
 	if kitchen == nil {
 		return ""
@@ -143,7 +146,7 @@ func externalURL(kitchen *kitchenv1alpha1.Kitchen) string {
 	if kitchen.Spec.BaseDomain == "" {
 		return ""
 	}
-	return "https://kitchen." + kitchen.Spec.BaseDomain
+	return kitchen.Spec.TLS.Mode.Scheme() + "://kitchen." + kitchen.Spec.BaseDomain
 }
 
 // verifierFor returns a verifier for the given issuer, discovering it on first

@@ -111,6 +111,18 @@ const (
 	TLSModeNone TLSMode = "none"
 )
 
+// Scheme is how generated URLs are reached from outside in this mode. Every
+// mode but "none" is served over HTTPS, whether the certificate is terminated
+// by the Gateway or by a tunnel in front of it; "none" gets an HTTP listener
+// alone, so every URL the platform publishes — the OIDC issuer included — has
+// to name the scheme that is actually served.
+func (m TLSMode) Scheme() string {
+	if m == TLSModeNone {
+		return "http"
+	}
+	return "https"
+}
+
 // Capability is an abstract feature a Connection provider implements. The
 // operator matches on capabilities, never on provider names.
 // +kubebuilder:validation:Enum=gitSource;statusChecks;imageStore;database
