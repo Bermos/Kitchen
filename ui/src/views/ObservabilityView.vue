@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { APIError, api, type LogLine } from "../lib/api";
-import { usePoll } from "../lib/useAsync";
+import { useAsync, usePoll } from "../lib/useAsync";
 import StatusDot from "../components/StatusDot.vue";
 
 // The observability view does not pretend the logs live anywhere but
@@ -27,6 +27,7 @@ const ranges = [
 ];
 const rangeMinutes = ref(60);
 
+const settings = useAsync(() => api.settings());
 const lines = ref<LogLine[] | null>(null);
 const error = ref<string | null>(null);
 const loading = ref(false);
@@ -92,7 +93,10 @@ function time(line: LogLine): string {
       <div>
         <h1 class="text-xl font-semibold text-highlighted">Observability</h1>
         <p class="text-xs text-muted mt-1">
-          ClickHouse, queried as ClickHouse: a boolean expression over the
+          ClickHouse<template v-if="settings.data.value?.logRetentionDays">
+            · {{ settings.data.value.logRetentionDays }} day retention</template
+          >
+          — queried as ClickHouse: a boolean expression over the
           <span class="font-mono">logs</span> table, run read-only.
         </p>
       </div>

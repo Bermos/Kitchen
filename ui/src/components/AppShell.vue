@@ -6,29 +6,53 @@ import { user, signOut } from "../lib/auth";
 import { operatorMode } from "../lib/mode";
 import { unhealthyConditions, type Tone } from "../lib/status";
 import { useAsync, usePoll } from "../lib/useAsync";
+import CommandPalette from "./CommandPalette.vue";
 import StatusDot from "./StatusDot.vue";
 
 const route = useRoute();
 
-const projects = useAsync(() => api.projects());
+// One inventory fetch feeds the sidebar: the project list, the counts next to
+// the nav items, and the preview count on each project row.
+const inventory = useAsync(async () => {
+  const [projects, environments, builds] = await Promise.all([api.projects(), api.environments(), api.builds()]);
+  return { projects, environments, builds };
+});
 const settings = useAsync(() => api.settings());
-usePoll(() => void projects.refresh(), 30000, () => true);
+usePoll(() => void inventory.refresh(), 30000, () => true);
+
+const projects = computed(() => inventory.data.value?.projects ?? []);
 
 function projectTone(name: string): Tone {
-  const project = projects.data.value?.find((p) => p.name === name);
+  const project = projects.value.find((p) => p.name === name);
   if (!project?.conditions?.length) return "neutral";
   return unhealthyConditions(project.conditions).length ? "warning" : "success";
 }
 
-const nav = [
-  { label: "Overview", icon: "i-lucide-layout-dashboard", to: "/", name: "overview" },
-  { label: "Builds", icon: "i-lucide-hammer", to: "/builds", name: "builds" },
-  { label: "Observability", icon: "i-lucide-activity", to: "/observability", name: "observability" },
-  { label: "Connections", icon: "i-lucide-plug", to: "/connections", name: "connections" },
-  { label: "Settings", icon: "i-lucide-settings-2", to: "/settings", name: "settings" },
-];
+function previewCount(name: string): number {
+  return (inventory.data.value?.environments ?? []).filter((e) => e.project === name && e.type === "preview").length;
+}
 
-function navActive(item: (typeof nav)[number]): boolean {
+const nav = computed(() => [
+  {
+    label: "Overview",
+    icon: "i-lucide-layout-dashboard",
+    to: "/",
+    name: "overview",
+    count: inventory.data.value?.projects.length,
+  },
+  {
+    label: "Builds",
+    icon: "i-lucide-hammer",
+    to: "/builds",
+    name: "builds",
+    count: inventory.data.value?.builds.length,
+  },
+  { label: "Observability", icon: "i-lucide-activity", to: "/observability", name: "observability", count: undefined },
+  { label: "Connections", icon: "i-lucide-plug", to: "/connections", name: "connections", count: undefined },
+  { label: "Settings", icon: "i-lucide-settings-2", to: "/settings", name: "settings", count: undefined },
+]);
+
+function navActive(item: { name: string }): boolean {
   if (item.name === "overview") return route.name === "overview";
   if (item.name === "builds") return route.name === "builds" || route.name === "build";
   return route.name === item.name;
@@ -82,6 +106,7 @@ const userMenu = computed(() => [
         >
           <UIcon :name="item.icon" class="size-4 shrink-0" />
           {{ item.label }}
+          <span v-if="item.count !== undefined" class="ml-auto font-mono text-xs text-dimmed">{{ item.count }}</span>
         </RouterLink>
       </nav>
 
@@ -90,7 +115,7 @@ const userMenu = computed(() => [
       </div>
       <nav class="px-2 space-y-0.5 overflow-y-auto flex-1">
         <RouterLink
-          v-for="project in projects.data.value ?? []"
+          v-for="project in projects"
           :key="project.name"
           :to="{ name: 'project', params: { name: project.name } }"
           class="flex items-center gap-2.5 px-2.5 py-1.5 rounded-md text-sm hover:bg-elevated hover:text-highlighted"
@@ -98,8 +123,11 @@ const userMenu = computed(() => [
         >
           <StatusDot :tone="projectTone(project.name)" />
           <span class="truncate">{{ project.name }}</span>
+          <span v-if="previewCount(project.name)" class="ml-auto font-mono text-xs text-dimmed">
+            {{ previewCount(project.name) }}
+          </span>
         </RouterLink>
-        <p v-if="projects.data.value && !projects.data.value.length" class="px-2.5 py-1.5 text-xs text-dimmed">
+        <p v-if="inventory.data.value && !projects.length" class="px-2.5 py-1.5 text-xs text-dimmed">
           No projects yet — create one with kubectl for now.
         </p>
       </nav>
@@ -118,6 +146,8 @@ const userMenu = computed(() => [
 
     <div class="flex-1 min-w-0 flex flex-col">
       <header class="h-14 shrink-0 border-b border-default flex items-center gap-3 px-6">
+        <span class="flex-1" />
+        <CommandPalette />
         <span class="flex-1" />
         <UFieldGroup size="sm">
           <UButton

@@ -14,13 +14,19 @@ const toast = useToast();
 const name = computed(() => route.params.name as string);
 
 const { data, error, loading, refresh } = useAsync(async () => {
-  const [project, environments, releases, builds] = await Promise.all([
+  const [project, environments, releases, builds, claims, allDomains] = await Promise.all([
     api.project(name.value),
     api.projectEnvironments(name.value),
     api.projectReleases(name.value),
     api.projectBuilds(name.value),
+    api.claims({ project: name.value }),
+    api.domains(),
   ]);
-  return { project, environments, releases, builds };
+  // Domains attach to environments; the project's are the ones pointing at
+  // one of its environments.
+  const environmentNames = new Set(environments.map((e) => e.name));
+  const domains = allDomains.filter((d) => environmentNames.has(d.environment));
+  return { project, environments, releases, builds, claims, domains };
 });
 watch(name, () => void refresh());
 usePoll(() => void refresh(), 10000, () => true);
@@ -96,7 +102,17 @@ const tabs = computed(() => [
   { label: `Previews (${previews.value.length})`, value: "previews" },
   { label: `Builds (${data.value?.builds.length ?? 0})`, value: "builds" },
   { label: `Environments (${data.value?.environments.length ?? 0})`, value: "environments" },
+  { label: `Domains (${data.value?.domains.length ?? 0})`, value: "domains" },
+  { label: `Resources (${data.value?.claims.length ?? 0})`, value: "resources" },
 ]);
+
+// Previews read best the way the mockup draws them: the pull request as the
+// unit, its builds underneath. Flat keeps the one-row-per-environment view.
+const previewLayout = ref<"pr" | "flat">("pr");
+function previewBuilds(pullRequest: number | undefined) {
+  if (!pullRequest) return [];
+  return (data.value?.builds ?? []).filter((b) => b.git.pullRequest === pullRequest).slice(0, 5);
+}
 
 function host(url?: string): string {
   if (!url) return "";
@@ -226,33 +242,75 @@ function host(url?: string): string {
         </table>
       </div>
 
-      <!-- Previews: one row per open pull request's environment. -->
+      <!-- Previews: the pull request as the unit, its builds underneath. -->
       <div v-else-if="tab === 'previews'" class="space-y-3">
+        <div v-if="previews.length" class="flex justify-end">
+          <UFieldGroup size="xs">
+            <UButton
+              :color="previewLayout === 'pr' ? 'primary' : 'neutral'"
+              :variant="previewLayout === 'pr' ? 'soft' : 'subtle'"
+              label="By PR"
+              @click="previewLayout = 'pr'"
+            />
+            <UButton
+              :color="previewLayout === 'flat' ? 'primary' : 'neutral'"
+              :variant="previewLayout === 'flat' ? 'soft' : 'subtle'"
+              label="Flat"
+              @click="previewLayout = 'flat'"
+            />
+          </UFieldGroup>
+        </div>
         <p v-if="!previews.length" class="text-sm text-muted py-6 text-center">
           No preview environments — they appear when a pull request opens{{ project.previews ? "" : " (previews are disabled for this project)" }}.
         </p>
-        <div
-          v-for="preview in previews"
-          :key="preview.name"
-          class="rounded-md border border-default bg-muted px-4 py-3 flex items-center gap-4 flex-wrap"
-        >
-          <span class="font-mono text-xs text-primary">#{{ preview.preview?.pullRequest ?? "—" }}</span>
-          <RouterLink
-            :to="{ name: 'environment', params: { name: preview.name } }"
-            class="text-sm text-highlighted font-medium hover:underline"
-            >{{ preview.name }}</RouterLink
+        <div v-for="preview in previews" :key="preview.name" class="rounded-md border border-default bg-muted">
+          <div class="px-4 py-3 flex items-center gap-4 flex-wrap">
+            <span class="font-mono text-xs text-primary">#{{ preview.preview?.pullRequest ?? "—" }}</span>
+            <RouterLink
+              :to="{ name: 'environment', params: { name: preview.name } }"
+              class="text-sm text-highlighted font-medium hover:underline"
+              >{{ preview.name }}</RouterLink
+            >
+            <span class="font-mono text-xs text-muted">{{ preview.preview?.branch }}</span>
+            <span class="flex-1" />
+            <PhaseBadge :phase="preview.phase" />
+            <a
+              v-if="preview.url"
+              :href="preview.url"
+              target="_blank"
+              rel="noopener"
+              class="font-mono text-xs text-primary hover:underline"
+              >{{ host(preview.url) }}</a
+            >
+          </div>
+          <table
+            v-if="previewLayout === 'pr' && previewBuilds(preview.preview?.pullRequest).length"
+            class="w-full text-sm border-t border-muted"
           >
-          <span class="font-mono text-xs text-muted">{{ preview.preview?.branch }}</span>
-          <span class="flex-1" />
-          <PhaseBadge :phase="preview.phase" />
-          <a
-            v-if="preview.url"
-            :href="preview.url"
-            target="_blank"
-            rel="noopener"
-            class="font-mono text-xs text-primary hover:underline"
-            >{{ host(preview.url) }}</a
-          >
+            <tbody>
+              <tr
+                v-for="build in previewBuilds(preview.preview?.pullRequest)"
+                :key="build.name"
+                class="border-b border-muted last:border-0 hover:bg-elevated/40"
+              >
+                <td class="pl-10 pr-4 py-2 w-32 font-mono text-xs text-toned">{{ shortSHA(build.git.sha) }}</td>
+                <td class="px-4 py-2">
+                  <RouterLink
+                    :to="{ name: 'build', params: { name: build.name } }"
+                    class="text-toned hover:text-highlighted hover:underline"
+                    >{{ build.git.message || build.name }}</RouterLink
+                  >
+                </td>
+                <td class="px-4 py-2"><PhaseBadge :phase="build.phase" /></td>
+                <td class="px-4 py-2 font-mono text-xs text-muted whitespace-nowrap">
+                  {{ duration(build.startedAt, build.completedAt) }}
+                </td>
+                <td class="px-4 py-2 text-right text-xs text-muted whitespace-nowrap">
+                  {{ timeAgo(build.createdAt) }}
+                </td>
+              </tr>
+            </tbody>
+          </table>
         </div>
       </div>
 
@@ -282,6 +340,74 @@ function host(url?: string): string {
                 {{ duration(build.startedAt, build.completedAt) }}
               </td>
               <td class="px-4 py-3 text-right text-xs text-muted whitespace-nowrap">{{ timeAgo(build.createdAt) }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Domains: custom hostnames attached to this project's environments. -->
+      <div v-else-if="tab === 'domains'" class="rounded-md border border-default overflow-x-auto">
+        <table class="w-full text-sm">
+          <tbody>
+            <tr v-if="!data?.domains.length">
+              <td class="px-4 py-8 text-center text-muted">
+                No custom domains — they are attached with kubectl until the create flow lands here.
+              </td>
+            </tr>
+            <tr v-for="domain in data?.domains" :key="domain.name" class="border-b border-muted last:border-0">
+              <td class="px-4 py-3">
+                <a
+                  :href="`https://${domain.hostname}`"
+                  target="_blank"
+                  rel="noopener"
+                  class="font-mono text-highlighted hover:underline"
+                  >{{ domain.hostname }}</a
+                >
+              </td>
+              <td class="px-4 py-3">
+                <RouterLink
+                  :to="{ name: 'environment', params: { name: domain.environment } }"
+                  class="text-toned hover:underline"
+                  >{{ domain.environment }}</RouterLink
+                >
+              </td>
+              <td class="px-4 py-3">
+                <UBadge v-if="domain.tls" color="neutral" variant="subtle" size="sm" class="font-mono">
+                  tls: {{ domain.tls }}
+                </UBadge>
+              </td>
+              <td class="px-4 py-3">
+                <UBadge :color="domain.verified ? 'success' : 'warning'" variant="soft" size="sm">
+                  {{ domain.verified ? "Verified" : "Awaiting DNS" }}
+                </UBadge>
+              </td>
+              <td class="px-4 py-3 text-right text-xs text-muted whitespace-nowrap">{{ timeAgo(domain.createdAt) }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Resources: provisioned claims (databases, OIDC clients, …) bound to this project. -->
+      <div v-else-if="tab === 'resources'" class="rounded-md border border-default overflow-x-auto">
+        <table class="w-full text-sm">
+          <tbody>
+            <tr v-if="!data?.claims.length">
+              <td class="px-4 py-8 text-center text-muted">
+                No resource claims — a claim asks a connection to provision something (a database, an OIDC client) and
+                binds it into the project's environment. Claims are created with kubectl for now.
+              </td>
+            </tr>
+            <tr v-for="claim in data?.claims" :key="claim.name" class="border-b border-muted last:border-0">
+              <td class="px-4 py-3 text-highlighted font-medium">{{ claim.name }}</td>
+              <td class="px-4 py-3">
+                <UBadge color="neutral" variant="subtle" size="sm" class="font-mono">{{ claim.type }}</UBadge>
+              </td>
+              <td class="px-4 py-3 font-mono text-xs text-toned">via {{ claim.connection }}</td>
+              <td class="px-4 py-3"><PhaseBadge :phase="claim.phase" /></td>
+              <td class="px-4 py-3 font-mono text-xs text-muted truncate max-w-48" :title="claim.secret">
+                {{ claim.secret || "not bound yet" }}
+              </td>
+              <td class="px-4 py-3 text-right text-xs text-muted whitespace-nowrap">{{ timeAgo(claim.createdAt) }}</td>
             </tr>
           </tbody>
         </table>

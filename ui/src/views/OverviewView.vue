@@ -16,7 +16,7 @@ const { data, error, loading, refresh } = useAsync(() =>
 );
 usePoll(() => void refresh(), 15000, () => true);
 
-const filter = ref<"all" | "failing">("all");
+const filter = ref<"all" | "production" | "previews" | "failing">("all");
 
 interface Row {
   name: string;
@@ -56,8 +56,21 @@ const rows = computed<Row[]>(() => {
   });
 });
 
-const failingCount = computed(() => rows.value.filter((r) => r.tone === "error").length);
-const visible = computed(() => (filter.value === "failing" ? rows.value.filter((r) => r.tone === "error") : rows.value));
+const filters = computed(() => {
+  const rowsOf = {
+    all: rows.value,
+    production: rows.value.filter((r) => r.environment?.phase === "Live"),
+    previews: rows.value.filter((r) => r.previews > 0),
+    failing: rows.value.filter((r) => r.tone === "error"),
+  };
+  return [
+    { value: "all" as const, label: "All", rows: rowsOf.all },
+    { value: "production" as const, label: "Production", rows: rowsOf.production },
+    { value: "previews" as const, label: "Previews", rows: rowsOf.previews },
+    { value: "failing" as const, label: "Failing", rows: rowsOf.failing },
+  ];
+});
+const visible = computed(() => filters.value.find((f) => f.value === filter.value)?.rows ?? rows.value);
 
 function host(url?: string): string {
   if (!url) return "—";
@@ -86,22 +99,16 @@ function host(url?: string): string {
 
     <UAlert v-if="error" color="error" variant="soft" icon="i-lucide-triangle-alert" :title="error" />
 
-    <div class="flex items-center gap-2">
+    <div class="flex items-center gap-2 flex-wrap">
       <UButton
+        v-for="chip in filters"
+        :key="chip.value"
         size="xs"
-        :color="filter === 'all' ? 'primary' : 'neutral'"
-        :variant="filter === 'all' ? 'soft' : 'subtle'"
-        @click="filter = 'all'"
+        :color="filter === chip.value ? 'primary' : 'neutral'"
+        :variant="filter === chip.value ? 'soft' : 'subtle'"
+        @click="filter = chip.value"
       >
-        All <span class="font-mono text-dimmed ml-1">{{ rows.length }}</span>
-      </UButton>
-      <UButton
-        size="xs"
-        :color="filter === 'failing' ? 'primary' : 'neutral'"
-        :variant="filter === 'failing' ? 'soft' : 'subtle'"
-        @click="filter = 'failing'"
-      >
-        Failing <span class="font-mono text-dimmed ml-1">{{ failingCount }}</span>
+        {{ chip.label }} <span class="font-mono text-dimmed ml-1">{{ chip.rows.length }}</span>
       </UButton>
     </div>
 
