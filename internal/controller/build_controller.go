@@ -339,14 +339,14 @@ func (r *BuildReconciler) succeed(
 			}
 			envName := fmt.Sprintf("%s-pr-%d", project.Name, *build.Spec.Git.PullRequest)
 			if err := r.ensureEnvironment(ctx, build.Namespace, project, envName,
-				kitchenv1alpha1.EnvironmentPreview, preview, release.Name); err != nil {
+				kitchenv1alpha1.EnvironmentPreview, preview, release.Name, build.Name); err != nil {
 				return ctrl.Result{}, err
 			}
 		}
 	case build.Spec.Git.Branch == project.Spec.Source.ProductionBranch:
 		envName := project.Name + "-production"
 		if err := r.ensureEnvironment(ctx, build.Namespace, project, envName,
-			kitchenv1alpha1.EnvironmentProduction, nil, release.Name); err != nil {
+			kitchenv1alpha1.EnvironmentProduction, nil, release.Name, build.Name); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
@@ -380,6 +380,7 @@ func (r *BuildReconciler) ensureEnvironment(
 	envType kitchenv1alpha1.EnvironmentType,
 	preview *kitchenv1alpha1.PreviewInfo,
 	releaseName string,
+	buildName string,
 ) error {
 	env := &kitchenv1alpha1.Environment{}
 	err := r.Get(ctx, types.NamespacedName{Namespace: namespace, Name: envName}, env)
@@ -405,8 +406,15 @@ func (r *BuildReconciler) ensureEnvironment(
 	if env.Spec.ReleaseRef.Name == releaseName {
 		return nil
 	}
+	outgoing := env.Spec.ReleaseRef.Name
 	env.Spec.ReleaseRef = kitchenv1alpha1.LocalObjectReference{Name: releaseName}
-	return r.Update(ctx, env)
+	if err := r.Update(ctx, env); err != nil {
+		return err
+	}
+	if env.RecordReleaseMove(outgoing, kitchenv1alpha1.ReleaseMovePromoted, buildName) {
+		return r.Status().Update(ctx, env)
+	}
+	return nil
 }
 
 // previewsEnabled reports whether the project wants preview environments.

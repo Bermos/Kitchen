@@ -167,6 +167,21 @@ curl -sS -X PATCH -H "authorization: Bearer $TOKEN" \
 The release has to belong to the same project as the environment; anything else
 is a `400`. Promotion is the same call with a newer release.
 
+Each move is remembered. The environment's `history` lists the releases that
+stopped being current, newest first: which release, when it was current
+(`from`/`to`), how it stopped (`reason`) and who moved the environment off it
+(`by` — the authenticated caller for API moves, the promoting build for
+automatic ones):
+
+```json
+{"history": [{"release": "shop-rel-42", "from": "2026-08-13T09:12:00Z",
+  "to": "2026-08-14T10:30:00Z", "reason": "rolledBack", "by": "ada@example.com"}]}
+```
+
+`reason` is `promoted` when a fresh build's release was auto-promoted over it,
+`rolledBack` when the environment was moved back to an older release, and
+`superseded` when another release replaced it any other way.
+
 ### Settings
 
 `GET /settings` is the `Kitchen` singleton as a view: the base domain, the

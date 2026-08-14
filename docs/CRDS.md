@@ -227,9 +227,21 @@ status:
   phase: Live                           # Pending | Deploying | Live | Degraded | Terminating
   url: https://my-shop-pr-42.apps.example.com
   observedRelease: my-shop-rel-000042
+  history:                              # how past releases stopped being current,
+    - release: my-shop-rel-000041       # newest first, last 10
+      from: "2026-08-13T09:12:00Z"      # when it became / stopped being current
+      to: "2026-08-14T10:30:00Z"
+      reason: promoted                  # promoted | rolledBack | superseded
+      by: my-shop-bld-abc123def456-xk2p9   # the promoting Build, or the API caller
   conditions: [...]                     # Ready, RouteProgrammed, WorkloadAvailable,
                                         # PreviewProtected (previews only)
 ```
+
+`history` answers what `releaseRef` alone cannot: **how** the environment moved off each
+release. `promoted` — a fresh build's release was auto-promoted over it; `rolledBack` —
+someone moved the environment back to an older release; `superseded` — anything else
+replaced it (a manual move forward through the API, or a direct spec edit, where `by`
+stays empty).
 
 Reconcile (the heart of the operator): in the project namespace, ensure an apps/v1
 Deployment (from the Release's image + config snapshot), Service, `HTTPRoute` attached to

@@ -180,6 +180,48 @@ var _ = Describe("Environment Controller", func() {
 			Expect(env.Status.Phase).To(Equal(kitchenv1alpha1.EnvironmentDeploying))
 		})
 
+		It("records a release move nobody else recorded", func() {
+			By("reconciling until the first release is observed")
+			reconcileOnce()
+			reconcileOnce()
+
+			By("moving the spec to another release directly, as kubectl would")
+			second := &kitchenv1alpha1.Release{
+				ObjectMeta: metav1.ObjectMeta{Name: releaseName + "-next", Namespace: namespace},
+				Spec: kitchenv1alpha1.ReleaseSpec{
+					ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: projectName},
+					BuildRef:   kitchenv1alpha1.LocalObjectReference{Name: "shop-bld-2"},
+					Image:      image,
+				},
+			}
+			Expect(k8sClient.Create(ctx, second)).To(Succeed())
+			DeferCleanup(func() {
+				Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, second))).To(Succeed())
+			})
+			env := &kitchenv1alpha1.Environment{}
+			Expect(k8sClient.Get(ctx, envKey, env)).To(Succeed())
+			env.Spec.ReleaseRef = kitchenv1alpha1.LocalObjectReference{Name: second.Name}
+			Expect(k8sClient.Update(ctx, env)).To(Succeed())
+
+			reconcileOnce()
+
+			By("checking the backstop entry: superseded, mover unknown")
+			Expect(k8sClient.Get(ctx, envKey, env)).To(Succeed())
+			Expect(env.Status.ObservedRelease).To(Equal(second.Name))
+			Expect(env.Status.History).To(HaveLen(1))
+			entry := env.Status.History[0]
+			Expect(entry.Release).To(Equal(releaseName))
+			Expect(entry.Reason).To(Equal(kitchenv1alpha1.ReleaseMoveSuperseded))
+			Expect(entry.By).To(BeEmpty())
+			Expect(entry.From.Equal(&env.CreationTimestamp)).To(BeTrue(),
+				"the first stint starts where the environment does")
+
+			By("reconciling again without another entry appearing")
+			reconcileOnce()
+			Expect(k8sClient.Get(ctx, envKey, env)).To(Succeed())
+			Expect(env.Status.History).To(HaveLen(1))
+		})
+
 		It("uses preview overlays and a preview hostname for preview environments", func() {
 			env := &kitchenv1alpha1.Environment{}
 			Expect(k8sClient.Get(ctx, envKey, env)).To(Succeed())

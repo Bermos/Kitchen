@@ -160,17 +160,28 @@ type previewView struct {
 	Branch      string `json:"branch"`
 }
 
+// releaseHistoryView is one completed stint of a release being current on an
+// environment: when it held the environment, and how and by whom it stopped.
+type releaseHistoryView struct {
+	Release string    `json:"release"`
+	From    time.Time `json:"from"`
+	To      time.Time `json:"to"`
+	Reason  string    `json:"reason"`
+	By      string    `json:"by,omitempty"`
+}
+
 type environmentView struct {
-	Name            string          `json:"name"`
-	Project         string          `json:"project"`
-	Type            string          `json:"type"`
-	Release         string          `json:"release"`
-	ObservedRelease string          `json:"observedRelease,omitempty"`
-	Phase           string          `json:"phase,omitempty"`
-	URL             string          `json:"url,omitempty"`
-	Preview         *previewView    `json:"preview,omitempty"`
-	CreatedAt       time.Time       `json:"createdAt"`
-	Conditions      []conditionView `json:"conditions,omitempty"`
+	Name            string               `json:"name"`
+	Project         string               `json:"project"`
+	Type            string               `json:"type"`
+	Release         string               `json:"release"`
+	ObservedRelease string               `json:"observedRelease,omitempty"`
+	Phase           string               `json:"phase,omitempty"`
+	URL             string               `json:"url,omitempty"`
+	Preview         *previewView         `json:"preview,omitempty"`
+	History         []releaseHistoryView `json:"history,omitempty"`
+	CreatedAt       time.Time            `json:"createdAt"`
+	Conditions      []conditionView      `json:"conditions,omitempty"`
 }
 
 func newEnvironmentView(env *kitchenv1alpha1.Environment) environmentView {
@@ -187,6 +198,15 @@ func newEnvironmentView(env *kitchenv1alpha1.Environment) environmentView {
 	}
 	if preview := env.Spec.Preview; preview != nil {
 		view.Preview = &previewView{PullRequest: preview.PullRequest, Branch: preview.Branch}
+	}
+	for _, entry := range env.Status.History {
+		view.History = append(view.History, releaseHistoryView{
+			Release: entry.Release,
+			From:    entry.From.Time,
+			To:      entry.To.Time,
+			Reason:  string(entry.Reason),
+			By:      entry.By,
+		})
 	}
 	return view
 }

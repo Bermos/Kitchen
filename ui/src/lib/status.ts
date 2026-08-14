@@ -1,4 +1,4 @@
-import type { Condition } from "./api";
+import type { Condition, Environment, ReleaseHistoryEntry } from "./api";
 
 // Phases are the coarse summary the CRDs expose; the platform's vocabulary
 // comes verbatim from docs/CRDS.md. Conditions carry the detail and the UI
@@ -25,6 +25,26 @@ const phaseTones: Record<string, Tone> = {
 
 export function phaseTone(phase: string | undefined): Tone {
   return (phase && phaseTones[phase]) || "neutral";
+}
+
+/** The newest history entry for a release — how its latest stint on the
+ * environment ended. History arrives newest first from the API. */
+export function releaseHistoryEntry(
+  release: string,
+  environment: Environment | undefined,
+): ReleaseHistoryEntry | undefined {
+  return environment?.history?.find((entry) => entry.release === release);
+}
+
+/** The deployment timeline's label for a release that is not current. A
+ * release rolled back off reads "Rolled back" wherever it sits; otherwise the
+ * one the environment left most recently is "Previous" and older ones are
+ * "Superseded". A release the history never saw current gets no label. */
+export function releaseHistoryLabel(release: string, environment: Environment | undefined): string {
+  const entry = releaseHistoryEntry(release, environment);
+  if (!entry) return "";
+  if (entry.reason === "rolledBack") return "Rolled back";
+  return entry === environment?.history?.[0] ? "Previous" : "Superseded";
 }
 
 /** A condition that is not where it should be — the thing the UI surfaces

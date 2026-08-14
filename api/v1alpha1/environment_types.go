@@ -66,6 +66,45 @@ const (
 	EnvironmentTerminating EnvironmentPhase = "Terminating"
 )
 
+// ReleaseMoveReason is how an Environment moved off a Release.
+// +kubebuilder:validation:Enum=promoted;rolledBack;superseded
+type ReleaseMoveReason string
+
+const (
+	// ReleaseMovePromoted: a fresh build's Release was auto-promoted over it.
+	ReleaseMovePromoted ReleaseMoveReason = "promoted"
+	// ReleaseMoveRolledBack: the Environment retreated to an older Release.
+	ReleaseMoveRolledBack ReleaseMoveReason = "rolledBack"
+	// ReleaseMoveSuperseded: another Release replaced it outside those two
+	// flows — a manual move forward through the API, or a direct spec edit.
+	ReleaseMoveSuperseded ReleaseMoveReason = "superseded"
+)
+
+// ReleaseHistoryEntry is one completed stint of a Release being current on
+// this Environment: which Release, when it held the spec, and how and by whom
+// it stopped being current.
+type ReleaseHistoryEntry struct {
+	// +kubebuilder:validation:MinLength=1
+	Release string `json:"release"`
+
+	// From is when the Release became current.
+	From metav1.Time `json:"from"`
+
+	// To is when it stopped being current.
+	To metav1.Time `json:"to"`
+
+	Reason ReleaseMoveReason `json:"reason"`
+
+	// By names who caused the move: the API caller, or the Build whose
+	// Release was promoted. Empty for moves made directly on the spec.
+	// +optional
+	By string `json:"by,omitempty"`
+}
+
+// MaxReleaseHistory bounds status.history; the timeline needs recency,
+// not an archive.
+const MaxReleaseHistory = 10
+
 // EnvironmentStatus defines the observed state of an Environment.
 type EnvironmentStatus struct {
 	// +optional
@@ -79,8 +118,46 @@ type EnvironmentStatus struct {
 	// +optional
 	ObservedRelease string `json:"observedRelease,omitempty"`
 
+	// History of Releases that stopped being current, newest first.
+	// +optional
+	// +kubebuilder:validation:MaxItems=10
+	History []ReleaseHistoryEntry `json:"history,omitempty"`
+
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+// RecordReleaseMove prepends a history entry for the Release the Environment
+// is moving off. The stint began where the previous one ended — or at the
+// Environment's creation for the first. It reports whether it recorded
+// anything: the newest entry already naming the outgoing Release means
+// another writer got there first (the spec writer and the environment
+// reconciler both call this for the same move), and an empty outgoing name
+// means there is no stint to close.
+func (e *Environment) RecordReleaseMove(outgoing string, reason ReleaseMoveReason, by string) bool {
+	if outgoing == "" {
+		return false
+	}
+	history := e.Status.History
+	if len(history) > 0 && history[0].Release == outgoing {
+		return false
+	}
+	from := e.CreationTimestamp
+	if len(history) > 0 {
+		from = history[0].To
+	}
+	history = append([]ReleaseHistoryEntry{{
+		Release: outgoing,
+		From:    from,
+		To:      metav1.Now(),
+		Reason:  reason,
+		By:      by,
+	}}, history...)
+	if len(history) > MaxReleaseHistory {
+		history = history[:MaxReleaseHistory]
+	}
+	e.Status.History = history
+	return true
 }
 
 // +kubebuilder:object:root=true

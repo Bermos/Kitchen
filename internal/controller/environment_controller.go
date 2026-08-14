@@ -471,6 +471,15 @@ func (r *EnvironmentReconciler) updateStatus(
 		}
 	}
 
+	// The release the workload ran until now stops being current here. The
+	// spec writers (auto-promotion, the API) record the move themselves with
+	// cause and caller; this records the ones nobody did — kubectl on the
+	// spec, or a writer whose status update was lost. RecordReleaseMove
+	// skips a move whose entry already exists.
+	if outgoing := env.Status.ObservedRelease; outgoing != release.Name {
+		env.RecordReleaseMove(outgoing, kitchenv1alpha1.ReleaseMoveSuperseded, "")
+	}
+
 	env.Status.URL = fmt.Sprintf("%s://%s", scheme, host)
 	env.Status.ObservedRelease = release.Name
 	if available {

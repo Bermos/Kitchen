@@ -164,8 +164,14 @@ func fixtures() []runtime.Object {
 		},
 		Status: kitchenv1alpha1.BuildStatus{Phase: kitchenv1alpha1.BuildSucceeded},
 	}
+	// The releases carry creation timestamps because that is the order they
+	// were cut in — what tells a rollback from a promotion.
 	release := &kitchenv1alpha1.Release{
-		ObjectMeta: metav1.ObjectMeta{Name: "shop-rel-1", Namespace: testNamespace},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              "shop-rel-1",
+			Namespace:         testNamespace,
+			CreationTimestamp: metav1.NewTime(time.Now().Add(-time.Hour)),
+		},
 		Spec: kitchenv1alpha1.ReleaseSpec{
 			ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: "shop"},
 			BuildRef:   kitchenv1alpha1.LocalObjectReference{Name: testBuild},
@@ -173,7 +179,11 @@ func fixtures() []runtime.Object {
 		},
 	}
 	previous := &kitchenv1alpha1.Release{
-		ObjectMeta: metav1.ObjectMeta{Name: "shop-rel-0", Namespace: testNamespace},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              "shop-rel-0",
+			Namespace:         testNamespace,
+			CreationTimestamp: metav1.NewTime(time.Now().Add(-2 * time.Hour)),
+		},
 		Spec: kitchenv1alpha1.ReleaseSpec{
 			ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: "shop"},
 			BuildRef:   kitchenv1alpha1.LocalObjectReference{Name: "shop-bld-000000000000"},
@@ -723,6 +733,48 @@ func TestRollingAnEnvironmentBack(t *testing.T) {
 	}
 	if stored.Spec.ReleaseRef.Name != "shop-rel-0" {
 		t.Fatalf("the rollback did not stick: %q", stored.Spec.ReleaseRef.Name)
+	}
+
+	// The move is remembered: which release stopped being current, that it
+	// was rolled back off, and by whom.
+	if len(stored.Status.History) != 1 {
+		t.Fatalf("want one history entry, got %+v", stored.Status.History)
+	}
+	entry := stored.Status.History[0]
+	if entry.Release != "shop-rel-1" || entry.Reason != kitchenv1alpha1.ReleaseMoveRolledBack {
+		t.Fatalf("want shop-rel-1 recorded as rolled back, got %+v", entry)
+	}
+	if entry.By != "grace@example.com" {
+		t.Fatalf("want the caller persisted, got %q", entry.By)
+	}
+	if entry.To.IsZero() {
+		t.Fatal("the entry should say when the release stopped being current")
+	}
+}
+
+func TestMovingForwardRecordsSupersessionNotRollback(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+
+	// Back to the older release, then forward again: only the first move is
+	// a rollback — the second superseded the older release.
+	for _, body := range []string{`{"release":"shop-rel-0"}`, `{"release":"shop-rel-1"}`} {
+		if recorder := h.do(t, http.MethodPatch, "/api/v1/environments/shop-production", body); recorder.Code != http.StatusOK {
+			t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
+		}
+	}
+
+	stored := &kitchenv1alpha1.Environment{}
+	if err := h.server.get(context.Background(), "shop-production", stored); err != nil {
+		t.Fatal(err)
+	}
+	if len(stored.Status.History) != 2 {
+		t.Fatalf("want two history entries, got %+v", stored.Status.History)
+	}
+	if got := stored.Status.History[0]; got.Release != "shop-rel-0" || got.Reason != kitchenv1alpha1.ReleaseMoveSuperseded {
+		t.Fatalf("want shop-rel-0 superseded, newest first, got %+v", got)
+	}
+	if got := stored.Status.History[1]; got.Release != "shop-rel-1" || got.Reason != kitchenv1alpha1.ReleaseMoveRolledBack {
+		t.Fatalf("want the rollback preserved underneath, got %+v", got)
 	}
 }
 
