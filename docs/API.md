@@ -87,6 +87,8 @@ sent the request.
 | GET | `/environments/{name}` | One environment |
 | PATCH | `/environments/{name}` | Move it to another release — promotion and rollback |
 | GET | `/environments/{name}/logs` | That environment's runtime logs |
+| GET | `/settings` | The platform's settings — the `Kitchen` singleton |
+| PATCH | `/settings` | Change the build and telemetry defaults |
 | GET | `/connections` | Every connection (never their credentials) |
 | GET | `/connections/{name}` | One connection |
 | GET | `/domains` | Every custom domain. `?environment=` filters |
@@ -134,6 +136,22 @@ curl -sS -X PATCH -H "authorization: Bearer $TOKEN" \
 The release has to belong to the same project as the environment; anything else
 is a `400`. Promotion is the same call with a newer release.
 
+### Settings
+
+`GET /settings` is the `Kitchen` singleton as a view: the base domain, the
+derived API and issuer URLs, the gateway's address and conditions, and the
+defaults the platform builds and retains telemetry with.
+
+`PATCH /settings` changes the fields that are safe to change at runtime:
+
+```json
+{"buildStrategy": "auto", "buildConcurrency": 2, "logRetentionDays": 30}
+```
+
+Fields left out stay as they are. Everything else on the singleton — the base
+domain, the issuer, the ingress — shapes URLs and credentials the platform has
+already handed out, so changing those stays a deliberate kubectl operation.
+
 ### Logs
 
 Build and runtime logs come from ClickHouse, where the collector has been
@@ -178,7 +196,8 @@ read, which is a missing capability rather than a bad request.
 | Token audience | The API's own URL (`resource=`), or the issuer | A resource server should be able to tell a token meant for it from a token meant for everything |
 | CI tokens | better-auth's api-key plugin, exchanged for a JWT at the issuer | The plugin already holds the operator's own credential; keeping key lookup at the issuer keeps the operator's request path stateless |
 | Response shapes | The API's own vocabulary, not raw custom resources | A stable contract for the UI, and freedom to change how state is stored |
-| Write surface | Rebuild and promote/rollback | The two writes that are meaningful before a UI exists; the rest wait for the flows they belong to |
+| Write surface | Rebuild, promote/rollback, and the settings' runtime defaults | The writes the UI drives today; creating projects and connections waits for the flows they belong to |
+| The dashboard | Served by the same process, outside `/api/` | The SPA is public, stateless files plus `/config.json` (issuer, client id, audience — the same values every login redirect shows); everything with state stays behind the token check |
 | Webhook receiver | Stays signature-authenticated, not OIDC | A provider proving a payload is genuine is a different question from a caller proving who they are |
 
 ## Open

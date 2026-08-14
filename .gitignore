@@ -23,6 +23,12 @@ go.work
 auth/node_modules/
 auth/dist/
 
+# dashboard build output (Node); the image build embeds it into the operator
+ui/node_modules/
+ui/dist/
+internal/ui/dist/*
+!internal/ui/dist/.gitkeep
+
 # editor and IDE paraphernalia
 .idea
 .vscode

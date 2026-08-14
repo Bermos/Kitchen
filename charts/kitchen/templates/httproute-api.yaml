@@ -34,4 +34,16 @@ spec:
       backendRefs:
         - name: {{ include "kitchen.fullname" . }}-api
           port: {{ .Values.api.service.port }}
+    {{- if .Values.api.ui.enabled }}
+    # The dashboard: everything outside /api/ (and the webhook receiver's more
+    # specific /webhooks/git/ prefix, which wins by Gateway API precedence) is
+    # the SPA and its assets, served by the same operator process.
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: {{ include "kitchen.fullname" . }}-api
+          port: {{ .Values.api.service.port }}
+    {{- end }}
 {{- end }}

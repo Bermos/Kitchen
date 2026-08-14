@@ -100,6 +100,13 @@ build: manifests generate fmt vet ## Build the manager and preview-gate binaries
 run: manifests generate fmt vet ## Run a controller from your host.
 	go run ./cmd/main.go
 
+.PHONY: ui-build
+ui-build: ## Build the dashboard and stage it for embedding into the manager.
+	cd ui && npm ci --no-audit --no-fund && npm run build
+	rm -rf internal/ui/dist && mkdir -p internal/ui/dist
+	cp -r ui/dist/. internal/ui/dist/
+	touch internal/ui/dist/.gitkeep
+
 # If you wish to build the manager image targeting other platforms you can use the --platform flag.
 # (i.e. docker build --platform linux/arm64). However, you must enable docker buildKit for it.
 # More info: https://docs.docker.com/develop/develop-images/build_enhancements/

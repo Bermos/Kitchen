@@ -120,6 +120,11 @@ api:
   # external URL. Only needed when tokens are minted for another name than the
   # one the platform generates.
   extraAudiences: []
+  ui:
+    # -- Serve the dashboard at the API host's root: the operator embeds the
+    # built SPA and answers everything outside `/api/` with it. Disabling this
+    # only removes the route rule — the operator still serves the files.
+    enabled: true
 
 # The git webhook receiver: the endpoint providers deliver push and
 # pull_request events to. It has to be reachable from the internet for
