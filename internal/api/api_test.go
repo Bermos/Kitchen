@@ -136,7 +136,7 @@ func fixtures() []runtime.Object {
 			Source: kitchenv1alpha1.GitSourceSpec{
 				ConnectionRef:    kitchenv1alpha1.LocalObjectReference{Name: "gh"},
 				Repo:             "acme/shop",
-				ProductionBranch: "main",
+				ProductionBranch: defaultProductionBranch,
 			},
 			Registry: kitchenv1alpha1.RegistrySpec{
 				ConnectionRef: kitchenv1alpha1.LocalObjectReference{Name: "registry"},
@@ -157,7 +157,7 @@ func fixtures() []runtime.Object {
 			ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: "shop"},
 			Git: kitchenv1alpha1.GitRevision{
 				SHA:     "abc123def456789",
-				Branch:  "main",
+				Branch:  defaultProductionBranch,
 				Message: "ship it",
 				Author:  "grace",
 			},
@@ -524,7 +524,7 @@ func TestCreatingAProjectAppliesTheDefaults(t *testing.T) {
 		t.Fatalf("want 201, got %d: %s", recorder.Code, recorder.Body.String())
 	}
 	view := decode[projectView](t, recorder)
-	if view.ProductionBranch != "main" || !view.Previews {
+	if view.ProductionBranch != defaultProductionBranch || !view.Previews {
 		t.Fatalf("want the main branch and previews on by default, got %+v", view)
 	}
 }
@@ -620,7 +620,7 @@ func TestRebuildingWithoutABodyRepeatsTheLastCommit(t *testing.T) {
 		t.Fatalf("want 201, got %d: %s", recorder.Code, recorder.Body.String())
 	}
 	build := decode[buildView](t, recorder)
-	if build.Git.SHA != "abc123def456789" || build.Git.Branch != "main" {
+	if build.Git.SHA != "abc123def456789" || build.Git.Branch != defaultProductionBranch {
 		t.Fatalf("want the last commit rebuilt, got %+v", build.Git)
 	}
 	if build.Name == testBuild {
@@ -660,7 +660,7 @@ func TestRebuildingAFreshCommitFallsBackToTheProductionBranch(t *testing.T) {
 	if recorder.Code != http.StatusCreated {
 		t.Fatalf("want 201, got %d: %s", recorder.Code, recorder.Body.String())
 	}
-	if build := decode[buildView](t, recorder); build.Git.Branch != "main" {
+	if build := decode[buildView](t, recorder); build.Git.Branch != defaultProductionBranch {
 		t.Fatalf("want the production branch, got %q", build.Git.Branch)
 	}
 }
