@@ -315,6 +315,37 @@ Removing a CRD field still needs care: the API server rejects a stored object
 that no longer validates, so land conversion work before shipping a breaking
 schema.
 
+### Upgrading from 0.1.0
+
+Releases at 0.1.0 cannot be upgraded in place. Their ClickHouse and Postgres
+StatefulSets stamp the chart version onto `volumeClaimTemplates`, which is an
+immutable field, so any upgrade to a different version is rejected:
+
+```
+Error: UPGRADE FAILED: server-side apply failed for object kitchen-system/kitchen-clickhouse
+apps/v1, Kind=StatefulSet: StatefulSet.apps "kitchen-clickhouse" is invalid: spec: Forbidden:
+updates to statefulset spec for fields other than 'replicas', 'ordinals', 'template', ... are forbidden
+```
+
+Newer charts no longer put a versioned label there, but that does not repair a
+StatefulSet already in the cluster — the live object still disagrees. Delete
+the two StatefulSets first, orphaning what they manage, then upgrade:
+
+```sh
+kubectl -n kitchen-system delete sts kitchen-clickhouse kitchen-postgres --cascade=orphan
+helm upgrade kitchen ./charts/kitchen --namespace kitchen-system --reuse-values
+```
+
+`--cascade=orphan` leaves the pods running and the PVCs intact; the upgrade
+recreates the StatefulSets and they adopt the existing pods, so neither the
+telemetry store nor the accounts database is interrupted. Confirm the volumes
+came back with `kubectl -n kitchen-system get pvc`.
+
+A failed upgrade does not roll back what it already applied, so a release
+caught by this is left mixed — the Deployments on the new version, the
+StatefulSets on the old one. The recovery above resolves that too: it ends in a
+completed upgrade at one version.
+
 The `Kitchen` singleton is applied as a **post-install hook** and is *not*
 re-applied on upgrade. Platform config is also editable from the management UI,
 and re-applying it every upgrade would silently revert those edits. Set
