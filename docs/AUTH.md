@@ -257,6 +257,12 @@ Two things fall out of the API being a **resource server of its own**:
   (`resource=https://kitchen.<baseDomain>`) rather than one for everything.
   That is also what makes the access token a signed JWT: the provider issues
   opaque tokens when no resource is named.
+- **The access token carries the account's name and address**, following the
+  granted scopes (`profile` → `name`, `email` → `email`). Neither the UI nor
+  the operator calls `/oauth2/userinfo`, and the ID token stops at the UI's
+  token exchange, so a token that named its account with `sub` alone would
+  leave both showing an opaque id — in the account menu, and as the author of
+  everything the API writes.
 - **CI tokens are the api-key plugin** (the open item below is closed). A key
   is a credential at the issuer, exchanged there for a short-lived JWT
   (`GET /token` with `x-api-key`); the operator only ever sees the JWT. Keeping

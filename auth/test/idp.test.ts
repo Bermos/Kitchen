@@ -410,6 +410,12 @@ describe("the Kitchen UI client and the operator API's audience", () => {
 		);
 		assert.equal(claims.azp, "kitchen-ui");
 		assert.ok(claims.sub, "the token names the account it belongs to");
+		// Neither the UI nor the operator API calls /oauth2/userinfo, so the
+		// account's name and address have to travel on the access token — it is
+		// what both of them show the person signed in, and what the API records
+		// as the author of everything it writes.
+		assert.equal(claims.name, admin.name, "the granted `profile` scope puts the account's name on the token");
+		assert.equal(claims.email, admin.email, "the granted `email` scope puts the address on the token");
 	});
 
 	it("refuses a token without the PKCE verifier the client committed to", async () => {
