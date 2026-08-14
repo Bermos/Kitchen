@@ -64,9 +64,11 @@ jobs:
       - name: Clone the code
         uses: actions/checkout@v4
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
+      # No QEMU here on purpose. The Dockerfile pins its build stages to the
+      # build platform and cross-compiles, and the final stage only copies
+      # binaries in, so nothing arm64 is ever executed. Verified by building
+      # this image, attestations included, on a host with no arm64 emulation
+      # registered at all. The auth image below still needs it.
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -99,8 +101,12 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # Reads the cache the branch builds populate, and deliberately
+          # writes none. Actions caches are ref-scoped: anything exported from
+          # a run on refs/tags/vX.Y.Z cannot be read by the next release's tag,
+          # and the layers worth caching change every release regardless.
+          # Exporting it cost 296s of the 43-minute v0.1.0 run for nothing.
           cache-from: type=gha
-          cache-to: type=gha,mode=max
           provenance: mode=max
           sbom: true
 
@@ -159,8 +165,12 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # Reads the cache the branch builds populate, and deliberately
+          # writes none. Actions caches are ref-scoped: anything exported from
+          # a run on refs/tags/vX.Y.Z cannot be read by the next release's tag,
+          # and the layers worth caching change every release regardless.
+          # Exporting it cost 296s of the 43-minute v0.1.0 run for nothing.
           cache-from: type=gha
-          cache-to: type=gha,mode=max
           provenance: mode=max
           sbom: true
 
