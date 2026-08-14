@@ -37,7 +37,7 @@ These aren't nice-to-haves — the first three are the product.
 
 2. **Git integration.** The `git push` in the one-liner: GitHub/GitLab/Gitea app + webhook receiver in the operator, commit-triggered builds, deploy status checks posted back on commits/PRs. Fits the connection-plugin model (git providers as a plugin family alongside registry/db).
 
-3. **Preview deployments.** The killer Vercel feature: every PR gets an ephemeral environment with a unique URL, torn down on merge/close. Requires wildcard DNS + wildcard TLS (or cloudflared, which sidesteps both) — this constrains the ingress/domain design and should be in from day one, not retrofitted. ✅ Shipped, and gated: preview URLs go through a forward-auth proxy so only signed-in platform users see unreleased work (`spec.previews.protected`, on by default).
+3. **Preview deployments.** The killer Vercel feature: every PR gets an ephemeral environment with a unique URL, torn down on merge/close. Requires wildcard DNS + wildcard TLS (or cloudflared, which sidesteps the wildcard *certificate* but not the wildcard DNS) — this constrains the ingress/domain design and should be in from day one, not retrofitted. ✅ Shipped, and gated: preview URLs go through a forward-auth proxy so only signed-in platform users see unreleased work (`spec.previews.protected`, on by default).
 
 4. **Domains & DNS.** Custom domain attachment with validation, a wildcard base domain for generated URLs (`*.apps.example.com`), optionally ExternalDNS for clusters that manage their own zones.
 
@@ -80,7 +80,8 @@ These aren't nice-to-haves — the first three are the product.
   between Gateway and Service).
 - **Preview protection is an in-path proxy, not a Gateway filter.** Gateway API has no external-authorization filter and Cilium's implementation exposes none of Envoy's `ext_authz`; injecting one through `CiliumEnvoyConfig` would tie routing to Cilium. Instead a protected preview's `HTTPRoute` simply points at the gate, with the application's address in a header the Gateway sets — something every Gateway API implementation can do. See [AUTH.md](AUTH.md).
 - **No separate ingress controller.** The operator programs **Gateway API** resources (`Gateway`/`HTTPRoute`), and Cilium's built-in Gateway API implementation (embedded Envoy) serves them. Gateway API is the abstraction, so another implementation (Envoy Gateway, Istio) could slot in later without touching the operator's routing logic. When cloudflared is enabled, the tunnel points at the Gateway service — cloudflared is the edge, but all traffic still flows through one routing layer with uniform telemetry.
-  - Documented cluster prerequisites this implies: Cilium with `gatewayAPI.enabled=true` + kube-proxy replacement, Gateway API CRDs installed, and a way to give the Gateway a reachable address on bare metal — Cilium L2 announcements or BGP for a LoadBalancer IP, or skip that entirely by fronting with cloudflared.
+  - Documented cluster prerequisites this implies: Cilium with `gatewayAPI.enabled=true` + kube-proxy replacement, Gateway API CRDs at the version Cilium pins, a default StorageClass (ClickHouse and the auth Postgres take the cluster default and stay `Pending` without one), and a LoadBalancer address for the Gateway.
+  - **cloudflared does not remove the address requirement**, only the routability requirement. Verified on bare metal: Cilium reports `Programmed=False` / `AddressNotAssigned` on a Gateway with no LoadBalancer IP, and `observeGateway` mirrors that into the Kitchen object, so the platform never goes ready. LB IPAM is needed either way; L2 announcements or BGP are what cloudflared lets you skip, since the tunnel dials out from inside the cluster.
 
 ## Open decisions
 

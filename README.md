@@ -29,26 +29,94 @@ flow data — lands in ClickHouse.
   URLs are served through
 - `charts/kitchen/` — the Helm chart that deploys all of it
 
-## Install
+## First-time setup
+
+Kitchen expects to be the only thing in its cluster, so it brings most of its
+own dependencies — including cert-manager. What it does *not* bring is the
+things a cluster needs before it can run anything at all.
+
+### 1. Cluster prerequisites
+
+Four things, none of which the chart installs:
+
+- **Cilium as the CNI**, with `gatewayAPI.enabled=true` and kube-proxy
+  replacement. Its Gateway API implementation *is* the ingress; there is no
+  separate ingress controller.
+- **Gateway API CRDs**, at the version your Cilium requires — this moves faster
+  than you would expect, so check Cilium's docs rather than guessing.
+- **A default StorageClass.** ClickHouse and the identity provider's Postgres
+  are StatefulSets with `volumeClaimTemplates` and no `storageClass` set, so
+  they take the cluster default. Without one they sit `Pending` forever, and
+  that is the most common way a first install appears to hang.
+- **A reachable address for the Gateway** — on bare metal, Cilium LB IPAM plus
+  L2 announcements or BGP. cloudflared sidesteps needing a routable address,
+  but not needing an address: Cilium will not mark a Gateway `Programmed`
+  without one.
+
+### 2. Wildcard DNS and a Cloudflare token
+
+Every generated URL is `<slug>.<baseDomain>`, so you need a wildcard record and
+a wildcard certificate. Kitchen obtains the certificate over ACME **DNS-01**,
+which is not a preference — ACME issues wildcards no other way, however
+reachable your cluster is.
+
+```sh
+kubectl create namespace kitchen-system
+kubectl -n kitchen-system create secret generic cloudflare-api-token \
+  --from-literal=api-token=<token>
+```
+
+The token needs `Zone:DNS:Edit` on the zone and `Zone:Zone:Read` to find it.
+
+> Note: Cloudflare's Universal SSL only covers one level of subdomain. If your
+> base domain is itself a subdomain — `apps.example.com`, so app URLs are
+> `<slug>.apps.example.com` — an edge certificate needs Advanced Certificate
+> Manager. This does not affect DNS-01 issuance, only proxied Cloudflare edge
+> TLS.
+
+### 3. Install
 
 ```sh
 helm install kitchen oci://ghcr.io/bermos/charts/kitchen \
-  --namespace kitchen-system --create-namespace \
-  --set kitchen.baseDomain=apps.example.com
+  --namespace kitchen-system \
+  --set kitchen.baseDomain=apps.example.com \
+  --set kitchen.tls.acme.email=you@example.com \
+  --set kitchen.tls.acme.dns01.cloudflare.apiTokenSecretName=cloudflare-api-token
 ```
 
-That brings up the operator, its CRDs, the git webhook receiver, the REST API
-at `kitchen.apps.example.com/api/v1/`, a single-node ClickHouse for telemetry
-with the collector that fills it, and the identity provider at
-`auth.apps.example.com` with its Postgres.
+That brings up cert-manager, the operator and its CRDs, the git webhook
+receiver, the REST API at `kitchen.apps.example.com/api/v1/`, a single-node
+ClickHouse for telemetry with the collector that fills it, and the identity
+provider at `auth.apps.example.com` with its Postgres.
 
-Then point `*.apps.example.com` at the shared Gateway:
+Set `kitchen.tls.mode=none` to start without TLS, or `cert-manager.enabled=false`
+if your cluster already runs one.
+
+### 4. Point DNS at the Gateway
 
 ```sh
 kubectl get kitchen default -o jsonpath='{.status.gatewayAddress}'
 ```
 
-Create the first administrator with the one-time link `helm install` prints:
+Point `*.apps.example.com` at that address.
+
+### 5. Wait for the certificate
+
+The wildcard certificate is requested by the operator rather than by Helm:
+cert-manager's webhook has to be serving before a `Certificate` is admitted,
+so it appears a reconcile after the release, not with it.
+
+```sh
+kubectl get kitchen default \
+  -o jsonpath='{.status.conditions[?(@.type=="CertificateReady")].message}'
+```
+
+A DNS-01 order takes a minute or two. Failures — a token without the right
+scopes, a zone it cannot see — are reported in that message.
+
+### 6. Create the first administrator
+
+With the one-time link `helm install` prints:
 
 ```sh
 echo "https://auth.apps.example.com/bootstrap?token=$(kubectl -n kitchen-system \
@@ -62,9 +130,8 @@ curl -H "authorization: Bearer $TOKEN" \
   https://kitchen.apps.example.com/api/v1/projects
 ```
 
-Cluster prerequisites (Cilium with Gateway API, wildcard DNS, cert-manager or
-cloudflared), every value, and the upgrade/uninstall semantics are documented
-in [the chart's README](charts/kitchen/README.md).
+Every value, and the upgrade/uninstall semantics, are documented in
+[the chart's README](charts/kitchen/README.md).
 
 ## Development
 

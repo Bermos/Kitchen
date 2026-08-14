@@ -12,9 +12,22 @@ Kitchen assumes these exist; the chart does **not** install them:
 - **Cilium as the cluster CNI** with `gatewayAPI.enabled=true` and kube-proxy
   replacement. Cilium's Gateway API implementation is the ingress; there is no
   separate ingress controller.
-- **Gateway API CRDs** (`gateway.networking.k8s.io/v1`).
-- **A reachable address for the Gateway**: Cilium L2 announcements or BGP for a
-  LoadBalancer IP — or cloudflared, which sidesteps both.
+- **Gateway API CRDs**, at the version your Cilium release requires — Cilium
+  pins this tightly and it moves quickly, so read its docs rather than assuming
+  the newest or the one in this repo's CI is right.
+- **A default StorageClass.** ClickHouse and the identity provider's Postgres
+  are StatefulSets whose `volumeClaimTemplates` leave `storageClass` empty, so
+  they take the cluster default. With no default they stay `Pending`
+  indefinitely, which is the usual reason a first install looks like it hung.
+- **A LoadBalancer address for the Gateway**: on bare metal, Cilium LB IPAM,
+  plus L2 announcements or BGP to make that address answer.
+
+  Note that cloudflared removes the need for the address to be *routable*, not
+  the need for it to *exist*: Cilium reports `Programmed=False`
+  (`AddressNotAssigned`) on a Gateway with no LoadBalancer IP, and the operator
+  mirrors that into the Kitchen object, so the platform never becomes ready.
+  With cloudflared you still want LB IPAM — you just do not need L2 or BGP,
+  because the tunnel dials out from inside the cluster.
 - **Wildcard DNS** for `*.<baseDomain>`, pointed at that address.
 cert-manager is **not** in that list: the chart ships it as a sub-chart
 (`cert-manager.enabled`, on by default), because Kitchen owns the cluster it is
