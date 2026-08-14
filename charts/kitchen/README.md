@@ -14,7 +14,8 @@ Kitchen assumes these exist; the chart does **not** install them:
   separate ingress controller.
 - **Gateway API CRDs**, at the version your Cilium release requires — Cilium
   pins this tightly and it moves quickly, so read its docs rather than assuming
-  the newest or the one in this repo's CI is right.
+  the newest is right. The release states it on its Gateway API page, and CI
+  resolves the same value from the Cilium version it targets.
 - **A default StorageClass.** ClickHouse and the identity provider's Postgres
   are StatefulSets whose `volumeClaimTemplates` leave `storageClass` empty, so
   they take the cluster default. With no default they stay `Pending`

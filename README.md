@@ -45,7 +45,8 @@ Four things, none of which the chart installs:
   replacement. Its Gateway API implementation *is* the ingress; there is no
   separate ingress controller.
 - **Gateway API CRDs**, at the version your Cilium requires — this moves faster
-  than you would expect, so check Cilium's docs rather than guessing.
+  than you would expect, so check Cilium's docs rather than guessing. CI does
+  the same, resolving the version from the Cilium release it targets.
 - **A default StorageClass.** ClickHouse and the identity provider's Postgres
   are StatefulSets with `volumeClaimTemplates` and no `storageClass` set, so
   they take the cluster default. Without one they sit `Pending` forever, and
