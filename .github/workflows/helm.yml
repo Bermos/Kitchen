@@ -134,6 +134,36 @@ jobs:
             exit 1
           }
 
+      - name: Check no immutable field carries a versioned label
+        run: |
+          set -euo pipefail
+          # `volumeClaimTemplates` is immutable: the API server rejects every
+          # change to it, including one confined to labels. So a label that
+          # moves with the chart version — `helm.sh/chart`,
+          # `app.kubernetes.io/version` — makes the StatefulSet unupgradable to
+          # any new version, on every existing install. The kind job installs
+          # and upgrades; only a render can check this without a cluster.
+          claim_templates() {
+            helm template kitchen charts/kitchen --namespace kitchen-system \
+              --set kitchen.baseDomain=apps.example.com -s "$1" \
+              | awk '/^  volumeClaimTemplates:/ { inside = 1; next }
+                     inside && /^  [^ #]/ { inside = 0 }
+                     inside && !/^ *#/'
+          }
+          for file in templates/clickhouse/statefulset.yaml templates/postgres/statefulset.yaml; do
+            block=$(claim_templates "${file}")
+            [ -n "${block}" ] || {
+              echo "::error::${file} rendered no volumeClaimTemplates to check"
+              exit 1
+            }
+            if echo "${block}" | grep -nE 'helm\.sh/chart|app\.kubernetes\.io/version'; then
+              echo "::error::${file} puts a versioned label on volumeClaimTemplates," \
+                   "which is immutable — no release could then be upgraded to a new chart" \
+                   "version. Use the component's selector labels there instead of kitchen.labels."
+              exit 1
+            fi
+          done
+
       - name: Check the collector is only rendered with somewhere to ship to
         run: |
           set -euo pipefail
@@ -636,6 +666,21 @@ jobs:
           kubectl patch kitchen default --type=merge \
             -p '{"spec":{"observability":{"clickhouse":{"retentionDays":30}}}}'
 
+      # The upgrade below has to cross a *chart version*, not re-apply the same
+      # one. Every object the chart owns is labelled with `helm.sh/chart` and
+      # `app.kubernetes.io/version`, so a same-version upgrade re-applies
+      # byte-identical objects and says nothing about the fields that cannot be
+      # re-applied at all. That is how a chart in which no release could ever be
+      # upgraded to a new version passed this job.
+      - name: Stage a newer chart version
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/kitchen-next
+          cp -r charts/kitchen /tmp/kitchen-next
+          sed -i -e 's/^version: .*/version: 9.9.9/' \
+                 -e 's/^appVersion: .*/appVersion: "9.9.9"/' /tmp/kitchen-next/Chart.yaml
+          grep -E '^(version|appVersion):' /tmp/kitchen-next/Chart.yaml
+
       - name: Upgrade the release
         run: |
           set -euo pipefail
@@ -645,8 +690,9 @@ jobs:
             -o jsonpath='{.data.secret}{" "}{.data.serviceKey}')
           # Both images have to be pinned again: an upgrade without
           # --reuse-values resets every value, and the published tags do not
-          # exist on this runner.
-          helm upgrade kitchen charts/kitchen \
+          # exist on this runner. Pinning them is also what keeps the staged
+          # 9.9.9 appVersion from becoming an image tag nothing published.
+          helm upgrade kitchen /tmp/kitchen-next \
             --namespace kitchen-system \
             --set image.repository=kitchen --set image.tag=ci \
             --set auth.image.repository=kitchen-auth --set auth.image.tag=ci \
@@ -663,6 +709,24 @@ jobs:
             echo "::error::the upgrade did not scale the manager to 2 replicas"
             exit 1
           }
+          # The StatefulSets are what a version bump used to break: their
+          # claim templates are immutable, so a versioned label there made the
+          # whole upgrade fail. Both must have taken the new version, and their
+          # volumes must still be bound to the data they had before.
+          for sts in kitchen-clickhouse kitchen-postgres; do
+            chart=$(kubectl -n kitchen-system get sts "${sts}" \
+              -o jsonpath='{.metadata.labels.helm\.sh/chart}')
+            [ "${chart}" = kitchen-9.9.9 ] || {
+              echo "::error::${sts} still carries chart label '${chart}' after the upgrade"
+              exit 1
+            }
+            bound=$(kubectl -n kitchen-system get pvc "data-${sts}-0" \
+              -o jsonpath='{.status.phase}')
+            [ "${bound}" = Bound ] || {
+              echo "::error::${sts} lost its volume on upgrade (pvc phase '${bound}')"
+              exit 1
+            }
+          done
           # The singleton is left alone by upgrades unless applyOnUpgrade is set.
           kubectl get kitchen default
           # A regenerated password would lock the collectors out of the store.

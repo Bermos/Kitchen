@@ -34,6 +34,18 @@ const (
 	MaxLogLimit     = 5000
 )
 
+// timestampAlias is the name the formatted timestamp is selected under.
+//
+// It is deliberately not `timestamp`: ClickHouse resolves a name in WHERE and
+// ORDER BY against the SELECT aliases before the table's columns, so aliasing
+// the formatted value to `timestamp` hides the DateTime64 column behind the
+// String this expression produces. The window then compares the two and the
+// query fails with "No operation greaterOrEquals between String and
+// DateTime64" — which is what the observability view showed on its very first
+// query, before a single line had been collected. The same shadowing would
+// catch any caller-written expression in FilterLogs that mentions the column.
+const timestampAlias = "ts"
+
 // LogQuery selects log lines. The zero value selects nothing: every caller
 // scopes the read to one build or one environment, because "every line in the
 // cluster" is not a question the API answers.
@@ -71,9 +83,10 @@ type LogLine struct {
 }
 
 // logRow is the wire shape ClickHouse returns. The timestamp arrives as a
-// string because JSONEachRow renders DateTime64 that way.
+// string because JSONEachRow renders DateTime64 that way, under the name
+// `ts` — see timestampAlias for why it is not called `timestamp`.
 type logRow struct {
-	Timestamp   string `json:"timestamp"`
+	Timestamp   string `json:"ts"`
 	Source      string `json:"source"`
 	Project     string `json:"project"`
 	Environment string `json:"environment"`
@@ -130,14 +143,14 @@ func (c *Client) SearchLogs(ctx context.Context, query LogQuery) ([]LogLine, err
 	}
 
 	statement := fmt.Sprintf(`SELECT
-    formatDateTime(timestamp, '%%Y-%%m-%%dT%%H:%%i:%%S.%%fZ', 'UTC') AS timestamp,
+    formatDateTime(timestamp, '%%Y-%%m-%%dT%%H:%%i:%%S.%%fZ', 'UTC') AS %s,
     source, project, environment, build, pod, container, stream, message
 FROM %s.%s
 WHERE %s
 ORDER BY timestamp DESC
 LIMIT {limit:UInt32}
 FORMAT JSONEachRow`,
-		quoteIdentifier(c.cfg.Database), quoteIdentifier(LogsTable), strings.Join(conditions, " AND "))
+		timestampAlias, quoteIdentifier(c.cfg.Database), quoteIdentifier(LogsTable), strings.Join(conditions, " AND "))
 
 	body, err := c.QueryWithParams(ctx, statement, params)
 	if err != nil {
@@ -197,14 +210,14 @@ func (c *Client) FilterLogs(ctx context.Context, filter LogFilter) ([]LogLine, e
 	}
 
 	statement := fmt.Sprintf(`SELECT
-    formatDateTime(timestamp, '%%Y-%%m-%%dT%%H:%%i:%%S.%%fZ', 'UTC') AS timestamp,
+    formatDateTime(timestamp, '%%Y-%%m-%%dT%%H:%%i:%%S.%%fZ', 'UTC') AS %s,
     source, project, environment, build, pod, container, stream, message
 FROM %s.%s
 WHERE %s
 ORDER BY timestamp DESC
 LIMIT {limit:UInt32}
 FORMAT JSONEachRow`,
-		quoteIdentifier(c.cfg.Database), quoteIdentifier(LogsTable), strings.Join(conditions, " AND "))
+		timestampAlias, quoteIdentifier(c.cfg.Database), quoteIdentifier(LogsTable), strings.Join(conditions, " AND "))
 
 	body, err := c.queryWithSettings(ctx, statement, params, readonlySettings)
 	if err != nil {
