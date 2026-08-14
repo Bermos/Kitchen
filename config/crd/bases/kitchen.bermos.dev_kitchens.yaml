@@ -21,6 +21,9 @@ spec:
     - jsonPath: .status.gatewayAddress
       name: Gateway
       type: string
+    - jsonPath: .status.conditions[?(@.type=="ComponentsHealthy")].message
+      name: Components
+      type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -284,6 +287,63 @@ spec:
           status:
             description: KitchenStatus defines the observed state of the platform.
             properties:
+              components:
+                description: |-
+                  Components reports every platform workload the operator can see, in
+                  name order, whether or not it is healthy. Something missing from this
+                  list was never created; something in it with Healthy false was created
+                  and is not running.
+                items:
+                  description: |-
+                    ComponentStatus reports the runtime health of one platform workload.
+
+                    This is deliberately about pods, not about reconciliation: the conditions
+                    say whether the operator could do its job, this says whether what it (or the
+                    chart) asked for is actually running.
+                  properties:
+                    available:
+                      description: Available pods right now.
+                      format: int32
+                      type: integer
+                    desired:
+                      description: |-
+                        Desired pods. For a DaemonSet this is however many nodes it selects,
+                        so it moves with the cluster rather than with any configured replica
+                        count.
+                      format: int32
+                      type: integer
+                    healthy:
+                      description: Healthy is true when every pod the workload wants
+                        is available.
+                      type: boolean
+                    kind:
+                      description: 'Kind of workload backing it: Deployment, StatefulSet
+                        or DaemonSet.'
+                      type: string
+                    message:
+                      description: |-
+                        Message explains an unhealthy component, and carries the reason from
+                        the workload's most recent warning event where there is one. A
+                        workload whose pods are rejected at admission reports no pods at all
+                        rather than failing pods, so without the event there is nothing to
+                        read: see the PodSecurity note in the chart README.
+                      type: string
+                    name:
+                      description: |-
+                        Name of the component, taken from app.kubernetes.io/component and
+                        falling back to the object name for workloads that set no such label.
+                      type: string
+                  required:
+                  - available
+                  - desired
+                  - healthy
+                  - kind
+                  - name
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
               conditions:
                 items:
                   description: Condition contains details for one aspect of the current

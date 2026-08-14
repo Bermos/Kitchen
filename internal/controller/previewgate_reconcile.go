@@ -462,8 +462,7 @@ func (r *KitchenReconciler) removePreviewGate(ctx context.Context) error {
 }
 
 func previewGateLabels() map[string]string {
-	return map[string]string{
-		labelComponentKey: PreviewGateName,
-		labelManagedByKey: labelManagedByValue,
-	}
+	// The selector matches on PreviewGateName and cannot be changed on an
+	// existing Deployment, so that stays exactly as it was.
+	return platformLabels(PreviewGateName, "preview-gate")
 }

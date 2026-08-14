@@ -226,6 +226,39 @@ type KitchenSpec struct {
 	Observability ObservabilitySpec `json:"observability,omitempty"`
 }
 
+// ComponentStatus reports the runtime health of one platform workload.
+//
+// This is deliberately about pods, not about reconciliation: the conditions
+// say whether the operator could do its job, this says whether what it (or the
+// chart) asked for is actually running.
+type ComponentStatus struct {
+	// Name of the component, taken from app.kubernetes.io/component and
+	// falling back to the object name for workloads that set no such label.
+	Name string `json:"name"`
+
+	// Kind of workload backing it: Deployment, StatefulSet or DaemonSet.
+	Kind string `json:"kind"`
+
+	// Healthy is true when every pod the workload wants is available.
+	Healthy bool `json:"healthy"`
+
+	// Available pods right now.
+	Available int32 `json:"available"`
+
+	// Desired pods. For a DaemonSet this is however many nodes it selects,
+	// so it moves with the cluster rather than with any configured replica
+	// count.
+	Desired int32 `json:"desired"`
+
+	// Message explains an unhealthy component, and carries the reason from
+	// the workload's most recent warning event where there is one. A
+	// workload whose pods are rejected at admission reports no pods at all
+	// rather than failing pods, so without the event there is nothing to
+	// read: see the PodSecurity note in the chart README.
+	// +optional
+	Message string `json:"message,omitempty"`
+}
+
 // KitchenStatus defines the observed state of the platform.
 type KitchenStatus struct {
 	// +optional
@@ -234,6 +267,15 @@ type KitchenStatus struct {
 	// Externally reachable address of the shared Gateway, once programmed.
 	// +optional
 	GatewayAddress string `json:"gatewayAddress,omitempty"`
+
+	// Components reports every platform workload the operator can see, in
+	// name order, whether or not it is healthy. Something missing from this
+	// list was never created; something in it with Healthy false was created
+	// and is not running.
+	// +optional
+	// +listType=map
+	// +listMapKey=name
+	Components []ComponentStatus `json:"components,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -241,6 +283,7 @@ type KitchenStatus struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="BaseDomain",type=string,JSONPath=`.spec.baseDomain`
 // +kubebuilder:printcolumn:name="Gateway",type=string,JSONPath=`.status.gatewayAddress`
+// +kubebuilder:printcolumn:name="Components",type=string,JSONPath=`.status.conditions[?(@.type=="ComponentsHealthy")].message`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // Kitchen is the cluster-wide platform configuration singleton.

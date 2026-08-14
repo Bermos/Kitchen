@@ -93,3 +93,18 @@ through its Go types, to avoid tying the build to its release cadence.
   directly. It is deliberately not configurable.
 - **The platform namespace is `kitchen-system`**, also compiled in. The chart
   refuses to render elsewhere unless `namespaceCheck=false`.
+- **The log collector needs Pod Security `privileged`**, because it mounts the
+  node's `/var/log` and `baseline` forbids `hostPath` outright. The chart does
+  not create the namespace, so `--create-namespace` inherits the cluster
+  default: kind is `privileged` and CI never notices, Talos is `baseline` and
+  the collector silently never starts. A DaemonSet whose pods are refused at
+  admission has **no pods at all** — `kubectl get pods` looks clean, and the
+  rejection is a `FailedCreate` event on the DaemonSet. That failure mode is
+  what `status.components` on the Kitchen singleton exists to surface.
+- **Anything that should appear in the component survey needs
+  `app.kubernetes.io/part-of: kitchen`** and, to be readable,
+  `app.kubernetes.io/component`. The survey selects on the former rather than on
+  names, since every chart-generated name is release-name prefixed. Use
+  `platformLabels()` for operator-created workloads — and note the selector name
+  is passed separately, because a Deployment's selector is immutable and must
+  keep whatever value it already had.

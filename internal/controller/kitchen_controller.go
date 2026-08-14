@@ -87,6 +87,7 @@ const (
 	condTelemetrySchema   = "TelemetrySchemaReady"
 	condPreviewGateReady  = "PreviewGateReady"
 	condCertificateReady  = "CertificateReady"
+	condComponentsHealthy = "ComponentsHealthy"
 
 	// defaultRetentionDays matches the CRD default, for Kitchen objects
 	// written before the field existed.
@@ -107,6 +108,14 @@ type KitchenReconciler struct {
 	// chart passes it in, because a pod cannot read its own image back.
 	// Without it, protected previews have nothing to route through.
 	PreviewGateImage string
+
+	// APIReader reads straight from the API server, bypassing the cache.
+	// The component survey needs it for events: field selectors are not
+	// served by the cache, and caching every event in the namespace to
+	// answer an occasional question would cost far more than it saves.
+	// SetupWithManager fills it in; a nil reader only costs the survey the
+	// explanatory half of its message.
+	APIReader client.Reader
 }
 
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=kitchens,verbs=get;list;watch;create;update;patch;delete
@@ -114,8 +123,10 @@ type KitchenReconciler struct {
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=kitchens/finalizers,verbs=update
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=apps,resources=statefulsets;daemonsets,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;create
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch
+// +kubebuilder:rbac:groups="",resources=events,verbs=get;list;watch
 // +kubebuilder:rbac:groups=cert-manager.io,resources=clusterissuers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=cert-manager.io,resources=certificates,verbs=get;list;watch;create;update;patch;delete
 
@@ -164,6 +175,7 @@ func (r *KitchenReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	schemaReady := r.reconcileTelemetrySchema(ctx, kitchen, setCond)
 	gateReady := r.reconcilePreviewGate(ctx, kitchen, setCond)
 	programmed := r.observeGateway(ctx, kitchen, setCond)
+	componentsHealthy := r.surveyComponents(ctx, kitchen, setCond)
 	setCond(condReady, metav1.ConditionTrue, "Reconciled", "platform infrastructure is in place")
 
 	if err := r.Status().Update(ctx, kitchen); err != nil {
@@ -173,8 +185,9 @@ func (r *KitchenReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		"gatewayProgrammed", programmed,
 		"telemetrySchemaReady", schemaReady,
 		"previewGateReady", gateReady,
-		"certificateReady", certReady)
-	if !programmed || !schemaReady || !gateReady || !certReady {
+		"certificateReady", certReady,
+		"componentsHealthy", componentsHealthy)
+	if !programmed || !schemaReady || !gateReady || !certReady || !componentsHealthy {
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 	return ctrl.Result{}, nil
@@ -326,10 +339,7 @@ func (r *KitchenReconciler) reconcileCloudflared(
 		return
 	}
 
-	labels := map[string]string{
-		labelComponentKey: "cloudflared",
-		labelManagedByKey: labelManagedByValue,
-	}
+	labels := platformLabels("cloudflared", "cloudflared")
 	deploy := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{
 		Name: deployKey.Name, Namespace: deployKey.Namespace,
 	}}
@@ -655,12 +665,33 @@ func (r *KitchenReconciler) mapToSingleton(_ context.Context, obj client.Object)
 	return []ctrl.Request{{NamespacedName: types.NamespacedName{Name: KitchenSingletonName}}}
 }
 
+// mapPlatformWorkload enqueues the singleton for anything the component survey
+// reports on. Unlike mapToSingleton this deliberately does not require the
+// operator to have created the object: most platform workloads come from the
+// chart and are labelled managed-by Helm, and their health is exactly what the
+// survey exists to notice.
+func (r *KitchenReconciler) mapPlatformWorkload(_ context.Context, obj client.Object) []ctrl.Request {
+	if obj.GetNamespace() != PlatformNamespace {
+		return nil
+	}
+	if obj.GetLabels()[labelPartOfKey] != labelPartOfValue {
+		return nil
+	}
+	return []ctrl.Request{{NamespacedName: types.NamespacedName{Name: KitchenSingletonName}}}
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *KitchenReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	// Events are read through this rather than the cache; see APIReader.
+	r.APIReader = mgr.GetAPIReader()
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&kitchenv1alpha1.Kitchen{}).
 		Watches(&gatewayv1.Gateway{}, handler.EnqueueRequestsFromMapFunc(r.mapToSingleton)).
 		Watches(&appsv1.Deployment{}, handler.EnqueueRequestsFromMapFunc(r.mapToSingleton)).
+		Watches(&appsv1.Deployment{}, handler.EnqueueRequestsFromMapFunc(r.mapPlatformWorkload)).
+		Watches(&appsv1.StatefulSet{}, handler.EnqueueRequestsFromMapFunc(r.mapPlatformWorkload)).
+		Watches(&appsv1.DaemonSet{}, handler.EnqueueRequestsFromMapFunc(r.mapPlatformWorkload)).
 		Named("kitchen").
 		Complete(r)
 }

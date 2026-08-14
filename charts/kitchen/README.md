@@ -30,6 +30,17 @@ Kitchen assumes these exist; the chart does **not** install them:
   With cloudflared you still want LB IPAM — you just do not need L2 or BGP,
   because the tunnel dials out from inside the cluster.
 - **Wildcard DNS** for `*.<baseDomain>`, pointed at that address.
+- **A `kitchen-system` namespace labelled `pod-security.kubernetes.io/enforce=privileged`**,
+  if you want container logs collected. The collector is a DaemonSet that mounts
+  the node's `/var/log`, and `hostPath` is admitted at the `privileged` level
+  only — `baseline` forbids it outright, so there is no narrower level that
+  still works. Clusters differ in what they default to: kind is `privileged` and
+  notices nothing, Talos is `baseline` and the collector never starts. Label the
+  namespace before installing, or install with `logs.enabled=false`.
+
+  The chart does not create or label the namespace itself, so
+  `--create-namespace` leaves it inheriting the cluster default.
+
 cert-manager is **not** in that list: the chart ships it as a sub-chart
 (`cert-manager.enabled`, on by default), because Kitchen owns the cluster it is
 installed into. Set `cert-manager.enabled=false` for a cluster that already
@@ -194,6 +205,34 @@ misbehaves. Narrow it with `logs.extraLabelSelector` (for example
 collector off entirely with `logs.enabled=false`. With no telemetry store
 configured the collector is not rendered at all.
 
+### If no logs arrive
+
+Check the collector is actually running, which is not the same as checking that
+it was installed:
+
+```sh
+kubectl -n kitchen-system get ds -l app.kubernetes.io/component=logs
+```
+
+`DESIRED 1, AVAILABLE 0` with no pod anywhere means its pods are being refused
+before they are created — Pod Security is the usual reason, and the rejection is
+recorded as a `FailedCreate` event on the DaemonSet rather than as a pod in a
+bad state:
+
+```sh
+kubectl -n kitchen-system describe ds -l app.kubernetes.io/component=logs
+```
+
+```
+Warning  FailedCreate  daemonset-controller  Error creating: pods "kitchen-logs-gc9m4" is
+forbidden: violates PodSecurity "baseline:latest": hostPath volumes (volumes "data", "var-log")
+```
+
+Fix it by labelling the namespace as described under
+[Prerequisites](#prerequisites), then `kubectl -n kitchen-system rollout restart
+ds -l app.kubernetes.io/component=logs`. The same message is on the Kitchen
+object's `logs` component, which is where to look first.
+
 ## Identity provider
 
 The chart runs Kitchen's identity provider at `auth.<baseDomain>` — better-auth
@@ -302,6 +341,63 @@ its session signing key in `kitchen-preview-gate`. Deleting the signing key
 rotates it, which signs every preview visitor out; deleting the client secret
 makes the operator register a new client on the next reconcile (the old one is
 then orphaned at the identity provider).
+
+## Platform health
+
+The operator surveys the platform's workloads on every reconcile and records
+what it sees on the Kitchen singleton. It finds them by label —
+`app.kubernetes.io/part-of=kitchen` in `kitchen-system` — so it covers what the
+chart installs and what the operator creates alike, under any release name, and
+picks up new components without being told about them.
+
+```sh
+kubectl get kitchen default
+```
+
+```
+NAME      BASEDOMAIN         GATEWAY        COMPONENTS   AGE
+default   apps.example.com   203.0.113.10   6/6 healthy  5h
+```
+
+`status.components` has one entry per workload, in name order:
+
+```sh
+kubectl get kitchen default -o jsonpath='{range .status.components[*]}{.name}{"\t"}{.available}/{.desired}{"\t"}{.message}{"\n"}{end}'
+```
+
+```
+auth            1/1
+clickhouse      1/1
+controller      1/1
+logs            0/1     0 of 1 pods available: Error creating: pods "kitchen-logs-gc9m4" is
+                        forbidden: violates PodSecurity "baseline:latest": hostPath volumes
+postgres        1/1
+preview-gate    2/2
+```
+
+A component short of pods carries the reason from its most recent warning
+event, because that is frequently the only place one exists. Pods rejected at
+admission, refused by quota, or unschedulable produce *no pod object at all*, so
+`kubectl get pods` looks healthy and there is nothing to describe; the count and
+the event are the whole signal.
+
+The summary is also a condition, for scripting:
+
+```sh
+kubectl wait --for=condition=ComponentsHealthy kitchen/default --timeout=5m
+```
+
+Note the distinction between this and the other conditions. `ComponentsHealthy`
+is about pods — whether what was asked for is running. `Ready`,
+`GatewayProgrammed`, `CertificateReady` and the rest are about reconciliation —
+whether the operator could do its job. A platform can be fully reconciled and
+still have a component down, which is exactly the case worth surfacing, so
+`Ready` deliberately does not fold this in.
+
+Something absent from `status.components` was never created; something present
+with `healthy: false` was created and is not running. An empty list means
+nothing carries the label at all, which on a current chart means the workloads
+are missing rather than unhealthy.
 
 ## Upgrade
 
