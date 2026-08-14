@@ -117,10 +117,27 @@ type ClickHouseSpec struct {
 	SecretRef *LocalObjectReference `json:"secretRef,omitempty"`
 }
 
+// HubbleSpec configures the network flow pipeline. Cilium is the platform's
+// CNI (a prerequisite, not something Kitchen installs), and Hubble Relay is
+// its cluster-wide flow API; when an address is given, the operator follows
+// it and ships flow observations into the telemetry store, which is what the
+// dashboard's traffic view draws.
+type HubbleSpec struct {
+	// RelayAddress is the host:port of Hubble Relay's gRPC endpoint,
+	// typically "hubble-relay.kube-system.svc.cluster.local:80" once Hubble
+	// is enabled in Cilium. Empty means no flow collection — the traffic
+	// view stays empty and says why.
+	// +optional
+	RelayAddress string `json:"relayAddress,omitempty"`
+}
+
 // ObservabilitySpec configures the telemetry pipeline.
 type ObservabilitySpec struct {
 	// +optional
 	ClickHouse ClickHouseSpec `json:"clickhouse,omitempty"`
+
+	// +optional
+	Hubble HubbleSpec `json:"hubble,omitempty"`
 }
 
 // APISpec configures how the operator's API is exposed.

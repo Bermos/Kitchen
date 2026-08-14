@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, onScopeDispose, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { APIError, api, type LogLine } from "../lib/api";
+import { compactCount, formatBytes } from "../lib/format";
 import { useAsync, usePoll } from "../lib/useAsync";
+import Sparkline from "../components/Sparkline.vue";
 import StatusDot from "../components/StatusDot.vue";
 
 // The observability view does not pretend the logs live anywhere but
@@ -33,9 +35,94 @@ const error = ref<string | null>(null);
 const loading = ref(false);
 const liveTail = ref(false);
 
-const columns = "timestamp · source · project · environment · build · pod · container · stream · message";
+// The headline numbers over the same store: what the platform served, erred,
+// and logged in the last 24 hours, per hour. Traffic rows read "—" until the
+// flow pipeline is configured.
+const metrics = useAsync(() => api.metricsOverview());
+usePoll(() => void metrics.refresh(), 60000, () => true);
+const headline = computed(() => {
+  const m = metrics.data.value;
+  if (!m) return null;
+  const traffic = m.requests24h > 0 || m.requestsPerHour.some((v) => v > 0);
+  return [
+    { label: "requests · 24 h", value: traffic ? compactCount(m.requests24h) : "—", points: m.requestsPerHour },
+    {
+      label: "errors · 24 h",
+      value: traffic ? compactCount(Math.round(m.requests24h * m.errorRate24h)) : "—",
+      points: m.errorsPerHour,
+      tone: "text-error",
+    },
+    {
+      label: "p95",
+      value: traffic && m.p95Ms24h > 0 ? `${Math.round(m.p95Ms24h)} ms` : "—",
+      points: m.p95MsPerHour,
+    },
+    { label: "log lines · 24 h", value: compactCount(m.logLines24h), points: m.logLinesPerHour },
+  ];
+});
+
+const columns = "timestamp · source · project · environment · build · pod · container · stream · level · message";
+
+// The live tail prefers the streamed endpoint (SSE on the same /logs, the
+// where expression applied to every new line) and falls back to re-running
+// the query every few seconds when the stream cannot be established.
+const streamBroken = ref(false);
+let controller: AbortController | undefined;
+const streaming = ref(false);
+
+function stopStream() {
+  controller?.abort();
+  controller = undefined;
+  streaming.value = false;
+}
+onScopeDispose(stopStream);
+
+function startStream() {
+  stopStream();
+  const mine = new AbortController();
+  controller = mine;
+  streaming.value = true;
+  const since = rangeMinutes.value > 0 ? new Date(Date.now() - rangeMinutes.value * 60000).toISOString() : undefined;
+  lines.value = [];
+  void api
+    .streamLogs(
+      where.value,
+      { limit: limit.value, since },
+      (line) => {
+        if (controller !== mine || !lines.value) return;
+        lines.value.push(line);
+        if (lines.value.length > 5000) lines.value.splice(0, lines.value.length - 5000);
+      },
+      mine.signal,
+    )
+    .catch((err) => {
+      if (controller !== mine) return;
+      stopStream();
+      if (err instanceof APIError && err.status === 400) {
+        // The expression itself was refused — surface it, don't poll it.
+        error.value = err.message;
+        liveTail.value = false;
+        return;
+      }
+      streamBroken.value = true;
+      void run();
+    });
+}
+
+function toggleLiveTail() {
+  liveTail.value = !liveTail.value;
+  if (liveTail.value && !streamBroken.value) startStream();
+  else {
+    stopStream();
+    void run();
+  }
+}
 
 async function run() {
+  if (streaming.value) {
+    startStream();
+    return;
+  }
   loading.value = true;
   // The expression is part of the address, so a query can be linked to.
   void router.replace({ query: where.value === "1 = 1" ? {} : { where: where.value } });
@@ -57,7 +144,7 @@ async function run() {
 }
 
 onMounted(run);
-usePoll(() => void run(), 5000, () => liveTail.value && !loading.value);
+usePoll(() => void run(), 5000, () => liveTail.value && !streaming.value && !loading.value);
 
 // Facets are counted client-side over the returned page: honest about what
 // they are, and free.
@@ -71,10 +158,18 @@ const facets = computed(() => {
     return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8);
   };
   return {
+    level: count((l) => l.level ?? ""),
     stream: count((l) => l.stream),
     source: count((l) => (l.environment ? `${l.environment}` : l.build ? `${l.build}` : l.source)),
   };
 });
+
+function levelClass(line: LogLine): string {
+  if (line.level === "error" || line.level === "fatal") return "text-error";
+  if (line.level === "warn") return "text-warning";
+  if (line.stream === "stderr") return "text-error";
+  return "text-toned";
+}
 
 function addClause(clause: string) {
   where.value = where.value.trim() === "1 = 1" || !where.value.trim() ? clause : `${where.value} AND ${clause}`;
@@ -95,6 +190,9 @@ function time(line: LogLine): string {
         <p class="text-xs text-muted mt-1">
           ClickHouse<template v-if="settings.data.value?.logRetentionDays">
             · {{ settings.data.value.logRetentionDays }} day retention</template
+          ><template v-if="metrics.data.value?.storeBytes">
+            · {{ formatBytes(metrics.data.value.storeBytes) }} ·
+            {{ Math.round(metrics.data.value.storeRowsPerSecond) }} rows/s</template
           >
           — queried as ClickHouse: a boolean expression over the
           <span class="font-mono">logs</span> table, run read-only.
@@ -106,10 +204,26 @@ function time(line: LogLine): string {
           size="sm"
           :color="liveTail ? 'success' : 'neutral'"
           :variant="liveTail ? 'soft' : 'subtle'"
-          @click="liveTail = !liveTail"
+          @click="toggleLiveTail"
         >
-          <StatusDot :tone="liveTail ? 'success' : 'neutral'" :pulse="liveTail" class="mr-1" /> Live tail
+          <StatusDot :tone="liveTail ? 'success' : 'neutral'" :pulse="liveTail" class="mr-1" />
+          {{ streaming ? "Streaming" : "Live tail" }}
         </UButton>
+      </div>
+    </div>
+
+    <!-- What the store saw in the last 24 hours, hourly. -->
+    <div v-if="headline" class="grid grid-cols-2 lg:grid-cols-4 gap-3">
+      <div
+        v-for="tile in headline"
+        :key="tile.label"
+        class="rounded-md border border-default px-3 py-2 flex items-center justify-between gap-3"
+      >
+        <div class="min-w-0">
+          <p class="text-[11px] text-muted truncate">{{ tile.label }}</p>
+          <p class="text-sm font-semibold text-highlighted tabular-nums">{{ tile.value }}</p>
+        </div>
+        <Sparkline :points="tile.points" :width="72" :height="20" :tone="tile.tone" />
       </div>
     </div>
 
@@ -153,10 +267,10 @@ function time(line: LogLine): string {
               <td class="px-2 py-0.5 whitespace-nowrap" :class="line.stream === 'stderr' ? 'text-error' : 'text-muted'">
                 {{ line.environment || line.build || line.source }}
               </td>
-              <td
-                class="px-2 py-0.5 whitespace-pre-wrap break-all w-full"
-                :class="line.stream === 'stderr' ? 'text-error' : 'text-toned'"
-              >
+              <td class="px-2 py-0.5 whitespace-nowrap select-none" :class="levelClass(line)">
+                {{ line.level || "" }}
+              </td>
+              <td class="px-2 py-0.5 whitespace-pre-wrap break-all w-full" :class="levelClass(line)">
                 {{ line.message }}
               </td>
             </tr>
@@ -165,6 +279,29 @@ function time(line: LogLine): string {
       </div>
 
       <aside v-if="lines?.length" class="w-56 shrink-0 space-y-4 text-xs">
+        <div>
+          <p class="text-muted mb-1.5">Level</p>
+          <button
+            v-for="[value, count] in facets.level"
+            :key="value"
+            class="flex items-center justify-between w-full px-2 py-1 rounded hover:bg-elevated text-left"
+            :disabled="value === '—'"
+            @click="value !== '—' && addClause(`level = '${value}'`)"
+          >
+            <span
+              class="font-mono"
+              :class="
+                value === 'error' || value === 'fatal'
+                  ? 'text-error'
+                  : value === 'warn'
+                    ? 'text-warning'
+                    : 'text-toned'
+              "
+              >{{ value }}</span
+            >
+            <span class="text-dimmed font-mono">{{ count }}</span>
+          </button>
+        </div>
         <div>
           <p class="text-muted mb-1.5">Stream</p>
           <button

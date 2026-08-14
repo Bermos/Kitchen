@@ -39,6 +39,8 @@ import (
 	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/activity"
+	"github.com/Bermos/Kitchen/internal/clickhouse"
 	"github.com/Bermos/Kitchen/internal/previewgate"
 )
 
@@ -70,6 +72,8 @@ const (
 type EnvironmentReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+	// Activity feeds the dashboard's recent-activity feed. May be nil.
+	Activity *activity.Recorder
 }
 
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=environments,verbs=get;list;watch;create;update;patch;delete
@@ -189,7 +193,18 @@ func (r *EnvironmentReconciler) finalize(ctx context.Context, env *kitchenv1alph
 	}
 
 	controllerutil.RemoveFinalizer(env, environmentFinalizer)
-	return ctrl.Result{}, r.Update(ctx, env)
+	if err := r.Update(ctx, env); err != nil {
+		return ctrl.Result{}, err
+	}
+	if env.Spec.Type == kitchenv1alpha1.EnvironmentPreview && env.Spec.Preview != nil {
+		r.Activity.Record(ctx, clickhouse.Event{
+			Type:        clickhouse.EventPreviewRemoved,
+			Project:     env.Spec.ProjectRef.Name,
+			Environment: env.Name,
+			Message:     fmt.Sprintf("preview for PR #%d removed", env.Spec.Preview.PullRequest),
+		})
+	}
+	return ctrl.Result{}, nil
 }
 
 func ensureNamespace(ctx context.Context, c client.Client, name, projectName string) error {
@@ -573,6 +588,12 @@ func (r *EnvironmentReconciler) notReady(
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
+}
+
+// AppNamespace is the namespace a project's workloads run in. It is exported
+// for the API, which joins per-namespace telemetry back to project names.
+func AppNamespace(projectName string) string {
+	return appNamespace(projectName)
 }
 
 func appNamespace(projectName string) string {

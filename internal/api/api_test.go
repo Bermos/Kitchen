@@ -254,10 +254,16 @@ func fixtures() []runtime.Object {
 
 // stubLogs stands in for the telemetry store.
 type stubLogs struct {
-	lines      []clickhouse.LogLine
-	last       clickhouse.LogQuery
-	lastFilter clickhouse.LogFilter
-	filterErr  error
+	lines       []clickhouse.LogLine
+	last        clickhouse.LogQuery
+	lastFilter  clickhouse.LogFilter
+	filterErr   error
+	events      []clickhouse.Event
+	lastEvents  clickhouse.EventQuery
+	edges       []clickhouse.TrafficEdge
+	lastTraffic clickhouse.TrafficQuery
+	overview    clickhouse.MetricsOverview
+	lastMetrics clickhouse.MetricsQuery
 }
 
 func (s *stubLogs) SearchLogs(_ context.Context, query clickhouse.LogQuery) ([]clickhouse.LogLine, error) {
@@ -271,6 +277,21 @@ func (s *stubLogs) FilterLogs(_ context.Context, filter clickhouse.LogFilter) ([
 		return nil, s.filterErr
 	}
 	return s.lines, nil
+}
+
+func (s *stubLogs) QueryEvents(_ context.Context, query clickhouse.EventQuery) ([]clickhouse.Event, error) {
+	s.lastEvents = query
+	return s.events, nil
+}
+
+func (s *stubLogs) TrafficEdges(_ context.Context, query clickhouse.TrafficQuery) ([]clickhouse.TrafficEdge, error) {
+	s.lastTraffic = query
+	return s.edges, nil
+}
+
+func (s *stubLogs) MetricsOverview(_ context.Context, query clickhouse.MetricsQuery) (clickhouse.MetricsOverview, error) {
+	s.lastMetrics = query
+	return s.overview, nil
 }
 
 type harness struct {
@@ -375,6 +396,9 @@ var routes = []struct {
 	{http.MethodPatch, "/api/v1/environments/shop-production"},
 	{http.MethodGet, "/api/v1/environments/shop-production/logs"},
 	{http.MethodGet, "/api/v1/logs"},
+	{http.MethodGet, "/api/v1/events"},
+	{http.MethodGet, "/api/v1/metrics/overview"},
+	{http.MethodGet, "/api/v1/traffic"},
 	{http.MethodGet, "/api/v1/settings"},
 	{http.MethodPatch, "/api/v1/settings"},
 	{http.MethodGet, "/api/v1/connections"},

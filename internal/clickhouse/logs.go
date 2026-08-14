@@ -79,6 +79,7 @@ type LogLine struct {
 	Pod         string    `json:"pod,omitempty"`
 	Container   string    `json:"container,omitempty"`
 	Stream      string    `json:"stream,omitempty"`
+	Level       string    `json:"level,omitempty"`
 	Message     string    `json:"message"`
 }
 
@@ -94,6 +95,7 @@ type logRow struct {
 	Pod         string `json:"pod"`
 	Container   string `json:"container"`
 	Stream      string `json:"stream"`
+	Level       string `json:"level"`
 	Message     string `json:"message"`
 }
 
@@ -144,7 +146,7 @@ func (c *Client) SearchLogs(ctx context.Context, query LogQuery) ([]LogLine, err
 
 	statement := fmt.Sprintf(`SELECT
     formatDateTime(timestamp, '%%Y-%%m-%%dT%%H:%%i:%%S.%%fZ', 'UTC') AS %s,
-    source, project, environment, build, pod, container, stream, message
+    source, project, environment, build, pod, container, stream, level, message
 FROM %s.%s
 WHERE %s
 ORDER BY timestamp DESC
@@ -166,7 +168,7 @@ FORMAT JSONEachRow`,
 type LogFilter struct {
 	// Where is a ClickHouse SQL expression over the table's columns
 	// (timestamp, source, project, environment, build, pod, container,
-	// stream, message). It must select something; "everything" is asked for
+	// stream, level, message). It must select something; "everything" is asked for
 	// explicitly with `1 = 1`.
 	Where string
 	// Since and Until bound the window on top of the expression.
@@ -211,7 +213,7 @@ func (c *Client) FilterLogs(ctx context.Context, filter LogFilter) ([]LogLine, e
 
 	statement := fmt.Sprintf(`SELECT
     formatDateTime(timestamp, '%%Y-%%m-%%dT%%H:%%i:%%S.%%fZ', 'UTC') AS %s,
-    source, project, environment, build, pod, container, stream, message
+    source, project, environment, build, pod, container, stream, level, message
 FROM %s.%s
 WHERE %s
 ORDER BY timestamp DESC
@@ -253,6 +255,7 @@ func parseLogLines(body string, capacity int) ([]LogLine, error) {
 			Pod:         row.Pod,
 			Container:   row.Container,
 			Stream:      row.Stream,
+			Level:       row.Level,
 			Message:     row.Message,
 		})
 	}

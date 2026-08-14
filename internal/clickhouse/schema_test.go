@@ -128,8 +128,43 @@ func TestEnsureLogsSchemaLeavesAMatchingTTLAlone(t *testing.T) {
 		t.Fatalf("EnsureLogsSchema: %v", err)
 	}
 
-	if store.sent("ALTER TABLE") {
-		t.Errorf("the TTL already matched, no ALTER expected, got:\n%s", strings.Join(store.queries, "\n---\n"))
+	if store.sent("MODIFY TTL") {
+		t.Errorf("the TTL already matched, no TTL change expected, got:\n%s", strings.Join(store.queries, "\n---\n"))
+	}
+}
+
+func TestEnsureLogsSchemaAddsTheLevelColumn(t *testing.T) {
+	store := newFakeStore(t)
+	store.engine = "MergeTree TTL toDateTime(timestamp) + toIntervalDay(30)"
+
+	if err := store.client(t).EnsureLogsSchema(context.Background(), 30); err != nil {
+		t.Fatalf("EnsureLogsSchema: %v", err)
+	}
+
+	// A table from before the level column is migrated in place; on a fresh
+	// table the same statement is a no-op thanks to IF NOT EXISTS.
+	want := "ALTER TABLE `kitchen`.`logs` ADD COLUMN IF NOT EXISTS level LowCardinality(String) AFTER stream"
+	if !store.sent(want) {
+		t.Errorf("expected %q, got:\n%s", want, strings.Join(store.queries, "\n---\n"))
+	}
+}
+
+func TestEnsureTelemetrySchemaCreatesEveryTable(t *testing.T) {
+	store := newFakeStore(t)
+	store.engine = ""
+
+	if err := store.client(t).EnsureTelemetrySchema(context.Background(), 14); err != nil {
+		t.Fatalf("EnsureTelemetrySchema: %v", err)
+	}
+
+	for _, want := range []string{
+		"CREATE TABLE IF NOT EXISTS `kitchen`.`logs`",
+		"CREATE TABLE IF NOT EXISTS `kitchen`.`events`",
+		"CREATE TABLE IF NOT EXISTS `kitchen`.`flows`",
+	} {
+		if !store.sent(want) {
+			t.Errorf("expected a statement containing %q, got:\n%s", want, strings.Join(store.queries, "\n---\n"))
+		}
 	}
 }
 

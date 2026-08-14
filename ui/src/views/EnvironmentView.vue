@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { useRoute } from "vue-router";
-import { api, type LogQuery, type Release } from "../lib/api";
+import { api, type LogLine, type LogQuery, type Release } from "../lib/api";
 import { shortImage, timeAgo } from "../lib/format";
 import { operatorMode } from "../lib/mode";
 import { useAsync, usePoll } from "../lib/useAsync";
@@ -49,6 +49,8 @@ async function move() {
 }
 
 const logFetcher = (query: LogQuery) => api.environmentLogs(name.value, query);
+const logStreamer = (query: LogQuery, onLine: (line: LogLine) => void, signal: AbortSignal) =>
+  api.streamEnvironmentLogs(name.value, query, onLine, signal);
 
 // The history entry labels the release's fate; the "by" column says who moved
 // the environment off it — a build for auto-promotions, a caller for API moves.
@@ -186,7 +188,7 @@ function historyBy(entry: { reason: string; by?: string }): string {
 
       <div>
         <h2 class="text-sm font-medium text-highlighted mb-2">Runtime logs</h2>
-        <LogViewer :fetcher="logFetcher" :live="moving" :query-clause="`environment = '${environment.name}'`" />
+        <LogViewer :fetcher="logFetcher" :streamer="logStreamer" :live="moving" :query-clause="`environment = '${environment.name}'`" />
       </div>
     </template>
     <div v-else-if="loading" class="py-24 text-center text-muted text-sm">Loading…</div>

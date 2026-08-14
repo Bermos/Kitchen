@@ -1,17 +1,20 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from "vue";
+import { computed, nextTick, onScopeDispose, ref, watch } from "vue";
 import type { LogLine, LogQuery } from "../lib/api";
 import { useAsync, usePoll } from "../lib/useAsync";
 import StatusDot from "./StatusDot.vue";
 
-// The log endpoints are bounded queries (newest lines win, oldest first in the
-// answer), so "live" is honest polling: re-run the same query while the thing
-// the logs belong to is still moving.
+// "Live" prefers a real tail: the same endpoint streamed as Server-Sent
+// Events, lines arriving as they are collected. When the stream cannot be
+// established (a proxy in the way, an old operator) the viewer falls back to
+// what it did before — re-running the bounded query every few seconds.
 
 const props = defineProps<{
   fetcher: (query: LogQuery) => Promise<LogLine[]>;
-  /** Keep refreshing while true — a running build, a deploying environment. */
+  /** Keep following while true — a running build, a deploying environment. */
   live?: boolean;
+  /** Streaming variant of the fetcher; polling is the fallback without it. */
+  streamer?: (query: LogQuery, onLine: (line: LogLine) => void, signal: AbortSignal) => Promise<void>;
   /** ClickHouse expression scoping this object, for the jump to Observability. */
   queryClause?: string;
 }>();
@@ -20,32 +23,95 @@ const search = ref("");
 const limit = ref(200);
 const limits = [200, 500, 1000, 5000];
 
-const { data, error, loading, refresh } = useAsync(() =>
-  props.fetcher({ limit: limit.value, search: search.value.trim() || undefined }),
-);
+const query = (): LogQuery => ({ limit: limit.value, search: search.value.trim() || undefined });
 
-usePoll(() => void refresh(), 3000, () => props.live === true);
-watch([() => props.live, limit], () => void refresh());
+const { data, error, loading, refresh } = useAsync(() => props.fetcher(query()));
+
+// The stream, when one is up. `streamed` doubles as the flag: non-null means
+// lines render from it instead of the polled page.
+const streamed = ref<LogLine[] | null>(null);
+const streamBroken = ref(false);
+let controller: AbortController | undefined;
+
+function stopStream() {
+  controller?.abort();
+  controller = undefined;
+  streamed.value = null;
+}
+
+function startStream() {
+  stopStream();
+  if (!props.streamer) return;
+  const mine = new AbortController();
+  controller = mine;
+  streamed.value = [];
+  void props
+    .streamer(
+      query(),
+      (line) => {
+        if (controller !== mine || !streamed.value) return;
+        streamed.value.push(line);
+        // The tail is a window, not an archive: the full history is one
+        // bounded query (or Observability) away.
+        if (streamed.value.length > 5000) streamed.value.splice(0, streamed.value.length - 5000);
+      },
+      mine.signal,
+    )
+    .catch(() => {
+      if (controller !== mine) return;
+      // Fall back to polling for the rest of this view's life.
+      streamBroken.value = true;
+      stopStream();
+      void refresh();
+    });
+}
+
+const streaming = computed(() => streamed.value !== null);
+const lines = computed(() => streamed.value ?? data.value);
+
+watch(
+  [() => props.live, limit],
+  () => {
+    if (props.live && props.streamer && !streamBroken.value) startStream();
+    else {
+      stopStream();
+      void refresh();
+    }
+  },
+  { immediate: true },
+);
+onScopeDispose(stopStream);
+
+// Polling only carries the fallback: live without a working stream.
+usePoll(() => void refresh(), 3000, () => props.live === true && !streaming.value);
 
 let debounce: ReturnType<typeof setTimeout> | undefined;
 watch(search, () => {
   clearTimeout(debounce);
-  debounce = setTimeout(() => void refresh(), 300);
+  debounce = setTimeout(() => {
+    if (streaming.value) startStream();
+    else void refresh();
+  }, 300);
 });
 
 const scroller = ref<HTMLElement | null>(null);
-watch(data, async () => {
-  // Follow the tail the way a terminal does, but only when already at it.
-  const el = scroller.value;
-  if (!el) return;
-  const atTail = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
-  await nextTick();
-  if (atTail) el.scrollTop = el.scrollHeight;
-});
+watch(
+  () => lines.value?.length,
+  async () => {
+    // Follow the tail the way a terminal does, but only when already at it.
+    const el = scroller.value;
+    if (!el) return;
+    const atTail = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+    await nextTick();
+    if (atTail) el.scrollTop = el.scrollHeight;
+  },
+);
 
 const unavailable = computed(() => error.value?.includes("telemetry store") ?? false);
 
 function levelClass(line: LogLine): string {
+  if (line.level === "error" || line.level === "fatal") return "text-error";
+  if (line.level === "warn") return "text-warning";
   if (line.stream === "stderr") return "text-error";
   return "text-toned";
 }
@@ -68,7 +134,7 @@ function time(line: LogLine): string {
       />
       <USelect v-model="limit" :items="limits" size="sm" class="w-24" />
       <UBadge v-if="live" color="success" variant="soft" size="sm" class="font-mono">
-        <StatusDot tone="success" pulse class="mr-1" /> live
+        <StatusDot tone="success" pulse class="mr-1" /> {{ streaming ? "streaming" : "live" }}
       </UBadge>
       <span class="flex-1" />
       <UButton
@@ -82,6 +148,7 @@ function time(line: LogLine): string {
         Query in Observability
       </UButton>
       <UButton
+        v-if="!streaming"
         icon="i-lucide-refresh-cw"
         size="sm"
         color="neutral"
@@ -100,21 +167,25 @@ function time(line: LogLine): string {
       title="No telemetry store"
       :description="error ?? undefined"
     />
-    <UAlert v-else-if="error" color="error" variant="soft" icon="i-lucide-triangle-alert" :title="error" />
+    <UAlert v-else-if="error && !streaming" color="error" variant="soft" icon="i-lucide-triangle-alert" :title="error" />
 
     <div
       v-else
       ref="scroller"
       class="rounded-md border border-default bg-muted font-mono text-xs leading-5 overflow-auto max-h-[32rem] min-h-24"
     >
-      <div v-if="!data?.length" class="px-3 py-3 text-muted">
-        {{ loading ? "Loading…" : "No log lines match." }}
+      <div v-if="!lines?.length" class="px-3 py-3 text-muted">
+        {{ loading ? "Loading…" : streaming ? "Waiting for lines…" : "No log lines match." }}
       </div>
       <table v-else class="w-full">
         <tbody>
-          <tr v-for="(line, i) in data" :key="i" class="hover:bg-elevated/50 align-top">
+          <tr v-for="(line, i) in lines" :key="i" class="hover:bg-elevated/50 align-top">
             <td class="px-3 py-0.5 text-dimmed whitespace-nowrap select-none">{{ time(line) }}</td>
             <td class="px-2 py-0.5 text-muted whitespace-nowrap">{{ line.container || line.source }}</td>
+            <td v-if="line.level" class="px-2 py-0.5 whitespace-nowrap select-none" :class="levelClass(line)">
+              {{ line.level }}
+            </td>
+            <td v-else class="px-2 py-0.5" />
             <td class="px-2 py-0.5 whitespace-pre-wrap break-all w-full" :class="levelClass(line)">
               {{ line.message }}
             </td>

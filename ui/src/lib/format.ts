@@ -46,3 +46,33 @@ export function shortImage(image: string | undefined): string {
   if (!digest) return image;
   return `${digest.slice(0, 15)}…`;
 }
+
+/** Large counts the way a dashboard reads them: `84`, `12.4k`, `1.2M`. */
+export function compactCount(value: number | undefined): string {
+  if (value === undefined || Number.isNaN(value)) return "—";
+  if (value < 1000) return String(Math.round(value));
+  if (value < 1_000_000) return `${(value / 1000).toFixed(1).replace(/\.0$/, "")}k`;
+  return `${(value / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
+}
+
+/** Store sizes: `0 B`, `84 MB`, `1.24 TB`. */
+export function formatBytes(bytes: number | undefined): string {
+  if (bytes === undefined || Number.isNaN(bytes)) return "—";
+  const units = ["B", "kB", "MB", "GB", "TB", "PB"];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1000 && unit < units.length - 1) {
+    value /= 1000;
+    unit += 1;
+  }
+  return `${unit === 0 ? value : value.toFixed(2).replace(/\.?0+$/, "")} ${units[unit]}`;
+}
+
+/** Seconds as a human duration: `43s`, `2m 05s`. */
+export function formatSeconds(seconds: number | undefined): string {
+  if (!seconds || Number.isNaN(seconds) || seconds <= 0) return "—";
+  const whole = Math.round(seconds);
+  const minutes = Math.floor(whole / 60);
+  if (minutes === 0) return `${whole}s`;
+  return `${minutes}m ${String(whole % 60).padStart(2, "0")}s`;
+}

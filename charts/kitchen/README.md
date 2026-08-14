@@ -215,11 +215,13 @@ traced back to what produced it:
 | `environment` | `kitchen.bermos.dev/environment` (production or a preview) |
 | `build` | `kitchen.bermos.dev/build` |
 | `namespace`, `pod`, `container`, `node`, `stream` | the pod that wrote the line |
+| `level` | best-effort severity (`trace`…`fatal`), parsed out of JSON logs or the common text spellings; `""` when the line says neither |
 | `message` | the line |
 | `labels` | every pod label, for anything the columns miss |
 
-The table (`logs`) is created by the operator, not the chart — it is applied
-from `Kitchen.spec.observability.clickhouse`, and its TTL follows
+The tables (`logs`, plus `events` for the activity feed and `flows` for the
+traffic view) are created by the operator, not the chart — they are applied
+from `Kitchen.spec.observability.clickhouse`, and their TTL follows
 `retentionDays`, so changing retention in the UI or with `kubectl` is enough:
 
 ```sh
@@ -612,6 +614,7 @@ kubectl delete namespace kitchen-system
 | `kitchen.builds.defaultStrategy` | `auto` | `auto`, `dockerfile` or `buildpacks`. |
 | `kitchen.builds.concurrency` | `2` | Builds running at once. |
 | `kitchen.observability.clickhouse.retentionDays` | `30` | Telemetry retention. |
+| `kitchen.observability.hubble.relayAddress` | `""` | host:port of Hubble Relay's gRPC endpoint (e.g. `hubble-relay.kube-system.svc.cluster.local:80`). When set, the operator ships flow observations into the telemetry store for the dashboard's traffic view. Empty disables flow collection. |
 | `clickhouse.enabled` | `true` | Run a single-node ClickHouse in the release. |
 | `clickhouse.image.repository` / `.tag` | `clickhouse/clickhouse-server` / `26.3.17.110-alpine` | Current LTS line. |
 | `clickhouse.auth.database` / `.username` | `kitchen` / `kitchen` | Created on first start. |

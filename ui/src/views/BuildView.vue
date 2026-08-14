@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, watch } from "vue";
 import { useRoute } from "vue-router";
-import { api, type LogQuery } from "../lib/api";
+import { api, type LogLine, type LogQuery } from "../lib/api";
 import { duration, shortSHA, timeAgo } from "../lib/format";
 import { operatorMode } from "../lib/mode";
 import { useAsync, usePoll } from "../lib/useAsync";
@@ -21,6 +21,8 @@ const moving = computed(() => build.value?.phase === "Queued" || build.value?.ph
 usePoll(() => void refresh(), 5000, () => moving.value);
 
 const logFetcher = (query: LogQuery) => api.buildLogs(name.value, query);
+const logStreamer = (query: LogQuery, onLine: (line: LogLine) => void, signal: AbortSignal) =>
+  api.streamBuildLogs(name.value, query, onLine, signal);
 </script>
 
 <template>
@@ -69,7 +71,7 @@ const logFetcher = (query: LogQuery) => api.buildLogs(name.value, query);
 
       <div>
         <h2 class="text-sm font-medium text-highlighted mb-2">Build output</h2>
-        <LogViewer :fetcher="logFetcher" :live="moving" :query-clause="`build = '${build.name}'`" />
+        <LogViewer :fetcher="logFetcher" :streamer="logStreamer" :live="moving" :query-clause="`build = '${build.name}'`" />
       </div>
     </template>
     <div v-else-if="loading" class="py-24 text-center text-muted text-sm">Loading…</div>

@@ -37,6 +37,8 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/activity"
+	"github.com/Bermos/Kitchen/internal/clickhouse"
 )
 
 const (
@@ -69,6 +71,8 @@ type registryConfig struct {
 type BuildReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+	// Activity feeds the dashboard's recent-activity feed. May be nil.
+	Activity *activity.Recorder
 }
 
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=builds,verbs=get;list;watch;create;update;patch;delete
@@ -366,6 +370,14 @@ func (r *BuildReconciler) succeed(
 		Type: condReady, Status: metav1.ConditionTrue, Reason: reason,
 		Message: msg, ObservedGeneration: build.Generation,
 	})
+	r.Activity.Record(ctx, clickhouse.Event{
+		Type:    clickhouse.EventBuildSucceeded,
+		Project: project.Name,
+		Build:   build.Name,
+		Release: release.Name,
+		Message: fmt.Sprintf("build %s succeeded", build.Name),
+		Value:   buildDurationSeconds(build),
+	})
 	return ctrl.Result{}, r.Status().Update(ctx, build)
 }
 
@@ -398,7 +410,27 @@ func (r *BuildReconciler) ensureEnvironment(
 				ReleaseRef: kitchenv1alpha1.LocalObjectReference{Name: releaseName},
 			},
 		}
-		return r.Create(ctx, env)
+		if err := r.Create(ctx, env); err != nil {
+			return err
+		}
+		if envType == kitchenv1alpha1.EnvironmentPreview && preview != nil {
+			r.Activity.Record(ctx, clickhouse.Event{
+				Type:        clickhouse.EventPreviewCreated,
+				Project:     project.Name,
+				Environment: envName,
+				Release:     releaseName,
+				Message:     fmt.Sprintf("preview for PR #%d created", preview.PullRequest),
+			})
+		} else {
+			r.Activity.Record(ctx, clickhouse.Event{
+				Type:        clickhouse.EventReleasePromoted,
+				Project:     project.Name,
+				Environment: envName,
+				Release:     releaseName,
+				Message:     fmt.Sprintf("release %s went live on %s", releaseName, envName),
+			})
+		}
+		return nil
 	}
 	if err != nil {
 		return err
@@ -411,6 +443,13 @@ func (r *BuildReconciler) ensureEnvironment(
 	if err := r.Update(ctx, env); err != nil {
 		return err
 	}
+	r.Activity.Record(ctx, clickhouse.Event{
+		Type:        clickhouse.EventReleasePromoted,
+		Project:     project.Name,
+		Environment: envName,
+		Release:     releaseName,
+		Message:     fmt.Sprintf("release %s promoted to %s", releaseName, envName),
+	})
 	if env.RecordReleaseMove(outgoing, kitchenv1alpha1.ReleaseMovePromoted, buildName) {
 		return r.Status().Update(ctx, env)
 	}
@@ -502,7 +541,26 @@ func (r *BuildReconciler) fail(
 		Type: condReady, Status: metav1.ConditionFalse, Reason: reason,
 		Message: message, ObservedGeneration: build.Generation,
 	})
+	r.Activity.Record(ctx, clickhouse.Event{
+		Type:    clickhouse.EventBuildFailed,
+		Project: build.Spec.ProjectRef.Name,
+		Build:   build.Name,
+		Message: fmt.Sprintf("build %s failed: %s", build.Name, message),
+		Value:   buildDurationSeconds(build),
+	})
 	return ctrl.Result{}, r.Status().Update(ctx, build)
+}
+
+// buildDurationSeconds is how long a finished build ran, 0 when unknown.
+func buildDurationSeconds(build *kitchenv1alpha1.Build) float64 {
+	if build.Status.StartedAt == nil || build.Status.CompletedAt == nil {
+		return 0
+	}
+	duration := build.Status.CompletedAt.Sub(build.Status.StartedAt.Time).Seconds()
+	if duration < 0 {
+		return 0
+	}
+	return duration
 }
 
 func isTerminal(phase kitchenv1alpha1.BuildPhase) bool {

@@ -131,6 +131,13 @@ kitchen:
     clickhouse:
       # -- Days to retain logs, metrics, traces and flow data.
       retentionDays: 30
+    hubble:
+      # -- host:port of Hubble Relay's gRPC endpoint, e.g.
+      # `hubble-relay.kube-system.svc.cluster.local:80` once Hubble is enabled
+      # in Cilium. When set, the operator follows the flow stream and ships
+      # observations into the telemetry store — the dashboard's traffic view.
+      # Empty disables flow collection.
+      relayAddress: ""
 
 # The operator's REST API: what the Kitchen UI, the CLI and CI talk to. Every
 # endpoint sits behind the platform's identity provider, so the API is only

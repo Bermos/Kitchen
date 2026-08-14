@@ -86,6 +86,31 @@ data:
           .message = to_string(.message) ?? ""
           .labels = labels
 
+          # Best-effort severity, so the observability view can facet on
+          # `level` instead of only stdout/stderr. JSON logs are asked for
+          # their level field; plain text is matched against the common
+          # spellings. A line that says neither stays "" — honest, rather
+          # than guessing from the stream.
+          #
+          # `??` catches errors, not nulls, so the missing-field fallbacks are
+          # spelled out as null checks — and nothing here aborts the event: a
+          # line the parsers cannot read still ships, just without a level.
+          .level = ""
+          structured = object(parse_json(.message) ?? {}) ?? {}
+          raw_level = get(structured, ["level"]) ?? null
+          if raw_level == null { raw_level = get(structured, ["severity"]) ?? null }
+          if raw_level == null { raw_level = get(structured, ["lvl"]) ?? null }
+          if raw_level != null {
+            .level = downcase(to_string(raw_level) ?? "")
+          }
+          if .level == "" {
+            matched = parse_regex(.message, r'(?i)(?:^|[\s\[("=])(?P<level>trace|debug|info|warn|warning|error|fatal|critical|panic)(?:$|[\s\])":=,])') ?? {}
+            .level = downcase(to_string(get(matched, ["level"]) ?? "") ?? "")
+          }
+          # One spelling per severity, so `level = 'warn'` means every warning.
+          if .level == "warning" { .level = "warn" }
+          if .level == "critical" || .level == "panic" { .level = "fatal" }
+
           # Everything the table has no column for. The sink skips unknown
           # fields anyway; dropping them here keeps the wire small.
           del(.kubernetes)

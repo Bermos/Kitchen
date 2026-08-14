@@ -31,6 +31,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/clickhouse"
 )
 
 // get reads one object out of the platform namespace.
@@ -207,6 +208,12 @@ func (s *Server) createProject(w http.ResponseWriter, req *http.Request) {
 	}
 	s.log().Info("project created through the api",
 		"project", project.Name, "repo", body.Repo, "caller", callerName(caller))
+	s.Activity.Record(ctx, clickhouse.Event{
+		Type:    clickhouse.EventProjectCreated,
+		Project: project.Name,
+		Message: fmt.Sprintf("project %s created from %s", project.Name, body.Repo),
+		Actor:   callerName(caller),
+	})
 	writeJSON(w, http.StatusCreated, newProjectView(project))
 }
 
@@ -592,6 +599,14 @@ func (s *Server) patchEnvironment(w http.ResponseWriter, req *http.Request) {
 		reason = kitchenv1alpha1.ReleaseMoveRolledBack
 	}
 
+	// The activity feed tells the same story in its own vocabulary: the
+	// history's reason describes what happened to the outgoing release,
+	// the feed entry describes what was done to the environment.
+	moveType, verb := clickhouse.EventReleasePromoted, "promoted to"
+	if reason == kitchenv1alpha1.ReleaseMoveRolledBack {
+		moveType, verb = clickhouse.EventReleaseRolledBack, "rolled back to"
+	}
+
 	patch := client.MergeFrom(env.DeepCopy())
 	env.Spec.ReleaseRef = kitchenv1alpha1.LocalObjectReference{Name: release.Name}
 	if err := s.Client.Patch(ctx, env, patch); err != nil {
@@ -614,6 +629,14 @@ func (s *Server) patchEnvironment(w http.ResponseWriter, req *http.Request) {
 
 	s.log().Info("environment moved to another release through the api",
 		"environment", env.Name, "release", release.Name, "caller", callerName(caller))
+	s.Activity.Record(ctx, clickhouse.Event{
+		Type:        moveType,
+		Project:     env.Spec.ProjectRef.Name,
+		Environment: env.Name,
+		Release:     release.Name,
+		Message:     fmt.Sprintf("%s %s release %s", env.Name, verb, release.Name),
+		Actor:       callerName(caller),
+	})
 	writeJSON(w, http.StatusOK, newEnvironmentView(env))
 }
 
