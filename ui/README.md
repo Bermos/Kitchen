@@ -26,6 +26,9 @@ after the Kitchen design mockups (IBM Plex, dark, conditions-first).
 - **"Live" logs.** The log endpoints are bounded queries, so live is honest
   polling while a build runs or an environment deploys; streaming is an open
   item on the API.
+- **Navigation.** ⌘K opens a palette over everything the API lists — projects,
+  environments, builds, domains, pages. The sidebar carries live counts from
+  the same collections.
 - **Observability.** The query bar takes a real ClickHouse boolean expression
   over the logs table (`GET /api/v1/logs?where=…`, read-only and capped
   server-side), and a refused expression shows ClickHouse's own diagnostic.
