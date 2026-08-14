@@ -1,0 +1,26 @@
+{{- include "kitchen.validate" . -}}
+{{- if .Values.namespace.create }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Release.Namespace }}
+  annotations:
+    # An uninstall must not take the platform's data with it. Without this,
+    # deleting the release deletes the namespace, and everything inside goes
+    # with it — including the PVCs behind Postgres and ClickHouse. Helm leaves
+    # a kept resource in place and says so.
+    helm.sh/resource-policy: keep
+  labels:
+    {{- include "kitchen.labels" . | nindent 4 }}
+    # The log collector mounts the node's /var/log, and hostPath is admitted at
+    # the privileged level alone — baseline forbids it outright, so there is no
+    # narrower level that still collects logs. Clusters differ in what they
+    # default to (kind is privileged, Talos is baseline), which is why this is
+    # set explicitly rather than inherited.
+    pod-security.kubernetes.io/enforce: {{ .Values.namespace.podSecurity | quote }}
+    pod-security.kubernetes.io/audit: {{ .Values.namespace.podSecurity | quote }}
+    pod-security.kubernetes.io/warn: {{ .Values.namespace.podSecurity | quote }}
+    {{- with .Values.namespace.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}

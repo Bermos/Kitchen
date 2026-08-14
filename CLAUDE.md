@@ -94,13 +94,27 @@ through its Go types, to avoid tying the build to its release cadence.
 - **The platform namespace is `kitchen-system`**, also compiled in. The chart
   refuses to render elsewhere unless `namespaceCheck=false`.
 - **The log collector needs Pod Security `privileged`**, because it mounts the
-  node's `/var/log` and `baseline` forbids `hostPath` outright. The chart does
-  not create the namespace, so `--create-namespace` inherits the cluster
-  default: kind is `privileged` and CI never notices, Talos is `baseline` and
-  the collector silently never starts. A DaemonSet whose pods are refused at
-  admission has **no pods at all** — `kubectl get pods` looks clean, and the
-  rejection is a `FailedCreate` event on the DaemonSet. That failure mode is
-  what `status.components` on the Kitchen singleton exists to surface.
+  node's `/var/log` and `baseline` forbids `hostPath` outright. The chart owns
+  `kitchen-system` (`namespace.create`) so the level is set rather than
+  inherited — kind defaults to `privileged` and CI never notices, Talos to
+  `baseline`, where the collector silently never starts. A DaemonSet whose pods
+  are refused at admission has **no pods at all** — `kubectl get pods` looks
+  clean, and the rejection is a `FailedCreate` event on the DaemonSet. That
+  failure mode is what `status.components` on the Kitchen singleton exists to
+  surface.
+- **A chart cannot bootstrap the namespace it installs into**, so
+  `--create-namespace` is still required: Helm writes its release record into
+  the target namespace *before* applying any manifest, and without the flag the
+  install dies with `namespaces "kitchen-system" not found`. The flag creates a
+  bare namespace which the template then adopts. Anything created another way
+  has no Helm ownership metadata and **fails** the install rather than being
+  adopted, which makes this a breaking change for pre-existing installs — they
+  need the three ownership keys applied by hand once. Verified against Helm
+  4.2.2; Helm 3 does not adopt at all.
+- **The namespace is annotated `helm.sh/resource-policy: keep`.** Without it,
+  `helm uninstall` deletes the namespace and every PVC in it, so removing the
+  release would destroy the accounts database and the telemetry store. Any
+  change to that template must keep the annotation.
 - **Anything that should appear in the component survey needs
   `app.kubernetes.io/part-of: kitchen`** and, to be readable,
   `app.kubernetes.io/component`. The survey selects on the former rather than on

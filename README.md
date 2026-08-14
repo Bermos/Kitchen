@@ -39,7 +39,7 @@ things a cluster needs before it can run anything at all.
 
 ### 1. Cluster prerequisites
 
-Five things, none of which the chart installs:
+Four things, none of which the chart installs:
 
 - **Cilium as the CNI**, with `gatewayAPI.enabled=true` and kube-proxy
   replacement. Its Gateway API implementation *is* the ingress; there is no
@@ -55,12 +55,6 @@ Five things, none of which the chart installs:
   L2 announcements or BGP. cloudflared sidesteps needing a routable address,
   but not needing an address: Cilium will not mark a Gateway `Programmed`
   without one.
-- **A platform namespace that admits `hostPath`.** The log collector reads
-  container logs off each node, which Pod Security only permits at the
-  `privileged` level. Where the cluster default is `baseline` or stricter —
-  Talos is one — the collector's pods are refused at admission and it never
-  starts. See step 2 for the labels.
-
 ### 2. Wildcard DNS and a Cloudflare token
 
 Every generated URL is `<slug>.<baseDomain>`, so you need a wildcard record and
@@ -68,24 +62,9 @@ a wildcard certificate. Kitchen obtains the certificate over ACME **DNS-01**,
 which is not a preference — ACME issues wildcards no other way, however
 reachable your cluster is.
 
-```sh
-kubectl create namespace kitchen-system
-kubectl label namespace kitchen-system \
-  pod-security.kubernetes.io/enforce=privileged \
-  pod-security.kubernetes.io/audit=privileged \
-  pod-security.kubernetes.io/warn=privileged
-kubectl -n kitchen-system create secret generic cloudflare-api-token \
-  --from-literal=api-token=<token>
-```
-
-The token needs `Zone:DNS:Edit` on the zone and `Zone:Zone:Read` to find it.
-
-The labels are for the log collector, which mounts the node's `/var/log`.
-`privileged` is the only Pod Security level that admits `hostPath` at all, so
-there is no narrower setting that still lets logs be collected — install with
-`--set logs.enabled=false` if you would rather not grant it. Creating the
-namespace with `helm install --create-namespace` instead leaves it unlabelled
-and inheriting the cluster default, which on Talos means no collector.
+Create a Cloudflare API token with `Zone:DNS:Edit` on the zone and
+`Zone:Zone:Read` to find it. You will hand it to the cluster in step 3, once
+the namespace exists.
 
 > Note: Cloudflare's Universal SSL only covers one level of subdomain. If your
 > base domain is itself a subdomain — `apps.example.com`, so app URLs are
@@ -97,16 +76,38 @@ and inheriting the cluster default, which on Talos means no collector.
 
 ```sh
 helm install kitchen oci://ghcr.io/bermos/charts/kitchen \
-  --namespace kitchen-system \
+  --namespace kitchen-system --create-namespace \
   --set kitchen.baseDomain=apps.example.com \
   --set kitchen.tls.acme.email=you@example.com \
   --set kitchen.tls.acme.dns01.cloudflare.apiTokenSecretName=cloudflare-api-token
+
+kubectl -n kitchen-system create secret generic cloudflare-api-token \
+  --from-literal=api-token=<token>
 ```
 
 That brings up cert-manager, the operator and its CRDs, the git webhook
 receiver, the REST API at `kitchen.apps.example.com/api/v1/`, a single-node
 ClickHouse for telemetry with the collector that fills it, and the identity
 provider at `auth.apps.example.com` with its Postgres.
+
+**Use `--create-namespace`, and do not create the namespace yourself.** The
+chart manages `kitchen-system` so its Pod Security level is set rather than
+inherited: the log collector mounts the node's `/var/log`, and `hostPath` is
+admitted at the `privileged` level alone, so on a cluster defaulting to
+`baseline` — Talos is one — an unlabelled namespace means no logs are ever
+collected. Helm writes its release record into the namespace before applying
+any manifest, so the chart cannot bootstrap the namespace it installs into; it
+can only adopt the empty one `--create-namespace` just made. A namespace
+created with `kubectl create namespace` carries no Helm ownership metadata and
+**fails the install** rather than being adopted. If you have one already, see
+[adopting an existing namespace](charts/kitchen/README.md#adopting-an-existing-namespace).
+
+The secret comes after the install because it lives in that namespace. That
+ordering is fine: the operator creates the `ClusterIssuer` and `Certificate`
+either way, cert-manager cannot solve the DNS-01 challenge until the token is
+there, and both it and the operator keep retrying. Progress shows up in
+`CertificateReady` (step 5), so a late secret costs a reconcile, not a
+reinstall.
 
 Set `kitchen.tls.mode=none` to start without TLS, or `cert-manager.enabled=false`
 if your cluster already runs one. In `none` mode the Gateway listens on HTTP

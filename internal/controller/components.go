@@ -69,23 +69,23 @@ func (r *KitchenReconciler) surveyComponents(
 		client.MatchingLabels{labelPartOfKey: labelPartOfValue},
 	}
 
-	var surveyed []surveyedWorkload
-
 	deployments := &appsv1.DeploymentList{}
-	if err := r.List(ctx, deployments, selector...); err != nil {
-		setCond(condComponentsHealthy, metav1.ConditionFalse, "SurveyFailed", err.Error())
-		return false
+	statefulSets := &appsv1.StatefulSetList{}
+	daemonSets := &appsv1.DaemonSetList{}
+	for _, list := range []client.ObjectList{deployments, statefulSets, daemonSets} {
+		if err := r.List(ctx, list, selector...); err != nil {
+			setCond(condComponentsHealthy, metav1.ConditionFalse, "SurveyFailed", err.Error())
+			return false
+		}
 	}
+
+	surveyed := make([]surveyedWorkload, 0,
+		len(deployments.Items)+len(statefulSets.Items)+len(daemonSets.Items))
+
 	for i := range deployments.Items {
 		d := &deployments.Items[i]
 		surveyed = append(surveyed, r.componentOf(ctx, &d.ObjectMeta, "Deployment",
 			replicasOrOne(d.Spec.Replicas), d.Status.AvailableReplicas))
-	}
-
-	statefulSets := &appsv1.StatefulSetList{}
-	if err := r.List(ctx, statefulSets, selector...); err != nil {
-		setCond(condComponentsHealthy, metav1.ConditionFalse, "SurveyFailed", err.Error())
-		return false
 	}
 	for i := range statefulSets.Items {
 		s := &statefulSets.Items[i]
@@ -94,12 +94,6 @@ func (r *KitchenReconciler) surveyComponents(
 		// long as the kinds this chart deploys have.
 		surveyed = append(surveyed, r.componentOf(ctx, &s.ObjectMeta, "StatefulSet",
 			replicasOrOne(s.Spec.Replicas), s.Status.ReadyReplicas))
-	}
-
-	daemonSets := &appsv1.DaemonSetList{}
-	if err := r.List(ctx, daemonSets, selector...); err != nil {
-		setCond(condComponentsHealthy, metav1.ConditionFalse, "SurveyFailed", err.Error())
-		return false
 	}
 	for i := range daemonSets.Items {
 		ds := &daemonSets.Items[i]
