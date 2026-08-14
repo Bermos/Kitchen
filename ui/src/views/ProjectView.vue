@@ -4,6 +4,7 @@ import { useRoute } from "vue-router";
 import { api, type Release } from "../lib/api";
 import { duration, shortImage, shortSHA, timeAgo } from "../lib/format";
 import { operatorMode } from "../lib/mode";
+import { releaseHistoryEntry, releaseHistoryLabel } from "../lib/status";
 import { useAsync, usePoll } from "../lib/useAsync";
 import ConditionsTable from "../components/ConditionsTable.vue";
 import PhaseBadge from "../components/PhaseBadge.vue";
@@ -48,7 +49,16 @@ function releaseState(release: Release): { label: string; tone: "success" | "neu
     const observed = production.value?.observedRelease;
     return observed === release.name ? { label: "Live", tone: "success" } : { label: "Rolling out", tone: "warning" };
   }
-  return { label: "", tone: "neutral" };
+  // Past releases read their label off the environment's history: how each
+  // one stopped being current, not just that it did.
+  return { label: releaseHistoryLabel(release.name, production.value), tone: "neutral" };
+}
+
+// The badge's tooltip: who moved production off this release.
+function releaseMovedBy(release: Release): string {
+  const entry = releaseHistoryEntry(release.name, production.value);
+  if (!entry?.by) return "";
+  return entry.reason === "promoted" ? `by build ${entry.by}` : `by ${entry.by}`;
 }
 
 // Rebuild: POST /projects/{name}/builds with an empty body repeats the last
@@ -221,7 +231,13 @@ function host(url?: string): string {
                 </p>
               </td>
               <td class="px-4 py-3 whitespace-nowrap">
-                <UBadge v-if="releaseState(release).label" :color="releaseState(release).tone" variant="soft" size="sm">
+                <UBadge
+                  v-if="releaseState(release).label"
+                  :color="releaseState(release).tone"
+                  variant="soft"
+                  size="sm"
+                  :title="releaseMovedBy(release)"
+                >
                   {{ releaseState(release).label }}
                 </UBadge>
               </td>

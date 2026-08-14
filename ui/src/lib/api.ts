@@ -69,6 +69,16 @@ export interface Preview {
   branch: string;
 }
 
+/** One completed stint of a release being current on an environment: when it
+ * held the environment, and how and by whom it stopped being current. */
+export interface ReleaseHistoryEntry {
+  release: string;
+  from: string;
+  to: string;
+  reason: "promoted" | "rolledBack" | "superseded";
+  by?: string;
+}
+
 export interface Environment {
   name: string;
   project: string;
@@ -78,6 +88,7 @@ export interface Environment {
   phase?: string;
   url?: string;
   preview?: Preview;
+  history?: ReleaseHistoryEntry[];
   createdAt: string;
   conditions?: Condition[];
 }

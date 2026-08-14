@@ -580,6 +580,18 @@ func (s *Server) patchEnvironment(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// Moving to an older release is a rollback; anything else superseded the
+	// one running. Releases are immutable, so creation time is the order they
+	// were cut in. A deleted outgoing release cannot be compared any more and
+	// counts as superseded.
+	outgoing := env.Spec.ReleaseRef.Name
+	reason := kitchenv1alpha1.ReleaseMoveSuperseded
+	previous := &kitchenv1alpha1.Release{}
+	if err := s.get(ctx, outgoing, previous); err == nil &&
+		release.CreationTimestamp.Before(&previous.CreationTimestamp) {
+		reason = kitchenv1alpha1.ReleaseMoveRolledBack
+	}
+
 	patch := client.MergeFrom(env.DeepCopy())
 	env.Spec.ReleaseRef = kitchenv1alpha1.LocalObjectReference{Name: release.Name}
 	if err := s.Client.Patch(ctx, env, patch); err != nil {
@@ -588,6 +600,18 @@ func (s *Server) patchEnvironment(w http.ResponseWriter, req *http.Request) {
 	}
 
 	caller, _ := CallerFrom(ctx)
+	// Persist what the audit log line below already knows: how the outgoing
+	// release stopped being current, and who moved the environment off it.
+	base := env.DeepCopy()
+	if env.RecordReleaseMove(outgoing, reason, callerName(caller)) {
+		if err := s.Client.Status().Patch(ctx, env, client.MergeFrom(base)); err != nil {
+			// The spec change went through either way; the environment
+			// reconciler still records the move, just without the caller.
+			s.log().Error(err, "failed to record release history",
+				"environment", env.Name, "release", outgoing)
+		}
+	}
+
 	s.log().Info("environment moved to another release through the api",
 		"environment", env.Name, "release", release.Name, "caller", callerName(caller))
 	writeJSON(w, http.StatusOK, newEnvironmentView(env))

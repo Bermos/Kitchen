@@ -235,6 +235,33 @@ var _ = Describe("Build Controller", func() {
 			Expect(env.Spec.ReleaseRef.Name).To(Equal(release.Name))
 		})
 
+		It("records how the replaced release stopped being current", func() {
+			// Production already runs an older release when this build lands.
+			env := &kitchenv1alpha1.Environment{
+				ObjectMeta: metav1.ObjectMeta{Name: projectName + "-production", Namespace: namespace},
+				Spec: kitchenv1alpha1.EnvironmentSpec{
+					ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: projectName},
+					Type:       kitchenv1alpha1.EnvironmentProduction,
+					ReleaseRef: kitchenv1alpha1.LocalObjectReference{Name: projectName + "-rel-previous"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, env)).To(Succeed())
+
+			reconcileOnce()
+			completeJob()
+			createBuildPod(`{"containerimage.digest":"sha256:feedface"}`)
+			reconcileOnce()
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: projectName + "-production", Namespace: namespace}, env)).To(Succeed())
+			Expect(env.Spec.ReleaseRef.Name).To(Equal(releaseName(projectName, sha)))
+			Expect(env.Status.History).To(HaveLen(1))
+			entry := env.Status.History[0]
+			Expect(entry.Release).To(Equal(projectName + "-rel-previous"))
+			Expect(entry.Reason).To(Equal(kitchenv1alpha1.ReleaseMovePromoted))
+			Expect(entry.By).To(Equal(buildName), "the promoting build is the mover")
+			Expect(entry.To.Time).NotTo(BeZero())
+		})
+
 		It("creates a preview environment for pull request builds", func() {
 			build := &kitchenv1alpha1.Build{}
 			Expect(k8sClient.Get(ctx, buildKey, build)).To(Succeed())

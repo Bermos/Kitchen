@@ -49,6 +49,16 @@ async function move() {
 }
 
 const logFetcher = (query: LogQuery) => api.environmentLogs(name.value, query);
+
+// The history entry labels the release's fate; the "by" column says who moved
+// the environment off it — a build for auto-promotions, a caller for API moves.
+function historyLabel(reason: string): { label: string; tone: "neutral" | "warning" } {
+  return reason === "rolledBack" ? { label: "Rolled back", tone: "warning" } : { label: "Superseded", tone: "neutral" };
+}
+function historyBy(entry: { reason: string; by?: string }): string {
+  if (!entry.by) return "—";
+  return entry.reason === "promoted" ? `build ${entry.by}` : entry.by;
+}
 </script>
 
 <template>
@@ -140,6 +150,33 @@ const logFetcher = (query: LogQuery) => api.environmentLogs(name.value, query);
                 <td class="px-4 py-2.5 text-xs text-muted whitespace-nowrap">{{ timeAgo(release.createdAt) }}</td>
                 <td class="px-4 py-2.5 text-right">
                   <UButton color="neutral" variant="subtle" size="xs" @click="target = release">Move here</UButton>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div v-if="environment.history?.length">
+        <h2 class="text-sm font-medium text-highlighted mb-2">Release history</h2>
+        <p class="text-xs text-muted mb-3">
+          How each release stopped being current — auto-promotions and moves through the dashboard alike, newest first.
+        </p>
+        <div class="rounded-md border border-default overflow-x-auto">
+          <table class="w-full text-sm">
+            <tbody>
+              <tr v-for="entry in environment.history" :key="entry.release + entry.to" class="border-b border-muted last:border-0">
+                <td class="px-4 py-2.5 font-mono text-highlighted w-44">{{ entry.release }}</td>
+                <td class="px-4 py-2.5">
+                  <UBadge :color="historyLabel(entry.reason).tone" variant="soft" size="sm">
+                    {{ historyLabel(entry.reason).label }}
+                  </UBadge>
+                </td>
+                <td class="px-4 py-2.5 text-xs text-toned truncate max-w-xs" :title="historyBy(entry)">
+                  {{ historyBy(entry) }}
+                </td>
+                <td class="px-4 py-2.5 text-xs text-muted whitespace-nowrap">
+                  current {{ timeAgo(entry.from) }} → {{ timeAgo(entry.to) }}
                 </td>
               </tr>
             </tbody>

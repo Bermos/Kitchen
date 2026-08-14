@@ -682,6 +682,47 @@ spec:
                   - type
                   type: object
                 type: array
+              history:
+                description: History of Releases that stopped being current, newest
+                  first.
+                items:
+                  description: |-
+                    ReleaseHistoryEntry is one completed stint of a Release being current on
+                    this Environment: which Release, when it held the spec, and how and by whom
+                    it stopped being current.
+                  properties:
+                    by:
+                      description: |-
+                        By names who caused the move: the API caller, or the Build whose
+                        Release was promoted. Empty for moves made directly on the spec.
+                      type: string
+                    from:
+                      description: From is when the Release became current.
+                      format: date-time
+                      type: string
+                    reason:
+                      description: ReleaseMoveReason is how an Environment moved off
+                        a Release.
+                      enum:
+                      - promoted
+                      - rolledBack
+                      - superseded
+                      type: string
+                    release:
+                      minLength: 1
+                      type: string
+                    to:
+                      description: To is when it stopped being current.
+                      format: date-time
+                      type: string
+                  required:
+                  - from
+                  - reason
+                  - release
+                  - to
+                  type: object
+                maxItems: 10
+                type: array
               observedRelease:
                 description: Release the running workload was last reconciled to.
                 type: string
