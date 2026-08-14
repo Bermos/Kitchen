@@ -73,6 +73,7 @@ sent the request.
 | Method | Path | Does |
 |---|---|---|
 | GET | `/projects` | List projects |
+| POST | `/projects` | Create a project |
 | GET | `/projects/{name}` | One project |
 | GET | `/projects/{name}/builds` | That project's builds, newest first |
 | POST | `/projects/{name}/builds` | Build a commit — a rebuild |
@@ -97,9 +98,38 @@ sent the request.
 | GET | `/claims` | Every resource claim. `?project=` filters |
 | GET | `/claims/{name}` | One claim |
 
-Creating projects, connections, domains and claims is not here yet: those are
-the flows the UI will drive, and they are worth designing against a UI rather
-than ahead of one. Until then they are `kubectl apply`, the same as they were.
+Creating connections, domains and claims is not here yet: those are the flows
+the UI will drive, and they are worth designing against a UI rather than ahead
+of one. Until then they are `kubectl apply`, the same as they were.
+
+### Creating a project
+
+```sh
+curl -sS -X POST -H "authorization: Bearer $TOKEN" \
+  -d '{"name": "shop", "repo": "acme/shop", "connection": "gh", "registry": "harbor"}' \
+  https://kitchen.apps.example.com/api/v1/projects
+```
+
+A project is a name, a repository in the provider's `owner/name` form, and the
+two Connections it builds and stores images with — `connection` needs the
+`gitSource` capability, `registry` needs `imageStore`. Optional fields with
+their defaults:
+
+```json
+{"productionBranch": "main", "previews": true}
+```
+
+The name has to work as a DNS label of at most 46 characters, because
+everything the platform derives from it — the application namespace, release
+names, generated hostnames — has to fit Kubernetes' 63-character limit.
+Naming a Connection that does not exist, or one without the needed
+capability, is a `400`; a Connection the operator has not assessed yet is
+accepted, and the project's own conditions report whether it fits. A name
+already in use is a `409`.
+
+Answers `201` with the new project. The operator takes it from there:
+namespace, webhook, and — once the first build of the production branch
+lands — the production environment.
 
 ### Triggering a build
 
@@ -219,7 +249,7 @@ telemetry database; per-caller scoping arrives with scopes and RBAC
 | Token audience | The API's own URL (`resource=`), or the issuer | A resource server should be able to tell a token meant for it from a token meant for everything |
 | CI tokens | better-auth's api-key plugin, exchanged for a JWT at the issuer | The plugin already holds the operator's own credential; keeping key lookup at the issuer keeps the operator's request path stateless |
 | Response shapes | The API's own vocabulary, not raw custom resources | A stable contract for the UI, and freedom to change how state is stored |
-| Write surface | Rebuild, promote/rollback, and the settings' runtime defaults | The writes the UI drives today; creating projects and connections waits for the flows they belong to |
+| Write surface | Create project, rebuild, promote/rollback, and the settings' runtime defaults | The writes the UI drives today; creating connections, domains and claims waits for the flows they belong to |
 | The dashboard | Served by the same process, outside `/api/` | The SPA is public, stateless files plus `/config.json` (issuer, client id, audience — the same values every login redirect shows); everything with state stays behind the token check |
 | Webhook receiver | Stays signature-authenticated, not OIDC | A provider proving a payload is genuine is a different question from a caller proving who they are |
 

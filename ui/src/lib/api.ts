@@ -25,6 +25,15 @@ export interface Project {
   conditions?: Condition[];
 }
 
+export interface NewProject {
+  name: string;
+  repo: string;
+  connection: string;
+  registry: string;
+  productionBranch?: string;
+  previews?: boolean;
+}
+
 export interface Revision {
   sha: string;
   branch: string;
@@ -198,6 +207,7 @@ function logQuery(query: LogQuery): string {
 
 export const api = {
   projects: list<Project>("/projects"),
+  createProject: (project: NewProject) => request<Project>("POST", "/projects", project),
   project: (name: string) => request<Project>("GET", `/projects/${name}`),
   projectBuilds: (name: string) => list<Build>(`/projects/${name}/builds`)(),
   projectReleases: (name: string) => list<Release>(`/projects/${name}/releases`)(),

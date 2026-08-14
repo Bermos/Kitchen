@@ -4,6 +4,7 @@ import { api, type Build, type Environment } from "../lib/api";
 import { timeAgo } from "../lib/format";
 import { statusDetail, unhealthyConditions, type Tone } from "../lib/status";
 import { useAsync, usePoll } from "../lib/useAsync";
+import NewProjectModal from "../components/NewProjectModal.vue";
 import PhaseBadge from "../components/PhaseBadge.vue";
 import StatusDot from "../components/StatusDot.vue";
 
@@ -86,15 +87,18 @@ function host(url?: string): string {
   <div class="space-y-6">
     <div class="flex items-center justify-between">
       <h1 class="text-xl font-semibold text-highlighted">Overview</h1>
-      <UButton
-        icon="i-lucide-refresh-cw"
-        color="neutral"
-        variant="ghost"
-        size="sm"
-        :loading="loading"
-        aria-label="Refresh"
-        @click="refresh"
-      />
+      <div class="flex items-center gap-2">
+        <UButton
+          icon="i-lucide-refresh-cw"
+          color="neutral"
+          variant="ghost"
+          size="sm"
+          :loading="loading"
+          aria-label="Refresh"
+          @click="refresh"
+        />
+        <NewProjectModal @created="refresh" />
+      </div>
     </div>
 
     <UAlert v-if="error" color="error" variant="soft" icon="i-lucide-triangle-alert" :title="error" />
@@ -126,7 +130,7 @@ function host(url?: string): string {
         <tbody>
           <tr v-if="!visible.length">
             <td colspan="5" class="px-4 py-8 text-center text-muted">
-              {{ loading ? "Loading…" : filter === "failing" ? "Nothing is failing." : "No projects yet — projects are created with kubectl until the create flow lands here." }}
+              {{ loading ? "Loading…" : filter === "failing" ? "Nothing is failing." : "No projects yet — “New project” connects your first repository." }}
             </td>
           </tr>
           <tr

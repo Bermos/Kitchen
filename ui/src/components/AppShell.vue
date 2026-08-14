@@ -7,6 +7,7 @@ import { operatorMode } from "../lib/mode";
 import { unhealthyConditions, type Tone } from "../lib/status";
 import { useAsync, usePoll } from "../lib/useAsync";
 import CommandPalette from "./CommandPalette.vue";
+import NewProjectModal from "./NewProjectModal.vue";
 import StatusDot from "./StatusDot.vue";
 
 const route = useRoute();
@@ -112,6 +113,16 @@ const userMenu = computed(() => [
 
       <div class="px-4 pt-4 pb-1 flex items-center justify-between">
         <span class="text-[11px] font-medium tracking-wider text-dimmed uppercase">Projects</span>
+        <NewProjectModal @created="() => void inventory.refresh()">
+          <UButton
+            icon="i-lucide-plus"
+            color="neutral"
+            variant="ghost"
+            size="xs"
+            aria-label="New project"
+            class="-mr-1.5"
+          />
+        </NewProjectModal>
       </div>
       <nav class="px-2 space-y-0.5 overflow-y-auto flex-1">
         <RouterLink
@@ -128,7 +139,7 @@ const userMenu = computed(() => [
           </span>
         </RouterLink>
         <p v-if="inventory.data.value && !projects.length" class="px-2.5 py-1.5 text-xs text-dimmed">
-          No projects yet — create one with kubectl for now.
+          No projects yet — the + above creates one.
         </p>
       </nav>
 

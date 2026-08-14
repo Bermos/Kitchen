@@ -123,6 +123,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /api/v1/projects", s.listProjects)
+	mux.HandleFunc("POST /api/v1/projects", s.createProject)
 	mux.HandleFunc("GET /api/v1/projects/{name}", s.getProject)
 	mux.HandleFunc("GET /api/v1/projects/{name}/builds", s.listProjectBuilds)
 	mux.HandleFunc("POST /api/v1/projects/{name}/builds", s.createBuild)
