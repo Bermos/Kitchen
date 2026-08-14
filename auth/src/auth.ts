@@ -78,6 +78,25 @@ export function authOptions(config: Config, database: Pool): BetterAuthOptions {
 				// a client per environment, so the plugin's default of five is
 				// too tight for a burst of preview deployments.
 				rateLimit: { register: { window: 60, max: 30 } },
+				// Who the token belongs to, in words.
+				//
+				// The access token is the only thing the UI and the operator API
+				// ever see: neither holds a session, and neither calls
+				// `/oauth2/userinfo`. Left alone the provider puts the account's
+				// identity in the ID token and names it in the access token with
+				// `sub` alone — an opaque id — so the UI's account menu shows a
+				// random string and everything the API records as created by a
+				// person is attributed to one too. The claims follow the granted
+				// scopes, the same rule the ID token and userinfo apply.
+				customAccessTokenClaims: ({ user, scopes }) => {
+					if (!user) {
+						return {};
+					}
+					return {
+						...(scopes.includes("profile") ? { name: user.name, picture: user.image ?? undefined } : {}),
+						...(scopes.includes("email") ? { email: user.email, email_verified: user.emailVerified } : {}),
+					};
+				},
 				silenceWarnings: { oauthAuthServerConfig: true },
 			}),
 			// Upstream identity providers registered at runtime (OIDC or SAML),

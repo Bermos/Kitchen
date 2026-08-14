@@ -68,8 +68,8 @@ func TestSearchLogsReadsABuildsOutputForwards(t *testing.T) {
 	store := newFakeLogStore(t)
 	// ClickHouse is asked for the newest lines first.
 	store.rows = strings.Join([]string{
-		`{"timestamp":"2026-08-13T10:00:02.000Z","source":"build","build":"shop-bld-1","stream":"stdout","message":"done"}`,
-		`{"timestamp":"2026-08-13T10:00:01.000Z","source":"build","build":"shop-bld-1","stream":"stdout","message":"building"}`,
+		`{"ts":"2026-08-13T10:00:02.000Z","source":"build","build":"shop-bld-1","stream":"stdout","message":"done"}`,
+		`{"ts":"2026-08-13T10:00:01.000Z","source":"build","build":"shop-bld-1","stream":"stdout","message":"building"}`,
 	}, "\n")
 
 	lines, err := store.client(t).SearchLogs(context.Background(), LogQuery{
@@ -159,7 +159,7 @@ func TestSearchLogsRefusesAnUnscopedQuery(t *testing.T) {
 
 func TestFilterLogsRunsTheExpressionReadOnly(t *testing.T) {
 	store := newFakeLogStore(t)
-	store.rows = `{"timestamp":"2026-08-13T10:00:01.000Z","source":"runtime","project":"shop","stream":"stderr","message":"boom"}`
+	store.rows = `{"ts":"2026-08-13T10:00:01.000Z","source":"runtime","project":"shop","stream":"stderr","message":"boom"}`
 
 	since := time.Date(2026, 8, 13, 9, 0, 0, 0, time.UTC)
 	lines, err := store.client(t).FilterLogs(context.Background(), LogFilter{
@@ -192,6 +192,40 @@ func TestFilterLogsRunsTheExpressionReadOnly(t *testing.T) {
 	}
 	if got := store.params.Get("param_limit"); got != "10" {
 		t.Errorf("the limit should travel as a parameter, got %q", got)
+	}
+}
+
+// The observability view's first query — `1 = 1` over the last hour, before a
+// single line exists — used to be refused by ClickHouse, because the formatted
+// timestamp was selected as `timestamp` and shadowed the column the window
+// compares against ("No operation greaterOrEquals between String and
+// DateTime64"). Both readers select it under another name so that `timestamp`
+// in a condition is always the column.
+func TestTheFormattedTimestampDoesNotShadowTheColumn(t *testing.T) {
+	store := newFakeLogStore(t)
+	since := time.Date(2026, 8, 13, 9, 0, 0, 0, time.UTC)
+
+	if _, err := store.client(t).FilterLogs(context.Background(), LogFilter{Where: "1 = 1", Since: since}); err != nil {
+		t.Fatalf("FilterLogs: %v", err)
+	}
+	assertNoShadow(t, store.query)
+
+	if _, err := store.client(t).SearchLogs(context.Background(), LogQuery{Build: "shop-bld-1", Since: since}); err != nil {
+		t.Fatalf("SearchLogs: %v", err)
+	}
+	assertNoShadow(t, store.query)
+}
+
+func assertNoShadow(t *testing.T, query string) {
+	t.Helper()
+	if strings.Contains(query, "AS timestamp") {
+		t.Fatalf("the formatted timestamp must not take the column's name:\n%s", query)
+	}
+	if !strings.Contains(query, "AS "+timestampAlias) {
+		t.Fatalf("the formatted timestamp should be selected as %q:\n%s", timestampAlias, query)
+	}
+	if !strings.Contains(query, "timestamp >= parseDateTime64BestEffort({since:String}, 3, 'UTC')") {
+		t.Fatalf("the window should compare the column:\n%s", query)
 	}
 }
 
