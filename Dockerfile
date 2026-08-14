@@ -43,11 +43,20 @@ COPY --from=ui-builder /ui/dist/ internal/ui/dist/
 # matches the image it is packaged into even though the compiler is not running
 # on that architecture. They are empty for a plain `docker build` with no
 # `--platform`, which is what leaves GOARCH unset and builds for the host.
-RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o manager cmd/main.go
+#
+# `go build -a` is deliberately absent. It forces a rebuild of every dependency
+# including the standard library, and is scaffold default left over from before
+# Go 1.10, when it was how you got a static binary out of CGO_ENABLED=0 — the
+# build cache has handled that correctly since. Dropping it produced
+# byte-identical binaries for both architectures while halving the compile
+# step, because the gate shares nearly all of its dependencies with the manager
+# and can now reuse what the manager build just compiled. Re-adding it would
+# buy nothing and cost that again.
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -o manager cmd/main.go
 # The forward-auth gate protected previews are routed through. It is a
 # separate process with a separate Deployment, but the same source tree and
 # the same release, so it rides along in this image.
-RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o gate cmd/gate/main.go
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -o gate cmd/gate/main.go
 
 # Use distroless as minimal base image to package the manager binary
 # Refer to https://github.com/GoogleContainerTools/distroless for more details
