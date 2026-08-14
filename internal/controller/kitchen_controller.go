@@ -66,6 +66,15 @@ const (
 	// wildcardCertificateName is the Certificate requesting *.<baseDomain>.
 	wildcardCertificateName = "kitchen-wildcard"
 
+	// The shared Gateway's listeners. Routes name one explicitly, so that in
+	// acme mode the HTTP listener can be left to the redirect alone.
+	gatewayListenerHTTP  = "http"
+	gatewayListenerHTTPS = "https"
+
+	// httpsRedirectRouteName is the only route bound to the HTTP listener when
+	// edge TLS is on.
+	httpsRedirectRouteName = "kitchen-https-redirect"
+
 	// defaultACMEServer matches the CRD default, for Kitchen objects written
 	// before the field existed.
 	defaultACMEServer = "https://acme-v02.api.letsencrypt.org/directory"
@@ -142,6 +151,10 @@ func (r *KitchenReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 
 	if err := r.applyGateway(ctx, kitchen); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	if err := r.applyHTTPSRedirect(ctx, kitchen); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -242,7 +255,7 @@ func (r *KitchenReconciler) applyGateway(ctx context.Context, kitchen *kitchenv1
 	}
 
 	listeners := []gatewayv1.Listener{{
-		Name:          "http",
+		Name:          gatewayListenerHTTP,
 		Port:          80,
 		Protocol:      gatewayv1.HTTPProtocolType,
 		Hostname:      &wildcard,
@@ -250,7 +263,7 @@ func (r *KitchenReconciler) applyGateway(ctx context.Context, kitchen *kitchenv1
 	}}
 	if kitchen.Spec.TLS.Mode == kitchenv1alpha1.TLSModeACME {
 		listeners = append(listeners, gatewayv1.Listener{
-			Name:          "https",
+			Name:          gatewayListenerHTTPS,
 			Port:          443,
 			Protocol:      gatewayv1.HTTPSProtocolType,
 			Hostname:      &wildcard,
@@ -358,6 +371,75 @@ func (r *KitchenReconciler) reconcileCloudflared(
 	} else {
 		setCond(condTunnelConnected, metav1.ConditionFalse, "TunnelPending", "cloudflared is not available yet")
 	}
+}
+
+// gatewaySection names the listener a route should attach to. In acme mode the
+// HTTP listener is left to the redirect alone, so everything that actually
+// serves binds to the HTTPS one; in the other modes there is no HTTPS listener
+// to bind to, and port 80 is where the platform answers.
+func gatewaySection(kitchen *kitchenv1alpha1.Kitchen) *gatewayv1.SectionName {
+	if kitchen.Spec.TLS.Mode == kitchenv1alpha1.TLSModeACME {
+		return ptr.To(gatewayv1.SectionName(gatewayListenerHTTPS))
+	}
+	return ptr.To(gatewayv1.SectionName(gatewayListenerHTTP))
+}
+
+// applyHTTPSRedirect publishes the only route the HTTP listener carries in acme
+// mode: a permanent redirect to the same URL over HTTPS.
+//
+// Gateway API has no listener-level redirect, so this has to be a route — and
+// it only works because every other route names the HTTPS listener explicitly
+// (see gatewaySection), leaving port 80 to this one. A route bound to both
+// listeners would otherwise win on hostname specificity and serve the real
+// thing over cleartext.
+//
+// In the other TLS modes port 80 is where the platform actually answers, so the
+// redirect is removed rather than left to loop.
+func (r *KitchenReconciler) applyHTTPSRedirect(
+	ctx context.Context,
+	kitchen *kitchenv1alpha1.Kitchen,
+) error {
+	route := &gatewayv1.HTTPRoute{ObjectMeta: metav1.ObjectMeta{
+		Name:      httpsRedirectRouteName,
+		Namespace: PlatformNamespace,
+	}}
+
+	if kitchen.Spec.TLS.Mode != kitchenv1alpha1.TLSModeACME {
+		if err := r.Delete(ctx, route); err != nil && !apierrors.IsNotFound(err) {
+			return err
+		}
+		return nil
+	}
+
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, route, func() error {
+		route.Labels = map[string]string{
+			labelComponentKey: httpsRedirectRouteName,
+			labelManagedByKey: labelManagedByValue,
+		}
+		route.Spec.CommonRouteSpec = gatewayv1.CommonRouteSpec{
+			ParentRefs: []gatewayv1.ParentReference{{
+				Name:        SharedGatewayName,
+				Namespace:   ptr.To(gatewayv1.Namespace(PlatformNamespace)),
+				SectionName: ptr.To(gatewayv1.SectionName(gatewayListenerHTTP)),
+			}},
+		}
+		// No hostnames: the listener's own *.<baseDomain> already scopes this,
+		// and anything else arriving on port 80 should be redirected too.
+		route.Spec.Hostnames = nil
+		route.Spec.Rules = []gatewayv1.HTTPRouteRule{{
+			Filters: []gatewayv1.HTTPRouteFilter{{
+				Type: gatewayv1.HTTPRouteFilterRequestRedirect,
+				RequestRedirect: &gatewayv1.HTTPRequestRedirectFilter{
+					Scheme: ptr.To("https"),
+					// Permanent: the HTTP address is not one the platform ever
+					// intends to serve while edge TLS is on.
+					StatusCode: ptr.To(301),
+				},
+			}},
+		}}
+		return nil
+	})
+	return err
 }
 
 // certManagerGVK builds a reference to one of cert-manager's kinds. They are

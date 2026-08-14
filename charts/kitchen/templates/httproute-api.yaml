@@ -24,6 +24,8 @@ spec:
   parentRefs:
     - name: {{ .Values.api.route.gateway.name }}
       namespace: {{ .Values.api.route.gateway.namespace }}
+      # Port 80 carries only the redirect when edge TLS is on.
+      sectionName: {{ include "kitchen.gatewaySection" . }}
   hostnames:
     - {{ include "kitchen.apiHost" . | quote }}
   rules:

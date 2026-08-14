@@ -22,6 +22,8 @@ spec:
   parentRefs:
     - name: {{ .Values.webhookReceiver.route.gateway.name }}
       namespace: {{ .Values.webhookReceiver.route.gateway.namespace }}
+      # Port 80 carries only the redirect when edge TLS is on.
+      sectionName: {{ include "kitchen.gatewaySection" . }}
   hostnames:
     - {{ include "kitchen.webhookHost" . | quote }}
   rules:

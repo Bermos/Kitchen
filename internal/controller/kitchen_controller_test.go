@@ -106,6 +106,43 @@ var _ = Describe("Kitchen Controller", func() {
 				"no gateway controller runs in envtest, so the gateway must report unprogrammed")
 		})
 
+		It("keeps port 80 for the redirect while edge TLS is on", func() {
+			reconcileOnce(KitchenSingletonName)
+
+			By("publishing a redirect bound to the http listener alone")
+			redirectKey := types.NamespacedName{Name: httpsRedirectRouteName, Namespace: PlatformNamespace}
+			route := &gatewayv1.HTTPRoute{}
+			Expect(k8sClient.Get(ctx, redirectKey, route)).To(Succeed())
+
+			parent := route.Spec.ParentRefs[0]
+			Expect(string(parent.Name)).To(Equal(SharedGatewayName))
+			Expect(parent.SectionName).NotTo(BeNil(),
+				"without a section the redirect would also bind to https and loop")
+			Expect(string(*parent.SectionName)).To(Equal(gatewayListenerHTTP))
+
+			filter := route.Spec.Rules[0].Filters[0]
+			Expect(filter.Type).To(Equal(gatewayv1.HTTPRouteFilterRequestRedirect))
+			Expect(*filter.RequestRedirect.Scheme).To(Equal("https"))
+			Expect(*filter.RequestRedirect.StatusCode).To(Equal(301))
+
+			By("sending everything that actually serves to the https listener")
+			kitchen := &kitchenv1alpha1.Kitchen{}
+			Expect(k8sClient.Get(ctx, singletonKey, kitchen)).To(Succeed())
+			Expect(string(*gatewaySection(kitchen))).To(Equal(gatewayListenerHTTPS))
+
+			By("removing the redirect when there is no https listener to send anyone to")
+			kitchen.Spec.TLS.Mode = kitchenv1alpha1.TLSModeNone
+			Expect(k8sClient.Update(ctx, kitchen)).To(Succeed())
+
+			reconcileOnce(KitchenSingletonName)
+
+			err := k8sClient.Get(ctx, redirectKey, &gatewayv1.HTTPRoute{})
+			Expect(errors.IsNotFound(err)).To(BeTrue(),
+				"port 80 is where the platform answers without edge TLS, so redirecting it would loop")
+			Expect(k8sClient.Get(ctx, singletonKey, kitchen)).To(Succeed())
+			Expect(string(*gatewaySection(kitchen))).To(Equal(gatewayListenerHTTP))
+		})
+
 		It("deploys cloudflared when enabled and removes it when disabled", func() {
 			kitchen := &kitchenv1alpha1.Kitchen{}
 			Expect(k8sClient.Get(ctx, singletonKey, kitchen)).To(Succeed())
