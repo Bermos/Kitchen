@@ -69,7 +69,7 @@ const logFetcher = (query: LogQuery) => api.buildLogs(name.value, query);
 
       <div>
         <h2 class="text-sm font-medium text-highlighted mb-2">Build output</h2>
-        <LogViewer :fetcher="logFetcher" :live="moving" />
+        <LogViewer :fetcher="logFetcher" :live="moving" :query-clause="`build = '${build.name}'`" />
       </div>
     </template>
     <div v-else-if="loading" class="py-24 text-center text-muted text-sm">Loading…</div>

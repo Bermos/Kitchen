@@ -87,6 +87,7 @@ sent the request.
 | GET | `/environments/{name}` | One environment |
 | PATCH | `/environments/{name}` | Move it to another release — promotion and rollback |
 | GET | `/environments/{name}/logs` | That environment's runtime logs |
+| GET | `/logs` | The whole logs table, filtered by a ClickHouse expression |
 | GET | `/settings` | The platform's settings — the `Kitchen` singleton |
 | PATCH | `/settings` | Change the build and telemetry defaults |
 | GET | `/connections` | Every connection (never their credentials) |
@@ -175,6 +176,28 @@ Lines come back oldest first — a log reads forwards — as
 
 An installation without a telemetry store answers `503`: there are no logs to
 read, which is a missing capability rather than a bad request.
+
+### Querying logs with ClickHouse syntax
+
+The logs live in ClickHouse, and the API does not pretend otherwise. `/logs`
+takes a real ClickHouse boolean expression over the table's columns and
+evaluates it as written — the observability view's query bar is this endpoint:
+
+```
+GET /logs?where=project = 'shop' AND stream = 'stderr' AND message ILIKE '%timeout%'
+GET /logs?where=match(message, 'GET /works\?page=\d+') AND environment = 'shop-production'
+```
+
+`limit`, `since` and `until` work as above and are applied on top of the
+expression; `where=1 = 1` selects everything in the window. A refused
+expression — a typo, an unknown column — answers `400` carrying ClickHouse's
+own diagnostic, which is the message that says how to fix it.
+
+The expression reaches ClickHouse as query text, which is the point — and why
+it runs pinned read-only (`readonly=2`: no writes, no DDL) under an execution
+cap, as the operator's own database user. What that user can read is the
+telemetry database; per-caller scoping arrives with scopes and RBAC
+([open item](#open)).
 
 ## Status codes
 

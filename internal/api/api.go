@@ -81,6 +81,7 @@ type Server struct {
 // logReader is the slice of the telemetry store the API depends on.
 type logReader interface {
 	SearchLogs(ctx context.Context, query clickhouse.LogQuery) ([]clickhouse.LogLine, error)
+	FilterLogs(ctx context.Context, filter clickhouse.LogFilter) ([]clickhouse.LogLine, error)
 }
 
 // Start implements manager.Runnable.
@@ -139,6 +140,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/environments/{name}", s.getEnvironment)
 	mux.HandleFunc("PATCH /api/v1/environments/{name}", s.patchEnvironment)
 	mux.HandleFunc("GET /api/v1/environments/{name}/logs", s.environmentLogs)
+
+	mux.HandleFunc("GET /api/v1/logs", s.queryLogs)
 
 	mux.HandleFunc("GET /api/v1/settings", s.getSettings)
 	mux.HandleFunc("PATCH /api/v1/settings", s.patchSettings)

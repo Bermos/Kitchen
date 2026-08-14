@@ -143,8 +143,81 @@ FORMAT JSONEachRow`,
 	if err != nil {
 		return nil, err
 	}
+	return parseLogLines(body, limit)
+}
 
-	lines := make([]LogLine, 0, limit)
+// LogFilter is a caller-written query over the whole logs table: a ClickHouse
+// boolean expression, evaluated as written. This is the "full ClickHouse
+// syntax" surface the observability view offers — the platform stores logs in
+// ClickHouse and does not pretend otherwise.
+type LogFilter struct {
+	// Where is a ClickHouse SQL expression over the table's columns
+	// (timestamp, source, project, environment, build, pod, container,
+	// stream, message). It must select something; "everything" is asked for
+	// explicitly with `1 = 1`.
+	Where string
+	// Since and Until bound the window on top of the expression.
+	Since time.Time
+	Until time.Time
+	// Limit caps the lines returned, newest kept, oldest first on the way out.
+	Limit int
+}
+
+// FilterLogs runs a caller-written expression against the logs table.
+//
+// The expression goes into the query text as written — that is the feature —
+// so the query runs read-only (readonly=2: no writes, no DDL) and under an
+// execution-time cap. What a caller can reach is what the operator's
+// ClickHouse user can read; today every API caller is a trusted platform user
+// (scopes and RBAC are an open item in AUTH.md), and the settings keep a typo
+// from becoming a write or a runaway scan.
+func (c *Client) FilterLogs(ctx context.Context, filter LogFilter) ([]LogLine, error) {
+	where := strings.TrimSpace(filter.Where)
+	if where == "" {
+		return nil, fmt.Errorf("a log filter needs a ClickHouse expression; `1 = 1` selects everything")
+	}
+
+	limit := filter.Limit
+	if limit < 1 {
+		limit = DefaultLogLimit
+	}
+	if limit > MaxLogLimit {
+		limit = MaxLogLimit
+	}
+
+	conditions := []string{fmt.Sprintf("(%s)", where)}
+	params := map[string]string{"limit": strconv.Itoa(limit)}
+	if !filter.Since.IsZero() {
+		conditions = append(conditions, "timestamp >= parseDateTime64BestEffort({since:String}, 3, 'UTC')")
+		params["since"] = filter.Since.UTC().Format(time.RFC3339Nano)
+	}
+	if !filter.Until.IsZero() {
+		conditions = append(conditions, "timestamp <= parseDateTime64BestEffort({until:String}, 3, 'UTC')")
+		params["until"] = filter.Until.UTC().Format(time.RFC3339Nano)
+	}
+
+	statement := fmt.Sprintf(`SELECT
+    formatDateTime(timestamp, '%%Y-%%m-%%dT%%H:%%i:%%S.%%fZ', 'UTC') AS timestamp,
+    source, project, environment, build, pod, container, stream, message
+FROM %s.%s
+WHERE %s
+ORDER BY timestamp DESC
+LIMIT {limit:UInt32}
+FORMAT JSONEachRow`,
+		quoteIdentifier(c.cfg.Database), quoteIdentifier(LogsTable), strings.Join(conditions, " AND "))
+
+	body, err := c.queryWithSettings(ctx, statement, params, readonlySettings)
+	if err != nil {
+		return nil, err
+	}
+	return parseLogLines(body, limit)
+}
+
+// parseLogLines turns a JSONEachRow answer into lines, oldest first. The
+// query asked for the newest lines, so the order is reversed on the way out —
+// a log reads forwards.
+func parseLogLines(body string, capacity int) ([]LogLine, error) {
+	lines := make([]LogLine, 0, capacity)
 	for _, raw := range strings.Split(body, "\n") {
 		raw = strings.TrimSpace(raw)
 		if raw == "" {
@@ -171,7 +244,6 @@ FORMAT JSONEachRow`,
 		})
 	}
 
-	// ClickHouse handed back the newest lines; a log reads forwards.
 	for i, j := 0, len(lines)-1; i < j; i, j = i+1, j-1 {
 		lines[i], lines[j] = lines[j], lines[i]
 	}

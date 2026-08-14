@@ -23,6 +23,7 @@ function projectTone(name: string): Tone {
 const nav = [
   { label: "Overview", icon: "i-lucide-layout-dashboard", to: "/", name: "overview" },
   { label: "Builds", icon: "i-lucide-hammer", to: "/builds", name: "builds" },
+  { label: "Observability", icon: "i-lucide-activity", to: "/observability", name: "observability" },
   { label: "Connections", icon: "i-lucide-plug", to: "/connections", name: "connections" },
   { label: "Settings", icon: "i-lucide-settings-2", to: "/settings", name: "settings" },
 ];

@@ -130,14 +130,44 @@ func (c *Client) Query(ctx context.Context, query string) (string, error) {
 	return c.QueryWithParams(ctx, query, nil)
 }
 
+// QueryError is a statement ClickHouse refused as written — a syntax error, an
+// unknown column — as opposed to a store that could not be reached. It exists
+// so a caller-authored query can be answered with "fix your query" rather than
+// "the platform is broken".
+type QueryError struct {
+	Status  string
+	Message string
+}
+
+func (e *QueryError) Error() string {
+	return fmt.Sprintf("clickhouse refused the query (%s): %s", e.Status, e.Message)
+}
+
 // QueryWithParams runs a statement whose `{name:Type}` placeholders are filled
 // in by ClickHouse itself. Anything that reaches a query from a request — a
 // project name, a search term, a row limit — goes through here rather than
 // into the query text.
 func (c *Client) QueryWithParams(ctx context.Context, query string, params map[string]string) (string, error) {
+	return c.queryWithSettings(ctx, query, params, nil)
+}
+
+// readonlySettings are applied to every query that carries caller-written
+// query text. readonly=2 forbids writes and DDL while still allowing the
+// request's own parameters and limits; the execution cap keeps an expensive
+// expression from holding a connection open until the client times out anyway.
+var readonlySettings = map[string]string{
+	"readonly":           "2",
+	"max_execution_time": "10",
+}
+
+// queryWithSettings is QueryWithParams plus per-query ClickHouse settings.
+func (c *Client) queryWithSettings(ctx context.Context, query string, params, settings map[string]string) (string, error) {
 	values := url.Values{"database": {c.cfg.Database}}
 	for name, value := range params {
 		values.Set("param_"+name, value)
+	}
+	for name, value := range settings {
+		values.Set(name, value)
 	}
 	endpoint := c.cfg.endpoint() + "?" + values.Encode()
 
@@ -162,6 +192,10 @@ func (c *Client) QueryWithParams(ctx context.Context, query string, params map[s
 		body, err := io.ReadAll(io.LimitReader(resp.Body, maxErrorBytes))
 		if err != nil {
 			return "", err
+		}
+		// A 4xx is ClickHouse judging the statement, not failing at it.
+		if resp.StatusCode < 500 {
+			return "", &QueryError{Status: resp.Status, Message: strings.TrimSpace(string(body))}
 		}
 		return "", fmt.Errorf("clickhouse returned %s: %s",
 			resp.Status, strings.TrimSpace(string(body)))
