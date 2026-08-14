@@ -85,6 +85,11 @@ type createProjectRequest struct {
 // adds 17 characters and still has to fit Kubernetes' 63-character limit.
 const maxProjectNameLength = 46
 
+// defaultProductionBranch is the CRD's own default for
+// spec.source.productionBranch, applied here as well so the response is
+// honest against a client the API server never defaulted for.
+const defaultProductionBranch = "main"
+
 // validateProjectName checks a name before it becomes namespaces, hostnames
 // and generated object names, which is why plain DNS-1123 is not enough.
 func validateProjectName(name string) error {
@@ -168,11 +173,9 @@ func (s *Server) createProject(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// The CRD defaults these too; applying them here as well keeps the
-	// response honest against a client (or test) the API server never saw.
 	branch := body.ProductionBranch
 	if branch == "" {
-		branch = "main"
+		branch = defaultProductionBranch
 	}
 	previews := true
 	if body.Previews != nil {
