@@ -137,12 +137,8 @@ func upstreamAddress(appNS, name string, port int32) string {
 	return fmt.Sprintf("%s.%s.svc.cluster.local:%d", name, appNS, port)
 }
 
-// platformScheme is how generated URLs are reached from outside. Everything
-// but TLS mode "none" is served over HTTPS, whether the certificate is
-// terminated by the Gateway or by a tunnel in front of it.
+// platformScheme is how generated URLs are reached from outside, which
+// follows the platform's TLS mode.
 func platformScheme(kitchen *kitchenv1alpha1.Kitchen) string {
-	if kitchen.Spec.TLS.Mode == kitchenv1alpha1.TLSModeNone {
-		return "http"
-	}
-	return "https"
+	return kitchen.Spec.TLS.Mode.Scheme()
 }

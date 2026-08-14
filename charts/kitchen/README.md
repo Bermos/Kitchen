@@ -89,6 +89,24 @@ helm install kitchen ./charts/kitchen \
   --set kitchen.ingress.cloudflared.tunnelSecretName=kitchen-tunnel
 ```
 
+Or without TLS at all, which is how a cluster usually comes up first — before
+DNS and certificates exist:
+
+```sh
+helm install kitchen ./charts/kitchen \
+  --namespace kitchen-system --create-namespace \
+  --set kitchen.baseDomain=apps.example.com \
+  --set kitchen.tls.mode=none
+```
+
+`kitchen.tls.mode` decides the scheme of every URL the chart and the operator
+publish, not only whether a certificate is managed. In `none` mode the shared
+Gateway gets an HTTP listener and nothing else, so the OIDC issuer, the API's
+external URL, the UI's redirect URIs and generated app URLs are all `http://`
+— which is what makes login work there instead of failing discovery against a
+scheme nothing serves. Everything is in the clear, so it is a way to bring a
+cluster up, not to run one.
+
 ## Telemetry store
 
 The chart runs a single-node ClickHouse — the store for logs, metrics, traces,
@@ -341,11 +359,11 @@ kubectl delete namespace kitchen-system
 | `kitchen.create` | `true` | Create the `Kitchen` singleton. Needs `baseDomain`. |
 | `kitchen.applyOnUpgrade` | `false` | Re-apply the singleton on every upgrade. |
 | `kitchen.baseDomain` | `""` | Generated URLs are `<slug>.<baseDomain>`. |
-| `kitchen.api.externalURL` | `""` | Defaults to `https://kitchen.<baseDomain>`. |
+| `kitchen.api.externalURL` | `""` | Defaults to `kitchen.<baseDomain>`, under the scheme `kitchen.tls.mode` serves. |
 | `kitchen.ingress.gatewayClassName` | `cilium` | GatewayClass for the shared Gateway. |
 | `kitchen.ingress.cloudflared.enabled` | `false` | Run a cloudflared tunnel as the edge. |
 | `kitchen.ingress.cloudflared.tunnelSecretName` | `""` | Secret with the tunnel token under `token`. |
-| `kitchen.tls.mode` | `acme` | `acme`, `cloudflared` or `none`. |
+| `kitchen.tls.mode` | `acme` | `acme`, `cloudflared` or `none`. Also the scheme of every published URL: `none` serves HTTP only. |
 | `kitchen.tls.acme.email` | `""` | CA contact address. Required in `acme` mode. |
 | `kitchen.tls.acme.server` | Let's Encrypt production | ACME directory URL. Use the staging directory while setting up. |
 | `kitchen.tls.acme.dns01.cloudflare.apiTokenSecretName` | `""` | Secret holding a Cloudflare API token (`Zone:DNS:Edit` + `Zone:Zone:Read`). Required in `acme` mode. |

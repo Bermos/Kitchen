@@ -66,14 +66,23 @@ Container image reference, digest taking precedence over tag.
 {{- end }}
 
 {{/*
+The scheme every generated URL is reached over, following kitchen.tls.mode as
+the operator does. In mode "none" the shared Gateway gets an HTTP listener and
+nothing else, so publishing https there names a scheme nothing serves.
+*/}}
+{{- define "kitchen.scheme" -}}
+{{- if eq .Values.kitchen.tls.mode "none" }}http{{ else }}https{{ end }}
+{{- end }}
+
+{{/*
 Public base URL of the operator API, mirroring the operator's own default of
-https://kitchen.<baseDomain>.
+kitchen.<baseDomain> under the platform's scheme.
 */}}
 {{- define "kitchen.apiExternalURL" -}}
 {{- if .Values.kitchen.api.externalURL }}
 {{- .Values.kitchen.api.externalURL | trimSuffix "/" }}
 {{- else if .Values.kitchen.baseDomain }}
-{{- printf "https://kitchen.%s" .Values.kitchen.baseDomain }}
+{{- printf "%s://kitchen.%s" (include "kitchen.scheme" .) .Values.kitchen.baseDomain }}
 {{- end }}
 {{- end }}
 
@@ -246,11 +255,13 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 
 {{/*
 The OIDC issuer. Everything that speaks to the identity provider — the UI, the
-operator API, deployed apps — starts from this URL.
+operator API, deployed apps — starts from this URL, so its scheme has to be one
+the Gateway actually serves: discovery, the JWKS fetch and every redirect are
+built from it.
 */}}
 {{- define "kitchen.authIssuer" -}}
 {{- with include "kitchen.authHost" . }}
-{{- printf "https://%s" . }}
+{{- printf "%s://%s" (include "kitchen.scheme" $) . }}
 {{- end }}
 {{- end }}
 

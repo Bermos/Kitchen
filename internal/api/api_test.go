@@ -737,6 +737,18 @@ func TestTheIssuerIsDerivedFromTheKitchenObject(t *testing.T) {
 			issuer: "https://auth.apps.example.com",
 			audit:  "https://kitchen.apps.example.com",
 		},
+		// Without TLS the Gateway only listens on HTTP, so an issuer
+		// advertised as https is one nothing answers on: discovery, the JWKS
+		// fetch and every redirect built from it would fail.
+		"under the scheme the gateway serves": {
+			kitchen: kitchenv1alpha1.KitchenSpec{
+				BaseDomain: "apps.example.com",
+				TLS:        kitchenv1alpha1.TLSSpec{Mode: kitchenv1alpha1.TLSModeNone},
+				Auth:       kitchenv1alpha1.AuthSpec{Enabled: true},
+			},
+			issuer: "http://auth.apps.example.com",
+			audit:  "http://kitchen.apps.example.com",
+		},
 		"from an explicit host and external URL": {
 			kitchen: kitchenv1alpha1.KitchenSpec{
 				BaseDomain: "apps.example.com",
@@ -745,6 +757,18 @@ func TestTheIssuerIsDerivedFromTheKitchenObject(t *testing.T) {
 			},
 			issuer: "https://id.example.com",
 			audit:  "https://api.example.com",
+		},
+		// An external identity provider may be reached over a scheme of its
+		// own, whatever the platform's edge does.
+		"from a host that spells its scheme out": {
+			kitchen: kitchenv1alpha1.KitchenSpec{
+				BaseDomain: "apps.example.com",
+				TLS:        kitchenv1alpha1.TLSSpec{Mode: kitchenv1alpha1.TLSModeNone},
+				API:        kitchenv1alpha1.APISpec{ExternalURL: "http://kitchen.example.com"},
+				Auth:       kitchenv1alpha1.AuthSpec{Enabled: true, Host: "https://id.example.com"},
+			},
+			issuer: "https://id.example.com",
+			audit:  "http://kitchen.example.com",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {

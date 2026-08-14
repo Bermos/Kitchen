@@ -90,6 +90,42 @@ jobs:
                  --set postgres.enabled=false \
                  --set postgres.external.host=postgres.databases.svc \
                  --set postgres.auth.password=hunter2
+          # Plain HTTP: the way a cluster comes up before DNS and certificates.
+          render --set kitchen.baseDomain=apps.example.com --set kitchen.tls.mode=none
+
+      - name: Check published URLs follow the TLS mode
+        run: |
+          set -euo pipefail
+          field() {
+            local file=$1 key=$2
+            shift 2
+            helm template kitchen charts/kitchen --namespace kitchen-system \
+              --set kitchen.baseDomain=apps.example.com "$@" -s "${file}" \
+              | awk -v key="${key}:" '$1 == key { print $2; exit }' | tr -d '"'
+          }
+          issuer() { field templates/auth/secret.yaml issuer "$@"; }
+          external() { field templates/kitchen.yaml externalURL "$@"; }
+
+          [ "$(issuer)" = https://auth.apps.example.com ] || {
+            echo "::error::the OIDC issuer is not served over https by default"
+            exit 1
+          }
+          [ "$(external)" = https://kitchen.apps.example.com ] || {
+            echo "::error::the API's external URL is not https by default"
+            exit 1
+          }
+          # In TLS mode "none" the shared Gateway gets an HTTP listener and
+          # nothing else, so an https URL published there is one nothing
+          # serves: discovery, the JWKS fetch and every redirect built from the
+          # issuer would fail.
+          [ "$(issuer --set kitchen.tls.mode=none)" = http://auth.apps.example.com ] || {
+            echo "::error::the OIDC issuer advertises a scheme the Gateway does not serve in tls.mode=none"
+            exit 1
+          }
+          [ "$(external --set kitchen.tls.mode=none)" = http://kitchen.apps.example.com ] || {
+            echo "::error::the API's external URL advertises https in tls.mode=none"
+            exit 1
+          }
 
       - name: Check the collector is only rendered with somewhere to ship to
         run: |

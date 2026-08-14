@@ -329,12 +329,14 @@ func (r *ProjectReconciler) updateReferences(ctx context.Context, project *kitch
 	}
 }
 
-// apiExternalURL returns the operator API's public base URL.
+// apiExternalURL returns the operator API's public base URL. Its scheme
+// follows the platform's TLS mode: a webhook URL handed to a git provider has
+// to name a scheme the Gateway serves.
 func apiExternalURL(kitchen *kitchenv1alpha1.Kitchen) string {
 	if kitchen.Spec.API.ExternalURL != "" {
 		return kitchen.Spec.API.ExternalURL
 	}
-	return "https://kitchen." + kitchen.Spec.BaseDomain
+	return platformScheme(kitchen) + "://kitchen." + kitchen.Spec.BaseDomain
 }
 
 // SetupWithManager sets up the controller with the Manager.

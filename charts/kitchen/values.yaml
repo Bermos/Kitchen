@@ -66,7 +66,8 @@ kitchen:
   baseDomain: ""
   api:
     # -- Public base URL of the operator API and git webhook receiver.
-    # Defaults to `https://kitchen.<baseDomain>`.
+    # Defaults to `kitchen.<baseDomain>` under the scheme `kitchen.tls.mode`
+    # serves — `https`, or `http` when the mode is `none`.
     externalURL: ""
   ingress:
     # -- GatewayClass backing the shared Gateway.
@@ -78,7 +79,10 @@ kitchen:
       # -- Existing secret holding the tunnel token under the key `token`.
       tunnelSecretName: ""
   tls:
-    # -- Edge TLS mode: acme | cloudflared | none.
+    # -- Edge TLS mode: acme | cloudflared | none. It also decides the scheme
+    # of every URL the platform publishes, the OIDC issuer included: `none`
+    # gives the shared Gateway an HTTP listener alone, so those URLs are
+    # `http://`.
     mode: acme
     # How the wildcard certificate for `*.<baseDomain>` is obtained in acme
     # mode. The operator — not this chart — creates the ClusterIssuer and the

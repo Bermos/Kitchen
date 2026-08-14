@@ -77,6 +77,12 @@ through its Go types, to avoid tying the build to its release cadence.
   without one, and the platform never goes ready. Verified on bare metal.
 - **The Gateway API CRD version is pinned by Cilium**, not by us, and it moves
   quickly. Check Cilium's docs for the release in use.
+- **`kitchen.tls.mode` decides the scheme of every published URL**, not just
+  whether a certificate is managed. Mode `none` gives the shared Gateway an
+  HTTP listener alone, so the OIDC issuer, the API's external URL and generated
+  app URLs are `http://` there. The chart derives it in `kitchen.scheme`, the
+  operator in `TLSMode.Scheme()`; anything new that builds a public URL goes
+  through one of them rather than writing `https://`.
 - **`kitchen-wildcard-tls` is a compiled-in constant**
   (`WildcardTLSSecretName`), because the Gateway's HTTPS listener references it
   directly. It is deliberately not configurable.

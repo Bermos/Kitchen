@@ -59,7 +59,8 @@ spec:
                     description: |-
                       ExternalURL is the base URL the operator API (including the git
                       webhook receiver) is reachable at from outside the cluster.
-                      Defaults to https://kitchen.<baseDomain>.
+                      Defaults to kitchen.<baseDomain>, under the scheme tls.mode serves:
+                      https, or http when tls.mode is none.
                     type: string
                 type: object
               auth:
@@ -77,7 +78,8 @@ spec:
                   host:
                     description: |-
                       Hostname the identity provider is served on, and therefore the OIDC
-                      issuer (https://<host>). Defaults to auth.<baseDomain>.
+                      issuer — under the scheme tls.mode serves, so https://<host> unless
+                      tls.mode is none. Defaults to auth.<baseDomain>.
                     type: string
                   previewGate:
                     default: {}
