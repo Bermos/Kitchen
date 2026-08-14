@@ -15,7 +15,10 @@ describe("pkce", () => {
   });
 
   it("claims of a JWT decode without verifying", () => {
-    const payload = Buffer.from(JSON.stringify({ sub: "abc", exp: 123 })).toString("base64url");
+    const payload = btoa(JSON.stringify({ sub: "abc", exp: 123 }))
+      .replace(/\+/g, "-")
+      .replace(/\//g, "_")
+      .replace(/=+$/, "");
     expect(claimsOf(`header.${payload}.signature`)).toEqual({ sub: "abc", exp: 123 });
   });
 
