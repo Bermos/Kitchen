@@ -99,15 +99,8 @@ func (s *Server) environmentLogs(w http.ResponseWriter, req *http.Request) {
 }
 
 func (s *Server) writeLogs(w http.ResponseWriter, req *http.Request, query clickhouse.LogQuery) {
-	store, err := s.logStore(req.Context())
-	if err != nil {
-		if errors.Is(err, errNoLogStore) {
-			// The installation chose to run without telemetry. That is a
-			// missing capability, not a broken request.
-			writeJSON(w, http.StatusServiceUnavailable, errorBody{Error: err.Error()})
-			return
-		}
-		s.writeError(w, err)
+	store := s.openLogStore(w, req)
+	if store == nil {
 		return
 	}
 
@@ -117,4 +110,72 @@ func (s *Server) writeLogs(w http.ResponseWriter, req *http.Request, query click
 		return
 	}
 	writeList(w, lines)
+}
+
+// queryLogs is the observability surface: a caller-written ClickHouse
+// expression over the whole logs table. The platform stores logs in ClickHouse
+// and does not hide it — `where` is real ClickHouse syntax, run read-only.
+func (s *Server) queryLogs(w http.ResponseWriter, req *http.Request) {
+	where := strings.TrimSpace(req.URL.Query().Get("where"))
+	if where == "" {
+		badRequest(w, "where is required: a ClickHouse expression over the logs table, e.g. "+
+			"where=project = 'shop' AND stream = 'stderr'. `1 = 1` selects everything.")
+		return
+	}
+	limit, err := intParam(req, "limit", clickhouse.DefaultLogLimit)
+	if err != nil {
+		badRequest(w, "%s", err.Error())
+		return
+	}
+	since, err := timeParam(req, "since")
+	if err != nil {
+		badRequest(w, "%s", err.Error())
+		return
+	}
+	until, err := timeParam(req, "until")
+	if err != nil {
+		badRequest(w, "%s", err.Error())
+		return
+	}
+
+	store := s.openLogStore(w, req)
+	if store == nil {
+		return
+	}
+
+	lines, err := store.FilterLogs(req.Context(), clickhouse.LogFilter{
+		Where: where,
+		Since: since,
+		Until: until,
+		Limit: limit,
+	})
+	if err != nil {
+		// ClickHouse judging the expression is the caller's problem to fix,
+		// and its message is the diagnostic they need to fix it.
+		queryErr := &clickhouse.QueryError{}
+		if errors.As(err, &queryErr) {
+			badRequest(w, "%s", queryErr.Message)
+			return
+		}
+		s.writeError(w, err)
+		return
+	}
+	writeList(w, lines)
+}
+
+// openLogStore resolves the telemetry store, answering the request itself when
+// there is none: a nil return means the response has been written.
+func (s *Server) openLogStore(w http.ResponseWriter, req *http.Request) logReader {
+	store, err := s.logStore(req.Context())
+	if err != nil {
+		if errors.Is(err, errNoLogStore) {
+			// The installation chose to run without telemetry. That is a
+			// missing capability, not a broken request.
+			writeJSON(w, http.StatusServiceUnavailable, errorBody{Error: err.Error()})
+			return nil
+		}
+		s.writeError(w, err)
+		return nil
+	}
+	return store
 }

@@ -12,6 +12,8 @@ const props = defineProps<{
   fetcher: (query: LogQuery) => Promise<LogLine[]>;
   /** Keep refreshing while true — a running build, a deploying environment. */
   live?: boolean;
+  /** ClickHouse expression scoping this object, for the jump to Observability. */
+  queryClause?: string;
 }>();
 
 const search = ref("");
@@ -69,6 +71,16 @@ function time(line: LogLine): string {
         <StatusDot tone="success" pulse class="mr-1" /> live
       </UBadge>
       <span class="flex-1" />
+      <UButton
+        v-if="queryClause"
+        :to="{ name: 'observability', query: { where: queryClause } }"
+        size="sm"
+        color="neutral"
+        variant="ghost"
+        icon="i-lucide-database"
+      >
+        Query in Observability
+      </UButton>
       <UButton
         icon="i-lucide-refresh-cw"
         size="sm"

@@ -230,12 +230,22 @@ func fixtures() []runtime.Object {
 
 // stubLogs stands in for the telemetry store.
 type stubLogs struct {
-	lines []clickhouse.LogLine
-	last  clickhouse.LogQuery
+	lines      []clickhouse.LogLine
+	last       clickhouse.LogQuery
+	lastFilter clickhouse.LogFilter
+	filterErr  error
 }
 
 func (s *stubLogs) SearchLogs(_ context.Context, query clickhouse.LogQuery) ([]clickhouse.LogLine, error) {
 	s.last = query
+	return s.lines, nil
+}
+
+func (s *stubLogs) FilterLogs(_ context.Context, filter clickhouse.LogFilter) ([]clickhouse.LogLine, error) {
+	s.lastFilter = filter
+	if s.filterErr != nil {
+		return nil, s.filterErr
+	}
 	return s.lines, nil
 }
 
@@ -339,6 +349,7 @@ var routes = []struct {
 	{http.MethodGet, "/api/v1/environments/shop-production"},
 	{http.MethodPatch, "/api/v1/environments/shop-production"},
 	{http.MethodGet, "/api/v1/environments/shop-production/logs"},
+	{http.MethodGet, "/api/v1/logs"},
 	{http.MethodGet, "/api/v1/settings"},
 	{http.MethodPatch, "/api/v1/settings"},
 	{http.MethodGet, "/api/v1/connections"},

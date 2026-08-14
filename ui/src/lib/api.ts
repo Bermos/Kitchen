@@ -219,6 +219,16 @@ export const api = {
   environmentLogs: (name: string, query: LogQuery = {}) =>
     request<{ items: LogLine[] }>("GET", `/environments/${name}/logs${logQuery(query)}`).then((b) => b.items),
 
+  // The observability surface: a ClickHouse expression over the whole logs
+  // table, evaluated as written (read-only, capped server-side).
+  logs: (where: string, query: LogQuery = {}) => {
+    const params = new URLSearchParams({ where });
+    if (query.limit) params.set("limit", String(query.limit));
+    if (query.since) params.set("since", query.since);
+    if (query.until) params.set("until", query.until);
+    return request<{ items: LogLine[] }>("GET", `/logs?${params}`).then((b) => b.items);
+  },
+
   connections: list<Connection>("/connections"),
   domains: list<Domain>("/domains"),
   claims: list<Claim>("/claims"),

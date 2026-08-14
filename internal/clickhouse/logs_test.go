@@ -18,6 +18,7 @@ package clickhouse
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -153,5 +154,82 @@ func TestSearchLogsRefusesAnUnscopedQuery(t *testing.T) {
 	// Without a scope this would read every line in the cluster.
 	if _, err := store.client(t).SearchLogs(context.Background(), LogQuery{Limit: 10}); err == nil {
 		t.Fatal("an unscoped log query should be refused")
+	}
+}
+
+func TestFilterLogsRunsTheExpressionReadOnly(t *testing.T) {
+	store := newFakeLogStore(t)
+	store.rows = `{"timestamp":"2026-08-13T10:00:01.000Z","source":"runtime","project":"shop","stream":"stderr","message":"boom"}`
+
+	since := time.Date(2026, 8, 13, 9, 0, 0, 0, time.UTC)
+	lines, err := store.client(t).FilterLogs(context.Background(), LogFilter{
+		Where: "project = 'shop' AND stream = 'stderr'",
+		Since: since,
+		Limit: 10,
+	})
+	if err != nil {
+		t.Fatalf("FilterLogs: %v", err)
+	}
+	if len(lines) != 1 || lines[0].Message != "boom" {
+		t.Fatalf("unexpected lines: %+v", lines)
+	}
+
+	// The expression is the feature, so it appears in the query text as
+	// written — which is exactly why the query must be pinned read-only and
+	// time-capped.
+	if !strings.Contains(store.query, "(project = 'shop' AND stream = 'stderr')") {
+		t.Fatalf("the expression should reach the query text as written:\n%s", store.query)
+	}
+	if got := store.params.Get("readonly"); got != "2" {
+		t.Fatalf("a caller-written query must run read-only, got readonly=%q", got)
+	}
+	if store.params.Get("max_execution_time") == "" {
+		t.Fatalf("a caller-written query must carry an execution cap")
+	}
+	// The window and the limit still travel as parameters.
+	if !strings.HasPrefix(store.params.Get("param_since"), "2026-08-13T09:00:00") {
+		t.Errorf("the window should travel as a parameter, got %q", store.params.Get("param_since"))
+	}
+	if got := store.params.Get("param_limit"); got != "10" {
+		t.Errorf("the limit should travel as a parameter, got %q", got)
+	}
+}
+
+func TestFilterLogsRefusesAnEmptyExpression(t *testing.T) {
+	store := newFakeLogStore(t)
+	if _, err := store.client(t).FilterLogs(context.Background(), LogFilter{Where: "   "}); err == nil {
+		t.Fatal("an empty expression should be refused before it reaches the store")
+	}
+}
+
+func TestFilterLogsBoundsTheLimit(t *testing.T) {
+	store := newFakeLogStore(t)
+	if _, err := store.client(t).FilterLogs(context.Background(), LogFilter{Where: "1 = 1", Limit: 999999}); err != nil {
+		t.Fatalf("FilterLogs: %v", err)
+	}
+	if got := store.params.Get("param_limit"); got != "5000" {
+		t.Fatalf("the limit should be capped at %d, got %q", MaxLogLimit, got)
+	}
+}
+
+func TestARefusedQueryIsTypedAsTheCallersError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, "Code: 62. DB::Exception: Syntax error")
+	}))
+	t.Cleanup(server.Close)
+	endpoint, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := New(Config{Host: endpoint.Hostname(), HTTPPort: endpoint.Port(), Database: "kitchen", Username: "kitchen"})
+
+	_, err = client.FilterLogs(context.Background(), LogFilter{Where: "projct = 'shop'"})
+	queryErr := &QueryError{}
+	if !errors.As(err, &queryErr) {
+		t.Fatalf("want a QueryError, got %v", err)
+	}
+	if !strings.Contains(queryErr.Message, "Syntax error") {
+		t.Fatalf("the diagnostic should survive: %v", queryErr)
 	}
 }
