@@ -16,9 +16,10 @@ RUN npm run build
 # target, rather than running an emulated toolchain. Without the `--platform`
 # pin, buildx pulls a target-architecture golang image and runs it under QEMU:
 # building linux/arm64 that way took 33 minutes of a 43-minute release, against
-# roughly 3 for the same two binaries compiled natively. Nothing here needs the
-# target's architecture — CGO is off, so the Go toolchain cross-compiles from
-# GOARCH alone.
+# three and a half for the same two binaries cross-compiled. Nothing here needs
+# the target's architecture — CGO is off, so the Go toolchain cross-compiles
+# from GOARCH alone, and the arm64 image can be built on a host with no arm64
+# emulation installed at all.
 FROM --platform=$BUILDPLATFORM docker.io/golang:1.23 AS builder
 ARG TARGETOS
 ARG TARGETARCH
