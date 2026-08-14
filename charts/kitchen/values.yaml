@@ -12,6 +12,22 @@ fullnameOverride: ""
 # know what you are doing.
 namespaceCheck: true
 
+namespace:
+  # -- Manage the platform namespace as part of the release, so its Pod
+  # Security level is set rather than inherited. Still install with
+  # `--create-namespace`: Helm writes the release record into the namespace
+  # before it applies any manifest, so a chart cannot bootstrap the namespace
+  # it installs into — it can only adopt the empty one Helm just made. A
+  # namespace created any other way (`kubectl create namespace`) cannot be
+  # adopted and fails the install; see the chart README.
+  create: true
+  # -- Pod Security level enforced on the platform namespace. The log
+  # collector mounts the node's /var/log and `hostPath` is admitted at
+  # `privileged` alone, so anything stricter needs `logs.enabled=false`.
+  podSecurity: privileged
+  # -- Extra labels for the platform namespace.
+  labels: {}
+
 image:
   repository: ghcr.io/bermos/kitchen
   # -- Image tag. Defaults to the chart's appVersion.

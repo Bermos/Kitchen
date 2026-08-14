@@ -447,6 +447,12 @@ does not run in.
 {{- if and (not .Values.clickhouse.enabled) (not .Values.clickhouse.external.host) (not .Values.clickhouse.acknowledgeNoStore) }}
 {{- fail "no telemetry store: enable clickhouse.enabled, set clickhouse.external.host, or set clickhouse.acknowledgeNoStore=true to install without one (logs, metrics and traces then have nowhere to land)." }}
 {{- end }}
+{{- if and .Values.namespace.create (not (has .Values.namespace.podSecurity (list "privileged" "baseline" "restricted"))) }}
+{{- fail (printf "namespace.podSecurity must be one of privileged, baseline, restricted (got %q)" .Values.namespace.podSecurity) }}
+{{- end }}
+{{- if and .Values.namespace.create .Values.logs.enabled (ne .Values.namespace.podSecurity "privileged") }}
+{{- fail (printf "namespace.podSecurity is %q but logs.enabled is true: the collector mounts the node's /var/log, and Pod Security admits hostPath at the privileged level alone, so its pods would be refused at admission and no logs would be collected. Set namespace.podSecurity=privileged, or logs.enabled=false." .Values.namespace.podSecurity) }}
+{{- end }}
 {{- if and .Values.logs.enabled (lt (int .Values.logs.batch.maxEvents) 1) }}
 {{- fail "logs.batch.maxEvents must be at least 1: a batch of nothing never ships." }}
 {{- end }}

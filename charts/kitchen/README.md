@@ -30,18 +30,10 @@ Kitchen assumes these exist; the chart does **not** install them:
   With cloudflared you still want LB IPAM — you just do not need L2 or BGP,
   because the tunnel dials out from inside the cluster.
 - **Wildcard DNS** for `*.<baseDomain>`, pointed at that address.
-- **A `kitchen-system` namespace labelled `pod-security.kubernetes.io/enforce=privileged`**,
-  if you want container logs collected. The collector is a DaemonSet that mounts
-  the node's `/var/log`, and `hostPath` is admitted at the `privileged` level
-  only — `baseline` forbids it outright, so there is no narrower level that
-  still works. Clusters differ in what they default to: kind is `privileged` and
-  notices nothing, Talos is `baseline` and the collector never starts. Label the
-  namespace before installing, or install with `logs.enabled=false`.
+The platform namespace is **not** in that list — the chart creates and labels
+`kitchen-system` itself; see [Install](#install).
 
-  The chart does not create or label the namespace itself, so
-  `--create-namespace` leaves it inheriting the cluster default.
-
-cert-manager is **not** in that list: the chart ships it as a sub-chart
+cert-manager is **not** in that list either: the chart ships it as a sub-chart
 (`cert-manager.enabled`, on by default), because Kitchen owns the cluster it is
 installed into. Set `cert-manager.enabled=false` for a cluster that already
 runs one.
@@ -76,6 +68,62 @@ helm install kitchen oci://ghcr.io/bermos/charts/kitchen \
   --set kitchen.baseDomain=apps.example.com
 ```
 
+### The chart owns the namespace
+
+`kitchen-system` is part of the release (`namespace.create`, on by default), so
+its Pod Security level is set rather than inherited. That matters because the
+log collector mounts the node's `/var/log`, and `hostPath` is admitted at the
+`privileged` level alone — `baseline` forbids it outright, so there is no
+narrower level that still collects logs. Clusters differ in what they default
+to: kind is `privileged` and notices nothing, Talos is `baseline` and the
+collector's pods are refused at admission with no pod ever created. The
+namespace therefore carries `pod-security.kubernetes.io/{enforce,audit,warn}`
+at `namespace.podSecurity`, and setting that stricter while `logs.enabled` is
+true is refused at render time rather than discovered later.
+
+Two consequences worth knowing:
+
+- **Still install with `--create-namespace`, and do not create the namespace
+  yourself.** Helm writes its release record into the target namespace *before*
+  it applies any manifest, so a chart cannot bootstrap the namespace it installs
+  into — `helm install` without the flag fails with `namespaces "kitchen-system"
+  not found`. What the flag creates is a bare namespace, which the chart's
+  template then adopts and labels. A namespace created any other way carries no
+  Helm ownership metadata and **fails the install** instead of being adopted.
+- **Uninstall keeps it.** The namespace is annotated
+  `helm.sh/resource-policy: keep`, so `helm uninstall` leaves it and everything
+  still inside — including the PVCs behind Postgres and ClickHouse. Without that
+  annotation, deleting the release would delete the namespace and take the
+  platform's data with it.
+
+Set `namespace.create=false` to manage the namespace yourself, in which case
+its Pod Security labels are yours to get right.
+
+#### Adopting an existing namespace
+
+An existing `kitchen-system` — one made with `kubectl create namespace`, or by
+`--create-namespace` under a chart older than this one — has no Helm ownership
+metadata, so install and upgrade both fail with:
+
+```
+Error: UPGRADE FAILED: unable to continue with update: Namespace "kitchen-system" in namespace ""
+exists and cannot be imported into the current release: invalid ownership metadata; label
+validation error: missing key "app.kubernetes.io/managed-by": must be set to "Helm"
+```
+
+Hand it over once, then upgrade normally:
+
+```sh
+kubectl label namespace kitchen-system app.kubernetes.io/managed-by=Helm --overwrite
+kubectl annotate namespace kitchen-system \
+  meta.helm.sh/release-name=kitchen \
+  meta.helm.sh/release-namespace=kitchen-system --overwrite
+```
+
+The release name must match yours. Nothing is restarted or recreated — this only
+writes metadata Helm reads to decide it may take ownership. The alternative, if
+you would rather the chart kept its hands off, is `--set namespace.create=false`.
+
 Releases are published to GHCR by `.github/workflows/publish.yml` when a `v*`
 tag is pushed: the multi-arch operator image as `ghcr.io/bermos/kitchen`, the
 auth image as `ghcr.io/bermos/kitchen-auth`, and the chart as
@@ -91,15 +139,19 @@ kubectl get kitchen default -o jsonpath='{.status.gatewayAddress}'
 Behind a cloudflared tunnel instead, no public address needed:
 
 ```sh
-kubectl -n kitchen-system create secret generic kitchen-tunnel --from-literal=token=<tunnel-token>
-
 helm install kitchen ./charts/kitchen \
   --namespace kitchen-system --create-namespace \
   --set kitchen.baseDomain=apps.example.com \
   --set kitchen.tls.mode=cloudflared \
   --set kitchen.ingress.cloudflared.enabled=true \
   --set kitchen.ingress.cloudflared.tunnelSecretName=kitchen-tunnel
+
+kubectl -n kitchen-system create secret generic kitchen-tunnel --from-literal=token=<tunnel-token>
 ```
+
+The secret is created after the release because the chart is what creates the
+namespace it goes in. The operator reports `TunnelConnected=False` until the
+token is there and reconciles again once it is.
 
 Or without TLS at all, which is how a cluster usually comes up first — before
 DNS and certificates exist:
@@ -411,6 +463,16 @@ Removing a CRD field still needs care: the API server rejects a stored object
 that no longer validates, so land conversion work before shipping a breaking
 schema.
 
+### Upgrading to a chart that owns the namespace
+
+Every release installed before `namespace.create` existed has a `kitchen-system`
+that Helm does not own, and the upgrade refuses to import it. Either adopt it
+once — see [Adopting an existing
+namespace](#adopting-an-existing-namespace) — or upgrade with
+`--set namespace.create=false` and keep managing its Pod Security labels
+yourself. Adopting is a metadata-only change: nothing is restarted, and the
+labels the chart then applies are what make log collection work.
+
 ### Upgrading from 0.1.0
 
 Releases at 0.1.0 cannot be upgraded in place. Their ClickHouse and Postgres
@@ -456,9 +518,12 @@ helm uninstall kitchen --namespace kitchen-system
 ```
 
 Deliberately left behind: the CRDs (annotated `helm.sh/resource-policy: keep`),
-every custom resource they hold, and the `Kitchen` singleton — uninstalling the
-control plane should not delete every project and its running environments. To
-tear it all down:
+every custom resource they hold, the `Kitchen` singleton — uninstalling the
+control plane should not delete every project and its running environments —
+and the `kitchen-system` namespace, kept by the same annotation. The namespace
+matters because it is what the PVCs behind Postgres and ClickHouse live in:
+were it deleted with the release, the platform's accounts and telemetry would
+go with it. To tear it all down:
 
 ```sh
 kubectl delete kitchen default
@@ -472,6 +537,9 @@ kubectl delete namespace kitchen-system
 |---|---|---|
 | `nameOverride` / `fullnameOverride` | `""` | Override generated resource names. |
 | `namespaceCheck` | `true` | Refuse to render outside `kitchen-system`. |
+| `namespace.create` | `true` | Manage the platform namespace as part of the release. Still needs `--create-namespace`; see [The chart owns the namespace](#the-chart-owns-the-namespace). |
+| `namespace.podSecurity` | `privileged` | Pod Security level on the platform namespace. Anything stricter needs `logs.enabled=false`. |
+| `namespace.labels` | `{}` | Extra labels for the platform namespace. |
 | `image.repository` | `ghcr.io/bermos/kitchen` | Operator image. |
 | `image.tag` | `""` | Defaults to the chart's `appVersion`. |
 | `image.digest` | `""` | Pin by digest; wins over `tag`. |
