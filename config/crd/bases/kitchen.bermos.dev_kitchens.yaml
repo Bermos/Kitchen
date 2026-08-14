@@ -217,6 +217,56 @@ spec:
               tls:
                 description: TLSSpec configures platform-wide TLS defaults.
                 properties:
+                  acme:
+                    description: |-
+                      ACME configures the issuer the operator creates, and the wildcard
+                      certificate it requests from it, when Mode is acme. Without it the
+                      operator manages no certificate and the Gateway's HTTPS listener waits
+                      for one to appear by other means.
+                    properties:
+                      dns01:
+                        description: DNS01 configures how challenges are solved.
+                        properties:
+                          cloudflare:
+                            description: CloudflareSolverSpec configures the Cloudflare
+                              DNS-01 solver.
+                            properties:
+                              apiTokenSecretRef:
+                                description: |-
+                                  APITokenSecretRef selects the Cloudflare API token to write challenge
+                                  records with. The token needs Zone:DNS:Edit on the zone the base domain
+                                  belongs to, and Zone:Zone:Read to find it.
+                                properties:
+                                  key:
+                                    minLength: 1
+                                    type: string
+                                  name:
+                                    minLength: 1
+                                    type: string
+                                required:
+                                - key
+                                - name
+                                type: object
+                            required:
+                            - apiTokenSecretRef
+                            type: object
+                        type: object
+                      email:
+                        description: Email the CA contacts about expiring certificates
+                          and account problems.
+                        minLength: 1
+                        type: string
+                      server:
+                        default: https://acme-v02.api.letsencrypt.org/directory
+                        description: |-
+                          Server is the ACME directory URL. Point it at Let's Encrypt's staging
+                          directory while setting the platform up: staging has far higher rate
+                          limits, at the cost of a certificate browsers do not trust.
+                        type: string
+                    required:
+                    - dns01
+                    - email
+                    type: object
                   mode:
                     default: acme
                     description: TLSMode selects how edge TLS is provided.

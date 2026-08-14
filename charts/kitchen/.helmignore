@@ -1,5 +1,7 @@
 .DS_Store
 .git/
 .gitignore
-*.tgz
+# Anchored to the chart root: an unanchored *.tgz also matches the vendored
+# sub-charts in charts/, which the loader then cannot see.
+/*.tgz
 ci/

@@ -16,8 +16,22 @@ Kitchen assumes these exist; the chart does **not** install them:
 - **A reachable address for the Gateway**: Cilium L2 announcements or BGP for a
   LoadBalancer IP — or cloudflared, which sidesteps both.
 - **Wildcard DNS** for `*.<baseDomain>`, pointed at that address.
-- **cert-manager** if `kitchen.tls.mode=acme`, to issue the wildcard
-  certificate into the secret `kitchen-wildcard-tls` in `kitchen-system`.
+cert-manager is **not** in that list: the chart ships it as a sub-chart
+(`cert-manager.enabled`, on by default), because Kitchen owns the cluster it is
+installed into. Set `cert-manager.enabled=false` for a cluster that already
+runs one.
+
+In `acme` mode the **operator**, not the chart, creates the `ClusterIssuer` and
+the wildcard `Certificate` from `kitchen.tls.acme`. That split is deliberate:
+cert-manager's webhook admits both objects, so on a first install neither can
+exist until it is serving, and a reconcile loop can wait where a Helm release
+cannot. Progress shows up as the `CertificateReady` condition on the Kitchen
+object.
+
+The solver is DNS-01 with a Cloudflare API token. That is not a preference:
+every generated URL is a subdomain of the base domain, so the platform needs a
+wildcard certificate, and ACME issues wildcards over DNS-01 alone — no amount
+of inbound reachability makes HTTP-01 able to.
 
 ## Install
 
@@ -312,6 +326,12 @@ kubectl delete namespace kitchen-system
 | `kitchen.ingress.cloudflared.enabled` | `false` | Run a cloudflared tunnel as the edge. |
 | `kitchen.ingress.cloudflared.tunnelSecretName` | `""` | Secret with the tunnel token under `token`. |
 | `kitchen.tls.mode` | `acme` | `acme`, `cloudflared` or `none`. |
+| `kitchen.tls.acme.email` | `""` | CA contact address. Required in `acme` mode. |
+| `kitchen.tls.acme.server` | Let's Encrypt production | ACME directory URL. Use the staging directory while setting up. |
+| `kitchen.tls.acme.dns01.cloudflare.apiTokenSecretName` | `""` | Secret holding a Cloudflare API token (`Zone:DNS:Edit` + `Zone:Zone:Read`). Required in `acme` mode. |
+| `kitchen.tls.acme.dns01.cloudflare.apiTokenSecretKey` | `api-token` | Key inside that secret. |
+| `cert-manager.enabled` | `true` | Install cert-manager with the platform. Disable if the cluster already runs one. |
+| `cert-manager.crds.enabled` / `.keep` | `true` / `true` | Install cert-manager's CRDs, and keep them on uninstall. |
 | `kitchen.auth` | from `auth.*` / `previewGate.*` | The singleton's `auth` block mirrors `auth.enabled`, the resolved host, the secret the operator registers clients with, and the preview gate. |
 | `kitchen.builds.defaultStrategy` | `auto` | `auto`, `dockerfile` or `buildpacks`. |
 | `kitchen.builds.concurrency` | `2` | Builds running at once. |

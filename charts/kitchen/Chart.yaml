@@ -7,6 +7,17 @@ type: application
 version: 0.1.0
 appVersion: "0.1.0"
 kubeVersion: ">=1.30.0-0"
+# cert-manager is part of the platform, not a prerequisite: Kitchen owns the
+# cluster it is installed into. Its CRDs are templates rather than crds/ files,
+# so `helm upgrade` applies schema changes — the reason bundling it is safe
+# here. The Certificate and ClusterIssuer are created by the operator, not by
+# this chart, because cert-manager's webhook has to be serving before either is
+# admitted.
+dependencies:
+  - name: cert-manager
+    version: v1.21.1
+    repository: https://charts.jetstack.io
+    condition: cert-manager.enabled
 home: https://github.com/Bermos/Kitchen
 sources:
   - https://github.com/Bermos/Kitchen

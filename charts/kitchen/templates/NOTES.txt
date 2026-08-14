@@ -17,10 +17,27 @@ Once the shared Gateway is programmed, point *.{{ .Values.kitchen.baseDomain }} 
 
   kubectl get kitchen default -o jsonpath='{.status.gatewayAddress}'
 {{- if eq .Values.kitchen.tls.mode "acme" }}
+{{- if eq (include "kitchen.acmeConfigured" .) "true" }}
 
-TLS mode is "acme": the Gateway's HTTPS listener expects a wildcard certificate
-in the secret "kitchen-wildcard-tls" in {{ .Release.Namespace }}. Issue it with cert-manager
-(a Certificate for *.{{ .Values.kitchen.baseDomain }}) before serving traffic.
+TLS mode is "acme": the operator requests a wildcard certificate for
+*.{{ .Values.kitchen.baseDomain }} into the secret "kitchen-wildcard-tls". It appears a reconcile
+after cert-manager starts answering, not with the rest of the release:
+
+  kubectl get kitchen default -o jsonpath='{.status.conditions[?(@.type=="CertificateReady")].message}'
+  kubectl -n {{ .Release.Namespace }} get certificate kitchen-wildcard
+
+The order is solved over DNS-01, with the Cloudflare token in the secret
+"{{ .Values.kitchen.tls.acme.dns01.cloudflare.apiTokenSecretName }}". That is not a preference: every generated URL is a
+subdomain of the base domain, so the platform needs a wildcard, and ACME issues
+wildcards over DNS-01 alone.
+{{- else }}
+
+TLS mode is "acme" but kitchen.tls.acme is not configured, so the platform
+manages no certificate and the Gateway's HTTPS listener has nothing to
+terminate with. Set kitchen.tls.acme.email and
+kitchen.tls.acme.dns01.cloudflare.apiTokenSecretName, or choose another
+kitchen.tls.mode.
+{{- end }}
 {{- end }}
 {{- if .Values.kitchen.ingress.cloudflared.enabled }}
 

@@ -80,6 +80,28 @@ kitchen:
   tls:
     # -- Edge TLS mode: acme | cloudflared | none.
     mode: acme
+    # How the wildcard certificate for `*.<baseDomain>` is obtained in acme
+    # mode. The operator — not this chart — creates the ClusterIssuer and the
+    # Certificate from these values: cert-manager's webhook admits both, so on
+    # a first install they cannot exist until it is serving, and a reconcile
+    # loop can wait where a Helm release cannot.
+    acme:
+      # -- Contact address the CA uses for expiry and account notices.
+      # Required when mode is `acme`.
+      email: ""
+      # -- ACME directory URL. Let's Encrypt's staging directory
+      # (`https://acme-staging-v02.api.letsencrypt.org/directory`) has far
+      # higher rate limits while you are setting the platform up.
+      server: https://acme-v02.api.letsencrypt.org/directory
+      dns01:
+        cloudflare:
+          # -- Existing secret holding a Cloudflare API token. Required when
+          # mode is `acme`: every generated URL is a subdomain, so the platform
+          # needs a wildcard, and ACME issues those over DNS-01 only. The token
+          # needs `Zone:DNS:Edit` on the zone and `Zone:Zone:Read` to find it.
+          apiTokenSecretName: ""
+          # -- Key inside that secret.
+          apiTokenSecretKey: api-token
   builds:
     # -- Default build strategy: auto | dockerfile | buildpacks.
     defaultStrategy: auto
@@ -543,3 +565,20 @@ affinity: {}
 topologySpreadConstraints: []
 priorityClassName: ""
 terminationGracePeriodSeconds: 10
+
+# cert-manager ships with the platform rather than being a prerequisite:
+# Kitchen owns the cluster it is installed into, so there is no other workload
+# to collide with. Its CRDs are plain templates in the sub-chart — not files in
+# a crds/ directory — so `helm upgrade` applies schema changes, the same reason
+# Kitchen ships its own CRDs as templates.
+#
+# The keys below belong to the cert-manager chart; see its values for the rest.
+cert-manager:
+  # -- Install cert-manager with the platform. Turn off for a cluster that
+  # already runs one — the operator then uses that installation.
+  enabled: true
+  crds:
+    # -- Install cert-manager's CRDs alongside it.
+    enabled: true
+    # -- Keep the CRDs, and the certificates they hold, on `helm uninstall`.
+    keep: true
