@@ -27,6 +27,17 @@ make test                       # also runs go fmt and regenerates deepcopy
 CI fails if the checked-in output differs from a fresh run. `make test` needs
 envtest binaries; it downloads them on first use.
 
+## Before every push
+
+```sh
+make lint                       # golangci-lint — CI runs it as its own job
+```
+
+`make test` passing does not imply `make lint` does: the linter also checks
+test files, and goconst has already caught a release name repeated across
+assertions. Run it before every push, not only after touching Go code you
+consider "real".
+
 ## Chart conventions
 
 - **CRDs are ordinary templates, not `crds/` files.** Helm never upgrades files
