@@ -46,6 +46,13 @@ every generated URL is a subdomain of the base domain, so the platform needs a
 wildcard certificate, and ACME issues wildcards over DNS-01 alone — no amount
 of inbound reachability makes HTTP-01 able to.
 
+In `acme` mode port 80 serves nothing but a permanent redirect to HTTPS: every
+route the platform creates names the Gateway's `https` listener explicitly, and
+the operator publishes a redirect route bound to `http`. In `none` and
+`cloudflared` mode there is no HTTPS listener — port 80 is where the platform
+answers, and no redirect is created. Routes pointed at a Gateway other than the
+shared one therefore need listeners named `http` and `https`.
+
 ## Install
 
 The operator resolves its platform namespace from a compiled-in constant, so

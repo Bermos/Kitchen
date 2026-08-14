@@ -159,7 +159,7 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	host := hostname(project.Name, env, kitchen.Spec.BaseDomain)
-	if err := r.applyHTTPRoute(ctx, env, appNS, labels, host, gate); err != nil {
+	if err := r.applyHTTPRoute(ctx, env, appNS, labels, host, gate, gatewaySection(kitchen)); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -339,6 +339,10 @@ func (r *EnvironmentReconciler) applyHTTPRoute(
 	labels map[string]string,
 	host string,
 	gate *previewGateBackend,
+	// section is the Gateway listener to attach to. With edge TLS on, port 80
+	// carries only the redirect, so an application route that also bound there
+	// would serve the app over cleartext.
+	section *gatewayv1.SectionName,
 ) error {
 	if gate != nil {
 		// The route and the gate live in different namespaces, and Gateway
@@ -353,8 +357,9 @@ func (r *EnvironmentReconciler) applyHTTPRoute(
 		route.Labels = labels
 		route.Spec.CommonRouteSpec = gatewayv1.CommonRouteSpec{
 			ParentRefs: []gatewayv1.ParentReference{{
-				Name:      SharedGatewayName,
-				Namespace: ptr.To(gatewayv1.Namespace(PlatformNamespace)),
+				Name:        SharedGatewayName,
+				Namespace:   ptr.To(gatewayv1.Namespace(PlatformNamespace)),
+				SectionName: section,
 			}},
 		}
 		route.Spec.Hostnames = []gatewayv1.Hostname{gatewayv1.Hostname(host)}

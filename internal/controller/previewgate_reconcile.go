@@ -88,7 +88,7 @@ func (r *KitchenReconciler) reconcilePreviewGate(
 		setCond(condPreviewGateReady, metav1.ConditionFalse, "DeployFailed", err.Error())
 		return false
 	}
-	if err := r.applyPreviewGateRoute(ctx, gate); err != nil {
+	if err := r.applyPreviewGateRoute(ctx, gate, gatewaySection(kitchen)); err != nil {
 		setCond(condPreviewGateReady, metav1.ConditionFalse, "RouteFailed", err.Error())
 		return false
 	}
@@ -387,7 +387,13 @@ func (r *KitchenReconciler) applyPreviewGateWorkload(
 // applyPreviewGateRoute publishes the gate's own hostname. It is where every
 // protected preview's login comes back to, and the only redirect URI the
 // OAuth client has.
-func (r *KitchenReconciler) applyPreviewGateRoute(ctx context.Context, gate *previewGateBackend) error {
+func (r *KitchenReconciler) applyPreviewGateRoute(
+	ctx context.Context,
+	gate *previewGateBackend,
+	// section is the Gateway listener to attach to; with edge TLS on, port 80
+	// carries only the redirect.
+	section *gatewayv1.SectionName,
+) error {
 	route := &gatewayv1.HTTPRoute{ObjectMeta: metav1.ObjectMeta{
 		Name: PreviewGateName, Namespace: PlatformNamespace,
 	}}
@@ -395,8 +401,9 @@ func (r *KitchenReconciler) applyPreviewGateRoute(ctx context.Context, gate *pre
 		route.Labels = previewGateLabels()
 		route.Spec.CommonRouteSpec = gatewayv1.CommonRouteSpec{
 			ParentRefs: []gatewayv1.ParentReference{{
-				Name:      SharedGatewayName,
-				Namespace: ptr.To(gatewayv1.Namespace(PlatformNamespace)),
+				Name:        SharedGatewayName,
+				Namespace:   ptr.To(gatewayv1.Namespace(PlatformNamespace)),
+				SectionName: section,
 			}},
 		}
 		route.Spec.Hostnames = []gatewayv1.Hostname{gatewayv1.Hostname(gate.Host)}

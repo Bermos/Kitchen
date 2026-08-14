@@ -373,6 +373,17 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
 {{/*
+The shared Gateway listener routes attach to. With edge TLS on, port 80 carries
+nothing but the operator's redirect to HTTPS, so anything that actually serves
+has to name the HTTPS listener: a route bound to both would win on hostname
+specificity and answer over cleartext. In the other TLS modes there is no HTTPS
+listener, and port 80 is where the platform answers.
+*/}}
+{{- define "kitchen.gatewaySection" -}}
+{{- if eq .Values.kitchen.tls.mode "acme" }}https{{ else }}http{{ end }}
+{{- end }}
+
+{{/*
 Whether the platform is configured to obtain its own wildcard certificate. The
 chart never creates the Certificate — the operator does, once cert-manager is
 serving — so this only reports whether it has been told how.
