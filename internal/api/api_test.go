@@ -42,6 +42,10 @@ const (
 	// testBuild is the build the fixtures start with: the one a rebuild
 	// repeats and the one whose logs are read.
 	testBuild = "shop-bld-abc123def456"
+	// testRelease is the release production runs in the fixtures;
+	// testPreviousRelease is the older one a rollback retreats to.
+	testRelease         = "shop-rel-1"
+	testPreviousRelease = "shop-rel-0"
 )
 
 // issuer is a stand-in for the platform's identity provider: it serves the
@@ -168,7 +172,7 @@ func fixtures() []runtime.Object {
 	// were cut in — what tells a rollback from a promotion.
 	release := &kitchenv1alpha1.Release{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:              "shop-rel-1",
+			Name:              testRelease,
 			Namespace:         testNamespace,
 			CreationTimestamp: metav1.NewTime(time.Now().Add(-time.Hour)),
 		},
@@ -180,7 +184,7 @@ func fixtures() []runtime.Object {
 	}
 	previous := &kitchenv1alpha1.Release{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:              "shop-rel-0",
+			Name:              testPreviousRelease,
 			Namespace:         testNamespace,
 			CreationTimestamp: metav1.NewTime(time.Now().Add(-2 * time.Hour)),
 		},
@@ -203,7 +207,7 @@ func fixtures() []runtime.Object {
 		Spec: kitchenv1alpha1.EnvironmentSpec{
 			ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: "shop"},
 			Type:       kitchenv1alpha1.EnvironmentProduction,
-			ReleaseRef: kitchenv1alpha1.LocalObjectReference{Name: "shop-rel-1"},
+			ReleaseRef: kitchenv1alpha1.LocalObjectReference{Name: testRelease},
 		},
 		Status: kitchenv1alpha1.EnvironmentStatus{
 			Phase: kitchenv1alpha1.EnvironmentLive,
@@ -365,7 +369,7 @@ var routes = []struct {
 	{http.MethodGet, "/api/v1/builds/shop-bld-abc123def456"},
 	{http.MethodGet, "/api/v1/builds/shop-bld-abc123def456/logs"},
 	{http.MethodGet, "/api/v1/releases"},
-	{http.MethodGet, "/api/v1/releases/shop-rel-1"},
+	{http.MethodGet, "/api/v1/releases/" + testRelease},
 	{http.MethodGet, "/api/v1/environments"},
 	{http.MethodGet, "/api/v1/environments/shop-production"},
 	{http.MethodPatch, "/api/v1/environments/shop-production"},
@@ -723,7 +727,7 @@ func TestRollingAnEnvironmentBack(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
 	}
-	if env := decode[environmentView](t, recorder); env.Release != "shop-rel-0" {
+	if env := decode[environmentView](t, recorder); env.Release != testPreviousRelease {
 		t.Fatalf("want the older release, got %q", env.Release)
 	}
 
@@ -731,7 +735,7 @@ func TestRollingAnEnvironmentBack(t *testing.T) {
 	if err := h.server.get(context.Background(), "shop-production", stored); err != nil {
 		t.Fatal(err)
 	}
-	if stored.Spec.ReleaseRef.Name != "shop-rel-0" {
+	if stored.Spec.ReleaseRef.Name != testPreviousRelease {
 		t.Fatalf("the rollback did not stick: %q", stored.Spec.ReleaseRef.Name)
 	}
 
@@ -741,8 +745,8 @@ func TestRollingAnEnvironmentBack(t *testing.T) {
 		t.Fatalf("want one history entry, got %+v", stored.Status.History)
 	}
 	entry := stored.Status.History[0]
-	if entry.Release != "shop-rel-1" || entry.Reason != kitchenv1alpha1.ReleaseMoveRolledBack {
-		t.Fatalf("want shop-rel-1 recorded as rolled back, got %+v", entry)
+	if entry.Release != testRelease || entry.Reason != kitchenv1alpha1.ReleaseMoveRolledBack {
+		t.Fatalf("want %s recorded as rolled back, got %+v", testRelease, entry)
 	}
 	if entry.By != "grace@example.com" {
 		t.Fatalf("want the caller persisted, got %q", entry.By)
@@ -770,10 +774,10 @@ func TestMovingForwardRecordsSupersessionNotRollback(t *testing.T) {
 	if len(stored.Status.History) != 2 {
 		t.Fatalf("want two history entries, got %+v", stored.Status.History)
 	}
-	if got := stored.Status.History[0]; got.Release != "shop-rel-0" || got.Reason != kitchenv1alpha1.ReleaseMoveSuperseded {
-		t.Fatalf("want shop-rel-0 superseded, newest first, got %+v", got)
+	if got := stored.Status.History[0]; got.Release != testPreviousRelease || got.Reason != kitchenv1alpha1.ReleaseMoveSuperseded {
+		t.Fatalf("want %s superseded, newest first, got %+v", testPreviousRelease, got)
 	}
-	if got := stored.Status.History[1]; got.Release != "shop-rel-1" || got.Reason != kitchenv1alpha1.ReleaseMoveRolledBack {
+	if got := stored.Status.History[1]; got.Release != testRelease || got.Reason != kitchenv1alpha1.ReleaseMoveRolledBack {
 		t.Fatalf("want the rollback preserved underneath, got %+v", got)
 	}
 }
@@ -790,7 +794,7 @@ func TestRollbackRefusesAReleaseFromAnotherProject(t *testing.T) {
 	if err := h.server.get(context.Background(), "shop-production", stored); err != nil {
 		t.Fatal(err)
 	}
-	if stored.Spec.ReleaseRef.Name != "shop-rel-1" {
+	if stored.Spec.ReleaseRef.Name != testRelease {
 		t.Fatalf("the environment was moved anyway: %q", stored.Spec.ReleaseRef.Name)
 	}
 }
@@ -880,7 +884,7 @@ func TestTheRestOfTheCollections(t *testing.T) {
 
 	for path, want := range map[string]string{
 		"/api/v1/builds":                              testBuild,
-		"/api/v1/releases?project=shop":               "shop-rel-1",
+		"/api/v1/releases?project=shop":               testRelease,
 		"/api/v1/environments":                        "shop-production",
 		"/api/v1/connections":                         "github",
 		"/api/v1/domains?environment=shop-production": "shop.example.com",
