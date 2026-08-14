@@ -41,10 +41,52 @@ type IngressSpec struct {
 	Cloudflared CloudflaredSpec `json:"cloudflared,omitempty"`
 }
 
+// CloudflareSolverSpec configures the Cloudflare DNS-01 solver.
+type CloudflareSolverSpec struct {
+	// APITokenSecretRef selects the Cloudflare API token to write challenge
+	// records with. The token needs Zone:DNS:Edit on the zone the base domain
+	// belongs to, and Zone:Zone:Read to find it.
+	APITokenSecretRef SecretKeySelector `json:"apiTokenSecretRef"`
+}
+
+// ACMEDNS01Spec selects the DNS-01 solver the issuer challenges with. There is
+// deliberately no HTTP-01 alternative: every generated URL is a subdomain of
+// the base domain, so the platform needs a wildcard certificate, and ACME
+// issues those over DNS-01 only.
+type ACMEDNS01Spec struct {
+	// +optional
+	Cloudflare *CloudflareSolverSpec `json:"cloudflare,omitempty"`
+}
+
+// ACMESpec configures the ClusterIssuer the operator creates in acme TLS mode,
+// and therefore how the wildcard certificate for the base domain is obtained.
+type ACMESpec struct {
+	// Email the CA contacts about expiring certificates and account problems.
+	// +kubebuilder:validation:MinLength=1
+	Email string `json:"email"`
+
+	// Server is the ACME directory URL. Point it at Let's Encrypt's staging
+	// directory while setting the platform up: staging has far higher rate
+	// limits, at the cost of a certificate browsers do not trust.
+	// +kubebuilder:default="https://acme-v02.api.letsencrypt.org/directory"
+	// +optional
+	Server string `json:"server,omitempty"`
+
+	// DNS01 configures how challenges are solved.
+	DNS01 ACMEDNS01Spec `json:"dns01"`
+}
+
 // TLSSpec configures platform-wide TLS defaults.
 type TLSSpec struct {
 	// +kubebuilder:default=acme
 	Mode TLSMode `json:"mode,omitempty"`
+
+	// ACME configures the issuer the operator creates, and the wildcard
+	// certificate it requests from it, when Mode is acme. Without it the
+	// operator manages no certificate and the Gateway's HTTPS listener waits
+	// for one to appear by other means.
+	// +optional
+	ACME *ACMESpec `json:"acme,omitempty"`
 }
 
 // BuildsSpec configures platform-wide build defaults.

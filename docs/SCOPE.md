@@ -86,7 +86,9 @@ These aren't nice-to-haves — the first three are the product.
 
 1. **Buildpacks vs. nixpacks vs. Dockerfile-first** for zero-config builds.
 2. **Neon plugin scope**: Neon is a managed cloud service — fine as a first-party plugin, but the plugin interface should be a generic "database provisioner" so CloudNativePG (fully self-hosted) can slot in.
-3. **cert-manager optionality**: keep it always-installed (operator webhook certs + internal CA), with only the *public ACME issuer* part optional when cloudflared handles edge TLS.
+3. ~~**cert-manager optionality**~~ ✅ Decided: cert-manager ships *with* the platform, as a sub-chart (`cert-manager.enabled`, on by default). Kitchen owns the cluster it is installed into, so the usual objection to bundling — a cluster-scoped singleton colliding with an existing installation — does not apply, and `cert-manager.enabled=false` covers the cluster that already has one. Bundling is safe specifically because cert-manager ships its CRDs as ordinary templates rather than `crds/` files, so `helm upgrade` applies schema changes; that is the same reason Kitchen ships its own CRDs as templates. The reasoning that it was needed for *operator webhook certs* no longer applies — the chart has no admission webhooks — so its one job is edge TLS.
+   - The `ClusterIssuer` and the wildcard `Certificate` are created by the **operator**, not the chart, from `spec.tls.acme`. cert-manager's webhook admits both, so on a first install neither can exist until it is serving: a reconcile loop waits and retries where a Helm release would simply fail. Progress is the `CertificateReady` condition.
+   - The solver is DNS-01 only. Every generated URL is a subdomain of the base domain, so the platform needs a wildcard, and ACME issues wildcards over DNS-01 alone — inbound reachability does not change that. Cloudflare is the first provider modelled.
 
 ## The future corner
 

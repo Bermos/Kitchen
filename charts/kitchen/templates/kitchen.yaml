@@ -37,6 +37,19 @@ spec:
       {{- end }}
   tls:
     mode: {{ .Values.kitchen.tls.mode | quote }}
+    {{- if eq (include "kitchen.acmeConfigured" .) "true" }}
+    # The operator creates the ClusterIssuer and the wildcard Certificate from
+    # this, once cert-manager answers. It cannot be done here: cert-manager's
+    # webhook admits both objects, and on a first install it is not serving yet.
+    acme:
+      email: {{ .Values.kitchen.tls.acme.email | quote }}
+      server: {{ .Values.kitchen.tls.acme.server | quote }}
+      dns01:
+        cloudflare:
+          apiTokenSecretRef:
+            name: {{ .Values.kitchen.tls.acme.dns01.cloudflare.apiTokenSecretName | quote }}
+            key: {{ .Values.kitchen.tls.acme.dns01.cloudflare.apiTokenSecretKey | quote }}
+    {{- end }}
   auth:
     enabled: {{ .Values.auth.enabled }}
     {{- with include "kitchen.authHost" . }}

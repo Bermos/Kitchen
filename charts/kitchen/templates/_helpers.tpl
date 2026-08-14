@@ -373,6 +373,16 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
 {{/*
+Whether the platform is configured to obtain its own wildcard certificate. The
+chart never creates the Certificate — the operator does, once cert-manager is
+serving — so this only reports whether it has been told how.
+*/}}
+{{- define "kitchen.acmeConfigured" -}}
+{{- $acme := .Values.kitchen.tls.acme }}
+{{- if and (eq .Values.kitchen.tls.mode "acme") $acme.email $acme.dns01.cloudflare.apiTokenSecretName }}true{{ end }}
+{{- end }}
+
+{{/*
 Guard rails. The operator resolves the platform namespace from a compiled-in
 constant, so a chart installed elsewhere would reconcile into a namespace it
 does not run in.
@@ -389,6 +399,16 @@ does not run in.
 {{- end }}
 {{- if not (has .Values.kitchen.builds.defaultStrategy (list "auto" "dockerfile" "buildpacks")) }}
 {{- fail (printf "kitchen.builds.defaultStrategy must be one of auto, dockerfile, buildpacks (got %q)" .Values.kitchen.builds.defaultStrategy) }}
+{{- end }}
+{{- $acme := .Values.kitchen.tls.acme }}
+{{- if and (ne .Values.kitchen.tls.mode "acme") (or $acme.email $acme.dns01.cloudflare.apiTokenSecretName) }}
+{{- fail (printf "kitchen.tls.acme is configured but kitchen.tls.mode is %q: the wildcard certificate is only read by the Gateway's HTTPS listener, which exists in acme mode alone. Set mode=acme, or clear the acme block." .Values.kitchen.tls.mode) }}
+{{- end }}
+{{- if and $acme.email (not $acme.dns01.cloudflare.apiTokenSecretName) }}
+{{- fail "kitchen.tls.acme.email is set without kitchen.tls.acme.dns01.cloudflare.apiTokenSecretName: every generated URL is a subdomain, so the platform needs a wildcard certificate, and ACME issues wildcards over DNS-01 only." }}
+{{- end }}
+{{- if and $acme.dns01.cloudflare.apiTokenSecretName (not $acme.email) }}
+{{- fail "kitchen.tls.acme.dns01.cloudflare.apiTokenSecretName is set without kitchen.tls.acme.email: the CA registers the account against a contact address." }}
 {{- end }}
 {{- if and .Values.kitchen.create .Values.kitchen.ingress.cloudflared.enabled (not .Values.kitchen.ingress.cloudflared.tunnelSecretName) }}
 {{- fail "kitchen.ingress.cloudflared.tunnelSecretName is required when cloudflared is enabled: create a secret holding the tunnel token under the key `token` first." }}

@@ -26,7 +26,9 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -47,9 +49,26 @@ const (
 	cloudflaredDeploymentName = "kitchen-cloudflared"
 
 	// WildcardTLSSecretName holds the wildcard certificate for the base
-	// domain when TLS mode is acme (issued by cert-manager, integration
-	// pending).
+	// domain when TLS mode is acme. The Gateway's HTTPS listener reads it, and
+	// in acme mode the operator asks cert-manager to fill it.
 	WildcardTLSSecretName = "kitchen-wildcard-tls"
+
+	// acmeClusterIssuerName is the issuer the operator creates from
+	// spec.tls.acme. It is cluster-scoped because it is the platform's one
+	// source of certificates.
+	acmeClusterIssuerName = "kitchen-acme"
+
+	// acmeAccountKeySecretName holds the ACME account key cert-manager
+	// generates on registration. Losing it means re-registering, not losing
+	// issued certificates.
+	acmeAccountKeySecretName = "kitchen-acme-account"
+
+	// wildcardCertificateName is the Certificate requesting *.<baseDomain>.
+	wildcardCertificateName = "kitchen-wildcard"
+
+	// defaultACMEServer matches the CRD default, for Kitchen objects written
+	// before the field existed.
+	defaultACMEServer = "https://acme-v02.api.letsencrypt.org/directory"
 
 	// tunnelTokenKey is the key in the cloudflared credentials secret.
 	tunnelTokenKey = "token"
@@ -58,6 +77,7 @@ const (
 	condTunnelConnected   = "TunnelConnected"
 	condTelemetrySchema   = "TelemetrySchemaReady"
 	condPreviewGateReady  = "PreviewGateReady"
+	condCertificateReady  = "CertificateReady"
 
 	// defaultRetentionDays matches the CRD default, for Kitchen objects
 	// written before the field existed.
@@ -87,6 +107,8 @@ type KitchenReconciler struct {
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;create
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch
+// +kubebuilder:rbac:groups=cert-manager.io,resources=clusterissuers,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=cert-manager.io,resources=certificates,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile drives the platform's shared infrastructure.
 func (r *KitchenReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -125,6 +147,7 @@ func (r *KitchenReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 	r.reconcileCloudflared(ctx, kitchen, setCond)
 
+	certReady := r.reconcileTLS(ctx, kitchen, setCond)
 	schemaReady := r.reconcileTelemetrySchema(ctx, kitchen, setCond)
 	gateReady := r.reconcilePreviewGate(ctx, kitchen, setCond)
 	programmed := r.observeGateway(ctx, kitchen, setCond)
@@ -136,8 +159,9 @@ func (r *KitchenReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	log.Info("reconciled kitchen",
 		"gatewayProgrammed", programmed,
 		"telemetrySchemaReady", schemaReady,
-		"previewGateReady", gateReady)
-	if !programmed || !schemaReady || !gateReady {
+		"previewGateReady", gateReady,
+		"certificateReady", certReady)
+	if !programmed || !schemaReady || !gateReady || !certReady {
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 	return ctrl.Result{}, nil
@@ -334,6 +358,179 @@ func (r *KitchenReconciler) reconcileCloudflared(
 	} else {
 		setCond(condTunnelConnected, metav1.ConditionFalse, "TunnelPending", "cloudflared is not available yet")
 	}
+}
+
+// certManagerGVK builds a reference to one of cert-manager's kinds. They are
+// addressed as unstructured objects rather than through cert-manager's Go
+// types: the operator only ever writes two small specs, and importing
+// cert-manager would tie the platform's build to its release cadence.
+func certManagerGVK(kind string) schema.GroupVersionKind {
+	return schema.GroupVersionKind{Group: "cert-manager.io", Version: "v1", Kind: kind}
+}
+
+// reconcileTLS owns edge TLS in acme mode: the ClusterIssuer the platform
+// requests certificates from, and the wildcard certificate the shared
+// Gateway's HTTPS listener terminates with.
+//
+// Both objects are admitted by cert-manager's own webhook, so on a first
+// install they cannot exist until it is serving. That is exactly why they are
+// created here rather than by the chart that installs cert-manager beside
+// them: an API that is not up yet surfaces as a condition and a retry, and the
+// next reconcile succeeds on its own.
+func (r *KitchenReconciler) reconcileTLS(
+	ctx context.Context,
+	kitchen *kitchenv1alpha1.Kitchen,
+	setCond func(string, metav1.ConditionStatus, string, string),
+) bool {
+	if kitchen.Spec.TLS.Mode != kitchenv1alpha1.TLSModeACME {
+		// Anything already issued is deliberately left alone. ACME limits how
+		// often the same names may be re-issued, so tearing certificates down
+		// on a mode change would make changing back expensive.
+		meta.RemoveStatusCondition(&kitchen.Status.Conditions, condCertificateReady)
+		return true
+	}
+
+	acme := kitchen.Spec.TLS.ACME
+	if acme == nil {
+		setCond(condCertificateReady, metav1.ConditionFalse, "ACMEConfigMissing",
+			"spec.tls.acme is unset, so the platform manages no certificate and the "+
+				"Gateway's HTTPS listener has nothing to terminate with")
+		return false
+	}
+
+	if acme.DNS01.Cloudflare == nil {
+		setCond(condCertificateReady, metav1.ConditionFalse, "SolverMissing",
+			"spec.tls.acme.dns01 needs a solver: a wildcard covers every generated URL, "+
+				"and ACME issues wildcards over DNS-01 only")
+		return false
+	}
+
+	if err := r.applyACMEClusterIssuer(ctx, acme); err != nil {
+		if meta.IsNoMatchError(err) {
+			setCond(condCertificateReady, metav1.ConditionFalse, "CertManagerUnavailable",
+				"waiting for the cert-manager API to be served: "+err.Error())
+			return false
+		}
+		setCond(condCertificateReady, metav1.ConditionFalse, "IssuerNotApplied", err.Error())
+		return false
+	}
+
+	cert, err := r.applyWildcardCertificate(ctx, kitchen)
+	if err != nil {
+		if meta.IsNoMatchError(err) {
+			setCond(condCertificateReady, metav1.ConditionFalse, "CertManagerUnavailable",
+				"waiting for the cert-manager API to be served: "+err.Error())
+			return false
+		}
+		setCond(condCertificateReady, metav1.ConditionFalse, "CertificateNotApplied", err.Error())
+		return false
+	}
+
+	ready, message := certificateReady(cert)
+	if !ready {
+		setCond(condCertificateReady, metav1.ConditionFalse, "Issuing", message)
+		return false
+	}
+	setCond(condCertificateReady, metav1.ConditionTrue, "Issued", message)
+	return true
+}
+
+// applyACMEClusterIssuer writes the platform's issuer from spec.tls.acme.
+func (r *KitchenReconciler) applyACMEClusterIssuer(
+	ctx context.Context,
+	acme *kitchenv1alpha1.ACMESpec,
+) error {
+	server := acme.Server
+	if server == "" {
+		server = defaultACMEServer
+	}
+	token := acme.DNS01.Cloudflare.APITokenSecretRef
+
+	issuer := &unstructured.Unstructured{}
+	issuer.SetGroupVersionKind(certManagerGVK("ClusterIssuer"))
+	issuer.SetName(acmeClusterIssuerName)
+
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, issuer, func() error {
+		issuer.SetLabels(map[string]string{
+			labelComponentKey: "kitchen-acme",
+			labelManagedByKey: labelManagedByValue,
+		})
+		return unstructured.SetNestedMap(issuer.Object, map[string]any{
+			"server":              server,
+			"email":               acme.Email,
+			"privateKeySecretRef": map[string]any{"name": acmeAccountKeySecretName},
+			"solvers": []any{map[string]any{
+				"dns01": map[string]any{
+					"cloudflare": map[string]any{
+						"apiTokenSecretRef": map[string]any{
+							"name": token.Name,
+							"key":  token.Key,
+						},
+					},
+				},
+			}},
+		}, "spec", "acme")
+	})
+	return err
+}
+
+// applyWildcardCertificate requests *.<baseDomain> into the secret the
+// Gateway's HTTPS listener reads, and returns the object as it now stands so
+// the caller can report on its progress.
+func (r *KitchenReconciler) applyWildcardCertificate(
+	ctx context.Context,
+	kitchen *kitchenv1alpha1.Kitchen,
+) (*unstructured.Unstructured, error) {
+	cert := &unstructured.Unstructured{}
+	cert.SetGroupVersionKind(certManagerGVK("Certificate"))
+	cert.SetName(wildcardCertificateName)
+	cert.SetNamespace(PlatformNamespace)
+
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, cert, func() error {
+		cert.SetLabels(map[string]string{
+			labelComponentKey: "kitchen-wildcard",
+			labelManagedByKey: labelManagedByValue,
+		})
+		return unstructured.SetNestedMap(cert.Object, map[string]any{
+			"secretName": WildcardTLSSecretName,
+			"dnsNames":   []any{"*." + kitchen.Spec.BaseDomain},
+			"issuerRef": map[string]any{
+				"name":  acmeClusterIssuerName,
+				"kind":  "ClusterIssuer",
+				"group": "cert-manager.io",
+			},
+		}, "spec")
+	})
+	if err != nil {
+		return nil, err
+	}
+	return cert, nil
+}
+
+// certificateReady reads the Ready condition cert-manager writes on a
+// Certificate, so the platform reports whether TLS actually works rather than
+// only whether the request was filed. A DNS-01 order takes a while, and its
+// failures — a bad API token, a zone the token cannot see — are reported here
+// and nowhere else the operator can see.
+func certificateReady(cert *unstructured.Unstructured) (bool, string) {
+	const pending = "waiting for cert-manager to issue the certificate"
+
+	conditions, found, err := unstructured.NestedSlice(cert.Object, "status", "conditions")
+	if err != nil || !found {
+		return false, pending
+	}
+	for _, entry := range conditions {
+		condition, ok := entry.(map[string]any)
+		if !ok || condition["type"] != "Ready" {
+			continue
+		}
+		message, _ := condition["message"].(string)
+		if message == "" {
+			message = pending
+		}
+		return condition["status"] == "True", message
+	}
+	return false, pending
 }
 
 // observeGateway mirrors the Gateway's data-plane state into Kitchen status.
