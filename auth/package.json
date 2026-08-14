@@ -12,7 +12,7 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "start": "node dist/src/main.js",
-    "test": "npm run build && node --test dist/test/*.test.js"
+    "test": "npm run build && node --test --test-concurrency=1 dist/test/*.test.js"
   },
   "dependencies": {
     "@better-auth/api-key": "1.6.27",
