@@ -18,13 +18,16 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
 	"strings"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
@@ -62,6 +65,146 @@ func (s *Server) getProject(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, newProjectView(project))
+}
+
+// createProjectRequest is everything the create flow asks for: a name, a
+// repository, and the two Connections it builds and stores images with. It
+// speaks the API's vocabulary — connections are named, never nested specs —
+// and everything else on a Project keeps its default until a flow needs it.
+type createProjectRequest struct {
+	Name             string `json:"name"`
+	Repo             string `json:"repo"`
+	Connection       string `json:"connection"`
+	Registry         string `json:"registry"`
+	ProductionBranch string `json:"productionBranch,omitempty"`
+	Previews         *bool  `json:"previews,omitempty"`
+}
+
+// maxProjectNameLength is what fits: the platform derives object names from
+// the project's — the longest, a Release's "<project>-rel-<12-char sha>",
+// adds 17 characters and still has to fit Kubernetes' 63-character limit.
+const maxProjectNameLength = 46
+
+// validateProjectName checks a name before it becomes namespaces, hostnames
+// and generated object names, which is why plain DNS-1123 is not enough.
+func validateProjectName(name string) error {
+	if name == "" {
+		return errors.New("name is required")
+	}
+	if len(name) > maxProjectNameLength {
+		return fmt.Errorf(
+			"name must be at most %d characters: the names the platform derives from it (releases, namespaces, hostnames) have to fit Kubernetes' 63-character limit",
+			maxProjectNameLength)
+	}
+	if errs := validation.IsDNS1123Label(name); len(errs) > 0 {
+		return fmt.Errorf("name must work as a DNS label — lowercase letters, digits and '-', starting and ending alphanumeric (got %q)", name)
+	}
+	return nil
+}
+
+// requireConnection answers whether the named Connection can back the given
+// capability, writing the response when it cannot. A Connection that has not
+// reported capabilities yet is accepted, mirroring what the project
+// controller tolerates: the Project's own conditions say so if it turns out
+// not to fit. A missing Connection is a 400, not a 404 — the endpoint exists,
+// the body names something that does not.
+func (s *Server) requireConnection(
+	ctx context.Context,
+	w http.ResponseWriter,
+	field, name string,
+	capability kitchenv1alpha1.Capability,
+) bool {
+	if name == "" {
+		badRequest(w, "%s is required: the name of a Connection with the %s capability", field, capability)
+		return false
+	}
+	conn := &kitchenv1alpha1.Connection{}
+	if err := s.get(ctx, name, conn); err != nil {
+		if apierrors.IsNotFound(err) {
+			badRequest(w, "%s %q does not exist: create the Connection first", field, name)
+		} else {
+			s.writeError(w, err)
+		}
+		return false
+	}
+	if len(conn.Status.Capabilities) == 0 {
+		return true
+	}
+	for _, c := range conn.Status.Capabilities {
+		if c == capability {
+			return true
+		}
+	}
+	badRequest(w, "connection %q does not provide the %s capability", name, capability)
+	return false
+}
+
+func (s *Server) createProject(w http.ResponseWriter, req *http.Request) {
+	ctx := req.Context()
+
+	body := createProjectRequest{}
+	if err := decodeBody(req, &body); err != nil {
+		badRequest(w, "%s", err.Error())
+		return
+	}
+	body.Name = strings.TrimSpace(body.Name)
+	body.Repo = strings.TrimSpace(body.Repo)
+	body.Connection = strings.TrimSpace(body.Connection)
+	body.Registry = strings.TrimSpace(body.Registry)
+	body.ProductionBranch = strings.TrimSpace(body.ProductionBranch)
+
+	if err := validateProjectName(body.Name); err != nil {
+		badRequest(w, "%s", err.Error())
+		return
+	}
+	if owner, repo, ok := strings.Cut(body.Repo, "/"); !ok || owner == "" || repo == "" {
+		badRequest(w, "repo must be the provider's owner/name form (got %q)", body.Repo)
+		return
+	}
+	if !s.requireConnection(ctx, w, "connection", body.Connection, kitchenv1alpha1.CapabilityGitSource) {
+		return
+	}
+	if !s.requireConnection(ctx, w, "registry", body.Registry, kitchenv1alpha1.CapabilityImageStore) {
+		return
+	}
+
+	// The CRD defaults these too; applying them here as well keeps the
+	// response honest against a client (or test) the API server never saw.
+	branch := body.ProductionBranch
+	if branch == "" {
+		branch = "main"
+	}
+	previews := true
+	if body.Previews != nil {
+		previews = *body.Previews
+	}
+
+	caller, _ := CallerFrom(ctx)
+	project := &kitchenv1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        body.Name,
+			Namespace:   s.Namespace,
+			Annotations: map[string]string{"kitchen.bermos.dev/requested-by": callerName(caller)},
+		},
+		Spec: kitchenv1alpha1.ProjectSpec{
+			Source: kitchenv1alpha1.GitSourceSpec{
+				ConnectionRef:    kitchenv1alpha1.LocalObjectReference{Name: body.Connection},
+				Repo:             body.Repo,
+				ProductionBranch: branch,
+			},
+			Registry: kitchenv1alpha1.RegistrySpec{
+				ConnectionRef: kitchenv1alpha1.LocalObjectReference{Name: body.Registry},
+			},
+			Previews: kitchenv1alpha1.PreviewsSpec{Enabled: previews},
+		},
+	}
+	if err := s.Client.Create(ctx, project); err != nil {
+		s.writeError(w, err)
+		return
+	}
+	s.log().Info("project created through the api",
+		"project", project.Name, "repo", body.Repo, "caller", callerName(caller))
+	writeJSON(w, http.StatusCreated, newProjectView(project))
 }
 
 // builds returns a project's builds, or every build when project is empty,

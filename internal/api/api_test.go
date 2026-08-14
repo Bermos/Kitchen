@@ -210,6 +210,16 @@ func fixtures() []runtime.Object {
 			Capabilities: []kitchenv1alpha1.Capability{kitchenv1alpha1.CapabilityGitSource},
 		},
 	}
+	registry := &kitchenv1alpha1.Connection{
+		ObjectMeta: metav1.ObjectMeta{Name: "registry", Namespace: testNamespace},
+		Spec: kitchenv1alpha1.ConnectionSpec{
+			Provider:             "dockerRegistry",
+			CredentialsSecretRef: kitchenv1alpha1.LocalObjectReference{Name: "registry-credentials"},
+		},
+		Status: kitchenv1alpha1.ConnectionStatus{
+			Capabilities: []kitchenv1alpha1.Capability{kitchenv1alpha1.CapabilityImageStore},
+		},
+	}
 	domain := &kitchenv1alpha1.Domain{
 		ObjectMeta: metav1.ObjectMeta{Name: "shop-com", Namespace: testNamespace},
 		Spec: kitchenv1alpha1.DomainSpec{
@@ -225,7 +235,7 @@ func fixtures() []runtime.Object {
 			Type:          "postgres",
 		},
 	}
-	return []runtime.Object{project, build, release, previous, other, environment, connection, domain, claim}
+	return []runtime.Object{project, build, release, previous, other, environment, connection, registry, domain, claim}
 }
 
 // stubLogs stands in for the telemetry store.
@@ -335,6 +345,7 @@ var routes = []struct {
 	path   string
 }{
 	{http.MethodGet, "/api/v1/projects"},
+	{http.MethodPost, "/api/v1/projects"},
 	{http.MethodGet, "/api/v1/projects/shop"},
 	{http.MethodGet, "/api/v1/projects/shop/builds"},
 	{http.MethodPost, "/api/v1/projects/shop/builds"},
@@ -476,6 +487,128 @@ func TestGettingSomethingThatIsNotThere(t *testing.T) {
 	recorder := h.do(t, http.MethodGet, "/api/v1/projects/nope", "")
 	if recorder.Code != http.StatusNotFound {
 		t.Fatalf("want 404, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestCreatingAProject(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+
+	recorder := h.do(t, http.MethodPost, "/api/v1/projects",
+		`{"name":"blog","repo":"acme/blog","connection":"gh","registry":"registry","productionBranch":"trunk","previews":false}`)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	view := decode[projectView](t, recorder)
+	if view.Name != "blog" || view.Repo != "acme/blog" || view.ProductionBranch != "trunk" || view.Previews {
+		t.Fatalf("the response does not echo the request: %+v", view)
+	}
+
+	stored := &kitchenv1alpha1.Project{}
+	if err := h.server.get(context.Background(), "blog", stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored.Spec.Source.ConnectionRef.Name != "gh" || stored.Spec.Registry.ConnectionRef.Name != "registry" {
+		t.Fatalf("the connections did not stick: %+v", stored.Spec)
+	}
+	if got := stored.Annotations["kitchen.bermos.dev/requested-by"]; got != "grace@example.com" {
+		t.Fatalf("the creator should be recorded, got %q", got)
+	}
+}
+
+func TestCreatingAProjectAppliesTheDefaults(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+
+	recorder := h.do(t, http.MethodPost, "/api/v1/projects",
+		`{"name":"blog","repo":"acme/blog","connection":"gh","registry":"registry"}`)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	view := decode[projectView](t, recorder)
+	if view.ProductionBranch != "main" || !view.Previews {
+		t.Fatalf("want the main branch and previews on by default, got %+v", view)
+	}
+}
+
+func TestCreatingAProjectThatAlreadyExists(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+
+	recorder := h.do(t, http.MethodPost, "/api/v1/projects",
+		`{"name":"shop","repo":"acme/shop","connection":"gh","registry":"registry"}`)
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("want 409, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestCreatingAProjectRejectsUnusableRequests(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+
+	for name, body := range map[string]string{
+		"no name":                              `{"repo":"acme/blog","connection":"gh","registry":"registry"}`,
+		"a name that is not a DNS label":       `{"name":"Blog!","repo":"acme/blog","connection":"gh","registry":"registry"}`,
+		"a name too long to derive names from": `{"name":"` + strings.Repeat("a", 47) + `","repo":"acme/blog","connection":"gh","registry":"registry"}`,
+		"no repo":                              `{"name":"blog","connection":"gh","registry":"registry"}`,
+		"a repo without an owner":              `{"name":"blog","repo":"blog","connection":"gh","registry":"registry"}`,
+		"no connection":                        `{"name":"blog","repo":"acme/blog","registry":"registry"}`,
+		"no registry":                          `{"name":"blog","repo":"acme/blog","connection":"gh"}`,
+		"an unknown field":                     `{"name":"blog","repo":"acme/blog","connection":"gh","registry":"registry","branch":"main"}`,
+		"not JSON":                             `{`,
+		"an empty body":                        ``,
+	} {
+		t.Run(name, func(t *testing.T) {
+			recorder := h.do(t, http.MethodPost, "/api/v1/projects", body)
+			if recorder.Code != http.StatusBadRequest {
+				t.Fatalf("want 400, got %d: %s", recorder.Code, recorder.Body.String())
+			}
+			if err := h.server.get(context.Background(), "blog", &kitchenv1alpha1.Project{}); err == nil {
+				t.Fatal("the project was created anyway")
+			}
+		})
+	}
+}
+
+func TestCreatingAProjectChecksItsConnections(t *testing.T) {
+	// A Connection the operator has not reconciled yet reports no
+	// capabilities; the create flow accepts it and the Project's own
+	// conditions take over from there.
+	unreconciled := &kitchenv1alpha1.Connection{
+		ObjectMeta: metav1.ObjectMeta{Name: "fresh", Namespace: testNamespace},
+		Spec: kitchenv1alpha1.ConnectionSpec{
+			Provider:             "gitea",
+			CredentialsSecretRef: kitchenv1alpha1.LocalObjectReference{Name: "fresh-credentials"},
+		},
+	}
+	h := newHarness(t, nil, append(fixtures(), unreconciled)...)
+
+	for name, tc := range map[string]struct {
+		body string
+		code int
+		want string
+	}{
+		"a connection that does not exist": {
+			body: `{"name":"blog","repo":"acme/blog","connection":"nope","registry":"registry"}`,
+			code: http.StatusBadRequest,
+			want: "does not exist: create the Connection first",
+		},
+		"a registry without the imageStore capability": {
+			body: `{"name":"blog","repo":"acme/blog","connection":"gh","registry":"gh"}`,
+			code: http.StatusBadRequest,
+			want: "imageStore",
+		},
+		"a connection that has not reported capabilities yet": {
+			body: `{"name":"blog","repo":"acme/blog","connection":"fresh","registry":"registry"}`,
+			code: http.StatusCreated,
+			want: `"name":"blog"`,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			recorder := h.do(t, http.MethodPost, "/api/v1/projects", tc.body)
+			if recorder.Code != tc.code {
+				t.Fatalf("want %d, got %d: %s", tc.code, recorder.Code, recorder.Body.String())
+			}
+			if !strings.Contains(recorder.Body.String(), tc.want) {
+				t.Fatalf("want %q in the response, got %s", tc.want, recorder.Body.String())
+			}
+		})
 	}
 }
 
