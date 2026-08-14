@@ -76,7 +76,12 @@ through its Go types, to avoid tying the build to its release cadence.
   it to be routable. Cilium reports `Programmed=False` / `AddressNotAssigned`
   without one, and the platform never goes ready. Verified on bare metal.
 - **The Gateway API CRD version is pinned by Cilium**, not by us, and it moves
-  quickly. Check Cilium's docs for the release in use.
+  quickly. Check Cilium's docs for the release in use. CI does exactly that:
+  `.github/workflows/helm.yml` pins `CILIUM_VERSION` and reads the CRD version
+  out of that release's `Documentation/conf.py` at job time, so the two cannot
+  drift apart. `GATEWAY_API_VERSION` there is only the fallback for when the
+  lookup cannot reach GitHub; the job warns when the two disagree. Bump
+  `CILIUM_VERSION` to move CI forward — the CRD version follows.
 - **`kitchen.tls.mode` decides the scheme of every published URL**, not just
   whether a certificate is managed. Mode `none` gives the shared Gateway an
   HTTP listener alone, so the OIDC issuer, the API's external URL and generated
@@ -88,11 +93,3 @@ through its Go types, to avoid tying the build to its release cadence.
   directly. It is deliberately not configurable.
 - **The platform namespace is `kitchen-system`**, also compiled in. The chart
   refuses to render elsewhere unless `namespaceCheck=false`.
-
-## Known gaps
-
-- `.github/workflows/helm.yml` pins `GATEWAY_API_VERSION: v1.2.1`, while
-  current Cilium releases require considerably newer CRDs. CI therefore tests
-  against a different API surface than a real cluster runs. The chart only uses
-  `gateway.networking.k8s.io/v1`, which is stable across those versions, so
-  nothing is broken today — but the pin is drifting and worth revisiting.

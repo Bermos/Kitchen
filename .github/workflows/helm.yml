@@ -5,7 +5,14 @@ on:
   pull_request:
 
 env:
-  GATEWAY_API_VERSION: v1.2.1
+  # The Cilium release Kitchen targets. Cilium *is* the Gateway API
+  # implementation here, and it pins the CRD version tightly — so the CRDs the
+  # kind jobs install are the ones this release requires, resolved from
+  # Cilium's own documentation below rather than written down twice. Bump this
+  # alone; GATEWAY_API_VERSION is only the fallback for when the lookup cannot
+  # reach GitHub.
+  CILIUM_VERSION: v1.20.0
+  GATEWAY_API_VERSION: v1.6.1
   # Used to poke the git webhook receiver from inside the cluster.
   PROBE_IMAGE: curlimages/curl:8.11.1
 
@@ -280,8 +287,34 @@ jobs:
             kind load docker-image "${image}"
           done
 
+      # Cilium states the Gateway API version it supports in one place its docs
+      # build from, so the pin can be read from the release Kitchen targets
+      # instead of being kept in step by hand — which is how it last drifted
+      # six minor versions behind. A lookup that cannot reach GitHub falls back
+      # to the checked-in pin rather than failing the job; a lookup that
+      # disagrees with it says so, because then the fallback is stale.
+      - name: Resolve the Gateway API version Cilium requires
+        run: |
+          set -uo pipefail
+          conf="https://raw.githubusercontent.com/cilium/cilium/${CILIUM_VERSION}/Documentation/conf.py"
+          required=$(curl -fsSL --retry 3 --retry-delay 5 "${conf}" \
+            | sed -n "s/^gateway_api_version *= *'\(v[0-9.]*\)'.*/\1/p" | head -1)
+          if [ -z "${required}" ]; then
+            echo "::warning::could not read the Gateway API version from Cilium ${CILIUM_VERSION};" \
+                 "falling back to the pinned ${GATEWAY_API_VERSION}"
+            exit 0
+          fi
+          echo "Cilium ${CILIUM_VERSION} requires Gateway API ${required}"
+          if [ "${required}" != "${GATEWAY_API_VERSION}" ]; then
+            echo "::warning::GATEWAY_API_VERSION is pinned at ${GATEWAY_API_VERSION} but Cilium" \
+                 "${CILIUM_VERSION} requires ${required}; testing against ${required}." \
+                 "Update the pin in .github/workflows/helm.yml."
+            echo "GATEWAY_API_VERSION=${required}" >> "$GITHUB_ENV"
+          fi
+
       - name: Install the Gateway API CRDs
         run: |
+          echo "Installing Gateway API ${GATEWAY_API_VERSION}"
           kubectl apply -f \
             https://github.com/kubernetes-sigs/gateway-api/releases/download/${GATEWAY_API_VERSION}/standard-install.yaml
 
