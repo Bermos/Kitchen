@@ -75,8 +75,46 @@ async function clientName(auth: Auth, clientId: string): Promise<string> {
 	}
 }
 
+/**
+ * Origins the browser may call this service from.
+ *
+ * The dashboard and the identity provider sit on different hostnames by
+ * design, so every call the dashboard's JavaScript makes here — fetching the
+ * discovery document, exchanging the authorization code — is cross-origin and
+ * unreadable without these headers.
+ *
+ * The list is derived rather than configured: the platform already tells this
+ * service where its UI lives, through the API URL and the UI client's redirect
+ * URIs. Only known origins are reflected, never `*`, because a wildcard cannot
+ * be combined with credentials.
+ */
+export function allowedOrigins(config: Config): ReadonlySet<string> {
+	const origins = new Set<string>();
+	const add = (value: string | undefined): void => {
+		if (!value) {
+			return;
+		}
+		try {
+			origins.add(new URL(value).origin);
+		} catch {
+			// A malformed entry is the config validator's problem, not ours.
+		}
+	};
+
+	add(config.baseURL);
+	add(config.apiURL);
+	for (const uri of config.ui?.redirectURIs ?? []) {
+		add(uri);
+	}
+	for (const origin of config.trustedOrigins) {
+		add(origin);
+	}
+	return origins;
+}
+
 export function createServer(auth: Auth, config: Config, pool: Pool): Server {
 	const authHandler = toNodeHandler(auth);
+	const allowed = allowedOrigins(config);
 
 	return createHTTPServer((req, res) => {
 		void handle(req, res).catch((error) => {
@@ -92,6 +130,37 @@ export function createServer(auth: Auth, config: Config, pool: Pool): Server {
 	async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		const url = new URL(req.url ?? "/", config.baseURL);
 		const path = url.pathname.replace(/\/+$/, "") || "/";
+
+		// Cross-origin access for the dashboard. Without these headers the
+		// browser refuses to let its script read anything this service returns,
+		// which surfaces as an unexplained load failure on the sign-in screen
+		// rather than as an error anyone can act on.
+		const origin = req.headers.origin;
+		const originAllowed = typeof origin === "string" && allowed.has(origin);
+		if (originAllowed) {
+			res.setHeader("access-control-allow-origin", origin);
+			res.setHeader("access-control-allow-credentials", "true");
+			res.setHeader("vary", "Origin");
+		}
+
+		// Preflight. better-auth answers no OPTIONS of its own, so without this
+		// the token endpoint's preflight falls through to a 405 and the code
+		// exchange never happens.
+		if (req.method === "OPTIONS") {
+			if (!originAllowed) {
+				send(res, 403, "text/plain; charset=utf-8", "origin not allowed\n");
+				return;
+			}
+			res.writeHead(204, {
+				"access-control-allow-methods": "GET, POST, OPTIONS",
+				"access-control-allow-headers":
+					req.headers["access-control-request-headers"] ?? "content-type, authorization",
+				"access-control-max-age": "600",
+				"cache-control": "no-store",
+			});
+			res.end();
+			return;
+		}
 
 		// Liveness: the process answers. Readiness additionally requires the
 		// database, because an instance that cannot reach Postgres can neither
