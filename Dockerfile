@@ -1,3 +1,12 @@
+# Build the dashboard, so the operator can embed and serve it: one image
+# carries the whole control plane, and the chart has nothing extra to ship.
+FROM docker.io/node:22-alpine AS ui-builder
+WORKDIR /ui
+COPY ui/package.json ui/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY ui/ ./
+RUN npm run build
+
 # Build the manager and gate binaries
 FROM docker.io/golang:1.23 AS builder
 ARG TARGETOS
@@ -15,6 +24,8 @@ RUN go mod download
 COPY cmd/ cmd/
 COPY api/ api/
 COPY internal/ internal/
+# The dashboard rides into the manager via go:embed.
+COPY --from=ui-builder /ui/dist/ internal/ui/dist/
 
 # Build
 # the GOARCH has not a default value to allow the binary be built according to the host where the command

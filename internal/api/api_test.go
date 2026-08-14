@@ -339,6 +339,8 @@ var routes = []struct {
 	{http.MethodGet, "/api/v1/environments/shop-production"},
 	{http.MethodPatch, "/api/v1/environments/shop-production"},
 	{http.MethodGet, "/api/v1/environments/shop-production/logs"},
+	{http.MethodGet, "/api/v1/settings"},
+	{http.MethodPatch, "/api/v1/settings"},
 	{http.MethodGet, "/api/v1/connections"},
 	{http.MethodGet, "/api/v1/connections/gh"},
 	{http.MethodGet, "/api/v1/domains"},

@@ -51,6 +51,10 @@ spec:
             {{- with .Values.api.extraAudiences }}
             - --api-audiences={{ join "," . }}
             {{- end }}
+            {{- if and .Values.auth.enabled .Values.auth.ui.enabled (ne .Values.auth.ui.clientId "kitchen-ui") }}
+            # The dashboard signs in as the client the chart seeded.
+            - --ui-client-id={{ .Values.auth.ui.clientId }}
+            {{- end }}
             {{- if .Values.metrics.enabled }}
             - --metrics-bind-address=:{{ .Values.metrics.port }}
             - --metrics-secure={{ .Values.metrics.secure }}

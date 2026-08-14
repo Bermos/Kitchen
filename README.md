@@ -25,6 +25,8 @@ flow data — lands in ClickHouse.
 - `config/crd/bases/` — generated CRD manifests
 - `cmd/` — operator entrypoint
 - `auth/` — the identity provider (better-auth) served at `auth.<baseDomain>`
+- `ui/` — the dashboard: a Vue SPA (Nuxt UI on Reka components) the operator
+  embeds and serves at `kitchen.<baseDomain>`, talking only to the REST API
 - `cmd/gate/`, `internal/previewgate/` — the forward-auth gate protected preview
   URLs are served through
 - `charts/kitchen/` — the Helm chart that deploys all of it
@@ -156,6 +158,17 @@ npm run typecheck
 npm test                  # integration tests, need a Postgres
 ```
 
+So is the dashboard. `npm run dev` proxies `/api` to a locally running
+operator (`make run`), and `make ui-build` stages the built SPA for embedding
+into the manager binary — the image build does the same on its own:
+
+```sh
+cd ui
+npm install
+npm run dev               # vite dev server against a local operator
+npm run build && npm run typecheck && npm test
+```
+
 ## Status
 
 The core pipeline is implemented end to end:
@@ -181,6 +194,13 @@ The identity provider serves OIDC discovery, JWKS and dynamic client
 registration, and hands the operator a service credential to register clients
 with — which is how the preview gate gets its own OAuth client. Logs are
 queryable by project, environment and build as soon as a build runs or an app
-deploys. Still missing: Connection/Domain/ResourceClaim reconcilers (including
-`oidcClient` claims), metrics/traces/flow collection, Infisical sync and the
-Vue UI — none of which the chart deploys yet.
+deploys.
+
+The Vue dashboard is served by the operator at `kitchen.<baseDomain>`, behind
+the platform login (OIDC Authorization Code + PKCE): projects, builds with
+their logs, environments with one-click rollback, connections and the editable
+platform settings, with an operator mode that surfaces `status.conditions` on
+everything. Still missing: Connection/Domain/ResourceClaim reconcilers
+(including `oidcClient` claims), metrics/traces/flow collection, Infisical
+sync, and create flows in the UI (projects and connections are still
+`kubectl apply`).

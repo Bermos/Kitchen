@@ -66,6 +66,10 @@ type Server struct {
 	// ExtraAudiences are token audiences accepted on top of the issuer and
 	// the API's own external URL.
 	ExtraAudiences []string
+	// UI, when set, answers everything outside /api/: the dashboard's
+	// static files, which are public — every request with state stays
+	// behind the token check.
+	UI http.Handler
 
 	auth *authenticator
 
@@ -136,6 +140,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PATCH /api/v1/environments/{name}", s.patchEnvironment)
 	mux.HandleFunc("GET /api/v1/environments/{name}/logs", s.environmentLogs)
 
+	mux.HandleFunc("GET /api/v1/settings", s.getSettings)
+	mux.HandleFunc("PATCH /api/v1/settings", s.patchSettings)
+
 	mux.HandleFunc("GET /api/v1/connections", s.listConnections)
 	mux.HandleFunc("GET /api/v1/connections/{name}", s.getConnection)
 
@@ -154,7 +161,18 @@ func (s *Server) Handler() http.Handler {
 		})
 	})
 
-	return s.authenticated(mux)
+	authenticated := s.authenticated(mux)
+	if s.UI == nil {
+		return authenticated
+	}
+
+	// The dashboard rides on the same server: /api/ keeps its token check
+	// (including the authenticated 404 above), everything else serves the
+	// SPA and its assets, which are public and stateless.
+	root := http.NewServeMux()
+	root.Handle("/api/", authenticated)
+	root.Handle("/", s.UI)
+	return root
 }
 
 // telemetryStore resolves the connection to the telemetry store the way the

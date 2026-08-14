@@ -44,6 +44,7 @@ import (
 	"github.com/Bermos/Kitchen/internal/api"
 	"github.com/Bermos/Kitchen/internal/controller"
 	"github.com/Bermos/Kitchen/internal/receiver"
+	"github.com/Bermos/Kitchen/internal/ui"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -74,6 +75,7 @@ func main() {
 	var previewGateImage string
 	var apiAddr string
 	var apiAudiences string
+	var uiClientID string
 	var secureMetrics bool
 	var enableHTTP2 bool
 	var tlsOpts []func(*tls.Config)
@@ -90,6 +92,9 @@ func main() {
 	flag.StringVar(&apiAudiences, "api-audiences", "",
 		"Comma-separated token audiences the API accepts on top of the identity provider's issuer "+
 			"and the API's own external URL, both of which come from the Kitchen object.")
+	flag.StringVar(&uiClientID, "ui-client-id", "kitchen-ui",
+		"OAuth client id the dashboard signs in as. The chart seeds the identity provider "+
+			"with the same id, so this only changes for installations that renamed that client.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
@@ -301,12 +306,14 @@ func main() {
 	// The REST API. It authenticates every request against the platform's
 	// identity provider, which it resolves from the Kitchen object at
 	// request time — so it can be added here without waiting for the
-	// platform to be configured.
+	// platform to be configured. The dashboard rides on the same server:
+	// static files outside /api/, resolved against the same Kitchen object.
 	if err := mgr.Add(&api.Server{
 		Client:         mgr.GetClient(),
 		Namespace:      operatorNamespace,
 		BindAddr:       apiAddr,
 		ExtraAudiences: splitList(apiAudiences),
+		UI:             ui.Handler(api.UIConfig(mgr.GetClient(), uiClientID)),
 	}); err != nil {
 		setupLog.Error(err, "unable to add the api server to manager")
 		os.Exit(1)
