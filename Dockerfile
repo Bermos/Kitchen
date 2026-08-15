@@ -20,7 +20,7 @@ RUN npm run build
 # the target's architecture — CGO is off, so the Go toolchain cross-compiles
 # from GOARCH alone, and the arm64 image can be built on a host with no arm64
 # emulation installed at all.
-FROM --platform=$BUILDPLATFORM docker.io/golang:1.24 AS builder
+FROM --platform=$BUILDPLATFORM docker.io/golang:1.26 AS builder
 ARG TARGETOS
 ARG TARGETARCH
 
