@@ -644,6 +644,7 @@ kubectl delete namespace kitchen-system
 | `logs.extraLabelSelector` / `.extraFieldSelector` | `""` | Narrow which pods are collected. |
 | `logs.excludePathsGlobPatterns` | `[]` | Extra log file globs to skip. |
 | `logs.globCooldownMs` | `5000` | How often the node is rescanned for new log files. |
+| `logs.maxStructuredFields` | `64` | Fields kept from a JSON line, queryable as `http.status:500`. Beyond it the line ships without them. |
 | `logs.batch.maxEvents` / `.timeoutSeconds` | `5000` / `5` | Insert batching; the timeout is log latency. |
 | `logs.buffer.maxEvents` | `20000` | Events held per node while the store is unreachable. |
 | `logs.serviceAccount.create` / `.name` / `.annotations` | `true` / `""` / `{}` | |
