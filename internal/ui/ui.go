@@ -28,6 +28,8 @@ import (
 	"net/http"
 	"path"
 	"strings"
+
+	"github.com/Bermos/Kitchen/internal/version"
 )
 
 // The image build copies ui/dist in here before compiling. A source checkout
@@ -48,6 +50,11 @@ type Config struct {
 	// APIURL is the operator API's external base URL — also the token
 	// audience the UI must ask for (`resource=`).
 	APIURL string `json:"apiURL"`
+	// Version is the release this operator was built from, which is the
+	// release the whole platform is on: one tag publishes the chart and both
+	// images. Handler fills it in — it is a fact about the binary, not about
+	// the cluster, so no caller has to supply it.
+	Version string `json:"version"`
 }
 
 // placeholder is served when the binary was built without the SPA — a source
@@ -85,6 +92,7 @@ func Handler(config func(ctx context.Context) (Config, error)) http.Handler {
 				http.Error(w, "the platform is not configured yet", http.StatusServiceUnavailable)
 				return
 			}
+			cfg.Version = version.Version
 			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("Cache-Control", "no-store")
 			_ = json.NewEncoder(w).Encode(cfg)

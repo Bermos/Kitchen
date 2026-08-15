@@ -1,6 +1,17 @@
 # Image URL to use all building/pushing image targets
 IMG ?= controller:latest
 
+# The release this build is of, stamped into the binaries so the dashboard can
+# show it. Releases come from release-please (CONTRIBUTING.md) and are passed
+# in by the publish workflow; a working copy describes itself from git, which
+# is what makes a locally built image identifiable. No leading "v": the UI adds
+# one, and `git describe` output keeps whatever suffix it earned.
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null | sed 's/^v//')
+ifeq ($(strip $(VERSION)),)
+VERSION := dev
+endif
+LDFLAGS ?= -X github.com/Bermos/Kitchen/internal/version.Version=$(VERSION)
+
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
 GOBIN=$(shell go env GOPATH)/bin
@@ -107,8 +118,8 @@ check-commits: ## Check the commit messages this branch adds to main (BASE overr
 
 .PHONY: build
 build: manifests generate fmt vet ## Build the manager and preview-gate binaries.
-	go build -o bin/manager cmd/main.go
-	go build -o bin/gate cmd/gate/main.go
+	go build -ldflags "$(LDFLAGS)" -o bin/manager cmd/main.go
+	go build -ldflags "$(LDFLAGS)" -o bin/gate cmd/gate/main.go
 
 .PHONY: run
 run: manifests generate fmt vet ## Run a controller from your host.
@@ -126,7 +137,7 @@ ui-build: ## Build the dashboard and stage it for embedding into the manager.
 # More info: https://docs.docker.com/develop/develop-images/build_enhancements/
 .PHONY: docker-build
 docker-build: ## Build docker image with the manager.
-	$(CONTAINER_TOOL) build -t ${IMG} .
+	$(CONTAINER_TOOL) build --build-arg VERSION=$(VERSION) -t ${IMG} .
 
 .PHONY: docker-push
 docker-push: ## Push docker image with the manager.
@@ -147,7 +158,7 @@ docker-buildx: ## Build and push docker image for the manager for cross-platform
 	# stages that need it and left the rest to run under emulation.
 	- $(CONTAINER_TOOL) buildx create --name kitchen-builder
 	$(CONTAINER_TOOL) buildx use kitchen-builder
-	- $(CONTAINER_TOOL) buildx build --push --platform=$(PLATFORMS) --tag ${IMG} .
+	- $(CONTAINER_TOOL) buildx build --push --platform=$(PLATFORMS) --build-arg VERSION=$(VERSION) --tag ${IMG} .
 	- $(CONTAINER_TOOL) buildx rm kitchen-builder
 
 .PHONY: build-installer
