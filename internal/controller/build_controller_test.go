@@ -105,7 +105,10 @@ var _ = Describe("Build Controller", func() {
 
 			kitchen := &kitchenv1alpha1.Kitchen{
 				ObjectMeta: metav1.ObjectMeta{Name: KitchenSingletonName},
-				Spec:       kitchenv1alpha1.KitchenSpec{BaseDomain: "apps.example.com"},
+				Spec: kitchenv1alpha1.KitchenSpec{
+					BaseDomain: "apps.example.com",
+					TLS:        acmeTLS(),
+				},
 			}
 			Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, kitchen))).To(Succeed())
 

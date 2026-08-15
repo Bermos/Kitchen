@@ -102,7 +102,9 @@ kitchen:
     # -- Edge TLS mode: acme | cloudflared | none. It also decides the scheme
     # of every URL the platform publishes, the OIDC issuer included: `none`
     # gives the shared Gateway an HTTP listener alone, so those URLs are
-    # `http://`.
+    # `http://`. `acme` requires the `acme` block below — the API server
+    # refuses a Kitchen in acme mode without it — so `none` is what brings a
+    # cluster up before DNS and certificates are ready.
     mode: acme
     # How the wildcard certificate for `*.<baseDomain>` is obtained in acme
     # mode. The operator — not this chart — creates the ClusterIssuer and the

@@ -453,7 +453,10 @@ var _ = Describe("Component survey", func() {
 	It("keeps names unique when two workloads claim the same component", func() {
 		singleton := &kitchenv1alpha1.Kitchen{
 			ObjectMeta: metav1.ObjectMeta{Name: KitchenSingletonName},
-			Spec:       kitchenv1alpha1.KitchenSpec{BaseDomain: "apps.example.com"},
+			Spec: kitchenv1alpha1.KitchenSpec{
+				BaseDomain: "apps.example.com",
+				TLS:        acmeTLS(),
+			},
 		}
 		Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, singleton))).To(Succeed())
 		defer func() {
@@ -488,7 +491,10 @@ var _ = Describe("Component survey", func() {
 	It("keeps the singleton's status writable with components on it", func() {
 		singleton := &kitchenv1alpha1.Kitchen{
 			ObjectMeta: metav1.ObjectMeta{Name: KitchenSingletonName},
-			Spec:       kitchenv1alpha1.KitchenSpec{BaseDomain: "apps.example.com"},
+			Spec: kitchenv1alpha1.KitchenSpec{
+				BaseDomain: "apps.example.com",
+				TLS:        acmeTLS(),
+			},
 		}
 		Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, singleton))).To(Succeed())
 		defer func() {

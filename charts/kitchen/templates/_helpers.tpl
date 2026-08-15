@@ -432,6 +432,9 @@ does not run in.
 {{- if and $acme.dns01.cloudflare.apiTokenSecretName (not $acme.email) }}
 {{- fail "kitchen.tls.acme.dns01.cloudflare.apiTokenSecretName is set without kitchen.tls.acme.email: the CA registers the account against a contact address." }}
 {{- end }}
+{{- if and .Values.kitchen.create (eq .Values.kitchen.tls.mode "acme") (ne (include "kitchen.acmeConfigured" .) "true") }}
+{{- fail "kitchen.tls.mode is acme but kitchen.tls.acme is not configured: set kitchen.tls.acme.email and kitchen.tls.acme.dns01.cloudflare.apiTokenSecretName. The API server refuses a Kitchen in acme mode without them, because the shared Gateway's HTTPS listener would terminate with a certificate nothing issues. To bring a cluster up before DNS and certificates are ready, set kitchen.tls.mode=none — every published URL is then http://." }}
+{{- end }}
 {{- if and .Values.kitchen.create .Values.kitchen.ingress.cloudflared.enabled (not .Values.kitchen.ingress.cloudflared.tunnelSecretName) }}
 {{- fail "kitchen.ingress.cloudflared.tunnelSecretName is required when cloudflared is enabled: create a secret holding the tunnel token under the key `token` first." }}
 {{- end }}

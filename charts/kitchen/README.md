@@ -65,8 +65,17 @@ the chart must be installed into `kitchen-system`:
 ```sh
 helm install kitchen oci://ghcr.io/bermos/charts/kitchen \
   --namespace kitchen-system --create-namespace \
-  --set kitchen.baseDomain=apps.example.com
+  --set kitchen.baseDomain=apps.example.com \
+  --set kitchen.tls.acme.email=you@example.com \
+  --set kitchen.tls.acme.dns01.cloudflare.apiTokenSecretName=cloudflare-api-token
 ```
+
+The default TLS mode is `acme`, and it is the two `kitchen.tls.acme` values
+that make it work, so the chart requires them there: the API server refuses a
+Kitchen in acme mode with no `acme` block, and a release that rendered one
+would fail at the post-install hook rather than at the point the value was
+missing. Neither is needed in the other modes — `--set kitchen.tls.mode=none`
+brings a cluster up before DNS and certificates exist.
 
 ### The chart owns the namespace
 
@@ -616,7 +625,7 @@ kubectl delete namespace kitchen-system
 | `kitchen.ingress.gatewayClassName` | `cilium` | GatewayClass for the shared Gateway. |
 | `kitchen.ingress.cloudflared.enabled` | `false` | Run a cloudflared tunnel as the edge. |
 | `kitchen.ingress.cloudflared.tunnelSecretName` | `""` | Secret with the tunnel token under `token`. |
-| `kitchen.tls.mode` | `acme` | `acme`, `cloudflared` or `none`. Also the scheme of every published URL: `none` serves HTTP only. |
+| `kitchen.tls.mode` | `acme` | `acme`, `cloudflared` or `none`. `acme` requires the `acme` values below. Also the scheme of every published URL: `none` serves HTTP only. |
 | `kitchen.tls.acme.email` | `""` | CA contact address. Required in `acme` mode. |
 | `kitchen.tls.acme.server` | Let's Encrypt production | ACME directory URL. Use the staging directory while setting up. |
 | `kitchen.tls.acme.dns01.cloudflare.apiTokenSecretName` | `""` | Secret holding a Cloudflare API token (`Zone:DNS:Edit` + `Zone:Zone:Read`). Required in `acme` mode. |

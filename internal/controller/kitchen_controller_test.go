@@ -64,7 +64,10 @@ var _ = Describe("Kitchen Controller", func() {
 
 			kitchen := &kitchenv1alpha1.Kitchen{
 				ObjectMeta: metav1.ObjectMeta{Name: KitchenSingletonName},
-				Spec:       kitchenv1alpha1.KitchenSpec{BaseDomain: "apps.example.com"},
+				Spec: kitchenv1alpha1.KitchenSpec{
+					BaseDomain: "apps.example.com",
+					TLS:        acmeTLS(),
+				},
 			}
 			Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, kitchen))).To(Succeed())
 		})
@@ -273,7 +276,10 @@ var _ = Describe("Kitchen Controller", func() {
 		It("refuses to reconcile a second Kitchen object", func() {
 			other := &kitchenv1alpha1.Kitchen{
 				ObjectMeta: metav1.ObjectMeta{Name: "other"},
-				Spec:       kitchenv1alpha1.KitchenSpec{BaseDomain: "elsewhere.example.com"},
+				Spec: kitchenv1alpha1.KitchenSpec{
+					BaseDomain: "elsewhere.example.com",
+					TLS:        acmeTLS(),
+				},
 			}
 			Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, other))).To(Succeed())
 
