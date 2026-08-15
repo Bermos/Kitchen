@@ -119,6 +119,23 @@ test files, and goconst has already caught a release name repeated across
 assertions. Run it before every push, not only after touching Go code you
 consider "real".
 
+## Checking chart behaviour without waiting for CI
+
+**In a dev container the Docker daemon is installed but not running — start it
+with `dockerd &` and wait for `docker info`.** With it up, `kind` reproduces the
+whole `helm.yml` install job locally, which is the only way to find out what
+Helm actually does before pushing.
+
+Failing that, a question about *Helm itself* can be answered against the
+envtest binaries `make setup-envtest` already downloads: `envtest.Environment`
+plus `AddUser(...).KubeConfig()` is a real API server, and `helm install`
+against it is faithful for anything short of pods running. That is how the
+"you cannot bundle a chart that ships a custom resource of another chart's
+CRD" rule below was established rather than guessed — four candidate
+workarounds, each disproved in about a minute. Note that cert-manager's
+`startupapicheck` hook Job can never finish there (no scheduler), so pass
+`--set cert-manager.enabled=false` to any full-chart install.
+
 ## Chart conventions
 
 - **CRDs are ordinary templates, not `crds/` files.** Helm never upgrades files
