@@ -331,14 +331,27 @@ logs:
   # -- Where the kubelet writes container logs on the node.
   hostLogsPath: /var/log
   # -- Where the collector keeps its read offsets, so a restart resumes
-  # instead of re-shipping.
+  # instead of re-shipping. Offsets are committed as it goes, so a process
+  # killed before its first commit resumes from wherever it last got to —
+  # which for a killed-on-startup collector is the beginning.
   hostDataPath: /var/lib/kitchen/logs
   resources:
     requests:
+      # Steady state is ~35Mi: the collector tails files and forwards, and
+      # holds little. The request covers that with room and is deliberately
+      # nowhere near the limit, because the limit is sized for a burst that
+      # should be rare.
       cpu: 100m
       memory: 128Mi
     limits:
-      memory: 512Mi
+      # Catching up on a backlog costs far more than steady state — measured
+      # at 1.2Gi against 16 hours of one quiet node's logs, roughly 35x what
+      # it settles at afterwards. This is sized for that burst, because being
+      # short here does not slow collection down, it stops it: the collector
+      # is killed before it can commit a read offset, so the next start
+      # re-reads the same backlog, and every cycle ships it all again. At
+      # 512Mi that loop ran for ten hours and wrote every line ~45 times.
+      memory: 2Gi
   # -- Run on every node, including tainted ones: a control-plane node's logs
   # are exactly the ones wanted when the platform itself misbehaves.
   tolerations:

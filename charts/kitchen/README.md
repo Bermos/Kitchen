@@ -257,6 +257,48 @@ misbehaves. Narrow it with `logs.extraLabelSelector` (for example
 collector off entirely with `logs.enabled=false`. With no telemetry store
 configured the collector is not rendered at all.
 
+### Sizing the collector
+
+The collector's memory limit is set for the worst case rather than the normal
+one, and the gap between them is wide: it settles at roughly **35Mi** in steady
+state, and was measured at **1.2Gi** catching up on sixteen hours of a single
+quiet node's logs. Thirty-five times the steady figure, for a burst that ends.
+
+The limit is what it is because being short is not a slowdown, it is a loop.
+Vector commits its read offsets as it goes, so a process killed *before its
+first commit* has nothing newer to resume from and starts again at the
+beginning. On a backlog it cannot finish inside the limit, that means: read,
+die, re-read the same lines, die again — shipping the whole backlog every cycle
+while never getting to the end of it. Each restart also adds whatever
+accumulated meanwhile, so it moves away from finishing rather than towards it.
+
+Measured on a cluster where this ran at the old 512Mi default for ten hours:
+
+```
+total     distinct   factor
+7751294   173323     44.8x
+```
+
+Every line written about forty-five times, and the earliest line — from the
+cluster's first minutes — present in 1122 copies. The store was not empty, it
+was full of the same thing.
+
+Two things follow for anyone tuning this:
+
+- **Do not size the limit from steady-state usage.** `kubectl top pod` on a
+  healthy collector reports something in the tens of megabytes, and a limit
+  chosen from that number fails on the first restart after any outage.
+- **1Gi is not a safe halving.** It happens to sit just above steady state and
+  far below catch-up, so it looks fine indefinitely and then fails exactly when
+  the collector has work to do.
+
+The request stays small on purpose: 128Mi covers steady state with room, and
+reserving catch-up-sized memory on every node for a burst that is rare would
+cost far more than it buys. The trade-off is that a collector spiking to over a
+gigabyte is using much more than it requested, which makes it a likelier target
+if the node comes under memory pressure. On a node where that is a real risk,
+raise the request rather than the limit.
+
 ### If no logs arrive
 
 Check the collector is actually running, which is not the same as checking that
@@ -591,7 +633,7 @@ kubectl delete namespace kitchen-system
 | `logs.serviceAccount.create` / `.name` / `.annotations` | `true` / `""` / `{}` | |
 | `logs.rbac.create` | `true` | ClusterRole to read pod/namespace/node metadata. |
 | `logs.hostLogsPath` / `.hostDataPath` | `/var/log` / `/var/lib/kitchen/logs` | Node paths for logs and read offsets. |
-| `logs.resources` | 100m/128Mi → 512Mi | |
+| `logs.resources` | 100m/128Mi → 2Gi | The limit is sized for catching up on a backlog, not for steady state; see [Sizing the collector](#sizing-the-collector). |
 | `logs.tolerations` | `[{operator: Exists}]` | Collect from tainted nodes too. |
 | `logs.terminationGracePeriodSeconds` | `60` | Time to flush the buffer on shutdown. |
 | `postgres.enabled` | `true` | Run a single-node Postgres for the identity provider. |
