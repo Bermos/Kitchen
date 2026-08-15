@@ -133,7 +133,7 @@ func TestEnsureLogsSchemaLeavesAMatchingTTLAlone(t *testing.T) {
 	}
 }
 
-func TestEnsureLogsSchemaAddsTheLevelColumn(t *testing.T) {
+func TestEnsureLogsSchemaAddsTheColumnsItGrew(t *testing.T) {
 	store := newFakeStore(t)
 	store.engine = "MergeTree TTL toDateTime(timestamp) + toIntervalDay(30)"
 
@@ -141,11 +141,16 @@ func TestEnsureLogsSchemaAddsTheLevelColumn(t *testing.T) {
 		t.Fatalf("EnsureLogsSchema: %v", err)
 	}
 
-	// A table from before the level column is migrated in place; on a fresh
-	// table the same statement is a no-op thanks to IF NOT EXISTS.
-	want := "ALTER TABLE `kitchen`.`logs` ADD COLUMN IF NOT EXISTS level LowCardinality(String) AFTER stream"
-	if !store.sent(want) {
-		t.Errorf("expected %q, got:\n%s", want, strings.Join(store.queries, "\n---\n"))
+	// A table from before a column is migrated in place — CREATE TABLE IF NOT
+	// EXISTS would not touch it — and on a fresh table the same statement is a
+	// no-op thanks to IF NOT EXISTS.
+	for _, want := range []string{
+		"ALTER TABLE `kitchen`.`logs` ADD COLUMN IF NOT EXISTS level LowCardinality(String) AFTER stream",
+		"ALTER TABLE `kitchen`.`logs` ADD COLUMN IF NOT EXISTS fields Map(String, String) AFTER labels",
+	} {
+		if !store.sent(want) {
+			t.Errorf("expected %q, got:\n%s", want, strings.Join(store.queries, "\n---\n"))
+		}
 	}
 }
 

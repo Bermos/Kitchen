@@ -110,9 +110,9 @@ type KitchenReconciler struct {
 	PreviewGateImage string
 
 	// APIReader reads straight from the API server, bypassing the cache.
-	// The component survey needs it for events: field selectors are not
-	// served by the cache, and caching every event in the namespace to
-	// answer an occasional question would cost far more than it saves.
+	// The component survey needs it for events and pods: field selectors are
+	// not served by the cache, and caching every event and pod in the cluster
+	// to answer an occasional question would cost far more than it saves.
 	// SetupWithManager fills it in; a nil reader only costs the survey the
 	// explanatory half of its message.
 	APIReader client.Reader
@@ -127,6 +127,7 @@ type KitchenReconciler struct {
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;create
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups="",resources=events,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups=cert-manager.io,resources=clusterissuers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=cert-manager.io,resources=certificates,verbs=get;list;watch;create;update;patch;delete
 
@@ -482,6 +483,12 @@ func (r *KitchenReconciler) reconcileTLS(
 		return true
 	}
 
+	// Both of the next two states are refused at admission by the CRD's own
+	// validation rules, so they are only reachable on an object written before
+	// those rules existed, or on a cluster whose CRDs are managed out of band
+	// (crds.install=false) and left behind. They stay because a reconciler that
+	// trusts the schema it was compiled against reports nothing at all when the
+	// schema in the cluster is older than it is.
 	acme := kitchen.Spec.TLS.ACME
 	if acme == nil {
 		setCond(condCertificateReady, metav1.ConditionFalse, "ACMEConfigMissing",

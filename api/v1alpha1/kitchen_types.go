@@ -53,6 +53,8 @@ type CloudflareSolverSpec struct {
 // deliberately no HTTP-01 alternative: every generated URL is a subdomain of
 // the base domain, so the platform needs a wildcard certificate, and ACME
 // issues those over DNS-01 only.
+//
+// +kubebuilder:validation:XValidation:rule="has(self.cloudflare)",message="spec.tls.acme.dns01 needs a solver: set dns01.cloudflare. Every generated URL is a subdomain, so the platform needs a wildcard certificate, and ACME issues wildcards over DNS-01 only."
 type ACMEDNS01Spec struct {
 	// +optional
 	Cloudflare *CloudflareSolverSpec `json:"cloudflare,omitempty"`
@@ -76,15 +78,20 @@ type ACMESpec struct {
 	DNS01 ACMEDNS01Spec `json:"dns01"`
 }
 
-// TLSSpec configures platform-wide TLS defaults.
+// TLSSpec configures platform-wide TLS defaults. acme mode cannot be
+// half-configured: a Kitchen asking for it with no acme block is refused at
+// admission, rather than accepted and then reported as a condition on an object
+// whose HTTPS listener has no certificate to terminate with.
+//
+// +kubebuilder:validation:XValidation:rule="self.mode != 'acme' || has(self.acme)",message="spec.tls.acme is required when tls.mode is acme: the shared Gateway's HTTPS listener terminates with the wildcard certificate the operator requests from it. Configure it, or set tls.mode to cloudflared or none."
 type TLSSpec struct {
 	// +kubebuilder:default=acme
 	Mode TLSMode `json:"mode,omitempty"`
 
 	// ACME configures the issuer the operator creates, and the wildcard
-	// certificate it requests from it, when Mode is acme. Without it the
-	// operator manages no certificate and the Gateway's HTTPS listener waits
-	// for one to appear by other means.
+	// certificate it requests from it. It is required in acme mode and
+	// pointless outside it: the wildcard is read by the Gateway's HTTPS
+	// listener, which exists in acme mode alone.
 	// +optional
 	ACME *ACMESpec `json:"acme,omitempty"`
 }

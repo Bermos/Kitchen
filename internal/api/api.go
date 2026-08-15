@@ -95,6 +95,9 @@ type Server struct {
 type logReader interface {
 	SearchLogs(ctx context.Context, query clickhouse.LogQuery) ([]clickhouse.LogLine, error)
 	FilterLogs(ctx context.Context, filter clickhouse.LogFilter) ([]clickhouse.LogLine, error)
+	LogHistogram(ctx context.Context, query clickhouse.LogHistogramQuery) (clickhouse.LogHistogram, error)
+	LogFacets(ctx context.Context, query clickhouse.LogFacetQuery) ([]clickhouse.LogFacet, error)
+	LogPatterns(ctx context.Context, query clickhouse.LogPatternQuery) ([]clickhouse.LogPattern, error)
 	QueryEvents(ctx context.Context, query clickhouse.EventQuery) ([]clickhouse.Event, error)
 	TrafficEdges(ctx context.Context, query clickhouse.TrafficQuery) ([]clickhouse.TrafficEdge, error)
 	MetricsOverview(ctx context.Context, query clickhouse.MetricsQuery) (clickhouse.MetricsOverview, error)
@@ -169,6 +172,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/environments/{name}/objects", s.environmentObjects)
 
 	mux.HandleFunc("GET /api/v1/logs", s.queryLogs)
+	mux.HandleFunc("GET /api/v1/logs/histogram", s.logHistogram)
+	mux.HandleFunc("GET /api/v1/logs/facets", s.logFacets)
+	mux.HandleFunc("GET /api/v1/logs/patterns", s.logPatterns)
 
 	mux.HandleFunc("GET /api/v1/events", s.listEvents)
 	mux.HandleFunc("GET /api/v1/metrics/overview", s.metricsOverview)
@@ -281,6 +287,21 @@ func (s *Server) writeError(w http.ResponseWriter, err error) {
 		s.log().Error(err, "request failed")
 		writeJSON(w, http.StatusInternalServerError, errorBody{Error: err.Error()})
 	}
+}
+
+// writeStoreError answers a telemetry read that the store refused or could not
+// complete. The query was the operator's own, not the caller's, so ClickHouse's
+// diagnostic — a nested-aggregate complaint, a version string, the offending
+// SQL — is a fault report for whoever maintains Kitchen and not something the
+// dashboard's user can act on. They get the name of the read that failed; the
+// store's text stays in the operator's log.
+//
+// what names the read in the dashboard's words: "the traffic query".
+func (s *Server) writeStoreError(w http.ResponseWriter, err error, what string) {
+	s.log().Error(err, what+" failed")
+	writeJSON(w, http.StatusInternalServerError, errorBody{
+		Error: what + " failed; the operator's log has the store's diagnostic",
+	})
 }
 
 func badRequest(w http.ResponseWriter, format string, args ...any) {

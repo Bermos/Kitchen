@@ -77,8 +77,16 @@ var _ = BeforeSuite(func() {
 		CRDDirectoryPaths: []string{
 			filepath.Join("..", "..", "config", "crd", "bases"),
 			filepath.Join("..", "..", "test", "crd", "gateway-api"),
-			// The KEDA HTTP add-on's HTTPScaledObject: what the operator
-			// writes to make an environment idle to zero.
+			// cert-manager's own schemas, extracted from the sub-chart the
+			// platform installs by hack/gen-test-crds.sh. The operator writes
+			// its ClusterIssuer and Certificate as unstructured objects, so
+			// only a real CRD prunes a misspelled field — which is what turns
+			// a typo in those specs into a failing assertion here rather than
+			// a passing round-trip.
+			filepath.Join("..", "..", "test", "crd", "cert-manager"),
+			// The KEDA HTTP add-on's HTTPScaledObject, for the same reason.
+			// It comes from a chart the platform does *not* install, so it is
+			// fetched from the add-on release rather than from charts/.
 			filepath.Join("..", "..", "test", "crd", "keda-http"),
 		},
 		ErrorIfCRDPathMissing: true,
@@ -105,6 +113,27 @@ var _ = AfterSuite(func() {
 	err := testEnv.Stop()
 	Expect(err).NotTo(HaveOccurred())
 })
+
+// acmeTLS is the TLS block every Kitchen created through the API server needs.
+// acme is the default mode, and the CRD refuses that mode without an ACME
+// account and a solver, so a spec that only cares about the base domain still
+// has to say how the platform would get its certificate.
+func acmeTLS() kitchenv1alpha1.TLSSpec {
+	return kitchenv1alpha1.TLSSpec{
+		Mode: kitchenv1alpha1.TLSModeACME,
+		ACME: &kitchenv1alpha1.ACMESpec{
+			Email: "platform@example.com",
+			DNS01: kitchenv1alpha1.ACMEDNS01Spec{
+				Cloudflare: &kitchenv1alpha1.CloudflareSolverSpec{
+					APITokenSecretRef: kitchenv1alpha1.SecretKeySelector{
+						Name: "cloudflare-api-token",
+						Key:  "api-token",
+					},
+				},
+			},
+		},
+	}
+}
 
 // getFirstFoundEnvTestBinaryDir locates the first binary in the specified path.
 // ENVTEST-based tests depend on specific binaries, usually located in paths set by

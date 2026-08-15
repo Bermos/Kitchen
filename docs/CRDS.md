@@ -51,6 +51,15 @@ spec:
       tunnelSecretRef: { name: cloudflared-creds }   # tunnel fronts the Gateway service
   tls:
     mode: cloudflared                   # cloudflared | acme | none
+    # mode: acme requires the acme block; the API server refuses the combination
+    # without it, rather than admitting a platform whose HTTPS listener has no
+    # certificate to terminate with.
+    # acme:
+    #   email: platform@example.com     # the CA's contact address for this account
+    #   server: https://acme-v02.api.letsencrypt.org/directory
+    #   dns01:                          # DNS-01 only: the platform needs a wildcard
+    #     cloudflare:
+    #       apiTokenSecretRef: { name: cloudflare-api-token, key: api-token }
   auth:
     enabled: true                       # the platform's identity provider
     host: auth.apps.example.com         # also the OIDC issuer; defaults to auth.<baseDomain>

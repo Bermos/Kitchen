@@ -110,7 +110,9 @@ there, and both it and the operator keep retrying. Progress shows up in
 `CertificateReady` (step 5), so a late secret costs a reconcile, not a
 reinstall.
 
-Set `kitchen.tls.mode=none` to start without TLS, or `cert-manager.enabled=false`
+Set `kitchen.tls.mode=none` to start without TLS — leave the two
+`kitchen.tls.acme` values off with it; they are only read in `acme` mode, which
+in turn is only accepted with them. Or `cert-manager.enabled=false`
 if your cluster already runs one. In `none` mode the Gateway listens on HTTP
 alone, and every URL the platform publishes — the OIDC issuer, the API's
 external URL, preview and app URLs — is `http://` to match, so logins and the

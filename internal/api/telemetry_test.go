@@ -18,6 +18,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -127,6 +128,31 @@ func TestTraffic(t *testing.T) {
 	}
 	if h.logs.lastTraffic.Namespace != "kitchen-shop" {
 		t.Errorf("expected the query scoped to the project's namespace, got %+v", h.logs.lastTraffic)
+	}
+}
+
+// The traffic query is the operator's, so ClickHouse refusing it is a Kitchen
+// fault and not a caller's mistake: the browser was shown a raw
+// `Code: 184. DB::Exception: … (version 26.3.17.110 (official build))`, which
+// tells the person reading it nothing they can do.
+func TestAStoreFailureDoesNotReachTheBrowser(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+	h.logs.trafficErr = errors.New("clickhouse returned 500 Internal Server Error: Code: 184. " +
+		"DB::Exception: Aggregate function countIf(protocol = 'HTTP') is found inside another " +
+		"aggregate function in query. (ILLEGAL_AGGREGATION) (version 26.3.17.110 (official build))")
+
+	res := h.do(t, http.MethodGet, "/api/v1/traffic", "")
+	if res.Code != http.StatusInternalServerError {
+		t.Fatalf("GET /traffic = %d: %s", res.Code, res.Body.String())
+	}
+	body := res.Body.String()
+	if !strings.Contains(body, "the traffic query failed") {
+		t.Errorf("the answer should name the read that failed: %s", body)
+	}
+	for _, leak := range []string{"DB::Exception", "ILLEGAL_AGGREGATION", "official build"} {
+		if strings.Contains(body, leak) {
+			t.Errorf("the store's internals reached the browser (%q): %s", leak, body)
+		}
 	}
 }
 

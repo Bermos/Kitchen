@@ -120,6 +120,7 @@ var _ = Describe("Preview gate", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: KitchenSingletonName},
 				Spec: kitchenv1alpha1.KitchenSpec{
 					BaseDomain: "apps.example.com",
+					TLS:        acmeTLS(),
 					Auth: kitchenv1alpha1.AuthSpec{
 						Enabled:     true,
 						PreviewGate: kitchenv1alpha1.PreviewGateSpec{Enabled: true},

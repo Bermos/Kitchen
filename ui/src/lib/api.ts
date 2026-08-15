@@ -212,6 +212,61 @@ export interface LogLine {
   /** Best-effort severity the collector parsed out of the line; "" when unknown. */
   level?: string;
   message: string;
+  /** The line's own structured fields, when it was JSON the collector could flatten. */
+  fields?: Record<string, string>;
+}
+
+/**
+ * What an observability question is asked over. `q` is Kitchen's log query
+ * language and the front door; `where` is a raw ClickHouse expression, the
+ * escape hatch. Given both, they compose with AND — which is how the view
+ * scopes the cluster's own pods out of an operator's hand-written SQL.
+ */
+export interface LogSelection {
+  q?: string;
+  where?: string;
+  since?: string;
+  until?: string;
+}
+
+/** One bar of the log histogram. */
+export interface LogBucket {
+  start: string;
+  count: number;
+  errors: number;
+  warnings: number;
+}
+
+/** The shape of a window (GET /logs/histogram), empty buckets included. */
+export interface LogHistogram {
+  start: string;
+  end: string;
+  bucketSeconds: number;
+  buckets: LogBucket[];
+  total: number;
+}
+
+/** One value a field takes in the current selection, and how often. */
+export interface LogFacetValue {
+  value: string;
+  count: number;
+}
+
+/** One field's distinct values over the window (GET /logs/facets). */
+export interface LogFacet {
+  field: string;
+  values: LogFacetValue[];
+  distinct: number;
+}
+
+/** One message template the selection's lines collapse into. */
+export interface LogPattern {
+  pattern: string;
+  count: number;
+  level?: string;
+  sample: string;
+  firstSeen: string;
+  lastSeen: string;
 }
 
 /** One entry of the platform's activity feed (GET /events). */
@@ -408,6 +463,16 @@ export interface LogQuery {
   container?: string;
 }
 
+/** The selection as query parameters, leaving out what was not asked. */
+function selectionParams(selection: LogSelection): URLSearchParams {
+  const params = new URLSearchParams();
+  if (selection.q) params.set("q", selection.q);
+  if (selection.where) params.set("where", selection.where);
+  if (selection.since) params.set("since", selection.since);
+  if (selection.until) params.set("until", selection.until);
+  return params;
+}
+
 function logQuery(query: LogQuery): string {
   const params = new URLSearchParams();
   if (query.limit) params.set("limit", String(query.limit));
@@ -445,14 +510,30 @@ export const api = {
   environmentLogs: (name: string, query: LogQuery = {}) =>
     request<{ items: LogLine[] }>("GET", `/environments/${name}/logs${logQuery(query)}`).then((b) => b.items),
 
-  // The observability surface: a ClickHouse expression over the whole logs
-  // table, evaluated as written (read-only, capped server-side).
-  logs: (where: string, query: LogQuery = {}) => {
-    const params = new URLSearchParams({ where });
-    if (query.limit) params.set("limit", String(query.limit));
-    if (query.since) params.set("since", query.since);
-    if (query.until) params.set("until", query.until);
+  // The observability surface. An empty selection is a legitimate question —
+  // everything in the window — so nothing has to be typed to ask it.
+  logs: (selection: LogSelection, limit?: number) => {
+    const params = selectionParams(selection);
+    if (limit) params.set("limit", String(limit));
     return request<{ items: LogLine[] }>("GET", `/logs?${params}`).then((b) => b.items);
+  },
+
+  // The same selection, asked three other ways: when, what else is in it, and
+  // what it is actually saying.
+  logHistogram: (selection: LogSelection, buckets?: number) => {
+    const params = selectionParams(selection);
+    if (buckets) params.set("buckets", String(buckets));
+    return request<LogHistogram>("GET", `/logs/histogram?${params}`);
+  },
+  logFacets: (selection: LogSelection, fields?: string[]) => {
+    const params = selectionParams(selection);
+    if (fields?.length) params.set("fields", fields.join(","));
+    return request<{ items: LogFacet[] }>("GET", `/logs/facets?${params}`).then((b) => b.items);
+  },
+  logPatterns: (selection: LogSelection, limit?: number) => {
+    const params = selectionParams(selection);
+    if (limit) params.set("limit", String(limit));
+    return request<{ items: LogPattern[] }>("GET", `/logs/patterns?${params}`).then((b) => b.items);
   },
 
   // Live tails of the same log endpoints, as Server-Sent Events.
@@ -460,10 +541,9 @@ export const api = {
     streamLines(`/builds/${name}/logs${logQuery(query)}`, onLine, signal),
   streamEnvironmentLogs: (name: string, query: LogQuery, onLine: (line: LogLine) => void, signal: AbortSignal) =>
     streamLines(`/environments/${name}/logs${logQuery(query)}`, onLine, signal),
-  streamLogs: (where: string, query: LogQuery, onLine: (line: LogLine) => void, signal: AbortSignal) => {
-    const params = new URLSearchParams({ where });
-    if (query.limit) params.set("limit", String(query.limit));
-    if (query.since) params.set("since", query.since);
+  streamLogs: (selection: LogSelection, limit: number, onLine: (line: LogLine) => void, signal: AbortSignal) => {
+    const params = selectionParams(selection);
+    if (limit) params.set("limit", String(limit));
     return streamLines(`/logs?${params}`, onLine, signal);
   },
 

@@ -266,8 +266,17 @@ type stubLogs struct {
 	lastEvents  clickhouse.EventQuery
 	edges       []clickhouse.TrafficEdge
 	lastTraffic clickhouse.TrafficQuery
+	trafficErr  error
 	overview    clickhouse.MetricsOverview
 	lastMetrics clickhouse.MetricsQuery
+
+	histogram     clickhouse.LogHistogram
+	lastHistogram clickhouse.LogHistogramQuery
+	facets        []clickhouse.LogFacet
+	lastFacets    clickhouse.LogFacetQuery
+	patterns      []clickhouse.LogPattern
+	lastPatterns  clickhouse.LogPatternQuery
+	analyticsErr  error
 }
 
 func (s *stubLogs) SearchLogs(_ context.Context, query clickhouse.LogQuery) ([]clickhouse.LogLine, error) {
@@ -283,6 +292,30 @@ func (s *stubLogs) FilterLogs(_ context.Context, filter clickhouse.LogFilter) ([
 	return s.lines, nil
 }
 
+func (s *stubLogs) LogHistogram(_ context.Context, query clickhouse.LogHistogramQuery) (clickhouse.LogHistogram, error) {
+	s.lastHistogram = query
+	if s.analyticsErr != nil {
+		return clickhouse.LogHistogram{}, s.analyticsErr
+	}
+	return s.histogram, nil
+}
+
+func (s *stubLogs) LogFacets(_ context.Context, query clickhouse.LogFacetQuery) ([]clickhouse.LogFacet, error) {
+	s.lastFacets = query
+	if s.analyticsErr != nil {
+		return nil, s.analyticsErr
+	}
+	return s.facets, nil
+}
+
+func (s *stubLogs) LogPatterns(_ context.Context, query clickhouse.LogPatternQuery) ([]clickhouse.LogPattern, error) {
+	s.lastPatterns = query
+	if s.analyticsErr != nil {
+		return nil, s.analyticsErr
+	}
+	return s.patterns, nil
+}
+
 func (s *stubLogs) QueryEvents(_ context.Context, query clickhouse.EventQuery) ([]clickhouse.Event, error) {
 	s.lastEvents = query
 	return s.events, nil
@@ -290,6 +323,9 @@ func (s *stubLogs) QueryEvents(_ context.Context, query clickhouse.EventQuery) (
 
 func (s *stubLogs) TrafficEdges(_ context.Context, query clickhouse.TrafficQuery) ([]clickhouse.TrafficEdge, error) {
 	s.lastTraffic = query
+	if s.trafficErr != nil {
+		return nil, s.trafficErr
+	}
 	return s.edges, nil
 }
 
@@ -408,6 +444,9 @@ var routes = []struct {
 	{http.MethodGet, "/api/v1/environments/shop-production/objects"},
 	{http.MethodGet, "/api/v1/status"},
 	{http.MethodGet, "/api/v1/logs"},
+	{http.MethodGet, "/api/v1/logs/histogram"},
+	{http.MethodGet, "/api/v1/logs/facets"},
+	{http.MethodGet, "/api/v1/logs/patterns"},
 	{http.MethodGet, "/api/v1/events"},
 	{http.MethodGet, "/api/v1/metrics/overview"},
 	{http.MethodGet, "/api/v1/traffic"},

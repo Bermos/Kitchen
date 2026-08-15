@@ -289,14 +289,18 @@ spec:
                     type: object
                 type: object
               tls:
-                description: TLSSpec configures platform-wide TLS defaults.
+                description: |-
+                  TLSSpec configures platform-wide TLS defaults. acme mode cannot be
+                  half-configured: a Kitchen asking for it with no acme block is refused at
+                  admission, rather than accepted and then reported as a condition on an object
+                  whose HTTPS listener has no certificate to terminate with.
                 properties:
                   acme:
                     description: |-
                       ACME configures the issuer the operator creates, and the wildcard
-                      certificate it requests from it, when Mode is acme. Without it the
-                      operator manages no certificate and the Gateway's HTTPS listener waits
-                      for one to appear by other means.
+                      certificate it requests from it. It is required in acme mode and
+                      pointless outside it: the wildcard is read by the Gateway's HTTPS
+                      listener, which exists in acme mode alone.
                     properties:
                       dns01:
                         description: DNS01 configures how challenges are solved.
@@ -325,6 +329,12 @@ spec:
                             - apiTokenSecretRef
                             type: object
                         type: object
+                        x-kubernetes-validations:
+                        - message: 'spec.tls.acme.dns01 needs a solver: set dns01.cloudflare.
+                            Every generated URL is a subdomain, so the platform needs
+                            a wildcard certificate, and ACME issues wildcards over
+                            DNS-01 only.'
+                          rule: has(self.cloudflare)
                       email:
                         description: Email the CA contacts about expiring certificates
                           and account problems.
@@ -350,6 +360,12 @@ spec:
                     - none
                     type: string
                 type: object
+                x-kubernetes-validations:
+                - message: 'spec.tls.acme is required when tls.mode is acme: the shared
+                    Gateway''s HTTPS listener terminates with the wildcard certificate
+                    the operator requests from it. Configure it, or set tls.mode to
+                    cloudflared or none.'
+                  rule: self.mode != 'acme' || has(self.acme)
             required:
             - baseDomain
             type: object

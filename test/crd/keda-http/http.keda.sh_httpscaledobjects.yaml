@@ -1,3 +1,7 @@
+# http.keda.sh/httpscaledobjects, taken from the KEDA HTTP add-on 0.15.0.
+# Unlike test/crd/cert-manager it cannot come from hack/gen-test-crds.sh:
+# the add-on is not a sub-chart of this one and never can be (see the chart
+# README), so refresh it from the release the chart README installs.
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:

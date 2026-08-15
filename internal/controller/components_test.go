@@ -172,6 +172,8 @@ var _ = Describe("Component survey", func() {
 		Expect(condition().Message).To(ContainSubstring("waiting on logs"))
 	})
 
+	// The no-pod case: with nothing to ask, the workload's own events are still
+	// where the reason is.
 	It("explains an unhealthy component with its latest warning event", func() {
 		labels := platform("logs")
 		ds := &appsv1.DaemonSet{
@@ -201,7 +203,170 @@ var _ = Describe("Component survey", func() {
 		Expect(componentNamed("logs").Message).To(ContainSubstring("violates PodSecurity"))
 	})
 
-	It("still reports counts when it cannot read events", func() {
+	// The failure the survey under-reported: the collector was created, ran for
+	// eight seconds, was OOM-killed, and did it again. `0 of 1 pods available`
+	// was the whole report; OOMKilled, exit 137 and the restart count were on
+	// the pod all along, and nothing was reading them.
+	It("explains a pod that is created and then killed", func() {
+		labels := platform("logs")
+		ds := &appsv1.DaemonSet{
+			ObjectMeta: metav1.ObjectMeta{Name: "survey-logs-oom", Namespace: PlatformNamespace, Labels: labels},
+			Spec: appsv1.DaemonSetSpec{
+				Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"sel": "logs-oom"}},
+				Template: podTemplate(map[string]string{"sel": "logs-oom"}),
+			},
+		}
+		track(ds)
+		ds.Status.DesiredNumberScheduled = 1
+		Expect(k8sClient.Status().Update(ctx, ds)).To(Succeed())
+
+		pod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "survey-logs-oom-abcde", Namespace: PlatformNamespace,
+				Labels: map[string]string{"sel": "logs-oom"},
+			},
+			Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "vector", Image: "busybox"}}},
+		}
+		track(pod)
+		pod.Status = corev1.PodStatus{
+			Phase:      corev1.PodRunning,
+			Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionFalse}},
+			ContainerStatuses: []corev1.ContainerStatus{{
+				Name:         "vector",
+				RestartCount: 214,
+				State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{
+					Reason: "CrashLoopBackOff",
+				}},
+				LastTerminationState: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{
+					Reason:     "OOMKilled",
+					ExitCode:   137,
+					FinishedAt: metav1.Now(),
+				}},
+			}},
+		}
+		Expect(k8sClient.Status().Update(ctx, pod)).To(Succeed())
+
+		Expect(reconciler.surveyComponents(ctx, kitchen, setCond)).To(BeFalse())
+
+		message := componentNamed("logs").Message
+		Expect(message).To(HavePrefix("0 of 1 pods available: "))
+		Expect(message).To(ContainSubstring("OOMKilled (exit 137)"))
+		Expect(message).To(ContainSubstring("CrashLoopBackOff"))
+		// A blip and a loop read very differently, and the count is what tells
+		// them apart.
+		Expect(message).To(ContainSubstring("214 restarts"))
+	})
+
+	It("reports why a pod could not be scheduled", func() {
+		labels := platform("clickhouse")
+		sts := &appsv1.StatefulSet{
+			ObjectMeta: metav1.ObjectMeta{Name: "survey-ch", Namespace: PlatformNamespace, Labels: labels},
+			Spec: appsv1.StatefulSetSpec{
+				ServiceName: "survey-ch",
+				Selector:    &metav1.LabelSelector{MatchLabels: map[string]string{"sel": "ch"}},
+				Template:    podTemplate(map[string]string{"sel": "ch"}),
+			},
+		}
+		track(sts)
+
+		pod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "survey-ch-0", Namespace: PlatformNamespace,
+				Labels: map[string]string{"sel": "ch"},
+			},
+			Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "clickhouse", Image: "busybox"}}},
+		}
+		track(pod)
+		pod.Status = corev1.PodStatus{
+			Phase: corev1.PodPending,
+			Conditions: []corev1.PodCondition{{
+				Type: corev1.PodScheduled, Status: corev1.ConditionFalse,
+				Reason:  "Unschedulable",
+				Message: `pod has unbound immediate PersistentVolumeClaims`,
+			}},
+		}
+		Expect(k8sClient.Status().Update(ctx, pod)).To(Succeed())
+
+		Expect(reconciler.surveyComponents(ctx, kitchen, setCond)).To(BeFalse())
+		Expect(componentNamed("clickhouse").Message).To(
+			ContainSubstring("Unschedulable: pod has unbound immediate PersistentVolumeClaims"))
+	})
+
+	It("reports a container that never started", func() {
+		labels := platform("auth")
+		deploy := &appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{Name: "survey-auth-pull", Namespace: PlatformNamespace, Labels: labels},
+			Spec: appsv1.DeploymentSpec{
+				Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"sel": "auth-pull"}},
+				Template: podTemplate(map[string]string{"sel": "auth-pull"}),
+			},
+		}
+		track(deploy)
+
+		pod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "survey-auth-pull-xyz", Namespace: PlatformNamespace,
+				Labels: map[string]string{"sel": "auth-pull"},
+			},
+			Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "auth", Image: "busybox"}}},
+		}
+		track(pod)
+		pod.Status = corev1.PodStatus{
+			Phase:      corev1.PodPending,
+			Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionFalse}},
+			ContainerStatuses: []corev1.ContainerStatus{{
+				Name: "auth",
+				State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{
+					Reason:  "ImagePullBackOff",
+					Message: `Back-off pulling image "ghcr.io/bermos/kitchen-auth:nope"`,
+				}},
+			}},
+		}
+		Expect(k8sClient.Status().Update(ctx, pod)).To(Succeed())
+
+		Expect(reconciler.surveyComponents(ctx, kitchen, setCond)).To(BeFalse())
+		Expect(componentNamed("auth").Message).To(ContainSubstring("ImagePullBackOff: Back-off pulling image"))
+	})
+
+	// A pod that is starting is not a pod that is broken. Reporting
+	// ContainerCreating as the reason for a shortfall would make every ordinary
+	// rollout read as a fault, so the workload's own events answer instead.
+	It("does not mistake a starting pod for a failing one", func() {
+		labels := platform("logs")
+		ds := &appsv1.DaemonSet{
+			ObjectMeta: metav1.ObjectMeta{Name: "survey-logs-start", Namespace: PlatformNamespace, Labels: labels},
+			Spec: appsv1.DaemonSetSpec{
+				Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"sel": "logs-start"}},
+				Template: podTemplate(map[string]string{"sel": "logs-start"}),
+			},
+		}
+		track(ds)
+		ds.Status.DesiredNumberScheduled = 1
+		Expect(k8sClient.Status().Update(ctx, ds)).To(Succeed())
+
+		pod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "survey-logs-start-abcde", Namespace: PlatformNamespace,
+				Labels: map[string]string{"sel": "logs-start"},
+			},
+			Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "vector", Image: "busybox"}}},
+		}
+		track(pod)
+		pod.Status = corev1.PodStatus{
+			Phase:      corev1.PodPending,
+			Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionFalse}},
+			ContainerStatuses: []corev1.ContainerStatus{{
+				Name:  "vector",
+				State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "ContainerCreating"}},
+			}},
+		}
+		Expect(k8sClient.Status().Update(ctx, pod)).To(Succeed())
+
+		Expect(reconciler.surveyComponents(ctx, kitchen, setCond)).To(BeFalse())
+		Expect(componentNamed("logs").Message).To(Equal("0 of 1 pods available"))
+	})
+
+	It("still reports counts when it can read neither pods nor events", func() {
 		reconciler.APIReader = nil
 
 		labels := platform("logs")
@@ -288,7 +453,10 @@ var _ = Describe("Component survey", func() {
 	It("keeps names unique when two workloads claim the same component", func() {
 		singleton := &kitchenv1alpha1.Kitchen{
 			ObjectMeta: metav1.ObjectMeta{Name: KitchenSingletonName},
-			Spec:       kitchenv1alpha1.KitchenSpec{BaseDomain: "apps.example.com"},
+			Spec: kitchenv1alpha1.KitchenSpec{
+				BaseDomain: "apps.example.com",
+				TLS:        acmeTLS(),
+			},
 		}
 		Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, singleton))).To(Succeed())
 		defer func() {
@@ -323,7 +491,10 @@ var _ = Describe("Component survey", func() {
 	It("keeps the singleton's status writable with components on it", func() {
 		singleton := &kitchenv1alpha1.Kitchen{
 			ObjectMeta: metav1.ObjectMeta{Name: KitchenSingletonName},
-			Spec:       kitchenv1alpha1.KitchenSpec{BaseDomain: "apps.example.com"},
+			Spec: kitchenv1alpha1.KitchenSpec{
+				BaseDomain: "apps.example.com",
+				TLS:        acmeTLS(),
+			},
 		}
 		Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, singleton))).To(Succeed())
 		defer func() {

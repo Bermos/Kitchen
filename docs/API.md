@@ -90,7 +90,10 @@ sent the request.
 | GET | `/environments/{name}/logs` | That environment's runtime logs |
 | GET | `/environments/{name}/workload` | What it is running: replicas, restarts, uptime, resources, pods |
 | GET | `/environments/{name}/objects` | The Kubernetes objects the operator materialized for it |
-| GET | `/logs` | The whole logs table, filtered by a ClickHouse expression |
+| GET | `/logs` | The whole logs table, filtered by a query. `?q=`, `?where=` |
+| GET | `/logs/histogram` | The same selection counted over time — the shape of the window |
+| GET | `/logs/facets` | The same selection's distinct values per field, with counts |
+| GET | `/logs/patterns` | The same selection's messages collapsed into templates |
 | GET | `/events` | The platform's recent activity, newest first. `?project=` and `?limit=` filter |
 | GET | `/metrics/overview` | The dashboard's numbers, pre-aggregated. `?project=` narrows |
 | GET | `/traffic` | The service map: aggregated flow edges. `?project=`, `?since=`, `?until=` |
@@ -306,10 +309,28 @@ GET /environments/{name}/logs?limit=200&container=app
 | `container` | One container of the pod |
 
 Lines come back oldest first — a log reads forwards — as
-`{timestamp, source, project, environment, build, pod, container, stream, level, message}`.
+`{timestamp, source, project, environment, build, pod, container, stream, level, message, fields}`.
 `level` is the collector's best-effort read of the line's severity
 (`trace`/`debug`/`info`/`warn`/`error`/`fatal`, parsed out of JSON logs and the
-common text spellings), empty when the line says neither.
+common text spellings), empty when the line says neither. `fields` is what the
+line itself said, when it was JSON: the collector flattens the object with dots
+(`{"http": {"status": 500}}` is `http.status`), stringifies every value, and
+leaves the field out entirely for a line that was not JSON or that carried more
+fields than `logs.maxStructuredFields`.
+
+`source` says whose the line is. The collector tails every container on every
+node, so this is a real distinction and not a formality:
+
+| `source` | What it is |
+|---|---|
+| `build` | A build job's output |
+| `runtime` | A deployed app, or anything else in a project's namespace |
+| `platform` | Kitchen's own components, in `kitchen-system` |
+| `cluster` | Everything else the cluster runs — the CNI, CSI sidecars, whatever was installed alongside |
+
+`cluster` lines are collected deliberately: a node whose storage or networking
+is failing is exactly when Kitchen looks broken, and the answer is in someone
+else's pod. The dashboard scopes them out by default and offers a switch.
 
 An installation without a telemetry store answers `503`: there are no logs to
 read, which is a missing capability rather than a bad request.
@@ -326,32 +347,136 @@ Accept: text/event-stream
 The answer is Server-Sent Events: the query's current page first, then every
 line that arrives after it as its own `data:` event (the same JSON shape as
 above), until the client closes the connection. `/logs` streams too, with its
-`where` expression applied to every new line. A plain GET on the same URL
+selection applied to every new line. A plain GET on the same URL
 still answers the bounded page, so nothing changes for callers that do not
 ask. The UI tails builds and the observability view this way and falls back
 to polling when the stream drops.
 
-### Querying logs with ClickHouse syntax
+### Querying logs
 
-The logs live in ClickHouse, and the API does not pretend otherwise. `/logs`
-takes a real ClickHouse boolean expression over the table's columns and
-evaluates it as written — the observability view's query bar is this endpoint:
+`/logs` and its three companions all take the same *selection*: what to match,
+and over what window. The four are views of one question — the lines, when they
+happened, what else is in them, and what they are actually saying — so they take
+the same parameters and are meant to be asked together.
+
+| Parameter | Meaning |
+|---|---|
+| `q` | Kitchen's log query language. The front door |
+| `where` | A ClickHouse boolean expression, evaluated as written. The escape hatch |
+| `since` / `until` | RFC 3339 bounds on the window |
+
+Both query parameters are optional and compose with `AND`. **Asking for nothing
+selects everything in the window** — the window and the limit are the bounds,
+and there is no sentinel expression to type. (`where=1 = 1` used to be that
+sentinel, and it is gone.)
 
 ```
-GET /logs?where=project = 'shop' AND stream = 'stderr' AND message ILIKE '%timeout%'
+GET /logs?q=level:error service:shop&since=2026-08-13T10:00:00Z
+GET /logs/histogram?q=level:error service:shop&since=2026-08-13T10:00:00Z&buckets=60
+GET /logs/facets?q=level:error&fields=level,service,container
+GET /logs/patterns?q=service:shop&limit=20
+```
+
+#### The query language
+
+A term is `field:value`, a bare word searches the message, and terms next to
+each other are `AND`ed:
+
+| Written | Means |
+|---|---|
+| `timeout` | The message contains `timeout`, case-insensitively |
+| `"connection refused"` | The same, as a phrase |
+| `level:error` | The `level` column is exactly `error` |
+| `level:error,fatal` | Either of them |
+| `pod:shop-*` | `*` and `?` are wildcards |
+| `message:/GET \/works\?page=/` | A ClickHouse regular expression |
+| `http.status:>=500` | Numeric comparison — `>`, `>=`, `<`, `<=` |
+| `trace_id:*` | The field is present and non-empty |
+| `-source:cluster` | Negation. `NOT` and `!` are the same |
+| `a OR b`, `(a b) OR c` | Alternation and grouping |
+
+Columns are `source`, `project`, `environment`, `build`, `namespace`, `pod`,
+`container`, `node`, `stream`, `level` and `message`, plus the aliases
+`service`/`app` for `project`, `env` for `environment` and `msg` for `message`.
+`timestamp` is deliberately not addressable: the window is `since`/`until`, and
+a query that could move it would let the lines and the histogram disagree about
+what they are showing.
+
+Anything that is not a column is a **structured field** of the line, so
+`http.status:500` reads `fields['http.status']` — the collector's flattening of
+a JSON log. `labels.tier:web` reaches the pod's Kubernetes labels instead. This
+is the one place a typo goes quiet: `levl:error` asks for a field nothing writes
+and matches nothing rather than being refused.
+
+Every value travels to ClickHouse as a bound parameter, never as query text.
+
+#### The ClickHouse escape hatch
+
+`where` is a real ClickHouse expression over the table's columns, evaluated as
+written — the query language is a front door, not a cage:
+
+```
 GET /logs?where=match(message, 'GET /works\?page=\d+') AND environment = 'shop-production'
 ```
 
-`limit`, `since` and `until` work as above and are applied on top of the
-expression; `where=1 = 1` selects everything in the window. A refused
-expression — a typo, an unknown column — answers `400` carrying ClickHouse's
-own diagnostic, which is the message that says how to fix it.
+It reaches ClickHouse as query text, which is the point — and why it runs pinned
+read-only (`readonly=2`: no writes, no DDL) under an execution cap, as the
+operator's own database user. What that user can read is the telemetry database;
+per-caller scoping arrives with scopes and RBAC ([open item](#open)).
 
-The expression reaches ClickHouse as query text, which is the point — and why
-it runs pinned read-only (`readonly=2`: no writes, no DDL) under an execution
-cap, as the operator's own database user. What that user can read is the
-telemetry database; per-caller scoping arrives with scopes and RBAC
-([open item](#open)).
+A query either side refuses — a bracket that never closes, an unknown column —
+answers `400` carrying the diagnostic that says how to fix it: Kitchen's parser
+for `q`, ClickHouse's own for `where`.
+
+#### The histogram
+
+`GET /logs/histogram` counts the selection into buckets:
+
+```json
+{"start": "...", "end": "...", "bucketSeconds": 60, "total": 14021,
+ "buckets": [{"start": "...", "count": 210, "errors": 4, "warnings": 12}]}
+```
+
+`?buckets=` is how many bars are wanted (default 60, capped at 480); the width
+is rounded up to a rung of a fixed ladder — 1s, 2s, 5s … 1h, 6h, 1d, 1w — so
+that panning the window does not restripe the chart. Every bucket in the window
+is present, including the empty ones, because a gap is information. A selection
+with no `since` is bucketed over what the matching lines actually span, read
+from the store, rather than over an assumed day.
+
+#### Facets
+
+`GET /logs/facets` counts each field's distinct values **over the whole
+window**, not over the page of lines `/logs` returned — which is the point of
+asking the store rather than counting in the browser:
+
+```json
+{"items": [{"field": "level", "distinct": 4,
+            "values": [{"value": "info", "count": 8021}, {"value": "error", "count": 42}]}]}
+```
+
+`?fields=` names them, defaulting to `level`, `source`, `project`,
+`environment`, `container`, `stream`. A field that is not a column is resolved
+the way the query language resolves it, so `fields=http.status` facets over a
+structured field. `?limit=` bounds the values per facet (capped at 20). All of
+them are one query, so a sidebar costs one round trip however many it shows.
+
+#### Patterns
+
+`GET /logs/patterns` collapses the messages into templates: the variable parts
+— identifiers, addresses, timestamps, numbers — are replaced with placeholders
+and what is left is grouped and counted, so a spike of 14,021 lines reads as the
+handful of shapes it is.
+
+```json
+{"items": [{"pattern": "GET /works?page=<n> <n>", "count": 14021, "level": "info",
+            "sample": "GET /works?page=7 200", "firstSeen": "...", "lastSeen": "..."}]}
+```
+
+Normalising is a regular expression per line rather than a columnar scan, so it
+runs over the newest `?scan=` matching lines (default 20,000, capped at
+200,000) rather than the whole window — the shape of the newest lines is the
+shape. `?limit=` is how many templates come back (default 20, capped at 200).
 
 ### The activity feed
 

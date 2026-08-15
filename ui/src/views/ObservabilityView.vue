@@ -1,23 +1,53 @@
 <script setup lang="ts">
-import { computed, onMounted, onScopeDispose, ref } from "vue";
+import { computed, onMounted, onScopeDispose, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { APIError, api, type LogLine } from "../lib/api";
+import {
+  APIError,
+  api,
+  type LogFacet,
+  type LogHistogram as LogHistogramData,
+  type LogLine,
+  type LogPattern,
+  type LogSelection,
+} from "../lib/api";
 import { compactCount, formatBytes } from "../lib/format";
+import { clausesOf, hasClause, isEditable, removeClause, toggleClause, type Clause } from "../lib/logquery";
 import { useAsync, usePoll } from "../lib/useAsync";
+import LogHistogram from "../components/LogHistogram.vue";
 import Sparkline from "../components/Sparkline.vue";
 import StatusDot from "../components/StatusDot.vue";
 
-// The observability view does not pretend the logs live anywhere but
-// ClickHouse: the query bar takes a real ClickHouse boolean expression over
-// the logs table, sent to GET /api/v1/logs and evaluated as written —
-// read-only and capped on the operator's side.
+// The observability view asks one selection four ways: the lines, when they
+// happened, what else is in them, and what they are actually saying. The
+// selection is the query bar plus the window, and it is entirely in the URL, so
+// what is on screen is always a link.
+//
+// The query bar speaks Kitchen's log query language — `level:error
+// service:shop` — and can be switched to raw ClickHouse, which is genuinely
+// more powerful and is not the front door. Neither has a default: an empty bar
+// asks for everything in the window, which is the question someone opening this
+// page is asking.
 
 const route = useRoute();
 const router = useRouter();
 
-const where = ref((route.query.where as string) || "1 = 1");
-const limit = ref(200);
+type Mode = "query" | "clickhouse";
+const mode = ref<Mode>(route.query.where ? "clickhouse" : "query");
+const query = ref((route.query.q as string) ?? "");
+const where = ref((route.query.where as string) ?? "");
+const limit = ref(Number(route.query.limit) || 200);
 const limits = [200, 500, 1000, 5000];
+const tab = ref<"lines" | "patterns">(route.query.view === "patterns" ? "patterns" : "lines");
+
+// Kitchen collects every container on every node, so the store also holds the
+// logs of things Kitchen did not deploy — the CNI, the CSI sidecars, whatever
+// else the cluster runs. They are worth having (a sick node is exactly when
+// Kitchen looks broken) and they are not what someone opening this page is
+// looking for, so they are scoped out unless asked for. The clause rides in the
+// query language even in ClickHouse mode: the two surfaces compose with AND
+// server-side, so the bar stays the operator's to write.
+const clusterClause: Clause = { field: "source", value: "cluster", negated: true };
+const includeCluster = ref(route.query.cluster === "1");
 
 const ranges = [
   { label: "Last 15 minutes", value: 15 },
@@ -27,13 +57,43 @@ const ranges = [
   { label: "Last 7 days", value: 10080 },
   { label: "All retained", value: 0 },
 ];
-const rangeMinutes = ref(60);
+const rangeMinutes = ref(Number(route.query.range ?? 60));
+// A range dragged out of the histogram is absolute, and stops following the
+// clock until a preset is chosen again.
+const pinned = ref<{ since: string; until: string } | null>(
+  route.query.since && route.query.until
+    ? { since: route.query.since as string, until: route.query.until as string }
+    : null,
+);
 
 const settings = useAsync(() => api.settings());
 const lines = ref<LogLine[] | null>(null);
+const histogram = ref<LogHistogramData | null>(null);
+const facets = ref<LogFacet[]>([]);
+const patterns = ref<LogPattern[]>([]);
 const error = ref<string | null>(null);
 const loading = ref(false);
 const liveTail = ref(false);
+const expanded = ref<number | null>(null);
+
+/** What every request this page makes is asked over. */
+function selection(): LogSelection {
+  const scoped = includeCluster.value ? query.value : toQueryWithCluster();
+  const window = pinned.value ?? {
+    since: rangeMinutes.value > 0 ? new Date(Date.now() - rangeMinutes.value * 60000).toISOString() : undefined,
+    until: undefined,
+  };
+  return {
+    q: scoped.trim() || undefined,
+    where: mode.value === "clickhouse" ? where.value.trim() || undefined : undefined,
+    since: window.since,
+    until: window.until,
+  };
+}
+
+function toQueryWithCluster(): string {
+  return hasClause(query.value, clusterClause) ? query.value : toggleClause(query.value, clusterClause);
+}
 
 // The headline numbers over the same store: what the platform served, erred,
 // and logged in the last 24 hours, per hour. Traffic rows read "—" until the
@@ -61,11 +121,9 @@ const headline = computed(() => {
   ];
 });
 
-const columns = "timestamp · source · project · environment · build · pod · container · stream · level · message";
-
 // The live tail prefers the streamed endpoint (SSE on the same /logs, the
-// where expression applied to every new line) and falls back to re-running
-// the query every few seconds when the stream cannot be established.
+// selection applied to every new line) and falls back to re-running the query
+// every few seconds when the stream cannot be established.
 const streamBroken = ref(false);
 let controller: AbortController | undefined;
 const streaming = ref(false);
@@ -82,12 +140,11 @@ function startStream() {
   const mine = new AbortController();
   controller = mine;
   streaming.value = true;
-  const since = rangeMinutes.value > 0 ? new Date(Date.now() - rangeMinutes.value * 60000).toISOString() : undefined;
   lines.value = [];
   void api
     .streamLogs(
-      where.value,
-      { limit: limit.value, since },
+      selection(),
+      limit.value,
       (line) => {
         if (controller !== mine || !lines.value) return;
         lines.value.push(line);
@@ -99,7 +156,7 @@ function startStream() {
       if (controller !== mine) return;
       stopStream();
       if (err instanceof APIError && err.status === 400) {
-        // The expression itself was refused — surface it, don't poll it.
+        // The query itself was refused — surface it, don't poll it.
         error.value = err.message;
         liveTail.value = false;
         return;
@@ -107,6 +164,11 @@ function startStream() {
       streamBroken.value = true;
       void run();
     });
+}
+
+function toggleCluster() {
+  includeCluster.value = !includeCluster.value;
+  void run();
 }
 
 function toggleLiveTail() {
@@ -118,18 +180,63 @@ function toggleLiveTail() {
   }
 }
 
-async function run() {
+function setMode(next: Mode) {
+  if (mode.value === next) return;
+  mode.value = next;
+  void run();
+}
+
+/** The selection, in the address bar. A query on screen is always a link. */
+function syncURL() {
+  const params: Record<string, string> = {};
+  if (query.value.trim()) params.q = query.value.trim();
+  if (mode.value === "clickhouse" && where.value.trim()) params.where = where.value.trim();
+  if (includeCluster.value) params.cluster = "1";
+  if (limit.value !== 200) params.limit = String(limit.value);
+  if (tab.value !== "lines") params.view = tab.value;
+  if (pinned.value) {
+    params.since = pinned.value.since;
+    params.until = pinned.value.until;
+  } else if (rangeMinutes.value !== 60) {
+    params.range = String(rangeMinutes.value);
+  }
+  void router.replace({ query: params });
+}
+
+/**
+ * Ask the selection. `full` asks it every way — which is what a new query or a
+ * new window means. The polling fallback for the live tail asks only for the
+ * lines: the chart and the facets over an unchanged selection are the same
+ * chart and the same facets, and re-asking them every five seconds is four
+ * aggregates a second the store does not owe anyone.
+ */
+async function run(full: unknown = true) {
   if (streaming.value) {
     startStream();
     return;
   }
   loading.value = true;
-  // The expression is part of the address, so a query can be linked to.
-  void router.replace({ query: where.value === "1 = 1" ? {} : { where: where.value } });
+  expanded.value = null;
+  const asked = selection();
   try {
-    const since =
-      rangeMinutes.value > 0 ? new Date(Date.now() - rangeMinutes.value * 60000).toISOString() : undefined;
-    lines.value = await api.logs(where.value, { limit: limit.value, since });
+    if (!full) {
+      lines.value = await api.logs(asked, limit.value);
+      error.value = null;
+      return;
+    }
+    syncURL();
+    // The rest go out together: they are views of one selection, and showing
+    // them at different ages would make them disagree.
+    const [answered, counted, faceted, clustered] = await Promise.all([
+      api.logs(asked, limit.value),
+      api.logHistogram(asked),
+      api.logFacets(asked),
+      tab.value === "patterns" ? api.logPatterns(asked) : Promise.resolve([] as LogPattern[]),
+    ]);
+    lines.value = answered;
+    histogram.value = counted;
+    facets.value = faceted;
+    patterns.value = clustered;
     error.value = null;
   } catch (err) {
     if (err instanceof APIError && err.status === 401) {
@@ -138,52 +245,83 @@ async function run() {
     }
     error.value = err instanceof Error ? err.message : String(err);
     lines.value = null;
+    histogram.value = null;
   } finally {
     loading.value = false;
   }
 }
 
 onMounted(run);
-usePoll(() => void run(), 5000, () => liveTail.value && !streaming.value && !loading.value);
+usePoll(() => void run(false), 5000, () => liveTail.value && !streaming.value && !loading.value);
 
-// Facets are counted client-side over the returned page: honest about what
-// they are, and free.
-const facets = computed(() => {
-  const count = (pick: (line: LogLine) => string) => {
-    const counts = new Map<string, number>();
-    for (const line of lines.value ?? []) {
-      const key = pick(line) || "—";
-      counts.set(key, (counts.get(key) ?? 0) + 1);
-    }
-    return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8);
-  };
-  return {
-    level: count((l) => l.level ?? ""),
-    stream: count((l) => l.stream),
-    source: count((l) => (l.environment ? `${l.environment}` : l.build ? `${l.build}` : l.source)),
-  };
+watch(tab, (next) => {
+  if (next === "patterns" && !patterns.value.length) void run();
+  else syncURL();
 });
 
-function levelClass(line: LogLine): string {
-  if (line.level === "error" || line.level === "fatal") return "text-error";
-  if (line.level === "warn") return "text-warning";
-  if (line.stream === "stderr") return "text-error";
-  return "text-toned";
-}
-
-function addClause(clause: string) {
-  where.value = where.value.trim() === "1 = 1" || !where.value.trim() ? clause : `${where.value} AND ${clause}`;
+/** A preset range releases whatever the histogram pinned. */
+function chooseRange(minutes: number) {
+  // The "Selected range" entry only exists to show what is pinned; choosing it
+  // again is not a change.
+  if (minutes < 0) return;
+  rangeMinutes.value = minutes;
+  pinned.value = null;
   void run();
 }
 
-function time(line: LogLine): string {
-  const date = new Date(line.timestamp);
+function onHistogramSelect(range: { since: string; until: string }) {
+  pinned.value = range;
+  void run();
+}
+
+// Facets narrow by clicking. Each value is a toggle, so the way out of a filter
+// is the thing that put you in it — and it only works on a query flat enough to
+// edit without changing what it means.
+const editable = computed(() => isEditable(query.value));
+const activeClauses = computed(() => clausesOf(query.value));
+
+function narrow(field: string, value: string) {
+  if (!editable.value) return;
+  query.value = toggleClause(query.value, { field, value, negated: false });
+  void run();
+}
+
+function drop(clause: Clause) {
+  query.value = removeClause(query.value, clause);
+  void run();
+}
+
+function isActive(field: string, value: string): boolean {
+  return hasClause(query.value, { field, value, negated: false });
+}
+
+function facetLabel(field: string): string {
+  return field.charAt(0).toUpperCase() + field.slice(1);
+}
+
+function levelClass(level: string | undefined, stream?: string): string {
+  if (level === "error" || level === "fatal") return "text-error";
+  if (level === "warn") return "text-warning";
+  if (stream === "stderr") return "text-error";
+  return "text-toned";
+}
+
+function time(iso: string): string {
+  const date = new Date(iso);
   return Number.isNaN(date.getTime()) ? "—" : date.toLocaleTimeString("en-GB");
 }
+
+function fieldsOf(line: LogLine): [string, string][] {
+  return Object.entries(line.fields ?? {}).sort((a, b) => a[0].localeCompare(b[0]));
+}
+
+const placeholder = computed(() =>
+  mode.value === "query" ? `level:error service:shop` : `project = 'shop' AND stream = 'stderr'`,
+);
 </script>
 
 <template>
-  <div class="space-y-5">
+  <div class="space-y-4">
     <div class="flex items-center justify-between gap-4 flex-wrap">
       <div>
         <h1 class="text-xl font-semibold text-highlighted">Observability</h1>
@@ -194,12 +332,30 @@ function time(line: LogLine): string {
             · {{ formatBytes(metrics.data.value.storeBytes) }} ·
             {{ Math.round(metrics.data.value.storeRowsPerSecond) }} rows/s</template
           >
-          — queried as ClickHouse: a boolean expression over the
-          <span class="font-mono">logs</span> table, run read-only.
         </p>
       </div>
       <div class="flex items-center gap-2">
-        <USelect v-model="rangeMinutes" :items="ranges" size="sm" class="w-44" />
+        <USelect
+          :model-value="pinned ? -1 : rangeMinutes"
+          :items="pinned ? [{ label: 'Selected range', value: -1 }, ...ranges] : ranges"
+          size="sm"
+          class="w-44"
+          @update:model-value="chooseRange"
+        />
+        <UButton
+          size="sm"
+          :color="includeCluster ? 'primary' : 'neutral'"
+          :variant="includeCluster ? 'soft' : 'subtle'"
+          icon="i-lucide-server"
+          :title="
+            includeCluster
+              ? 'Showing everything on the node, Kitchen\'s and the cluster\'s'
+              : 'Showing Kitchen\'s own logs. The cluster\'s other pods are collected too.'
+          "
+          @click="toggleCluster"
+        >
+          Cluster
+        </UButton>
         <UButton
           size="sm"
           :color="liveTail ? 'success' : 'neutral'"
@@ -231,101 +387,192 @@ function time(line: LogLine): string {
       <div
         class="flex-1 flex items-center gap-2 rounded-md border border-default bg-muted px-3 focus-within:border-accented"
       >
-        <span class="font-mono text-xs text-info select-none">where</span>
+        <button
+          class="font-mono text-xs shrink-0 select-none"
+          :class="mode === 'query' ? 'text-info' : 'text-warning'"
+          :title="
+            mode === 'query'
+              ? 'Kitchen query syntax. Click to write ClickHouse instead.'
+              : 'A ClickHouse expression, evaluated as written. Click to go back to query syntax.'
+          "
+          @click="setMode(mode === 'query' ? 'clickhouse' : 'query')"
+        >
+          {{ mode === "query" ? "search" : "where" }}
+        </button>
         <input
+          v-if="mode === 'query'"
+          v-model="query"
+          class="flex-1 bg-transparent py-2 font-mono text-sm text-highlighted outline-none placeholder:text-dimmed"
+          :placeholder="placeholder"
+          spellcheck="false"
+          @keydown.enter="run"
+        />
+        <input
+          v-else
           v-model="where"
           class="flex-1 bg-transparent py-2 font-mono text-sm text-highlighted outline-none placeholder:text-dimmed"
-          :placeholder="`project = 'shop' AND stream = 'stderr'`"
+          :placeholder="placeholder"
           spellcheck="false"
           @keydown.enter="run"
         />
       </div>
-      <USelect v-model="limit" :items="limits" size="sm" class="w-24" />
+      <USelect v-model="limit" :items="limits" size="sm" class="w-24" @update:model-value="run" />
       <UButton icon="i-lucide-play" :loading="loading" @click="run">Run</UButton>
     </div>
-    <p class="text-[11px] text-dimmed font-mono -mt-3">columns: {{ columns }}</p>
+
+    <!-- What the query is currently narrowed by, and the way back out. -->
+    <div class="flex items-center gap-2 flex-wrap -mt-2 text-[11px]">
+      <button
+        v-for="clause in activeClauses"
+        :key="`${clause.negated}${clause.field}${clause.value}`"
+        class="font-mono px-1.5 py-0.5 rounded border border-default text-toned hover:border-accented hover:text-error"
+        title="Remove"
+        @click="drop(clause)"
+      >
+        {{ clause.negated ? "−" : "" }}{{ clause.field }}:{{ clause.value }} ×
+      </button>
+      <span v-if="mode === 'query'" class="text-dimmed">
+        <template v-if="!activeClauses.length">
+          <span class="font-mono">level:error</span> · <span class="font-mono">service:shop</span> ·
+          <span class="font-mono">http.status:&gt;=500</span> · <span class="font-mono">-source:cluster</span>
+        </template>
+      </span>
+      <span v-else class="text-dimmed font-mono">
+        columns: timestamp · source · project · environment · build · pod · container · stream · level · message ·
+        fields
+      </span>
+    </div>
 
     <UAlert
       v-if="error"
       color="error"
       variant="soft"
       icon="i-lucide-triangle-alert"
-      title="ClickHouse refused the query"
+      :title="mode === 'query' ? 'The query could not be run' : 'ClickHouse refused the query'"
       :description="error"
       class="[&_p]:font-mono [&_p]:text-xs"
     />
 
+    <LogHistogram :histogram="histogram" :loading="loading" @select="onHistogramSelect" />
+
     <div class="flex gap-4 items-start">
-      <div class="flex-1 min-w-0 rounded-md border border-default bg-muted font-mono text-xs leading-5 overflow-auto max-h-[36rem]">
-        <div v-if="!lines?.length" class="px-3 py-6 text-center text-muted">
-          {{ loading ? "Running…" : "No lines match the expression in this window." }}
+      <div class="flex-1 min-w-0 space-y-2">
+        <div class="flex items-center gap-1 text-xs">
+          <button
+            v-for="view in (['lines', 'patterns'] as const)"
+            :key="view"
+            class="px-2 py-1 rounded capitalize"
+            :class="tab === view ? 'bg-elevated text-highlighted' : 'text-muted hover:text-toned'"
+            @click="tab = view"
+          >
+            {{ view }}
+          </button>
+          <span v-if="tab === 'patterns'" class="text-dimmed ml-2">
+            the newest lines in the window, collapsed to templates
+          </span>
         </div>
-        <table v-else class="w-full">
-          <tbody>
-            <tr v-for="(line, i) in lines" :key="i" class="hover:bg-elevated/50 align-top">
-              <td class="px-3 py-0.5 text-dimmed whitespace-nowrap select-none">{{ time(line) }}</td>
-              <td class="px-2 py-0.5 whitespace-nowrap" :class="line.stream === 'stderr' ? 'text-error' : 'text-muted'">
-                {{ line.environment || line.build || line.source }}
-              </td>
-              <td class="px-2 py-0.5 whitespace-nowrap select-none" :class="levelClass(line)">
-                {{ line.level || "" }}
-              </td>
-              <td class="px-2 py-0.5 whitespace-pre-wrap break-all w-full" :class="levelClass(line)">
-                {{ line.message }}
-              </td>
-            </tr>
-          </tbody>
-        </table>
+
+        <div
+          v-if="tab === 'lines'"
+          class="rounded-md border border-default bg-muted font-mono text-xs leading-5 overflow-auto max-h-[36rem]"
+        >
+          <div v-if="!lines?.length" class="px-3 py-6 text-center text-muted">
+            {{ loading ? "Running…" : "No lines match in this window." }}
+          </div>
+          <table v-else class="w-full">
+            <tbody>
+              <template v-for="(line, i) in lines" :key="i">
+                <tr class="hover:bg-elevated/50 align-top cursor-pointer" @click="expanded = expanded === i ? null : i">
+                  <td class="px-3 py-0.5 text-dimmed whitespace-nowrap select-none">{{ time(line.timestamp) }}</td>
+                  <td
+                    class="px-2 py-0.5 whitespace-nowrap"
+                    :class="line.stream === 'stderr' ? 'text-error' : 'text-muted'"
+                  >
+                    {{ line.environment || line.build || line.source }}
+                  </td>
+                  <td
+                    class="px-2 py-0.5 whitespace-nowrap select-none"
+                    :class="levelClass(line.level, line.stream)"
+                  >
+                    {{ line.level || "" }}
+                  </td>
+                  <td
+                    class="px-2 py-0.5 whitespace-pre-wrap break-all w-full"
+                    :class="levelClass(line.level, line.stream)"
+                  >
+                    {{ line.message }}
+                  </td>
+                </tr>
+                <!-- A JSON line's own fields, and each of them a filter. -->
+                <tr v-if="expanded === i && fieldsOf(line).length" class="bg-elevated/30">
+                  <td colspan="4" class="px-3 py-2">
+                    <div class="flex flex-wrap gap-1">
+                      <button
+                        v-for="[key, value] in fieldsOf(line)"
+                        :key="key"
+                        class="px-1.5 py-0.5 rounded border border-default hover:border-accented text-left"
+                        :disabled="!editable"
+                        :title="editable ? `Filter on ${key}` : 'Simplify the query to filter by clicking'"
+                        @click.stop="narrow(key, value)"
+                      >
+                        <span class="text-info">{{ key }}</span>
+                        <span class="text-dimmed">:</span>
+                        <span class="text-toned">{{ value }}</span>
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+
+        <div v-else class="rounded-md border border-default bg-muted overflow-auto max-h-[36rem]">
+          <div v-if="!patterns.length" class="px-3 py-6 text-center text-muted text-xs">
+            {{ loading ? "Clustering…" : "No lines to cluster in this window." }}
+          </div>
+          <table v-else class="w-full text-xs">
+            <tbody>
+              <tr v-for="pattern in patterns" :key="pattern.pattern" class="hover:bg-elevated/50 align-top">
+                <td class="px-3 py-1.5 text-right tabular-nums font-mono text-highlighted whitespace-nowrap">
+                  {{ compactCount(pattern.count) }}
+                </td>
+                <td class="px-2 py-1.5 font-mono whitespace-nowrap select-none" :class="levelClass(pattern.level)">
+                  {{ pattern.level || "" }}
+                </td>
+                <td class="px-2 py-1.5 w-full">
+                  <p class="font-mono break-all" :class="levelClass(pattern.level)">{{ pattern.pattern }}</p>
+                  <p class="font-mono text-[11px] text-dimmed break-all mt-0.5">{{ pattern.sample }}</p>
+                </td>
+                <td class="px-3 py-1.5 text-dimmed font-mono whitespace-nowrap text-right">
+                  {{ time(pattern.lastSeen) }}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </div>
 
-      <aside v-if="lines?.length" class="w-56 shrink-0 space-y-4 text-xs">
-        <div>
-          <p class="text-muted mb-1.5">Level</p>
+      <aside class="w-56 shrink-0 space-y-4 text-xs">
+        <div v-for="facet in facets" :key="facet.field">
+          <p class="text-muted mb-1.5">{{ facetLabel(facet.field) }}</p>
+          <p v-if="!facet.values.length" class="text-dimmed px-2">—</p>
           <button
-            v-for="[value, count] in facets.level"
-            :key="value"
-            class="flex items-center justify-between w-full px-2 py-1 rounded hover:bg-elevated text-left"
-            :disabled="value === '—'"
-            @click="value !== '—' && addClause(`level = '${value}'`)"
+            v-for="value in facet.values"
+            :key="value.value"
+            class="flex items-center justify-between w-full px-2 py-1 rounded text-left hover:bg-elevated disabled:hover:bg-transparent"
+            :class="isActive(facet.field, value.value) ? 'bg-elevated' : ''"
+            :disabled="!editable"
+            :title="editable ? 'Narrow to this' : 'Simplify the query to filter by clicking'"
+            @click="narrow(facet.field, value.value)"
           >
-            <span
-              class="font-mono"
-              :class="
-                value === 'error' || value === 'fatal'
-                  ? 'text-error'
-                  : value === 'warn'
-                    ? 'text-warning'
-                    : 'text-toned'
-              "
-              >{{ value }}</span
-            >
-            <span class="text-dimmed font-mono">{{ count }}</span>
+            <span class="font-mono truncate" :class="levelClass(facet.field === 'level' ? value.value : undefined)">
+              {{ value.value }}
+            </span>
+            <span class="text-dimmed font-mono ml-2 tabular-nums">{{ compactCount(value.count) }}</span>
           </button>
         </div>
-        <div>
-          <p class="text-muted mb-1.5">Stream</p>
-          <button
-            v-for="[value, count] in facets.stream"
-            :key="value"
-            class="flex items-center justify-between w-full px-2 py-1 rounded hover:bg-elevated text-left"
-            @click="addClause(`stream = '${value}'`)"
-          >
-            <span class="font-mono" :class="value === 'stderr' ? 'text-error' : 'text-toned'">{{ value }}</span>
-            <span class="text-dimmed font-mono">{{ count }}</span>
-          </button>
-        </div>
-        <div>
-          <p class="text-muted mb-1.5">Source</p>
-          <div
-            v-for="[value, count] in facets.source"
-            :key="value"
-            class="flex items-center justify-between px-2 py-1"
-          >
-            <span class="font-mono text-toned truncate" :title="value">{{ value }}</span>
-            <span class="text-dimmed font-mono ml-2">{{ count }}</span>
-          </div>
-        </div>
-        <p class="text-dimmed leading-relaxed">Counts are over the returned page, not the whole table.</p>
+        <p class="text-dimmed leading-relaxed">Counts are over the whole window, not the returned page.</p>
       </aside>
     </div>
   </div>

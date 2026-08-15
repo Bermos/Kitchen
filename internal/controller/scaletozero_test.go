@@ -114,6 +114,7 @@ var _ = Describe("Scale to zero", func() {
 			ObjectMeta: metav1.ObjectMeta{Name: KitchenSingletonName},
 			Spec: kitchenv1alpha1.KitchenSpec{
 				BaseDomain: "apps.example.com",
+				TLS:        acmeTLS(),
 				ScaleToZero: kitchenv1alpha1.ScaleToZeroSpec{
 					Enabled: true,
 					Interceptor: kitchenv1alpha1.InterceptorSpec{
