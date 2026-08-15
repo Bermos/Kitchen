@@ -67,7 +67,8 @@ type ProjectReconciler struct {
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=projects,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=projects/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=projects/finalizers,verbs=update
-// +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=connections;kitchens;builds;environments,verbs=get;list;watch
+// +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=connections;kitchens,verbs=get;list;watch
+// +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=builds;releases;environments;domains;resourceclaims,verbs=get;list;watch;delete
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;create;delete
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch
 
@@ -133,8 +134,9 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	return ctrl.Result{}, nil
 }
 
-// finalize deregisters the git webhook (best effort) and deletes the
-// application namespace with everything in it.
+// finalize deregisters the git webhook (best effort), garbage-collects the
+// records the platform derived from the project, and deletes the application
+// namespace with everything in it.
 func (r *ProjectReconciler) finalize(ctx context.Context, project *kitchenv1alpha1.Project) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 	if !controllerutil.ContainsFinalizer(project, projectFinalizer) {
@@ -149,6 +151,17 @@ func (r *ProjectReconciler) finalize(ctx context.Context, project *kitchenv1alph
 		}
 	}
 
+	remaining, err := r.deleteDependents(ctx, project)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if remaining > 0 {
+		// Environments carry their own cleanup finalizer, so their deletion is
+		// asynchronous; the namespace waits for them so their finalizers still
+		// find the children they have to remove.
+		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+	}
+
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: appNamespace(project.Name)}}
 	if err := r.Delete(ctx, ns); err != nil && !apierrors.IsNotFound(err) {
 		return ctrl.Result{}, err
@@ -156,6 +169,98 @@ func (r *ProjectReconciler) finalize(ctx context.Context, project *kitchenv1alph
 
 	controllerutil.RemoveFinalizer(project, projectFinalizer)
 	return ctrl.Result{}, r.Update(ctx, project)
+}
+
+// deleteDependents removes everything in the platform namespace that
+// references the project — builds, releases, environments, and the domains and
+// resource claims hanging off them. They reference the project by name rather
+// than by owner, so nothing garbage-collects them when the project goes. It
+// returns how many are still around, which is nonzero while environment
+// finalizers run.
+func (r *ProjectReconciler) deleteDependents(ctx context.Context, project *kitchenv1alpha1.Project) (int, error) {
+	remaining := 0
+	inNamespace := client.InNamespace(project.Namespace)
+
+	environments := &kitchenv1alpha1.EnvironmentList{}
+	if err := r.List(ctx, environments, inNamespace); err != nil {
+		return 0, err
+	}
+	environmentNames := map[string]bool{}
+	for i := range environments.Items {
+		if environments.Items[i].Spec.ProjectRef.Name == project.Name {
+			environmentNames[environments.Items[i].Name] = true
+		}
+	}
+
+	// Domains go first, while the environments they point at still exist to
+	// say which project they belonged to.
+	domains := &kitchenv1alpha1.DomainList{}
+	if err := r.List(ctx, domains, inNamespace); err != nil {
+		return 0, err
+	}
+	for i := range domains.Items {
+		if !environmentNames[domains.Items[i].Spec.EnvironmentRef.Name] {
+			continue
+		}
+		remaining++
+		if err := r.Delete(ctx, &domains.Items[i]); err != nil && !apierrors.IsNotFound(err) {
+			return 0, err
+		}
+	}
+
+	for i := range environments.Items {
+		if !environmentNames[environments.Items[i].Name] {
+			continue
+		}
+		remaining++
+		if err := r.Delete(ctx, &environments.Items[i]); err != nil && !apierrors.IsNotFound(err) {
+			return 0, err
+		}
+	}
+
+	builds := &kitchenv1alpha1.BuildList{}
+	if err := r.List(ctx, builds, inNamespace); err != nil {
+		return 0, err
+	}
+	for i := range builds.Items {
+		if builds.Items[i].Spec.ProjectRef.Name != project.Name {
+			continue
+		}
+		remaining++
+		if err := r.Delete(ctx, &builds.Items[i]); err != nil && !apierrors.IsNotFound(err) {
+			return 0, err
+		}
+	}
+
+	releases := &kitchenv1alpha1.ReleaseList{}
+	if err := r.List(ctx, releases, inNamespace); err != nil {
+		return 0, err
+	}
+	for i := range releases.Items {
+		if releases.Items[i].Spec.ProjectRef.Name != project.Name {
+			continue
+		}
+		remaining++
+		if err := r.Delete(ctx, &releases.Items[i]); err != nil && !apierrors.IsNotFound(err) {
+			return 0, err
+		}
+	}
+
+	claims := &kitchenv1alpha1.ResourceClaimList{}
+	if err := r.List(ctx, claims, inNamespace); err != nil {
+		return 0, err
+	}
+	for i := range claims.Items {
+		if claims.Items[i].Spec.ProjectRef.Name != project.Name {
+			continue
+		}
+		remaining++
+		if err := r.Delete(ctx, &claims.Items[i]); err != nil && !apierrors.IsNotFound(err) {
+			return 0, err
+		}
+	}
+
+	return remaining, nil
 }
 
 // checkConnection loads a Connection and records a condition. When the
