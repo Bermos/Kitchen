@@ -10,6 +10,13 @@ export interface UIConfig {
   clientId: string;
   /** The API's external URL — also the token audience (`resource`). */
   apiURL: string;
+  /**
+   * The release the operator serving this SPA was built from, as a bare
+   * SemVer string — the UI adds the leading "v". One release publishes the
+   * chart and both images, so this is the platform's version, not just the
+   * dashboard's. "dev" for a build nothing stamped.
+   */
+  version: string;
 }
 
 let loaded: UIConfig | null = null;
@@ -28,6 +35,7 @@ export async function loadConfig(): Promise<UIConfig> {
     issuer: fetched.issuer || env.VITE_ISSUER || "",
     clientId: fetched.clientId || env.VITE_CLIENT_ID || "kitchen-ui",
     apiURL: fetched.apiURL || env.VITE_API_URL || window.location.origin,
+    version: fetched.version || env.VITE_VERSION || "dev",
   };
   return loaded;
 }

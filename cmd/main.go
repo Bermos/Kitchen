@@ -47,6 +47,7 @@ import (
 	"github.com/Bermos/Kitchen/internal/flows"
 	"github.com/Bermos/Kitchen/internal/receiver"
 	"github.com/Bermos/Kitchen/internal/ui"
+	"github.com/Bermos/Kitchen/internal/version"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -119,6 +120,9 @@ func main() {
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+
+	// First line in the log, so a bug report says which release it came from.
+	setupLog.Info("starting kitchen", "version", version.Version)
 
 	// if the enable-http2 flag is false (the default), http/2 should be disabled
 	// due to its vulnerabilities. More specifically, disabling http/2 will

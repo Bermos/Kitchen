@@ -3,6 +3,7 @@ import { computed } from "vue";
 import { useRoute } from "vue-router";
 import { api } from "../lib/api";
 import { user, signOut } from "../lib/auth";
+import { loadConfig } from "../lib/config";
 import { operatorMode } from "../lib/mode";
 import { unhealthyConditions, type Tone } from "../lib/status";
 import { useAsync, usePoll } from "../lib/useAsync";
@@ -75,6 +76,16 @@ const gateway = computed(() => {
   };
 });
 
+// The release the operator was built from — the platform's version, since one
+// release publishes the chart and both images. It rides in /config.json, so it
+// is there before anyone signs in and costs no extra request.
+const platform = useAsync(() => loadConfig());
+const version = computed(() => {
+  const v = platform.data.value?.version;
+  if (!v) return null;
+  return v === "dev" ? "dev" : `v${v}`;
+});
+
 const userMenu = computed(() => [
   [{ label: user.value?.email || user.value?.name || "Signed in", type: "label" as const }],
   [
@@ -144,14 +155,20 @@ const userMenu = computed(() => [
         </p>
       </nav>
 
-      <div v-if="gateway" class="px-4 py-3 border-t border-default text-xs space-y-1.5">
-        <div class="flex items-center gap-2">
-          <StatusDot :tone="gateway.healthy ? 'success' : 'warning'" />
-          <span class="text-muted">Gateway</span>
-          <span class="ml-auto font-mono text-toned">{{ gateway.healthy ? "healthy" : "pending" }}</span>
-        </div>
-        <div class="flex items-center gap-2">
-          <span class="text-dimmed pl-3.5 font-mono truncate" :title="gateway.address">{{ gateway.address }}</span>
+      <div class="px-4 py-3 border-t border-default text-xs space-y-1.5">
+        <template v-if="gateway">
+          <div class="flex items-center gap-2">
+            <StatusDot :tone="gateway.healthy ? 'success' : 'warning'" />
+            <span class="text-muted">Gateway</span>
+            <span class="ml-auto font-mono text-toned">{{ gateway.healthy ? "healthy" : "pending" }}</span>
+          </div>
+          <div class="flex items-center gap-2">
+            <span class="text-dimmed pl-3.5 font-mono truncate" :title="gateway.address">{{ gateway.address }}</span>
+          </div>
+        </template>
+        <div v-if="version" class="flex items-center gap-2">
+          <span class="text-muted">Kitchen</span>
+          <span class="ml-auto font-mono text-dimmed" :title="`Kitchen ${version}`">{{ version }}</span>
         </div>
       </div>
     </aside>

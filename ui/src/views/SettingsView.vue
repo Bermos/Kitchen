@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { api } from "../lib/api";
+import { loadConfig } from "../lib/config";
 import { operatorMode } from "../lib/mode";
 import { useAsync } from "../lib/useAsync";
 import ConditionsTable from "../components/ConditionsTable.vue";
@@ -10,6 +11,15 @@ import ConditionsTable from "../components/ConditionsTable.vue";
 
 const toast = useToast();
 const { data: settings, error, loading, refresh } = useAsync(() => api.settings());
+
+// The release, from /config.json rather than the settings API: it is a fact
+// about the running operator, not part of the singleton anyone can edit here.
+const platform = useAsync(() => loadConfig());
+const version = computed(() => {
+  const v = platform.data.value?.version;
+  if (!v) return "—";
+  return v === "dev" ? "dev" : `v${v}`;
+});
 
 const strategy = ref<string>("auto");
 const concurrency = ref<number>(2);
@@ -92,6 +102,10 @@ const strategies = [
               · {{ settings.gatewayAddress }}</template
             >
           </p>
+        </div>
+        <div>
+          <p class="text-xs text-muted mb-0.5">Version</p>
+          <p class="font-mono text-toned">{{ version }}</p>
         </div>
       </div>
 
