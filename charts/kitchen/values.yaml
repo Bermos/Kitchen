@@ -58,6 +58,44 @@ rbac:
   # -- Create the ClusterRole/Role and their bindings for the manager.
   create: true
 
+# Letting the platform upgrade its own Helm release from the dashboard.
+#
+# Off by default, and the default is the safe one: the upgrade runs as a Job
+# bound to **cluster-admin**, because a `helm upgrade` of this chart applies
+# CRDs, ClusterRoles, the namespace and cert-manager. Enabling it is a
+# deliberate `helm upgrade` from a terminal — a chart cannot grant itself
+# permissions it was not installed with — and from then on upgrades are a
+# button in the settings page.
+#
+# Who can actually use that grant: only something that can create a pod with
+# the ServiceAccount in `kitchen-system`, which is the operator. But the
+# operator creates one when an authenticated API caller asks it to, and the
+# API has no roles yet, so **every user who can sign in to the dashboard can
+# trigger a platform upgrade** while that is true. Weigh that before enabling
+# it on an installation with accounts you do not control.
+selfUpdate:
+  # -- Let the platform upgrade its own release from the dashboard. Creates a
+  # ServiceAccount bound to cluster-admin; see the note above.
+  enabled: false
+  # -- Chart reference the upgrade pulls from. The published chart, unless you
+  # mirror it somewhere the cluster can reach.
+  chart: oci://ghcr.io/bermos/charts/kitchen
+  # -- Helm release name to upgrade. Defaults to this release's own name,
+  # which is what an in-place upgrade has to target.
+  releaseName: ""
+  # -- Allow an upgrade that crosses a minor version. While Kitchen is pre-1.0
+  # the minor is where breaking changes land, so those are the upgrades whose
+  # release notes may name manual steps: they are opted into separately.
+  allowMinor: false
+  # -- How long helm is given to finish. It waits for the whole release to come
+  # back up, StatefulSets included.
+  timeout: 15m
+  # -- Name of the update job's ServiceAccount. Generated when empty.
+  serviceAccountName: ""
+  image:
+    repository: alpine/helm
+    tag: 3.19.0
+
 crds:
   # -- Install the kitchen.bermos.dev CRDs. Disable when they are managed
   # out of band (GitOps, cluster bootstrap).

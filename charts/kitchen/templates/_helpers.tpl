@@ -55,6 +55,15 @@ control-plane: controller-manager
 {{- end }}
 
 {{/*
+The self-update job's ServiceAccount. Separate from the manager's, because it
+is bound to cluster-admin and that grant should be one obvious object rather
+than an extra rule on the account everything else already runs as.
+*/}}
+{{- define "kitchen.selfUpdateServiceAccountName" -}}
+{{- default (printf "%s-self-update" (include "kitchen.fullname" .)) .Values.selfUpdate.serviceAccountName }}
+{{- end }}
+
+{{/*
 Container image reference, digest taking precedence over tag.
 */}}
 {{- define "kitchen.image" -}}
@@ -434,6 +443,14 @@ does not run in.
 {{- end }}
 {{- if and .Values.kitchen.create .Values.kitchen.ingress.cloudflared.enabled (not .Values.kitchen.ingress.cloudflared.tunnelSecretName) }}
 {{- fail "kitchen.ingress.cloudflared.tunnelSecretName is required when cloudflared is enabled: create a secret holding the tunnel token under the key `token` first." }}
+{{- end }}
+{{- if .Values.selfUpdate.enabled }}
+{{- if not .Values.rbac.create }}
+{{- fail "selfUpdate.enabled requires rbac.create: the update job runs as its own ServiceAccount bound to cluster-admin, which this chart is not creating. Set rbac.create=true, or leave selfUpdate.enabled=false and upgrade with helm." }}
+{{- end }}
+{{- if not .Values.selfUpdate.chart }}
+{{- fail "selfUpdate.chart is required when selfUpdate.enabled is true: the update job has nothing to upgrade from. Set it to the published chart (oci://ghcr.io/bermos/charts/kitchen) or to your own mirror." }}
+{{- end }}
 {{- end }}
 {{- if and (gt (int .Values.replicaCount) 1) (not .Values.leaderElection) }}
 {{- fail "leaderElection must stay enabled when replicaCount > 1, otherwise every replica reconciles concurrently." }}

@@ -51,7 +51,7 @@ These aren't nice-to-haves — the first three are the product.
 
 9. **Operator state.** ✅ Decided: CRDs (etcd) are the source of truth for all config and management state — no extra database for the control plane. ClickHouse stays analytics-only. The things that genuinely don't fit CRDs — accounts, sessions, OAuth clients — belong to the identity provider and live in its Postgres, not in the operator.
 
-10. **Self-hosting hygiene.** Helm upgrade path incl. CRD migrations, backup/restore of platform state. NetworkPolicies between app namespaces are lower priority given the trusted-team model, but keep the platform namespace protected.
+10. **Self-hosting hygiene.** Helm upgrade path incl. CRD migrations, backup/restore of platform state. The upgrade path itself is shipped, and optionally self-serve: `selfUpdate.enabled` grants a Job cluster-admin and the platform upgrades its own release from the dashboard (`PlatformUpdate`). Off by default — the grant is real — and it runs helm in a Job rather than in the operator, which does not survive applying its own new Deployment. Backup/restore is still to come. NetworkPolicies between app namespaces are lower priority given the trusted-team model, but keep the platform namespace protected.
 
 ### Nice-to-haves (later)
 

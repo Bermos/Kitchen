@@ -79,6 +79,7 @@ func main() {
 	var apiAddr string
 	var apiAudiences string
 	var uiClientID string
+	var selfUpdate controller.SelfUpdateConfig
 	var secureMetrics bool
 	var enableHTTP2 bool
 	var tlsOpts []func(*tls.Config)
@@ -98,6 +99,27 @@ func main() {
 	flag.StringVar(&uiClientID, "ui-client-id", "kitchen-ui",
 		"OAuth client id the dashboard signs in as. The chart seeds the identity provider "+
 			"with the same id, so this only changes for installations that renamed that client.")
+	// Self-update. These are flags rather than fields on the Kitchen
+	// singleton because the singleton is a post-install hook and is not
+	// re-applied on upgrade, so a chart value flipped in a `helm upgrade`
+	// would never reach the operator; the Deployment is re-applied every
+	// time. An empty chart reference disables the feature outright.
+	flag.StringVar(&selfUpdate.Chart, "self-update-chart", "",
+		"Chart reference the platform upgrades itself from, e.g. oci://ghcr.io/bermos/charts/kitchen. "+
+			"Empty disables self-update, which is the default: the upgrade runs as a job bound to cluster-admin, "+
+			"so the chart only passes this when selfUpdate.enabled is set.")
+	flag.StringVar(&selfUpdate.Release, "self-update-release", "kitchen",
+		"Helm release name the self-update upgrades, which is whatever this installation was installed as.")
+	flag.StringVar(&selfUpdate.ServiceAccount, "self-update-service-account", "",
+		"ServiceAccount the self-update job runs as. It is separate from the manager's, and bound to "+
+			"cluster-admin, because a helm upgrade of this chart applies CRDs, ClusterRoles and the namespace.")
+	flag.StringVar(&selfUpdate.HelmImage, "self-update-image", controller.DefaultHelmImage,
+		"Image the self-update job runs helm from.")
+	flag.DurationVar(&selfUpdate.Timeout, "self-update-timeout", controller.DefaultSelfUpdateTimeout,
+		"How long helm is given to complete a self-update. It waits for the whole release, StatefulSets included.")
+	flag.BoolVar(&selfUpdate.AllowMinor, "self-update-allow-minor", false,
+		"Allow a self-update that crosses a minor version. While Kitchen is pre-1.0 the minor is where breaking "+
+			"changes land, so those upgrades are opted into separately.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
@@ -310,6 +332,18 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "ResourceClaim")
 		os.Exit(1)
 	}
+	if err = (&controller.PlatformUpdateReconciler{
+		Client:         mgr.GetClient(),
+		Scheme:         mgr.GetScheme(),
+		SelfUpdate:     selfUpdate,
+		CurrentVersion: version.Version,
+		Activity:       recorder,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "PlatformUpdate")
+		os.Exit(1)
+	}
+	setupLog.Info("self-update", "enabled", selfUpdate.Enabled(),
+		"chart", selfUpdate.Chart, "allowMinor", selfUpdate.AllowMinor)
 	// +kubebuilder:scaffold:builder
 
 	if err := mgr.Add(&receiver.GitWebhookReceiver{
