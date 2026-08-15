@@ -311,6 +311,20 @@ Lines come back oldest first — a log reads forwards — as
 (`trace`/`debug`/`info`/`warn`/`error`/`fatal`, parsed out of JSON logs and the
 common text spellings), empty when the line says neither.
 
+`source` says whose the line is. The collector tails every container on every
+node, so this is a real distinction and not a formality:
+
+| `source` | What it is |
+|---|---|
+| `build` | A build job's output |
+| `runtime` | A deployed app, or anything else in a project's namespace |
+| `platform` | Kitchen's own components, in `kitchen-system` |
+| `cluster` | Everything else the cluster runs — the CNI, CSI sidecars, whatever was installed alongside |
+
+`cluster` lines are collected deliberately: a node whose storage or networking
+is failing is exactly when Kitchen looks broken, and the answer is in someone
+else's pod. The dashboard scopes them out by default and offers a switch.
+
 An installation without a telemetry store answers `503`: there are no logs to
 read, which is a missing capability rather than a bad request.
 
