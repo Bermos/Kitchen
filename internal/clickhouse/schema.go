@@ -80,11 +80,20 @@ func (c *Client) EnsureLogsSchema(ctx context.Context, retentionDays int32) erro
 	if err := c.ensureTable(ctx, LogsTable, createLogsTable(c.cfg.Database, retentionDays), retentionDays); err != nil {
 		return err
 	}
-	// A logs table from before the level column learned it here. ClickHouse
-	// makes this idempotent, so it is safe to run on every reconcile.
-	return c.Exec(ctx, fmt.Sprintf(
-		"ALTER TABLE %s.%s ADD COLUMN IF NOT EXISTS level LowCardinality(String) AFTER stream",
-		quoteIdentifier(c.cfg.Database), quoteIdentifier(LogsTable)))
+	// A logs table from before a column learned it here. ClickHouse makes
+	// these idempotent, so they are safe to run on every reconcile — and they
+	// have to be run on every reconcile, because a table created by an older
+	// Kitchen is not recreated by the CREATE above.
+	for _, column := range []string{
+		"level LowCardinality(String) AFTER stream",
+		"fields Map(String, String) AFTER labels",
+	} {
+		if err := c.Exec(ctx, fmt.Sprintf("ALTER TABLE %s.%s ADD COLUMN IF NOT EXISTS %s",
+			quoteIdentifier(c.cfg.Database), quoteIdentifier(LogsTable), column)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // EnsureEventsSchema creates the platform activity table.
@@ -157,6 +166,13 @@ func ttlExpression(retentionDays int32) string {
 // rather than a place in the key: it is empty for every runtime line, so it
 // would only dilute the primary index. `message` gets a token filter so that
 // free-text search does not have to read every granule.
+//
+// `labels` are the pod's Kubernetes labels; `fields` are the line's own, from
+// a JSON log the collector flattened. They are two maps rather than one
+// because they answer different questions and a collision between a pod label
+// and an application field would be silent. A missing key of either reads as
+// the empty string, which is what makes `http.status:*` one test rather than
+// two.
 func createLogsTable(database string, retentionDays int32) string {
 	return fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.%s
 (
@@ -173,6 +189,7 @@ func createLogsTable(database string, retentionDays int32) string {
     level       LowCardinality(String),
     message     String,
     labels      Map(LowCardinality(String), String),
+    fields      Map(String, String),
     INDEX idx_build build TYPE set(0) GRANULARITY 4,
     INDEX idx_message message TYPE tokenbf_v1(32768, 3, 0) GRANULARITY 4
 )
