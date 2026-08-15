@@ -782,12 +782,23 @@ jobs:
             exit 1
           }
 
+          # applyOnUpgrade is what makes the value reach the operator: the
+          # Kitchen singleton is a post-install hook, so an ordinary upgrade
+          # leaves it exactly as it was and the switch would go nowhere. The
+          # other way round is editing the object, which the last step does.
           helm upgrade kitchen charts/kitchen \
             --namespace kitchen-system --reuse-values \
-            --set scaleToZero.enabled=true --wait --timeout 5m || {
+            --set scaleToZero.enabled=true --set kitchen.applyOnUpgrade=true \
+            --wait --timeout 5m || {
               kubectl -n kitchen-system get pods -o wide
               exit 1
             }
+          switch=$(kubectl get kitchen default -o jsonpath='{.spec.scaleToZero.enabled}')
+          [ "${switch}" = true ] || {
+            echo "::error::the chart value did not reach the operator's configuration" \
+                 "(spec.scaleToZero.enabled is '${switch}')"
+            exit 1
+          }
 
           # A project, a release and two environments applied directly: the
           # Environment reconciler needs nothing else, so this checks the

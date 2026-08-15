@@ -475,6 +475,21 @@ Turning the switch on without them costs nothing: every environment stays on
 plain Deployment routing and says so in its `ScaleToZero` condition. The
 operator never routes an application through an interceptor it cannot find.
 
+**On an installation that already exists, `--set scaleToZero.enabled=true`
+alone changes nothing.** The switch lives on the Kitchen singleton, which is a
+post-install hook: `helm upgrade` deliberately leaves it alone so that edits
+made in the UI survive (see [Values](#values), `kitchen.applyOnUpgrade`). Add
+`--set kitchen.applyOnUpgrade=true` to let the chart own it, or turn it on
+where it lives:
+
+```sh
+kubectl patch kitchen default --type=merge \
+  -p '{"spec":{"scaleToZero":{"enabled":true}}}'
+```
+
+Either way the operator re-reconciles every Environment, because it watches the
+singleton — the switch reaches environments that have no other reason to change.
+
 Which environments actually idle is then each project's own decision:
 
 ```yaml
