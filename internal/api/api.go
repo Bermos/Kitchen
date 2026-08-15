@@ -187,6 +187,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/projects", s.listProjects)
 	mux.HandleFunc("POST /api/v1/projects", s.createProject)
 	mux.HandleFunc("GET /api/v1/projects/{name}", s.getProject)
+	mux.HandleFunc("PATCH /api/v1/projects/{name}", s.patchProject)
+	mux.HandleFunc("DELETE /api/v1/projects/{name}", s.deleteProject)
 	mux.HandleFunc("GET /api/v1/projects/{name}/builds", s.listProjectBuilds)
 	mux.HandleFunc("POST /api/v1/projects/{name}/builds", s.createBuild)
 	mux.HandleFunc("GET /api/v1/projects/{name}/releases", s.listProjectReleases)
@@ -194,6 +196,7 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("GET /api/v1/builds", s.listBuilds)
 	mux.HandleFunc("GET /api/v1/builds/{name}", s.getBuild)
+	mux.HandleFunc("POST /api/v1/builds/{name}/cancel", s.cancelBuild)
 	mux.HandleFunc("GET /api/v1/builds/{name}/logs", s.buildLogs)
 
 	mux.HandleFunc("GET /api/v1/releases", s.listReleases)
@@ -202,6 +205,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/environments", s.listEnvironments)
 	mux.HandleFunc("GET /api/v1/environments/{name}", s.getEnvironment)
 	mux.HandleFunc("PATCH /api/v1/environments/{name}", s.patchEnvironment)
+	mux.HandleFunc("DELETE /api/v1/environments/{name}", s.deleteEnvironment)
 	mux.HandleFunc("GET /api/v1/environments/{name}/logs", s.environmentLogs)
 	mux.HandleFunc("GET /api/v1/environments/{name}/workload", s.environmentWorkload)
 	mux.HandleFunc("GET /api/v1/environments/{name}/objects", s.environmentObjects)
@@ -225,7 +229,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/updates/{name}", s.getUpdate)
 
 	mux.HandleFunc("GET /api/v1/connections", s.listConnections)
+	mux.HandleFunc("POST /api/v1/connections", s.createConnection)
 	mux.HandleFunc("GET /api/v1/connections/{name}", s.getConnection)
+	mux.HandleFunc("PATCH /api/v1/connections/{name}", s.patchConnection)
+	mux.HandleFunc("DELETE /api/v1/connections/{name}", s.deleteConnection)
 
 	mux.HandleFunc("GET /api/v1/domains", s.listDomains)
 	mux.HandleFunc("GET /api/v1/domains/{name}", s.getDomain)

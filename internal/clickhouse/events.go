@@ -38,6 +38,7 @@ const (
 	EventClaimBound        = "claim.bound"
 	EventClaimFailed       = "claim.failed"
 	EventProjectCreated    = "project.created"
+	EventProjectDeleted    = "project.deleted"
 
 	// The platform's own upgrades. They name no project, environment or
 	// release because they are about the installation itself — which is

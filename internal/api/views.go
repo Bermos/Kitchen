@@ -19,6 +19,7 @@ package api
 import (
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
@@ -55,6 +56,41 @@ func conditionViews(conditions []metav1.Condition) []conditionView {
 	return out
 }
 
+// envVarView is one of a project's environment variables. The value of a
+// secret- or claim-backed variable is a reference here, never the resolved
+// value: the API hands out configuration, not credentials.
+type envVarView struct {
+	Name         string      `json:"name"`
+	Value        string      `json:"value,omitempty"`
+	PreviewValue string      `json:"previewValue,omitempty"`
+	FromSecret   *keyRefView `json:"fromSecret,omitempty"`
+	FromClaim    *keyRefView `json:"fromClaim,omitempty"`
+}
+
+// keyRefView names one key of a Secret or a ResourceClaim binding.
+type keyRefView struct {
+	Name string `json:"name"`
+	Key  string `json:"key"`
+}
+
+func envVarViews(env []kitchenv1alpha1.EnvVar) []envVarView {
+	if len(env) == 0 {
+		return nil
+	}
+	out := make([]envVarView, 0, len(env))
+	for _, v := range env {
+		view := envVarView{Name: v.Name, Value: v.Value, PreviewValue: v.PreviewValue}
+		if v.SecretRef != nil {
+			view.FromSecret = &keyRefView{Name: v.SecretRef.Name, Key: v.SecretRef.Key}
+		}
+		if v.FromResourceClaim != nil {
+			view.FromClaim = &keyRefView{Name: v.FromResourceClaim.Name, Key: v.FromResourceClaim.Key}
+		}
+		out = append(out, view)
+	}
+	return out
+}
+
 type projectView struct {
 	Name                  string          `json:"name"`
 	Repo                  string          `json:"repo"`
@@ -62,6 +98,15 @@ type projectView struct {
 	Registry              string          `json:"registry"`
 	ProductionBranch      string          `json:"productionBranch"`
 	Previews              bool            `json:"previews"`
+	PreviewsProtected     bool            `json:"previewsProtected"`
+	BuildStrategy         string          `json:"buildStrategy,omitempty"`
+	DockerfilePath        string          `json:"dockerfilePath,omitempty"`
+	RootDirectory         string          `json:"rootDirectory,omitempty"`
+	Env                   []envVarView    `json:"env,omitempty"`
+	Port                  int32           `json:"port,omitempty"`
+	Replicas              *int32          `json:"replicas,omitempty"`
+	CPU                   string          `json:"cpu,omitempty"`
+	Memory                string          `json:"memory,omitempty"`
 	ProductionEnvironment string          `json:"productionEnvironment,omitempty"`
 	LatestBuild           string          `json:"latestBuild,omitempty"`
 	CreatedAt             time.Time       `json:"createdAt"`
@@ -70,14 +115,27 @@ type projectView struct {
 
 func newProjectView(project *kitchenv1alpha1.Project) projectView {
 	view := projectView{
-		Name:             project.Name,
-		Repo:             project.Spec.Source.Repo,
-		Connection:       project.Spec.Source.ConnectionRef.Name,
-		Registry:         project.Spec.Registry.ConnectionRef.Name,
-		ProductionBranch: project.Spec.Source.ProductionBranch,
-		Previews:         project.Spec.Previews.Enabled,
-		CreatedAt:        project.CreationTimestamp.Time,
-		Conditions:       conditionViews(project.Status.Conditions),
+		Name:              project.Name,
+		Repo:              project.Spec.Source.Repo,
+		Connection:        project.Spec.Source.ConnectionRef.Name,
+		Registry:          project.Spec.Registry.ConnectionRef.Name,
+		ProductionBranch:  project.Spec.Source.ProductionBranch,
+		Previews:          project.Spec.Previews.Enabled,
+		PreviewsProtected: project.Spec.Previews.IsProtected(),
+		BuildStrategy:     string(project.Spec.Build.Strategy),
+		DockerfilePath:    project.Spec.Build.DockerfilePath,
+		RootDirectory:     project.Spec.Build.RootDirectory,
+		Env:               envVarViews(project.Spec.Env),
+		Port:              project.Spec.Runtime.Port,
+		Replicas:          project.Spec.Runtime.Replicas,
+		CreatedAt:         project.CreationTimestamp.Time,
+		Conditions:        conditionViews(project.Status.Conditions),
+	}
+	if quantity, ok := project.Spec.Runtime.Resources.Limits[corev1.ResourceCPU]; ok {
+		view.CPU = quantity.String()
+	}
+	if quantity, ok := project.Spec.Runtime.Resources.Limits[corev1.ResourceMemory]; ok {
+		view.Memory = quantity.String()
 	}
 	if ref := project.Status.ProductionEnvironmentRef; ref != nil {
 		view.ProductionEnvironment = ref.Name
