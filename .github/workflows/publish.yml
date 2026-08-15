@@ -232,8 +232,14 @@ jobs:
             --version "${version}" \
             --app-version "${version}" \
             --destination dist
+          # The default TLS mode is acme, and the chart refuses to render a
+          # Kitchen in it without an ACME account and a solver — the API server
+          # refuses that object — so the lint has to pass what an install does.
           helm lint "dist/kitchen-${version}.tgz" \
-            --namespace kitchen-system --set kitchen.baseDomain=apps.example.com
+            --namespace kitchen-system \
+            --set kitchen.baseDomain=apps.example.com \
+            --set kitchen.tls.acme.email=platform@example.com \
+            --set kitchen.tls.acme.dns01.cloudflare.apiTokenSecretName=cloudflare-api-token
 
       - name: Log in to GHCR
         run: |
@@ -261,7 +267,9 @@ jobs:
             echo '```sh'
             echo "helm install kitchen ${{ needs.version.outputs.chart_repo }}/kitchen --version ${version} \\"
             echo "  --namespace kitchen-system --create-namespace \\"
-            echo "  --set kitchen.baseDomain=apps.example.com"
+            echo "  --set kitchen.baseDomain=apps.example.com \\"
+            echo "  --set kitchen.tls.acme.email=you@example.com \\"
+            echo "  --set kitchen.tls.acme.dns01.cloudflare.apiTokenSecretName=cloudflare-api-token"
             echo '```'
             echo
             echo "Images (linux/amd64, linux/arm64):"

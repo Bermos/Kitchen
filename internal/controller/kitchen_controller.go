@@ -483,6 +483,12 @@ func (r *KitchenReconciler) reconcileTLS(
 		return true
 	}
 
+	// Both of the next two states are refused at admission by the CRD's own
+	// validation rules, so they are only reachable on an object written before
+	// those rules existed, or on a cluster whose CRDs are managed out of band
+	// (crds.install=false) and left behind. They stay because a reconciler that
+	// trusts the schema it was compiled against reports nothing at all when the
+	// schema in the cluster is older than it is.
 	acme := kitchen.Spec.TLS.ACME
 	if acme == nil {
 		setCond(condCertificateReady, metav1.ConditionFalse, "ACMEConfigMissing",

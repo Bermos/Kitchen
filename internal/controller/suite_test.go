@@ -103,6 +103,27 @@ var _ = AfterSuite(func() {
 	Expect(err).NotTo(HaveOccurred())
 })
 
+// acmeTLS is the TLS block every Kitchen created through the API server needs.
+// acme is the default mode, and the CRD refuses that mode without an ACME
+// account and a solver, so a spec that only cares about the base domain still
+// has to say how the platform would get its certificate.
+func acmeTLS() kitchenv1alpha1.TLSSpec {
+	return kitchenv1alpha1.TLSSpec{
+		Mode: kitchenv1alpha1.TLSModeACME,
+		ACME: &kitchenv1alpha1.ACMESpec{
+			Email: "platform@example.com",
+			DNS01: kitchenv1alpha1.ACMEDNS01Spec{
+				Cloudflare: &kitchenv1alpha1.CloudflareSolverSpec{
+					APITokenSecretRef: kitchenv1alpha1.SecretKeySelector{
+						Name: "cloudflare-api-token",
+						Key:  "api-token",
+					},
+				},
+			},
+		},
+	}
+}
+
 // getFirstFoundEnvTestBinaryDir locates the first binary in the specified path.
 // ENVTEST-based tests depend on specific binaries, usually located in paths set by
 // controller-runtime. When running tests directly (e.g., via an IDE) without using

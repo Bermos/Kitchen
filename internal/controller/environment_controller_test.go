@@ -74,6 +74,7 @@ var _ = Describe("Environment Controller", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: KitchenSingletonName},
 				Spec: kitchenv1alpha1.KitchenSpec{
 					BaseDomain: "apps.example.com",
+					TLS:        acmeTLS(),
 					// As the chart writes it: an identity provider, and a gate
 					// for previews to be protected by.
 					Auth: kitchenv1alpha1.AuthSpec{

@@ -15,6 +15,16 @@ env:
   GATEWAY_API_VERSION: v1.6.1
   # Used to poke the git webhook receiver from inside the cluster.
   PROBE_IMAGE: curlimages/curl:8.11.1
+  # What every render below installs as, split in two because the halves are
+  # not interchangeable. CHART_ACME is what the documented install passes and
+  # what the default TLS mode now requires — the CRD refuses a Kitchen in acme
+  # mode with no acme block, so the chart refuses to render one. It must be
+  # left off wherever the mode is something else, which the chart also refuses
+  # to combine with an acme block.
+  CHART_BASE: --set kitchen.baseDomain=apps.example.com
+  CHART_ACME: >-
+    --set kitchen.tls.acme.email=platform@example.com
+    --set kitchen.tls.acme.dns01.cloudflare.apiTokenSecretName=cloudflare-api-token
 
 jobs:
   lint:
@@ -36,7 +46,7 @@ jobs:
           }
 
       - name: Lint the chart
-        run: helm lint charts/kitchen --namespace kitchen-system --set kitchen.baseDomain=apps.example.com
+        run: helm lint charts/kitchen --namespace kitchen-system ${CHART_BASE} ${CHART_ACME}
 
       - name: Render the supported value combinations
         run: |
@@ -45,13 +55,13 @@ jobs:
             echo "--- helm template $*"
             helm template kitchen charts/kitchen --namespace kitchen-system "$@" >/dev/null
           }
-          render --set kitchen.baseDomain=apps.example.com
-          render --set kitchen.baseDomain=apps.example.com --set replicaCount=3
-          render --set kitchen.baseDomain=apps.example.com --set kitchen.applyOnUpgrade=true
-          render --set kitchen.baseDomain=apps.example.com --set metrics.serviceMonitor.enabled=true
-          render --set kitchen.baseDomain=apps.example.com --set metrics.enabled=false
-          render --set kitchen.baseDomain=apps.example.com --set crds.install=false --set rbac.create=false
-          render --set kitchen.baseDomain=apps.example.com \
+          render ${CHART_BASE} ${CHART_ACME}
+          render ${CHART_BASE} ${CHART_ACME} --set replicaCount=3
+          render ${CHART_BASE} ${CHART_ACME} --set kitchen.applyOnUpgrade=true
+          render ${CHART_BASE} ${CHART_ACME} --set metrics.serviceMonitor.enabled=true
+          render ${CHART_BASE} ${CHART_ACME} --set metrics.enabled=false
+          render ${CHART_BASE} ${CHART_ACME} --set crds.install=false --set rbac.create=false
+          render ${CHART_BASE} \
                  --set kitchen.tls.mode=cloudflared \
                  --set kitchen.ingress.cloudflared.enabled=true \
                  --set kitchen.ingress.cloudflared.tunnelSecretName=kitchen-tunnel
@@ -61,44 +71,44 @@ jobs:
                  --set api.route.host=kitchen.example.com \
                  --set auth.route.host=login.example.com \
                  --set previewGate.host=previews.example.com
-          render --set kitchen.baseDomain=apps.example.com \
+          render ${CHART_BASE} ${CHART_ACME} \
                  --set clickhouse.persistence.enabled=false \
                  --set clickhouse.extraConfig.logger\\.xml='<clickhouse><logger><level>debug</level></logger></clickhouse>'
-          render --set kitchen.baseDomain=apps.example.com \
+          render ${CHART_BASE} ${CHART_ACME} \
                  --set clickhouse.enabled=false \
                  --set clickhouse.external.host=clickhouse.telemetry.svc \
                  --set clickhouse.auth.password=hunter2
-          render --set kitchen.baseDomain=apps.example.com \
+          render ${CHART_BASE} ${CHART_ACME} \
                  --set clickhouse.enabled=false --set clickhouse.acknowledgeNoStore=true
-          render --set kitchen.baseDomain=apps.example.com --set logs.enabled=false
-          render --set kitchen.baseDomain=apps.example.com \
+          render ${CHART_BASE} ${CHART_ACME} --set logs.enabled=false
+          render ${CHART_BASE} ${CHART_ACME} \
                  --set logs.extraLabelSelector=app.kubernetes.io/part-of=kitchen \
                  --set logs.extraFieldSelector=metadata.namespace!=kube-system
-          render --set kitchen.baseDomain=apps.example.com \
+          render ${CHART_BASE} ${CHART_ACME} \
                  --set auth.enabled=false --set postgres.enabled=false \
                  --set previewGate.enabled=false
-          render --set kitchen.baseDomain=apps.example.com \
+          render ${CHART_BASE} ${CHART_ACME} \
                  --set auth.replicaCount=2 --set auth.bootstrap.enabled=false
-          render --set kitchen.baseDomain=apps.example.com \
+          render ${CHART_BASE} ${CHART_ACME} \
                  --set auth.github.clientId=Iv1.deadbeef --set auth.github.clientSecret=hunter2
-          render --set kitchen.baseDomain=apps.example.com \
+          render ${CHART_BASE} ${CHART_ACME} \
                  --set auth.github.clientId=Iv1.deadbeef --set auth.github.existingSecret=github-oauth
-          render --set kitchen.baseDomain=apps.example.com \
+          render ${CHART_BASE} ${CHART_ACME} \
                  --set auth.route.host=login.example.com
-          render --set kitchen.baseDomain=apps.example.com \
+          render ${CHART_BASE} ${CHART_ACME} \
                  --set postgres.persistence.enabled=false
           # The forward-auth gate for protected previews.
-          render --set kitchen.baseDomain=apps.example.com \
+          render ${CHART_BASE} ${CHART_ACME} \
                  --set previewGate.enabled=false
-          render --set kitchen.baseDomain=apps.example.com \
+          render ${CHART_BASE} ${CHART_ACME} \
                  --set previewGate.host=gate.example.com \
                  --set previewGate.replicas=1 --set previewGate.sessionTTL=1h
-          render --set kitchen.baseDomain=apps.example.com \
+          render ${CHART_BASE} ${CHART_ACME} \
                  --set postgres.enabled=false \
                  --set postgres.external.host=postgres.databases.svc \
                  --set postgres.auth.password=hunter2
           # Plain HTTP: the way a cluster comes up before DNS and certificates.
-          render --set kitchen.baseDomain=apps.example.com --set kitchen.tls.mode=none
+          render ${CHART_BASE} --set kitchen.tls.mode=none
 
       - name: Check published URLs follow the TLS mode
         run: |
@@ -107,17 +117,17 @@ jobs:
             local file=$1 key=$2
             shift 2
             helm template kitchen charts/kitchen --namespace kitchen-system \
-              --set kitchen.baseDomain=apps.example.com "$@" -s "${file}" \
+              ${CHART_BASE} "$@" -s "${file}" \
               | awk -v key="${key}:" '$1 == key { print $2; exit }' | tr -d '"'
           }
           issuer() { field templates/auth/secret.yaml issuer "$@"; }
           external() { field templates/kitchen.yaml externalURL "$@"; }
 
-          [ "$(issuer)" = https://auth.apps.example.com ] || {
+          [ "$(issuer ${CHART_ACME})" = https://auth.apps.example.com ] || {
             echo "::error::the OIDC issuer is not served over https by default"
             exit 1
           }
-          [ "$(external)" = https://kitchen.apps.example.com ] || {
+          [ "$(external ${CHART_ACME})" = https://kitchen.apps.example.com ] || {
             echo "::error::the API's external URL is not https by default"
             exit 1
           }
@@ -145,7 +155,7 @@ jobs:
           # and upgrades; only a render can check this without a cluster.
           claim_templates() {
             helm template kitchen charts/kitchen --namespace kitchen-system \
-              --set kitchen.baseDomain=apps.example.com -s "$1" \
+              ${CHART_BASE} ${CHART_ACME} -s "$1" \
               | awk '/^  volumeClaimTemplates:/ { inside = 1; next }
                      inside && /^  [^ #]/ { inside = 0 }
                      inside && !/^ *#/'
@@ -168,7 +178,7 @@ jobs:
         run: |
           set -euo pipefail
           namespace=$(helm template kitchen charts/kitchen --namespace kitchen-system \
-            --set kitchen.baseDomain=apps.example.com -s templates/namespace.yaml)
+            ${CHART_BASE} ${CHART_ACME} -s templates/namespace.yaml)
 
           # hostPath is admitted at the privileged level alone, and the log
           # collector mounts the node's /var/log. Anything stricter here and
@@ -190,7 +200,7 @@ jobs:
           # A stricter level with the collector still on is a silent no-logs
           # install, so the chart refuses to render it.
           if helm template kitchen charts/kitchen --namespace kitchen-system \
-              --set kitchen.baseDomain=apps.example.com \
+              ${CHART_BASE} ${CHART_ACME} \
               --set namespace.podSecurity=baseline >/dev/null 2>&1; then
             echo "::error::expected rendering to fail: namespace.podSecurity=baseline with logs enabled"
             exit 1
@@ -203,13 +213,13 @@ jobs:
             helm template kitchen charts/kitchen --namespace kitchen-system "$@" \
               | grep -c 'kind: DaemonSet' || true
           }
-          [ "$(collector --set kitchen.baseDomain=apps.example.com)" = 1 ] || {
+          [ "$(collector ${CHART_BASE} ${CHART_ACME})" = 1 ] || {
             echo "::error::the log collector should be installed by default"
             exit 1
           }
           # Acknowledging no telemetry store must not leave a DaemonSet
           # crash-looping against a ClickHouse that was never installed.
-          [ "$(collector --set kitchen.baseDomain=apps.example.com \
+          [ "$(collector ${CHART_BASE} ${CHART_ACME} \
                  --set clickhouse.enabled=false --set clickhouse.acknowledgeNoStore=true)" = 0 ] || {
             echo "::error::the log collector was rendered without a telemetry store"
             exit 1
@@ -227,36 +237,43 @@ jobs:
           # No base domain for the Kitchen singleton.
           expect_failure kitchen-system
           # Installed outside the operator's platform namespace.
-          expect_failure default --set kitchen.baseDomain=apps.example.com
+          expect_failure default ${CHART_BASE} ${CHART_ACME}
           # cloudflared without tunnel credentials.
-          expect_failure kitchen-system --set kitchen.baseDomain=apps.example.com \
+          expect_failure kitchen-system ${CHART_BASE} ${CHART_ACME} \
             --set kitchen.ingress.cloudflared.enabled=true
+          # acme mode — the default — with no ACME account and no solver. The
+          # API server refuses that Kitchen object, so a release rendering one
+          # would fail at the post-install hook instead of here.
+          expect_failure kitchen-system ${CHART_BASE}
+          # An acme block in a mode with no HTTPS listener to use the wildcard.
+          expect_failure kitchen-system ${CHART_BASE} ${CHART_ACME} \
+            --set kitchen.tls.mode=none
           # Multiple replicas without leader election.
-          expect_failure kitchen-system --set kitchen.baseDomain=apps.example.com \
+          expect_failure kitchen-system ${CHART_BASE} ${CHART_ACME} \
             --set replicaCount=3 --set leaderElection=false
           # Both a bundled and an external ClickHouse.
-          expect_failure kitchen-system --set kitchen.baseDomain=apps.example.com \
+          expect_failure kitchen-system ${CHART_BASE} ${CHART_ACME} \
             --set clickhouse.external.host=clickhouse.telemetry.svc
           # External ClickHouse without a password.
-          expect_failure kitchen-system --set kitchen.baseDomain=apps.example.com \
+          expect_failure kitchen-system ${CHART_BASE} ${CHART_ACME} \
             --set clickhouse.enabled=false --set clickhouse.external.host=clickhouse.telemetry.svc
           # No telemetry store at all, unacknowledged.
-          expect_failure kitchen-system --set kitchen.baseDomain=apps.example.com \
+          expect_failure kitchen-system ${CHART_BASE} ${CHART_ACME} \
             --set clickhouse.enabled=false
           # A collector buffer too small to hold a single batch.
-          expect_failure kitchen-system --set kitchen.baseDomain=apps.example.com \
+          expect_failure kitchen-system ${CHART_BASE} ${CHART_ACME} \
             --set logs.batch.maxEvents=5000 --set logs.buffer.maxEvents=100
           # The identity provider without a database to keep accounts in.
-          expect_failure kitchen-system --set kitchen.baseDomain=apps.example.com \
+          expect_failure kitchen-system ${CHART_BASE} ${CHART_ACME} \
             --set postgres.enabled=false
           # Both a bundled and an external Postgres.
-          expect_failure kitchen-system --set kitchen.baseDomain=apps.example.com \
+          expect_failure kitchen-system ${CHART_BASE} ${CHART_ACME} \
             --set postgres.external.host=postgres.databases.svc
           # External Postgres without a password.
-          expect_failure kitchen-system --set kitchen.baseDomain=apps.example.com \
+          expect_failure kitchen-system ${CHART_BASE} ${CHART_ACME} \
             --set postgres.enabled=false --set postgres.external.host=postgres.databases.svc
           # The preview gate without an identity provider to sign visitors in.
-          expect_failure kitchen-system --set kitchen.baseDomain=apps.example.com \
+          expect_failure kitchen-system ${CHART_BASE} ${CHART_ACME} \
             --set auth.enabled=false --set postgres.enabled=false
           # The preview gate with nowhere to bring logins back to: every other
           # hostname is given, so only the gate's is missing.
@@ -265,10 +282,10 @@ jobs:
             --set api.route.host=kitchen.example.com \
             --set auth.route.host=login.example.com
           # A gate with no replicas is a preview with no URL.
-          expect_failure kitchen-system --set kitchen.baseDomain=apps.example.com \
+          expect_failure kitchen-system ${CHART_BASE} ${CHART_ACME} \
             --set previewGate.replicas=0
           # A GitHub OAuth app with no secret to go with the client id.
-          expect_failure kitchen-system --set kitchen.baseDomain=apps.example.com \
+          expect_failure kitchen-system ${CHART_BASE} ${CHART_ACME} \
             --set auth.github.clientId=Iv1.deadbeef
           # The REST API with nowhere to be published.
           expect_failure kitchen-system --set kitchen.create=false \
@@ -331,7 +348,7 @@ jobs:
           # ImagePullBackOff.
           template() {
             helm template kitchen charts/kitchen \
-              --namespace kitchen-system --set kitchen.baseDomain=apps.example.com \
+              --namespace kitchen-system ${CHART_BASE} ${CHART_ACME} \
               -s "$1" | awk '$1 == "image:" { print $2; exit }'
           }
           clickhouse_image=$(template templates/clickhouse/statefulset.yaml)
@@ -388,7 +405,7 @@ jobs:
             --namespace kitchen-system --create-namespace \
             --set image.repository=kitchen --set image.tag=ci \
             --set auth.image.repository=kitchen-auth --set auth.image.tag=ci \
-            --set kitchen.baseDomain=apps.example.com \
+            ${CHART_BASE} ${CHART_ACME} \
             --wait --timeout 8m || {
               kubectl -n kitchen-system get pods -o wide
               kubectl -n kitchen-system describe deploy kitchen-controller-manager
@@ -443,6 +460,38 @@ jobs:
             echo "::error::the git webhook receiver did not answer a ping"
             exit 1
           }
+
+      - name: Verify the edge certificate is requested
+        run: |
+          set -euo pipefail
+          # In acme mode the ClusterIssuer and the wildcard Certificate are the
+          # operator's, not the chart's, because cert-manager's webhook admits
+          # both and is not serving on a first install. So their existence here
+          # is what proves the reconciler waits for that API instead of failing
+          # on it — and that its RBAC covers cert-manager's kinds.
+          for i in $(seq 60); do
+            kubectl get clusterissuer kitchen-acme >/dev/null 2>&1 \
+              && kubectl -n kitchen-system get certificate kitchen-wildcard >/dev/null 2>&1 \
+              && break
+            [ "$i" = 60 ] && {
+              kubectl get kitchen default -o jsonpath='{.status.conditions}'
+              kubectl -n kitchen-system logs -l control-plane=controller-manager --tail=100
+              echo "::error::the operator never created the issuer and the wildcard certificate"
+              exit 1
+            }
+            sleep 5
+          done
+          dns_name=$(kubectl -n kitchen-system get certificate kitchen-wildcard \
+            -o jsonpath='{.spec.dnsNames[0]}')
+          [ "${dns_name}" = '*.apps.example.com' ] || {
+            echo "::error::the wildcard certificate requests '${dns_name}'"
+            exit 1
+          }
+          # It is never issued here: the Cloudflare token the solver names does
+          # not exist, and no zone would answer for apps.example.com anyway.
+          # The condition is what says so, which is the point of having it.
+          kubectl get kitchen default \
+            -o jsonpath='{.status.conditions[?(@.type=="CertificateReady")]}'
 
       - name: Verify the REST API is shut without a token
         run: |
@@ -728,7 +777,7 @@ jobs:
             --namespace kitchen-system \
             --set image.repository=kitchen --set image.tag=ci \
             --set auth.image.repository=kitchen-auth --set auth.image.tag=ci \
-            --set kitchen.baseDomain=apps.example.com \
+            ${CHART_BASE} ${CHART_ACME} \
             --set replicaCount=2 \
             --wait --timeout 8m || {
               kubectl -n kitchen-system get pods -o wide

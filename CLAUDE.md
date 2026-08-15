@@ -164,6 +164,14 @@ through its Go types, to avoid tying the build to its release cadence.
 - **Wildcard certificates are DNS-01 only.** ACME cannot issue `*.example.com`
   over HTTP-01, no matter how reachable the cluster is. Every generated URL is
   a subdomain, so the platform always needs a wildcard.
+- **`tls.mode: acme` without `tls.acme` is refused at admission**, by a CEL rule
+  on the CRD (`x-kubernetes-validations` on `TLSSpec`), as is an `acme` block
+  naming no solver. Since `acme` is also the *default* mode, the chart cannot
+  render a Kitchen from base values alone: `kitchen.validate` fails unless
+  `kitchen.tls.acme.email` and the Cloudflare token secret are set, or the mode
+  is something else. Every `helm template` in CI passes them for that reason —
+  `CHART_BASE` plus `CHART_ACME` in `.github/workflows/helm.yml`, kept apart
+  because an `acme` block in another mode is refused too.
 - **cloudflared does not remove the need for a LoadBalancer address**, only for
   it to be routable. Cilium reports `Programmed=False` / `AddressNotAssigned`
   without one, and the platform never goes ready. Verified on bare metal.
