@@ -188,7 +188,7 @@ func (s *Server) createProject(w http.ResponseWriter, req *http.Request) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        body.Name,
 			Namespace:   s.Namespace,
-			Annotations: map[string]string{"kitchen.bermos.dev/requested-by": callerName(caller)},
+			Annotations: map[string]string{requestedByAnnotation: callerName(caller)},
 		},
 		Spec: kitchenv1alpha1.ProjectSpec{
 			Source: kitchenv1alpha1.GitSourceSpec{

@@ -38,6 +38,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/blang/semver/v4"
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -47,6 +48,7 @@ import (
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/activity"
+	"github.com/Bermos/Kitchen/internal/chartrepo"
 	"github.com/Bermos/Kitchen/internal/clickhouse"
 	"github.com/Bermos/Kitchen/internal/controller"
 )
@@ -82,11 +84,34 @@ type Server struct {
 	// a release promoted — into the platform's activity feed. May be nil.
 	Activity *activity.Recorder
 
+	// Version is the release this binary was built from, reported by the
+	// updates endpoints as what the platform is currently running.
+	Version string
+
+	// SelfUpdate is the chart's self-update configuration, as the operator
+	// received it. The API only reads it: whether the feature is on, and
+	// whether upgrades across a minor version are allowed, so the dashboard
+	// offers what the reconciler will actually accept.
+	SelfUpdate controller.SelfUpdateConfig
+
+	// charts lists the versions the platform's chart has been published at.
+	// Nil when self-update is off or the chart reference cannot be read as an
+	// OCI one, in which case the updates endpoint reports the running version
+	// and no candidates. It is an interface for the same reason logStore is:
+	// so the endpoint can be tested without a registry to talk to.
+	charts chartVersions
+
 	auth *authenticator
 
 	// logStore builds the client the telemetry endpoints read through. It is
 	// a field so tests can serve telemetry without a ClickHouse.
 	logStore func(ctx context.Context) (logReader, error)
+}
+
+// chartVersions lists the versions the platform's Helm chart has been
+// published at, newest last.
+type chartVersions interface {
+	Versions(ctx context.Context) ([]semver.Version, error)
 }
 
 // logReader is the slice of the telemetry store the API depends on: logs, the
@@ -143,6 +168,16 @@ func (s *Server) Handler() http.Handler {
 	if s.logStore == nil {
 		s.logStore = s.telemetryStore
 	}
+	if s.charts == nil && s.SelfUpdate.Chart != "" {
+		charts, err := chartrepo.New(s.SelfUpdate.Chart)
+		if err != nil {
+			// Not fatal, and not silent: the platform serves its dashboard
+			// either way, and the settings page says the versions could not
+			// be listed rather than showing none and implying there are none.
+			s.log().Error(err, "cannot list the chart's published versions", "chart", s.SelfUpdate.Chart)
+		}
+		s.charts = charts
+	}
 
 	mux := http.NewServeMux()
 
@@ -178,6 +213,10 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("GET /api/v1/settings", s.getSettings)
 	mux.HandleFunc("PATCH /api/v1/settings", s.patchSettings)
+
+	mux.HandleFunc("GET /api/v1/updates", s.listUpdates)
+	mux.HandleFunc("POST /api/v1/updates", s.createUpdate)
+	mux.HandleFunc("GET /api/v1/updates/{name}", s.getUpdate)
 
 	mux.HandleFunc("GET /api/v1/connections", s.listConnections)
 	mux.HandleFunc("GET /api/v1/connections/{name}", s.getConnection)

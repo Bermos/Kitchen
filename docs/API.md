@@ -97,6 +97,9 @@ sent the request.
 | GET | `/status` | The platform as it is running: cluster, tunnel, build queue, components |
 | GET | `/settings` | The platform's settings — the `Kitchen` singleton |
 | PATCH | `/settings` | Change the build and telemetry defaults |
+| GET | `/updates` | The platform's own version, what it can upgrade to, and every upgrade it has attempted |
+| POST | `/updates` | Upgrade the platform |
+| GET | `/updates/{name}` | One upgrade |
 | GET | `/connections` | Every connection (never their credentials) |
 | GET | `/connections/{name}` | One connection |
 | GET | `/domains` | Every custom domain. `?environment=` filters |
@@ -286,6 +289,62 @@ defaults the platform builds and retains telemetry with.
 Fields left out stay as they are. Everything else on the singleton — the base
 domain, the issuer, the ingress — shapes URLs and credentials the platform has
 already handed out, so changing those stays a deliberate kubectl operation.
+
+### Updating the platform
+
+`GET /updates` answers what the installation is running, what has been
+published since, and what it has already attempted:
+
+```json
+{
+  "enabled": true,
+  "currentVersion": "0.2.0",
+  "latestVersion": "0.3.0",
+  "available": true,
+  "upgradableTo": ["0.2.2", "0.2.1"],
+  "allowMinor": false,
+  "items": [{"name": "update-0-2-1-h4k9c", "version": "0.2.1", "phase": "Succeeded", "fromVersion": "0.2.0"}]
+}
+```
+
+`upgradableTo` is what this installation would actually accept, so it is not
+simply everything newer: `latestVersion` here is `0.3.0` while the offer stops
+at `0.2.2`, because `allowMinor` is false and pre-1.0 the minor is where
+breaking changes land. `enabled` is false on an installation whose chart was
+not installed with `selfUpdate.enabled=true`, and `reason` then says so — the
+running version is still reported, because that is the first thing anyone
+asks. An installation that cannot reach the chart registry gets
+`discoveryError` and no candidates, and can still be given a version by hand.
+
+`POST /updates` starts one:
+
+```sh
+curl -sS -X POST -H "authorization: Bearer $TOKEN" \
+  -d '{"version": "0.2.1"}' \
+  https://kitchen.apps.example.com/api/v1/updates
+```
+
+A version is the only field, and an unknown field is a `400` rather than
+something ignored. That is not tidiness: the job that runs the upgrade holds
+cluster-admin, so an endpoint that forwarded helm arguments would be a way to
+apply anything at all with it. The operator builds the whole `helm upgrade`
+invocation itself.
+
+The answer is `201` with the created upgrade; watch it with
+`GET /updates/{name}` — or watch the version in the sidebar, which changes when
+the new operator comes up. `409` means self-update is not enabled on this
+installation. Everything else the platform refuses — a downgrade, a version it
+is already on, a minor crossing without `selfUpdate.allowMinor`, a second
+upgrade while one is in flight — is accepted here and refused by the operator,
+which records the reason on the `PlatformUpdate` rather than losing it: the
+checks are about the state of the cluster at the moment the job would start,
+not about the request.
+
+Requests are attributed: the caller's name is annotated onto the object and
+reported as `requestedBy`.
+
+See [Letting the platform update itself](../charts/kitchen/README.md#letting-the-platform-update-itself)
+for what enabling it grants.
 
 ### Logs
 
