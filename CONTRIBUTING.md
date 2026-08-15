@@ -95,9 +95,38 @@ Nobody edits a version number by hand, and nobody writes the changelog.
    builds and pushes both images and packages and pushes the chart, all
    stamped `X.Y.Z`.
 
+A release pull request appears only when the commits since the last tag
+contain something that moves a version — `feat`, `fix`, `perf`, `revert` or a
+breaking change. A run of nothing but `ci`, `docs`, `chore`, `refactor`,
+`test`, `style` and `build` opens no pull request, because there is no version
+to move to. That is the tool working, not a jam.
+
 To release without merging first — a hotfix from a tag, say — push a `vX.Y.Z`
 tag or run the Publish workflow by hand with a version. Both paths land in the
 same jobs.
+
+### The first automated release
+
+Kitchen was released by hand up to `v0.1.4`, and six commits landed on `main`
+after it that were never published. Those commits predate the convention, so
+release-please can date them but cannot describe them: it skips a message it
+cannot parse, which would put the dashboard's telemetry into a release whose
+notes never mention it.
+
+`bootstrap-sha` is therefore pinned to `v0.1.4`'s commit — the range for the
+first automated release is exactly "everything not yet published" — and
+`.release-please-manifest.json` starts at `0.1.4` to match the newest tag that
+exists. A lower baseline would compute a version whose tag is already taken,
+and creating it fails.
+
+So the first release pull request covers those six commits plus everything
+conventional since, and its `CHANGELOG.md` will list only the latter. **Fill
+the gap in by hand on the release branch before merging** — the six are worth
+one line each, and that entry is the only one anyone will ever have to write.
+Merge it without letting other commits land on `main` first: a new commit makes
+release-please regenerate the branch, and the hand-written lines go with it.
+
+After that release, `bootstrap-sha` has done its job and is ignored.
 
 ### Why the release workflow calls publish instead of waiting for the tag
 
