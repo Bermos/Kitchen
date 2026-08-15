@@ -1,0 +1,88 @@
+name: Commits
+
+# Conventional Commits is not a style preference here: release-please reads
+# these messages to decide the next version and to write the change notes, so a
+# message outside the spec is a release that silently omits a change or bumps
+# the wrong digit. This job is the enforcement point — make it a required check
+# on main (see CONTRIBUTING.md) and neither a merge nor a direct push can land
+# a message the release tooling cannot read.
+
+on:
+  pull_request:
+    # `edited` matters: the title is checked below, and editing it is how a
+    # rejected title gets fixed.
+    types: [opened, edited, reopened, synchronize]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: commits-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  conventional:
+    name: Conventional Commits
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@v4
+        with:
+          # The commits being checked are the ones this branch adds, so the
+          # merge base has to be in the clone.
+          fetch-depth: 0
+
+      # Squash-merging replaces every commit on the branch with one whose
+      # subject is the pull request title, so that title — not the branch's
+      # history — is what ends up on main and in the changelog. Both are
+      # checked: the title because it lands, the commits because a merge
+      # commit or a rebase merge lands those instead.
+      - name: Check the pull request title
+        if: github.event_name == 'pull_request'
+        env:
+          # Through the environment rather than an expression: a title is
+          # whatever the author typed, and ${{ }} would paste it into the
+          # shell.
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          printf '%s\n' "${PR_TITLE}" \
+            | ./hack/check-commit-message.sh - --label "the pull request title"
+
+      - name: Check every commit on the branch
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          failed=0
+          for sha in $(git rev-list "${BASE_SHA}..${HEAD_SHA}"); do
+            git log -1 --format=%B "${sha}" \
+              | ./hack/check-commit-message.sh - --label "commit ${sha:0:8}" || failed=1
+          done
+          exit "${failed}"
+
+      # Pushes that bypass a pull request — release-please's own commits among
+      # them — still have to be readable by the next release.
+      - name: Check the pushed commits
+        if: github.event_name == 'push'
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          # A new branch, or a force-push past what the runner fetched, has no
+          # usable "before": check the tip alone rather than the whole history.
+          if [ "${BEFORE}" = 0000000000000000000000000000000000000000 ] \
+            || ! git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+            range="-1 HEAD"
+          else
+            range="${BEFORE}..HEAD"
+          fi
+          failed=0
+          for sha in $(git rev-list ${range}); do
+            git log -1 --format=%B "${sha}" \
+              | ./hack/check-commit-message.sh - --label "commit ${sha:0:8}" || failed=1
+          done
+          exit "${failed}"

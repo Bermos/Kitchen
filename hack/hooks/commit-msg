@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Reject a commit message that CI would reject anyway. Installed by
+# `make hooks`, which points core.hooksPath at this directory.
+set -euo pipefail
+exec "$(dirname "${BASH_SOURCE[0]}")/../check-commit-message.sh" "$1"

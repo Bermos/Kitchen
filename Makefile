@@ -89,6 +89,20 @@ lint-fix: golangci-lint ## Run golangci-lint linter and perform fixes
 lint-config: golangci-lint ## Verify golangci-lint linter configuration
 	$(GOLANGCI_LINT) config verify
 
+.PHONY: hooks
+hooks: ## Install the git hooks: reject a commit message CI would reject anyway.
+	git config core.hooksPath hack/hooks
+	@echo "core.hooksPath -> hack/hooks. Undo with: git config --unset core.hooksPath"
+
+.PHONY: check-commits
+check-commits: ## Check the commit messages this branch adds to main (BASE overrides main).
+	@failed=0; \
+	for sha in $$(git rev-list $${BASE:-main}..HEAD); do \
+		git log -1 --format=%B "$$sha" \
+			| ./hack/check-commit-message.sh - --label "commit $${sha:0:8}" || failed=1; \
+	done; \
+	exit $$failed
+
 ##@ Build
 
 .PHONY: build
