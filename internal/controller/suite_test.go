@@ -77,6 +77,13 @@ var _ = BeforeSuite(func() {
 		CRDDirectoryPaths: []string{
 			filepath.Join("..", "..", "config", "crd", "bases"),
 			filepath.Join("..", "..", "test", "crd", "gateway-api"),
+			// cert-manager's own schemas, extracted from the sub-chart the
+			// platform installs by hack/gen-test-crds.sh. The operator writes
+			// its ClusterIssuer and Certificate as unstructured objects, so
+			// only a real CRD prunes a misspelled field — which is what turns
+			// a typo in those specs into a failing assertion here rather than
+			// a passing round-trip.
+			filepath.Join("..", "..", "test", "crd", "cert-manager"),
 		},
 		ErrorIfCRDPathMissing: true,
 	}
