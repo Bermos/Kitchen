@@ -14,6 +14,62 @@ where they normally would not be.
 Two exceptions stay prerequisites, because they must exist before the cluster
 can run anything: **Cilium** (it is the CNI) and a **default StorageClass**.
 
+## Commits
+
+**Every commit message is a
+[Conventional Commit](https://www.conventionalcommits.org/en/v1.0.0/)**, no
+exceptions: `<type>[(scope)][!]: <description>`. Types are `build`, `chore`,
+`ci`, `docs`, `feat`, `fix`, `perf`, `refactor`, `revert`, `style`, `test`;
+scopes are free-form and usually name the piece (`chart`, `operator`, `api`,
+`ui`, `auth`, `deps`). No full stop on the description, blank line before any
+body, subject under 100 characters.
+
+This is machine-read, not decorative. release-please derives the next version
+and the change notes from these messages, so the wrong type is the wrong
+version number and a non-conforming message is a change missing from the
+release notes. Choose the type by what it does to the version — `feat` bumps
+the minor, `fix`/`perf`/`revert` the patch, everything else nothing — rather
+than by which word describes the diff most flatteringly.
+
+`hack/check-commit-message.sh` is the one implementation of these rules; the
+Commits workflow runs it over every commit in a pull request **and over the
+pull request title**, because squash-merging makes the title the subject that
+lands on main. When opening a pull request, write the title as a Conventional
+Commit. `make hooks` installs the same check as a local `commit-msg` hook, and
+`make check-commits` runs it over what the branch already has.
+
+Breaking changes take `!` and a `BREAKING CHANGE:` footer. **While Kitchen is
+on 0.x that bumps the minor, not the major** — that is
+`bump-minor-pre-major` in `release-please-config.json`, and it is the correct
+pre-1.0 reading of SemVer, not an oversight.
+
+## Releases
+
+Never edit a version number, and never write a changelog entry. Both are
+release-please's, driven by the commits on `main`: it keeps a release pull
+request open, and merging it tags `vX.Y.Z`, creates the GitHub release, and
+calls the publish workflow, which ships both images and the chart under that
+one number.
+
+- **Adding a file that spells the version out means adding it to
+  `release-please-config.json`.** `charts/kitchen/Chart.yaml` (annotated
+  `# x-release-please-version` on both `version` and `appVersion`) and the
+  `package.json`/`package-lock.json` pairs under `ui/` and `auth/` are there
+  already. A file that is not listed silently keeps the old number forever.
+- **release-please owns `CHANGELOG.md`** and rewrites the top of it. Nothing
+  else writes to that file — prose about the release process goes in
+  [CONTRIBUTING.md](CONTRIBUTING.md).
+- **The version reaches the running platform through the linker, not through a
+  source file.** `internal/version.Version` defaults to `dev` and is set by
+  `-ldflags` (`LDFLAGS` in the Makefile, `ARG VERSION` in the Dockerfile). It
+  is served on `/config.json` and shown in the dashboard's sidebar and settings
+  page. Anything else that wants to report the version reads that package.
+- **`release.yml` calls `publish.yml` through `workflow_call` rather than
+  letting the tag trigger it.** A tag pushed with a workflow's own
+  `GITHUB_TOKEN` does not start another workflow run, so the `push: tags`
+  trigger would never fire for an automated release. It stays only for a tag a
+  person pushes.
+
 ## Regeneration
 
 Anything under `api/` or any `+kubebuilder:rbac` marker feeds generated files.

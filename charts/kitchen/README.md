@@ -501,6 +501,18 @@ are missing rather than unhealthy.
 helm upgrade kitchen ./charts/kitchen --namespace kitchen-system --reuse-values
 ```
 
+The chart's `version` and `appVersion` are always the same number, and both are
+[SemVer](https://semver.org/spec/v2.0.0.html): one release publishes the chart
+and the two images it deploys together, and `image.tag` defaults to
+`appVersion`, so a chart can never point at an operator from another release.
+That number is what the dashboard reports on its settings page, which is the
+quickest way to see what a cluster is actually running.
+
+While the major version is 0, **a breaking change bumps the minor** — 0.4.2 to
+0.5.0 may need manual steps, and the release notes say which. The changelog is
+generated from the commits in the release, so anything marked
+`BREAKING CHANGE:` is called out there.
+
 CRDs ship as ordinary templates rather than in the chart's `crds/` directory,
 so `helm upgrade` applies schema changes — that is the CRD migration path.
 Removing a CRD field still needs care: the API server rejects a stored object
