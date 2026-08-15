@@ -507,3 +507,184 @@ describe("the Kitchen UI client and the operator API's audience", () => {
 		assert.ok(claims.exp, "the token expires");
 	});
 });
+
+/**
+ * What keeps a dashboard tab signed in without the redirect it used to make
+ * once per access-token lifetime (issue #25): the sign-in asks for
+ * `offline_access`, and the refresh token it gets back buys new access tokens
+ * for the API in the background.
+ */
+describe("renewing the dashboard's session", () => {
+	let kitchen: Harness;
+	let cookie = "";
+
+	const apiURL = "https://kitchen.apps.example.com";
+	const redirectURI = `${apiURL}/auth/callback`;
+	const admin = {
+		name: "Katherine",
+		email: "katherine@example.com",
+		password: "correct horse battery staple",
+	};
+
+	const claimsOf = (token: string): Record<string, unknown> =>
+		JSON.parse(Buffer.from(token.split(".")[1] ?? "", "base64url").toString("utf8")) as Record<string, unknown>;
+
+	interface Tokens {
+		access_token?: string;
+		refresh_token?: string;
+		error?: string;
+	}
+
+	/** One sign-in the way the dashboard makes it: the seeded public client,
+	 * PKCE instead of a secret, and a token minted for the operator API. */
+	async function signIn(scope: string): Promise<Tokens> {
+		const verifier = randomBytes(32).toString("base64url");
+		const challenge = createHash("sha256").update(verifier).digest("base64url");
+		const authorize = await kitchen.fetch(
+			`/oauth2/authorize?${new URLSearchParams({
+				response_type: "code",
+				client_id: "kitchen-ui",
+				redirect_uri: redirectURI,
+				scope,
+				state: "opaque",
+				code_challenge: challenge,
+				code_challenge_method: "S256",
+				resource: apiURL,
+			})}`,
+			{ headers: { cookie }, redirect: "manual" },
+		);
+		const target =
+			authorize.status === 302
+				? (authorize.headers.get("location") ?? "")
+				: ((await authorize.clone().json().catch(() => ({}))) as { url?: string }).url;
+		assert.ok(target, `authorize did not redirect: ${authorize.status} ${await authorize.text()}`);
+		const code = new URL(target, kitchen.url).searchParams.get("code");
+		assert.ok(code, "the redirect carries an authorization code");
+
+		const response = await kitchen.fetch("/oauth2/token", {
+			method: "POST",
+			headers: { "content-type": "application/x-www-form-urlencoded" },
+			body: new URLSearchParams({
+				grant_type: "authorization_code",
+				client_id: "kitchen-ui",
+				code,
+				redirect_uri: redirectURI,
+				code_verifier: verifier,
+				resource: apiURL,
+			}),
+		});
+		assert.equal(response.status, 200, await response.clone().text());
+		return (await response.json()) as Tokens;
+	}
+
+	/** The renewal itself: no interaction, no redirect, and the same resource
+	 * indicator, because a token that did not name the API comes back opaque. */
+	const refresh = (refreshToken: string): Promise<Response> =>
+		kitchen.fetch("/oauth2/token", {
+			method: "POST",
+			headers: { "content-type": "application/x-www-form-urlencoded" },
+			body: new URLSearchParams({
+				grant_type: "refresh_token",
+				client_id: "kitchen-ui",
+				refresh_token: refreshToken,
+				resource: apiURL,
+			}),
+		});
+
+	before(async () => {
+		kitchen = await startHarness({
+			apiURL,
+			ui: { clientId: "kitchen-ui", redirectURIs: [redirectURI] },
+		});
+
+		await kitchen.fetch("/bootstrap", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ token: kitchen.bootstrapToken, ...admin }),
+		});
+		const signedIn = await kitchen.fetch("/sign-in/email", {
+			method: "POST",
+			headers: { "content-type": "application/json", origin: kitchen.url },
+			body: JSON.stringify({ email: admin.email, password: admin.password }),
+		});
+		cookie = signedIn.headers
+			.getSetCookie()
+			.map((value) => value.split(";")[0])
+			.join("; ");
+	});
+
+	after(async () => {
+		await kitchen.stop();
+	});
+
+	it("hands out a refresh token only to a sign-in that asked for one", async () => {
+		assert.equal(
+			(await signIn("openid profile email")).refresh_token,
+			undefined,
+			"a session that cannot be renewed is what `offline_access` opts out of",
+		);
+		assert.ok((await signIn("openid profile email offline_access")).refresh_token);
+	});
+
+	it("renews the token for the API without another trip through the login", async () => {
+		const first = await signIn("openid profile email offline_access");
+		assert.ok(first.refresh_token);
+		assert.ok(first.access_token);
+
+		// `iat` and `exp` count in whole seconds, and the signature is
+		// deterministic: a renewal inside the same second as the sign-in mints
+		// the same token byte for byte, and proves nothing about the deadline
+		// moving. Crossing a second boundary is what makes the assertion real.
+		await new Promise((resolve) => setTimeout(resolve, 1_100));
+
+		const response = await refresh(first.refresh_token);
+		assert.equal(response.status, 200, await response.clone().text());
+		const renewed = (await response.json()) as Tokens;
+		assert.ok(renewed.access_token);
+		assert.ok(
+			Number(claimsOf(renewed.access_token).exp) > Number(claimsOf(first.access_token).exp),
+			"the whole point: the renewed token outlives the one it replaces",
+		);
+
+		// Everything the operator API and the dashboard read off the first
+		// token has to survive the renewal, or the tab renews into a session
+		// the API refuses and an account menu showing an opaque id.
+		const claims = claimsOf(renewed.access_token);
+		const audience = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
+		assert.ok(audience.includes(apiURL), `the renewed token is still for the API: ${JSON.stringify(audience)}`);
+		assert.equal(claims.azp, "kitchen-ui");
+		assert.equal(claims.email, admin.email);
+		assert.equal(claims.name, admin.name);
+	});
+
+	it("rotates the refresh token on every renewal", async () => {
+		const first = await signIn("openid profile email offline_access");
+		assert.ok(first.refresh_token);
+
+		const renewed = (await (await refresh(first.refresh_token)).json()) as Tokens;
+		assert.ok(renewed.refresh_token);
+		assert.notEqual(renewed.refresh_token, first.refresh_token, "a refresh token is single-use");
+
+		const again = await refresh(renewed.refresh_token);
+		assert.equal(again.status, 200, await again.clone().text());
+	});
+
+	// Last, deliberately: replaying a spent token tears down every refresh
+	// token the provider issued for this account and client (RFC 9700 §4.14),
+	// so nothing after it would have a session left to renew.
+	it("treats a replayed refresh token as a compromised session", async () => {
+		const first = await signIn("openid profile email offline_access");
+		assert.ok(first.refresh_token);
+		const renewed = (await (await refresh(first.refresh_token)).json()) as Tokens;
+		assert.ok(renewed.refresh_token);
+
+		const replay = await refresh(first.refresh_token);
+		assert.equal(replay.ok, false, "a spent refresh token must not buy a second access token");
+
+		// The dashboard keeps its refresh token in localStorage, so a stolen
+		// one is the threat this answers: the moment both copies are used, the
+		// family goes, and the real tab is asked to sign in again.
+		const after = await refresh(renewed.refresh_token);
+		assert.equal(after.ok, false, "the replay takes the whole family with it");
+	});
+});

@@ -74,6 +74,23 @@ export function authOptions(config: Config, database: Pool): BetterAuthOptions {
 				// than be a token for everything.
 				validAudiences: config.apiURL ? [config.baseURL, config.apiURL] : undefined,
 				//
+				//
+				// The shape of a dashboard session, spelled out rather than
+				// left to the plugin's defaults because it is now a decision:
+				// an hour of API access per token, and a week before anyone is
+				// asked to sign in again. The dashboard trades its refresh
+				// token for a new access token in the background, so the hour
+				// is invisible; the week is how long a browser that was closed
+				// with a session still has one when it comes back.
+				//
+				// The plugin rotates refresh tokens and tears down the whole
+				// family when a spent one is replayed (RFC 9700 §4.14), which
+				// is what makes it defensible to keep one in the browser at
+				// all — and why the shorter-than-default lifetime is worth
+				// having.
+				accessTokenExpiresIn: 60 * 60,
+				refreshTokenExpiresIn: 60 * 60 * 24 * 7,
+				//
 				// Registration is rate limited per minute; the operator creates
 				// a client per environment, so the plugin's default of five is
 				// too tight for a burst of preview deployments.

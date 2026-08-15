@@ -1,5 +1,5 @@
 import { loadConfig } from "./config";
-import { signOut, token } from "./auth";
+import { renew, signOut, token } from "./auth";
 
 // Typed client for the operator REST API (docs/API.md). The types mirror the
 // API's view shapes — the platform's own vocabulary, nothing Kubernetes.
@@ -212,28 +212,53 @@ export class APIError extends Error {
   }
 }
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const config = await loadConfig();
-  const bearer = token();
+/**
+ * Send a request with the session's bearer token, and give a 401 exactly one
+ * more chance: the token may have been refused a moment before the scheduled
+ * renewal, or the issuer may have rotated its keys under us. Renewing and
+ * retrying keeps the page — and whatever was half-typed on it — where it is,
+ * rather than sending the browser back through the identity provider.
+ *
+ * A 401 that survives the retry is a session that is over, and the caller
+ * routes back to the login.
+ */
+async function authorized(send: (bearer: string) => Promise<Response>): Promise<Response> {
+  const bearer = await token();
   if (!bearer) {
-    signOut();
+    void signOut();
     throw new APIError(401, "not signed in");
   }
-  const base = config.apiURL === window.location.origin ? "" : config.apiURL;
-  const res = await fetch(`${base}/api/v1${path}`, {
-    method,
-    headers: {
-      authorization: `Bearer ${bearer}`,
-      ...(body !== undefined ? { "content-type": "application/json" } : {}),
-    },
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  });
-  if (res.status === 401) {
-    // The token expired or the issuer rotated its keys under us: back through
-    // the login, which is invisible for a browser that still has a session.
-    signOut();
+  const res = await send(bearer);
+  if (res.status !== 401) return res;
+
+  const renewed = await renew();
+  // The same token back means the renewal had nothing new to offer, so the
+  // retry would be the request that just failed.
+  if (!renewed || renewed === bearer) {
+    void signOut();
     throw new APIError(401, "the session expired");
   }
+  const retry = await send(renewed);
+  if (retry.status === 401) {
+    void signOut();
+    throw new APIError(401, "the session expired");
+  }
+  return retry;
+}
+
+async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+  const config = await loadConfig();
+  const base = config.apiURL === window.location.origin ? "" : config.apiURL;
+  const res = await authorized((bearer) =>
+    fetch(`${base}/api/v1${path}`, {
+      method,
+      headers: {
+        authorization: `Bearer ${bearer}`,
+        ...(body !== undefined ? { "content-type": "application/json" } : {}),
+      },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    }),
+  );
   if (!res.ok) {
     let message = `${res.status}`;
     try {
@@ -263,20 +288,13 @@ const list =
  */
 async function streamLines(path: string, onLine: (line: LogLine) => void, signal: AbortSignal): Promise<void> {
   const config = await loadConfig();
-  const bearer = token();
-  if (!bearer) {
-    signOut();
-    throw new APIError(401, "not signed in");
-  }
   const base = config.apiURL === window.location.origin ? "" : config.apiURL;
-  const res = await fetch(`${base}/api/v1${path}`, {
-    headers: { authorization: `Bearer ${bearer}`, accept: "text/event-stream" },
-    signal,
-  });
-  if (res.status === 401) {
-    signOut();
-    throw new APIError(401, "the session expired");
-  }
+  const res = await authorized((bearer) =>
+    fetch(`${base}/api/v1${path}`, {
+      headers: { authorization: `Bearer ${bearer}`, accept: "text/event-stream" },
+      signal,
+    }),
+  );
   if (!res.ok || !res.body || !(res.headers.get("content-type") ?? "").includes("text/event-stream")) {
     throw new APIError(res.status, `streaming unavailable (${res.status})`);
   }
