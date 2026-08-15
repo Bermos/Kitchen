@@ -266,6 +266,7 @@ type stubLogs struct {
 	lastEvents  clickhouse.EventQuery
 	edges       []clickhouse.TrafficEdge
 	lastTraffic clickhouse.TrafficQuery
+	trafficErr  error
 	overview    clickhouse.MetricsOverview
 	lastMetrics clickhouse.MetricsQuery
 }
@@ -290,6 +291,9 @@ func (s *stubLogs) QueryEvents(_ context.Context, query clickhouse.EventQuery) (
 
 func (s *stubLogs) TrafficEdges(_ context.Context, query clickhouse.TrafficQuery) ([]clickhouse.TrafficEdge, error) {
 	s.lastTraffic = query
+	if s.trafficErr != nil {
+		return nil, s.trafficErr
+	}
 	return s.edges, nil
 }
 

@@ -106,6 +106,19 @@ type TrafficEdge struct {
 	P95Ms float64 `json:"p95Ms"`
 }
 
+// protocolAlias is the name the edge's dominant protocol is selected under.
+//
+// It is deliberately not `protocol`: ClickHouse resolves a name in the SELECT
+// list against the other aliases before the table's columns, so aliasing the
+// derived value to `protocol` hides the column behind the expression that
+// computes it. The `protocol` inside `quantileIf(...)` then becomes the whole
+// `if(countIf(...) > 0, ...)` expression, substituted in, and the query fails
+// with "Aggregate function countIf(...) is found inside another aggregate
+// function" — an error naming a countIf the query never wrote there. That is
+// what the traffic page answered with on every load. See timestampAlias in
+// logs.go for the same trap in the other reader.
+const protocolAlias = "edgeProtocol"
+
 // trafficRow is the wire shape of one aggregated edge. Counts arrive as
 // strings because ClickHouse renders UInt64 that way in JSON.
 type trafficRow struct {
@@ -113,7 +126,7 @@ type trafficRow struct {
 	SourceNamespace      string  `json:"sourceNamespace"`
 	Destination          string  `json:"destination"`
 	DestinationNamespace string  `json:"destinationNamespace"`
-	Protocol             string  `json:"protocol"`
+	Protocol             string  `json:"edgeProtocol"`
 	Flows                string  `json:"flows"`
 	Errors               string  `json:"errors"`
 	Drops                string  `json:"drops"`
@@ -150,9 +163,12 @@ func (c *Client) TrafficEdges(ctx context.Context, query TrafficQuery) ([]Traffi
 		params["namespace"] = query.Namespace
 	}
 
+	// The busiest edges are the ones worth keeping when the limit bites, so
+	// the ordering is on the count itself and not on `flows` — that alias is
+	// the count rendered as a String, and String order puts 9 above 1000.
 	statement := fmt.Sprintf(`SELECT
     source, sourceNamespace, destination, destinationNamespace,
-    if(countIf(protocol = 'HTTP') > 0, 'HTTP', anyLast(protocol)) AS protocol,
+    if(countIf(protocol = 'HTTP') > 0, 'HTTP', anyLast(protocol)) AS %s,
     toString(count()) AS flows,
     toString(countIf(httpStatus >= 500)) AS errors,
     toString(countIf(verdict != 'FORWARDED')) AS drops,
@@ -160,10 +176,11 @@ func (c *Client) TrafficEdges(ctx context.Context, query TrafficQuery) ([]Traffi
 FROM %s.%s
 WHERE %s
 GROUP BY source, sourceNamespace, destination, destinationNamespace
-ORDER BY flows DESC
+ORDER BY count() DESC
 LIMIT 500
 FORMAT JSONEachRow`,
-		quoteIdentifier(c.cfg.Database), quoteIdentifier(FlowsTable), strings.Join(conditions, " AND "))
+		protocolAlias, quoteIdentifier(c.cfg.Database), quoteIdentifier(FlowsTable),
+		strings.Join(conditions, " AND "))
 
 	body, err := c.QueryWithParams(ctx, statement, params)
 	if err != nil {

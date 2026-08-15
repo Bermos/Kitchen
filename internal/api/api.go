@@ -283,6 +283,21 @@ func (s *Server) writeError(w http.ResponseWriter, err error) {
 	}
 }
 
+// writeStoreError answers a telemetry read that the store refused or could not
+// complete. The query was the operator's own, not the caller's, so ClickHouse's
+// diagnostic — a nested-aggregate complaint, a version string, the offending
+// SQL — is a fault report for whoever maintains Kitchen and not something the
+// dashboard's user can act on. They get the name of the read that failed; the
+// store's text stays in the operator's log.
+//
+// what names the read in the dashboard's words: "the traffic query".
+func (s *Server) writeStoreError(w http.ResponseWriter, err error, what string) {
+	s.log().Error(err, what+" failed")
+	writeJSON(w, http.StatusInternalServerError, errorBody{
+		Error: what + " failed; the operator's log has the store's diagnostic",
+	})
+}
+
 func badRequest(w http.ResponseWriter, format string, args ...any) {
 	writeJSON(w, http.StatusBadRequest, errorBody{Error: fmt.Sprintf(format, args...)})
 }
