@@ -1,0 +1,40 @@
+{{- include "kitchen.validate" . -}}
+{{- if .Values.selfUpdate.enabled }}
+# The identity the platform upgrades itself as.
+#
+# It is bound to cluster-admin, and deliberately not to something narrower. The
+# job it runs applies this entire chart — CRDs, ClusterRoles, the namespace,
+# cert-manager — so an enumerated role would have to list every kind the chart
+# has ever contained and would break the first time a release adds one. A
+# self-update that dies half-way through rewriting the platform is worse than
+# no self-update, and a role that merely looks narrow while granting the power
+# to write ClusterRoles is not narrow.
+#
+# What makes it acceptable rather than alarming: it is a separate account from
+# the manager's, so the grant is visible in one place, revocable by setting
+# `selfUpdate.enabled=false`, and removed with the release.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "kitchen.selfUpdateServiceAccountName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kitchen.labels" . | nindent 4 }}
+    app.kubernetes.io/component: self-update
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "kitchen.fullname" . }}-self-update
+  labels:
+    {{- include "kitchen.labels" . | nindent 4 }}
+    app.kubernetes.io/component: self-update
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "kitchen.selfUpdateServiceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

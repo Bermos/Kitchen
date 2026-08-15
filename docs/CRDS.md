@@ -20,6 +20,7 @@ graph LR
     D[Domain] -->|target| E
     RC[ResourceClaim<br/><i>e.g. Postgres via Neon</i>] -->|via| C
     RC -->|bound to| P
+    PU[PlatformUpdate<br/><i>the platform's own upgrades</i>] -.->|upgrades| K
 ```
 
 The chain is the product: **webhook → Build → Release → Environment → running pods + URL.**
@@ -337,6 +338,48 @@ Reconcile: call the plugin to provision, write bindings into a Secret in the pro
 namespace, expose keys to `Project.spec.env` via `fromResourceClaim`. With
 `previewBranching`, preview Environments each get their own DB branch, cleaned up with
 the Environment — that plus preview URLs is the whole Vercel+Neon flow, self-hosted.
+
+---
+
+## `PlatformUpdate` (cluster-scoped)
+
+One attempt to upgrade Kitchen's own Helm release. Cluster-scoped because the thing
+it upgrades is: there is one release, and the namespace it lives in is compiled in.
+Records are kept after they finish, so the list is the installation's upgrade history.
+
+```yaml
+apiVersion: kitchen.bermos.dev/v1alpha1
+kind: PlatformUpdate
+metadata:
+  name: update-0-2-1
+spec:
+  version: "0.2.1"                      # bare SemVer; the only field there is
+status:
+  phase: Succeeded                      # Pending | Running | Succeeded | Failed
+  fromVersion: "0.2.0"
+  jobName: kitchen-self-update-update-0-2-1
+  message: the platform is on 0.2.1
+  conditions: [...]
+```
+
+`spec.version` is deliberately the only field. The Job that runs the upgrade is bound
+to cluster-admin, so an update that forwarded caller-supplied helm arguments would be
+a way to apply anything at all as cluster-admin — the reconciler builds the whole
+invocation itself and reads nothing from here but the version.
+
+Reconcile: preflight (self-update enabled, not a downgrade, not already current, minor
+crossing allowed, ServiceAccount present, no other upgrade in flight) → a Job running
+`helm upgrade --reset-then-reuse-values --atomic` → phase from the Job's outcome.
+
+The Job exists because the operator cannot run its own upgrade: applying the new
+manager Deployment terminates the pod, and helm killed mid-upgrade leaves the release
+`pending-upgrade` with no process to finish or roll it back. Everything in status is
+therefore derived from the Job, never from what the reconciler remembers — the process
+that reports an upgrade succeeded is a different one, usually a different version, from
+the one that started it.
+
+Needs `selfUpdate.enabled=true` on the chart; without it every PlatformUpdate is
+refused with a message saying so. See the [chart README](../charts/kitchen/README.md#letting-the-platform-update-itself).
 
 ---
 

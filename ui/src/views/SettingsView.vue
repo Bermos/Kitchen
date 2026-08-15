@@ -3,8 +3,9 @@ import { computed, ref, watch } from "vue";
 import { api } from "../lib/api";
 import { loadConfig } from "../lib/config";
 import { operatorMode } from "../lib/mode";
-import { useAsync } from "../lib/useAsync";
+import { useAsync, usePoll } from "../lib/useAsync";
 import ConditionsTable from "../components/ConditionsTable.vue";
+import PhaseBadge from "../components/PhaseBadge.vue";
 import StatusDot from "../components/StatusDot.vue";
 
 // The Kitchen singleton: platform-wide configuration, editable from here —
@@ -72,6 +73,56 @@ const strategies = [
   { label: "dockerfile — the project's own", value: "dockerfile" },
   { label: "buildpacks", value: "buildpacks" },
 ];
+
+// The platform's own upgrades. Off unless the chart was installed with
+// selfUpdate.enabled, which grants the update job cluster-admin — so when it
+// is off the panel says how to turn it on rather than hiding.
+const updates = useAsync(() => api.updates());
+const offered = computed(() => updates.data.value?.upgradableTo ?? []);
+const target = ref<string>("");
+watch(offered, (versions) => {
+  if (!target.value || !versions.includes(target.value)) target.value = versions[0] ?? "";
+});
+
+const inFlight = computed(() =>
+  (updates.data.value?.items ?? []).find((u) => u.phase === "Running" || u.phase === "Pending"),
+);
+// The upgrade replaces the operator serving this page, so the poll is also
+// how the dashboard notices it has come back on a new version.
+usePoll(() => void updates.refresh(), 5000, () => !!inFlight.value);
+
+// A release newer than anything on offer is a minor crossing held back by
+// selfUpdate.allowMinor — worth naming, since it is the upgrade whose notes
+// may carry manual steps.
+const heldBack = computed(() => {
+  const u = updates.data.value;
+  if (!u?.latestVersion || u.allowMinor) return "";
+  return offered.value.includes(u.latestVersion) ? "" : u.latestVersion;
+});
+
+const upgrading = ref(false);
+async function startUpdate() {
+  if (!target.value) return;
+  upgrading.value = true;
+  try {
+    await api.startUpdate(target.value);
+    toast.add({
+      title: `Upgrading to ${target.value}`,
+      description: "The operator restarts part-way through; this page will follow it.",
+      color: "success",
+      icon: "i-lucide-arrow-up-circle",
+    });
+    await updates.refresh();
+  } catch (err) {
+    toast.add({
+      title: "The upgrade was not started",
+      description: err instanceof Error ? err.message : String(err),
+      color: "error",
+    });
+  } finally {
+    upgrading.value = false;
+  }
+}
 </script>
 
 <template>
@@ -130,6 +181,107 @@ const strategies = [
         <div class="flex justify-end">
           <UButton :disabled="!dirty" :loading="saving" icon="i-lucide-save" @click="save">Save changes</UButton>
         </div>
+      </div>
+
+      <div class="rounded-md border border-default px-5 py-4 space-y-4">
+        <div class="flex items-baseline justify-between gap-4">
+          <h2 class="text-sm font-medium text-highlighted">Platform updates</h2>
+          <p class="text-xs text-muted font-mono">running {{ version }}</p>
+        </div>
+
+        <UAlert
+          v-if="updates.error.value"
+          color="error"
+          variant="soft"
+          icon="i-lucide-triangle-alert"
+          :title="updates.error.value"
+        />
+
+        <template v-else-if="updates.data.value">
+          <UAlert
+            v-if="!updates.data.value.enabled"
+            color="neutral"
+            variant="soft"
+            icon="i-lucide-lock"
+            title="This installation does not update itself"
+            :description="updates.data.value.reason"
+          />
+
+          <template v-else>
+            <UAlert
+              v-if="inFlight"
+              color="info"
+              variant="soft"
+              icon="i-lucide-loader"
+              :title="`Upgrading to ${inFlight.version}`"
+              :description="inFlight.message || 'The operator is being replaced by the version it is installing.'"
+            />
+            <UAlert
+              v-else-if="updates.data.value.discoveryError"
+              color="warning"
+              variant="soft"
+              icon="i-lucide-cloud-off"
+              title="The published versions could not be listed"
+              :description="updates.data.value.discoveryError"
+            />
+            <template v-else-if="offered.length">
+              <div class="flex flex-wrap items-end gap-3">
+                <UFormField label="Upgrade to" help="Applies the chart at this version and waits for it to come up.">
+                  <USelect v-model="target" :items="offered" class="w-40 font-mono" />
+                </UFormField>
+                <UButton
+                  :loading="upgrading"
+                  :disabled="!target"
+                  icon="i-lucide-arrow-up-circle"
+                  @click="startUpdate"
+                >
+                  Update platform
+                </UButton>
+              </div>
+              <p v-if="heldBack" class="text-xs text-muted">
+                {{ heldBack }} has been published, but it crosses a minor version — pre-1.0 that is where breaking
+                changes land, and its release notes may name manual steps. Set
+                <span class="font-mono">selfUpdate.allowMinor=true</span> to offer these here.
+              </p>
+            </template>
+            <p v-else class="text-sm text-muted">
+              The platform is on the newest version it can move to.
+              <template v-if="heldBack">
+                {{ heldBack }} is available but crosses a minor version; set
+                <span class="font-mono">selfUpdate.allowMinor=true</span> to offer it.
+              </template>
+            </p>
+          </template>
+
+          <div v-if="updates.data.value.items.length" class="rounded-md border border-default bg-muted overflow-x-auto">
+            <table class="w-full text-sm">
+              <thead>
+                <tr class="text-left text-xs text-muted border-b border-default">
+                  <th class="px-3 py-2 font-medium">Version</th>
+                  <th class="px-3 py-2 font-medium">Phase</th>
+                  <th class="px-3 py-2 font-medium">Requested by</th>
+                  <th class="px-3 py-2 font-medium">Message</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr
+                  v-for="update in updates.data.value.items.slice(0, 5)"
+                  :key="update.name"
+                  class="border-b border-muted last:border-0"
+                >
+                  <td class="px-3 py-2 font-mono text-highlighted">
+                    <template v-if="update.fromVersion">{{ update.fromVersion }} → </template>{{ update.version }}
+                  </td>
+                  <td class="px-3 py-2"><PhaseBadge :phase="update.phase" /></td>
+                  <td class="px-3 py-2 text-xs text-toned">{{ update.requestedBy || "—" }}</td>
+                  <td class="px-3 py-2 text-xs text-toned max-w-md truncate" :title="update.message">
+                    {{ update.message || "—" }}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </template>
       </div>
 
       <div v-if="operatorMode">

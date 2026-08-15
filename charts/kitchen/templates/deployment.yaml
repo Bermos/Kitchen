@@ -70,6 +70,19 @@ spec:
             # operator once it has registered an OAuth client for it.
             - --preview-gate-image={{ include "kitchen.image" . }}
             {{- end }}
+            {{- if .Values.selfUpdate.enabled }}
+            # Self-update reaches the operator as flags rather than as fields
+            # on the Kitchen singleton, because the singleton is applied as a
+            # post-install hook and is not re-applied on upgrade: a value
+            # flipped here would create the ServiceAccount and never reach the
+            # operator. This Deployment is re-applied every time.
+            - --self-update-chart={{ .Values.selfUpdate.chart }}
+            - --self-update-release={{ default .Release.Name .Values.selfUpdate.releaseName }}
+            - --self-update-service-account={{ include "kitchen.selfUpdateServiceAccountName" . }}
+            - --self-update-image={{ .Values.selfUpdate.image.repository }}:{{ .Values.selfUpdate.image.tag }}
+            - --self-update-timeout={{ .Values.selfUpdate.timeout }}
+            - --self-update-allow-minor={{ .Values.selfUpdate.allowMinor }}
+            {{- end }}
             {{- with .Values.extraArgs }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

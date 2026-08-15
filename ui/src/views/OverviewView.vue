@@ -82,11 +82,13 @@ function eventIcon(event: PlatformEvent): string {
   if (event.type.startsWith("release.")) return "i-lucide-rocket";
   if (event.type.startsWith("preview.")) return "i-lucide-git-pull-request";
   if (event.type.startsWith("claim.")) return "i-lucide-database";
+  if (event.type.startsWith("platform.")) return "i-lucide-arrow-up-circle";
   return "i-lucide-sparkles";
 }
 
 function eventTone(event: PlatformEvent): string {
   if (event.type === "build.failed" || event.type === "claim.failed") return "text-error";
+  if (event.type === "platform.updateFailed") return "text-error";
   if (event.type === "release.rolledBack") return "text-warning";
   return "text-muted";
 }
