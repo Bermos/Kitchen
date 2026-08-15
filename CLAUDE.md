@@ -14,6 +14,34 @@ where they normally would not be.
 Two exceptions stay prerequisites, because they must exist before the cluster
 can run anything: **Cilium** (it is the CNI) and a **default StorageClass**.
 
+## Nothing needs kubectl
+
+**Abstracting the cluster away is the product** (issue #60). Anything a
+developer or an operator does in the normal running of the platform has a
+route and a screen: a feature is not done when its reconciler works, it is
+done when the operation exists in the REST API and the dashboard. This holds
+for every future feature — a new capability that only works via `kubectl
+apply` is an unfinished feature, and the docs must never point at `kubectl`
+for something the dashboard can do.
+
+The corollaries that shape how such writes are built:
+
+- **The API never reads credentials back.** Writing a credential means the
+  operator creates the Secret from the request body; no response ever echoes
+  it. Secrets the API wrote carry `app.kubernetes.io/managed-by: kitchen` and
+  are deleted with their connection — secrets anything else wrote are not.
+- **A write surface waits for its reconciler.** Domain and ResourceClaim
+  writes are deliberately absent while their reconcilers are stubs: an API
+  over objects nothing reconciles only looks like it works.
+- **Destructive writes are honest about blast radius.** Project deletion is a
+  finalizer that tears down environments, builds, releases, domains, claims
+  and the app namespace (nothing owner-references them — the finalizer is the
+  garbage collector); the UI confirms by typing the name. Deletions the
+  operator finishes asynchronously answer `202`.
+- The allowed exceptions are cluster bootstrap (install, DNS, the Cloudflare
+  token secret, the bootstrap link) and deploy-time chart values — and a
+  setting that stays chart-only should be a deliberate decision, not a gap.
+
 ## Commits
 
 **Every commit message is a

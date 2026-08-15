@@ -159,10 +159,16 @@ curl -H "authorization: Bearer $TOKEN" \
 Every value, and the upgrade/uninstall semantics, are documented in
 [the chart's README](charts/kitchen/README.md).
 
+Signing in lands on the dashboard, and from there nothing needs `kubectl`:
+connections, projects, builds, environments, domains — creating, changing and
+deleting them all have a screen, and everything a screen does goes through the
+same REST API a script can call.
+
 ### Checking what is running
 
-The operator surveys every platform workload each reconcile and reports what it
-finds on the singleton:
+The dashboard's settings page and status bar show the operator's component
+survey — which platform workloads are short of pods, and why. The same data is
+on the singleton for a terminal:
 
 ```sh
 kubectl get kitchen default
@@ -277,11 +283,14 @@ queryable by project, environment and build as soon as a build runs or an app
 deploys.
 
 The Vue dashboard is served by the operator at `kitchen.<baseDomain>`, behind
-the platform login (OIDC Authorization Code + PKCE): projects, builds with
-their logs, environments with one-click rollback, connections and the editable
-platform settings, with an operator mode that surfaces `status.conditions` on
-everything and the Kubernetes objects the operator materialized for an
-environment. Still missing: Connection/Domain/ResourceClaim reconcilers
-(including `oidcClient` claims), metrics/traces/flow collection, Infisical
-sync, and create flows in the UI (projects and connections are still
-`kubectl apply`).
+the platform login (OIDC Authorization Code + PKCE): projects with editable
+settings and a full create/delete lifecycle, builds with their logs and
+cancellation, environments with one-click rollback and preview teardown,
+connections with create/rotate/delete — credentials go to the operator and are
+never read back — and the editable platform settings, with an operator mode
+that surfaces `status.conditions` on everything and the Kubernetes objects the
+operator materialized for an environment. Still missing:
+Connection/Domain/ResourceClaim reconcilers (including `oidcClient` claims),
+metrics/traces/flow collection, Infisical sync — and with them the domain and
+resource-claim create flows, which stay `kubectl apply` until their
+reconcilers land.
