@@ -7,7 +7,7 @@
       "changelog-path": "CHANGELOG.md",
       "include-component-in-tag": false,
       "extra-files": [
-        "charts/kitchen/Chart.yaml",
+        { "type": "generic", "path": "charts/kitchen/Chart.yaml" },
         { "type": "json", "path": "ui/package.json", "jsonpath": "$.version" },
         { "type": "json", "path": "ui/package-lock.json", "jsonpath": "$.version" },
         { "type": "json", "path": "ui/package-lock.json", "jsonpath": "$.packages[''].version" },
