@@ -32,6 +32,12 @@ import (
 // The activity feed, the traffic map and the dashboard's metrics are all
 // reads of the same telemetry store the logs live in. Like the log endpoints,
 // they answer 503 on an installation that runs without one.
+//
+// Every query here is written by the operator, so a store that refuses one is
+// reporting a fault in Kitchen and not a mistake the caller made: they go
+// through writeStoreError, which names the read and leaves ClickHouse's own
+// text in the operator's log. GET /logs is the exception — there the
+// expression is the caller's, and its diagnostic is the answer.
 
 // listEvents serves the platform's recent activity, newest first.
 func (s *Server) listEvents(w http.ResponseWriter, req *http.Request) {
@@ -56,7 +62,7 @@ func (s *Server) listEvents(w http.ResponseWriter, req *http.Request) {
 		Limit:   limit,
 	})
 	if err != nil {
-		s.writeError(w, err)
+		s.writeStoreError(w, err, "the activity query")
 		return
 	}
 	writeList(w, events)
@@ -102,7 +108,7 @@ func (s *Server) metricsOverview(w http.ResponseWriter, req *http.Request) {
 	}
 	overview, err := store.MetricsOverview(ctx, query)
 	if err != nil {
-		s.writeError(w, err)
+		s.writeStoreError(w, err, "the metrics query")
 		return
 	}
 
@@ -186,7 +192,7 @@ func (s *Server) traffic(w http.ResponseWriter, req *http.Request) {
 	}
 	edges, err := store.TrafficEdges(ctx, query)
 	if err != nil {
-		s.writeError(w, err)
+		s.writeStoreError(w, err, "the traffic query")
 		return
 	}
 	writeList(w, edges)
