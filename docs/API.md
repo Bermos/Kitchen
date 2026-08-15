@@ -75,18 +75,22 @@ sent the request.
 | GET | `/projects` | List projects |
 | POST | `/projects` | Create a project |
 | GET | `/projects/{name}` | One project |
+| PATCH | `/projects/{name}` | Change its settings — branch, previews, build, env vars, runtime |
+| DELETE | `/projects/{name}` | Delete it, and everything derived from it |
 | GET | `/projects/{name}/builds` | That project's builds, newest first |
 | POST | `/projects/{name}/builds` | Build a commit — a rebuild |
 | GET | `/projects/{name}/releases` | That project's releases, newest first |
 | GET | `/projects/{name}/environments` | That project's environments |
 | GET | `/builds` | Every build. `?project=` filters |
 | GET | `/builds/{name}` | One build |
+| POST | `/builds/{name}/cancel` | Stop it — the Build stays, phase `Cancelled` |
 | GET | `/builds/{name}/logs` | That build's output |
 | GET | `/releases` | Every release. `?project=` filters |
 | GET | `/releases/{name}` | One release |
 | GET | `/environments` | Every environment. `?project=` filters |
 | GET | `/environments/{name}` | One environment |
 | PATCH | `/environments/{name}` | Move it to another release — promotion and rollback |
+| DELETE | `/environments/{name}` | Tear down a stuck preview. Previews only |
 | GET | `/environments/{name}/logs` | That environment's runtime logs |
 | GET | `/environments/{name}/workload` | What it is running: replicas, restarts, uptime, resources, pods |
 | GET | `/environments/{name}/objects` | The Kubernetes objects the operator materialized for it |
@@ -104,15 +108,19 @@ sent the request.
 | POST | `/updates` | Upgrade the platform |
 | GET | `/updates/{name}` | One upgrade |
 | GET | `/connections` | Every connection (never their credentials) |
+| POST | `/connections` | Create one — the credential goes in, and never comes back out |
 | GET | `/connections/{name}` | One connection |
+| PATCH | `/connections/{name}` | Rotate the credential, change the config, or both |
+| DELETE | `/connections/{name}` | Delete it, unless something still uses it |
 | GET | `/domains` | Every custom domain. `?environment=` filters |
 | GET | `/domains/{name}` | One domain |
 | GET | `/claims` | Every resource claim. `?project=` filters |
 | GET | `/claims/{name}` | One claim |
 
-Creating connections, domains and claims is not here yet: those are the flows
-the UI will drive, and they are worth designing against a UI rather than ahead
-of one. Until then they are `kubectl apply`, the same as they were.
+Creating domains and claims is not here yet: their reconcilers are stubs, and
+a write surface over objects nothing reconciles would only look like it
+worked. Those writes land with their reconcilers; until then they are
+`kubectl apply`, the same as they were.
 
 ### Creating a project
 
@@ -143,6 +151,45 @@ Answers `201` with the new project. The operator takes it from there:
 namespace, webhook, and — once the first build of the production branch
 lands — the production environment.
 
+### Changing a project's settings
+
+`PATCH /projects/{name}` edits what a project already is. Every field is
+optional and absent ones keep their value:
+
+```json
+{"productionBranch": "trunk", "previews": true, "previewsProtected": false,
+ "buildStrategy": "dockerfile", "dockerfilePath": "build/Dockerfile", "rootDirectory": "apps/shop",
+ "port": 8080, "replicas": 3, "cpu": "250m", "memory": "512Mi",
+ "env": [
+   {"name": "PUBLIC_URL", "value": "https://shop.example.com", "previewValue": "https://preview.invalid"},
+   {"name": "API_KEY", "fromSecret": {"name": "shop-api-key", "key": "key"}},
+   {"name": "DATABASE_URL", "fromClaim": {"name": "shop-db", "key": "url"}}]}
+```
+
+`env`, when present, replaces the whole list — read the project, edit, write
+back. A variable is a literal `value` (with an optional `previewValue` used in
+previews), a `fromSecret` reference, or a `fromClaim` reference; naming more
+than one source is a `400`. `cpu` and `memory` are Kubernetes quantities and
+set request and limit alike; an empty string clears one. The repository and the
+two connections are deliberately not editable: rebinding a project to another
+repository is a different project.
+
+Settings land in the next release's snapshot — what is already running keeps
+the configuration it was released with until the next deploy.
+
+### Deleting a project
+
+```sh
+curl -sS -X DELETE -H "authorization: Bearer $TOKEN" \
+  https://kitchen.apps.example.com/api/v1/projects/shop
+```
+
+Answers `202`: the operator's finalizer deregisters the git webhook, tears
+down the project's environments (production included), garbage-collects its
+builds, releases, domains and claims, and removes the application namespace.
+There is no undo, which is why the dashboard makes you type the project's name
+first.
+
 ### Triggering a build
 
 ```sh
@@ -163,6 +210,18 @@ immutable, so a rebuild is always a new `Build` with a generated name
 (`shop-bld-abc123def456-xk2p9`) rather than a mutation of the old one.
 
 Answers `201` with the new build.
+
+### Cancelling a build
+
+```sh
+curl -sS -X POST -H "authorization: Bearer $TOKEN" \
+  https://kitchen.apps.example.com/api/v1/builds/shop-bld-abc123def456-xk2p9/cancel
+```
+
+The BuildKit job is deleted, pod and all; the `Build` itself stays, phase
+`Cancelled`, with who cancelled it in its condition — Builds are the history of
+who asked for what, so cancellation never removes one. A build that already
+finished answers `409`.
 
 ### Rolling back
 
@@ -193,6 +252,53 @@ automatic ones):
 `reason` is `promoted` when a fresh build's release was auto-promoted over it,
 `rolledBack` when the environment was moved back to an older release, and
 `superseded` when another release replaced it any other way.
+
+### Deleting a stuck preview
+
+`DELETE /environments/{name}` tears a preview down — its Deployment, Service
+and route go with it, and a new build for the pull request recreates it.
+Previews only: the production environment is the project, torn down with it
+and never on its own, so asking is a `400`. Answers `202` while the finalizer
+works.
+
+### Connections
+
+A connection is a plugin instance — a git provider, a registry, a database
+provisioner — and its credential is the reason these endpoints are shaped the
+way they are: **the API never reads credentials back.** Writing one means the
+operator stores it in a Secret it manages, and every response is the same
+credential-free view `GET` answers.
+
+```sh
+curl -sS -X POST -H "authorization: Bearer $TOKEN" \
+  -d '{"name": "gh", "provider": "github", "credential": {"token": "ghp_…"}}' \
+  https://kitchen.apps.example.com/api/v1/connections
+```
+
+`github`, `gitlab`, `gitea` and `neon` authenticate with `credential.token`.
+A `dockerRegistry` takes `credential.username` and `credential.password`, plus
+the registry in `config.url` — the prefix images are pushed under, whose host
+is what builds authenticate against:
+
+```json
+{"name": "harbor", "provider": "dockerRegistry",
+ "config": {"url": "harbor.example.com/kitchen"},
+ "credential": {"username": "robot$kitchen", "password": "…"}}
+```
+
+`config` is the provider's own configuration and passes through as given — a
+self-hosted GitHub names its API endpoint as `{"apiUrl": "https://github.internal/api/v3"}`.
+
+`PATCH /connections/{name}` rotates the credential (`credential`), replaces
+the config (`config`), or both; fields left out keep what is stored. The
+provider is not editable — a connection to a different kind of system is a
+different connection.
+
+`DELETE /connections/{name}` refuses with `409` while any project or claim
+still references the connection, naming what does. The stored credential is
+deleted with it — but only when the platform wrote the Secret; a credential
+something else manages (an Infisical sync, a hand-written manifest) is left
+in place. Answers `204`.
 
 ### What an environment is running
 
@@ -553,8 +659,8 @@ the object fields name what the entry is about so a client can link to it,
 things the reconcilers decided on their own, and `value` carries the one
 number some events have (a finished build's duration in seconds). Types:
 `build.succeeded`, `build.failed`, `release.promoted`, `release.rolledBack`,
-`preview.created`, `preview.removed`, `project.created` (plus `claim.bound` /
-`claim.failed` once claims bind).
+`preview.created`, `preview.removed`, `project.created`, `project.deleted`
+(plus `claim.bound` / `claim.failed` once claims bind).
 
 The feed is written by the reconcilers and the API into the events table of
 the telemetry store, under the same retention as the logs. Kubernetes Events
@@ -599,11 +705,13 @@ endpoint answers an empty list and the traffic view explains what to enable.
 | Code | When |
 |---|---|
 | `200` / `201` | Fine |
+| `202` | Accepted — the operator's finalizers finish the work after the response |
+| `204` | Deleted, nothing left to describe |
 | `400` | The request cannot be carried out as written |
 | `401` | No valid token — including when the platform has no identity provider |
 | `403` | The operator's own service account may not do this |
 | `404` | No such object, or no such endpoint |
-| `409` | Someone else changed the object first |
+| `409` | Someone else changed the object first, it already exists, it already finished, or something still uses it |
 | `503` | A capability this endpoint needs is not installed |
 
 ## Decisions
@@ -614,7 +722,8 @@ endpoint answers an empty list and the traffic view explains what to enable.
 | Token audience | The API's own URL (`resource=`), or the issuer | A resource server should be able to tell a token meant for it from a token meant for everything |
 | CI tokens | better-auth's api-key plugin, exchanged for a JWT at the issuer | The plugin already holds the operator's own credential; keeping key lookup at the issuer keeps the operator's request path stateless |
 | Response shapes | The API's own vocabulary, not raw custom resources | A stable contract for the UI, and freedom to change how state is stored |
-| Write surface | Create project, rebuild, promote/rollback, and the settings' runtime defaults | The writes the UI drives today; creating connections, domains and claims waits for the flows they belong to |
+| Write surface | The full project and connection lifecycle, rebuild and cancel, promote/rollback, preview teardown, and the settings' runtime defaults | Nothing a user does in the platform's normal running should need `kubectl`; domain and claim writes wait for their reconcilers, because a write over objects nothing reconciles only looks like it works |
+| Credentials | Write-only: the operator stores them in Secrets and never echoes them | "Credentials never leave the operator" survives the API growing a write surface |
 | Introspection shapes | Kubernetes' own vocabulary — replicas, restarts, manifests | The exception that proves the rule above: these endpoints exist to explain the platform's machinery, and a reader comparing them against `kubectl` should not have to translate |
 | Pods and nodes | Read uncached, straight from the API server | Serving them from the manager's cache would mean an informer over every pod in the cluster, kept warm for a question only an open dashboard asks |
 | The dashboard | Served by the same process, outside `/api/` | The SPA is public, stateless files plus `/config.json` (issuer, client id, audience — the same values every login redirect shows); everything with state stays behind the token check |
