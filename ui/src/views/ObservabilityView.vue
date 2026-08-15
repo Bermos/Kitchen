@@ -19,6 +19,20 @@ const where = ref((route.query.where as string) || "1 = 1");
 const limit = ref(200);
 const limits = [200, 500, 1000, 5000];
 
+// Kitchen collects every container on every node, so the store also holds the
+// logs of things Kitchen did not deploy — the CNI, the CSI sidecars, whatever
+// else the cluster runs. They are worth having (a sick node is exactly when
+// Kitchen looks broken) and they are not what someone opening this page is
+// looking for, so they are scoped out unless asked for. The clause composes
+// with the expression rather than editing it: the query bar stays the
+// operator's to write.
+const clusterClause = "source != 'cluster'";
+const includeCluster = ref(route.query.cluster === "1");
+const scoped = computed(() => {
+  const expression = where.value.trim() || "1 = 1";
+  return includeCluster.value ? expression : `(${expression}) AND ${clusterClause}`;
+});
+
 const ranges = [
   { label: "Last 15 minutes", value: 15 },
   { label: "Last hour", value: 60 },
@@ -86,7 +100,7 @@ function startStream() {
   lines.value = [];
   void api
     .streamLogs(
-      where.value,
+      scoped.value,
       { limit: limit.value, since },
       (line) => {
         if (controller !== mine || !lines.value) return;
@@ -109,6 +123,11 @@ function startStream() {
     });
 }
 
+function toggleCluster() {
+  includeCluster.value = !includeCluster.value;
+  void run();
+}
+
 function toggleLiveTail() {
   liveTail.value = !liveTail.value;
   if (liveTail.value && !streamBroken.value) startStream();
@@ -124,12 +143,16 @@ async function run() {
     return;
   }
   loading.value = true;
-  // The expression is part of the address, so a query can be linked to.
-  void router.replace({ query: where.value === "1 = 1" ? {} : { where: where.value } });
+  // The expression and the scope are part of the address, so a query can be
+  // linked to.
+  const query: Record<string, string> = {};
+  if (where.value !== "1 = 1") query.where = where.value;
+  if (includeCluster.value) query.cluster = "1";
+  void router.replace({ query });
   try {
     const since =
       rangeMinutes.value > 0 ? new Date(Date.now() - rangeMinutes.value * 60000).toISOString() : undefined;
-    lines.value = await api.logs(where.value, { limit: limit.value, since });
+    lines.value = await api.logs(scoped.value, { limit: limit.value, since });
     error.value = null;
   } catch (err) {
     if (err instanceof APIError && err.status === 401) {
@@ -202,6 +225,20 @@ function time(line: LogLine): string {
         <USelect v-model="rangeMinutes" :items="ranges" size="sm" class="w-44" />
         <UButton
           size="sm"
+          :color="includeCluster ? 'primary' : 'neutral'"
+          :variant="includeCluster ? 'soft' : 'subtle'"
+          icon="i-lucide-server"
+          :title="
+            includeCluster
+              ? 'Showing everything on the node, Kitchen\'s and the cluster\'s'
+              : 'Showing Kitchen\'s own logs. The cluster\'s other pods are collected too.'
+          "
+          @click="toggleCluster"
+        >
+          Cluster
+        </UButton>
+        <UButton
+          size="sm"
           :color="liveTail ? 'success' : 'neutral'"
           :variant="liveTail ? 'soft' : 'subtle'"
           @click="toggleLiveTail"
@@ -243,7 +280,10 @@ function time(line: LogLine): string {
       <USelect v-model="limit" :items="limits" size="sm" class="w-24" />
       <UButton icon="i-lucide-play" :loading="loading" @click="run">Run</UButton>
     </div>
-    <p class="text-[11px] text-dimmed font-mono -mt-3">columns: {{ columns }}</p>
+    <p class="text-[11px] text-dimmed font-mono -mt-3">
+      columns: {{ columns }}
+      <template v-if="!includeCluster"> · scoped with AND {{ clusterClause }}</template>
+    </p>
 
     <UAlert
       v-if="error"

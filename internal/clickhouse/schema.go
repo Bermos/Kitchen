@@ -38,11 +38,19 @@ const EventsTable = "events"
 // collector saw. The traffic view's service map is aggregated out of it.
 const FlowsTable = "flows"
 
-// Log sources, as written into the `source` column.
+// Log sources, as written into the `source` column by the collector's
+// transform in charts/kitchen/templates/logs/configmap.yaml.
+//
+// The collector tails every container on the node, so the distinction that
+// matters is whose the line is: SourcePlatform is Kitchen's own components,
+// running in the platform namespace, and SourceCluster is everything else the
+// cluster runs. They were one value until the platform facet turned out to be
+// answering with Cilium and cert-manager.
 const (
 	SourceRuntime  = "runtime"
 	SourceBuild    = "build"
 	SourcePlatform = "platform"
+	SourceCluster  = "cluster"
 )
 
 // ttlIntervalPattern pulls the retention out of a table's DDL. ClickHouse

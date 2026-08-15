@@ -62,23 +62,41 @@ data:
         inputs: [containers]
         source: |
           labels = object(.kubernetes.pod_labels) ?? {}
+          namespace_labels = object(.kubernetes.namespace_labels) ?? {}
+
+          .namespace = to_string(.kubernetes.pod_namespace) ?? ""
 
           .project = to_string(get(labels, ["kitchen.bermos.dev/project"]) ?? "") ?? ""
+          # A project's namespace carries the project on the namespace itself,
+          # so anything running in one belongs to that project whether or not
+          # the pod was labelled — a claimed database, a sidecar someone added.
+          if .project == "" {
+            .project = to_string(get(namespace_labels, ["kitchen.bermos.dev/project"]) ?? "") ?? ""
+          }
           .environment = to_string(get(labels, ["kitchen.bermos.dev/environment"]) ?? "") ?? ""
           .build = to_string(get(labels, ["kitchen.bermos.dev/build"]) ?? "") ?? ""
 
           # What produced the line, so the UI can ask for one kind without
-          # knowing which labels imply it: a build job, a deployed app, or a
-          # platform component.
-          .source = if .build != "" {
+          # knowing which labels imply it.
+          #
+          # The namespace decides whether the line is Kitchen's at all. This
+          # source tails every container on the node, so "no Kitchen label" is
+          # not "a platform component" — it is Cilium, cert-manager, a CSI
+          # sidecar, whatever else the cluster runs. Labelling those `platform`
+          # made the platform's own diagnostic facet return the entire cluster,
+          # and made other people's warnings read as Kitchen faults. They are
+          # still collected — a sick node is exactly when Kitchen looks broken
+          # — but under a name that says whose they are.
+          .source = if .namespace == {{ .Release.Namespace | quote }} {
+            "platform"
+          } else if .build != "" {
             "build"
-          } else if .environment != "" {
+          } else if .environment != "" || .project != "" {
             "runtime"
           } else {
-            "platform"
+            "cluster"
           }
 
-          .namespace = to_string(.kubernetes.pod_namespace) ?? ""
           .pod = to_string(.kubernetes.pod_name) ?? ""
           .container = to_string(.kubernetes.container_name) ?? ""
           .node = to_string(.kubernetes.pod_node_name) ?? ""
