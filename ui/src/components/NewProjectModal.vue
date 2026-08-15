@@ -142,8 +142,8 @@ async function create() {
           v-if="connections.data.value && (!sourceOptions.length || !registryOptions.length)"
           class="text-xs text-warning"
         >
-          {{ !sourceOptions.length ? "No gitSource connection yet" : "No imageStore connection yet" }} — connections
-          are still created with kubectl.
+          {{ !sourceOptions.length ? "No gitSource connection yet" : "No imageStore connection yet" }} — create one
+          on the <RouterLink to="/connections" class="underline">Connections</RouterLink> page first.
         </p>
         <UFormField label="Production branch" help="Builds of this branch promote to production.">
           <UInput v-model="productionBranch" class="w-44 font-mono" />

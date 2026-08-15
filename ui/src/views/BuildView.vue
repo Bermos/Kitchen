@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, watch } from "vue";
+import { computed, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 import { api, type LogLine, type LogQuery } from "../lib/api";
 import { duration, shortSHA, timeAgo } from "../lib/format";
@@ -10,6 +10,7 @@ import LogViewer from "../components/LogViewer.vue";
 import PhaseBadge from "../components/PhaseBadge.vue";
 
 const route = useRoute();
+const toast = useToast();
 const name = computed(() => route.params.name as string);
 
 const { data: build, error, loading, refresh } = useAsync(() => api.build(name.value));
@@ -19,6 +20,25 @@ watch(name, () => void refresh());
 // log viewer below follows the output.
 const moving = computed(() => build.value?.phase === "Queued" || build.value?.phase === "Running");
 usePoll(() => void refresh(), 5000, () => moving.value);
+
+// Cancelling keeps the Build — phase Cancelled — and stops its BuildKit job.
+const cancelling = ref(false);
+async function cancel() {
+  cancelling.value = true;
+  try {
+    await api.cancelBuild(name.value);
+    toast.add({ title: `Build ${name.value} cancelled`, color: "success", icon: "i-lucide-ban" });
+    await refresh();
+  } catch (err) {
+    toast.add({
+      title: "Cancelling the build failed",
+      description: err instanceof Error ? err.message : String(err),
+      color: "error",
+    });
+  } finally {
+    cancelling.value = false;
+  }
+}
 
 const logFetcher = (query: LogQuery) => api.buildLogs(name.value, query);
 const logStreamer = (query: LogQuery, onLine: (line: LogLine) => void, signal: AbortSignal) =>
@@ -42,6 +62,18 @@ const logStreamer = (query: LogQuery, onLine: (line: LogLine) => void, signal: A
         <div class="flex items-center gap-3 flex-wrap">
           <h1 class="text-xl font-semibold text-highlighted">{{ build.git.message || build.name }}</h1>
           <PhaseBadge :phase="build.phase" />
+          <span class="flex-1" />
+          <UButton
+            v-if="moving"
+            color="neutral"
+            variant="subtle"
+            size="sm"
+            icon="i-lucide-ban"
+            :loading="cancelling"
+            @click="cancel"
+          >
+            Cancel build
+          </UButton>
         </div>
         <div class="flex items-center gap-3 mt-1 text-xs text-muted font-mono flex-wrap">
           <span>{{ shortSHA(build.git.sha) }}</span>

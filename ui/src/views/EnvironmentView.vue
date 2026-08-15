@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { useRoute } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import { api, type LogLine, type LogQuery, type MaterializedObject, type Release, type WorkloadPod } from "../lib/api";
 import { shortImage, timeAgo, uptime } from "../lib/format";
 import { operatorMode } from "../lib/mode";
@@ -12,6 +12,7 @@ import PhaseBadge from "../components/PhaseBadge.vue";
 import StatusDot from "../components/StatusDot.vue";
 
 const route = useRoute();
+const router = useRouter();
 const toast = useToast();
 const name = computed(() => route.params.name as string);
 
@@ -81,6 +82,30 @@ async function move() {
   }
 }
 
+// Deleting is for previews only — a stuck one whose pull request the operator
+// no longer tracks. Production is refused server-side; the button only shows
+// for previews.
+const confirmingDelete = ref(false);
+const deleting = ref(false);
+async function deleteEnvironment() {
+  const env = environment.value;
+  if (!env) return;
+  deleting.value = true;
+  try {
+    await api.deleteEnvironment(env.name);
+    toast.add({ title: `Preview ${env.name} is being torn down`, color: "success", icon: "i-lucide-trash-2" });
+    void router.push({ name: "project", params: { name: env.project } });
+  } catch (err) {
+    toast.add({
+      title: "Deleting the preview failed",
+      description: err instanceof Error ? err.message : String(err),
+      color: "error",
+    });
+    deleting.value = false;
+    confirmingDelete.value = false;
+  }
+}
+
 const logFetcher = (query: LogQuery) => api.environmentLogs(name.value, query);
 const logStreamer = (query: LogQuery, onLine: (line: LogLine) => void, signal: AbortSignal) =>
   api.streamEnvironmentLogs(name.value, query, onLine, signal);
@@ -123,17 +148,46 @@ function historyBy(entry: { reason: string; by?: string }): string {
             <span>created {{ timeAgo(environment.createdAt) }}</span>
           </div>
         </div>
-        <UButton
-          v-if="environment.url"
-          :href="environment.url"
-          target="_blank"
-          size="sm"
-          icon="i-lucide-arrow-up-right"
-          trailing
-        >
-          Open
-        </UButton>
+        <div class="flex items-center gap-2">
+          <UButton
+            v-if="environment.type === 'preview'"
+            color="neutral"
+            variant="subtle"
+            size="sm"
+            icon="i-lucide-trash-2"
+            @click="confirmingDelete = true"
+          >
+            Delete preview
+          </UButton>
+          <UButton
+            v-if="environment.url"
+            :href="environment.url"
+            target="_blank"
+            size="sm"
+            icon="i-lucide-arrow-up-right"
+            trailing
+          >
+            Open
+          </UButton>
+        </div>
       </div>
+
+      <!-- Preview deletion confirmation -->
+      <UModal
+        :open="confirmingDelete"
+        :title="`Delete ${environment.name}?`"
+        description="The preview's workload and route are torn down. A new build for its pull request recreates it."
+        @update:open="(open: boolean) => { confirmingDelete = open; }"
+      >
+        <template #footer>
+          <div class="flex justify-end gap-2 w-full">
+            <UButton color="neutral" variant="subtle" @click="confirmingDelete = false">Cancel</UButton>
+            <UButton color="error" :loading="deleting" icon="i-lucide-trash-2" @click="deleteEnvironment">
+              Delete {{ environment.name }}
+            </UButton>
+          </div>
+        </template>
+      </UModal>
 
       <div class="rounded-md border border-default bg-muted px-5 py-4 grid gap-6 sm:grid-cols-3">
         <div>
