@@ -43,9 +43,7 @@ const (
 	// object name.
 	labelComponentKind = "app.kubernetes.io/component"
 
-	// maxComponentMessage keeps an event message from dominating the status.
-	// Warning events from admission are long and front-loaded — the reason
-	// is at the start — so truncating the tail loses nothing that matters.
+	// maxComponentMessage keeps one explanation from dominating the status.
 	maxComponentMessage = 220
 )
 
@@ -84,7 +82,7 @@ func (r *KitchenReconciler) surveyComponents(
 
 	for i := range deployments.Items {
 		d := &deployments.Items[i]
-		surveyed = append(surveyed, r.componentOf(ctx, &d.ObjectMeta, "Deployment",
+		surveyed = append(surveyed, r.componentOf(ctx, &d.ObjectMeta, "Deployment", d.Spec.Selector,
 			replicasOrOne(d.Spec.Replicas), d.Status.AvailableReplicas))
 	}
 	for i := range statefulSets.Items {
@@ -92,14 +90,14 @@ func (r *KitchenReconciler) surveyComponents(
 		// ReadyReplicas rather than AvailableReplicas: both are populated on
 		// a current API server, but only ReadyReplicas has been there for as
 		// long as the kinds this chart deploys have.
-		surveyed = append(surveyed, r.componentOf(ctx, &s.ObjectMeta, "StatefulSet",
+		surveyed = append(surveyed, r.componentOf(ctx, &s.ObjectMeta, "StatefulSet", s.Spec.Selector,
 			replicasOrOne(s.Spec.Replicas), s.Status.ReadyReplicas))
 	}
 	for i := range daemonSets.Items {
 		ds := &daemonSets.Items[i]
 		// A DaemonSet's desired count comes from the nodes it selects, not
 		// from any replica count, so it is only ever readable from status.
-		surveyed = append(surveyed, r.componentOf(ctx, &ds.ObjectMeta, "DaemonSet",
+		surveyed = append(surveyed, r.componentOf(ctx, &ds.ObjectMeta, "DaemonSet", ds.Spec.Selector,
 			ds.Status.DesiredNumberScheduled, ds.Status.NumberAvailable))
 	}
 
@@ -175,10 +173,18 @@ func resolveNames(surveyed []surveyedWorkload) []kitchenv1alpha1.ComponentStatus
 
 // componentOf turns one workload into its reported status, looking up why it
 // is short of pods when it is.
+//
+// A shortfall has two shapes and the reason lives in a different place for
+// each. A pod refused at admission never exists, so the rejection lands on the
+// workload as a FailedCreate event. A pod that is created and then dies carries
+// its reason itself — OOMKilled is not an event at all, it is a field of pod
+// status — and none of that reaches the workload. The pods are asked first,
+// because when there is a pod to ask it knows more than the workload does.
 func (r *KitchenReconciler) componentOf(
 	ctx context.Context,
 	objectMeta *metav1.ObjectMeta,
 	kind string,
+	selector *metav1.LabelSelector,
 	desired, available int32,
 ) surveyedWorkload {
 	name := objectMeta.Labels[labelComponentKind]
@@ -198,10 +204,152 @@ func (r *KitchenReconciler) componentOf(
 	}
 
 	component.Message = fmt.Sprintf("%d of %d pods available", available, desired)
-	if reason := r.latestWarning(ctx, objectMeta); reason != "" {
+	reason := r.podReason(ctx, objectMeta.Namespace, selector)
+	if reason == "" {
+		reason = r.latestWarning(ctx, objectMeta)
+	}
+	if reason != "" {
 		component.Message += ": " + reason
 	}
 	return surveyedWorkload{status: component, objectName: objectMeta.Name}
+}
+
+// podReason asks the pods a workload selects why they are not serving.
+//
+// It exists because the survey used to report `logs 0/1: 0 of 1 pods available`
+// for a collector that was OOM-killing itself every eight seconds. The reason
+// was there the whole time — OOMKilled, exit 137, against a 512Mi limit — on
+// the pod, which nothing was reading. The diagnosis came from `kubectl describe
+// pod` by hand instead.
+//
+// Best effort, like latestWarning: reads go straight to the API server rather
+// than through the cache, because caching every pod in the cluster to answer an
+// occasional question would cost far more than it saves, and a survey that
+// cannot read pods still reports its counts.
+func (r *KitchenReconciler) podReason(
+	ctx context.Context,
+	namespace string,
+	selector *metav1.LabelSelector,
+) string {
+	reader := r.APIReader
+	if reader == nil || selector == nil {
+		return ""
+	}
+	labelSelector, err := metav1.LabelSelectorAsSelector(selector)
+	if err != nil {
+		return ""
+	}
+
+	pods := &corev1.PodList{}
+	if err := reader.List(ctx, pods,
+		client.InNamespace(namespace),
+		client.MatchingLabelsSelector{Selector: labelSelector},
+	); err != nil {
+		return ""
+	}
+
+	for i := range pods.Items {
+		if reason := podTrouble(&pods.Items[i]); reason != "" {
+			return truncateMessage(reason)
+		}
+	}
+	// Nothing the pods know. Either there are none — the admission case — or
+	// they are between states and say nothing yet.
+	return ""
+}
+
+// waitingIsNormal holds the waiting reasons that mean "starting", not "stuck".
+// A pod reports them for a second on every ordinary rollout, and reporting them
+// as the explanation for a shortfall would make a healthy deploy look like a
+// fault.
+var waitingIsNormal = map[string]bool{
+	"ContainerCreating": true,
+	"PodInitializing":   true,
+}
+
+// podTrouble reads one pod for why it is not serving, or "" when it is fine or
+// has nothing to say yet.
+func podTrouble(pod *corev1.Pod) string {
+	// A pod on its way out is a rollout, not a fault.
+	if pod.DeletionTimestamp != nil {
+		return ""
+	}
+	for i := range pod.Status.Conditions {
+		condition := &pod.Status.Conditions[i]
+		if condition.Type == corev1.PodReady && condition.Status == corev1.ConditionTrue {
+			return ""
+		}
+	}
+
+	// A pod that was never scheduled has no container statuses to carry a
+	// reason; the scheduler's own is on the condition. Unschedulable is a
+	// first-install failure in its own right — no default StorageClass,
+	// insufficient memory, a taint nothing tolerates.
+	for i := range pod.Status.Conditions {
+		condition := &pod.Status.Conditions[i]
+		if condition.Type == corev1.PodScheduled && condition.Status == corev1.ConditionFalse {
+			if reason := withMessage(condition.Reason, condition.Message); reason != "" {
+				return reason
+			}
+		}
+	}
+
+	statuses := make([]corev1.ContainerStatus, 0,
+		len(pod.Status.InitContainerStatuses)+len(pod.Status.ContainerStatuses))
+	statuses = append(statuses, pod.Status.InitContainerStatuses...)
+	statuses = append(statuses, pod.Status.ContainerStatuses...)
+
+	// What a container died of, preferring the one that died most recently:
+	// with several containers the newest death is the one still happening.
+	var died *corev1.ContainerStatus
+	for i := range statuses {
+		terminated := statuses[i].LastTerminationState.Terminated
+		if terminated == nil || terminated.Reason == "" {
+			continue
+		}
+		if died == nil || terminated.FinishedAt.After(died.LastTerminationState.Terminated.FinishedAt.Time) {
+			died = &statuses[i]
+		}
+	}
+	if died != nil {
+		terminated := died.LastTerminationState.Terminated
+		// The exit code is worth carrying: 137 is the kernel's OOM kill and
+		// tells the reader the limit was the cause, not the program.
+		parts := []string{fmt.Sprintf("%s (exit %d)", terminated.Reason, terminated.ExitCode)}
+		if waiting := died.State.Waiting; waiting != nil && waiting.Reason != "" {
+			parts = append(parts, waiting.Reason)
+		}
+		// A pod that has restarted twice and one that has restarted 200 times
+		// read very differently, and the count is what tells them apart.
+		if died.RestartCount > 0 {
+			parts = append(parts, fmt.Sprintf("%d restarts", died.RestartCount))
+		}
+		return strings.Join(parts, ", ")
+	}
+
+	// Never started: ImagePullBackOff, CreateContainerConfigError, a missing
+	// secret or ConfigMap.
+	for i := range statuses {
+		waiting := statuses[i].State.Waiting
+		if waiting == nil || waiting.Reason == "" || waitingIsNormal[waiting.Reason] {
+			continue
+		}
+		return withMessage(waiting.Reason, waiting.Message)
+	}
+	return ""
+}
+
+// withMessage joins a reason to its detail, when there is one. The reason
+// alone is the headline ("Unschedulable"); the message is what makes it
+// actionable ("0/3 nodes are available: 3 Insufficient memory").
+func withMessage(reason, message string) string {
+	if reason == "" {
+		return ""
+	}
+	if message = strings.TrimSpace(message); message != "" {
+		return reason + ": " + message
+	}
+	return reason
 }
 
 // latestWarning returns the most recent warning event on a workload, which is
@@ -234,9 +382,17 @@ func (r *KitchenReconciler) latestWarning(ctx context.Context, objectMeta *metav
 		}
 	}
 
-	message := strings.TrimSpace(latest.Message)
+	return truncateMessage(latest.Message)
+}
+
+// truncateMessage keeps one explanation from dominating the status. The reason
+// is at the front of everything here — an admission rejection, a scheduler
+// complaint, a container's exit — so cutting the tail loses nothing that
+// matters.
+func truncateMessage(message string) string {
+	message = strings.TrimSpace(message)
 	if len(message) > maxComponentMessage {
-		message = message[:maxComponentMessage] + "…"
+		return message[:maxComponentMessage] + "…"
 	}
 	return message
 }
