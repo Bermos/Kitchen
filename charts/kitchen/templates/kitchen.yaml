@@ -74,6 +74,17 @@ spec:
   builds:
     defaultStrategy: {{ .Values.kitchen.builds.defaultStrategy | quote }}
     concurrency: {{ int .Values.kitchen.builds.concurrency }}
+  scaleToZero:
+    enabled: {{ .Values.scaleToZero.enabled }}
+    {{- if .Values.scaleToZero.enabled }}
+    # An idling environment has no pods to route to, so its URL points at the
+    # add-on's interceptor instead: it holds the first request, asks KEDA to
+    # scale the workload back up, and forwards it once a pod answers.
+    interceptor:
+      service: {{ .Values.scaleToZero.interceptor.service | quote }}
+      namespace: {{ include "kitchen.interceptorNamespace" . | quote }}
+      port: {{ int .Values.scaleToZero.interceptor.port }}
+    {{- end }}
   observability:
     clickhouse:
       retentionDays: {{ int .Values.kitchen.observability.clickhouse.retentionDays }}

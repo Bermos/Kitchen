@@ -18,11 +18,31 @@ kubeVersion: ">=1.30.0-0"
 # here. The Certificate and ClusterIssuer are created by the operator, not by
 # this chart, because cert-manager's webhook has to be serving before either is
 # admitted.
+#
+# KEDA and its HTTP add-on are what let an idle environment cost nothing: the
+# add-on's interceptor parks in front of an application, scales it to zero when
+# it goes quiet and cold-starts it on the next request. They ship their CRDs as
+# ordinary templates too, so the same reasoning applies. Neither is installed
+# unless scaleToZero.enabled — the feature is six more workloads in the
+# cluster and an extra hop in the request path of everything that idles.
+#
+# A cluster that already runs KEDA sets keda.enabled=false (and
+# keda-add-ons-http.enabled=false) to keep the feature without a second
+# installation: the first condition that exists in values wins, so setting
+# either one takes it out of scaleToZero.enabled's hands.
 dependencies:
   - name: cert-manager
     version: v1.21.1
     repository: https://charts.jetstack.io
     condition: cert-manager.enabled
+  - name: keda
+    version: 2.20.2
+    repository: https://kedacore.github.io/charts
+    condition: keda.enabled,scaleToZero.enabled
+  - name: keda-add-ons-http
+    version: 0.15.0
+    repository: https://kedacore.github.io/charts
+    condition: keda-add-ons-http.enabled,scaleToZero.enabled
 home: https://github.com/Bermos/Kitchen
 sources:
   - https://github.com/Bermos/Kitchen

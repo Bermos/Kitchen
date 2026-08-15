@@ -89,6 +89,50 @@ type TLSSpec struct {
 	ACME *ACMESpec `json:"acme,omitempty"`
 }
 
+// InterceptorSpec locates the KEDA HTTP add-on's interceptor proxy: the
+// component that sits between the shared Gateway and an idling application,
+// holds the first request while KEDA scales the workload back up, and forwards
+// it once there is a pod to forward it to.
+//
+// The defaults describe the add-on as the Kitchen chart installs it. They are
+// configurable because a cluster that already ran the add-on before Kitchen
+// arrived has it somewhere else.
+type InterceptorSpec struct {
+	// Service name of the interceptor's proxy. The add-on names it after its
+	// own chart rather than after the release, so this is stable.
+	// +kubebuilder:default=keda-add-ons-http-interceptor-proxy
+	// +optional
+	Service string `json:"service,omitempty"`
+
+	// Namespace the interceptor runs in.
+	// +kubebuilder:default=kitchen-system
+	// +optional
+	Namespace string `json:"namespace,omitempty"`
+
+	// Port the proxy accepts live traffic on.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=65535
+	// +kubebuilder:default=8080
+	// +optional
+	Port int32 `json:"port,omitempty"`
+}
+
+// ScaleToZeroSpec is the platform switch for idling environments down to no
+// pods at all. It is off by default: it needs KEDA and its HTTP add-on
+// running in the cluster, which the chart installs only when asked.
+//
+// With it on, each Project decides for itself which of its environments idle,
+// through its own `spec.scaleToZero`.
+type ScaleToZeroSpec struct {
+	// +kubebuilder:default=false
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// +kubebuilder:default={}
+	// +optional
+	Interceptor InterceptorSpec `json:"interceptor,omitempty"`
+}
+
 // BuildsSpec configures platform-wide build defaults.
 type BuildsSpec struct {
 	// +kubebuilder:default=auto
@@ -246,6 +290,10 @@ type KitchenSpec struct {
 
 	// +optional
 	Builds BuildsSpec `json:"builds,omitempty"`
+
+	// +kubebuilder:default={}
+	// +optional
+	ScaleToZero ScaleToZeroSpec `json:"scaleToZero,omitempty"`
 
 	// +optional
 	Observability ObservabilitySpec `json:"observability,omitempty"`

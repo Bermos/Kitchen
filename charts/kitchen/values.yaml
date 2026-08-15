@@ -573,6 +573,84 @@ previewGate:
   # to the identity provider.
   sessionTTL: 8h
 
+# Scale-to-zero: an environment nobody is using drops to no pods at all, and
+# the next request to its URL starts it again. It is what makes a dozen open
+# pull requests nearly free — a preview costs a URL and a Deployment record
+# until someone opens it.
+#
+# Turning it on installs KEDA and the KEDA HTTP add-on with the platform (see
+# the chart dependencies) and tells the operator to use them. Which
+# environments actually idle is then each Project's own decision, through
+# `spec.scaleToZero` — previews by default, production only when asked.
+scaleToZero:
+  # -- Idle unused environments down to zero pods. Off by default: it is six
+  # more workloads in the cluster, and it puts the add-on's interceptor in the
+  # request path of everything that idles, which is a cold start the first
+  # visitor waits through.
+  enabled: false
+  # The interceptor the operator routes idling environments through. The
+  # defaults describe the add-on as this chart installs it; change them only to
+  # point at an add-on installed some other way.
+  interceptor:
+    # -- Name of the interceptor's proxy Service. The add-on names it after its
+    # own chart rather than after the release, so this is a constant.
+    service: keda-add-ons-http-interceptor-proxy
+    # -- Namespace the interceptor runs in. Empty means the release namespace.
+    namespace: ""
+    # -- Port the proxy accepts live traffic on.
+    port: 8080
+
+# The keys below belong to the KEDA chart; see its values for the rest. KEDA
+# itself only manages replica counts on the Deployments the operator already
+# creates — it is the HTTP add-on below that puts something in the request
+# path.
+keda:
+  crds:
+    # -- Install KEDA's CRDs alongside it. They are ordinary templates in the
+    # sub-chart, so `helm upgrade` applies schema changes.
+    install: true
+  image:
+    # -- Pull policy for KEDA's images, as everything else in this chart:
+    # every tag it runs is pinned by the sub-chart version, so re-pulling on
+    # every restart buys nothing and costs a restart that a registry outage
+    # can stop.
+    pullPolicy: IfNotPresent
+
+# The keys below belong to the KEDA HTTP add-on chart; see its values for the
+# rest.
+keda-add-ons-http:
+  crds:
+    # -- Install the `HTTPScaledObject` and `InterceptorRoute` CRDs alongside
+    # the add-on. The operator writes one HTTPScaledObject per idling
+    # environment.
+    install: true
+  operator:
+    # -- Pull policy for the add-on's operator, as for KEDA's own images.
+    pullPolicy: IfNotPresent
+  interceptor:
+    # -- Pull policy for the interceptor. It is in the request path of every
+    # idling environment, so a restart that has to reach a registry first is a
+    # restart that can fail.
+    pullPolicy: IfNotPresent
+    replicas:
+      # -- Interceptor replicas. It is in the request path of every idling
+      # environment, so it is worth more than one — the add-on's own default of
+      # three is sized for a busier cluster than a self-hosted Kitchen.
+      min: 2
+    # -- How long the interceptor holds the first request while the
+    # environment cold-starts, before answering with an error. This is the
+    # wait a visitor actually sees: seconds for an image already on the node,
+    # considerably longer for one that has to be pulled first. Short enough
+    # that a broken environment fails visibly, long enough that a working one
+    # is not cut off mid-start.
+    readinessTimeout: 90s
+  scaler:
+    # -- Pull policy for the external scaler, as for KEDA's own images.
+    pullPolicy: IfNotPresent
+    # -- Replicas of the external scaler. KEDA polls it for metrics; no
+    # request depends on it, so one is enough.
+    replicas: 1
+
 healthProbe:
   # -- Port the /healthz and /readyz endpoints bind to.
   port: 8081

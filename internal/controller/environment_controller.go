@@ -63,6 +63,16 @@ const (
 	// off it.
 	AppContainerName = "app"
 
+	// servicePort is the port an Environment's Service is published on,
+	// whatever the container listens on behind it. Everything that addresses
+	// the application — the Gateway's backend, the preview gate's upstream,
+	// the interceptor's scale target — names this one.
+	servicePort = int32(80)
+
+	// defaultContainerPort matches the CRD default, for Releases whose
+	// snapshot predates the field.
+	defaultContainerPort = int32(3000)
+
 	labelProject        = "kitchen.bermos.dev/project"
 	labelEnvironment    = LabelEnvironment
 	labelEnvironmentNS  = "kitchen.bermos.dev/environment-namespace"
@@ -75,6 +85,7 @@ const (
 	condWorkloadAvailable = "WorkloadAvailable"
 	condRouteProgrammed   = "RouteProgrammed"
 	condPreviewProtected  = "PreviewProtected"
+	condScaleToZero       = "ScaleToZero"
 )
 
 // EnvironmentReconciler reconciles an Environment: it materializes the
@@ -97,6 +108,7 @@ type EnvironmentReconciler struct {
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=referencegrants,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=http.keda.sh,resources=httpscaledobjects,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile drives an Environment towards its Release.
 func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -147,39 +159,47 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	labels := childLabels(project.Name, env)
+	host := hostname(project.Name, env, kitchen.Spec.BaseDomain)
 
-	if err := r.applyDeployment(ctx, env, release, appNS, labels, podEnv); err != nil {
+	// Only previews are ever gated: a production environment is the
+	// application's public address. A preview asked to be protected on a
+	// platform with no gate gets no route at all — publishing it anyway would
+	// be the one outcome the Project explicitly did not ask for.
+	protected := env.Spec.Type == kitchenv1alpha1.EnvironmentPreview && project.Spec.Previews.IsProtected()
+	gate := previewGate(kitchen)
+	unprotectable := protected && gate == nil
+	if !protected {
+		gate = nil
+	}
+
+	runtimeSpec := release.Spec.ConfigSnapshot.Runtime
+	idle, idleCond, err := r.reconcileScaleToZero(ctx, env, project, kitchen, appNS, host, labels,
+		servicePort, desiredReplicas(env, runtimeSpec), !unprotectable)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	if err := r.applyDeployment(ctx, env, release, appNS, labels, podEnv, idle != nil); err != nil {
 		return ctrl.Result{}, err
 	}
 	if err := r.applyService(ctx, env, release, appNS, labels); err != nil {
 		return ctrl.Result{}, err
 	}
 
-	// Only previews are ever gated: a production environment is the
-	// application's public address.
-	protected := env.Spec.Type == kitchenv1alpha1.EnvironmentPreview && project.Spec.Previews.IsProtected()
-	gate := previewGate(kitchen)
-	if protected && gate == nil {
-		// Asked to protect a preview on a platform with no gate. Publishing
-		// it anyway would be the one outcome the Project explicitly did not
-		// ask for, so it gets no route at all until the platform grows a gate
-		// or the Project opts out of protection.
+	if unprotectable {
 		if err := r.deleteRoute(ctx, appNS, env.Name); err != nil {
 			return ctrl.Result{}, err
 		}
 		return r.unprotectable(ctx, env)
 	}
-	if !protected {
-		gate = nil
-	}
 
-	host := hostname(project.Name, env, kitchen.Spec.BaseDomain)
-	if err := r.applyHTTPRoute(ctx, env, appNS, labels, host, gate, gatewaySection(kitchen)); err != nil {
+	if err := r.applyHTTPRoute(ctx, env, appNS, labels, host, gate, idle, gatewaySection(kitchen)); err != nil {
 		return ctrl.Result{}, err
 	}
 
-	log.Info("reconciled environment", "namespace", appNS, "host", host, "protected", protected)
-	return r.updateStatus(ctx, env, release, kitchen, appNS, host, protected)
+	log.Info("reconciled environment", "namespace", appNS, "host", host,
+		"protected", protected, "idlesToZero", idle != nil)
+	return r.updateStatus(ctx, env, release, kitchen, appNS, host, protected, idleCond)
 }
 
 // finalize deletes the Environment's children and releases the finalizer. The
@@ -201,6 +221,12 @@ func (r *EnvironmentReconciler) finalize(ctx context.Context, env *kitchenv1alph
 		if err := r.Delete(ctx, child); err != nil && !apierrors.IsNotFound(err) {
 			return ctrl.Result{}, err
 		}
+	}
+	// The scaled object goes too, and separately: an environment that never
+	// idled has none, and a platform without the HTTP add-on has no API to
+	// ask, neither of which is a failure to tear down.
+	if err := r.deleteHTTPScaledObject(ctx, appNS, env.Name); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	controllerutil.RemoveFinalizer(env, environmentFinalizer)
@@ -290,6 +316,23 @@ func (r *EnvironmentReconciler) resolveEnv(
 	return out, false, nil
 }
 
+// desiredReplicas is how many pods an Environment runs when it is not idling.
+// Previews always run one; production runs what the Release was built with.
+func desiredReplicas(env *kitchenv1alpha1.Environment, runtimeSpec kitchenv1alpha1.RuntimeSpec) int32 {
+	if env.Spec.Type == kitchenv1alpha1.EnvironmentPreview || runtimeSpec.Replicas == nil {
+		return 1
+	}
+	return *runtimeSpec.Replicas
+}
+
+// containerPort is the port the application listens on inside its pod.
+func containerPort(runtimeSpec kitchenv1alpha1.RuntimeSpec) int32 {
+	if runtimeSpec.Port == 0 {
+		return defaultContainerPort
+	}
+	return runtimeSpec.Port
+}
+
 func (r *EnvironmentReconciler) applyDeployment(
 	ctx context.Context,
 	env *kitchenv1alpha1.Environment,
@@ -297,21 +340,25 @@ func (r *EnvironmentReconciler) applyDeployment(
 	appNS string,
 	labels map[string]string,
 	podEnv []corev1.EnvVar,
+	// idles says KEDA owns the replica count on this Deployment, because the
+	// environment is allowed to park at zero.
+	idles bool,
 ) error {
 	runtimeSpec := release.Spec.ConfigSnapshot.Runtime
-	port := runtimeSpec.Port
-	if port == 0 {
-		port = 3000
-	}
-	replicas := int32(1)
-	if env.Spec.Type != kitchenv1alpha1.EnvironmentPreview && runtimeSpec.Replicas != nil {
-		replicas = *runtimeSpec.Replicas
-	}
+	port := containerPort(runtimeSpec)
 
 	deploy := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: env.Name, Namespace: appNS}}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, deploy, func() error {
 		deploy.Labels = labels
-		deploy.Spec.Replicas = ptr.To(replicas)
+		// While the environment idles the replica count is left exactly as it
+		// stands: KEDA is what parks the pods and what brings them back, and
+		// writing a number here every reconcile would undo whichever it had
+		// just set — including the zero the whole feature exists for. A
+		// Deployment created in that state starts at the API server's default
+		// of one and is scaled down as soon as it goes quiet.
+		if !idles {
+			deploy.Spec.Replicas = ptr.To(desiredReplicas(env, runtimeSpec))
+		}
 		deploy.Spec.Selector = &metav1.LabelSelector{
 			MatchLabels: map[string]string{labelEnvironment: env.Name},
 		}
@@ -335,17 +382,14 @@ func (r *EnvironmentReconciler) applyService(
 	appNS string,
 	labels map[string]string,
 ) error {
-	port := release.Spec.ConfigSnapshot.Runtime.Port
-	if port == 0 {
-		port = 3000
-	}
+	port := containerPort(release.Spec.ConfigSnapshot.Runtime)
 	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: env.Name, Namespace: appNS}}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, svc, func() error {
 		svc.Labels = labels
 		svc.Spec.Selector = map[string]string{labelEnvironment: env.Name}
 		svc.Spec.Ports = []corev1.ServicePort{{
 			Name:       "http",
-			Port:       80,
+			Port:       servicePort,
 			TargetPort: intstr.FromInt32(port),
 		}}
 		return nil
@@ -353,11 +397,19 @@ func (r *EnvironmentReconciler) applyService(
 	return err
 }
 
-// applyHTTPRoute publishes the Environment on the shared Gateway. A gate
-// turns the same route into a protected one: traffic goes to the gate
-// instead, carrying the application's address in a header the Gateway sets —
-// so one gate serves every preview on the platform without knowing about any
-// of them in advance.
+// applyHTTPRoute publishes the Environment on the shared Gateway. Two things
+// can stand between the Gateway and the application, and they compose:
+//
+//   - A gate turns the route into a protected one: traffic goes to the gate
+//     instead, carrying the application's address in a header the Gateway sets,
+//     so one gate serves every preview on the platform without knowing about
+//     any of them in advance.
+//   - An idling environment is addressed through the interceptor, which
+//     cold-starts it. It replaces the application wherever the route would
+//     otherwise name it — as the Gateway's backend on an open environment, and
+//     as the gate's upstream on a protected one. Both keep the visitor's Host
+//     header, which is how the interceptor knows which application a request
+//     that arrived at it belongs to.
 func (r *EnvironmentReconciler) applyHTTPRoute(
 	ctx context.Context,
 	env *kitchenv1alpha1.Environment,
@@ -365,15 +417,26 @@ func (r *EnvironmentReconciler) applyHTTPRoute(
 	labels map[string]string,
 	host string,
 	gate *previewGateBackend,
+	idle *idleBackend,
 	// section is the Gateway listener to attach to. With edge TLS on, port 80
 	// carries only the redirect, so an application route that also bound there
 	// would serve the app over cleartext.
 	section *gatewayv1.SectionName,
 ) error {
-	if gate != nil {
-		// The route and the gate live in different namespaces, and Gateway
-		// API only allows that with the target namespace's permission.
-		if err := r.allowGateBackend(ctx, appNS, gate); err != nil {
+	// A route and a backend in different namespaces need the backend
+	// namespace's permission, which is what a ReferenceGrant is. It is only
+	// needed where the route itself names the other namespace: a gated route
+	// reaches the interceptor through the gate, which is an ordinary
+	// connection Gateway API has no say over.
+	switch {
+	case gate != nil:
+		if err := r.allowBackendService(ctx, appNS, PlatformNamespace, gate.Service,
+			referenceGrantName(appNS), PreviewGateName); err != nil {
+			return err
+		}
+	case idle != nil:
+		if err := r.allowBackendService(ctx, appNS, idle.Namespace, idle.Service,
+			interceptorGrantName(appNS), interceptorComponentName); err != nil {
 			return err
 		}
 	}
@@ -390,14 +453,25 @@ func (r *EnvironmentReconciler) applyHTTPRoute(
 		}
 		route.Spec.Hostnames = []gatewayv1.Hostname{gatewayv1.Hostname(host)}
 
+		// Where the application is reached: itself, or the interceptor that
+		// wakes it. Whoever forwards the request last uses this address.
+		application := upstreamAddress(appNS, env.Name, servicePort)
+		applicationRef := gatewayv1.BackendObjectReference{
+			Name: gatewayv1.ObjectName(env.Name),
+			Port: ptr.To(gatewayv1.PortNumber(servicePort)),
+		}
+		if idle != nil {
+			application = idle.Address()
+			applicationRef = gatewayv1.BackendObjectReference{
+				Name:      gatewayv1.ObjectName(idle.Service),
+				Namespace: ptr.To(gatewayv1.Namespace(idle.Namespace)),
+				Port:      ptr.To(gatewayv1.PortNumber(idle.Port)),
+			}
+		}
+
 		rule := gatewayv1.HTTPRouteRule{
 			BackendRefs: []gatewayv1.HTTPBackendRef{{
-				BackendRef: gatewayv1.BackendRef{
-					BackendObjectReference: gatewayv1.BackendObjectReference{
-						Name: gatewayv1.ObjectName(env.Name),
-						Port: ptr.To(gatewayv1.PortNumber(80)),
-					},
-				},
+				BackendRef: gatewayv1.BackendRef{BackendObjectReference: applicationRef},
 			}},
 		}
 		if gate != nil {
@@ -408,7 +482,7 @@ func (r *EnvironmentReconciler) applyHTTPRoute(
 					// is overwritten before the gate ever sees it.
 					Set: []gatewayv1.HTTPHeader{{
 						Name:  previewgate.UpstreamHeader,
-						Value: upstreamAddress(appNS, env.Name, 80),
+						Value: application,
 					}},
 				},
 			}}
@@ -428,22 +502,26 @@ func (r *EnvironmentReconciler) applyHTTPRoute(
 	return err
 }
 
-// allowGateBackend grants the project's namespace permission to route to the
-// gate. One grant covers every protected Environment of that namespace, and
-// it names the single Service — a cross-namespace reference is exactly as
-// wide as it has to be.
+// allowBackendService grants one application namespace permission to route to
+// one Service in another. It lives in the Service's namespace, because that is
+// the side being asked, and it names the single Service — a cross-namespace
+// reference is exactly as wide as it has to be. One grant covers every
+// Environment of the application namespace that routes there.
 //
 // It outlives the Environments that needed it, like the application namespace
 // itself does: a project whose previews are all closed will want it again on
 // the next pull request.
-func (r *EnvironmentReconciler) allowGateBackend(ctx context.Context, appNS string, gate *previewGateBackend) error {
+func (r *EnvironmentReconciler) allowBackendService(
+	ctx context.Context,
+	appNS, backendNS, service, name, component string,
+) error {
 	grant := &gatewayv1beta1.ReferenceGrant{ObjectMeta: metav1.ObjectMeta{
-		Name:      referenceGrantName(appNS),
-		Namespace: PlatformNamespace,
+		Name:      name,
+		Namespace: backendNS,
 	}}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, grant, func() error {
 		grant.Labels = map[string]string{
-			labelComponentKey: "kitchen-preview-gate",
+			labelComponentKey: component,
 			labelManagedByKey: labelManagedByValue,
 		}
 		grant.Spec.From = []gatewayv1beta1.ReferenceGrantFrom{{
@@ -454,17 +532,22 @@ func (r *EnvironmentReconciler) allowGateBackend(ctx context.Context, appNS stri
 		grant.Spec.To = []gatewayv1beta1.ReferenceGrantTo{{
 			Group: "",
 			Kind:  "Service",
-			Name:  ptr.To(gatewayv1beta1.ObjectName(gate.Service)),
+			Name:  ptr.To(gatewayv1beta1.ObjectName(service)),
 		}}
 		return nil
 	})
 	return err
 }
 
-// referenceGrantName is stable per application namespace, so the grant is
-// created once and found again by every Environment in it.
+// referenceGrantName and interceptorGrantName are stable per application
+// namespace, so each grant is created once and found again by every
+// Environment in it.
 func referenceGrantName(appNS string) string {
-	return "kitchen-preview-gate-" + appNS
+	return PreviewGateName + "-" + appNS
+}
+
+func interceptorGrantName(appNS string) string {
+	return interceptorComponentName + "-" + appNS
 }
 
 // deleteRoute takes an Environment off the Gateway.
@@ -484,6 +567,10 @@ func (r *EnvironmentReconciler) updateStatus(
 	appNS string,
 	host string,
 	protected bool,
+	// idleCond is the ScaleToZero condition to record, or nil on a platform
+	// that idles nothing — where the condition would be the same line on every
+	// Environment and say nothing.
+	idleCond *metav1.Condition,
 ) (ctrl.Result, error) {
 	scheme := platformScheme(kitchen)
 
@@ -524,6 +611,7 @@ func (r *EnvironmentReconciler) updateStatus(
 		})
 	}
 	setCond(condRouteProgrammed, metav1.ConditionTrue, "Applied", "HTTPRoute applied")
+	recordScaleToZero(env, idleCond)
 	switch {
 	case protected:
 		setCond(condPreviewProtected, metav1.ConditionTrue, "GatedByPlatformLogin",
@@ -566,6 +654,9 @@ func (r *EnvironmentReconciler) unprotectable(
 
 	env.Status.Phase = kitchenv1alpha1.EnvironmentPending
 	env.Status.URL = ""
+	// An environment with no route has nothing that could cold-start it, so it
+	// is not idling and does not report on it.
+	recordScaleToZero(env, nil)
 	for _, condition := range []metav1.Condition{
 		{Type: condPreviewProtected, Status: metav1.ConditionFalse, Reason: "PreviewGateUnavailable", Message: message},
 		{Type: condRouteProgrammed, Status: metav1.ConditionFalse, Reason: "PreviewGateUnavailable", Message: message},
@@ -644,11 +735,35 @@ func (r *EnvironmentReconciler) mapChildToEnvironment(_ context.Context, obj cli
 	return []ctrl.Request{{NamespacedName: types.NamespacedName{Namespace: ns, Name: name}}}
 }
 
+// mapPlatformToEnvironments enqueues every Environment when the platform
+// configuration changes.
+//
+// Routing follows the Kitchen object — the base domain, whether there is a gate
+// to protect previews with, whether environments may idle to zero — and a live
+// Environment has nothing else that would reconcile it again. Without this, a
+// platform switch would only reach the environments that happened to change
+// after it was flipped.
+func (r *EnvironmentReconciler) mapPlatformToEnvironments(ctx context.Context, _ client.Object) []ctrl.Request {
+	environments := &kitchenv1alpha1.EnvironmentList{}
+	if err := r.List(ctx, environments); err != nil {
+		logf.FromContext(ctx).Error(err, "could not list environments after a platform change")
+		return nil
+	}
+	requests := make([]ctrl.Request, 0, len(environments.Items))
+	for _, env := range environments.Items {
+		requests = append(requests, ctrl.Request{NamespacedName: types.NamespacedName{
+			Namespace: env.Namespace, Name: env.Name,
+		}})
+	}
+	return requests
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *EnvironmentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&kitchenv1alpha1.Environment{}).
 		Watches(&appsv1.Deployment{}, handler.EnqueueRequestsFromMapFunc(r.mapChildToEnvironment)).
+		Watches(&kitchenv1alpha1.Kitchen{}, handler.EnqueueRequestsFromMapFunc(r.mapPlatformToEnvironments)).
 		Named("environment").
 		Complete(r)
 }

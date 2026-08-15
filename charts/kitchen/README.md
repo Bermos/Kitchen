@@ -438,6 +438,89 @@ rotates it, which signs every preview visitor out; deleting the client secret
 makes the operator register a new client on the next reconcile (the old one is
 then orphaned at the identity provider).
 
+## Scale to zero
+
+An environment nobody is using can drop to no pods at all, and the next request
+to its URL starts it again. That is what makes a dozen open pull requests
+nearly free: a preview costs a URL and a Deployment record until someone opens
+it.
+
+It is off by default. Turning it on installs [KEDA](https://keda.sh) and its
+[HTTP add-on](https://github.com/kedacore/http-add-on) as sub-charts and tells
+the operator to use them:
+
+```sh
+--set scaleToZero.enabled=true
+```
+
+Which environments actually idle is then each project's own decision:
+
+```yaml
+spec:
+  scaleToZero:
+    mode: previews     # previews (default) | always | never
+    idleAfter: 5m      # quiet for this long, then no pods
+    maxReplicas: 5     # ceiling once traffic arrives
+```
+
+`previews` idles preview environments and leaves production running — the
+default, because an open pull request costs nothing while nobody is looking at
+it and real users should never pay a cold start. `always` idles production too;
+it is deliberately an opt-in, and until it is given a production environment
+never drops below `spec.runtime.replicas`. A `maxReplicas` below the replica
+count the environment already runs is raised to it, so idling can never shrink
+an environment.
+
+### What the first request pays
+
+An idling environment's URL does not point at the application any more: it
+points at the add-on's **interceptor**, which holds the request, asks KEDA to
+scale the workload up, and forwards it once a pod answers. That wait is the
+cold start, and it is real — a few seconds where the image is already on the
+node, considerably longer where it has to be pulled first. The interceptor
+gives up after `keda-add-ons-http.interceptor.readinessTimeout` (90s here), so
+a genuinely broken environment fails visibly instead of hanging:
+
+```sh
+--set keda-add-ons-http.interceptor.readinessTimeout=3m
+```
+
+Protected previews compose with it: the route still goes to the forward-auth
+gate, and it is the gate that is pointed at the interceptor. A visitor signs in
+first and cold-starts the application second.
+
+### Watching it
+
+The Environment says what it decided and why:
+
+```sh
+kubectl get environment shop-pr-42 \
+  -o jsonpath='{.status.conditions[?(@.type=="ScaleToZero")].message}'
+kubectl -n kitchen-shop get httpscaledobject
+```
+
+Nothing here is allowed to take an application off the air. If the
+`HTTPScaledObject` API is not served — the switch turned on without the
+add-on, or the add-on still starting — the environment falls back to plain
+Deployment routing with its own replicas and says so in that condition, rather
+than parking behind an interceptor with nothing to wake it.
+
+### On a cluster that already runs KEDA
+
+Take the sub-charts out of the release and point the operator at the
+interceptor you have:
+
+```sh
+--set scaleToZero.enabled=true \
+--set keda.enabled=false \
+--set keda-add-ons-http.enabled=false \
+--set scaleToZero.interceptor.namespace=keda
+```
+
+Turning `scaleToZero.enabled` back off returns every environment to plain
+Deployment routing on the next reconcile and deletes the scaled objects; the
+sub-charts' own resources go with the next `helm upgrade`.
+
 ## Platform health
 
 The operator surveys the platform's workloads on every reconcile and records
@@ -686,6 +769,19 @@ kubectl delete namespace kitchen-system
 | `previewGate.host` | `""` | Where logins come back to. Defaults to `previews.<baseDomain>`. |
 | `previewGate.replicas` | `2` | The gate is in the request path of every protected preview. |
 | `previewGate.sessionTTL` | `8h` | How long a visitor stays signed in to a preview. |
+| `scaleToZero.enabled` | `false` | Idle environments down to no pods. Installs KEDA and the HTTP add-on, and turns the operator's switch on. See [Scale to zero](#scale-to-zero). |
+| `scaleToZero.interceptor.service` | `keda-add-ons-http-interceptor-proxy` | Interceptor Service idling environments are routed through. The add-on names it after its own chart, so this is a constant. |
+| `scaleToZero.interceptor.namespace` | `""` | Defaults to the release namespace. |
+| `scaleToZero.interceptor.port` | `8080` | Port the interceptor accepts traffic on. |
+| `keda.enabled` | unset | Set to `false` to keep the feature without installing KEDA (a cluster that already runs one). Unset, it follows `scaleToZero.enabled`. |
+| `keda.crds.install` | `true` | Install KEDA's CRDs alongside it. |
+| `keda.image.pullPolicy` | `IfNotPresent` | Every KEDA tag is pinned by the sub-chart version, as elsewhere in this chart. |
+| `keda-add-ons-http.enabled` | unset | Same escape hatch for the HTTP add-on. |
+| `keda-add-ons-http.crds.install` | `true` | Install `HTTPScaledObject` and `InterceptorRoute`. |
+| `keda-add-ons-http.interceptor.replicas.min` | `2` | The interceptor is in the request path of every idling environment. |
+| `keda-add-ons-http.*.pullPolicy` | `IfNotPresent` | Interceptor, operator and scaler alike; a restart that has to reach a registry first is a restart that can fail. |
+| `keda-add-ons-http.interceptor.readinessTimeout` | `90s` | How long the interceptor holds the first request while the environment cold-starts. |
+| `keda-add-ons-http.scaler.replicas` | `1` | KEDA polls the external scaler; no request depends on it. |
 | `api.port` | `8092` | Container port for the REST API. |
 | `api.service.type` / `.port` / `.annotations` | `ClusterIP` / `80` / `{}` | |
 | `api.route.enabled` | `true` | Publish the API on the shared Gateway under `/api/`. |

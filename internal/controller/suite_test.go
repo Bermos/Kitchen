@@ -77,6 +77,9 @@ var _ = BeforeSuite(func() {
 		CRDDirectoryPaths: []string{
 			filepath.Join("..", "..", "config", "crd", "bases"),
 			filepath.Join("..", "..", "test", "crd", "gateway-api"),
+			// The KEDA HTTP add-on's HTTPScaledObject: what the operator
+			// writes to make an environment idle to zero.
+			filepath.Join("..", "..", "test", "crd", "keda-http"),
 		},
 		ErrorIfCRDPathMissing: true,
 	}

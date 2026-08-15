@@ -156,6 +156,11 @@ release simply fails.
 When adding a dependency that ships an admission webhook for its own CRs,
 assume its CRs belong in the operator.
 
+The same split holds for scale-to-zero: the chart installs KEDA and the HTTP
+add-on (`scaleToZero.enabled`, off by default), and `EnvironmentReconciler`
+writes the per-environment `HTTPScaledObject` — one per Environment, so it
+could never have been a template.
+
 cert-manager's kinds are addressed as `unstructured` objects rather than
 through its Go types, to avoid tying the build to its release cadence.
 
@@ -207,6 +212,21 @@ through its Go types, to avoid tying the build to its release cadence.
   `helm uninstall` deletes the namespace and every PVC in it, so removing the
   release would destroy the accounts database and the telemetry store. Any
   change to that template must keep the annotation.
+- **An idling Deployment's replica count belongs to KEDA, not to the
+  reconciler.** While an Environment is allowed to scale to zero,
+  `applyDeployment` does not touch `spec.replicas` at all: the number it would
+  write is the one the autoscaler has just moved, so writing it back would undo
+  every scale decision — including the zero the feature exists for. The
+  fallback path (idling off, or the add-on's API unavailable) sets it again,
+  which is what brings a parked environment back.
+- **Routing an idling environment means replacing the application's address,
+  wherever it appears.** For an open environment that is the HTTPRoute's
+  backend; for a *protected* preview the route still points at the forward-auth
+  gate, and it is the gate's upstream header that has to name the interceptor
+  instead — pointing the route at the interceptor there would take the gate out
+  of the path and publish the preview. Both work because everything in front
+  keeps the visitor's `Host` header, which is the only thing the interceptor
+  routes on.
 - **Anything that should appear in the component survey needs
   `app.kubernetes.io/part-of: kitchen`** and, to be readable,
   `app.kubernetes.io/component`. The survey selects on the former rather than on
