@@ -140,14 +140,19 @@ data:
           # Map(String, String) because a log field has no schema and the
           # query language compares numerically where it is asked to.
           #
+          # A value `to_string` will not take — an array, which `flatten`
+          # leaves whole rather than exploding into keys — keeps its JSON
+          # instead of becoming an empty string, so `tags:/canary/` can still
+          # find it. A field that is present must not read as absent.
+          #
           # The key count is capped. A line that carries hundreds of fields is
           # a dump rather than a log, and letting one widen the map would put
           # its keys in every part the batch writes.
           .fields = {}
           if length(structured) > 0 {
-            flat = object(flatten(structured, ".")) ?? {}
+            flat = object(flatten(structured, "."))
             if length(flat) <= {{ int .Values.logs.maxStructuredFields }} {
-              .fields = map_values(flat) -> |value| { to_string(value) ?? "" }
+              .fields = map_values(flat) -> |value| { to_string(value) ?? encode_json(value) }
             }
           }
 
