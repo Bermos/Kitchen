@@ -75,6 +75,11 @@ var _ = Describe("Kitchen Controller", func() {
 		AfterEach(func() {
 			for _, obj := range []client.Object{
 				&gatewayv1.Gateway{ObjectMeta: metav1.ObjectMeta{Name: SharedGatewayName, Namespace: PlatformNamespace}},
+				// Every reconcile here creates these, the singleton being in
+				// acme mode. The ClusterIssuer is cluster-scoped, so leaving
+				// it behind would leak into whatever runs next.
+				acmeIssuerObject(),
+				wildcardCertificateObject(),
 				&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "kitchen-cloudflared", Namespace: PlatformNamespace}},
 				&kitchenv1alpha1.Kitchen{ObjectMeta: metav1.ObjectMeta{Name: KitchenSingletonName}},
 				&kitchenv1alpha1.Kitchen{ObjectMeta: metav1.ObjectMeta{Name: "other"}},
