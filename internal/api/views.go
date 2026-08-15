@@ -211,6 +211,146 @@ func newEnvironmentView(env *kitchenv1alpha1.Environment) environmentView {
 	return view
 }
 
+// The introspection views answer a different question from the ones above:
+// not what the platform was asked for, but what is running because of it. A
+// Deployment's replica counts, its pods' restarts and the objects the
+// reconciler materialized are Kubernetes' own vocabulary, and the views keep
+// it — an operator reading them is looking for exactly the words `kubectl`
+// would have shown, and inventing synonyms would only make them translate.
+
+// replicaCountsView is the "3 of 3" the environment view reads at a glance,
+// with the two counts that tell a rollout from a steady state underneath it.
+type replicaCountsView struct {
+	Desired   int32 `json:"desired"`
+	Ready     int32 `json:"ready"`
+	Available int32 `json:"available"`
+	Updated   int32 `json:"updated"`
+}
+
+// resourcesView is what the workload asked the scheduler for, as written —
+// the quantities come straight off the container, so `250m` stays `250m`.
+type resourcesView struct {
+	CPURequest    string `json:"cpuRequest,omitempty"`
+	CPULimit      string `json:"cpuLimit,omitempty"`
+	MemoryRequest string `json:"memoryRequest,omitempty"`
+	MemoryLimit   string `json:"memoryLimit,omitempty"`
+}
+
+type podView struct {
+	Name      string     `json:"name"`
+	Phase     string     `json:"phase"`
+	Ready     bool       `json:"ready"`
+	Restarts  int32      `json:"restarts"`
+	Node      string     `json:"node,omitempty"`
+	StartedAt *time.Time `json:"startedAt,omitempty"`
+	// Message is why the pod is not running: the container's waiting reason
+	// (ImagePullBackOff, CrashLoopBackOff) or the pod's own status message.
+	// It is the line an operator would otherwise go to `kubectl describe` for.
+	Message string `json:"message,omitempty"`
+}
+
+// workloadView is the Deployment behind an Environment as it is running now.
+type workloadView struct {
+	Environment string            `json:"environment"`
+	Namespace   string            `json:"namespace"`
+	Deployment  string            `json:"deployment,omitempty"`
+	Image       string            `json:"image,omitempty"`
+	Replicas    replicaCountsView `json:"replicas"`
+	// Restarts is every restart across the environment's pods, which is the
+	// number that says a workload is crash-looping rather than merely slow.
+	Restarts int32 `json:"restarts"`
+	// StartedAt is when the oldest running pod started, so uptime is measured
+	// against the workload rather than against the Environment object, which
+	// outlives any number of rollouts.
+	StartedAt *time.Time     `json:"startedAt,omitempty"`
+	Resources *resourcesView `json:"resources,omitempty"`
+	Pods      []podView      `json:"pods,omitempty"`
+	// Message explains an environment with no workload at all, which is a
+	// normal state — a preview whose route is withheld, an environment the
+	// reconciler has not reached yet — and not an error to report as one.
+	Message string `json:"message,omitempty"`
+}
+
+// materializedObjectView is one Kubernetes object the operator created for an
+// Environment, carrying the object itself.
+type materializedObjectView struct {
+	Kind       string `json:"kind"`
+	APIVersion string `json:"apiVersion"`
+	Name       string `json:"name"`
+	Namespace  string `json:"namespace"`
+	// Present is false for an object the reconciler has not created yet. It
+	// is reported rather than omitted, because "the HTTPRoute is missing" is
+	// the answer to most of the questions this endpoint gets asked.
+	Present bool `json:"present"`
+	// Manifest is the object as the API server holds it, minus the
+	// bookkeeping (managedFields, the last-applied annotation) that no reader
+	// of a manifest wants. Status is kept: for an HTTPRoute it is where the
+	// Gateway says whether it accepted the route.
+	Manifest map[string]any `json:"manifest,omitempty"`
+	Message  string         `json:"message,omitempty"`
+}
+
+type objectsView struct {
+	Environment string                   `json:"environment"`
+	Namespace   string                   `json:"namespace"`
+	Objects     []materializedObjectView `json:"objects"`
+}
+
+// clusterStatusView is the cluster the platform owns, as the status bar shows
+// it: "chef · 8 nodes".
+type clusterStatusView struct {
+	Name       string `json:"name,omitempty"`
+	Nodes      int    `json:"nodes"`
+	ReadyNodes int    `json:"readyNodes"`
+	// Message carries why the nodes could not be counted, which on an
+	// installation upgraded from before this endpoint means the operator's
+	// ClusterRole has not been rolled forward yet.
+	Message string `json:"message,omitempty"`
+}
+
+type tunnelStatusView struct {
+	Enabled   bool   `json:"enabled"`
+	Connected bool   `json:"connected"`
+	Message   string `json:"message,omitempty"`
+}
+
+// buildQueueView is the "1 of 2" in the status bar: builds running against the
+// platform's concurrency limit, and how many are waiting for a slot.
+type buildQueueView struct {
+	Running  int32 `json:"running"`
+	Capacity int32 `json:"capacity"`
+	Queued   int32 `json:"queued"`
+}
+
+type gatewayStatusView struct {
+	Address    string `json:"address,omitempty"`
+	Programmed bool   `json:"programmed"`
+	Message    string `json:"message,omitempty"`
+}
+
+// componentStatusView is one platform workload out of the Kitchen singleton's
+// component survey — the operator's own answer to "is what the chart installed
+// actually running".
+type componentStatusView struct {
+	Name      string `json:"name"`
+	Kind      string `json:"kind"`
+	Healthy   bool   `json:"healthy"`
+	Available int32  `json:"available"`
+	Desired   int32  `json:"desired"`
+	Message   string `json:"message,omitempty"`
+}
+
+// statusView is everything the dashboard's status bar shows, in one request.
+// It overlaps /settings on the gateway deliberately: settings is the platform
+// as configured, this is the platform as it is running.
+type statusView struct {
+	Cluster    clusterStatusView     `json:"cluster"`
+	Tunnel     tunnelStatusView      `json:"tunnel"`
+	Builds     buildQueueView        `json:"builds"`
+	Gateway    gatewayStatusView     `json:"gateway"`
+	Components []componentStatusView `json:"components,omitempty"`
+}
+
 type connectionView struct {
 	Name         string          `json:"name"`
 	Provider     string          `json:"provider"`

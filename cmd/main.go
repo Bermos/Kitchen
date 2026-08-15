@@ -327,7 +327,11 @@ func main() {
 	// platform to be configured. The dashboard rides on the same server:
 	// static files outside /api/, resolved against the same Kitchen object.
 	if err := mgr.Add(&api.Server{
-		Client:         mgr.GetClient(),
+		Client: mgr.GetClient(),
+		// Pods and nodes are read through the uncached reader: the
+		// introspection endpoints are the only thing that asks for them, and
+		// caching them would mean watching every pod in the cluster.
+		APIReader:      mgr.GetAPIReader(),
 		Namespace:      operatorNamespace,
 		BindAddr:       apiAddr,
 		ExtraAudiences: splitList(apiAudiences),

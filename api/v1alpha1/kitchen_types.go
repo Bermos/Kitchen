@@ -221,6 +221,14 @@ type KitchenSpec struct {
 	// +kubebuilder:validation:MinLength=1
 	BaseDomain string `json:"baseDomain"`
 
+	// ClusterName is what this cluster is called in the dashboard's status
+	// bar. Kitchen owns the cluster it is installed into, so this names the
+	// installation as much as the machines: it is what someone with a staging
+	// platform and a production one reads to tell which is on screen.
+	// Defaults to the first label of the base domain.
+	// +optional
+	ClusterName string `json:"clusterName,omitempty"`
+
 	// +optional
 	API APISpec `json:"api,omitempty"`
 

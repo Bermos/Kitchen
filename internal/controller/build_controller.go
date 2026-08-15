@@ -55,7 +55,10 @@ const (
 	// and still keeps finished jobs from piling up in the namespace.
 	buildJobTTLSeconds = 3600
 
-	defaultBuildConcurrency = 2
+	// DefaultBuildConcurrency is how many builds run at once when the Kitchen
+	// object names no limit. It is exported because the API reports the queue
+	// against it, and a status bar reading "1 of 0" would be its own bug.
+	DefaultBuildConcurrency = 2
 )
 
 // registryConfig is the expected shape of a dockerRegistry Connection's config.
@@ -172,7 +175,7 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 // gateConcurrency keeps the Build queued while the platform-wide concurrency
 // limit is reached.
 func (r *BuildReconciler) gateConcurrency(ctx context.Context, build *kitchenv1alpha1.Build) (bool, ctrl.Result) {
-	limit := int32(defaultBuildConcurrency)
+	limit := int32(DefaultBuildConcurrency)
 	kitchen := &kitchenv1alpha1.Kitchen{}
 	if err := r.Get(ctx, types.NamespacedName{Name: KitchenSingletonName}, kitchen); err == nil {
 		if kitchen.Spec.Builds.Concurrency > 0 {

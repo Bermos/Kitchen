@@ -40,6 +40,8 @@ metadata:
   name: default
 spec:
   baseDomain: apps.example.com          # generated URLs: <slug>.apps.example.com
+  clusterName: chef                     # what the dashboard's status bar calls this cluster;
+                                        # defaults to the first label of baseDomain
   api:
     externalURL: https://kitchen.apps.example.com   # operator API + webhook receiver; defaults to kitchen.<baseDomain>
   ingress:

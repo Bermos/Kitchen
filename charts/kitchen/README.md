@@ -611,6 +611,7 @@ kubectl delete namespace kitchen-system
 | `kitchen.create` | `true` | Create the `Kitchen` singleton. Needs `baseDomain`. |
 | `kitchen.applyOnUpgrade` | `false` | Re-apply the singleton on every upgrade. |
 | `kitchen.baseDomain` | `""` | Generated URLs are `<slug>.<baseDomain>`. |
+| `kitchen.clusterName` | `""` | What the dashboard's status bar calls this cluster. Defaults to the first label of `baseDomain`. |
 | `kitchen.api.externalURL` | `""` | Defaults to `kitchen.<baseDomain>`, under the scheme `kitchen.tls.mode` serves. |
 | `kitchen.ingress.gatewayClassName` | `cilium` | GatewayClass for the shared Gateway. |
 | `kitchen.ingress.cloudflared.enabled` | `false` | Run a cloudflared tunnel as the edge. |

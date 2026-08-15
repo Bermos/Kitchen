@@ -80,6 +80,10 @@ kitchen:
   # -- Base domain for generated URLs: `<slug>.<baseDomain>`. Requires wildcard
   # DNS, and wildcard TLS unless cloudflared terminates at the edge.
   baseDomain: ""
+  # -- What this cluster is called in the dashboard's status bar — how someone
+  # running a staging platform and a production one tells which is on screen.
+  # Defaults to the first label of `kitchen.baseDomain`.
+  clusterName: ""
   api:
     # -- Public base URL of the operator API and git webhook receiver.
     # Defaults to `kitchen.<baseDomain>` under the scheme `kitchen.tls.mode`
