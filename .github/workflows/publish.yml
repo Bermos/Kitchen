@@ -4,6 +4,16 @@ on:
   push:
     tags:
       - "v*"
+  # How a release normally gets here: release.yml calls this workflow directly
+  # once release-please has tagged the commit, because a tag pushed with
+  # GITHUB_TOKEN never fires the `push: tags` trigger above. That trigger is
+  # left in place for a tag pushed by a person.
+  workflow_call:
+    inputs:
+      version:
+        description: "Version to publish, without the leading v (e.g. 0.2.0)"
+        required: true
+        type: string
   workflow_dispatch:
     inputs:
       version:
@@ -30,13 +40,15 @@ jobs:
     steps:
       - name: Resolve the version and image names
         id: resolve
+        env:
+          # Through the environment rather than an expression: on a manual run
+          # this is whatever the operator typed into the form, and ${{ }} would
+          # paste it into the shell. Empty on a tag push, where the tag is the
+          # version.
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = workflow_dispatch ]; then
-            version='${{ inputs.version }}'
-          else
-            version="${GITHUB_REF_NAME#v}"
-          fi
+          version="${INPUT_VERSION:-${GITHUB_REF_NAME#v}}"
           # Chart and image versions are SemVer; Helm rejects anything else.
           if ! [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
             echo "::error::'${version}' is not a SemVer version"
@@ -101,6 +113,11 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # Stamped into the binaries with -ldflags, which is how the dashboard
+          # knows which release it is running. The build stage compiles the
+          # source and nothing else, so it cannot work this out for itself.
+          build-args: |
+            VERSION=${{ needs.version.outputs.version }}
           # Reads the cache the branch builds populate, and deliberately
           # writes none. Actions caches are ref-scoped: anything exported from
           # a run on refs/tags/vX.Y.Z cannot be read by the next release's tag,

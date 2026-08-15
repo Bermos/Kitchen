@@ -1,0 +1,39 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "packages": {
+    ".": {
+      "release-type": "go",
+      "package-name": "kitchen",
+      "changelog-path": "CHANGELOG.md",
+      "include-component-in-tag": false,
+      "extra-files": [
+        "charts/kitchen/Chart.yaml",
+        { "type": "json", "path": "ui/package.json", "jsonpath": "$.version" },
+        { "type": "json", "path": "ui/package-lock.json", "jsonpath": "$.version" },
+        { "type": "json", "path": "ui/package-lock.json", "jsonpath": "$.packages[''].version" },
+        { "type": "json", "path": "auth/package.json", "jsonpath": "$.version" },
+        { "type": "json", "path": "auth/package-lock.json", "jsonpath": "$.version" },
+        { "type": "json", "path": "auth/package-lock.json", "jsonpath": "$.packages[''].version" }
+      ]
+    }
+  },
+  "include-v-in-tag": true,
+  "bootstrap-sha": "821bf5f4a7cb6ac24723fdd32c29c3d397d114b0",
+  "bump-minor-pre-major": true,
+  "bump-patch-for-minor-pre-major": false,
+  "pull-request-title-pattern": "chore(release): kitchen ${version}",
+  "pull-request-header": "The next release, as the commits on main describe it. Merging this tags it and publishes the images and the chart.",
+  "changelog-sections": [
+    { "type": "feat", "section": "Features" },
+    { "type": "fix", "section": "Bug fixes" },
+    { "type": "perf", "section": "Performance" },
+    { "type": "revert", "section": "Reverts" },
+    { "type": "refactor", "section": "Refactoring" },
+    { "type": "docs", "section": "Documentation" },
+    { "type": "build", "section": "Build and dependencies" },
+    { "type": "ci", "section": "Continuous integration", "hidden": true },
+    { "type": "test", "section": "Tests", "hidden": true },
+    { "type": "style", "section": "Style", "hidden": true },
+    { "type": "chore", "section": "Chores", "hidden": true }
+  ]
+}
