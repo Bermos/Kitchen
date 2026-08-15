@@ -24,14 +24,20 @@ import (
 	"sort"
 	"strings"
 
+	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/clickhouse"
+	"github.com/Bermos/Kitchen/internal/controller"
 )
 
 // get reads one object out of the platform namespace.
@@ -215,6 +221,222 @@ func (s *Server) createProject(w http.ResponseWriter, req *http.Request) {
 		Actor:   callerName(caller),
 	})
 	writeJSON(w, http.StatusCreated, newProjectView(project))
+}
+
+// patchProjectRequest carries the parts of a project a user can change after
+// creating it. Every field is optional; absent ones keep their value. The
+// repository and the two connections are deliberately not here: rebinding a
+// project to another repository or registry is a different project.
+type patchProjectRequest struct {
+	ProductionBranch  *string          `json:"productionBranch,omitempty"`
+	Previews          *bool            `json:"previews,omitempty"`
+	PreviewsProtected *bool            `json:"previewsProtected,omitempty"`
+	BuildStrategy     *string          `json:"buildStrategy,omitempty"`
+	DockerfilePath    *string          `json:"dockerfilePath,omitempty"`
+	RootDirectory     *string          `json:"rootDirectory,omitempty"`
+	Env               *[]envVarRequest `json:"env,omitempty"`
+	Port              *int32           `json:"port,omitempty"`
+	Replicas          *int32           `json:"replicas,omitempty"`
+	CPU               *string          `json:"cpu,omitempty"`
+	Memory            *string          `json:"memory,omitempty"`
+}
+
+// envVarRequest mirrors envVarView, so what a client reads is what it writes
+// back. At most one source may be set; a bare name with no source is refused.
+type envVarRequest struct {
+	Name         string      `json:"name"`
+	Value        string      `json:"value,omitempty"`
+	PreviewValue string      `json:"previewValue,omitempty"`
+	FromSecret   *keyRefView `json:"fromSecret,omitempty"`
+	FromClaim    *keyRefView `json:"fromClaim,omitempty"`
+}
+
+// envVarsFromRequest turns the request's variables into the spec's, refusing
+// ambiguity: a variable naming two sources would silently prefer one of them.
+func envVarsFromRequest(vars []envVarRequest) ([]kitchenv1alpha1.EnvVar, error) {
+	out := make([]kitchenv1alpha1.EnvVar, 0, len(vars))
+	seen := map[string]bool{}
+	for _, v := range vars {
+		name := strings.TrimSpace(v.Name)
+		if name == "" {
+			return nil, errors.New("every env var needs a name")
+		}
+		if seen[name] {
+			return nil, fmt.Errorf("env var %q appears twice", name)
+		}
+		seen[name] = true
+		sources := 0
+		if v.Value != "" {
+			sources++
+		}
+		if v.FromSecret != nil {
+			sources++
+		}
+		if v.FromClaim != nil {
+			sources++
+		}
+		if sources > 1 {
+			return nil, fmt.Errorf("env var %q names more than one source: use value, fromSecret or fromClaim, not several", name)
+		}
+		spec := kitchenv1alpha1.EnvVar{Name: name, Value: v.Value, PreviewValue: v.PreviewValue}
+		if v.FromSecret != nil {
+			if v.FromSecret.Name == "" || v.FromSecret.Key == "" {
+				return nil, fmt.Errorf("env var %q: fromSecret needs both a name and a key", name)
+			}
+			spec.SecretRef = &kitchenv1alpha1.SecretKeySelector{Name: v.FromSecret.Name, Key: v.FromSecret.Key}
+		}
+		if v.FromClaim != nil {
+			if v.FromClaim.Name == "" || v.FromClaim.Key == "" {
+				return nil, fmt.Errorf("env var %q: fromClaim needs both a name and a key", name)
+			}
+			spec.FromResourceClaim = &kitchenv1alpha1.ResourceClaimKeySelector{Name: v.FromClaim.Name, Key: v.FromClaim.Key}
+		}
+		out = append(out, spec)
+	}
+	return out, nil
+}
+
+// applyResource sets one compute resource as both request and limit —
+// applications get the guaranteed class, not a burstable surprise — or clears
+// it for an empty value.
+func applyResource(resources *corev1.ResourceRequirements, name corev1.ResourceName, value string) error {
+	if value == "" {
+		delete(resources.Requests, name)
+		delete(resources.Limits, name)
+		return nil
+	}
+	quantity, err := resource.ParseQuantity(value)
+	if err != nil {
+		return fmt.Errorf("%s must be a Kubernetes quantity like 250m or 512Mi (got %q)", name, value)
+	}
+	if resources.Requests == nil {
+		resources.Requests = corev1.ResourceList{}
+	}
+	if resources.Limits == nil {
+		resources.Limits = corev1.ResourceList{}
+	}
+	resources.Requests[name] = quantity
+	resources.Limits[name] = quantity
+	return nil
+}
+
+func (s *Server) patchProject(w http.ResponseWriter, req *http.Request) {
+	ctx := req.Context()
+
+	project := &kitchenv1alpha1.Project{}
+	if err := s.get(ctx, req.PathValue("name"), project); err != nil {
+		s.writeError(w, err)
+		return
+	}
+
+	body := patchProjectRequest{}
+	if err := decodeBody(req, &body); err != nil {
+		badRequest(w, "%s", err.Error())
+		return
+	}
+
+	patch := client.MergeFrom(project.DeepCopy())
+	if body.ProductionBranch != nil {
+		branch := strings.TrimSpace(*body.ProductionBranch)
+		if branch == "" {
+			badRequest(w, "productionBranch cannot be empty: every project has a branch whose builds go to production")
+			return
+		}
+		project.Spec.Source.ProductionBranch = branch
+	}
+	if body.Previews != nil {
+		project.Spec.Previews.Enabled = *body.Previews
+	}
+	if body.PreviewsProtected != nil {
+		project.Spec.Previews.Protected = body.PreviewsProtected
+	}
+	if body.BuildStrategy != nil {
+		strategy := kitchenv1alpha1.BuildStrategy(strings.TrimSpace(*body.BuildStrategy))
+		switch strategy {
+		case kitchenv1alpha1.BuildStrategyAuto, kitchenv1alpha1.BuildStrategyDockerfile, kitchenv1alpha1.BuildStrategyBuildpacks:
+			project.Spec.Build.Strategy = strategy
+		default:
+			badRequest(w, "buildStrategy must be auto, dockerfile or buildpacks (got %q)", *body.BuildStrategy)
+			return
+		}
+	}
+	if body.DockerfilePath != nil {
+		project.Spec.Build.DockerfilePath = strings.TrimSpace(*body.DockerfilePath)
+	}
+	if body.RootDirectory != nil {
+		project.Spec.Build.RootDirectory = strings.TrimSpace(*body.RootDirectory)
+	}
+	if body.Env != nil {
+		env, err := envVarsFromRequest(*body.Env)
+		if err != nil {
+			badRequest(w, "%s", err.Error())
+			return
+		}
+		project.Spec.Env = env
+	}
+	if body.Port != nil {
+		if *body.Port < 1 || *body.Port > 65535 {
+			badRequest(w, "port must be between 1 and 65535 (got %d)", *body.Port)
+			return
+		}
+		project.Spec.Runtime.Port = *body.Port
+	}
+	if body.Replicas != nil {
+		if *body.Replicas < 1 {
+			badRequest(w, "replicas must be at least 1 (got %d) — production never scales to zero", *body.Replicas)
+			return
+		}
+		project.Spec.Runtime.Replicas = body.Replicas
+	}
+	if body.CPU != nil {
+		if err := applyResource(&project.Spec.Runtime.Resources, corev1.ResourceCPU, strings.TrimSpace(*body.CPU)); err != nil {
+			badRequest(w, "%s", err.Error())
+			return
+		}
+	}
+	if body.Memory != nil {
+		if err := applyResource(&project.Spec.Runtime.Resources, corev1.ResourceMemory, strings.TrimSpace(*body.Memory)); err != nil {
+			badRequest(w, "%s", err.Error())
+			return
+		}
+	}
+
+	if err := s.Client.Patch(ctx, project, patch); err != nil {
+		s.writeError(w, err)
+		return
+	}
+
+	caller, _ := CallerFrom(ctx)
+	s.log().Info("project settings changed through the api",
+		"project", project.Name, "caller", callerName(caller))
+	writeJSON(w, http.StatusOK, newProjectView(project))
+}
+
+func (s *Server) deleteProject(w http.ResponseWriter, req *http.Request) {
+	ctx := req.Context()
+
+	project := &kitchenv1alpha1.Project{}
+	if err := s.get(ctx, req.PathValue("name"), project); err != nil {
+		s.writeError(w, err)
+		return
+	}
+	if err := s.Client.Delete(ctx, project); err != nil {
+		s.writeError(w, err)
+		return
+	}
+
+	caller, _ := CallerFrom(ctx)
+	s.log().Info("project deleted through the api",
+		"project", project.Name, "caller", callerName(caller))
+	s.Activity.Record(ctx, clickhouse.Event{
+		Type:    clickhouse.EventProjectDeleted,
+		Project: project.Name,
+		Message: fmt.Sprintf("project %s deleted", project.Name),
+		Actor:   callerName(caller),
+	})
+	// 202, not 200: the operator's finalizer still has environments to tear
+	// down and a namespace to remove when this response goes out.
+	writeJSON(w, http.StatusAccepted, newProjectView(project))
 }
 
 // builds returns a project's builds, or every build when project is empty,
@@ -638,6 +860,84 @@ func (s *Server) patchEnvironment(w http.ResponseWriter, req *http.Request) {
 		Actor:       callerName(caller),
 	})
 	writeJSON(w, http.StatusOK, newEnvironmentView(env))
+}
+
+// cancelBuild stops a queued or running build: the BuildKit job is deleted and
+// the Build itself is kept, phase Cancelled — the history of who asked for
+// what is the point of Build objects, so cancellation never removes one.
+func (s *Server) cancelBuild(w http.ResponseWriter, req *http.Request) {
+	ctx := req.Context()
+
+	build := &kitchenv1alpha1.Build{}
+	if err := s.get(ctx, req.PathValue("name"), build); err != nil {
+		s.writeError(w, err)
+		return
+	}
+	switch build.Status.Phase {
+	case kitchenv1alpha1.BuildSucceeded, kitchenv1alpha1.BuildFailed, kitchenv1alpha1.BuildCancelled:
+		writeJSON(w, http.StatusConflict, errorBody{
+			Error: fmt.Sprintf("build %s already finished (%s): there is nothing to cancel", build.Name, build.Status.Phase),
+		})
+		return
+	}
+
+	job := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{
+		Name:      build.Name,
+		Namespace: controller.AppNamespace(build.Spec.ProjectRef.Name),
+	}}
+	// Background propagation takes the build pod with the job; a cancelled
+	// build that keeps building would only be a lie.
+	if err := s.Client.Delete(ctx, job, client.PropagationPolicy(metav1.DeletePropagationBackground)); err != nil &&
+		!apierrors.IsNotFound(err) {
+		s.writeError(w, err)
+		return
+	}
+
+	caller, _ := CallerFrom(ctx)
+	build.Status.Phase = kitchenv1alpha1.BuildCancelled
+	build.Status.CompletedAt = ptr.To(metav1.Now())
+	meta.SetStatusCondition(&build.Status.Conditions, metav1.Condition{
+		Type:               "Ready",
+		Status:             metav1.ConditionFalse,
+		Reason:             "BuildCancelled",
+		Message:            fmt.Sprintf("cancelled by %s", callerName(caller)),
+		ObservedGeneration: build.Generation,
+	})
+	if err := s.Client.Status().Update(ctx, build); err != nil {
+		s.writeError(w, err)
+		return
+	}
+
+	s.log().Info("build cancelled through the api",
+		"project", build.Spec.ProjectRef.Name, "build", build.Name, "caller", callerName(caller))
+	writeJSON(w, http.StatusOK, newBuildView(build))
+}
+
+// deleteEnvironment removes a stuck preview. Only previews: the production
+// environment is the project — it goes down when the project does, and a
+// stray DELETE must not be able to take a live site with it.
+func (s *Server) deleteEnvironment(w http.ResponseWriter, req *http.Request) {
+	ctx := req.Context()
+
+	env := &kitchenv1alpha1.Environment{}
+	if err := s.get(ctx, req.PathValue("name"), env); err != nil {
+		s.writeError(w, err)
+		return
+	}
+	if env.Spec.Type != kitchenv1alpha1.EnvironmentPreview {
+		badRequest(w, "environment %q is the production environment: it is torn down with its project, not on its own", env.Name)
+		return
+	}
+	if err := s.Client.Delete(ctx, env); err != nil {
+		s.writeError(w, err)
+		return
+	}
+
+	caller, _ := CallerFrom(ctx)
+	s.log().Info("environment deleted through the api",
+		"project", env.Spec.ProjectRef.Name, "environment", env.Name, "caller", callerName(caller))
+	// 202: the environment's finalizer still has its workload to remove.
+	writeJSON(w, http.StatusAccepted, newEnvironmentView(env))
 }
 
 func (s *Server) listConnections(w http.ResponseWriter, req *http.Request) {
