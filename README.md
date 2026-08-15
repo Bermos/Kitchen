@@ -11,6 +11,7 @@ flow data — lands in ClickHouse.
 
 ## Docs
 
+- [Contributing](CONTRIBUTING.md) — commit conventions and how a release is cut
 - [Project scope](docs/SCOPE.md) — components, decisions, phasing
 - [CRD schema](docs/CRDS.md) — the operator's data model and reconcile flows
 - [Auth architecture](docs/AUTH.md) — the platform's identity provider
@@ -215,6 +216,30 @@ npm install
 npm run dev               # vite dev server against a local operator
 npm run build && npm run typecheck && npm test
 ```
+
+## Versioning and releases
+
+Kitchen is versioned with [SemVer](https://semver.org/spec/v2.0.0.html), and
+one number covers the whole platform: a release publishes the operator image,
+the auth image and the Helm chart together, and that number is what the
+dashboard shows in its sidebar and on the settings page. While the major
+version is 0, **a breaking change bumps the minor** — read the release notes
+before upgrading across one.
+
+Commit messages are
+[Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/), which
+is what makes the rest automatic: CI rejects a message (and a pull request
+title) outside the spec, release-please turns the ones that land on `main` into
+the next version number and the entry in `CHANGELOG.md`, and merging the
+release pull request it opens tags `vX.Y.Z` and publishes everything.
+
+```sh
+make hooks                # reject a bad commit message before CI does
+make check-commits        # check what this branch already has
+```
+
+[CONTRIBUTING.md](CONTRIBUTING.md) has the type table and the whole release
+path.
 
 ## Status
 
