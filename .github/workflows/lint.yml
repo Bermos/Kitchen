@@ -21,3 +21,10 @@ jobs:
         uses: golangci/golangci-lint-action@v6
         with:
           version: v1.63.4
+          # Build the pinned version with the repo's own Go rather than
+          # downloading the release binary: that binary is built with go1.23,
+          # and golangci-lint refuses to run against a go.mod that targets a
+          # newer language version (go 1.24, required by the Hubble flow
+          # client's cilium dependency). goinstall matches what `make lint`
+          # runs locally.
+          install-mode: goinstall
