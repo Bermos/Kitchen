@@ -51,6 +51,14 @@ request open, and merging it tags `vX.Y.Z`, creates the GitHub release, and
 calls the publish workflow, which ships both images and the chart under that
 one number.
 
+- **No release pull request is not a broken workflow.** release-please opens
+  one only when the commits since the last tag contain something that bumps a
+  version: `feat`, `fix`, `perf`, `revert`, or a breaking change. A batch of
+  nothing but `ci`, `docs`, `chore`, `refactor`, `test`, `style` and `build`
+  produces no pull request at all, because there is no version to move to.
+  That is correct, and it looks exactly like a jammed workflow — check the
+  types on the commits before going looking for a fault. It also means a
+  change worth shipping that is typed `chore` will not ship.
 - **Adding a file that spells the version out means adding it to
   `release-please-config.json`.** `charts/kitchen/Chart.yaml` (annotated
   `# x-release-please-version` on both `version` and `appVersion`) and the
@@ -59,6 +67,14 @@ one number.
 - **release-please owns `CHANGELOG.md`** and rewrites the top of it. Nothing
   else writes to that file — prose about the release process goes in
   [CONTRIBUTING.md](CONTRIBUTING.md).
+- **The baseline is `.release-please-manifest.json`, and it has to match the
+  newest tag that actually exists.** It says `0.1.4` because `v0.1.4` is the
+  last release that was published. Setting it lower does not merely produce an
+  odd number: the next release would compute a version whose tag is already
+  taken, and creating it fails. Tags published before release-please
+  (`v0.1.0`–`v0.1.4`) were cut by hand and have no GitHub release object, so
+  `bootstrap-sha` pins the commit range explicitly rather than trusting tag
+  discovery.
 - **The version reaches the running platform through the linker, not through a
   source file.** `internal/version.Version` defaults to `dev` and is set by
   `-ldflags` (`LDFLAGS` in the Makefile, `ARG VERSION` in the Dockerfile). It

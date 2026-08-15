@@ -18,7 +18,7 @@
     }
   },
   "include-v-in-tag": true,
-  "bootstrap-sha": "821bf5f4a7cb6ac24723fdd32c29c3d397d114b0",
+  "bootstrap-sha": "107cd68438e2d03b26408b303e6a6e09d067cce3",
   "bump-minor-pre-major": true,
   "bump-patch-for-minor-pre-major": false,
   "pull-request-title-pattern": "chore(release): kitchen ${version}",
