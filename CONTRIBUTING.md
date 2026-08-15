@@ -95,6 +95,13 @@ Nobody edits a version number by hand, and nobody writes the changelog.
    builds and pushes both images and packages and pushes the chart, all
    stamped `X.Y.Z`.
 
+This needs **Settings → Actions → General → Workflow permissions → "Allow
+GitHub Actions to create and approve pull requests"** to be on. Without it
+release-please does all its work, pushes the release branch, and then fails on
+the last step with *"GitHub Actions is not permitted to create or approve pull
+requests"* — a red Release run and a branch with no pull request attached to
+it. Re-run the workflow after switching it on; the branch is regenerated.
+
 A release pull request appears only when the commits since the last tag
 contain something that moves a version — `feat`, `fix`, `perf`, `revert` or a
 breaking change. A run of nothing but `ci`, `docs`, `chore`, `refactor`,

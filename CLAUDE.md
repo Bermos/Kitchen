@@ -64,6 +64,15 @@ one number.
   `# x-release-please-version` on both `version` and `appVersion`) and the
   `package.json`/`package-lock.json` pairs under `ui/` and `auth/` are there
   already. A file that is not listed silently keeps the old number forever.
+- **Every `extra-files` entry names its updater; never list a path as a bare
+  string.** A bare string is resolved by file extension, so a `.yaml` file goes
+  to the YAML updater: it rewrites the document through a parser, which strips
+  every comment in the file — the `# x-release-please-version` annotations
+  included, so the next release cannot find the version at all — and it sets
+  only `$.version`, leaving `appVersion` behind. `Chart.yaml` is listed as
+  `{"type": "generic", ...}` for that reason, which edits the annotated lines
+  in place and touches nothing else. This is not what the config schema's
+  description of string entries implies; it is what release-please 17 does.
 - **release-please owns `CHANGELOG.md`** and rewrites the top of it. Nothing
   else writes to that file — prose about the release process goes in
   [CONTRIBUTING.md](CONTRIBUTING.md).
