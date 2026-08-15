@@ -60,6 +60,12 @@ const maxRequestBody = 1 << 20
 // the API server, so no replica has to be the leader to answer.
 type Server struct {
 	Client client.Client
+	// APIReader reads straight from the API server, bypassing the manager's
+	// cache. The introspection endpoints ask about pods and nodes, and
+	// answering those from the cache would mean an informer over every pod in
+	// the cluster kept warm for a question only an open dashboard asks. Nil
+	// falls back to Client, which is what the tests do.
+	APIReader client.Reader
 	// Namespace is where the Kitchen custom resources live.
 	Namespace string
 	// BindAddr for the HTTP server, e.g. ":8082".
@@ -120,6 +126,14 @@ func (s *Server) NeedLeaderElection() bool { return false }
 
 func (s *Server) log() logr.Logger { return logf.Log.WithName("api") }
 
+// reader is where the uncached reads go; see APIReader.
+func (s *Server) reader() client.Reader {
+	if s.APIReader != nil {
+		return s.APIReader
+	}
+	return s.Client
+}
+
 // Handler builds the routed, authenticated handler. It is exported so the
 // routing table can be exercised without binding a port.
 func (s *Server) Handler() http.Handler {
@@ -151,12 +165,16 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/environments/{name}", s.getEnvironment)
 	mux.HandleFunc("PATCH /api/v1/environments/{name}", s.patchEnvironment)
 	mux.HandleFunc("GET /api/v1/environments/{name}/logs", s.environmentLogs)
+	mux.HandleFunc("GET /api/v1/environments/{name}/workload", s.environmentWorkload)
+	mux.HandleFunc("GET /api/v1/environments/{name}/objects", s.environmentObjects)
 
 	mux.HandleFunc("GET /api/v1/logs", s.queryLogs)
 
 	mux.HandleFunc("GET /api/v1/events", s.listEvents)
 	mux.HandleFunc("GET /api/v1/metrics/overview", s.metricsOverview)
 	mux.HandleFunc("GET /api/v1/traffic", s.traffic)
+
+	mux.HandleFunc("GET /api/v1/status", s.getStatus)
 
 	mux.HandleFunc("GET /api/v1/settings", s.getSettings)
 	mux.HandleFunc("PATCH /api/v1/settings", s.patchSettings)

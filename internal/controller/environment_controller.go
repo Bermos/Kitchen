@@ -52,8 +52,19 @@ const (
 	// KitchenSingletonName is the name of the cluster-wide Kitchen object.
 	KitchenSingletonName = "default"
 
+	// LabelEnvironment marks everything an Environment materializes, and is
+	// what its Deployment and Service select their pods on. It is exported
+	// because the API finds those pods the same way, and a second spelling of
+	// a selector is a bug waiting for the first rename.
+	LabelEnvironment = "kitchen.bermos.dev/environment"
+
+	// AppContainerName is the container an Environment's pod runs the
+	// application in. The API reads the workload's image and resources back
+	// off it.
+	AppContainerName = "app"
+
 	labelProject        = "kitchen.bermos.dev/project"
-	labelEnvironment    = "kitchen.bermos.dev/environment"
+	labelEnvironment    = LabelEnvironment
 	labelEnvironmentNS  = "kitchen.bermos.dev/environment-namespace"
 	labelManagedByKey   = "app.kubernetes.io/managed-by"
 	labelManagedByValue = "kitchen"
@@ -306,7 +317,7 @@ func (r *EnvironmentReconciler) applyDeployment(
 		}
 		deploy.Spec.Template.Labels = labels
 		deploy.Spec.Template.Spec.Containers = []corev1.Container{{
-			Name:      "app",
+			Name:      AppContainerName,
 			Image:     release.Spec.Image,
 			Ports:     []corev1.ContainerPort{{Name: "http", ContainerPort: port}},
 			Env:       podEnv,

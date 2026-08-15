@@ -110,7 +110,7 @@ func TestMetricsOverviewScopedToAProject(t *testing.T) {
 func TestTraffic(t *testing.T) {
 	h := newHarness(t, nil, fixtures()...)
 	h.logs.edges = []clickhouse.TrafficEdge{{
-		Source: "gateway", Destination: "shop-production",
+		Source: "gateway", Destination: testEnvironment,
 		DestinationNamespace: "kitchen-shop", Protocol: "HTTP",
 		Flows: 100, RPS: 1.5, Errors: 2, P95Ms: 40,
 	}}
@@ -122,7 +122,7 @@ func TestTraffic(t *testing.T) {
 	body := decode[struct {
 		Items []clickhouse.TrafficEdge `json:"items"`
 	}](t, res)
-	if len(body.Items) != 1 || body.Items[0].Destination != "shop-production" {
+	if len(body.Items) != 1 || body.Items[0].Destination != testEnvironment {
 		t.Errorf("unexpected edges %+v", body.Items)
 	}
 	if h.logs.lastTraffic.Namespace != "kitchen-shop" {

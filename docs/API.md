@@ -88,10 +88,13 @@ sent the request.
 | GET | `/environments/{name}` | One environment |
 | PATCH | `/environments/{name}` | Move it to another release — promotion and rollback |
 | GET | `/environments/{name}/logs` | That environment's runtime logs |
+| GET | `/environments/{name}/workload` | What it is running: replicas, restarts, uptime, resources, pods |
+| GET | `/environments/{name}/objects` | The Kubernetes objects the operator materialized for it |
 | GET | `/logs` | The whole logs table, filtered by a ClickHouse expression |
 | GET | `/events` | The platform's recent activity, newest first. `?project=` and `?limit=` filter |
 | GET | `/metrics/overview` | The dashboard's numbers, pre-aggregated. `?project=` narrows |
 | GET | `/traffic` | The service map: aggregated flow edges. `?project=`, `?since=`, `?until=` |
+| GET | `/status` | The platform as it is running: cluster, tunnel, build queue, components |
 | GET | `/settings` | The platform's settings — the `Kitchen` singleton |
 | PATCH | `/settings` | Change the build and telemetry defaults |
 | GET | `/connections` | Every connection (never their credentials) |
@@ -184,6 +187,89 @@ automatic ones):
 `reason` is `promoted` when a fresh build's release was auto-promoted over it,
 `rolledBack` when the environment was moved back to an older release, and
 `superseded` when another release replaced it any other way.
+
+### What an environment is running
+
+An `Environment`'s phase says whether it is live. `GET
+/environments/{name}/workload` says what "live" is made of, read out of the
+cluster at request time:
+
+```json
+{"environment": "shop-production", "namespace": "kitchen-shop",
+ "deployment": "shop-production", "image": "registry.example.com/shop@sha256:…",
+ "replicas": {"desired": 3, "ready": 3, "available": 3, "updated": 3},
+ "restarts": 2, "startedAt": "2026-08-14T09:12:00Z",
+ "resources": {"cpuRequest": "100m", "memoryRequest": "128Mi", "memoryLimit": "256Mi"},
+ "pods": [{"name": "shop-production-7d9f…", "phase": "Running", "ready": true,
+   "restarts": 2, "node": "node-1", "startedAt": "2026-08-14T09:12:00Z"}]}
+```
+
+`replicas` is the "3 of 3" the dashboard shows; `restarts` sums every restart
+across the environment's pods, which is the number that tells a crash loop
+from a slow start. `startedAt` is the oldest *running* pod, so uptime is the
+workload's rather than the `Environment` object's, and a pod replaced a minute
+ago does not reset it. A pod that is not serving carries the reason in
+`message` — the waiting reason (`CrashLoopBackOff`, `ImagePullBackOff`) or the
+exit that ended its last run, which is the line `kubectl describe` is usually
+opened for.
+
+An environment with nothing materialized — a preview whose route is withheld,
+one the reconciler has not reached — answers `200` with no `deployment` and a
+`message` saying so. That is a state, not an error; the environment's own
+conditions carry why.
+
+### The objects the operator materialized
+
+`GET /environments/{name}/objects` answers with the Kubernetes objects behind
+an environment — the `Deployment`, the `Service` and the `HTTPRoute` — as the
+API server holds them. It is the dashboard's operator mode surfacing what the
+reconciler did, so the objects are deliberately *not* translated into the API's
+own vocabulary: whoever opens this wants the manifest, and a summary would send
+them to a terminal anyway.
+
+```json
+{"environment": "shop-production", "namespace": "kitchen-shop", "objects": [
+  {"kind": "Deployment", "apiVersion": "apps/v1", "name": "shop-production",
+   "namespace": "kitchen-shop", "present": true, "manifest": {"kind": "Deployment", "…": "…"}},
+  {"kind": "HTTPRoute", "apiVersion": "gateway.networking.k8s.io/v1", "name": "shop-production",
+   "namespace": "kitchen-shop", "present": false, "message": "not materialized"}]}
+```
+
+Every expected object is listed whether or not it exists: `present: false` is
+the answer to most of the questions this endpoint gets asked — a preview with
+no route, an environment stuck before its Service. `manifest` keeps `status`,
+which is where the Gateway says whether it accepted the route, and drops the
+bookkeeping (`managedFields`, the last-applied annotation) no reader of a
+manifest wants.
+
+### Platform status
+
+`GET /status` is the platform as it is *running*, where `/settings` is the
+platform as it is *configured*. It is one request because it answers one
+question — the dashboard's status bar:
+
+```json
+{"cluster": {"name": "chef", "nodes": 8, "readyNodes": 8},
+ "tunnel": {"enabled": true, "connected": true, "message": "cloudflared is available"},
+ "builds": {"running": 1, "capacity": 2, "queued": 0},
+ "gateway": {"address": "203.0.113.7", "programmed": true},
+ "components": [{"name": "logs", "kind": "DaemonSet", "healthy": false,
+   "available": 0, "desired": 3, "message": "0 of 3 pods available: …"}]}
+```
+
+`cluster.name` is `spec.clusterName` on the `Kitchen` singleton, falling back
+to the first label of the base domain — Kitchen owns the cluster it is
+installed into, so naming it names the installation. `builds` is what the build
+controller's concurrency gate is weighing: builds running against
+`spec.builds.concurrency`, and how many are waiting for a slot. `components` is
+the operator's own survey of every workload labelled
+`app.kubernetes.io/part-of: kitchen`, which is the only place a workload whose
+pods were refused at admission shows up at all — it has no pods to look at.
+
+A node count the operator's ClusterRole does not allow comes back as zero with
+the reason in `cluster.message`, rather than failing the request: an
+installation upgraded from before this endpoint should not lose its whole
+status bar over the one line it cannot fill in.
 
 ### Settings
 
@@ -345,6 +431,8 @@ endpoint answers an empty list and the traffic view explains what to enable.
 | CI tokens | better-auth's api-key plugin, exchanged for a JWT at the issuer | The plugin already holds the operator's own credential; keeping key lookup at the issuer keeps the operator's request path stateless |
 | Response shapes | The API's own vocabulary, not raw custom resources | A stable contract for the UI, and freedom to change how state is stored |
 | Write surface | Create project, rebuild, promote/rollback, and the settings' runtime defaults | The writes the UI drives today; creating connections, domains and claims waits for the flows they belong to |
+| Introspection shapes | Kubernetes' own vocabulary — replicas, restarts, manifests | The exception that proves the rule above: these endpoints exist to explain the platform's machinery, and a reader comparing them against `kubectl` should not have to translate |
+| Pods and nodes | Read uncached, straight from the API server | Serving them from the manager's cache would mean an informer over every pod in the cluster, kept warm for a question only an open dashboard asks |
 | The dashboard | Served by the same process, outside `/api/` | The SPA is public, stateless files plus `/config.json` (issuer, client id, audience — the same values every login redirect shows); everything with state stays behind the token check |
 | Webhook receiver | Stays signature-authenticated, not OIDC | A provider proving a payload is genuine is a different question from a caller proving who they are |
 

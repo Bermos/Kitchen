@@ -8,6 +8,7 @@ rules:
   - ""
   resources:
   - events
+  - nodes
   - pods
   verbs:
   - get

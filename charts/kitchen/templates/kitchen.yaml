@@ -25,6 +25,9 @@ metadata:
     {{- end }}
 spec:
   baseDomain: {{ .Values.kitchen.baseDomain | quote }}
+  {{- with .Values.kitchen.clusterName }}
+  clusterName: {{ . | quote }}
+  {{- end }}
   api:
     externalURL: {{ include "kitchen.apiExternalURL" . | quote }}
   ingress:

@@ -162,6 +162,14 @@ spec:
                     - buildpacks
                     type: string
                 type: object
+              clusterName:
+                description: |-
+                  ClusterName is what this cluster is called in the dashboard's status
+                  bar. Kitchen owns the cluster it is installed into, so this names the
+                  installation as much as the machines: it is what someone with a staging
+                  platform and a production one reads to tell which is on screen.
+                  Defaults to the first label of the base domain.
+                type: string
               ingress:
                 description: IngressSpec configures how traffic enters the cluster.
                 properties:

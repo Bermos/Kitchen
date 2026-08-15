@@ -31,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/clickhouse"
@@ -46,6 +47,9 @@ const (
 	// testPreviousRelease is the older one a rollback retreats to.
 	testRelease         = "shop-rel-1"
 	testPreviousRelease = "shop-rel-0"
+	// testEnvironment is the fixtures' production environment: the one that
+	// is rolled back, read for logs, and introspected.
+	testEnvironment = "shop-production"
 )
 
 // issuer is a stand-in for the platform's identity provider: it serves the
@@ -203,7 +207,7 @@ func fixtures() []runtime.Object {
 		},
 	}
 	environment := &kitchenv1alpha1.Environment{
-		ObjectMeta: metav1.ObjectMeta{Name: "shop-production", Namespace: testNamespace},
+		ObjectMeta: metav1.ObjectMeta{Name: testEnvironment, Namespace: testNamespace},
 		Spec: kitchenv1alpha1.EnvironmentSpec{
 			ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: "shop"},
 			Type:       kitchenv1alpha1.EnvironmentProduction,
@@ -238,7 +242,7 @@ func fixtures() []runtime.Object {
 		ObjectMeta: metav1.ObjectMeta{Name: "shop-com", Namespace: testNamespace},
 		Spec: kitchenv1alpha1.DomainSpec{
 			Hostname:       "shop.example.com",
-			EnvironmentRef: kitchenv1alpha1.LocalObjectReference{Name: "shop-production"},
+			EnvironmentRef: kitchenv1alpha1.LocalObjectReference{Name: testEnvironment},
 		},
 	}
 	claim := &kitchenv1alpha1.ResourceClaim{
@@ -349,6 +353,11 @@ func newHarness(t *testing.T, kitchen *kitchenv1alpha1.Kitchen, objs ...runtime.
 	if err := kitchenv1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
+	// The objects endpoint reads HTTPRoutes, which are the one materialized
+	// object that is not a core kind.
+	if err := gatewayv1.Install(scheme); err != nil {
+		t.Fatal(err)
+	}
 
 	if kitchen == nil {
 		kitchen = &kitchenv1alpha1.Kitchen{
@@ -395,6 +404,9 @@ var routes = []struct {
 	{http.MethodGet, "/api/v1/environments/shop-production"},
 	{http.MethodPatch, "/api/v1/environments/shop-production"},
 	{http.MethodGet, "/api/v1/environments/shop-production/logs"},
+	{http.MethodGet, "/api/v1/environments/shop-production/workload"},
+	{http.MethodGet, "/api/v1/environments/shop-production/objects"},
+	{http.MethodGet, "/api/v1/status"},
 	{http.MethodGet, "/api/v1/logs"},
 	{http.MethodGet, "/api/v1/events"},
 	{http.MethodGet, "/api/v1/metrics/overview"},
@@ -756,7 +768,7 @@ func TestRollingAnEnvironmentBack(t *testing.T) {
 	}
 
 	stored := &kitchenv1alpha1.Environment{}
-	if err := h.server.get(context.Background(), "shop-production", stored); err != nil {
+	if err := h.server.get(context.Background(), testEnvironment, stored); err != nil {
 		t.Fatal(err)
 	}
 	if stored.Spec.ReleaseRef.Name != testPreviousRelease {
@@ -792,7 +804,7 @@ func TestMovingForwardRecordsSupersessionNotRollback(t *testing.T) {
 	}
 
 	stored := &kitchenv1alpha1.Environment{}
-	if err := h.server.get(context.Background(), "shop-production", stored); err != nil {
+	if err := h.server.get(context.Background(), testEnvironment, stored); err != nil {
 		t.Fatal(err)
 	}
 	if len(stored.Status.History) != 2 {
@@ -815,7 +827,7 @@ func TestRollbackRefusesAReleaseFromAnotherProject(t *testing.T) {
 	}
 
 	stored := &kitchenv1alpha1.Environment{}
-	if err := h.server.get(context.Background(), "shop-production", stored); err != nil {
+	if err := h.server.get(context.Background(), testEnvironment, stored); err != nil {
 		t.Fatal(err)
 	}
 	if stored.Spec.ReleaseRef.Name != testRelease {
@@ -864,7 +876,7 @@ func TestReadingAnEnvironmentsLogs(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
 	}
-	if h.logs.last.Environment != "shop-production" || h.logs.last.Source != clickhouse.SourceRuntime {
+	if h.logs.last.Environment != testEnvironment || h.logs.last.Source != clickhouse.SourceRuntime {
 		t.Fatalf("the query was not scoped to the environment: %+v", h.logs.last)
 	}
 	if h.logs.last.Project != "shop" {
@@ -909,7 +921,7 @@ func TestTheRestOfTheCollections(t *testing.T) {
 	for path, want := range map[string]string{
 		"/api/v1/builds":                              testBuild,
 		"/api/v1/releases?project=shop":               testRelease,
-		"/api/v1/environments":                        "shop-production",
+		"/api/v1/environments":                        testEnvironment,
 		"/api/v1/connections":                         "github",
 		"/api/v1/domains?environment=shop-production": "shop.example.com",
 		"/api/v1/claims?project=shop":                 "postgres",
