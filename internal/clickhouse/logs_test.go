@@ -163,8 +163,10 @@ func TestFilterLogsRunsTheExpressionReadOnly(t *testing.T) {
 
 	since := time.Date(2026, 8, 13, 9, 0, 0, 0, time.UTC)
 	lines, err := store.client(t).FilterLogs(context.Background(), LogFilter{
-		Where: "project = 'shop' AND stream = 'stderr'",
-		Since: since,
+		LogSelection: LogSelection{
+			Where: "project = 'shop' AND stream = 'stderr'",
+			Since: since,
+		},
 		Limit: 10,
 	})
 	if err != nil {
@@ -195,17 +197,19 @@ func TestFilterLogsRunsTheExpressionReadOnly(t *testing.T) {
 	}
 }
 
-// The observability view's first query — `1 = 1` over the last hour, before a
-// single line exists — used to be refused by ClickHouse, because the formatted
-// timestamp was selected as `timestamp` and shadowed the column the window
-// compares against ("No operation greaterOrEquals between String and
+// The observability view's first query — an empty one over the last hour,
+// before a single line exists — used to be refused by ClickHouse, because the
+// formatted timestamp was selected as `timestamp` and shadowed the column the
+// window compares against ("No operation greaterOrEquals between String and
 // DateTime64"). Both readers select it under another name so that `timestamp`
 // in a condition is always the column.
 func TestTheFormattedTimestampDoesNotShadowTheColumn(t *testing.T) {
 	store := newFakeLogStore(t)
 	since := time.Date(2026, 8, 13, 9, 0, 0, 0, time.UTC)
 
-	if _, err := store.client(t).FilterLogs(context.Background(), LogFilter{Where: "1 = 1", Since: since}); err != nil {
+	if _, err := store.client(t).FilterLogs(context.Background(), LogFilter{
+		LogSelection: LogSelection{Since: since},
+	}); err != nil {
 		t.Fatalf("FilterLogs: %v", err)
 	}
 	assertNoShadow(t, store.query)
@@ -229,16 +233,27 @@ func assertNoShadow(t *testing.T, query string) {
 	}
 }
 
-func TestFilterLogsRefusesAnEmptyExpression(t *testing.T) {
+// An empty selection is a legitimate question — "everything in the window" —
+// and the window and the limit are what bound it. It used to be refused, which
+// is why the observability view opened with `1 = 1` in its query bar.
+func TestFilterLogsAcceptsAnEmptySelection(t *testing.T) {
 	store := newFakeLogStore(t)
-	if _, err := store.client(t).FilterLogs(context.Background(), LogFilter{Where: "   "}); err == nil {
-		t.Fatal("an empty expression should be refused before it reaches the store")
+	if _, err := store.client(t).FilterLogs(context.Background(), LogFilter{
+		LogSelection: LogSelection{Where: "   ", Query: "  "},
+	}); err != nil {
+		t.Fatalf("an empty selection should select everything: %v", err)
+	}
+	if strings.Contains(store.query, "WHERE") {
+		t.Fatalf("nothing to filter on should mean no WHERE clause at all:\n%s", store.query)
+	}
+	if strings.Contains(store.query, "1 = 1") {
+		t.Fatalf("everything should be the absence of a predicate, not a tautology:\n%s", store.query)
 	}
 }
 
 func TestFilterLogsBoundsTheLimit(t *testing.T) {
 	store := newFakeLogStore(t)
-	if _, err := store.client(t).FilterLogs(context.Background(), LogFilter{Where: "1 = 1", Limit: 999999}); err != nil {
+	if _, err := store.client(t).FilterLogs(context.Background(), LogFilter{Limit: 999999}); err != nil {
 		t.Fatalf("FilterLogs: %v", err)
 	}
 	if got := store.params.Get("param_limit"); got != "5000" {
@@ -258,7 +273,9 @@ func TestARefusedQueryIsTypedAsTheCallersError(t *testing.T) {
 	}
 	client := New(Config{Host: endpoint.Hostname(), HTTPPort: endpoint.Port(), Database: "kitchen", Username: "kitchen"})
 
-	_, err = client.FilterLogs(context.Background(), LogFilter{Where: "projct = 'shop'"})
+	_, err = client.FilterLogs(context.Background(), LogFilter{
+		LogSelection: LogSelection{Where: "projct = 'shop'"},
+	})
 	queryErr := &QueryError{}
 	if !errors.As(err, &queryErr) {
 		t.Fatalf("want a QueryError, got %v", err)

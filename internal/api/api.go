@@ -95,6 +95,9 @@ type Server struct {
 type logReader interface {
 	SearchLogs(ctx context.Context, query clickhouse.LogQuery) ([]clickhouse.LogLine, error)
 	FilterLogs(ctx context.Context, filter clickhouse.LogFilter) ([]clickhouse.LogLine, error)
+	LogHistogram(ctx context.Context, query clickhouse.LogHistogramQuery) (clickhouse.LogHistogram, error)
+	LogFacets(ctx context.Context, query clickhouse.LogFacetQuery) ([]clickhouse.LogFacet, error)
+	LogPatterns(ctx context.Context, query clickhouse.LogPatternQuery) ([]clickhouse.LogPattern, error)
 	QueryEvents(ctx context.Context, query clickhouse.EventQuery) ([]clickhouse.Event, error)
 	TrafficEdges(ctx context.Context, query clickhouse.TrafficQuery) ([]clickhouse.TrafficEdge, error)
 	MetricsOverview(ctx context.Context, query clickhouse.MetricsQuery) (clickhouse.MetricsOverview, error)
@@ -169,6 +172,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/environments/{name}/objects", s.environmentObjects)
 
 	mux.HandleFunc("GET /api/v1/logs", s.queryLogs)
+	mux.HandleFunc("GET /api/v1/logs/histogram", s.logHistogram)
+	mux.HandleFunc("GET /api/v1/logs/facets", s.logFacets)
+	mux.HandleFunc("GET /api/v1/logs/patterns", s.logPatterns)
 
 	mux.HandleFunc("GET /api/v1/events", s.listEvents)
 	mux.HandleFunc("GET /api/v1/metrics/overview", s.metricsOverview)

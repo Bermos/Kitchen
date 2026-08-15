@@ -129,27 +129,57 @@ func (s *Server) writeLogs(w http.ResponseWriter, req *http.Request, query click
 	writeList(w, lines)
 }
 
-// queryLogs is the observability surface: a caller-written ClickHouse
-// expression over the whole logs table. The platform stores logs in ClickHouse
-// and does not hide it — `where` is real ClickHouse syntax, run read-only.
+// logSelectionFrom reads what every observability endpoint is asked over: the
+// query, the escape hatch, and the window.
+//
+// Both query surfaces are optional. An empty selection asks for everything in
+// the window, which is a legitimate question and is spelled by asking nothing —
+// there is no sentinel expression to type.
+func logSelectionFrom(req *http.Request) (clickhouse.LogSelection, error) {
+	since, err := timeParam(req, "since")
+	if err != nil {
+		return clickhouse.LogSelection{}, err
+	}
+	until, err := timeParam(req, "until")
+	if err != nil {
+		return clickhouse.LogSelection{}, err
+	}
+	return clickhouse.LogSelection{
+		Query: strings.TrimSpace(req.URL.Query().Get("q")),
+		Where: strings.TrimSpace(req.URL.Query().Get("where")),
+		Since: since,
+		Until: until,
+	}, nil
+}
+
+// writeQueryError answers the two ways a caller's own query can be wrong —
+// Kitchen's parser refusing it, and ClickHouse refusing it — with the
+// diagnostic that says how to fix it. Anything else is the platform's fault
+// and is reported as one.
+func (s *Server) writeQueryError(w http.ResponseWriter, err error) {
+	syntaxErr := &clickhouse.LogQueryError{}
+	if errors.As(err, &syntaxErr) {
+		badRequest(w, "%s", syntaxErr.Message)
+		return
+	}
+	queryErr := &clickhouse.QueryError{}
+	if errors.As(err, &queryErr) {
+		badRequest(w, "%s", queryErr.Message)
+		return
+	}
+	s.writeError(w, err)
+}
+
+// queryLogs is the observability surface's lines. `q` is Kitchen's log query
+// language and the front door; `where` is a real ClickHouse expression, kept
+// because it is genuinely more powerful. Given both, they compose with AND.
 func (s *Server) queryLogs(w http.ResponseWriter, req *http.Request) {
-	where := strings.TrimSpace(req.URL.Query().Get("where"))
-	if where == "" {
-		badRequest(w, "where is required: a ClickHouse expression over the logs table, e.g. "+
-			"where=project = 'shop' AND stream = 'stderr'. `1 = 1` selects everything.")
+	selection, err := logSelectionFrom(req)
+	if err != nil {
+		badRequest(w, "%s", err.Error())
 		return
 	}
 	limit, err := intParam(req, "limit", clickhouse.DefaultLogLimit)
-	if err != nil {
-		badRequest(w, "%s", err.Error())
-		return
-	}
-	since, err := timeParam(req, "since")
-	if err != nil {
-		badRequest(w, "%s", err.Error())
-		return
-	}
-	until, err := timeParam(req, "until")
 	if err != nil {
 		badRequest(w, "%s", err.Error())
 		return
@@ -160,7 +190,7 @@ func (s *Server) queryLogs(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	filter := clickhouse.LogFilter{Where: where, Since: since, Until: until, Limit: limit}
+	filter := clickhouse.LogFilter{LogSelection: selection, Limit: limit}
 	if wantsEventStream(req) {
 		s.streamLogs(w, req, func(ctx context.Context, followSince time.Time) ([]clickhouse.LogLine, error) {
 			follow := filter
@@ -175,17 +205,110 @@ func (s *Server) queryLogs(w http.ResponseWriter, req *http.Request) {
 
 	lines, err := store.FilterLogs(req.Context(), filter)
 	if err != nil {
-		// ClickHouse judging the expression is the caller's problem to fix,
-		// and its message is the diagnostic they need to fix it.
-		queryErr := &clickhouse.QueryError{}
-		if errors.As(err, &queryErr) {
-			badRequest(w, "%s", queryErr.Message)
-			return
-		}
-		s.writeError(w, err)
+		s.writeQueryError(w, err)
 		return
 	}
 	writeList(w, lines)
+}
+
+// logHistogram is when the selection's lines happened: counts per bucket over
+// the window, so a spike is seen rather than scrolled to, and so the chart can
+// be dragged to narrow the window it is drawn over.
+func (s *Server) logHistogram(w http.ResponseWriter, req *http.Request) {
+	selection, err := logSelectionFrom(req)
+	if err != nil {
+		badRequest(w, "%s", err.Error())
+		return
+	}
+	buckets, err := intParam(req, "buckets", clickhouse.DefaultHistogramBuckets)
+	if err != nil {
+		badRequest(w, "%s", err.Error())
+		return
+	}
+
+	store := s.openLogStore(w, req)
+	if store == nil {
+		return
+	}
+
+	histogram, err := store.LogHistogram(req.Context(),
+		clickhouse.LogHistogramQuery{LogSelection: selection, Buckets: buckets})
+	if err != nil {
+		s.writeQueryError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, histogram)
+}
+
+// logFacets is what else is in the selection: each field's distinct values with
+// their counts, over the whole window rather than over the page of lines that
+// came back. It is what lets someone narrow a search without knowing which
+// columns the table has.
+func (s *Server) logFacets(w http.ResponseWriter, req *http.Request) {
+	selection, err := logSelectionFrom(req)
+	if err != nil {
+		badRequest(w, "%s", err.Error())
+		return
+	}
+	limit, err := intParam(req, "limit", clickhouse.MaxFacetValues)
+	if err != nil {
+		badRequest(w, "%s", err.Error())
+		return
+	}
+
+	var fields []string
+	for _, field := range strings.Split(req.URL.Query().Get("fields"), ",") {
+		if field = strings.TrimSpace(field); field != "" {
+			fields = append(fields, field)
+		}
+	}
+
+	store := s.openLogStore(w, req)
+	if store == nil {
+		return
+	}
+
+	facets, err := store.LogFacets(req.Context(),
+		clickhouse.LogFacetQuery{LogSelection: selection, Fields: fields, Limit: limit})
+	if err != nil {
+		s.writeQueryError(w, err)
+		return
+	}
+	writeList(w, facets)
+}
+
+// logPatterns is what the selection's lines are actually saying: the messages
+// collapsed into templates, commonest first, so a spike of 14,021 lines reads
+// as the handful of shapes it is.
+func (s *Server) logPatterns(w http.ResponseWriter, req *http.Request) {
+	selection, err := logSelectionFrom(req)
+	if err != nil {
+		badRequest(w, "%s", err.Error())
+		return
+	}
+	limit, err := intParam(req, "limit", clickhouse.DefaultPatternRows)
+	if err != nil {
+		badRequest(w, "%s", err.Error())
+		return
+	}
+	scan, err := intParam(req, "scan", clickhouse.DefaultPatternScan)
+	if err != nil {
+		badRequest(w, "%s", err.Error())
+		return
+	}
+
+	store := s.openLogStore(w, req)
+	if store == nil {
+		return
+	}
+
+	patterns, err := store.LogPatterns(req.Context(),
+		clickhouse.LogPatternQuery{LogSelection: selection, Limit: limit, Scan: scan})
+	if err != nil {
+		s.writeQueryError(w, err)
+		return
+	}
+	writeList(w, patterns)
 }
 
 // wantsEventStream reports whether the caller asked to follow the logs live:

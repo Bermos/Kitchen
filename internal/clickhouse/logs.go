@@ -81,23 +81,33 @@ type LogLine struct {
 	Stream      string    `json:"stream,omitempty"`
 	Level       string    `json:"level,omitempty"`
 	Message     string    `json:"message"`
+	// Fields are the line's own structured fields — what the collector
+	// flattened a JSON line into. Empty for a line that was not JSON.
+	Fields map[string]string `json:"fields,omitempty"`
 }
 
 // logRow is the wire shape ClickHouse returns. The timestamp arrives as a
 // string because JSONEachRow renders DateTime64 that way, under the name
 // `ts` — see timestampAlias for why it is not called `timestamp`.
 type logRow struct {
-	Timestamp   string `json:"ts"`
-	Source      string `json:"source"`
-	Project     string `json:"project"`
-	Environment string `json:"environment"`
-	Build       string `json:"build"`
-	Pod         string `json:"pod"`
-	Container   string `json:"container"`
-	Stream      string `json:"stream"`
-	Level       string `json:"level"`
-	Message     string `json:"message"`
+	Timestamp   string            `json:"ts"`
+	Source      string            `json:"source"`
+	Project     string            `json:"project"`
+	Environment string            `json:"environment"`
+	Build       string            `json:"build"`
+	Pod         string            `json:"pod"`
+	Container   string            `json:"container"`
+	Stream      string            `json:"stream"`
+	Level       string            `json:"level"`
+	Message     string            `json:"message"`
+	Fields      map[string]string `json:"fields"`
 }
+
+// logColumns is the projection every line-returning query selects. It is one
+// constant because the two of them have to agree: a column added to one and
+// forgotten in the other is a field that is populated on a build's log page
+// and empty on the observability view.
+const logColumns = "source, project, environment, build, pod, container, stream, level, message, fields"
 
 // SearchLogs reads the lines matching the query, oldest first.
 //
@@ -146,13 +156,14 @@ func (c *Client) SearchLogs(ctx context.Context, query LogQuery) ([]LogLine, err
 
 	statement := fmt.Sprintf(`SELECT
     formatDateTime(timestamp, '%%Y-%%m-%%dT%%H:%%i:%%S.%%fZ', 'UTC') AS %s,
-    source, project, environment, build, pod, container, stream, level, message
+    %s
 FROM %s.%s
 WHERE %s
 ORDER BY timestamp DESC
 LIMIT {limit:UInt32}
 FORMAT JSONEachRow`,
-		timestampAlias, quoteIdentifier(c.cfg.Database), quoteIdentifier(LogsTable), strings.Join(conditions, " AND "))
+		timestampAlias, logColumns,
+		quoteIdentifier(c.cfg.Database), quoteIdentifier(LogsTable), strings.Join(conditions, " AND "))
 
 	body, err := c.QueryWithParams(ctx, statement, params)
 	if err != nil {
@@ -161,37 +172,90 @@ FORMAT JSONEachRow`,
 	return parseLogLines(body, limit)
 }
 
-// LogFilter is a caller-written query over the whole logs table: a ClickHouse
-// boolean expression, evaluated as written. This is the "full ClickHouse
-// syntax" surface the observability view offers — the platform stores logs in
-// ClickHouse and does not pretend otherwise.
-type LogFilter struct {
-	// Where is a ClickHouse SQL expression over the table's columns
-	// (timestamp, source, project, environment, build, pod, container,
-	// stream, level, message). It must select something; "everything" is asked for
-	// explicitly with `1 = 1`.
+// LogSelection is what a question about the logs is asked over: the query, and
+// the window it is asked in. Every analytic over the store — the lines, the
+// histogram, the facets, the patterns — takes one, because they are four views
+// of the same selection and would be lying if they could disagree about it.
+//
+// Both query surfaces are optional and compose with AND. An empty selection is
+// a legitimate question — "everything in the window" — and the window and the
+// limit are what bound it. There is deliberately no sentinel to type for that.
+type LogSelection struct {
+	// Query is Kitchen's log query language: `level:error service:shop`.
+	// See CompileLogQuery. This is the front door.
+	Query string
+	// Where is a ClickHouse boolean expression over the table's columns,
+	// evaluated as written. It is the escape hatch, kept because it is
+	// genuinely more powerful than the query language and always will be.
 	Where string
-	// Since and Until bound the window on top of the expression.
+	// Since and Until bound the window on top of the query.
 	Since time.Time
 	Until time.Time
+}
+
+// conditions compiles the selection into ClickHouse predicates and the
+// parameters they read. An empty selection compiles to no conditions at all —
+// not to a tautology — and the caller renders no WHERE clause.
+func (s LogSelection) conditions() ([]string, map[string]string, error) {
+	conditions := []string{}
+	params := map[string]string{}
+
+	if query := strings.TrimSpace(s.Query); query != "" {
+		compiled, err := CompileLogQuery(query)
+		if err != nil {
+			return nil, nil, err
+		}
+		if compiled.Expression != "" {
+			conditions = append(conditions, "("+compiled.Expression+")")
+			for name, value := range compiled.Params {
+				params[name] = value
+			}
+		}
+	}
+	if where := strings.TrimSpace(s.Where); where != "" {
+		conditions = append(conditions, "("+where+")")
+	}
+	if !s.Since.IsZero() {
+		conditions = append(conditions, "timestamp >= parseDateTime64BestEffort({since:String}, 3, 'UTC')")
+		params["since"] = s.Since.UTC().Format(time.RFC3339Nano)
+	}
+	if !s.Until.IsZero() {
+		conditions = append(conditions, "timestamp <= parseDateTime64BestEffort({until:String}, 3, 'UTC')")
+		params["until"] = s.Until.UTC().Format(time.RFC3339Nano)
+	}
+	return conditions, params, nil
+}
+
+// whereClause is conditions() rendered — an empty string when the selection
+// bounds nothing, so that "everything" is the absence of a predicate rather
+// than a predicate that is always true.
+func (s LogSelection) whereClause() (string, map[string]string, error) {
+	conditions, params, err := s.conditions()
+	if err != nil {
+		return "", nil, err
+	}
+	if len(conditions) == 0 {
+		return "", params, nil
+	}
+	return "WHERE " + strings.Join(conditions, " AND "), params, nil
+}
+
+// LogFilter reads lines matching a selection.
+type LogFilter struct {
+	LogSelection
 	// Limit caps the lines returned, newest kept, oldest first on the way out.
 	Limit int
 }
 
-// FilterLogs runs a caller-written expression against the logs table.
+// FilterLogs answers the lines a selection matches.
 //
-// The expression goes into the query text as written — that is the feature —
-// so the query runs read-only (readonly=2: no writes, no DDL) and under an
-// execution-time cap. What a caller can reach is what the operator's
+// The `where` half of a selection goes into the query text as written — that is
+// the feature — so the query runs read-only (readonly=2: no writes, no DDL) and
+// under an execution-time cap. What a caller can reach is what the operator's
 // ClickHouse user can read; today every API caller is a trusted platform user
 // (scopes and RBAC are an open item in AUTH.md), and the settings keep a typo
 // from becoming a write or a runaway scan.
 func (c *Client) FilterLogs(ctx context.Context, filter LogFilter) ([]LogLine, error) {
-	where := strings.TrimSpace(filter.Where)
-	if where == "" {
-		return nil, fmt.Errorf("a log filter needs a ClickHouse expression; `1 = 1` selects everything")
-	}
-
 	limit := filter.Limit
 	if limit < 1 {
 		limit = DefaultLogLimit
@@ -200,26 +264,22 @@ func (c *Client) FilterLogs(ctx context.Context, filter LogFilter) ([]LogLine, e
 		limit = MaxLogLimit
 	}
 
-	conditions := []string{fmt.Sprintf("(%s)", where)}
-	params := map[string]string{"limit": strconv.Itoa(limit)}
-	if !filter.Since.IsZero() {
-		conditions = append(conditions, "timestamp >= parseDateTime64BestEffort({since:String}, 3, 'UTC')")
-		params["since"] = filter.Since.UTC().Format(time.RFC3339Nano)
+	where, params, err := filter.whereClause()
+	if err != nil {
+		return nil, err
 	}
-	if !filter.Until.IsZero() {
-		conditions = append(conditions, "timestamp <= parseDateTime64BestEffort({until:String}, 3, 'UTC')")
-		params["until"] = filter.Until.UTC().Format(time.RFC3339Nano)
-	}
+	params["limit"] = strconv.Itoa(limit)
 
 	statement := fmt.Sprintf(`SELECT
     formatDateTime(timestamp, '%%Y-%%m-%%dT%%H:%%i:%%S.%%fZ', 'UTC') AS %s,
-    source, project, environment, build, pod, container, stream, level, message
+    %s
 FROM %s.%s
-WHERE %s
+%s
 ORDER BY timestamp DESC
 LIMIT {limit:UInt32}
 FORMAT JSONEachRow`,
-		timestampAlias, quoteIdentifier(c.cfg.Database), quoteIdentifier(LogsTable), strings.Join(conditions, " AND "))
+		timestampAlias, logColumns,
+		quoteIdentifier(c.cfg.Database), quoteIdentifier(LogsTable), where)
 
 	body, err := c.queryWithSettings(ctx, statement, params, readonlySettings)
 	if err != nil {
@@ -246,6 +306,9 @@ func parseLogLines(body string, capacity int) ([]LogLine, error) {
 		if err != nil {
 			return nil, fmt.Errorf("unreadable log timestamp %q: %w", row.Timestamp, err)
 		}
+		if len(row.Fields) == 0 {
+			row.Fields = nil
+		}
 		lines = append(lines, LogLine{
 			Timestamp:   timestamp,
 			Source:      row.Source,
@@ -257,6 +320,7 @@ func parseLogLines(body string, capacity int) ([]LogLine, error) {
 			Stream:      row.Stream,
 			Level:       row.Level,
 			Message:     row.Message,
+			Fields:      row.Fields,
 		})
 	}
 
