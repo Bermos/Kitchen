@@ -17,9 +17,16 @@ after the Kitchen design mockups (IBM Plex, dark, conditions-first).
 - **Login.** OIDC Authorization Code + PKCE as the public client `kitchen-ui`
   (seeded by the chart). The token request carries
   `resource=<api url>` so the access token is a JWT the operator can validate
-  (docs/AUTH.md). The access token lives in `sessionStorage`; a 401 routes
-  back through the login, which is a redirect and no interaction while the
-  identity provider still has a session.
+  (docs/AUTH.md).
+- **Staying signed in.** The sign-in asks for `offline_access`, and the
+  refresh token that comes back is traded for a new access token a minute
+  before the old one expires — so a tab left open does not reload through the
+  identity provider once an hour. A 401 renews and retries the request once
+  before anyone is sent back to the login. Refresh tokens are single-use, so
+  renewal is serialised across tabs with a Web Lock; a replayed one costs the
+  whole session by design. The session lives in `localStorage`, which is what
+  makes it one session per browser rather than one per tab — the reasoning,
+  and what it costs, is in [docs/AUTH.md](../docs/AUTH.md).
 - **Status display.** Phases are the coarse summary; the views read
   `status.conditions` for detail (docs/CRDS.md), and the Operator toggle in
   the top bar surfaces the full condition tables on every object.

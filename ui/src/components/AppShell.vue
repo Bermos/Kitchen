@@ -92,8 +92,11 @@ const userMenu = computed(() => [
     {
       label: "Sign out",
       icon: "i-lucide-log-out",
-      onSelect: () => {
-        signOut();
+      onSelect: async () => {
+        // Waiting lets the refresh token be revoked at the issuer before the
+        // page goes away; a revocation that fails still leaves nothing behind
+        // in this browser.
+        await signOut();
         window.location.assign("/login");
       },
     },

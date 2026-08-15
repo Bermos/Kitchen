@@ -203,6 +203,7 @@ different issuer or callback.
 | Auth storage | Chart-managed single-node Postgres (external override) | OLTP; SQLite would cap replicas at 1; mirrors the ClickHouse pattern |
 | App auth surface | `ResourceClaim` type `oidcClient` | Reuses the existing claim → binding-secret → env flow |
 | API tokens for CI | better-auth's api-key plugin, exchanged for a JWT at the issuer | The plugin already holds the operator's credential; the operator stays stateless and revocation stays in one place |
+| Dashboard sessions | Rotating refresh tokens (`offline_access`), one per browser in `localStorage` | Renewal that needs no redirect and no framing of the login page; rotation is what makes browser storage defensible |
 | Preview protection | An in-path gate the routes pass through | Gateway API has no external-auth filter, and Cilium exposes none of Envoy's |
 | Gate's OAuth client | One client, one redirect URI, registered by the operator | Previews come and go without touching the client |
 | Sequencing | auth service → REST API behind it → forward-auth for previews → UI → app claims | The API should never exist without auth; the provider is the hard part, claims are known plumbing |
@@ -276,6 +277,49 @@ consent is skipped for the platform's own dashboard. It is seeded rather than
 dynamically registered because the UI is built with its client id; apps, whose
 clients nobody has to know the id of, still get theirs through dynamic
 registration.
+
+### Dashboard sessions (settled)
+
+An access token is good for an hour. The dashboard used to answer the 401 that
+follows by starting the sign-in again — no interaction while the identity
+provider still had a session, but a full page load that dropped whatever the
+tab was in the middle of, once per hour, forever.
+
+It now **renews in the background** instead. The sign-in asks for
+`offline_access`; the refresh token that comes back is traded for a new access
+token a minute before the old one expires, and a 401 renews and retries the
+request once before anyone is sent back to the login page. Both numbers are
+set explicitly on the provider rather than left to its defaults, because
+together they *are* the session: `accessTokenExpiresIn` an hour,
+`refreshTokenExpiresIn` a week.
+
+The alternative was silent re-authentication — `prompt=none` in a hidden
+iframe against the provider's own session. Refresh tokens win on two counts.
+The iframe would need the identity provider to permit being framed by the
+dashboard, which is the one thing a login page should refuse to anyone; and it
+would need the browser to send the provider's session cookie from inside that
+frame, which holds only while the dashboard and the issuer are subdomains of a
+single site. `auth.host` is configurable, so that is a property of one
+deployment, not of the design.
+
+Two consequences worth stating plainly, because both look like bugs from the
+outside:
+
+- **A refresh token is single-use.** The provider rotates on every renewal and
+  tears down every token it issued for that account and client when a spent one
+  is replayed (RFC 9700 §4.14). Two tabs renewing at the same moment would
+  replay one and sign the account out of all of them, so the dashboard
+  serialises renewal on a Web Lock and re-reads storage inside it: the tab that
+  loses the race adopts the winner's token instead of spending its own.
+- **The session lives in `localStorage`, deliberately.** It is one session per
+  browser rather than one per tab: opening a second tab is no longer a second
+  trip through the identity provider, and signing out of one signs out of all
+  of them through the `storage` event. The cost is a refresh token that
+  outlives the tab that fetched it, which is a longer-lived thing for an XSS in
+  the dashboard to steal than the old per-tab access token was. What bounds it:
+  rotation makes a stolen copy detectable the moment both are used, the
+  dashboard revokes the token on sign-out rather than leaving it valid, and a
+  week is the longest it is worth anything.
 
 ## Open items
 
