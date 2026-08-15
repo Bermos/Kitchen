@@ -210,6 +210,87 @@ var _ = Describe("Project Controller", func() {
 			Expect(cond.Reason).To(Equal("CapabilityMissing"))
 		})
 
+		It("garbage-collects everything derived from the project on delete", func() {
+			reconcileOnce()
+
+			// The records the platform derived from the project: they
+			// reference it by name, so no owner reference cleans them up.
+			build := &kitchenv1alpha1.Build{
+				ObjectMeta: metav1.ObjectMeta{Name: projectName + "-bld-abc123def456", Namespace: namespace},
+				Spec: kitchenv1alpha1.BuildSpec{
+					ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: projectName},
+					Git:        kitchenv1alpha1.GitRevision{SHA: "abc123def456789", Branch: "main"},
+				},
+			}
+			release := &kitchenv1alpha1.Release{
+				ObjectMeta: metav1.ObjectMeta{Name: projectName + "-rel-abc123def456", Namespace: namespace},
+				Spec: kitchenv1alpha1.ReleaseSpec{
+					ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: projectName},
+					BuildRef:   kitchenv1alpha1.LocalObjectReference{Name: build.Name},
+					Image:      "registry.example.com/shop@sha256:1111",
+				},
+			}
+			environment := &kitchenv1alpha1.Environment{
+				ObjectMeta: metav1.ObjectMeta{Name: projectName + "-production", Namespace: namespace},
+				Spec: kitchenv1alpha1.EnvironmentSpec{
+					ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: projectName},
+					Type:       kitchenv1alpha1.EnvironmentProduction,
+					ReleaseRef: kitchenv1alpha1.LocalObjectReference{Name: release.Name},
+				},
+			}
+			domain := &kitchenv1alpha1.Domain{
+				ObjectMeta: metav1.ObjectMeta{Name: projectName + "-com", Namespace: namespace},
+				Spec: kitchenv1alpha1.DomainSpec{
+					Hostname:       "shop.example.com",
+					EnvironmentRef: kitchenv1alpha1.LocalObjectReference{Name: environment.Name},
+				},
+			}
+			claim := &kitchenv1alpha1.ResourceClaim{
+				ObjectMeta: metav1.ObjectMeta{Name: projectName + "-db", Namespace: namespace},
+				Spec: kitchenv1alpha1.ResourceClaimSpec{
+					ProjectRef:    kitchenv1alpha1.LocalObjectReference{Name: projectName},
+					ConnectionRef: kitchenv1alpha1.LocalObjectReference{Name: "neon"},
+					Type:          "postgres",
+				},
+			}
+			// A stranger's build must survive the neighbor's teardown.
+			bystander := &kitchenv1alpha1.Build{
+				ObjectMeta: metav1.ObjectMeta{Name: "blog-bld-abc123def456", Namespace: namespace},
+				Spec: kitchenv1alpha1.BuildSpec{
+					ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: "blog"},
+					Git:        kitchenv1alpha1.GitRevision{SHA: "abc123def456789", Branch: "main"},
+				},
+			}
+			for _, obj := range []client.Object{build, release, environment, domain, claim, bystander} {
+				Expect(k8sClient.Create(ctx, obj)).To(Succeed())
+			}
+			DeferCleanup(func() {
+				Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, bystander))).To(Succeed())
+			})
+
+			project := &kitchenv1alpha1.Project{}
+			Expect(k8sClient.Get(ctx, projectKey, project)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, project)).To(Succeed())
+
+			// The finalizer requeues while dependents drain, so it can take
+			// more than one pass.
+			Eventually(func() bool {
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: projectKey})
+				Expect(err).NotTo(HaveOccurred())
+				return errors.IsNotFound(k8sClient.Get(ctx, projectKey, &kitchenv1alpha1.Project{}))
+			}).Should(BeTrue(), "project should be gone after finalization")
+
+			for _, gone := range []client.Object{build, release, environment, domain, claim} {
+				key := types.NamespacedName{Name: gone.GetName(), Namespace: namespace}
+				err := k8sClient.Get(ctx, key, gone)
+				Expect(errors.IsNotFound(err)).To(BeTrue(), gone.GetName()+" should be garbage-collected")
+			}
+
+			survivor := &kitchenv1alpha1.Build{}
+			key := types.NamespacedName{Name: bystander.Name, Namespace: namespace}
+			Expect(k8sClient.Get(ctx, key, survivor)).To(Succeed(), "another project's build must survive")
+		})
+
 		It("deregisters the webhook and removes the finalizer on delete", func() {
 			reconcileOnce()
 
