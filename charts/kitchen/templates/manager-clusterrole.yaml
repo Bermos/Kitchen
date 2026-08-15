@@ -16,6 +16,7 @@ rules:
   - events
   - nodes
   - pods
+  - serviceaccounts
   verbs:
   - get
   - list
@@ -121,6 +122,7 @@ rules:
   - domains
   - environments
   - kitchens
+  - platformupdates
   - projects
   - releases
   - resourceclaims
@@ -140,6 +142,7 @@ rules:
   - domains/finalizers
   - environments/finalizers
   - kitchens/finalizers
+  - platformupdates/finalizers
   - projects/finalizers
   - releases/finalizers
   - resourceclaims/finalizers
@@ -153,6 +156,7 @@ rules:
   - domains/status
   - environments/status
   - kitchens/status
+  - platformupdates/status
   - projects/status
   - releases/status
   - resourceclaims/status

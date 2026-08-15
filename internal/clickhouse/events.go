@@ -38,6 +38,14 @@ const (
 	EventClaimBound        = "claim.bound"
 	EventClaimFailed       = "claim.failed"
 	EventProjectCreated    = "project.created"
+
+	// The platform's own upgrades. They name no project, environment or
+	// release because they are about the installation itself — which is
+	// precisely why they are worth reading in the same feed: an app that
+	// changed behaviour at the same moment the platform did is a question the
+	// feed can now answer.
+	EventPlatformUpdated      = "platform.updated"
+	EventPlatformUpdateFailed = "platform.updateFailed"
 )
 
 // DefaultEventLimit is how many entries a feed request returns when it does

@@ -528,6 +528,60 @@ Removing a CRD field still needs care: the API server rejects a stored object
 that no longer validates, so land conversion work before shipping a breaking
 schema.
 
+### Letting the platform update itself
+
+Off by default. With it on, an upgrade is a button on the dashboard's settings
+page instead of a command:
+
+```sh
+helm upgrade kitchen oci://ghcr.io/bermos/charts/kitchen \
+  --namespace kitchen-system --reuse-values \
+  --set selfUpdate.enabled=true
+```
+
+That one command is unavoidable — a chart cannot grant itself permissions it
+was not installed with — and it is the right place for the decision, because
+what it creates is a ServiceAccount bound to **cluster-admin**. The upgrade
+applies this whole chart: CRDs, ClusterRoles, the namespace, cert-manager. A
+narrower role would have to enumerate every kind the chart has ever contained
+and would break the first time a release adds one, and a self-update that dies
+half-way through rewriting the platform is worse than no self-update.
+
+The account is separate from the operator's, so the grant is one object, and
+`--set selfUpdate.enabled=false` takes it away again.
+
+**Know who can use it.** Only something that can create a pod with that account
+in `kitchen-system` can reach the grant, which means the operator — but the
+operator creates one whenever an authenticated API caller asks it to, and the
+API has no roles yet. Until it does, everyone who can sign in to the dashboard
+can upgrade the platform. That is a fair trade on a homelab and a poor one on
+an installation with accounts you do not control.
+
+What happens when the button is pressed:
+
+- The operator creates a `PlatformUpdate`, checks it, and runs
+  `helm upgrade --reset-then-reuse-values --atomic` in a Job. `--atomic` rolls
+  the release back if it does not come up; `--reset-then-reuse-values` keeps
+  your overrides while picking up values the new chart version added, which
+  plain `--reuse-values` would silently skip.
+- The Job runs the upgrade rather than the operator, because the operator does
+  not survive it: applying the new manager Deployment kills the pod, and a helm
+  process killed mid-upgrade leaves the release `pending-upgrade` with nothing
+  left to finish or roll it back.
+- Refused before anything is applied: a downgrade (use `helm rollback`, which
+  knows what the previous release contained), a version the platform is already
+  on, an upgrade crossing a minor version unless `selfUpdate.allowMinor=true`,
+  and a second upgrade while one is in flight. An operator built from source
+  reports version `dev` and cannot self-update at all.
+- `kubectl get platformupdates` is the history, and the Job's logs are the
+  helm output — collected into ClickHouse like any other, under the component
+  `self-update`.
+
+It cannot rescue an installation that needs manual steps first: read
+[Upgrading to a chart that owns the namespace](#upgrading-to-a-chart-that-owns-the-namespace)
+and [Upgrading from 0.1.0](#upgrading-from-010) below, which are exactly the
+cases where a `helm upgrade` fails part-way and leaves the release mixed.
+
 ### Upgrading to a chart that owns the namespace
 
 Every release installed before `namespace.create` existed has a `kitchen-system`
@@ -615,6 +669,13 @@ kubectl delete namespace kitchen-system
 | `developmentLogging` | `false` | Console encoder, debug level. |
 | `serviceAccount.create` / `.name` / `.annotations` | `true` / `""` / `{}` | |
 | `rbac.create` | `true` | Manager ClusterRole, leader election Role, bindings. |
+| `selfUpdate.enabled` | `false` | Let the platform upgrade its own release from the dashboard. Creates a ServiceAccount bound to **cluster-admin**; see [Letting the platform update itself](#letting-the-platform-update-itself). |
+| `selfUpdate.chart` | `oci://ghcr.io/bermos/charts/kitchen` | Chart the upgrade pulls from. |
+| `selfUpdate.releaseName` | `""` | Release to upgrade. Defaults to this release's own name. |
+| `selfUpdate.allowMinor` | `false` | Allow an upgrade that crosses a minor version — pre-1.0, where breaking changes land. |
+| `selfUpdate.timeout` | `15m` | How long helm is given to finish. |
+| `selfUpdate.serviceAccountName` | `""` | Generated when empty. |
+| `selfUpdate.image.repository` / `.tag` | `alpine/helm` / `3.19.0` | Image the update job runs helm from. |
 | `crds.install` | `true` | Install the `kitchen.bermos.dev` CRDs. |
 | `crds.keep` | `true` | Keep CRDs (and custom resources) on uninstall. |
 | `kitchen.create` | `true` | Create the `Kitchen` singleton. Needs `baseDomain`. |
