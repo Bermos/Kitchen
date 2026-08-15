@@ -79,10 +79,11 @@ spec:
     {{- if .Values.scaleToZero.enabled }}
     # An idling environment has no pods to route to, so its URL points at the
     # add-on's interceptor instead: it holds the first request, asks KEDA to
-    # scale the workload back up, and forwards it once a pod answers.
+    # scale the workload back up, and forwards it once a pod answers. The
+    # add-on is its own Helm release, so this says where to find it.
     interceptor:
       service: {{ .Values.scaleToZero.interceptor.service | quote }}
-      namespace: {{ include "kitchen.interceptorNamespace" . | quote }}
+      namespace: {{ .Values.scaleToZero.interceptor.namespace | quote }}
       port: {{ int .Values.scaleToZero.interceptor.port }}
     {{- end }}
   observability:

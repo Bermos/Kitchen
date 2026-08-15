@@ -94,9 +94,9 @@ type TLSSpec struct {
 // holds the first request while KEDA scales the workload back up, and forwards
 // it once there is a pod to forward it to.
 //
-// The defaults describe the add-on as the Kitchen chart installs it. They are
-// configurable because a cluster that already ran the add-on before Kitchen
-// arrived has it somewhere else.
+// The add-on is a Helm release of its own rather than part of Kitchen's — it
+// cannot be a sub-chart of anything, see the chart's Chart.yaml — so this is
+// how the operator is told where it went.
 type InterceptorSpec struct {
 	// Service name of the interceptor's proxy. The add-on names it after its
 	// own chart rather than after the release, so this is stable.
@@ -105,7 +105,7 @@ type InterceptorSpec struct {
 	Service string `json:"service,omitempty"`
 
 	// Namespace the interceptor runs in.
-	// +kubebuilder:default=kitchen-system
+	// +kubebuilder:default=keda
 	// +optional
 	Namespace string `json:"namespace,omitempty"`
 
@@ -118,8 +118,9 @@ type InterceptorSpec struct {
 }
 
 // ScaleToZeroSpec is the platform switch for idling environments down to no
-// pods at all. It is off by default: it needs KEDA and its HTTP add-on
-// running in the cluster, which the chart installs only when asked.
+// pods at all. It is off by default: it needs KEDA and its HTTP add-on running
+// in the cluster, and those are the one platform dependency Kitchen's chart
+// cannot install for you.
 //
 // With it on, each Project decides for itself which of its environments idle,
 // through its own `spec.scaleToZero`.

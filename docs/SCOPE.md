@@ -76,14 +76,22 @@ These aren't nice-to-haves — the first three are the product.
   interceptor in front of idle apps, scales them to zero, and cold-starts on the next
   request — which makes open preview environments nearly free. Chosen over Knative
   because it only manages replica counts on our existing Deployments instead of taking
-  over the serving model. The chart installs both sub-charts under
-  `scaleToZero.enabled`; the operator writes one `HTTPScaledObject` per idling
+  over the serving model. The operator writes one `HTTPScaledObject` per idling
   environment and addresses the application through the interceptor instead of directly
   — as the Gateway's backend where the environment is open, as the preview gate's
   upstream where it is protected. Which environments idle is each Project's own
   `spec.scaleToZero`: previews by default, production only when asked. Turning it on
   costs the first visitor a cold start, which is why the interceptor's readiness
   timeout is a documented value rather than a hidden one.
+  - **KEDA is the one platform dependency Kitchen does not bundle**, against the usual
+    rule. The HTTP add-on ships a `ScaledObject` of KEDA's own CRD, and Helm builds and
+    validates a release's entire manifest before applying any of it, so a chart
+    containing both never installs — nor does a `pre-install` hook (built after the main
+    manifest) or a `crds/` directory (never applied on upgrade), and a bundled copy
+    collides with a cluster that already runs KEDA, since Helm will not adopt CRDs
+    another release owns. Two releases, as upstream ships them. `scaleToZero.enabled`
+    carries the interceptor's address rather than installing it, and an environment on a
+    platform that lacks it stays on plain Deployment routing and says so.
 - **Preview protection is an in-path proxy, not a Gateway filter.** Gateway API has no external-authorization filter and Cilium's implementation exposes none of Envoy's `ext_authz`; injecting one through `CiliumEnvoyConfig` would tie routing to Cilium. Instead a protected preview's `HTTPRoute` simply points at the gate, with the application's address in a header the Gateway sets — something every Gateway API implementation can do. See [AUTH.md](AUTH.md).
 - **No separate ingress controller.** The operator programs **Gateway API** resources (`Gateway`/`HTTPRoute`), and Cilium's built-in Gateway API implementation (embedded Envoy) serves them. Gateway API is the abstraction, so another implementation (Envoy Gateway, Istio) could slot in later without touching the operator's routing logic. When cloudflared is enabled, the tunnel points at the Gateway service — cloudflared is the edge, but all traffic still flows through one routing layer with uniform telemetry.
   - Documented cluster prerequisites this implies: Cilium with `gatewayAPI.enabled=true` + kube-proxy replacement, Gateway API CRDs at the version Cilium pins, a default StorageClass (ClickHouse and the auth Postgres take the cluster default and stay `Pending` without one), and a LoadBalancer address for the Gateway.

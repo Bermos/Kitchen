@@ -349,16 +349,6 @@ contributes is the switch, the hostname and the image.
 {{- end }}
 
 {{/*
-Where an idling environment's traffic goes: the HTTP add-on's interceptor,
-which holds the first request while KEDA scales the workload back up. The
-add-on names its proxy Service after its own chart rather than after the
-release, so the name is a constant; only the namespace follows the release.
-*/}}
-{{- define "kitchen.interceptorNamespace" -}}
-{{- default .Release.Namespace .Values.scaleToZero.interceptor.namespace }}
-{{- end }}
-
-{{/*
 Whether there is a telemetry store to talk to at all — one the chart runs, or
 one it was pointed at. Both cases produce the same connection secret.
 */}}
@@ -505,7 +495,10 @@ does not run in.
 {{- end }}
 {{- if .Values.scaleToZero.enabled }}
 {{- if not .Values.scaleToZero.interceptor.service }}
-{{- fail "scaleToZero.interceptor.service is required when scaleToZero.enabled: an idling environment has no pods of its own, so the operator has to route its URL at the interceptor that starts them. Leave it at the default unless the HTTP add-on was installed some other way." }}
+{{- fail "scaleToZero.interceptor.service is required when scaleToZero.enabled: an idling environment has no pods of its own, so the operator has to route its URL at the interceptor that starts them. Leave it at the default unless the HTTP add-on was installed under another name." }}
+{{- end }}
+{{- if not .Values.scaleToZero.interceptor.namespace }}
+{{- fail "scaleToZero.interceptor.namespace is required when scaleToZero.enabled: the KEDA HTTP add-on is its own Helm release, so the operator has to be told which namespace it went into." }}
 {{- end }}
 {{- $port := int .Values.scaleToZero.interceptor.port }}
 {{- if or (lt $port 1) (gt $port 65535) }}

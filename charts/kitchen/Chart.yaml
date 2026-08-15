@@ -19,30 +19,22 @@ kubeVersion: ">=1.30.0-0"
 # this chart, because cert-manager's webhook has to be serving before either is
 # admitted.
 #
-# KEDA and its HTTP add-on are what let an idle environment cost nothing: the
-# add-on's interceptor parks in front of an application, scales it to zero when
-# it goes quiet and cold-starts it on the next request. They ship their CRDs as
-# ordinary templates too, so the same reasoning applies. Neither is installed
-# unless scaleToZero.enabled — the feature is six more workloads in the
-# cluster and an extra hop in the request path of everything that idles.
-#
-# A cluster that already runs KEDA sets keda.enabled=false (and
-# keda-add-ons-http.enabled=false) to keep the feature without a second
-# installation: the first condition that exists in values wins, so setting
-# either one takes it out of scaleToZero.enabled's hands.
+# KEDA and its HTTP add-on — what scaleToZero.enabled needs — are deliberately
+# *not* here, even though Kitchen owns its cluster and bundles what it can.
+# They cannot be sub-charts of anything: the add-on ships a keda.sh ScaledObject
+# of its own (it autoscales its interceptor fleet), and Helm builds and
+# validates a release's whole manifest against the API server before applying
+# any of it, so a custom resource whose CRD arrives in the same release can
+# never resolve — "no matches for kind ScaledObject". Neither hooks nor a crds/
+# directory fix it for both install and upgrade, and a bundled copy also
+# collides with a cluster that already runs KEDA, since Helm refuses to adopt
+# CRDs another release owns. Upstream says the same thing by installing the two
+# as separate releases. See the chart README's scale-to-zero section.
 dependencies:
   - name: cert-manager
     version: v1.21.1
     repository: https://charts.jetstack.io
     condition: cert-manager.enabled
-  - name: keda
-    version: 2.20.2
-    repository: https://kedacore.github.io/charts
-    condition: keda.enabled,scaleToZero.enabled
-  - name: keda-add-ons-http
-    version: 0.15.0
-    repository: https://kedacore.github.io/charts
-    condition: keda-add-ons-http.enabled,scaleToZero.enabled
 home: https://github.com/Bermos/Kitchen
 sources:
   - https://github.com/Bermos/Kitchen

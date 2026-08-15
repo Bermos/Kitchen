@@ -156,10 +156,19 @@ release simply fails.
 When adding a dependency that ships an admission webhook for its own CRs,
 assume its CRs belong in the operator.
 
-The same split holds for scale-to-zero: the chart installs KEDA and the HTTP
-add-on (`scaleToZero.enabled`, off by default), and `EnvironmentReconciler`
-writes the per-environment `HTTPScaledObject` — one per Environment, so it
-could never have been a template.
+**A chart cannot bundle a dependency that ships a custom resource of another
+chart's CRD.** Helm builds and validates a release's whole manifest against the
+API server before it applies any of it, so a CR whose CRD arrives in the same
+release never resolves. That is why KEDA and its HTTP add-on are the one
+platform dependency Kitchen does *not* bundle, despite owning its cluster: the
+add-on autoscales its own interceptor with a `keda.sh` ScaledObject, whose CRD
+comes from the KEDA chart. A `pre-install` hook does not help (the main
+manifest is built first), `crds/` fixes install but is never applied on
+upgrade, and a bundled copy also collides with a cluster that already runs
+KEDA, because Helm will not adopt CRDs another release owns. `scaleToZero`
+therefore carries the interceptor's address instead of installing it, and
+`EnvironmentReconciler` writes the per-environment `HTTPScaledObject` — one per
+Environment, so that was never a template either.
 
 cert-manager's kinds are addressed as `unstructured` objects rather than
 through its Go types, to avoid tying the build to its release cadence.

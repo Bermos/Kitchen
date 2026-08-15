@@ -32,11 +32,12 @@ import (
 
 const (
 	// Defaults matching the CRD's, for Kitchen objects written before the
-	// fields existed. They describe the HTTP add-on as the chart installs it:
-	// the add-on names its proxy Service after its own chart rather than after
-	// the Helm release, so the name is a constant and not a rendered one.
+	// fields existed. They describe the HTTP add-on installed the way the
+	// chart README describes: its own Helm release in its own namespace. The
+	// add-on names its proxy Service after its own chart rather than after the
+	// release, so that name is a constant and not a rendered one.
 	defaultInterceptorService   = "keda-add-ons-http-interceptor-proxy"
-	defaultInterceptorNamespace = PlatformNamespace
+	defaultInterceptorNamespace = "keda"
 	defaultInterceptorPort      = int32(8080)
 
 	// interceptorComponentName labels the ReferenceGrants that let application
@@ -174,8 +175,8 @@ func (r *EnvironmentReconciler) reconcileScaleToZero(
 			Status: metav1.ConditionFalse,
 			Reason: "HTTPAddOnUnavailable",
 			Message: "spec.scaleToZero is enabled on the platform but the HTTPScaledObject API is not served: " +
-				"install KEDA and its HTTP add-on (the chart's scaleToZero.enabled), or turn the platform " +
-				"switch off. The environment runs its own replicas until then",
+				"install KEDA and its HTTP add-on (each its own Helm release, see the chart README), or " +
+				"turn the platform switch off. The environment runs its own replicas until then",
 		}, nil
 	}
 
