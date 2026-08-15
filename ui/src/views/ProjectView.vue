@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
-import { useRoute } from "vue-router";
-import { api, type Release } from "../lib/api";
+import { computed, reactive, ref, watch } from "vue";
+import { useRoute, useRouter } from "vue-router";
+import { api, type EnvVar, type Project, type Release } from "../lib/api";
 import { duration, shortImage, shortSHA, timeAgo } from "../lib/format";
 import { operatorMode } from "../lib/mode";
 import { releaseHistoryEntry, releaseHistoryLabel } from "../lib/status";
@@ -11,6 +11,7 @@ import PhaseBadge from "../components/PhaseBadge.vue";
 import StatusDot from "../components/StatusDot.vue";
 
 const route = useRoute();
+const router = useRouter();
 const toast = useToast();
 const name = computed(() => route.params.name as string);
 
@@ -114,7 +115,118 @@ const tabs = computed(() => [
   { label: `Environments (${data.value?.environments.length ?? 0})`, value: "environments" },
   { label: `Domains (${data.value?.domains.length ?? 0})`, value: "domains" },
   { label: `Resources (${data.value?.claims.length ?? 0})`, value: "resources" },
+  { label: `Settings`, value: "settings" },
 ]);
+
+// The settings tab edits a copy of the project, loaded once per project so
+// the 10s poll never types over the user. Env vars ride along in full — the
+// PATCH replaces the whole list, so secret- and claim-backed variables are
+// kept in the copy even though only literal ones are editable here.
+const settings = reactive({
+  loadedFor: "",
+  productionBranch: "",
+  previews: true,
+  previewsProtected: true,
+  buildStrategy: "auto",
+  dockerfilePath: "",
+  rootDirectory: "",
+  port: 3000,
+  replicas: 1,
+  cpu: "",
+  memory: "",
+  env: [] as EnvVar[],
+});
+const strategyOptions = [
+  { label: "auto — detect the framework", value: "auto" },
+  { label: "dockerfile", value: "dockerfile" },
+  { label: "buildpacks", value: "buildpacks" },
+];
+function loadSettings(from: Project) {
+  settings.loadedFor = from.name;
+  settings.productionBranch = from.productionBranch;
+  settings.previews = from.previews;
+  settings.previewsProtected = from.previewsProtected;
+  settings.buildStrategy = from.buildStrategy || "auto";
+  settings.dockerfilePath = from.dockerfilePath ?? "";
+  settings.rootDirectory = from.rootDirectory ?? "";
+  settings.port = from.port ?? 3000;
+  settings.replicas = from.replicas ?? 1;
+  settings.cpu = from.cpu ?? "";
+  settings.memory = from.memory ?? "";
+  settings.env = (from.env ?? []).map((v) => ({ ...v }));
+}
+watch(project, (value) => {
+  if (value && value.name !== settings.loadedFor) loadSettings(value);
+});
+
+function addEnvVar() {
+  settings.env.push({ name: "", value: "" });
+}
+function removeEnvVar(index: number) {
+  settings.env.splice(index, 1);
+}
+
+const savingSettings = ref(false);
+async function saveSettings() {
+  savingSettings.value = true;
+  try {
+    const saved = await api.updateProject(name.value, {
+      productionBranch: settings.productionBranch,
+      previews: settings.previews,
+      previewsProtected: settings.previewsProtected,
+      buildStrategy: settings.buildStrategy,
+      dockerfilePath: settings.dockerfilePath,
+      rootDirectory: settings.rootDirectory,
+      port: settings.port,
+      replicas: settings.replicas,
+      cpu: settings.cpu,
+      memory: settings.memory,
+      env: settings.env.filter((v) => v.name.trim() !== ""),
+    });
+    loadSettings(saved);
+    toast.add({
+      title: "Settings saved",
+      description: "New builds and deployments pick them up; what is already running keeps its release's snapshot.",
+      color: "success",
+      icon: "i-lucide-check",
+    });
+    await refresh();
+  } catch (err) {
+    toast.add({
+      title: "Saving the settings failed",
+      description: err instanceof Error ? err.message : String(err),
+      color: "error",
+    });
+  } finally {
+    savingSettings.value = false;
+  }
+}
+
+// Deleting a project takes everything with it, so the confirmation is typing
+// the name — a click can be a slip, the name cannot.
+const deleteConfirmation = ref("");
+const deleting = ref(false);
+async function deleteProject() {
+  if (deleteConfirmation.value !== name.value || deleting.value) return;
+  deleting.value = true;
+  try {
+    await api.deleteProject(name.value);
+    toast.add({
+      title: `Project ${name.value} is being deleted`,
+      description: "Environments, builds, releases and the project namespace are being torn down.",
+      color: "success",
+      icon: "i-lucide-trash-2",
+    });
+    void router.push({ name: "overview" });
+  } catch (err) {
+    toast.add({
+      title: "Deleting the project failed",
+      description: err instanceof Error ? err.message : String(err),
+      color: "error",
+    });
+    deleting.value = false;
+  }
+}
 
 // Previews read best the way the mockup draws them: the pull request as the
 // unit, its builds underneath. Flat keeps the one-row-per-environment view.
@@ -427,6 +539,119 @@ function host(url?: string): string {
             </tr>
           </tbody>
         </table>
+      </div>
+
+      <!-- Settings: everything on the project a user may change after
+           creating it, and the danger zone that removes it entirely. -->
+      <div v-else-if="tab === 'settings'" class="space-y-6 max-w-2xl">
+        <form class="space-y-6" @submit.prevent="saveSettings">
+          <div class="rounded-md border border-default bg-muted p-5 space-y-4">
+            <h2 class="text-sm font-semibold text-highlighted">Git</h2>
+            <UFormField label="Production branch" help="Builds of this branch promote to production.">
+              <UInput v-model="settings.productionBranch" class="w-44 font-mono" />
+            </UFormField>
+            <USwitch v-model="settings.previews" label="Preview environments" description="Every pull request gets its own environment." />
+            <USwitch
+              v-model="settings.previewsProtected"
+              :disabled="!settings.previews"
+              label="Protect previews"
+              description="Previews sit behind platform login instead of being public."
+            />
+          </div>
+
+          <div class="rounded-md border border-default bg-muted p-5 space-y-4">
+            <h2 class="text-sm font-semibold text-highlighted">Build</h2>
+            <div class="grid gap-4 sm:grid-cols-3">
+              <UFormField label="Strategy">
+                <USelect v-model="settings.buildStrategy" :items="strategyOptions" class="w-full" />
+              </UFormField>
+              <UFormField label="Dockerfile" help="Relative to the root directory.">
+                <UInput v-model="settings.dockerfilePath" placeholder="Dockerfile" class="w-full font-mono" />
+              </UFormField>
+              <UFormField label="Root directory" help="For monorepos.">
+                <UInput v-model="settings.rootDirectory" placeholder="." class="w-full font-mono" />
+              </UFormField>
+            </div>
+          </div>
+
+          <div class="rounded-md border border-default bg-muted p-5 space-y-4">
+            <h2 class="text-sm font-semibold text-highlighted">Runtime</h2>
+            <div class="grid gap-4 sm:grid-cols-4">
+              <UFormField label="Port">
+                <UInput v-model.number="settings.port" type="number" class="w-full font-mono" />
+              </UFormField>
+              <UFormField label="Replicas" help="Previews always run 1.">
+                <UInput v-model.number="settings.replicas" type="number" min="1" class="w-full font-mono" />
+              </UFormField>
+              <UFormField label="CPU" help="Per replica, e.g. 250m.">
+                <UInput v-model="settings.cpu" placeholder="unset" class="w-full font-mono" />
+              </UFormField>
+              <UFormField label="Memory" help="Per replica, e.g. 512Mi.">
+                <UInput v-model="settings.memory" placeholder="unset" class="w-full font-mono" />
+              </UFormField>
+            </div>
+          </div>
+
+          <div class="rounded-md border border-default bg-muted p-5 space-y-4">
+            <div class="flex items-center justify-between">
+              <h2 class="text-sm font-semibold text-highlighted">Environment variables</h2>
+              <UButton color="neutral" variant="subtle" size="xs" icon="i-lucide-plus" @click="addEnvVar">
+                Add variable
+              </UButton>
+            </div>
+            <p v-if="!settings.env.length" class="text-xs text-muted">
+              None yet. Values land in new releases — what is running keeps its release's snapshot until the next
+              deploy.
+            </p>
+            <div v-for="(envVar, index) in settings.env" :key="index" class="flex items-start gap-2">
+              <UInput v-model="envVar.name" placeholder="NAME" class="w-44 font-mono" />
+              <template v-if="!envVar.fromSecret && !envVar.fromClaim">
+                <UInput v-model="envVar.value" placeholder="value" class="flex-1 font-mono" />
+                <UInput v-model="envVar.previewValue" placeholder="preview value (optional)" class="flex-1 font-mono" />
+              </template>
+              <UBadge v-else color="neutral" variant="subtle" size="sm" class="font-mono mt-1.5 flex-1">
+                {{ envVar.fromSecret ? `secret ${envVar.fromSecret.name}/${envVar.fromSecret.key}` : `claim ${envVar.fromClaim!.name}/${envVar.fromClaim!.key}` }}
+              </UBadge>
+              <UButton
+                color="neutral"
+                variant="ghost"
+                size="xs"
+                icon="i-lucide-x"
+                aria-label="Remove variable"
+                class="mt-1"
+                @click="removeEnvVar(index)"
+              />
+            </div>
+          </div>
+
+          <div class="flex justify-end">
+            <UButton type="submit" :loading="savingSettings" icon="i-lucide-check">Save settings</UButton>
+          </div>
+        </form>
+
+        <div class="rounded-md border border-error/40 p-5 space-y-3">
+          <h2 class="text-sm font-semibold text-error">Danger zone</h2>
+          <p class="text-xs text-muted">
+            Deleting the project tears down its environments — production included — and removes its builds, releases,
+            domains and namespace. There is no undo.
+          </p>
+          <div class="flex items-center gap-2">
+            <UInput
+              v-model="deleteConfirmation"
+              :placeholder="`Type ${project.name} to confirm`"
+              class="w-64 font-mono"
+            />
+            <UButton
+              color="error"
+              :disabled="deleteConfirmation !== project.name"
+              :loading="deleting"
+              icon="i-lucide-trash-2"
+              @click="deleteProject"
+            >
+              Delete project
+            </UButton>
+          </div>
+        </div>
       </div>
 
       <!-- Environments: production and previews alike, with their URLs. -->

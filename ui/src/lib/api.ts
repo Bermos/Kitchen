@@ -12,6 +12,22 @@ export interface Condition {
   lastTransitionTime: string;
 }
 
+/** One key of a Secret or a ResourceClaim binding backing an env var. */
+export interface KeyRef {
+  name: string;
+  key: string;
+}
+
+/** One of a project's environment variables. Secret- and claim-backed
+ * variables carry references; the API never resolves them to values. */
+export interface EnvVar {
+  name: string;
+  value?: string;
+  previewValue?: string;
+  fromSecret?: KeyRef;
+  fromClaim?: KeyRef;
+}
+
 export interface Project {
   name: string;
   repo: string;
@@ -19,10 +35,34 @@ export interface Project {
   registry: string;
   productionBranch: string;
   previews: boolean;
+  previewsProtected: boolean;
+  buildStrategy?: string;
+  dockerfilePath?: string;
+  rootDirectory?: string;
+  env?: EnvVar[];
+  port?: number;
+  replicas?: number;
+  cpu?: string;
+  memory?: string;
   productionEnvironment?: string;
   latestBuild?: string;
   createdAt: string;
   conditions?: Condition[];
+}
+
+/** What PATCH /projects/{name} accepts: absent fields keep their value. */
+export interface ProjectSettings {
+  productionBranch?: string;
+  previews?: boolean;
+  previewsProtected?: boolean;
+  buildStrategy?: string;
+  dockerfilePath?: string;
+  rootDirectory?: string;
+  env?: EnvVar[];
+  port?: number;
+  replicas?: number;
+  cpu?: string;
+  memory?: string;
 }
 
 export interface NewProject {
@@ -164,6 +204,28 @@ export interface Connection {
   capabilities?: string[];
   createdAt: string;
   conditions?: Condition[];
+}
+
+/** A credential as the API accepts one — a token, or a username and password,
+ * depending on the provider. Write-only: the API never reads it back. */
+export interface ConnectionCredential {
+  token?: string;
+  username?: string;
+  password?: string;
+}
+
+export interface NewConnection {
+  name: string;
+  provider: string;
+  config?: Record<string, unknown>;
+  credential: ConnectionCredential;
+}
+
+/** What PATCH /connections/{name} accepts: a new config, a rotated
+ * credential, or both. */
+export interface ConnectionChanges {
+  config?: Record<string, unknown>;
+  credential?: ConnectionCredential;
 }
 
 export interface Domain {
@@ -422,6 +484,8 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     }
     throw new APIError(res.status, message);
   }
+  // A delete that answers 204 has nothing to parse.
+  if (res.status === 204) return undefined as T;
   return res.json();
 }
 
@@ -522,6 +586,9 @@ export const api = {
   projects: list<Project>("/projects"),
   createProject: (project: NewProject) => request<Project>("POST", "/projects", project),
   project: (name: string) => request<Project>("GET", `/projects/${name}`),
+  updateProject: (name: string, changes: ProjectSettings) =>
+    request<Project>("PATCH", `/projects/${name}`, changes),
+  deleteProject: (name: string) => request<Project>("DELETE", `/projects/${name}`),
   projectBuilds: (name: string) => list<Build>(`/projects/${name}/builds`)(),
   projectReleases: (name: string) => list<Release>(`/projects/${name}/releases`)(),
   projectEnvironments: (name: string) => list<Environment>(`/projects/${name}/environments`)(),
@@ -535,6 +602,7 @@ export const api = {
 
   builds: list<Build>("/builds"),
   build: (name: string) => request<Build>("GET", `/builds/${name}`),
+  cancelBuild: (name: string) => request<Build>("POST", `/builds/${name}/cancel`),
   buildLogs: (name: string, query: LogQuery = {}) =>
     request<{ items: LogLine[] }>("GET", `/builds/${name}/logs${logQuery(query)}`).then((b) => b.items),
 
@@ -544,6 +612,7 @@ export const api = {
   environment: (name: string) => request<Environment>("GET", `/environments/${name}`),
   moveEnvironment: (name: string, release: string) =>
     request<Environment>("PATCH", `/environments/${name}`, { release }),
+  deleteEnvironment: (name: string) => request<Environment>("DELETE", `/environments/${name}`),
   environmentWorkload: (name: string) => request<Workload>("GET", `/environments/${name}/workload`),
   environmentObjects: (name: string) => request<EnvironmentObjects>("GET", `/environments/${name}/objects`),
   environmentLogs: (name: string, query: LogQuery = {}) =>
@@ -608,6 +677,11 @@ export const api = {
   },
 
   connections: list<Connection>("/connections"),
+  createConnection: (connection: NewConnection) =>
+    request<Connection>("POST", "/connections", connection),
+  updateConnection: (name: string, changes: ConnectionChanges) =>
+    request<Connection>("PATCH", `/connections/${name}`, changes),
+  deleteConnection: (name: string) => request<void>("DELETE", `/connections/${name}`),
   domains: list<Domain>("/domains"),
   claims: list<Claim>("/claims"),
 
