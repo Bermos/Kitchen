@@ -371,6 +371,8 @@ func main() {
 		ExtraAudiences: splitList(apiAudiences),
 		UI:             ui.Handler(api.UIConfig(mgr.GetClient(), uiClientID)),
 		Activity:       recorder,
+		Version:        version.Version,
+		SelfUpdate:     selfUpdate,
 	}); err != nil {
 		setupLog.Error(err, "unable to add the api server to manager")
 		os.Exit(1)
