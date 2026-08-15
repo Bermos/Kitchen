@@ -35,6 +35,22 @@ export function duration(from?: string, to?: string): string {
   return `${minutes}m ${String(seconds % 60).padStart(2, "0")}s`;
 }
 
+/** How long something has been up, at the coarseness a status line reads:
+ * `43s`, `12m`, `2h 14m`, `6d 3h`. */
+export function uptime(iso: string | undefined): string {
+  if (!iso) return "—";
+  const started = new Date(iso).getTime();
+  if (Number.isNaN(started)) return "—";
+  const seconds = Math.floor((Date.now() - started) / 1000);
+  if (seconds < 0) return "—";
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ${minutes % 60}m`;
+  return `${Math.floor(hours / 24)}d ${hours % 24}h`;
+}
+
 export function shortSHA(sha: string | undefined): string {
   return sha ? sha.slice(0, 7) : "—";
 }

@@ -19,8 +19,12 @@ const inventory = useAsync(async () => {
   const [projects, environments, builds] = await Promise.all([api.projects(), api.environments(), api.builds()]);
   return { projects, environments, builds };
 });
-const settings = useAsync(() => api.settings());
+// The platform as it is running, for the status bar at the foot of the
+// sidebar. It is one request rather than four: cluster, tunnel, build queue
+// and gateway all come off /status.
+const status = useAsync(() => api.status());
 usePoll(() => void inventory.refresh(), 30000, () => true);
+usePoll(() => void status.refresh(), 30000, () => true);
 
 const projects = computed(() => inventory.data.value?.projects ?? []);
 
@@ -67,12 +71,33 @@ const activeProject = computed(() => {
 });
 
 const gateway = computed(() => {
-  const s = settings.data.value;
+  const s = status.data.value;
   if (!s) return null;
-  const programmed = s.conditions?.find((c) => c.type === "GatewayProgrammed");
+  return { address: s.gateway.address || "—", healthy: s.gateway.programmed };
+});
+
+// "chef · 8 nodes", the cluster this platform owns. A node count the operator
+// may not read comes back as zero with a message, so the count is only shown
+// once there is one.
+const cluster = computed(() => {
+  const c = status.data.value?.cluster;
+  if (!c) return null;
   return {
-    address: s.gatewayAddress || "—",
-    healthy: programmed ? programmed.status === "True" : Boolean(s.gatewayAddress),
+    label: [c.name, c.nodes ? `${c.nodes} node${c.nodes === 1 ? "" : "s"}` : ""].filter(Boolean).join(" · "),
+    healthy: c.nodes === 0 || c.readyNodes === c.nodes,
+    title: c.message || (c.nodes ? `${c.readyNodes} of ${c.nodes} nodes ready` : ""),
+  };
+});
+
+// The build queue as the gate sees it: running against the concurrency limit,
+// with anything waiting called out.
+const builds = computed(() => {
+  const b = status.data.value?.builds;
+  if (!b) return null;
+  return {
+    label: `${b.running} of ${b.capacity}`,
+    queued: b.queued,
+    busy: b.running > 0 || b.queued > 0,
   };
 });
 
@@ -156,6 +181,10 @@ const userMenu = computed(() => [
       </nav>
 
       <div class="px-4 py-3 border-t border-default text-xs space-y-1.5">
+        <div v-if="cluster" class="flex items-center gap-2" :title="cluster.title">
+          <StatusDot :tone="cluster.healthy ? 'success' : 'warning'" />
+          <span class="text-toned truncate">{{ cluster.label || "cluster" }}</span>
+        </div>
         <template v-if="gateway">
           <div class="flex items-center gap-2">
             <StatusDot :tone="gateway.healthy ? 'success' : 'warning'" />
@@ -166,6 +195,23 @@ const userMenu = computed(() => [
             <span class="text-dimmed pl-3.5 font-mono truncate" :title="gateway.address">{{ gateway.address }}</span>
           </div>
         </template>
+        <div v-if="status.data.value?.tunnel.enabled" class="flex items-center gap-2">
+          <StatusDot :tone="status.data.value.tunnel.connected ? 'success' : 'warning'" />
+          <span class="text-muted">Tunnel</span>
+          <span class="ml-auto font-mono text-toned" :title="status.data.value.tunnel.message">
+            {{ status.data.value.tunnel.connected ? "connected" : "pending" }}
+          </span>
+        </div>
+        <div v-if="builds" class="flex items-center gap-2">
+          <StatusDot :tone="builds.busy ? 'warning' : 'neutral'" :pulse="builds.busy" />
+          <span class="text-muted">Builds</span>
+          <span
+            class="ml-auto font-mono text-toned"
+            :title="builds.queued ? `${builds.queued} waiting for a slot` : 'no builds waiting'"
+          >
+            {{ builds.label }}<template v-if="builds.queued"> · {{ builds.queued }} queued</template>
+          </span>
+        </div>
         <div v-if="version" class="flex items-center gap-2">
           <span class="text-muted">Kitchen</span>
           <span class="ml-auto font-mono text-dimmed" :title="`Kitchen ${version}`">{{ version }}</span>

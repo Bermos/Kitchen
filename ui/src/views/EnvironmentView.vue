@@ -1,13 +1,15 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { useRoute } from "vue-router";
-import { api, type LogLine, type LogQuery, type Release } from "../lib/api";
-import { shortImage, timeAgo } from "../lib/format";
+import { api, type LogLine, type LogQuery, type MaterializedObject, type Release, type WorkloadPod } from "../lib/api";
+import { shortImage, timeAgo, uptime } from "../lib/format";
 import { operatorMode } from "../lib/mode";
+import type { Tone } from "../lib/status";
 import { useAsync, usePoll } from "../lib/useAsync";
 import ConditionsTable from "../components/ConditionsTable.vue";
 import LogViewer from "../components/LogViewer.vue";
 import PhaseBadge from "../components/PhaseBadge.vue";
+import StatusDot from "../components/StatusDot.vue";
 
 const route = useRoute();
 const toast = useToast();
@@ -23,6 +25,37 @@ watch(name, () => void refresh());
 const environment = computed(() => data.value?.environment);
 const moving = computed(() => environment.value?.phase === "Deploying" || environment.value?.phase === "Pending");
 usePoll(() => void refresh(), 5000, () => moving.value);
+
+// What is running, fetched apart from the environment itself: a workload read
+// that fails should cost its own panel, not the whole page.
+const workload = useAsync(() => api.environmentWorkload(name.value));
+watch(name, () => void workload.refresh());
+usePoll(() => void workload.refresh(), 5000, () => moving.value);
+
+function podTone(pod: WorkloadPod): Tone {
+  if (pod.ready) return "success";
+  return pod.phase === "Failed" || pod.restarts > 0 ? "error" : "warning";
+}
+
+// The objects the operator materialized. Operator mode only — and fetched only
+// once it is on, so the everyday view never pays for it.
+const objects = useAsync(() => api.environmentObjects(name.value), { immediate: operatorMode.value });
+watch([name, operatorMode], () => {
+  if (operatorMode.value) void objects.refresh();
+});
+
+function manifestOf(object: MaterializedObject): string {
+  return JSON.stringify(object.manifest ?? {}, null, 2);
+}
+
+async function copyManifest(object: MaterializedObject) {
+  try {
+    await navigator.clipboard.writeText(manifestOf(object));
+    toast.add({ title: `${object.kind} copied`, color: "success", icon: "i-lucide-clipboard-check" });
+  } catch (err) {
+    toast.add({ title: "Copy failed", description: err instanceof Error ? err.message : String(err), color: "error" });
+  }
+}
 
 const currentRelease = computed(() =>
   data.value?.releases.find((r) => r.name === environment.value?.release),
@@ -133,7 +166,125 @@ function historyBy(entry: { reason: string; by?: string }): string {
         </div>
       </div>
 
+      <div>
+        <h2 class="text-sm font-medium text-highlighted mb-2">Workload</h2>
+        <UAlert
+          v-if="workload.error.value"
+          color="error"
+          variant="soft"
+          icon="i-lucide-triangle-alert"
+          :title="workload.error.value"
+        />
+        <div v-else-if="workload.data.value" class="rounded-md border border-default overflow-hidden">
+          <p v-if="!workload.data.value.deployment" class="bg-muted px-5 py-4 text-sm text-muted">
+            {{ workload.data.value.message || "Nothing is running for this environment yet." }}
+          </p>
+          <div v-else class="bg-muted px-5 py-4 grid gap-6 grid-cols-2 sm:grid-cols-4 text-sm">
+            <div>
+              <p class="text-xs text-muted mb-1">Replicas</p>
+              <p class="font-mono text-highlighted">
+                {{ workload.data.value.replicas.ready }} of {{ workload.data.value.replicas.desired }} ready
+              </p>
+            </div>
+            <div>
+              <p class="text-xs text-muted mb-1">Restarts</p>
+              <p class="font-mono" :class="workload.data.value.restarts ? 'text-warning' : 'text-toned'">
+                {{ workload.data.value.restarts }}
+              </p>
+            </div>
+            <div>
+              <p class="text-xs text-muted mb-1">Uptime</p>
+              <p class="font-mono text-toned">{{ uptime(workload.data.value.startedAt) }}</p>
+            </div>
+            <div>
+              <p class="text-xs text-muted mb-1">Resources</p>
+              <p
+                v-if="workload.data.value.resources"
+                class="font-mono text-toned"
+                :title="`limits ${workload.data.value.resources.cpuLimit || '—'} / ${workload.data.value.resources.memoryLimit || '—'}`"
+              >
+                {{ workload.data.value.resources.cpuRequest || "—" }} ·
+                {{ workload.data.value.resources.memoryRequest || "—" }}
+              </p>
+              <p v-else class="text-dimmed">unset</p>
+            </div>
+          </div>
+
+          <table v-if="workload.data.value.pods?.length" class="w-full text-sm border-t border-default">
+            <thead>
+              <tr class="text-left text-xs text-muted border-b border-default">
+                <th class="px-4 py-2 font-medium">Pod</th>
+                <th class="px-4 py-2 font-medium">Restarts</th>
+                <th class="px-4 py-2 font-medium">Node</th>
+                <th class="px-4 py-2 font-medium">Up</th>
+                <th class="px-4 py-2 font-medium">Detail</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="pod in workload.data.value.pods" :key="pod.name" class="border-b border-muted last:border-0">
+                <td class="px-4 py-2 font-mono text-highlighted">
+                  <span class="inline-flex items-center gap-2">
+                    <StatusDot :tone="podTone(pod)" />
+                    <span class="truncate">{{ pod.name }}</span>
+                  </span>
+                </td>
+                <td class="px-4 py-2 font-mono" :class="pod.restarts ? 'text-warning' : 'text-toned'">
+                  {{ pod.restarts }}
+                </td>
+                <td class="px-4 py-2 font-mono text-xs text-toned">{{ pod.node || "—" }}</td>
+                <td class="px-4 py-2 text-xs text-muted whitespace-nowrap">{{ uptime(pod.startedAt) }}</td>
+                <td class="px-4 py-2 text-xs text-toned max-w-xs truncate" :title="pod.message || pod.phase">
+                  {{ pod.message || pod.phase }}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
       <ConditionsTable v-if="operatorMode" :conditions="environment.conditions" />
+
+      <div v-if="operatorMode">
+        <h2 class="text-sm font-medium text-highlighted mb-2">Materialized objects</h2>
+        <p class="text-xs text-muted mb-3">
+          What the operator created in
+          <span class="font-mono">{{ objects.data.value?.namespace || "the application namespace" }}</span> for this
+          environment — the objects themselves, as the API server holds them.
+        </p>
+        <UAlert
+          v-if="objects.error.value"
+          color="error"
+          variant="soft"
+          icon="i-lucide-triangle-alert"
+          :title="objects.error.value"
+        />
+        <div v-else class="rounded-md border border-default divide-y divide-default overflow-hidden">
+          <details v-for="object in objects.data.value?.objects ?? []" :key="object.kind" class="group">
+            <summary class="flex items-center gap-3 px-4 py-2.5 cursor-pointer text-sm hover:bg-elevated">
+              <UIcon name="i-lucide-chevron-right" class="size-4 text-dimmed group-open:rotate-90" />
+              <span class="font-mono text-highlighted">{{ object.kind }}</span>
+              <span class="font-mono text-xs text-dimmed truncate">{{ object.name }}</span>
+              <span v-if="!object.present" class="ml-auto text-xs text-warning">{{ object.message }}</span>
+              <UButton
+                v-else
+                color="neutral"
+                variant="ghost"
+                size="xs"
+                icon="i-lucide-copy"
+                class="ml-auto"
+                aria-label="Copy manifest"
+                @click.prevent="copyManifest(object)"
+              />
+            </summary>
+            <pre
+              v-if="object.present"
+              class="px-4 py-3 text-xs font-mono bg-muted overflow-x-auto max-h-96 overflow-y-auto"
+              >{{ manifestOf(object) }}</pre
+            >
+          </details>
+          <p v-if="!objects.data.value" class="px-4 py-3 text-xs text-muted">Loading…</p>
+        </div>
+      </div>
 
       <div v-if="otherReleases.length">
         <h2 class="text-sm font-medium text-highlighted mb-2">Move to another release</h2>

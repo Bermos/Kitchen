@@ -93,6 +93,71 @@ export interface Environment {
   conditions?: Condition[];
 }
 
+/** One pod behind an environment (GET /environments/{name}/workload). */
+export interface WorkloadPod {
+  name: string;
+  phase: string;
+  ready: boolean;
+  restarts: number;
+  node?: string;
+  startedAt?: string;
+  /** Why the pod is not serving — a crash loop, a pull failure. */
+  message?: string;
+}
+
+/** What an environment is actually running, as opposed to what it was asked
+ * to run: the Deployment's replica counts, its pods and their restarts. */
+export interface Workload {
+  environment: string;
+  namespace: string;
+  /** Empty when nothing has been materialized yet; `message` says why. */
+  deployment?: string;
+  image?: string;
+  replicas: { desired: number; ready: number; available: number; updated: number };
+  restarts: number;
+  startedAt?: string;
+  resources?: { cpuRequest?: string; cpuLimit?: string; memoryRequest?: string; memoryLimit?: string };
+  pods?: WorkloadPod[];
+  message?: string;
+}
+
+/** One Kubernetes object the operator materialized for an environment
+ * (GET /environments/{name}/objects) — operator mode's inspect surface. */
+export interface MaterializedObject {
+  kind: string;
+  apiVersion: string;
+  name: string;
+  namespace: string;
+  present: boolean;
+  manifest?: Record<string, unknown>;
+  message?: string;
+}
+
+export interface EnvironmentObjects {
+  environment: string;
+  namespace: string;
+  objects: MaterializedObject[];
+}
+
+/** One platform workload out of the operator's component survey. */
+export interface ComponentStatus {
+  name: string;
+  kind: string;
+  healthy: boolean;
+  available: number;
+  desired: number;
+  message?: string;
+}
+
+/** The platform as it is running (GET /status) — the status bar's request. */
+export interface PlatformStatus {
+  cluster: { name?: string; nodes: number; readyNodes: number; message?: string };
+  tunnel: { enabled: boolean; connected: boolean; message?: string };
+  builds: { running: number; capacity: number; queued: number };
+  gateway: { address?: string; programmed: boolean; message?: string };
+  components?: ComponentStatus[];
+}
+
 export interface Connection {
   name: string;
   provider: string;
@@ -357,6 +422,8 @@ export const api = {
   environment: (name: string) => request<Environment>("GET", `/environments/${name}`),
   moveEnvironment: (name: string, release: string) =>
     request<Environment>("PATCH", `/environments/${name}`, { release }),
+  environmentWorkload: (name: string) => request<Workload>("GET", `/environments/${name}/workload`),
+  environmentObjects: (name: string) => request<EnvironmentObjects>("GET", `/environments/${name}/objects`),
   environmentLogs: (name: string, query: LogQuery = {}) =>
     request<{ items: LogLine[] }>("GET", `/environments/${name}/logs${logQuery(query)}`).then((b) => b.items),
 
@@ -406,6 +473,9 @@ export const api = {
   connections: list<Connection>("/connections"),
   domains: list<Domain>("/domains"),
   claims: list<Claim>("/claims"),
+
+  // The platform as it is running: cluster, tunnel, build queue, components.
+  status: () => request<PlatformStatus>("GET", "/status"),
 
   settings: () => request<Settings>("GET", "/settings"),
   updateSettings: (changes: Partial<Pick<Settings, "buildStrategy" | "buildConcurrency" | "logRetentionDays">>) =>

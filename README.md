@@ -272,7 +272,8 @@ The Vue dashboard is served by the operator at `kitchen.<baseDomain>`, behind
 the platform login (OIDC Authorization Code + PKCE): projects, builds with
 their logs, environments with one-click rollback, connections and the editable
 platform settings, with an operator mode that surfaces `status.conditions` on
-everything. Still missing: Connection/Domain/ResourceClaim reconcilers
+everything and the Kubernetes objects the operator materialized for an
+environment. Still missing: Connection/Domain/ResourceClaim reconcilers
 (including `oidcClient` claims), metrics/traces/flow collection, Infisical
 sync, and create flows in the UI (projects and connections are still
 `kubectl apply`).

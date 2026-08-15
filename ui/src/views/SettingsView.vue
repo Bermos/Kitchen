@@ -5,12 +5,19 @@ import { loadConfig } from "../lib/config";
 import { operatorMode } from "../lib/mode";
 import { useAsync } from "../lib/useAsync";
 import ConditionsTable from "../components/ConditionsTable.vue";
+import StatusDot from "../components/StatusDot.vue";
 
 // The Kitchen singleton: platform-wide configuration, editable from here —
 // which is the reason it is a custom resource and not just Helm values.
 
 const toast = useToast();
 const { data: settings, error, loading, refresh } = useAsync(() => api.settings());
+
+// The platform as it is running, next to the platform as it is configured.
+// The component survey is the part that catches what conditions cannot: a
+// workload whose pods were refused at admission has no pods to look at.
+const status = useAsync(() => api.status());
+const components = computed(() => status.data.value?.components ?? []);
 
 // The release, from /config.json rather than the settings API: it is a fact
 // about the running operator, not part of the singleton anyone can edit here.
@@ -128,6 +135,46 @@ const strategies = [
       <div v-if="operatorMode">
         <h2 class="text-sm font-medium text-highlighted mb-2">Platform conditions</h2>
         <ConditionsTable :conditions="settings.conditions" />
+      </div>
+
+      <div v-if="operatorMode">
+        <h2 class="text-sm font-medium text-highlighted mb-2">Platform components</h2>
+        <p class="text-xs text-muted mb-3">
+          Every workload labelled as part of Kitchen, and whether the pods it wants are running. A component with no
+          pods at all was refused before it started — the message carries the reason.
+        </p>
+        <div class="rounded-md border border-default bg-muted overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="text-left text-xs text-muted border-b border-default">
+                <th class="px-3 py-2 font-medium">Component</th>
+                <th class="px-3 py-2 font-medium">Kind</th>
+                <th class="px-3 py-2 font-medium">Pods</th>
+                <th class="px-3 py-2 font-medium">Message</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-if="!components.length">
+                <td colspan="4" class="px-3 py-3 text-muted">No components surveyed yet.</td>
+              </tr>
+              <tr v-for="component in components" :key="component.name" class="border-b border-muted last:border-0">
+                <td class="px-3 py-2 font-mono text-highlighted">
+                  <span class="inline-flex items-center gap-2">
+                    <StatusDot :tone="component.healthy ? 'success' : 'error'" />
+                    {{ component.name }}
+                  </span>
+                </td>
+                <td class="px-3 py-2 font-mono text-xs text-toned">{{ component.kind }}</td>
+                <td class="px-3 py-2 font-mono" :class="component.healthy ? 'text-toned' : 'text-error'">
+                  {{ component.available }} / {{ component.desired }}
+                </td>
+                <td class="px-3 py-2 text-xs text-toned max-w-md truncate" :title="component.message">
+                  {{ component.message || "—" }}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </div>
     </template>
     <div v-else-if="loading" class="py-24 text-center text-muted text-sm">Loading…</div>
