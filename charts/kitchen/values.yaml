@@ -322,6 +322,12 @@ logs:
   # -- How often the node is rescanned for new log files. Builds and preview
   # deployments are short-lived, so this is far below Vector's own default.
   globCooldownMs: 5000
+  # -- How many fields of a JSON log line are kept as structured fields,
+  # queryable as `http.status:500`. Nesting is flattened with dots and counted
+  # after flattening. A line with more fields than this still ships, with its
+  # message intact and no structured fields — one dump should not widen the
+  # map for every line written alongside it.
+  maxStructuredFields: 64
   batch:
     maxEvents: 5000
     # -- How long a partial batch waits before it ships. Build logs are
