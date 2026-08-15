@@ -200,6 +200,40 @@ export interface Settings {
   conditions?: Condition[];
 }
 
+/** One attempt to upgrade the platform itself. */
+export interface PlatformUpdate {
+  name: string;
+  version: string;
+  phase?: string;
+  fromVersion?: string;
+  message?: string;
+  requestedBy?: string;
+  startedAt?: string;
+  completedAt?: string;
+  conditions?: Condition[];
+}
+
+/** The platform's own version, what it can move to, and what it has tried. */
+export interface PlatformUpdates {
+  /** Whether the chart was installed with `selfUpdate.enabled`. */
+  enabled: boolean;
+  /** Why not, when it was not — including how to turn it on. */
+  reason?: string;
+  currentVersion: string;
+  latestVersion?: string;
+  available: boolean;
+  /**
+   * What this installation would actually accept, newest first. It is not
+   * simply everything newer than `currentVersion`: pre-1.0 a minor crossing
+   * carries the breaking changes, so those are left out unless `allowMinor`.
+   */
+  upgradableTo?: string[];
+  allowMinor: boolean;
+  /** Why the published versions could not be listed — usually no egress. */
+  discoveryError?: string;
+  items: PlatformUpdate[];
+}
+
 export interface LogLine {
   timestamp: string;
   source: string;
@@ -428,6 +462,11 @@ export const api = {
   projectEnvironments: (name: string) => list<Environment>(`/projects/${name}/environments`)(),
   rebuild: (project: string, revision?: { sha: string; branch?: string }) =>
     request<Build>("POST", `/projects/${project}/builds`, revision ?? {}),
+
+  // The platform upgrading itself. Creating an update takes a version and
+  // nothing else; every other decision is the operator's.
+  updates: () => request<PlatformUpdates>("GET", "/updates"),
+  startUpdate: (version: string) => request<PlatformUpdate>("POST", "/updates", { version }),
 
   builds: list<Build>("/builds"),
   build: (name: string) => request<Build>("GET", `/builds/${name}`),
