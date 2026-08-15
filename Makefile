@@ -106,9 +106,12 @@ hooks: ## Install the git hooks: reject a commit message CI would reject anyway.
 	@echo "core.hooksPath -> hack/hooks. Undo with: git config --unset core.hooksPath"
 
 .PHONY: check-commits
-check-commits: ## Check the commit messages this branch adds to main (BASE overrides main).
+check-commits: ## Check the commit messages this branch adds to origin/main (BASE overrides).
+	@# origin/main, not main: a stale local branch ref makes this walk history
+	@# that is already merged and drown the real answer in it. This is also the
+	@# range CI checks.
 	@failed=0; \
-	for sha in $$(git rev-list $${BASE:-main}..HEAD); do \
+	for sha in $$(git rev-list $${BASE:-origin/main}..HEAD); do \
 		git log -1 --format=%B "$$sha" \
 			| ./hack/check-commit-message.sh - --label "commit $${sha:0:8}" || failed=1; \
 	done; \
