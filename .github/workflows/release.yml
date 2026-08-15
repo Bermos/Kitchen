@@ -1,0 +1,58 @@
+name: Release
+
+# Cutting a release is merging a pull request. release-please keeps that pull
+# request open and up to date: it reads the Conventional Commits landed on main
+# since the last tag, works out whether they add up to a patch, a minor or a
+# major, writes CHANGELOG.md and bumps the version everywhere it is written
+# down (release-please-config.json lists those files). Merging it tags the
+# commit and publishes the release; nothing here is decided by hand.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    name: Release pull request
+    runs-on: ubuntu-latest
+    permissions:
+      # Writes the release branch, the tag and the GitHub release.
+      contents: write
+      pull-requests: write
+    outputs:
+      released: ${{ steps.release.outputs.release_created }}
+      version: ${{ steps.release.outputs.version }}
+      tag: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - name: Run release-please
+        id: release
+        uses: googleapis/release-please-action@v4
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  publish:
+    name: Publish
+    needs: release-please
+    if: needs.release-please.outputs.released == 'true'
+    # Called rather than triggered by the tag: a tag pushed with the workflow's
+    # own GITHUB_TOKEN does not start another workflow run, so waiting for the
+    # `push: tags` trigger in publish.yml would wait forever. The version is
+    # passed straight through instead.
+    uses: ./.github/workflows/publish.yml
+    with:
+      version: ${{ needs.release-please.outputs.version }}
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    secrets: inherit
