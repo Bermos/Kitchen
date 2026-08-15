@@ -281,13 +281,20 @@ $(HELM): $(LOCALBIN)
 # $1 - target path with name of binary
 # $2 - package url which can be installed
 # $3 - specific version of package
+# The toolchain go.mod pins. Tools are built with it rather than whatever go
+# happens to be on PATH: `go install pkg@version` ignores the surrounding
+# module, and golangci-lint refuses to analyze code targeting a newer Go than
+# the one it was built with — so a PATH toolchain older than the pin would
+# produce a linter that rejects the repo.
+GO_TOOLCHAIN = $(shell awk '/^toolchain /{print $$2}' go.mod)
+
 define go-install-tool
 @[ -f "$(1)-$(3)" ] || { \
 set -e; \
 package=$(2)@$(3) ;\
 echo "Downloading $${package}" ;\
 rm -f $(1) || true ;\
-GOBIN=$(LOCALBIN) go install $${package} ;\
+GOBIN=$(LOCALBIN) GOTOOLCHAIN=$(GO_TOOLCHAIN) go install $${package} ;\
 mv $(1) $(1)-$(3) ;\
 } ;\
 ln -sf $(1)-$(3) $(1)
