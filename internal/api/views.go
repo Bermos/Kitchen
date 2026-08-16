@@ -434,26 +434,49 @@ func newConnectionView(connection *kitchenv1alpha1.Connection) connectionView {
 	}
 }
 
+// domainVerificationView is the DNS change that proves ownership, exactly as
+// the user has to type it into their zone. Either record satisfies the check.
+type domainVerificationView struct {
+	TXTRecord string `json:"txtRecord"`
+	TXTValue  string `json:"txtValue"`
+	// CNAMETarget both verifies and routes: the record the hostname needs
+	// anyway to reach the platform.
+	CNAMETarget string `json:"cnameTarget,omitempty"`
+}
+
 type domainView struct {
-	Name        string          `json:"name"`
-	Hostname    string          `json:"hostname"`
-	Environment string          `json:"environment"`
-	TLS         string          `json:"tls,omitempty"`
-	Verified    bool            `json:"verified"`
-	CreatedAt   time.Time       `json:"createdAt"`
-	Conditions  []conditionView `json:"conditions,omitempty"`
+	Name        string `json:"name"`
+	Hostname    string `json:"hostname"`
+	Environment string `json:"environment"`
+	// TLS is the spec's own mode; empty means it inherits the platform's.
+	// EffectiveTLS is the mode actually in effect, as the reconciler observed.
+	TLS          string                  `json:"tls,omitempty"`
+	EffectiveTLS string                  `json:"effectiveTLS,omitempty"`
+	Verified     bool                    `json:"verified"`
+	Verification *domainVerificationView `json:"verification,omitempty"`
+	CreatedAt    time.Time               `json:"createdAt"`
+	Conditions   []conditionView         `json:"conditions,omitempty"`
 }
 
 func newDomainView(domain *kitchenv1alpha1.Domain) domainView {
-	return domainView{
-		Name:        domain.Name,
-		Hostname:    domain.Spec.Hostname,
-		Environment: domain.Spec.EnvironmentRef.Name,
-		TLS:         string(domain.Spec.TLS),
-		Verified:    domain.Status.Verified,
-		CreatedAt:   domain.CreationTimestamp.Time,
-		Conditions:  conditionViews(domain.Status.Conditions),
+	view := domainView{
+		Name:         domain.Name,
+		Hostname:     domain.Spec.Hostname,
+		Environment:  domain.Spec.EnvironmentRef.Name,
+		TLS:          string(domain.Spec.TLS),
+		EffectiveTLS: string(domain.Status.TLSMode),
+		Verified:     domain.Status.Verified,
+		CreatedAt:    domain.CreationTimestamp.Time,
+		Conditions:   conditionViews(domain.Status.Conditions),
 	}
+	if v := domain.Status.Verification; v != nil {
+		view.Verification = &domainVerificationView{
+			TXTRecord:   v.TXTRecord,
+			TXTValue:    v.TXTValue,
+			CNAMETarget: v.CNAMETarget,
+		}
+	}
+	return view
 }
 
 type claimView struct {
