@@ -7,6 +7,7 @@ import { operatorMode } from "../lib/mode";
 import type { Tone } from "../lib/status";
 import { useAsync, usePoll } from "../lib/useAsync";
 import ConditionsTable from "../components/ConditionsTable.vue";
+import DomainsPanel from "../components/DomainsPanel.vue";
 import LogViewer from "../components/LogViewer.vue";
 import PhaseBadge from "../components/PhaseBadge.vue";
 import StatusDot from "../components/StatusDot.vue";
@@ -295,6 +296,8 @@ function historyBy(entry: { reason: string; by?: string }): string {
           </table>
         </div>
       </div>
+
+      <DomainsPanel :environment="environment.name" />
 
       <ConditionsTable v-if="operatorMode" :conditions="environment.conditions" />
 
