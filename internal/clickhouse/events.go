@@ -41,6 +41,8 @@ const (
 	EventClaimDeleted      = "claim.deleted"
 	EventProjectCreated    = "project.created"
 	EventProjectDeleted    = "project.deleted"
+	EventDomainAttached    = "domain.attached"
+	EventDomainRemoved     = "domain.removed"
 
 	// The platform's own upgrades. They name no project, environment or
 	// release because they are about the installation itself — which is

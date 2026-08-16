@@ -235,7 +235,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/v1/connections/{name}", s.deleteConnection)
 
 	mux.HandleFunc("GET /api/v1/domains", s.listDomains)
+	mux.HandleFunc("POST /api/v1/domains", s.createDomain)
 	mux.HandleFunc("GET /api/v1/domains/{name}", s.getDomain)
+	mux.HandleFunc("DELETE /api/v1/domains/{name}", s.deleteDomain)
 
 	mux.HandleFunc("GET /api/v1/claims", s.listClaims)
 	mux.HandleFunc("POST /api/v1/claims", s.createClaim)
