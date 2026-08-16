@@ -228,14 +228,36 @@ export interface ConnectionChanges {
   credential?: ConnectionCredential;
 }
 
+/** The DNS change that proves ownership of a custom domain, exactly as the
+ * user has to type it into their zone. Either record satisfies the check;
+ * the CNAME also routes the hostname at the platform. */
+export interface DomainVerification {
+  txtRecord: string;
+  txtValue: string;
+  cnameTarget?: string;
+}
+
 export interface Domain {
   name: string;
   hostname: string;
   environment: string;
+  /** The spec's own TLS mode; empty inherits the platform's. */
   tls?: string;
+  /** The mode actually in effect, as the operator resolved it. */
+  effectiveTLS?: string;
   verified: boolean;
+  verification?: DomainVerification;
   createdAt: string;
   conditions?: Condition[];
+}
+
+/** What POST /domains takes: the name is derived from the hostname when
+ * absent, and tls empty inherits the platform's mode. */
+export interface NewDomain {
+  name?: string;
+  hostname: string;
+  environment: string;
+  tls?: string;
 }
 
 export interface Claim {
@@ -696,6 +718,9 @@ export const api = {
     request<Connection>("PATCH", `/connections/${name}`, changes),
   deleteConnection: (name: string) => request<void>("DELETE", `/connections/${name}`),
   domains: list<Domain>("/domains"),
+  domain: (name: string) => request<Domain>("GET", `/domains/${name}`),
+  createDomain: (domain: NewDomain) => request<Domain>("POST", "/domains", domain),
+  deleteDomain: (name: string) => request<Domain>("DELETE", `/domains/${name}`),
   claims: list<Claim>("/claims"),
   createClaim: (claim: NewClaim) => request<Claim>("POST", "/claims", claim),
   // Answers 202: the operator's finalizer finishes the teardown — branches,
