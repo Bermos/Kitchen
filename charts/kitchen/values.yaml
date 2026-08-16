@@ -182,6 +182,32 @@ kitchen:
       # observations into the telemetry store — the dashboard's traffic view.
       # Empty disables flow collection.
       relayAddress: ""
+    metrics:
+      # -- Sample every application container's resource usage into the
+      # telemetry store, which is what gives the environment page a history
+      # rather than an instant. The operator does the sampling itself — there
+      # is no metrics collector to install.
+      enabled: true
+      # -- Seconds between samples. Below this the row count climbs faster
+      # than the answers improve; much above a minute and a short spike falls
+      # between two samples.
+      intervalSeconds: 30
+    traces:
+      # -- Run the OTLP/HTTP receiver instrumented applications export spans
+      # to, and hand every environment its address through the standard OTLP
+      # environment variables. Off means neither: no receiver, and no
+      # variables injected into application pods.
+      enabled: true
+      # -- Port the receiver binds, and the port its Service publishes. This
+      # is OTLP/HTTP's registered port; an SDK given only a hostname assumes
+      # it.
+      port: 4318
+      # -- Endpoint applications are told to export to. Empty means the
+      # receiver's own in-cluster Service, which is almost always right — set
+      # this only to put something else in front of it.
+      endpoint: ""
+      service:
+        annotations: {}
 
 # The operator's REST API: what the Kitchen UI, the CLI and CI talk to. Every
 # endpoint sits behind the platform's identity provider, so the API is only
@@ -366,6 +392,24 @@ logs:
   # message intact and no structured fields — one dump should not widen the
   # map for every line written alongside it.
   maxStructuredFields: 64
+  # -- Structured fields a line's trace id may be written under, first match
+  # wins. The name belongs to whichever instrumentation library the
+  # application uses, so the collector accepts all the usual ones rather than
+  # asking every project to agree on one. Lifting it into a column is what
+  # makes a log line and a trace two views of the same request.
+  traceIdFields:
+    - trace_id
+    - traceId
+    - traceID
+    - trace.id
+    - dd.trace_id
+  # -- The same for a line's span id.
+  spanIdFields:
+    - span_id
+    - spanId
+    - spanID
+    - span.id
+    - dd.span_id
   batch:
     maxEvents: 5000
     # -- How long a partial batch waits before it ships. Build logs are

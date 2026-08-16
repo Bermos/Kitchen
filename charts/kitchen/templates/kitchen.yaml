@@ -101,4 +101,20 @@ spec:
       # observations into the telemetry store.
       relayAddress: {{ . | quote }}
     {{- end }}
+    metrics:
+      # The operator samples every application container's CPU and memory off
+      # the kubelet, and its replicas and restarts off the pods themselves.
+      # There is no collector to install: the join from a container back to
+      # its project and environment lives in the pod's labels, which a metrics
+      # scrape does not carry and the operator is already reading.
+      enabled: {{ .Values.kitchen.observability.metrics.enabled }}
+      intervalSeconds: {{ int .Values.kitchen.observability.metrics.intervalSeconds }}
+    traces:
+      enabled: {{ .Values.kitchen.observability.traces.enabled }}
+      {{- if .Values.kitchen.observability.traces.enabled }}
+      # Where instrumented applications export their spans. The operator hands
+      # this to every environment through OTLP's own environment variables, so
+      # adding a language's SDK is the whole of instrumenting an app here.
+      endpoint: {{ include "kitchen.otlpEndpoint" . | quote }}
+      {{- end }}
 {{- end }}

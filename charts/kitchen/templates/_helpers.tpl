@@ -141,6 +141,24 @@ one, so consumers never have to care which.
 {{- printf "%s-clickhouse" (include "kitchen.fullname" .) }}
 {{- end }}
 
+{{/*
+The trace receiver's Service, and the endpoint applications are told to export
+to. The endpoint is written into the Kitchen object rather than left to the
+CRD's default because every name this chart generates carries the release's,
+and the operator has no way to know what that was.
+*/}}
+{{- define "kitchen.otlpServiceName" -}}
+{{- printf "%s-otlp" (include "kitchen.fullname" .) }}
+{{- end }}
+
+{{- define "kitchen.otlpEndpoint" -}}
+{{- if .Values.kitchen.observability.traces.endpoint }}
+{{- .Values.kitchen.observability.traces.endpoint }}
+{{- else }}
+{{- printf "http://%s.%s.svc.cluster.local:%v" (include "kitchen.otlpServiceName" .) .Release.Namespace .Values.kitchen.observability.traces.port }}
+{{- end }}
+{{- end }}
+
 {{- define "kitchen.clickhouseSelectorLabels" -}}
 app.kubernetes.io/name: {{ include "kitchen.name" . }}-clickhouse
 app.kubernetes.io/instance: {{ .Release.Name }}
