@@ -478,3 +478,125 @@ func TestDeletingAConnectionKeepsSecretsItDidNotWrite(t *testing.T) {
 		t.Fatal("the externally managed secret was deleted")
 	}
 }
+
+// neonConnection is a database-capable connection, as the Connection
+// reconciler leaves one once it has validated the credentials.
+func neonConnection() *kitchenv1alpha1.Connection {
+	return &kitchenv1alpha1.Connection{
+		ObjectMeta: metav1.ObjectMeta{Name: "neon", Namespace: testNamespace},
+		Spec: kitchenv1alpha1.ConnectionSpec{
+			Provider:             "neon",
+			CredentialsSecretRef: kitchenv1alpha1.LocalObjectReference{Name: "neon-credentials"},
+		},
+		Status: kitchenv1alpha1.ConnectionStatus{
+			Capabilities: []kitchenv1alpha1.Capability{kitchenv1alpha1.CapabilityDatabase},
+		},
+	}
+}
+
+func TestCreatingAClaim(t *testing.T) {
+	h := newHarness(t, nil, append(fixtures(), neonConnection())...)
+
+	recorder := h.do(t, http.MethodPost, "/api/v1/claims",
+		`{"name": "orders-db", "project": "shop", "connection": "neon", "type": "postgres", "previewBranching": true}`)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	view := decode[claimView](t, recorder)
+	if view.Name != "orders-db" || view.Project != feedProject || view.Connection != "neon" || !view.PreviewBranching {
+		t.Fatalf("the response does not echo the request: %+v", view)
+	}
+
+	stored := &kitchenv1alpha1.ResourceClaim{}
+	if err := h.server.get(context.Background(), "orders-db", stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored.Spec.ProjectRef.Name != feedProject || stored.Spec.ConnectionRef.Name != "neon" || stored.Spec.Type != "postgres" {
+		t.Fatalf("the claim did not stick: %+v", stored.Spec)
+	}
+	if !stored.PreviewBranching() {
+		t.Fatal("previewBranching did not reach spec.config")
+	}
+}
+
+func TestCreatingAClaimWithDeletionPolicyDelete(t *testing.T) {
+	h := newHarness(t, nil, append(fixtures(), neonConnection())...)
+
+	recorder := h.do(t, http.MethodPost, "/api/v1/claims",
+		`{"name": "scratch-db", "project": "shop", "connection": "neon", "type": "postgres", "deletionPolicy": "Delete"}`)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	stored := &kitchenv1alpha1.ResourceClaim{}
+	if err := h.server.get(context.Background(), "scratch-db", stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored.Spec.DeletionPolicy != kitchenv1alpha1.ClaimDelete {
+		t.Fatalf("want deletionPolicy Delete, got %q", stored.Spec.DeletionPolicy)
+	}
+	if stored.PreviewBranching() {
+		t.Fatal("previewBranching was not asked for")
+	}
+}
+
+func TestCreatingAClaimRejectsUnusableRequests(t *testing.T) {
+	h := newHarness(t, nil, append(fixtures(), neonConnection())...)
+
+	for name, body := range map[string]string{
+		"no name":                  `{"project": "shop", "connection": "neon", "type": "postgres"}`,
+		"a name that is no label":  `{"name": "Orders DB", "project": "shop", "connection": "neon", "type": "postgres"}`,
+		"a type nobody provisions": `{"name": "cache", "project": "shop", "connection": "neon", "type": "redis"}`,
+		"no project":               `{"name": "orders-db", "connection": "neon", "type": "postgres"}`,
+		"a project that is not there": `{"name": "orders-db", "project": "nope", "connection": "neon",
+			"type": "postgres"}`,
+		"a connection that is not there": `{"name": "orders-db", "project": "shop", "connection": "nope",
+			"type": "postgres"}`,
+		"a connection without the capability": `{"name": "orders-db", "project": "shop", "connection": "gh",
+			"type": "postgres"}`,
+		"a policy that is neither": `{"name": "orders-db", "project": "shop", "connection": "neon",
+			"type": "postgres", "deletionPolicy": "Keep"}`,
+		"an unknown field": `{"name": "orders-db", "project": "shop", "connection": "neon", "type": "postgres",
+			"branching": true}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			recorder := h.do(t, http.MethodPost, "/api/v1/claims", body)
+			if recorder.Code != http.StatusBadRequest {
+				t.Fatalf("want 400, got %d: %s", recorder.Code, recorder.Body.String())
+			}
+		})
+	}
+}
+
+func TestCreatingAClaimUnderATakenNameIsRefused(t *testing.T) {
+	// shop-db is already in the fixtures.
+	h := newHarness(t, nil, append(fixtures(), neonConnection())...)
+
+	recorder := h.do(t, http.MethodPost, "/api/v1/claims",
+		`{"name": "shop-db", "project": "shop", "connection": "neon", "type": "postgres"}`)
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("want 409, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestDeletingAClaim(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+
+	recorder := h.do(t, http.MethodDelete, "/api/v1/claims/shop-db", "")
+	// 202: the reconciler's finalizer still has the binding, branches and —
+	// under deletionPolicy Delete — the instance to remove.
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("want 202, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if err := h.server.get(context.Background(), "shop-db", &kitchenv1alpha1.ResourceClaim{}); err == nil {
+		t.Fatal("the claim is still there")
+	}
+}
+
+func TestDeletingAClaimThatDoesNotExist(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+
+	recorder := h.do(t, http.MethodDelete, "/api/v1/claims/nope", "")
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("want 404, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+}

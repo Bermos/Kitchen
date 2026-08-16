@@ -457,25 +457,29 @@ func newDomainView(domain *kitchenv1alpha1.Domain) domainView {
 }
 
 type claimView struct {
-	Name       string          `json:"name"`
-	Project    string          `json:"project"`
-	Connection string          `json:"connection"`
-	Type       string          `json:"type"`
-	Phase      string          `json:"phase,omitempty"`
-	Secret     string          `json:"secret,omitempty"`
-	CreatedAt  time.Time       `json:"createdAt"`
-	Conditions []conditionView `json:"conditions,omitempty"`
+	Name             string          `json:"name"`
+	Project          string          `json:"project"`
+	Connection       string          `json:"connection"`
+	Type             string          `json:"type"`
+	Phase            string          `json:"phase,omitempty"`
+	Secret           string          `json:"secret,omitempty"`
+	DeletionPolicy   string          `json:"deletionPolicy,omitempty"`
+	PreviewBranching bool            `json:"previewBranching"`
+	CreatedAt        time.Time       `json:"createdAt"`
+	Conditions       []conditionView `json:"conditions,omitempty"`
 }
 
 func newClaimView(claim *kitchenv1alpha1.ResourceClaim) claimView {
 	return claimView{
-		Name:       claim.Name,
-		Project:    claim.Spec.ProjectRef.Name,
-		Connection: claim.Spec.ConnectionRef.Name,
-		Type:       claim.Spec.Type,
-		Phase:      string(claim.Status.Phase),
-		Secret:     claim.Status.SecretName,
-		CreatedAt:  claim.CreationTimestamp.Time,
-		Conditions: conditionViews(claim.Status.Conditions),
+		Name:             claim.Name,
+		Project:          claim.Spec.ProjectRef.Name,
+		Connection:       claim.Spec.ConnectionRef.Name,
+		Type:             claim.Spec.Type,
+		Phase:            string(claim.Status.Phase),
+		Secret:           claim.Status.SecretName,
+		DeletionPolicy:   string(claim.Spec.DeletionPolicy),
+		PreviewBranching: claim.PreviewBranching(),
+		CreatedAt:        claim.CreationTimestamp.Time,
+		Conditions:       conditionViews(claim.Status.Conditions),
 	}
 }

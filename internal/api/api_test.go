@@ -467,7 +467,9 @@ var routes = []struct {
 	{http.MethodGet, "/api/v1/domains"},
 	{http.MethodGet, "/api/v1/domains/shop-com"},
 	{http.MethodGet, "/api/v1/claims"},
+	{http.MethodPost, "/api/v1/claims"},
 	{http.MethodGet, "/api/v1/claims/shop-db"},
+	{http.MethodDelete, "/api/v1/claims/shop-db"},
 	{http.MethodGet, "/api/v1/nonsense"},
 }
 

@@ -238,7 +238,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/domains/{name}", s.getDomain)
 
 	mux.HandleFunc("GET /api/v1/claims", s.listClaims)
+	mux.HandleFunc("POST /api/v1/claims", s.createClaim)
 	mux.HandleFunc("GET /api/v1/claims/{name}", s.getClaim)
+	mux.HandleFunc("DELETE /api/v1/claims/{name}", s.deleteClaim)
 
 	// Anything else under the API prefix is a 404 rather than a fall-through,
 	// and it is still a 404 only after the caller has been identified: an
