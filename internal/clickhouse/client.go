@@ -169,6 +169,26 @@ func (c *Client) queryWithSettings(ctx context.Context, query string, params, se
 	for name, value := range settings {
 		values.Set(name, value)
 	}
+	return c.do(ctx, query, values)
+}
+
+// execOutsideDatabase runs a statement without naming a database to run it in.
+//
+// There is exactly one such statement, and it is the CREATE DATABASE itself:
+// ClickHouse resolves the `database` parameter before it looks at the query, so
+// a CREATE DATABASE sent with it is refused with "Database kitchen does not
+// exist" — which is the very thing it was about to fix. On the chart's own
+// ClickHouse this never showed, because the StatefulSet creates the database
+// from CLICKHOUSE_DB before the operator ever connects; against an external
+// store it is the difference between the platform bringing its own schema up
+// and an install that cannot start.
+func (c *Client) execOutsideDatabase(ctx context.Context, query string) error {
+	_, err := c.do(ctx, query, url.Values{})
+	return err
+}
+
+// do posts one statement and reads its answer.
+func (c *Client) do(ctx context.Context, query string, values url.Values) (string, error) {
 	endpoint := c.cfg.endpoint() + "?" + values.Encode()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(query))
