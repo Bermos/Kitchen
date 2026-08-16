@@ -6,8 +6,8 @@ A self-hosted Vercel alternative for people who bring their own Kubernetes clust
 `git push` → build → deploy → URL, on your own cluster, with batteries included.
 
 Deploys as a single Helm chart. Assumes Cilium as the cluster CNI (Hubble for traffic
-observability, Cilium Gateway API for ingress). All telemetry — logs, metrics, traces,
-flow data — lands in ClickHouse.
+observability, Cilium Gateway API for ingress). All telemetry lands in one store,
+ClickHouse — logs, deploy events and flow data today, metrics and traces to come.
 
 ## Docs
 
@@ -294,5 +294,17 @@ operator materialized for an environment. Resource claims provision through
 their connection (Neon Postgres first, a DB branch per preview with
 `previewBranching`) with create/delete in the dashboard, and custom domains
 attach from the environment screen — the dashboard shows the DNS record to
-create and tracks verification, certificate and routing live. Still missing:
-`oidcClient` claims, metrics/traces/flow collection, and Infisical sync.
+create and tracks verification, certificate and routing live.
+
+Telemetry lands in ClickHouse for three of the four signals: container and
+build logs, deploy events, and Hubble flows. The observability view asks one
+log selection four ways — lines, a histogram, facets, message patterns — the
+traffic view draws the service map from the flows, and the overview's numbers
+are derived from all three.
+
+The rest is in [the issue tracker](https://github.com/Bermos/Kitchen/issues)
+rather than in a list here, which is the only version that stays true. The
+open ones nearest the shipped path are resource metrics and traces
+([#73](https://github.com/Bermos/Kitchen/issues/73)), `oidcClient` resource
+claims ([#8](https://github.com/Bermos/Kitchen/issues/8)) and Infisical sync
+([#13](https://github.com/Bermos/Kitchen/issues/13)).
