@@ -21,7 +21,7 @@ flow data — lands in ClickHouse.
 
 - `api/v1alpha1/` — CRD types (`kitchen.bermos.dev/v1alpha1`): Kitchen, Connection,
   Project, Build, Release, Environment, Domain, ResourceClaim
-- `internal/controller/` — one reconciler per CRD (stubs for now)
+- `internal/controller/` — one reconciler per CRD
 - `internal/api/` — the REST API, behind the platform's identity provider
 - `config/crd/bases/` — generated CRD manifests
 - `cmd/` — operator entrypoint
@@ -292,7 +292,7 @@ never read back — and the editable platform settings, with an operator mode
 that surfaces `status.conditions` on everything and the Kubernetes objects the
 operator materialized for an environment. Resource claims provision through
 their connection (Neon Postgres first, a DB branch per preview with
-`previewBranching`) with create/delete in the dashboard. Still missing: the
-Domain reconciler (including `oidcClient` claims), metrics/traces/flow
-collection, Infisical sync — and with them the domain create flow, which
-stays `kubectl apply` until its reconciler lands.
+`previewBranching`) with create/delete in the dashboard, and custom domains
+attach from the environment screen — the dashboard shows the DNS record to
+create and tracks verification, certificate and routing live. Still missing:
+`oidcClient` claims, metrics/traces/flow collection, and Infisical sync.
