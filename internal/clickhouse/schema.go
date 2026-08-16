@@ -178,7 +178,9 @@ func (c *Client) ensureTableTTL(ctx context.Context, table, ddl, column string, 
 	}
 
 	db := quoteIdentifier(c.cfg.Database)
-	if err := c.Exec(ctx, "CREATE DATABASE IF NOT EXISTS "+db); err != nil {
+	// Deliberately not through Exec: see execOutsideDatabase for why the one
+	// statement that creates the database cannot name it.
+	if err := c.execOutsideDatabase(ctx, "CREATE DATABASE IF NOT EXISTS "+db); err != nil {
 		return err
 	}
 	if err := c.Exec(ctx, ddl); err != nil {
