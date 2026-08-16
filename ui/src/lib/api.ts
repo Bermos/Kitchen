@@ -367,6 +367,10 @@ export interface LogLine {
   /** Best-effort severity the collector parsed out of the line; "" when unknown. */
   level?: string;
   message: string;
+  /** The line's own trace and span, lifted out of its structured fields by the
+   * collector. A line that carries one can offer the whole request. */
+  traceId?: string;
+  spanId?: string;
   /** The line's own structured fields, when it was JSON the collector could flatten. */
   fields?: Record<string, string>;
 }
@@ -422,6 +426,80 @@ export interface LogPattern {
   sample: string;
   firstSeen: string;
   lastSeen: string;
+}
+
+/** One bucket of an environment's resource history. CPU and memory are summed
+ * across the environment's containers; `replicas` is how many distinct pods
+ * reported in the bucket, which is the only way to see one idle to zero and
+ * come back. */
+export interface ResourcePoint {
+  start: string;
+  cpuCores: number;
+  cpuPeakCores: number;
+  memoryBytes: number;
+  memoryPeakBytes: number;
+  replicas: number;
+  restarts: number;
+  oomKills: number;
+}
+
+/** What an environment has been using (GET /environments/{name}/metrics), as
+ * opposed to what it is using — which is the workload endpoint. */
+export interface ResourceSeries {
+  start: string;
+  end: string;
+  bucketSeconds: number;
+  points: ResourcePoint[];
+  cpuLimitCores: number;
+  memoryLimitBytes: number;
+  restarts: number;
+  oomKills: number;
+  /** Whether the five-minute rollup answered — why a wide window is coarser
+   * than the resolution that was asked for. */
+  rollup: boolean;
+}
+
+/** One trace as a list entry (GET /traces): what it was, how long it took end
+ * to end, and whether anything in it failed. */
+export interface Trace {
+  traceId: string;
+  timestamp: string;
+  name: string;
+  service: string;
+  project?: string;
+  environment?: string;
+  durationMs: number;
+  spans: number;
+  errors: number;
+  /** How many distinct services the trace touched — one process, or a
+   * conversation. */
+  services: number;
+  httpStatus?: number;
+}
+
+/** One operation inside a trace (GET /traces/{traceId}). */
+export interface Span {
+  timestamp: string;
+  traceId: string;
+  spanId: string;
+  parentSpanId?: string;
+  name: string;
+  kind?: string;
+  service: string;
+  project?: string;
+  environment?: string;
+  durationMs: number;
+  statusCode?: string;
+  statusMessage?: string;
+  httpStatus?: number;
+  attributes?: Record<string, string>;
+  resource?: Record<string, string>;
+}
+
+/** A whole trace: its spans in start order, which is how a waterfall is drawn. */
+export interface TraceDetail {
+  traceId: string;
+  spans: Span[];
 }
 
 /** One entry of the platform's activity feed (GET /events). */
@@ -673,6 +751,14 @@ export const api = {
     request<Environment>("PATCH", `/environments/${name}`, { release }),
   deleteEnvironment: (name: string) => request<Environment>("DELETE", `/environments/${name}`),
   environmentWorkload: (name: string) => request<Workload>("GET", `/environments/${name}/workload`),
+  // What the workload endpoint cannot be: the same environment over time.
+  environmentMetrics: (name: string, query: { since?: string; until?: string; points?: number } = {}) => {
+    const params = new URLSearchParams();
+    if (query.since) params.set("since", query.since);
+    if (query.until) params.set("until", query.until);
+    if (query.points) params.set("points", String(query.points));
+    return request<ResourceSeries>("GET", `/environments/${name}/metrics?${params}`);
+  },
   environmentObjects: (name: string) => request<EnvironmentObjects>("GET", `/environments/${name}/objects`),
   environmentLogs: (name: string, query: LogQuery = {}) =>
     request<{ items: LogLine[] }>("GET", `/environments/${name}/logs${logQuery(query)}`).then((b) => b.items),
@@ -730,6 +816,36 @@ export const api = {
   // The dashboard's numbers, pre-aggregated server-side.
   metricsOverview: (project?: string) =>
     request<MetricsOverview>("GET", `/metrics/overview${project ? `?project=${encodeURIComponent(project)}` : ""}`),
+
+  // Traces, from applications that instrument themselves. The two filters are
+  // the two reasons anyone opens a trace list: something failed, or it was
+  // slow.
+  traces: (
+    query: {
+      project?: string;
+      environment?: string;
+      service?: string;
+      since?: string;
+      until?: string;
+      errors?: boolean;
+      minDuration?: number;
+      limit?: number;
+    } = {},
+  ) => {
+    const params: Record<string, string> = {};
+    if (query.project) params.project = query.project;
+    if (query.environment) params.environment = query.environment;
+    if (query.service) params.service = query.service;
+    if (query.since) params.since = query.since;
+    if (query.until) params.until = query.until;
+    if (query.errors) params.errors = "1";
+    if (query.minDuration) params.minDuration = String(query.minDuration);
+    if (query.limit) params.limit = String(query.limit);
+    return list<Trace>("/traces")(params);
+  },
+  // No window: a trace id arrives from a log line or from the list, and
+  // needing to know when it happened would break that link.
+  trace: (traceId: string) => request<TraceDetail>("GET", `/traces/${encodeURIComponent(traceId)}`),
 
   // The service map's aggregated edges for a window.
   traffic: (query: { project?: string; since?: string; until?: string } = {}) => {

@@ -55,6 +55,7 @@ const nav = computed(() => [
   },
   { label: "Observability", icon: "i-lucide-activity", to: "/observability", name: "observability", count: undefined },
   { label: "Traffic", icon: "i-lucide-waypoints", to: "/traffic", name: "traffic", count: undefined },
+  { label: "Traces", icon: "i-lucide-git-fork", to: "/traces", name: "traces", count: undefined },
   { label: "Connections", icon: "i-lucide-plug", to: "/connections", name: "connections", count: undefined },
   { label: "Settings", icon: "i-lucide-settings-2", to: "/settings", name: "settings", count: undefined },
 ]);
