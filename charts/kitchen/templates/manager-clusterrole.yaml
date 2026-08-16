@@ -134,6 +134,7 @@ rules:
   - projects
   - releases
   - resourceclaims
+  - savedqueries
   verbs:
   - create
   - delete

@@ -224,6 +224,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/logs/histogram", s.logHistogram)
 	mux.HandleFunc("GET /api/v1/logs/facets", s.logFacets)
 	mux.HandleFunc("GET /api/v1/logs/patterns", s.logPatterns)
+	mux.HandleFunc("GET /api/v1/logs/saved", s.listSavedQueries)
+	mux.HandleFunc("POST /api/v1/logs/saved", s.createSavedQuery)
+	mux.HandleFunc("DELETE /api/v1/logs/saved/{name}", s.deleteSavedQuery)
 
 	mux.HandleFunc("GET /api/v1/events", s.listEvents)
 	mux.HandleFunc("GET /api/v1/metrics/overview", s.metricsOverview)

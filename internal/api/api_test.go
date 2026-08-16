@@ -50,6 +50,9 @@ const (
 	// testEnvironment is the fixtures' production environment: the one that
 	// is rolled back, read for logs, and introspected.
 	testEnvironment = "shop-production"
+	// testCaller is who the harness's token is signed for: the identity every
+	// write is recorded against.
+	testCaller = "grace@example.com"
 )
 
 // issuer is a stand-in for the platform's identity provider: it serves the
@@ -127,7 +130,7 @@ func (i *issuer) token(t *testing.T) string {
 	t.Helper()
 	return i.sign(t, map[string]any{
 		"sub":   "user_1",
-		"email": "grace@example.com",
+		"email": testCaller,
 		"iss":   i.url(),
 		"aud":   i.url(),
 		"iat":   time.Now().Add(-time.Minute).Unix(),
@@ -488,6 +491,9 @@ var routes = []struct {
 	{http.MethodGet, "/api/v1/logs/histogram"},
 	{http.MethodGet, "/api/v1/logs/facets"},
 	{http.MethodGet, "/api/v1/logs/patterns"},
+	{http.MethodGet, "/api/v1/logs/saved"},
+	{http.MethodPost, "/api/v1/logs/saved"},
+	{http.MethodDelete, "/api/v1/logs/saved/checkout-500s"},
 	{http.MethodGet, "/api/v1/events"},
 	{http.MethodGet, "/api/v1/metrics/overview"},
 	{http.MethodGet, "/api/v1/traffic"},
@@ -651,7 +657,7 @@ func TestCreatingAProject(t *testing.T) {
 	if stored.Spec.Source.ConnectionRef.Name != "gh" || stored.Spec.Registry.ConnectionRef.Name != "registry" {
 		t.Fatalf("the connections did not stick: %+v", stored.Spec)
 	}
-	if got := stored.Annotations["kitchen.bermos.dev/requested-by"]; got != "grace@example.com" {
+	if got := stored.Annotations["kitchen.bermos.dev/requested-by"]; got != testCaller {
 		t.Fatalf("the creator should be recorded, got %q", got)
 	}
 }
@@ -875,7 +881,7 @@ func TestRollingAnEnvironmentBack(t *testing.T) {
 	if entry.Release != testRelease || entry.Reason != kitchenv1alpha1.ReleaseMoveRolledBack {
 		t.Fatalf("want %s recorded as rolled back, got %+v", testRelease, entry)
 	}
-	if entry.By != "grace@example.com" {
+	if entry.By != testCaller {
 		t.Fatalf("want the caller persisted, got %q", entry.By)
 	}
 	if entry.To.IsZero() {
