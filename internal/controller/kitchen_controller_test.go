@@ -76,9 +76,10 @@ var _ = Describe("Kitchen Controller", func() {
 			for _, obj := range []client.Object{
 				&gatewayv1.Gateway{ObjectMeta: metav1.ObjectMeta{Name: SharedGatewayName, Namespace: PlatformNamespace}},
 				// Every reconcile here creates these, the singleton being in
-				// acme mode. The ClusterIssuer is cluster-scoped, so leaving
-				// it behind would leak into whatever runs next.
+				// acme mode. The ClusterIssuers are cluster-scoped, so leaving
+				// them behind would leak into whatever runs next.
 				acmeIssuerObject(),
+				http01IssuerObject(),
 				wildcardCertificateObject(),
 				&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "kitchen-cloudflared", Namespace: PlatformNamespace}},
 				&kitchenv1alpha1.Kitchen{ObjectMeta: metav1.ObjectMeta{Name: KitchenSingletonName}},
@@ -91,7 +92,7 @@ var _ = Describe("Kitchen Controller", func() {
 			// namespaces never finish terminating and would poison later specs.
 		})
 
-		It("creates the shared gateway with wildcard listeners", func() {
+		It("creates the shared gateway with its two listeners", func() {
 			reconcileOnce(KitchenSingletonName)
 
 			gw := &gatewayv1.Gateway{}
@@ -100,10 +101,13 @@ var _ = Describe("Kitchen Controller", func() {
 
 			// Default TLS mode is acme: expect both listeners.
 			Expect(gw.Spec.Listeners).To(HaveLen(2))
-			Expect(string(*gw.Spec.Listeners[0].Hostname)).To(Equal("*.apps.example.com"))
+			Expect(gw.Spec.Listeners[0].Hostname).To(BeNil(),
+				"port 80 is deliberately catch-all: custom domains and their ACME HTTP-01 challenges "+
+					"arrive there with hostnames outside the base domain")
 			Expect(gw.Spec.Listeners[0].Protocol).To(Equal(gatewayv1.HTTPProtocolType))
 			https := gw.Spec.Listeners[1]
 			Expect(https.Protocol).To(Equal(gatewayv1.HTTPSProtocolType))
+			Expect(string(*https.Hostname)).To(Equal("*.apps.example.com"))
 			Expect(https.TLS).NotTo(BeNil())
 			Expect(string(https.TLS.CertificateRefs[0].Name)).To(Equal(WildcardTLSSecretName))
 

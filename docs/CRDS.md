@@ -306,11 +306,41 @@ spec:
   tls: acme                             # acme | cloudflared | none (inherits Kitchen default)
 status:
   verified: true                        # DNS ownership check (TXT or CNAME)
+  verification:                         # the exact records that satisfy it
+    txtRecord: _kitchen-challenge.shop.example.com
+    txtValue: kitchen-verify=…          # derived from the Domain's UID — stable, recomputable
+    cnameTarget: my-shop.apps.example.com
+  tlsMode: acme                         # the mode in effect after inheritance
   conditions: [...]                     # Verified, CertificateReady, RouteProgrammed
 ```
 
-Reconcile: verify DNS, request cert via cert-manager when `tls: acme` (or add a
-cloudflared tunnel hostname route), add the hostname to the Environment's HTTPRoute.
+Reconcile: prove ownership first — a TXT record at `_kitchen-challenge.<hostname>`
+carrying a token derived from the Domain's UID, or a CNAME from the hostname into the
+base domain (pointing your name at the platform is the zone owner's own action, and the
+record traffic needs anyway). `Verified` distinguishes the real failure modes: record
+absent, record present with the wrong value, lookup failed. Once verified it stays
+verified — routing must not flap with a record owners typically delete after setup.
+
+What happens next follows the TLS mode in effect (`spec.tls`, or the platform's mode):
+
+- **acme** — a per-hostname cert-manager `Certificate`, issued through the
+  `kitchen-acme-http01` ClusterIssuer. HTTP-01 through the shared Gateway, not the
+  platform's DNS-01: the Cloudflare token only writes to the base domain's zone, and a
+  custom domain's zone is by definition someone else's. Issuance therefore needs the
+  hostname to already resolve to the platform. Once the certificate's secret exists,
+  the shared Gateway gains an HTTPS listener for the hostname.
+- **cloudflared** — a custom hostname is a tunnel ingress rule in Cloudflare's control
+  plane, which the token-managed tunnel gives the operator no way to write or read.
+  `CertificateReady` is honestly `Unknown` and its message names the manual step.
+- **none** — plain HTTP over the shared port-80 listener; no certificate.
+
+The Domain reconciler never writes the Gateway or an HTTPRoute — `KitchenReconciler`
+owns the shared Gateway's listeners and `EnvironmentReconciler` each Environment's
+route; both watch Domains and include the verified ones. `RouteProgrammed` *observes*
+the result: whether the route carries the hostname and the Gateway accepted it on the
+listener this domain's traffic uses. Deleting a Domain removes its Certificate and
+secret through a finalizer; the listener and hostname disappear because their writers
+only ever include live, verified Domains.
 
 ## `ResourceClaim` (namespaced: kitchen-system)
 

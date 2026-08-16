@@ -139,6 +139,40 @@ spec:
                   - type
                   type: object
                 type: array
+              tlsMode:
+                description: |-
+                  TLSMode in effect for this domain: the spec's own, or the platform
+                  default it inherits when the spec leaves it empty.
+                enum:
+                - cloudflared
+                - acme
+                - none
+                type: string
+              verification:
+                description: |-
+                  Verification is the DNS record the owner has to create for Verified to
+                  become true.
+                properties:
+                  cnameTarget:
+                    description: |-
+                      CNAMETarget is the alternative: a CNAME from the hostname itself to
+                      this name both proves ownership and points traffic at the platform.
+                    type: string
+                  txtRecord:
+                    description: |-
+                      TXTRecord is the name of the TXT record to create:
+                      _kitchen-challenge.<hostname>.
+                    type: string
+                  txtValue:
+                    description: |-
+                      TXTValue is the exact value that record must carry. It is derived
+                      deterministically from the Domain's UID, so a wiped status recomputes
+                      the same token.
+                    type: string
+                required:
+                - txtRecord
+                - txtValue
+                type: object
               verified:
                 description: DNS ownership verified (TXT or CNAME check).
                 type: boolean

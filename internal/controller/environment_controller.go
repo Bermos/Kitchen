@@ -101,7 +101,7 @@ type EnvironmentReconciler struct {
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=environments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=environments/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=environments/finalizers,verbs=update
-// +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=projects;releases;resourceclaims,verbs=get;list;watch
+// +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=projects;releases;resourceclaims;domains,verbs=get;list;watch
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=kitchens,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;create
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
@@ -193,7 +193,14 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return r.unprotectable(ctx, env)
 	}
 
-	if err := r.applyHTTPRoute(ctx, env, appNS, labels, host, gate, idle, gatewaySection(kitchen)); err != nil {
+	// Verified custom domains ride this environment's route; see
+	// domainRoutingFor. The Domain reconciler owns everything else about them.
+	domains, err := domainRoutingFor(ctx, r.Client, env, kitchen)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	if err := r.applyHTTPRoute(ctx, env, appNS, labels, host, gate, idle, gatewaySection(kitchen), domains); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -437,6 +444,11 @@ func (r *EnvironmentReconciler) applyHTTPRoute(
 	// carries only the redirect, so an application route that also bound there
 	// would serve the app over cleartext.
 	section *gatewayv1.SectionName,
+	// domains adds the environment's verified custom hostnames and the extra
+	// listeners they bind — each parentRef names its section explicitly, so
+	// hostname intersection alone never puts a host on a listener it should
+	// not serve from.
+	domains domainRouting,
 ) error {
 	// A route and a backend in different namespaces need the backend
 	// namespace's permission, which is what a ReferenceGrant is. It is only
@@ -459,14 +471,23 @@ func (r *EnvironmentReconciler) applyHTTPRoute(
 	route := &gatewayv1.HTTPRoute{ObjectMeta: metav1.ObjectMeta{Name: env.Name, Namespace: appNS}}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, route, func() error {
 		route.Labels = labels
-		route.Spec.CommonRouteSpec = gatewayv1.CommonRouteSpec{
-			ParentRefs: []gatewayv1.ParentReference{{
+		parents := []gatewayv1.ParentReference{{
+			Name:        SharedGatewayName,
+			Namespace:   ptr.To(gatewayv1.Namespace(PlatformNamespace)),
+			SectionName: section,
+		}}
+		for _, extra := range domains.sections {
+			if section != nil && extra == *section {
+				continue
+			}
+			parents = append(parents, gatewayv1.ParentReference{
 				Name:        SharedGatewayName,
 				Namespace:   ptr.To(gatewayv1.Namespace(PlatformNamespace)),
-				SectionName: section,
-			}},
+				SectionName: ptr.To(extra),
+			})
 		}
-		route.Spec.Hostnames = []gatewayv1.Hostname{gatewayv1.Hostname(host)}
+		route.Spec.CommonRouteSpec = gatewayv1.CommonRouteSpec{ParentRefs: parents}
+		route.Spec.Hostnames = append([]gatewayv1.Hostname{gatewayv1.Hostname(host)}, domains.hostnames...)
 
 		// Where the application is reached: itself, or the interceptor that
 		// wakes it. Whoever forwards the request last uses this address.
@@ -750,6 +771,19 @@ func (r *EnvironmentReconciler) mapChildToEnvironment(_ context.Context, obj cli
 	return []ctrl.Request{{NamespacedName: types.NamespacedName{Namespace: ns, Name: name}}}
 }
 
+// mapDomainToEnvironment enqueues the Environment a Domain routes to, so its
+// route gains and loses the hostname with the Domain rather than on the next
+// unrelated reconcile.
+func (r *EnvironmentReconciler) mapDomainToEnvironment(_ context.Context, obj client.Object) []ctrl.Request {
+	domain, ok := obj.(*kitchenv1alpha1.Domain)
+	if !ok || domain.Spec.EnvironmentRef.Name == "" {
+		return nil
+	}
+	return []ctrl.Request{{NamespacedName: types.NamespacedName{
+		Namespace: domain.Namespace, Name: domain.Spec.EnvironmentRef.Name,
+	}}}
+}
+
 // mapPlatformToEnvironments enqueues every Environment when the platform
 // configuration changes.
 //
@@ -779,6 +813,7 @@ func (r *EnvironmentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&kitchenv1alpha1.Environment{}).
 		Watches(&appsv1.Deployment{}, handler.EnqueueRequestsFromMapFunc(r.mapChildToEnvironment)).
 		Watches(&kitchenv1alpha1.Kitchen{}, handler.EnqueueRequestsFromMapFunc(r.mapPlatformToEnvironments)).
+		Watches(&kitchenv1alpha1.Domain{}, handler.EnqueueRequestsFromMapFunc(r.mapDomainToEnvironment)).
 		Named("environment").
 		Complete(r)
 }

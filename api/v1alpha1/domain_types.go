@@ -34,11 +34,40 @@ type DomainSpec struct {
 	TLS TLSMode `json:"tls,omitempty"`
 }
 
+// DomainVerification is the exact DNS change that proves ownership of the
+// hostname, spelled out so the API and the dashboard can show it verbatim.
+// Either record satisfies the check.
+type DomainVerification struct {
+	// TXTRecord is the name of the TXT record to create:
+	// _kitchen-challenge.<hostname>.
+	TXTRecord string `json:"txtRecord"`
+
+	// TXTValue is the exact value that record must carry. It is derived
+	// deterministically from the Domain's UID, so a wiped status recomputes
+	// the same token.
+	TXTValue string `json:"txtValue"`
+
+	// CNAMETarget is the alternative: a CNAME from the hostname itself to
+	// this name both proves ownership and points traffic at the platform.
+	// +optional
+	CNAMETarget string `json:"cnameTarget,omitempty"`
+}
+
 // DomainStatus defines the observed state of a Domain.
 type DomainStatus struct {
 	// DNS ownership verified (TXT or CNAME check).
 	// +optional
 	Verified bool `json:"verified,omitempty"`
+
+	// Verification is the DNS record the owner has to create for Verified to
+	// become true.
+	// +optional
+	Verification *DomainVerification `json:"verification,omitempty"`
+
+	// TLSMode in effect for this domain: the spec's own, or the platform
+	// default it inherits when the spec leaves it empty.
+	// +optional
+	TLSMode TLSMode `json:"tlsMode,omitempty"`
 
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`

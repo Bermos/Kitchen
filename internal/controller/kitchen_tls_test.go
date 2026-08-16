@@ -55,6 +55,10 @@ func acmeIssuerObject() *unstructured.Unstructured {
 	return certManagerObject("ClusterIssuer", acmeClusterIssuerName, "")
 }
 
+func http01IssuerObject() *unstructured.Unstructured {
+	return certManagerObject("ClusterIssuer", acmeHTTP01ClusterIssuerName, "")
+}
+
 func wildcardCertificateObject() *unstructured.Unstructured {
 	return certManagerObject("Certificate", wildcardCertificateName, PlatformNamespace)
 }
@@ -138,6 +142,7 @@ var _ = Describe("Kitchen edge TLS", func() {
 	AfterEach(func() {
 		for _, obj := range []client.Object{
 			acmeIssuerObject(),
+			http01IssuerObject(),
 			wildcardCertificateObject(),
 			&gatewayv1.Gateway{ObjectMeta: metav1.ObjectMeta{
 				Name: SharedGatewayName, Namespace: PlatformNamespace,
@@ -179,6 +184,32 @@ var _ = Describe("Kitchen edge TLS", func() {
 				},
 			},
 		}))
+
+		By("registering a second account for custom domains, solved over HTTP-01")
+		http01 := http01IssuerObject()
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: acmeHTTP01ClusterIssuerName}, http01)).To(Succeed())
+		acme, found, err = unstructured.NestedMap(http01.Object, "spec", "acme")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(acme).To(HaveKeyWithValue("email", "platform@example.com"))
+		Expect(acme).To(HaveKeyWithValue("privateKeySecretRef",
+			map[string]any{"name": acmeHTTP01AccountKeySecretName}),
+			"its own account key: two registrations must not race over one")
+		solvers, found, err = unstructured.NestedSlice(http01.Object, "spec", "acme", "solvers")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(solvers).To(HaveLen(1))
+		Expect(solvers[0]).To(HaveKeyWithValue("http01", map[string]any{
+			"gatewayHTTPRoute": map[string]any{
+				"parentRefs": []any{map[string]any{
+					"group":     "gateway.networking.k8s.io",
+					"kind":      "Gateway",
+					"name":      SharedGatewayName,
+					"namespace": PlatformNamespace,
+				}},
+			},
+		}), "challenges are published as HTTPRoutes on the shared Gateway — the one "+
+			"challenge that works for a zone the platform's DNS token cannot write to")
 
 		By("requesting the wildcard into the secret the HTTPS listener reads")
 		cert := wildcardCertificateObject()

@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"sort"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -54,14 +55,22 @@ const (
 	WildcardTLSSecretName = "kitchen-wildcard-tls"
 
 	// acmeClusterIssuerName is the issuer the operator creates from
-	// spec.tls.acme. It is cluster-scoped because it is the platform's one
-	// source of certificates.
+	// spec.tls.acme: the platform's source of certificates for names inside
+	// the base domain, solving over Cloudflare DNS-01.
 	acmeClusterIssuerName = "kitchen-acme"
 
+	// acmeHTTP01ClusterIssuerName is the second issuer acme mode creates, for
+	// custom domains: their zones are by definition not the one the DNS-01
+	// token can write to, so they are solved over HTTP-01 through the shared
+	// Gateway instead. Same ACME account details, its own registration.
+	acmeHTTP01ClusterIssuerName = "kitchen-acme-http01"
+
 	// acmeAccountKeySecretName holds the ACME account key cert-manager
-	// generates on registration. Losing it means re-registering, not losing
-	// issued certificates.
-	acmeAccountKeySecretName = "kitchen-acme-account"
+	// generates on registration; acmeHTTP01AccountKeySecretName the HTTP-01
+	// issuer's own, so the two registrations never race over one key. Losing
+	// either means re-registering, not losing issued certificates.
+	acmeAccountKeySecretName       = "kitchen-acme-account"
+	acmeHTTP01AccountKeySecretName = "kitchen-acme-http01-account"
 
 	// wildcardCertificateName is the Certificate requesting *.<baseDomain>.
 	wildcardCertificateName = "kitchen-wildcard"
@@ -258,10 +267,15 @@ func (r *KitchenReconciler) ensurePlatformNamespace(ctx context.Context) error {
 	return nil
 }
 
-// applyGateway ensures the shared Gateway with a wildcard HTTP listener and,
-// in acme TLS mode, an HTTPS listener terminating with the wildcard
-// certificate. In cloudflared mode the tunnel carries edge TLS, so only the
-// HTTP listener exists.
+// applyGateway ensures the shared Gateway: a catch-all HTTP listener, in acme
+// TLS mode an HTTPS listener terminating with the wildcard certificate, and
+// one HTTPS listener per custom domain that is ready for one. In cloudflared
+// mode the tunnel carries edge TLS, so no wildcard HTTPS listener exists.
+//
+// The HTTP listener deliberately carries no hostname: custom domains and
+// their ACME HTTP-01 challenges arrive on port 80 with names outside the base
+// domain, and a *.<baseDomain> listener would refuse their routes outright.
+// Hostname scoping lives on the routes, which all declare theirs.
 func (r *KitchenReconciler) applyGateway(ctx context.Context, kitchen *kitchenv1alpha1.Kitchen) error {
 	wildcard := gatewayv1.Hostname("*." + kitchen.Spec.BaseDomain)
 	allowAll := &gatewayv1.AllowedRoutes{
@@ -272,7 +286,6 @@ func (r *KitchenReconciler) applyGateway(ctx context.Context, kitchen *kitchenv1
 		Name:          gatewayListenerHTTP,
 		Port:          80,
 		Protocol:      gatewayv1.HTTPProtocolType,
-		Hostname:      &wildcard,
 		AllowedRoutes: allowAll,
 	}}
 	if kitchen.Spec.TLS.Mode == kitchenv1alpha1.TLSModeACME {
@@ -291,6 +304,12 @@ func (r *KitchenReconciler) applyGateway(ctx context.Context, kitchen *kitchenv1
 		})
 	}
 
+	domainListeners, err := r.domainListeners(ctx, kitchen, allowAll)
+	if err != nil {
+		return err
+	}
+	listeners = append(listeners, domainListeners...)
+
 	className := kitchen.Spec.Ingress.GatewayClassName
 	if className == "" {
 		className = "cilium"
@@ -300,7 +319,7 @@ func (r *KitchenReconciler) applyGateway(ctx context.Context, kitchen *kitchenv1
 		Name:      SharedGatewayName,
 		Namespace: PlatformNamespace,
 	}}
-	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, gw, func() error {
+	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, gw, func() error {
 		gw.Labels = map[string]string{
 			labelComponentKey: "kitchen-gateway",
 			labelManagedByKey: labelManagedByValue,
@@ -310,6 +329,54 @@ func (r *KitchenReconciler) applyGateway(ctx context.Context, kitchen *kitchenv1
 		return nil
 	})
 	return err
+}
+
+// domainListeners builds one HTTPS listener per custom domain that is ready
+// for one: verified, TLS-terminating, and with its certificate secret in
+// place — the predicate domainListenerReady shares with the route writer. A
+// domain whose secret is not issued yet simply has no listener, and one being
+// deleted loses its listener before the finalizer removes the secret, so a
+// listener never references a secret that is gone.
+func (r *KitchenReconciler) domainListeners(
+	ctx context.Context,
+	kitchen *kitchenv1alpha1.Kitchen,
+	allowAll *gatewayv1.AllowedRoutes,
+) ([]gatewayv1.Listener, error) {
+	domains := &kitchenv1alpha1.DomainList{}
+	if err := r.List(ctx, domains, client.InNamespace(PlatformNamespace)); err != nil {
+		return nil, err
+	}
+	// Name order keeps the spec stable across reconciles, and decides which
+	// of two Domains claiming one hostname gets the listener: listeners on
+	// one port must have distinct hostnames, so the duplicate is dropped
+	// rather than writing a Gateway that conflicts with itself.
+	sort.Slice(domains.Items, func(i, j int) bool {
+		return domains.Items[i].Name < domains.Items[j].Name
+	})
+
+	listeners := make([]gatewayv1.Listener, 0, len(domains.Items))
+	claimed := map[string]bool{}
+	for i := range domains.Items {
+		domain := &domains.Items[i]
+		if claimed[domain.Spec.Hostname] || !domainListenerReady(ctx, r.Client, domain, kitchen) {
+			continue
+		}
+		claimed[domain.Spec.Hostname] = true
+		listeners = append(listeners, gatewayv1.Listener{
+			Name:          gatewayv1.SectionName(domainListenerName(domain.Name)),
+			Port:          443,
+			Protocol:      gatewayv1.HTTPSProtocolType,
+			Hostname:      ptr.To(gatewayv1.Hostname(domain.Spec.Hostname)),
+			AllowedRoutes: allowAll,
+			TLS: &gatewayv1.GatewayTLSConfig{
+				Mode: ptr.To(gatewayv1.TLSModeTerminate),
+				CertificateRefs: []gatewayv1.SecretObjectReference{{
+					Name: gatewayv1.ObjectName(DomainTLSSecretName(domain.Name)),
+				}},
+			},
+		})
+	}
+	return listeners, nil
 }
 
 // reconcileCloudflared deploys or removes the tunnel. Failures surface as
@@ -514,6 +581,16 @@ func (r *KitchenReconciler) reconcileTLS(
 		return false
 	}
 
+	if err := r.applyHTTP01ClusterIssuer(ctx, acme); err != nil {
+		if meta.IsNoMatchError(err) {
+			setCond(condCertificateReady, metav1.ConditionFalse, "CertManagerUnavailable",
+				"waiting for the cert-manager API to be served: "+err.Error())
+			return false
+		}
+		setCond(condCertificateReady, metav1.ConditionFalse, "IssuerNotApplied", err.Error())
+		return false
+	}
+
 	cert, err := r.applyWildcardCertificate(ctx, kitchen)
 	if err != nil {
 		if meta.IsNoMatchError(err) {
@@ -565,6 +642,51 @@ func (r *KitchenReconciler) applyACMEClusterIssuer(
 							"name": token.Name,
 							"key":  token.Key,
 						},
+					},
+				},
+			}},
+		}, "spec", "acme")
+	})
+	return err
+}
+
+// applyHTTP01ClusterIssuer writes the issuer custom domains request from. It
+// solves over HTTP-01 through the shared Gateway — cert-manager publishes each
+// challenge as an HTTPRoute on it — because the DNS-01 solver's token only
+// writes to the base domain's zone, and a custom domain's zone is someone
+// else's. cert-manager needs its Gateway API support switched on for this;
+// the chart does that (config.gatewayAPI.enabled on the sub-chart).
+func (r *KitchenReconciler) applyHTTP01ClusterIssuer(
+	ctx context.Context,
+	acme *kitchenv1alpha1.ACMESpec,
+) error {
+	server := acme.Server
+	if server == "" {
+		server = defaultACMEServer
+	}
+
+	issuer := &unstructured.Unstructured{}
+	issuer.SetGroupVersionKind(certManagerGVK("ClusterIssuer"))
+	issuer.SetName(acmeHTTP01ClusterIssuerName)
+
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, issuer, func() error {
+		issuer.SetLabels(map[string]string{
+			labelComponentKey: acmeHTTP01ClusterIssuerName,
+			labelManagedByKey: labelManagedByValue,
+		})
+		return unstructured.SetNestedMap(issuer.Object, map[string]any{
+			"server":              server,
+			"email":               acme.Email,
+			"privateKeySecretRef": map[string]any{"name": acmeHTTP01AccountKeySecretName},
+			"solvers": []any{map[string]any{
+				"http01": map[string]any{
+					"gatewayHTTPRoute": map[string]any{
+						"parentRefs": []any{map[string]any{
+							"group":     gatewayv1.GroupName,
+							"kind":      "Gateway",
+							"name":      SharedGatewayName,
+							"namespace": PlatformNamespace,
+						}},
 					},
 				},
 			}},
@@ -672,6 +794,16 @@ func (r *KitchenReconciler) mapToSingleton(_ context.Context, obj client.Object)
 	return []ctrl.Request{{NamespacedName: types.NamespacedName{Name: KitchenSingletonName}}}
 }
 
+// mapDomainToSingleton enqueues the singleton for any Domain in the platform
+// namespace. Unlike mapToSingleton it needs no managed-by label: Domains are
+// user objects, not something this reconciler created.
+func (r *KitchenReconciler) mapDomainToSingleton(_ context.Context, obj client.Object) []ctrl.Request {
+	if obj.GetNamespace() != PlatformNamespace {
+		return nil
+	}
+	return []ctrl.Request{{NamespacedName: types.NamespacedName{Name: KitchenSingletonName}}}
+}
+
 // mapPlatformWorkload enqueues the singleton for anything the component survey
 // reports on. Unlike mapToSingleton this deliberately does not require the
 // operator to have created the object: most platform workloads come from the
@@ -699,6 +831,12 @@ func (r *KitchenReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&appsv1.Deployment{}, handler.EnqueueRequestsFromMapFunc(r.mapPlatformWorkload)).
 		Watches(&appsv1.StatefulSet{}, handler.EnqueueRequestsFromMapFunc(r.mapPlatformWorkload)).
 		Watches(&appsv1.DaemonSet{}, handler.EnqueueRequestsFromMapFunc(r.mapPlatformWorkload)).
+		// Domains feed the Gateway's per-domain listeners; a listener also
+		// waits on its certificate secret, which cert-manager labels
+		// managed-by kitchen (through the Certificate's secretTemplate), so
+		// mapToSingleton picks the secret up the moment it is issued.
+		Watches(&kitchenv1alpha1.Domain{}, handler.EnqueueRequestsFromMapFunc(r.mapDomainToSingleton)).
+		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.mapToSingleton)).
 		Named("kitchen").
 		Complete(r)
 }
