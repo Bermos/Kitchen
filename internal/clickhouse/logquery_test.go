@@ -82,9 +82,17 @@ func TestTheQueryLanguageCompiles(t *testing.T) {
 		values:     []string{"http.status", "500"},
 	}, {
 		name:       "a star asks whether the field is there at all",
-		query:      "trace_id:*",
+		query:      "request_id:*",
 		expression: "fields[{q0:String}] != ''",
-		values:     []string{"trace_id"},
+		values:     []string{"request_id"},
+	}, {
+		// The collector lifts a line's trace id into a column of its own, so
+		// every spelling of it resolves there rather than to the field map it
+		// was flattened out of.
+		name:       "a trace id is a column, however it is spelled",
+		query:      "trace_id:9d8d0f OR traceId:9d8d0f",
+		expression: "(`traceId` = {q0:String} OR `traceId` = {q1:String})",
+		values:     []string{"9d8d0f", "9d8d0f"},
 	}, {
 		name:       "a pod label is addressed under its own name",
 		query:      "labels.tier:web",

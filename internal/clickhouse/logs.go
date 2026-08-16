@@ -81,6 +81,11 @@ type LogLine struct {
 	Stream      string    `json:"stream,omitempty"`
 	Level       string    `json:"level,omitempty"`
 	Message     string    `json:"message"`
+	// TraceID and SpanID are the line's own, lifted out of its structured
+	// fields by the collector. They are what makes a log line and a trace two
+	// views of the same request rather than two searches.
+	TraceID string `json:"traceId,omitempty"`
+	SpanID  string `json:"spanId,omitempty"`
 	// Fields are the line's own structured fields — what the collector
 	// flattened a JSON line into. Empty for a line that was not JSON.
 	Fields map[string]string `json:"fields,omitempty"`
@@ -99,6 +104,8 @@ type logRow struct {
 	Container   string            `json:"container"`
 	Stream      string            `json:"stream"`
 	Level       string            `json:"level"`
+	TraceID     string            `json:"traceId"`
+	SpanID      string            `json:"spanId"`
 	Message     string            `json:"message"`
 	Fields      map[string]string `json:"fields"`
 }
@@ -107,7 +114,8 @@ type logRow struct {
 // constant because the two of them have to agree: a column added to one and
 // forgotten in the other is a field that is populated on a build's log page
 // and empty on the observability view.
-const logColumns = "source, project, environment, build, pod, container, stream, level, message, fields"
+const logColumns = "source, project, environment, build, pod, container, stream, level, " +
+	"traceId, spanId, message, fields"
 
 // SearchLogs reads the lines matching the query, oldest first.
 //
@@ -319,6 +327,8 @@ func parseLogLines(body string, capacity int) ([]LogLine, error) {
 			Container:   row.Container,
 			Stream:      row.Stream,
 			Level:       row.Level,
+			TraceID:     row.TraceID,
+			SpanID:      row.SpanID,
 			Message:     row.Message,
 			Fields:      row.Fields,
 		})

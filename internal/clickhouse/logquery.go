@@ -69,17 +69,30 @@ import (
 var logQueryColumns = []string{
 	"source", "project", "environment", "build",
 	"namespace", "pod", "container", "node",
-	"stream", "level", "message",
+	"stream", "level", "traceId", "spanId", "message",
 }
 
 // logFieldAliases are the names people reach for that are not what the column
 // is called. `service` is the one that matters — every log UI has it, and in
 // Kitchen the thing being served is the project.
+//
+// The trace columns are here as well as in logQueryColumns because a field
+// name is matched case-insensitively and those two columns are the only ones
+// that are not lower case. Their other spellings are the ones instrumentation
+// libraries actually write, and a query should not depend on guessing which
+// one this platform's collector settled on.
 var logFieldAliases = map[string]string{
-	"service": "project",
-	"app":     "project",
-	"env":     "environment",
-	"msg":     "message",
+	"service":  "project",
+	"app":      "project",
+	"env":      "environment",
+	"msg":      "message",
+	"traceid":  "traceId",
+	"trace_id": "traceId",
+	"trace.id": "traceId",
+	"trace":    "traceId",
+	"spanid":   "spanId",
+	"span_id":  "spanId",
+	"span.id":  "spanId",
 }
 
 // LogQueryError is a query the parser refused: a missing bracket, a value where
