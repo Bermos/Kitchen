@@ -243,17 +243,14 @@ spec:
                         type: string
                     type: object
                   metrics:
+                    default: {}
                     description: |-
-                      MetricsSpec configures the resource telemetry pipeline: the operator
-                      sampling what the platform's workloads are actually using, so that an
-                      environment's CPU, memory, replica count and restarts are a history rather
-                      than the instant the page happened to be opened.
-
-                      There is no collector to install. The join from a container back to the
-                      project and environment that own it lives in the pod's labels, which a
-                      Prometheus scrape of the kubelet does not carry and which the operator is
-                      already reading — so the operator samples, and what would have been
-                      kube-state-metrics is the API objects it already watches.
+                      The empty-object defaults are what make these on by default for an
+                      installation that predates them. Structural defaulting only descends
+                      into objects that are present, so without one an upgraded Kitchen —
+                      whose singleton the chart does not re-apply — would read back with
+                      every field at its zero value, and the platform would quietly stop
+                      collecting what it had just learned to collect.
                     properties:
                       enabled:
                         default: true
@@ -274,6 +271,7 @@ spec:
                         type: integer
                     type: object
                   traces:
+                    default: {}
                     description: |-
                       TracesSpec configures the platform's OTLP receiver.
 

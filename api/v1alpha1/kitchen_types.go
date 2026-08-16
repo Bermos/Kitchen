@@ -243,9 +243,17 @@ type ObservabilitySpec struct {
 	// +optional
 	Hubble HubbleSpec `json:"hubble,omitempty"`
 
+	// The empty-object defaults are what make these on by default for an
+	// installation that predates them. Structural defaulting only descends
+	// into objects that are present, so without one an upgraded Kitchen —
+	// whose singleton the chart does not re-apply — would read back with
+	// every field at its zero value, and the platform would quietly stop
+	// collecting what it had just learned to collect.
+	// +kubebuilder:default={}
 	// +optional
 	Metrics MetricsSpec `json:"metrics,omitempty"`
 
+	// +kubebuilder:default={}
 	// +optional
 	Traces TracesSpec `json:"traces,omitempty"`
 }

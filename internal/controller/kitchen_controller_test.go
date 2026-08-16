@@ -30,6 +30,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -280,6 +281,48 @@ var _ = Describe("Kitchen Controller", func() {
 			kitchen := &kitchenv1alpha1.Kitchen{}
 			Expect(k8sClient.Get(ctx, singletonKey, kitchen)).To(Succeed())
 			Expect(meta.FindStatusCondition(kitchen.Status.Conditions, condTelemetrySchema)).To(BeNil())
+		})
+
+		It("switches sampling and traces on for a Kitchen that predates them", func() {
+			// The upgrade case, and the one that would fail silently. The chart
+			// applies the singleton as a post-install hook and does not
+			// re-apply it on upgrade, so an installation that predates these
+			// fields has an observability block in etcd with neither key in it.
+			// Structural defaulting only descends into objects that are
+			// present, which is why both carry an empty-object default of their
+			// own — without it the platform would read `false` for both and
+			// quietly collect nothing after the upgrade that taught it to.
+			//
+			// It is written as unstructured JSON on purpose: the Go type always
+			// marshals `enabled`, so a typed create would send an explicit
+			// `false` and test nothing at all.
+			legacy := &unstructured.Unstructured{Object: map[string]any{
+				"apiVersion": kitchenv1alpha1.GroupVersion.String(),
+				"kind":       "Kitchen",
+				"metadata":   map[string]any{"name": "legacy"},
+				"spec": map[string]any{
+					"baseDomain": "old.example.com",
+					"tls":        map[string]any{"mode": "none"},
+					"observability": map[string]any{
+						"clickhouse": map[string]any{"retentionDays": int64(30)},
+					},
+				},
+			}}
+			legacy.SetGroupVersionKind(kitchenv1alpha1.GroupVersion.WithKind("Kitchen"))
+			Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, legacy))).To(Succeed())
+			DeferCleanup(func() {
+				Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, legacy))).To(Succeed())
+			})
+
+			stored := &kitchenv1alpha1.Kitchen{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "legacy"}, stored)).To(Succeed())
+
+			Expect(stored.Spec.Observability.Metrics.Enabled).To(BeTrue())
+			Expect(stored.Spec.Observability.Metrics.IntervalSeconds).To(Equal(int32(30)))
+			Expect(stored.Spec.Observability.Traces.Enabled).To(BeTrue())
+			// And an endpoint to hand to applications, rather than the empty
+			// string the reconciler reads as "do not tell them anything".
+			Expect(stored.Spec.Observability.Traces.Endpoint).NotTo(BeEmpty())
 		})
 
 		It("refuses to reconcile a second Kitchen object", func() {
