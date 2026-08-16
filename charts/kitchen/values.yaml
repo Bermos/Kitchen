@@ -707,3 +707,11 @@ cert-manager:
     enabled: true
     # -- Keep the CRDs, and the certificates they hold, on `helm uninstall`.
     keep: true
+  config:
+    # Custom-domain certificates are solved over HTTP-01 through the shared
+    # Gateway (the DNS-01 token only writes to the base domain's zone), and
+    # cert-manager publishes those challenges as HTTPRoutes only with its
+    # Gateway API support switched on. The Gateway API CRDs are a platform
+    # prerequisite anyway — Cilium's Gateway support needs them first.
+    gatewayAPI:
+      enabled: true
