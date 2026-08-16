@@ -290,8 +290,9 @@ cancellation, environments with one-click rollback and preview teardown,
 connections with create/rotate/delete — credentials go to the operator and are
 never read back — and the editable platform settings, with an operator mode
 that surfaces `status.conditions` on everything and the Kubernetes objects the
-operator materialized for an environment. Still missing:
-Domain/ResourceClaim reconcilers (including `oidcClient` claims),
-metrics/traces/flow collection, Infisical sync — and with them the domain and
-resource-claim create flows, which stay `kubectl apply` until their
-reconcilers land.
+operator materialized for an environment. Resource claims provision through
+their connection (Neon Postgres first, a DB branch per preview with
+`previewBranching`) with create/delete in the dashboard. Still missing: the
+Domain reconciler (including `oidcClient` claims), metrics/traces/flow
+collection, Infisical sync — and with them the domain create flow, which
+stays `kubectl apply` until its reconciler lands.

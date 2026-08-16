@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { api, type EnvVar, type Project, type Release } from "../lib/api";
+import { api, type Claim, type EnvVar, type Project, type Release } from "../lib/api";
 import { duration, shortImage, shortSHA, timeAgo } from "../lib/format";
 import { operatorMode } from "../lib/mode";
 import { releaseHistoryEntry, releaseHistoryLabel } from "../lib/status";
 import { useAsync, usePoll } from "../lib/useAsync";
+import ClaimModal from "../components/ClaimModal.vue";
 import ConditionsTable from "../components/ConditionsTable.vue";
 import PhaseBadge from "../components/PhaseBadge.vue";
 import StatusDot from "../components/StatusDot.vue";
@@ -225,6 +226,39 @@ async function deleteProject() {
       color: "error",
     });
     deleting.value = false;
+  }
+}
+
+// Deleting a claim is honest about its blast radius: what happens to the
+// data is the deletionPolicy's call, and the confirmation says which it is
+// before asking for the click.
+const claimToDelete = ref<Claim | null>(null);
+const deletingClaim = ref(false);
+async function deleteClaim() {
+  const claim = claimToDelete.value;
+  if (!claim || deletingClaim.value) return;
+  deletingClaim.value = true;
+  try {
+    await api.deleteClaim(claim.name);
+    toast.add({
+      title: `Claim ${claim.name} is being deleted`,
+      description:
+        claim.deletionPolicy === "Delete"
+          ? "The database and its data are being deprovisioned."
+          : "The database is kept at the provider; only the platform's binding is removed.",
+      color: "success",
+      icon: "i-lucide-trash-2",
+    });
+    claimToDelete.value = null;
+    await refresh();
+  } catch (err) {
+    toast.add({
+      title: "Deleting the claim failed",
+      description: err instanceof Error ? err.message : String(err),
+      color: "error",
+    });
+  } finally {
+    deletingClaim.value = false;
   }
 }
 
@@ -516,29 +550,47 @@ function host(url?: string): string {
       </div>
 
       <!-- Resources: provisioned claims (databases, OIDC clients, …) bound to this project. -->
-      <div v-else-if="tab === 'resources'" class="rounded-md border border-default overflow-x-auto">
-        <table class="w-full text-sm">
-          <tbody>
-            <tr v-if="!data?.claims.length">
-              <td class="px-4 py-8 text-center text-muted">
-                No resource claims — a claim asks a connection to provision something (a database, an OIDC client) and
-                binds it into the project's environment. Claims are created with kubectl for now.
-              </td>
-            </tr>
-            <tr v-for="claim in data?.claims" :key="claim.name" class="border-b border-muted last:border-0">
-              <td class="px-4 py-3 text-highlighted font-medium">{{ claim.name }}</td>
-              <td class="px-4 py-3">
-                <UBadge color="neutral" variant="subtle" size="sm" class="font-mono">{{ claim.type }}</UBadge>
-              </td>
-              <td class="px-4 py-3 font-mono text-xs text-toned">via {{ claim.connection }}</td>
-              <td class="px-4 py-3"><PhaseBadge :phase="claim.phase" /></td>
-              <td class="px-4 py-3 font-mono text-xs text-muted truncate max-w-48" :title="claim.secret">
-                {{ claim.secret || "not bound yet" }}
-              </td>
-              <td class="px-4 py-3 text-right text-xs text-muted whitespace-nowrap">{{ timeAgo(claim.createdAt) }}</td>
-            </tr>
-          </tbody>
-        </table>
+      <div v-else-if="tab === 'resources'" class="space-y-3">
+        <div class="flex justify-end">
+          <ClaimModal :project="project.name" @saved="refresh">
+            <UButton icon="i-lucide-plus" size="sm">New claim</UButton>
+          </ClaimModal>
+        </div>
+        <div class="rounded-md border border-default overflow-x-auto">
+          <table class="w-full text-sm">
+            <tbody>
+              <tr v-if="!data?.claims.length">
+                <td class="px-4 py-8 text-center text-muted">
+                  No resource claims — a claim asks a connection to provision something (a database) and binds it into
+                  the project's environment through a secret its env vars reference.
+                </td>
+              </tr>
+              <tr v-for="claim in data?.claims" :key="claim.name" class="border-b border-muted last:border-0">
+                <td class="px-4 py-3 text-highlighted font-medium">{{ claim.name }}</td>
+                <td class="px-4 py-3">
+                  <UBadge color="neutral" variant="subtle" size="sm" class="font-mono">{{ claim.type }}</UBadge>
+                  <UBadge v-if="claim.previewBranching" color="neutral" variant="subtle" size="sm" class="ml-1">
+                    branch per preview
+                  </UBadge>
+                </td>
+                <td class="px-4 py-3 font-mono text-xs text-toned">via {{ claim.connection }}</td>
+                <td class="px-4 py-3"><PhaseBadge :phase="claim.phase" /></td>
+                <td class="px-4 py-3 font-mono text-xs text-muted truncate max-w-48" :title="claim.secret">
+                  {{ claim.secret || "not bound yet" }}
+                </td>
+                <td class="px-4 py-3 text-xs text-muted whitespace-nowrap">
+                  on delete: {{ claim.deletionPolicy === "Delete" ? "delete data" : "retain data" }}
+                </td>
+                <td class="px-4 py-3 text-right text-xs text-muted whitespace-nowrap">{{ timeAgo(claim.createdAt) }}</td>
+                <td class="px-4 py-3 text-right whitespace-nowrap">
+                  <UButton color="neutral" variant="subtle" size="xs" icon="i-lucide-trash-2" @click="claimToDelete = claim">
+                    Delete
+                  </UButton>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </div>
 
       <!-- Settings: everything on the project a user may change after
@@ -708,6 +760,28 @@ function host(url?: string): string {
           <UButton color="neutral" variant="subtle" @click="rollbackTarget = null">Cancel</UButton>
           <UButton color="error" :loading="rollingBack" icon="i-lucide-undo-2" @click="rollBack">
             Roll back to {{ rollbackTarget?.name }}
+          </UButton>
+        </div>
+      </template>
+    </UModal>
+
+    <!-- Claim deletion confirmation: explicit about what the deletionPolicy
+         does to the data, which is the whole difference between the two. -->
+    <UModal
+      :open="claimToDelete !== null"
+      :title="`Delete claim ${claimToDelete?.name}?`"
+      :description="
+        claimToDelete?.deletionPolicy === 'Delete'
+          ? `This claim's policy is Delete: the ${claimToDelete?.type} database and ALL ITS DATA are destroyed at ${claimToDelete?.connection}. Preview branches and the binding secrets go too. There is no undo.`
+          : `This claim's policy is Retain: the ${claimToDelete?.type} database and its data are kept at ${claimToDelete?.connection}, but the platform forgets it — preview branches and the binding secrets are removed, and environments referencing it will fail to deploy until the variable is removed.`
+      "
+      @update:open="(open: boolean) => { if (!open) claimToDelete = null; }"
+    >
+      <template #footer>
+        <div class="flex justify-end gap-2 w-full">
+          <UButton color="neutral" variant="subtle" @click="claimToDelete = null">Cancel</UButton>
+          <UButton color="error" :loading="deletingClaim" icon="i-lucide-trash-2" @click="deleteClaim">
+            {{ claimToDelete?.deletionPolicy === "Delete" ? "Delete claim and data" : "Delete claim, keep data" }}
           </UButton>
         </div>
       </template>

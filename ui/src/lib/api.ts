@@ -245,8 +245,21 @@ export interface Claim {
   type: string;
   phase?: string;
   secret?: string;
+  /** Retain (default) keeps the provisioned database when the claim is
+   * deleted; Delete destroys it and its data. */
+  deletionPolicy?: string;
+  previewBranching: boolean;
   createdAt: string;
   conditions?: Condition[];
+}
+
+export interface NewClaim {
+  name: string;
+  project: string;
+  connection: string;
+  type: string;
+  previewBranching?: boolean;
+  deletionPolicy?: string;
 }
 
 export interface Settings {
@@ -684,6 +697,10 @@ export const api = {
   deleteConnection: (name: string) => request<void>("DELETE", `/connections/${name}`),
   domains: list<Domain>("/domains"),
   claims: list<Claim>("/claims"),
+  createClaim: (claim: NewClaim) => request<Claim>("POST", "/claims", claim),
+  // Answers 202: the operator's finalizer finishes the teardown — branches,
+  // binding secrets and, under deletionPolicy Delete, the database itself.
+  deleteClaim: (name: string) => request<Claim>("DELETE", `/claims/${name}`),
 
   // The platform as it is running: cluster, tunnel, build queue, components.
   status: () => request<PlatformStatus>("GET", "/status"),
