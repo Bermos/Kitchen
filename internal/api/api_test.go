@@ -461,6 +461,7 @@ var routes = []struct {
 	{http.MethodPatch, "/api/v1/settings"},
 	{http.MethodGet, "/api/v1/connections"},
 	{http.MethodPost, "/api/v1/connections"},
+	{http.MethodPost, "/api/v1/connections/test"},
 	{http.MethodGet, "/api/v1/connections/gh"},
 	{http.MethodPatch, "/api/v1/connections/gh"},
 	{http.MethodDelete, "/api/v1/connections/gh"},

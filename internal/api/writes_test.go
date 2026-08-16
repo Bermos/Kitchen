@@ -18,13 +18,16 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
@@ -416,6 +419,149 @@ func TestPatchingAConnectionWithNothingToChange(t *testing.T) {
 	recorder := h.do(t, http.MethodPatch, "/api/v1/connections/gh", `{}`)
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("want 400, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+// fakeGitHub answers /user the way GitHub does: the token decides, and a good
+// one comes back with a login and its scopes.
+func fakeGitHub(t *testing.T, goodToken string) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.URL.Path != "/user" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if req.Header.Get("Authorization") != "Bearer "+goodToken {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"message": "Bad credentials"}`))
+			return
+		}
+		w.Header().Set("X-OAuth-Scopes", "admin:repo_hook, repo")
+		_, _ = w.Write([]byte(`{"login": "octocat"}`))
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+func testConnection(t *testing.T, h *harness, body string) connectionTestView {
+	t.Helper()
+	recorder := h.do(t, http.MethodPost, "/api/v1/connections/test", body)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	view := connectionTestView{}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &view); err != nil {
+		t.Fatal(err)
+	}
+	return view
+}
+
+func TestTestingACredentialBeforeItIsStored(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+	github := fakeGitHub(t, "ghp_good")
+
+	view := testConnection(t, h, `{"name": "hub", "provider": "github",
+		"config": {"apiUrl": "`+github.URL+`"}, "credential": {"token": "ghp_good"}}`)
+	if !view.Reachable || !view.CredentialChecked || !view.CredentialValid {
+		t.Fatalf("a working token did not come back green: %+v", view)
+	}
+	if !strings.Contains(view.Message, "octocat") {
+		t.Fatalf("the verdict does not say who the token authenticates as: %+v", view)
+	}
+	if strings.Contains(view.Message, "ghp_good") {
+		t.Fatalf("the verdict leaks the credential: %+v", view)
+	}
+
+	// A test stores nothing: the credential that was tried leaves no secret
+	// behind, and the connection it was for still does not exist.
+	if _, err := getSecret(t, h, connectionSecretPrefix+"hub"); err == nil {
+		t.Fatal("testing a credential wrote a secret")
+	}
+	if err := h.server.get(context.Background(), "hub", &kitchenv1alpha1.Connection{}); err == nil {
+		t.Fatal("testing a credential created a connection")
+	}
+}
+
+func TestTestingACredentialTheProviderRejects(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+	github := fakeGitHub(t, "ghp_good")
+
+	view := testConnection(t, h, `{"provider": "github",
+		"config": {"apiUrl": "`+github.URL+`"}, "credential": {"token": "ghp_stale"}}`)
+	// Reached, ruled on, refused — the three parts have to stay distinct.
+	if !view.Reachable || !view.CredentialChecked || view.CredentialValid {
+		t.Fatalf("a rejected token did not read as rejected: %+v", view)
+	}
+	if !strings.Contains(view.Message, "Bad credentials") {
+		t.Fatalf("the verdict does not carry the provider's words: %+v", view)
+	}
+}
+
+func TestTestingAProviderThatCannotBeReached(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+
+	// A port nothing listens on: unreachable is not the same as refused, and
+	// the credential was never judged.
+	view := testConnection(t, h, `{"provider": "github",
+		"config": {"apiUrl": "http://127.0.0.1:1/api/v3"}, "credential": {"token": "ghp_good"}}`)
+	if view.Reachable || view.CredentialChecked || view.CredentialValid {
+		t.Fatalf("an unreachable provider did not read as unreachable: %+v", view)
+	}
+}
+
+func TestTestingAStoredCredential(t *testing.T) {
+	github := fakeGitHub(t, "ghp_stored")
+	connection := &kitchenv1alpha1.Connection{
+		ObjectMeta: metav1.ObjectMeta{Name: "hub", Namespace: testNamespace},
+		Spec: kitchenv1alpha1.ConnectionSpec{
+			Provider:             "github",
+			CredentialsSecretRef: kitchenv1alpha1.LocalObjectReference{Name: connectionSecretPrefix + "hub"},
+			Config:               &runtime.RawExtension{Raw: []byte(`{"apiUrl": "` + github.URL + `"}`)},
+		},
+	}
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: connectionSecretPrefix + "hub", Namespace: testNamespace},
+		Data:       map[string][]byte{gitTokenKey: []byte("ghp_stored")},
+	}
+	h := newHarness(t, nil, append(fixtures(), connection, secret)...)
+
+	// No credential in the request: the connection's own is re-checked, which
+	// is what the edit flow does without retyping a token.
+	view := testConnection(t, h, `{"name": "hub"}`)
+	if !view.CredentialValid {
+		t.Fatalf("the stored credential did not come back green: %+v", view)
+	}
+}
+
+func TestTestingAProviderThePlatformCannotProbeYet(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+
+	// gitlab passes admission but nothing implements it: unchecked, not red.
+	view := testConnection(t, h, `{"provider": "gitlab", "credential": {"token": "glpat"}}`)
+	if view.CredentialChecked || view.CredentialValid {
+		t.Fatalf("an unimplemented provider ruled on a credential: %+v", view)
+	}
+	if !strings.Contains(view.Message, "gitlab") {
+		t.Fatalf("the verdict does not say why nothing was checked: %+v", view)
+	}
+}
+
+func TestTestingAConnectionRejectsUnusableRequests(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+
+	for name, body := range map[string]string{
+		"nothing at all":                   `{}`,
+		"a name nothing answers to":        `{"name": "ghost"}`,
+		"a provider with no credential":    `{"provider": "github"}`,
+		"an unknown provider":              `{"provider": "svn", "credential": {"token": "t"}}`,
+		"a token provider without a token": `{"provider": "github", "credential": {"username": "u", "password": "p"}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			recorder := h.do(t, http.MethodPost, "/api/v1/connections/test", body)
+			if recorder.Code != http.StatusBadRequest && recorder.Code != http.StatusNotFound {
+				t.Fatalf("want 400 or 404, got %d: %s", recorder.Code, recorder.Body.String())
+			}
+		})
 	}
 }
 
