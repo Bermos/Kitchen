@@ -277,6 +277,15 @@ type stubLogs struct {
 	patterns      []clickhouse.LogPattern
 	lastPatterns  clickhouse.LogPatternQuery
 	analyticsErr  error
+
+	series      clickhouse.ResourceSeries
+	lastSeries  clickhouse.ResourceSeriesQuery
+	seriesErr   error
+	traces      []clickhouse.Trace
+	lastTraces  clickhouse.TraceQuery
+	spans       []clickhouse.Span
+	lastTraceID string
+	tracesErr   error
 }
 
 func (s *stubLogs) SearchLogs(_ context.Context, query clickhouse.LogQuery) ([]clickhouse.LogLine, error) {
@@ -332,6 +341,33 @@ func (s *stubLogs) TrafficEdges(_ context.Context, query clickhouse.TrafficQuery
 func (s *stubLogs) MetricsOverview(_ context.Context, query clickhouse.MetricsQuery) (clickhouse.MetricsOverview, error) {
 	s.lastMetrics = query
 	return s.overview, nil
+}
+
+func (s *stubLogs) ResourceSeries(
+	_ context.Context,
+	query clickhouse.ResourceSeriesQuery,
+) (clickhouse.ResourceSeries, error) {
+	s.lastSeries = query
+	if s.seriesErr != nil {
+		return clickhouse.ResourceSeries{}, s.seriesErr
+	}
+	return s.series, nil
+}
+
+func (s *stubLogs) Traces(_ context.Context, query clickhouse.TraceQuery) ([]clickhouse.Trace, error) {
+	s.lastTraces = query
+	if s.tracesErr != nil {
+		return nil, s.tracesErr
+	}
+	return s.traces, nil
+}
+
+func (s *stubLogs) Trace(_ context.Context, traceID string) ([]clickhouse.Span, error) {
+	s.lastTraceID = traceID
+	if s.tracesErr != nil {
+		return nil, s.tracesErr
+	}
+	return s.spans, nil
 }
 
 type harness struct {
@@ -445,6 +481,7 @@ var routes = []struct {
 	{http.MethodDelete, "/api/v1/environments/shop-production"},
 	{http.MethodGet, "/api/v1/environments/shop-production/logs"},
 	{http.MethodGet, "/api/v1/environments/shop-production/workload"},
+	{http.MethodGet, "/api/v1/environments/shop-production/metrics"},
 	{http.MethodGet, "/api/v1/environments/shop-production/objects"},
 	{http.MethodGet, "/api/v1/status"},
 	{http.MethodGet, "/api/v1/logs"},
@@ -454,6 +491,8 @@ var routes = []struct {
 	{http.MethodGet, "/api/v1/events"},
 	{http.MethodGet, "/api/v1/metrics/overview"},
 	{http.MethodGet, "/api/v1/traffic"},
+	{http.MethodGet, "/api/v1/traces"},
+	{http.MethodGet, "/api/v1/traces/9d8d0f"},
 	{http.MethodGet, "/api/v1/settings"},
 	{http.MethodGet, "/api/v1/updates"},
 	{http.MethodPost, "/api/v1/updates"},
