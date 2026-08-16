@@ -10,6 +10,7 @@ import ConditionsTable from "../components/ConditionsTable.vue";
 import DomainsPanel from "../components/DomainsPanel.vue";
 import LogViewer from "../components/LogViewer.vue";
 import PhaseBadge from "../components/PhaseBadge.vue";
+import ResourceHistory from "../components/ResourceHistory.vue";
 import StatusDot from "../components/StatusDot.vue";
 
 const route = useRoute();
@@ -296,6 +297,8 @@ function historyBy(entry: { reason: string; by?: string }): string {
           </table>
         </div>
       </div>
+
+      <ResourceHistory :environment="environment.name" :live="moving" />
 
       <DomainsPanel :environment="environment.name" />
 

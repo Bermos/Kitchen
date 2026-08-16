@@ -438,8 +438,8 @@ const placeholder = computed(() =>
         </template>
       </span>
       <span v-else class="text-dimmed font-mono">
-        columns: timestamp · source · project · environment · build · pod · container · stream · level · message ·
-        fields
+        columns: timestamp · source · project · environment · build · pod · container · stream · level · traceId ·
+        spanId · message · fields
       </span>
     </div>
 
@@ -501,12 +501,40 @@ const placeholder = computed(() =>
                     :class="levelClass(line.level, line.stream)"
                   >
                     {{ line.message }}
+                    <!-- A line that carries a trace id is a line with a whole
+                         request behind it; the mark is what says so before it
+                         is expanded. -->
+                    <UIcon
+                      v-if="line.traceId"
+                      name="i-lucide-git-fork"
+                      class="size-3 align-[-2px] ml-1 text-dimmed"
+                      title="Part of a traced request"
+                    />
                   </td>
                 </tr>
-                <!-- A JSON line's own fields, and each of them a filter. -->
-                <tr v-if="expanded === i && fieldsOf(line).length" class="bg-elevated/30">
-                  <td colspan="4" class="px-3 py-2">
-                    <div class="flex flex-wrap gap-1">
+                <!-- A JSON line's own fields, and each of them a filter — plus
+                     the way out to the request the line belongs to. -->
+                <tr v-if="expanded === i && (fieldsOf(line).length || line.traceId)" class="bg-elevated/30">
+                  <td colspan="4" class="px-3 py-2 space-y-2">
+                    <div v-if="line.traceId" class="flex items-center gap-2">
+                      <RouterLink
+                        :to="{ name: 'traces', query: { trace: line.traceId, range: '1440' } }"
+                        class="px-1.5 py-0.5 rounded border border-default hover:border-accented text-primary"
+                        title="Open the whole request this line came out of"
+                      >
+                        <UIcon name="i-lucide-git-fork" class="size-3 align-[-2px]" />
+                        trace {{ line.traceId.slice(0, 12) }}
+                      </RouterLink>
+                      <button
+                        class="px-1.5 py-0.5 rounded border border-default hover:border-accented text-toned"
+                        :disabled="!editable"
+                        title="Every line of this request"
+                        @click.stop="narrow('traceId', line.traceId!)"
+                      >
+                        its other lines
+                      </button>
+                    </div>
+                    <div v-if="fieldsOf(line).length" class="flex flex-wrap gap-1">
                       <button
                         v-for="[key, value] in fieldsOf(line)"
                         :key="key"

@@ -20,6 +20,7 @@ export const router = createRouter({
       component: () => import("./views/ObservabilityView.vue"),
     },
     { path: "/traffic", name: "traffic", component: () => import("./views/TrafficView.vue") },
+    { path: "/traces", name: "traces", component: () => import("./views/TracesView.vue") },
     { path: "/builds/:name", name: "build", component: () => import("./views/BuildView.vue") },
     {
       path: "/environments/:name",
