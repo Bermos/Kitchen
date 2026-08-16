@@ -1,11 +1,17 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { api, type Connection } from "../lib/api";
+import { api, type Connection, type ConnectionTestResult } from "../lib/api";
+import { providerGuidance, testSummary, testTone } from "../lib/connectors";
 
 // The create flow the connections page used to point at kubectl for — and the
 // edit flow that rotates a credential. The credential goes to the operator and
 // never comes back: editing always starts from blank credential fields, and
 // leaving them blank keeps what is stored.
+//
+// Which token, allowed to do what, from where: the form answers all three
+// before it asks (lib/connectors.ts), and "Test connection" runs the probe the
+// ConnectionReconciler runs — storing nothing — so a token that is missing a
+// permission is caught here rather than at the first failed webhook.
 
 const props = defineProps<{
   /** When set, the modal edits this connection instead of creating one. */
@@ -38,6 +44,8 @@ const apiURL = ref("");
 
 const usesToken = computed(() => provider.value !== "dockerRegistry");
 
+const guidance = computed(() => providerGuidance(provider.value, apiURL.value));
+
 watch(open, (value) => {
   if (!value) return;
   // A fresh start on every open: prefill identity and config from the
@@ -49,6 +57,8 @@ watch(open, (value) => {
   provider.value = props.connection?.provider ?? "github";
   registryURL.value = "";
   apiURL.value = "";
+  testResult.value = null;
+  testError.value = "";
 });
 
 const credentialGiven = computed(() =>
@@ -73,6 +83,44 @@ const config = computed(() => {
 const credential = computed(() =>
   usesToken.value ? { token: token.value } : { username: username.value, password: password.value },
 );
+
+// The verdict of the last test, and the test's own failure — a 400 from the
+// API is a badly formed request, not a provider's ruling, and reads as one.
+const testResult = ref<ConnectionTestResult | null>(null);
+const testError = ref("");
+const testing = ref(false);
+
+// Editing can re-check the stored credential without retyping it; creating
+// has nothing to test until a credential is there.
+const testable = computed(() => credentialGiven.value || editing.value);
+
+// Any change to what would be tested makes the old verdict stale.
+watch([provider, token, username, password, registryURL, apiURL], () => {
+  testResult.value = null;
+  testError.value = "";
+});
+
+async function test() {
+  if (!testable.value || testing.value) return;
+  testing.value = true;
+  testResult.value = null;
+  testError.value = "";
+  try {
+    testResult.value = await api.testConnection({
+      // Creating deliberately sends no name: the probe is about the
+      // credential, and the connection does not exist yet. Editing names it,
+      // which is what lets a blank credential field mean "the stored one".
+      name: editing.value ? props.connection!.name : undefined,
+      provider: provider.value,
+      config: config.value,
+      credential: credentialGiven.value ? credential.value : undefined,
+    });
+  } catch (err) {
+    testError.value = err instanceof Error ? err.message : String(err);
+  } finally {
+    testing.value = false;
+  }
+}
 
 const saving = ref(false);
 async function save() {
@@ -157,13 +205,14 @@ async function save() {
 
         <UFormField
           v-if="usesToken"
-          label="Token"
-          :help="editing ? 'Leave empty to keep the stored token.' : 'An access token for the provider.'"
+          :label="guidance?.tokenLabel ?? 'Token'"
+          :help="editing ? 'Leave empty to keep the stored one.' : undefined"
           :required="!editing"
         >
           <UInput v-model="token" type="password" class="w-full font-mono" autocomplete="off" />
         </UFormField>
-        <div v-else class="grid gap-4 sm:grid-cols-2">
+
+        <div v-if="!usesToken" class="grid gap-4 sm:grid-cols-2">
           <UFormField label="Username" :required="!editing">
             <UInput v-model="username" class="w-full font-mono" autocomplete="off" />
           </UFormField>
@@ -175,11 +224,68 @@ async function save() {
             <UInput v-model="password" type="password" class="w-full font-mono" autocomplete="off" />
           </UFormField>
         </div>
+
+        <!-- What the credential is for, what it has to be allowed to do, and
+             the provider's own page for making one. -->
+        <div v-if="guidance" class="rounded-md border border-default bg-elevated/50 px-3 py-2.5 space-y-1.5">
+          <p class="text-xs text-toned">{{ guidance.purpose }}</p>
+          <ul v-if="guidance.permissions.length" class="text-xs text-muted space-y-1">
+            <li v-for="permission in guidance.permissions" :key="permission" class="flex gap-1.5">
+              <span class="text-dimmed">•</span>
+              <span>{{ permission }}</span>
+            </li>
+          </ul>
+          <UButton
+            v-if="guidance.link"
+            :to="guidance.link.href"
+            target="_blank"
+            rel="noopener noreferrer"
+            color="neutral"
+            variant="link"
+            size="xs"
+            icon="i-lucide-external-link"
+            class="px-0"
+            >{{ guidance.link.label }}</UButton
+          >
+        </div>
+
+        <!-- The probe's verdict, in the provider's own words. Reachability and
+             the credential are separate answers, and the alert's colour says
+             which one is the problem. -->
+        <UAlert
+          v-if="testResult"
+          :color="testTone(testResult) === 'success' ? 'success' : testTone(testResult) === 'error' ? 'error' : 'warning'"
+          variant="soft"
+          :icon="testTone(testResult) === 'success' ? 'i-lucide-plug-zap' : 'i-lucide-triangle-alert'"
+          :title="testSummary(testResult)"
+          :description="testResult.message"
+        />
+        <UAlert
+          v-else-if="testError"
+          color="error"
+          variant="soft"
+          icon="i-lucide-triangle-alert"
+          title="The test could not run"
+          :description="testError"
+        />
       </form>
     </template>
 
     <template #footer>
-      <div class="flex justify-end gap-2 w-full">
+      <div class="flex items-center gap-2 w-full">
+        <!-- Testing writes nothing: it tries the credential against the
+             provider and throws it away, so it is safe before creating. -->
+        <UButton
+          color="neutral"
+          variant="subtle"
+          icon="i-lucide-plug-zap"
+          :disabled="!testable"
+          :loading="testing"
+          @click="test"
+        >
+          Test connection
+        </UButton>
+        <span class="flex-1" />
         <UButton color="neutral" variant="ghost" @click="open = false">Cancel</UButton>
         <UButton :disabled="!ready" :loading="saving" :icon="editing ? 'i-lucide-key-round' : 'i-lucide-plus'" @click="save">
           {{ editing ? "Save changes" : "Create connection" }}
