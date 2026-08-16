@@ -115,12 +115,32 @@ sent the request.
 | GET | `/domains` | Every custom domain. `?environment=` filters |
 | GET | `/domains/{name}` | One domain |
 | GET | `/claims` | Every resource claim. `?project=` filters |
+| POST | `/claims` | Ask a database-capable connection to provision one |
 | GET | `/claims/{name}` | One claim |
+| DELETE | `/claims/{name}` | Delete it — what happens to the data is its `deletionPolicy`'s call |
 
-Creating domains and claims is not here yet: their reconcilers are stubs, and
-a write surface over objects nothing reconciles would only look like it
-worked. Those writes land with their reconcilers; until then they are
-`kubectl apply`, the same as they were.
+Creating domains is not here yet: the Domain reconciler is a stub, and a
+write surface over objects nothing reconciles would only look like it worked.
+That write lands with its reconciler; until then it is `kubectl apply`, the
+same as it was.
+
+### Creating a claim
+
+```sh
+curl -sS -X POST -H "authorization: Bearer $TOKEN" \
+  -d '{"name": "shop-db", "project": "shop", "connection": "neon", "type": "postgres", "previewBranching": true}' \
+  https://kitchen.apps.example.com/api/v1/claims
+```
+
+A claim asks a Connection with the `database` capability to provision a
+resource for a project; the reconciler writes the credentials into a binding
+secret that `Project.spec.env`'s `fromClaim` references, and the API never
+reads them back. `previewBranching` gives every preview environment its own
+database branch. `deletionPolicy` (`Retain`, the default, or `Delete`) decides
+what deleting the claim later does to the provisioned database — `Retain` is
+the default because destroying data has to be asked for, never implied.
+Deleting a claim answers `202`: the operator's finalizer still has branches,
+binding secrets and — under `Delete` — the database itself to remove.
 
 ### Creating a project
 
@@ -659,8 +679,8 @@ the object fields name what the entry is about so a client can link to it,
 things the reconcilers decided on their own, and `value` carries the one
 number some events have (a finished build's duration in seconds). Types:
 `build.succeeded`, `build.failed`, `release.promoted`, `release.rolledBack`,
-`preview.created`, `preview.removed`, `project.created`, `project.deleted`
-(plus `claim.bound` / `claim.failed` once claims bind).
+`preview.created`, `preview.removed`, `project.created`, `project.deleted`,
+`claim.created`, `claim.deleted`, `claim.bound`, `claim.failed`.
 
 The feed is written by the reconcilers and the API into the events table of
 the telemetry store, under the same retention as the logs. Kubernetes Events
@@ -722,7 +742,7 @@ endpoint answers an empty list and the traffic view explains what to enable.
 | Token audience | The API's own URL (`resource=`), or the issuer | A resource server should be able to tell a token meant for it from a token meant for everything |
 | CI tokens | better-auth's api-key plugin, exchanged for a JWT at the issuer | The plugin already holds the operator's own credential; keeping key lookup at the issuer keeps the operator's request path stateless |
 | Response shapes | The API's own vocabulary, not raw custom resources | A stable contract for the UI, and freedom to change how state is stored |
-| Write surface | The full project and connection lifecycle, rebuild and cancel, promote/rollback, preview teardown, and the settings' runtime defaults | Nothing a user does in the platform's normal running should need `kubectl`; domain and claim writes wait for their reconcilers, because a write over objects nothing reconciles only looks like it works |
+| Write surface | The full project, connection and claim lifecycle, rebuild and cancel, promote/rollback, preview teardown, and the settings' runtime defaults | Nothing a user does in the platform's normal running should need `kubectl`; domain writes wait for their reconciler, because a write over objects nothing reconciles only looks like it works |
 | Credentials | Write-only: the operator stores them in Secrets and never echoes them | "Credentials never leave the operator" survives the API growing a write surface |
 | Introspection shapes | Kubernetes' own vocabulary — replicas, restarts, manifests | The exception that proves the rule above: these endpoints exist to explain the platform's machinery, and a reader comparing them against `kubectl` should not have to translate |
 | Pods and nodes | Read uncached, straight from the API server | Serving them from the manager's cache would mean an informer over every pod in the cluster, kept warm for a question only an open dashboard asks |

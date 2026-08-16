@@ -37,6 +37,8 @@ const (
 	EventPreviewRemoved    = "preview.removed"
 	EventClaimBound        = "claim.bound"
 	EventClaimFailed       = "claim.failed"
+	EventClaimCreated      = "claim.created"
+	EventClaimDeleted      = "claim.deleted"
 	EventProjectCreated    = "project.created"
 	EventProjectDeleted    = "project.deleted"
 
