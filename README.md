@@ -270,7 +270,8 @@ project asks — see [the chart README](charts/kitchen/README.md#scale-to-zero).
 
 Reconcilers: Kitchen (shared Gateway, optional cloudflared, telemetry schema,
 the preview gate and its OAuth client), Project (webhook registration,
-namespace, connection validation), Build, Environment. The Helm chart ships the
+namespace, connection validation), Connection (credential probes against the
+live provider, capabilities), Build, Environment. The Helm chart ships the
 operator, its CRDs, the git webhook route, the REST API, ClickHouse with a
 Vector DaemonSet shipping container and build logs into it, and the identity
 provider with its Postgres; tagged releases publish both images and the chart
@@ -290,7 +291,7 @@ connections with create/rotate/delete — credentials go to the operator and are
 never read back — and the editable platform settings, with an operator mode
 that surfaces `status.conditions` on everything and the Kubernetes objects the
 operator materialized for an environment. Still missing:
-Connection/Domain/ResourceClaim reconcilers (including `oidcClient` claims),
+Domain/ResourceClaim reconcilers (including `oidcClient` claims),
 metrics/traces/flow collection, Infisical sync — and with them the domain and
 resource-claim create flows, which stay `kubectl apply` until their
 reconcilers land.
