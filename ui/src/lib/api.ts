@@ -228,6 +228,26 @@ export interface ConnectionChanges {
   credential?: ConnectionCredential;
 }
 
+/** What POST /connections/test takes: a credential to try before it is
+ * stored, or the name of a connection whose stored credential should be
+ * re-checked. Nothing is written either way. */
+export interface ConnectionTestRequest {
+  name?: string;
+  provider?: string;
+  config?: Record<string, unknown>;
+  credential?: ConnectionCredential;
+}
+
+/** The probe's verdict, in the same parts the Connected and CredentialsValid
+ * conditions are written from — a provider that is down and a credential that
+ * is wrong are different answers. */
+export interface ConnectionTestResult {
+  reachable: boolean;
+  credentialChecked: boolean;
+  credentialValid: boolean;
+  message: string;
+}
+
 /** The DNS change that proves ownership of a custom domain, exactly as the
  * user has to type it into their zone. Either record satisfies the check;
  * the CNAME also routes the hostname at the platform. */
@@ -716,6 +736,8 @@ export const api = {
     request<Connection>("POST", "/connections", connection),
   updateConnection: (name: string, changes: ConnectionChanges) =>
     request<Connection>("PATCH", `/connections/${name}`, changes),
+  testConnection: (test: ConnectionTestRequest) =>
+    request<ConnectionTestResult>("POST", "/connections/test", test),
   deleteConnection: (name: string) => request<void>("DELETE", `/connections/${name}`),
   domains: list<Domain>("/domains"),
   domain: (name: string) => request<Domain>("GET", `/domains/${name}`),
