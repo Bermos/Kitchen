@@ -25,6 +25,11 @@ env:
   CHART_ACME: >-
     --set kitchen.tls.acme.email=platform@example.com
     --set kitchen.tls.acme.dns01.cloudflare.apiTokenSecretName=cloudflare-api-token
+  # Scale-to-zero's prerequisite, installed the way the chart README says to:
+  # two releases of their own, because the add-on ships a custom resource of
+  # KEDA's CRD and Helm cannot install both in one release.
+  KEDA_VERSION: 2.20.2
+  KEDA_HTTP_ADDON_VERSION: 0.15.0
 
 jobs:
   lint:
@@ -107,6 +112,14 @@ jobs:
                  --set postgres.enabled=false \
                  --set postgres.external.host=postgres.databases.svc \
                  --set postgres.auth.password=hunter2
+          # Scale-to-zero, at the interceptor the README installs and at one
+          # somewhere else.
+          render ${CHART_BASE} ${CHART_ACME} \
+                 --set scaleToZero.enabled=true
+          render ${CHART_BASE} ${CHART_ACME} \
+                 --set scaleToZero.enabled=true \
+                 --set scaleToZero.interceptor.namespace=keda-system \
+                 --set scaleToZero.interceptor.port=9090
           # Plain HTTP: the way a cluster comes up before DNS and certificates.
           render ${CHART_BASE} --set kitchen.tls.mode=none
 
@@ -225,6 +238,40 @@ jobs:
             exit 1
           }
 
+      - name: Check the chart does not try to bundle KEDA
+        run: |
+          set -euo pipefail
+          # KEDA and its HTTP add-on are the one platform dependency this chart
+          # does not install, and it is not a preference: the add-on ships a
+          # ScaledObject of KEDA's own CRD, and Helm validates a release's whole
+          # manifest before applying any of it, so a chart carrying both never
+          # installs — and a bundled copy also collides with a cluster that
+          # already runs KEDA. See the chart README.
+          rendered=$(helm template kitchen charts/kitchen --namespace kitchen-system \
+            ${CHART_BASE} ${CHART_ACME} --set scaleToZero.enabled=true)
+          if echo "${rendered}" | grep -qE '^kind: (ScaledObject|CustomResourceDefinition)$' \
+             && echo "${rendered}" | grep -q 'keda.sh'; then
+            echo "::error::the chart renders KEDA's own objects; it must point at an" \
+                 "installation instead of carrying one"
+            exit 1
+          fi
+          # What it does carry is the address, and the operator looks that
+          # Service up by name, so it has to be the one the add-on creates.
+          singleton() {
+            helm template kitchen charts/kitchen --namespace kitchen-system \
+              ${CHART_BASE} ${CHART_ACME} --set scaleToZero.enabled=true \
+              -s templates/kitchen.yaml | awk -v key="$1:" '$1 == key { print $2; exit }' | tr -d '"'
+          }
+          [ "$(singleton service)" = keda-add-ons-http-interceptor-proxy ] || {
+            echo "::error::the Kitchen singleton points at '$(singleton service)'," \
+                 "which the add-on does not create"
+            exit 1
+          }
+          [ "$(singleton namespace)" = keda ] || {
+            echo "::error::the interceptor namespace does not match the chart README's install"
+            exit 1
+          }
+
       - name: Reject unsupported value combinations
         run: |
           set -uo pipefail
@@ -295,6 +342,15 @@ jobs:
           expect_failure kitchen-system --set kitchen.create=false \
             --set webhookReceiver.route.enabled=false \
             --set api.route.enabled=false
+          # Scale-to-zero with nothing to route an idling environment through:
+          # it has no pods of its own, so a missing interceptor is a URL that
+          # answers nowhere.
+          expect_failure kitchen-system ${CHART_BASE} ${CHART_ACME} \
+            --set scaleToZero.enabled=true --set scaleToZero.interceptor.service=
+          expect_failure kitchen-system ${CHART_BASE} ${CHART_ACME} \
+            --set scaleToZero.enabled=true --set scaleToZero.interceptor.namespace=
+          expect_failure kitchen-system ${CHART_BASE} ${CHART_ACME} \
+            --set scaleToZero.enabled=true --set scaleToZero.interceptor.port=0
 
   install:
     name: Chart install on kind
@@ -354,10 +410,17 @@ jobs:
           clickhouse_image=$(template templates/clickhouse/statefulset.yaml)
           postgres_image=$(template templates/postgres/statefulset.yaml)
           collector_image=$(template templates/logs/daemonset.yaml)
+          # The scale-to-zero step later installs the HTTP add-on as its own
+          # release and waits for the interceptor, so its image is on that
+          # step's critical path even though this install has nothing to do
+          # with it.
+          interceptor_image="ghcr.io/kedacore/http-add-on-interceptor:${KEDA_HTTP_ADDON_VERSION}"
           echo "ClickHouse image: ${clickhouse_image}"
           echo "Postgres image: ${postgres_image}"
           echo "Collector image: ${collector_image}"
-          for image in "${clickhouse_image}" "${postgres_image}" "${collector_image}" "${PROBE_IMAGE}"; do
+          echo "Interceptor image: ${interceptor_image}"
+          for image in "${clickhouse_image}" "${postgres_image}" "${collector_image}" \
+                       "${interceptor_image}" "${PROBE_IMAGE}"; do
             for i in 1 2 3; do
               docker pull "${image}" && break
               [ "$i" = 3 ] && exit 1
@@ -746,6 +809,171 @@ jobs:
           esac
           kubectl patch kitchen default --type=merge \
             -p '{"spec":{"observability":{"clickhouse":{"retentionDays":30}}}}'
+
+      - name: Verify scale-to-zero routing
+        run: |
+          set -euo pipefail
+          # KEDA and the HTTP add-on are the one platform dependency the chart
+          # does not install — the add-on ships a ScaledObject of KEDA's own
+          # CRD, and Helm cannot install a release whose custom resources need
+          # CRDs from that same release. So this is exactly what the chart
+          # README tells a user to run, in the order it tells them to.
+          helm repo add kedacore https://kedacore.github.io/charts
+          helm repo update kedacore
+          helm install keda kedacore/keda --version "${KEDA_VERSION}" \
+            --namespace keda --create-namespace --wait --timeout 5m
+          helm install keda-add-ons-http kedacore/keda-add-ons-http \
+            --version "${KEDA_HTTP_ADDON_VERSION}" --namespace keda \
+            --set interceptor.replicas.min=1 --set scaler.replicas=1 \
+            --set interceptor.readinessTimeout=90s
+          kubectl -n keda rollout status deploy/keda-add-ons-http-interceptor --timeout=5m || {
+            kubectl -n keda describe deploy keda-add-ons-http-interceptor
+            exit 1
+          }
+
+          # applyOnUpgrade is what makes the value reach the operator: the
+          # Kitchen singleton is a post-install hook, so an ordinary upgrade
+          # leaves it exactly as it was and the switch would go nowhere. The
+          # other way round is editing the object, which the last step does.
+          helm upgrade kitchen charts/kitchen \
+            --namespace kitchen-system --reuse-values \
+            --set scaleToZero.enabled=true --set kitchen.applyOnUpgrade=true \
+            --wait --timeout 5m || {
+              kubectl -n kitchen-system get pods -o wide
+              exit 1
+            }
+          switch=$(kubectl get kitchen default -o jsonpath='{.spec.scaleToZero.enabled}')
+          [ "${switch}" = true ] || {
+            echo "::error::the chart value did not reach the operator's configuration" \
+                 "(spec.scaleToZero.enabled is '${switch}')"
+            exit 1
+          }
+
+          # A project, a release and two environments applied directly: the
+          # Environment reconciler needs nothing else, so this checks the
+          # routing without going anywhere near a build. The image never
+          # resolves, which does not matter — what is under test is what the
+          # operator writes, not what the pod does.
+          kubectl apply -f - <<'EOF'
+          apiVersion: kitchen.bermos.dev/v1alpha1
+          kind: Project
+          metadata:
+            name: idler
+            namespace: kitchen-system
+          spec:
+            source:
+              connectionRef: {name: none}
+              repo: acme/idler
+            registry:
+              connectionRef: {name: none}
+            previews:
+              protected: false
+            scaleToZero:
+              mode: previews
+              idleAfter: 1m
+          ---
+          apiVersion: kitchen.bermos.dev/v1alpha1
+          kind: Release
+          metadata:
+            name: idler-rel-1
+            namespace: kitchen-system
+          spec:
+            projectRef: {name: idler}
+            buildRef: {name: idler-bld-1}
+            image: registry.example.com/idler@sha256:0000000000000000000000000000000000000000000000000000000000000000
+            configSnapshot:
+              runtime:
+                port: 8080
+                replicas: 2
+          ---
+          apiVersion: kitchen.bermos.dev/v1alpha1
+          kind: Environment
+          metadata:
+            name: idler-pr-1
+            namespace: kitchen-system
+          spec:
+            projectRef: {name: idler}
+            type: preview
+            releaseRef: {name: idler-rel-1}
+            preview:
+              pullRequest: 1
+              branch: feat/idle
+          ---
+          apiVersion: kitchen.bermos.dev/v1alpha1
+          kind: Environment
+          metadata:
+            name: idler-production
+            namespace: kitchen-system
+          spec:
+            projectRef: {name: idler}
+            type: production
+            releaseRef: {name: idler-rel-1}
+          EOF
+
+          backend() {
+            kubectl -n kitchen-idler get httproute "$1" \
+              -o jsonpath='{.spec.rules[0].backendRefs[0].name}' 2>/dev/null || true
+          }
+          for _ in $(seq 60); do
+            [ "$(backend idler-pr-1)" = keda-add-ons-http-interceptor-proxy ] && break
+            sleep 5
+          done
+
+          # The acceptance criterion, as far as a cluster with no real image can
+          # show it: the preview's URL points at the interceptor that would
+          # cold-start it, and the record KEDA parks it by exists.
+          [ "$(backend idler-pr-1)" = keda-add-ons-http-interceptor-proxy ] || {
+            echo "::error::an idling preview is not routed through the interceptor (backend: $(backend idler-pr-1))"
+            kubectl get environment idler-pr-1 -o jsonpath='{.status.conditions}'
+            kubectl -n kitchen-system logs -l control-plane=controller-manager --tail=100
+            exit 1
+          }
+          min=$(kubectl -n kitchen-idler get httpscaledobject idler-pr-1 -o jsonpath='{.spec.replicas.min}')
+          period=$(kubectl -n kitchen-idler get httpscaledobject idler-pr-1 -o jsonpath='{.spec.scaledownPeriod}')
+          echo "preview scaled object: min=${min} scaledownPeriod=${period}"
+          [ "${min}" = 0 ] && [ "${period}" = 60 ] || {
+            echo "::error::the preview's HTTPScaledObject does not park it at zero after the project's idle window"
+            exit 1
+          }
+          kubectl -n keda get referencegrant "kitchen-interceptor-kitchen-idler"
+
+          # Production keeps its pods and its own routing: idling it is an
+          # opt-in this Project did not give.
+          [ "$(backend idler-production)" = idler-production ] || {
+            echo "::error::a production environment was routed through the interceptor"
+            exit 1
+          }
+          if kubectl -n kitchen-idler get httpscaledobject idler-production >/dev/null 2>&1; then
+            echo "::error::a production environment was given an HTTPScaledObject without opting in"
+            exit 1
+          fi
+          replicas=$(kubectl -n kitchen-idler get deploy idler-production -o jsonpath='{.spec.replicas}')
+          [ "${replicas}" = 2 ] || {
+            echo "::error::production runs ${replicas} replicas, not the release's 2"
+            exit 1
+          }
+
+          # Turning the platform switch off has to take the environments back
+          # to plain Deployment routing and leave nothing behind.
+          kubectl patch kitchen default --type=merge \
+            -p '{"spec":{"scaleToZero":{"enabled":false}}}'
+          for _ in $(seq 60); do
+            [ "$(backend idler-pr-1)" = idler-pr-1 ] && break
+            sleep 5
+          done
+          [ "$(backend idler-pr-1)" = idler-pr-1 ] || {
+            echo "::error::disabling scale-to-zero left the preview routed through the interceptor"
+            kubectl -n kitchen-system logs -l control-plane=controller-manager --tail=100
+            exit 1
+          }
+          if kubectl -n kitchen-idler get httpscaledobject idler-pr-1 >/dev/null 2>&1; then
+            echo "::error::disabling scale-to-zero left the HTTPScaledObject behind"
+            exit 1
+          fi
+
+          kubectl -n kitchen-system delete environment idler-pr-1 idler-production
+          kubectl -n kitchen-system delete release idler-rel-1
+          kubectl -n kitchen-system delete project idler
 
       # The upgrade below has to cross a *chart version*, not re-apply the same
       # one. Every object the chart owns is labelled with `helm.sh/chart` and

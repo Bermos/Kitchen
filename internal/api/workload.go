@@ -25,6 +25,8 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -205,6 +207,14 @@ func containerMessage(status *corev1.ContainerStatus) string {
 // the API's own vocabulary: whoever opens this wants the manifest they would
 // have run `kubectl get -o yaml` for, and a summarized one would send them to
 // the terminal anyway.
+// inspectedObject is one of the objects an Environment is made of, and the
+// empty value to read it into.
+type inspectedObject struct {
+	kind       string
+	apiVersion string
+	into       client.Object
+}
+
 func (s *Server) environmentObjects(w http.ResponseWriter, req *http.Request) {
 	ctx := req.Context()
 
@@ -219,15 +229,23 @@ func (s *Server) environmentObjects(w http.ResponseWriter, req *http.Request) {
 
 	// The three objects an Environment is made of, in the order the
 	// reconciler creates them — which is also the order they fail in.
-	for _, object := range []struct {
-		kind       string
-		apiVersion string
-		into       client.Object
-	}{
+	objects := []inspectedObject{
 		{"Deployment", "apps/v1", &appsv1.Deployment{}},
 		{"Service", "v1", &corev1.Service{}},
 		{"HTTPRoute", gatewayv1.GroupVersion.String(), &gatewayv1.HTTPRoute{}},
-	} {
+	}
+	// A fourth, wherever the platform idles environments: the record KEDA
+	// parks this one by. It is listed off the condition rather than always,
+	// because on a platform without the HTTP add-on that API is not served,
+	// and every environment would report an error for an object none of them
+	// were ever meant to have.
+	if meta.FindStatusCondition(env.Status.Conditions, controller.ConditionScaleToZero) != nil {
+		gvk := controller.HTTPScaledObjectGVK()
+		scaled := &unstructured.Unstructured{}
+		scaled.SetGroupVersionKind(gvk)
+		objects = append(objects, inspectedObject{gvk.Kind, gvk.GroupVersion().String(), scaled})
+	}
+	for _, object := range objects {
 		view.Objects = append(view.Objects,
 			s.materializedObject(ctx, object.kind, object.apiVersion, appNS, env.Name, object.into))
 	}

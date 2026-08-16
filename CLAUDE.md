@@ -119,6 +119,23 @@ test files, and goconst has already caught a release name repeated across
 assertions. Run it before every push, not only after touching Go code you
 consider "real".
 
+## Checking chart behaviour without waiting for CI
+
+**In a dev container the Docker daemon is installed but not running — start it
+with `dockerd &` and wait for `docker info`.** With it up, `kind` reproduces the
+whole `helm.yml` install job locally, which is the only way to find out what
+Helm actually does before pushing.
+
+Failing that, a question about *Helm itself* can be answered against the
+envtest binaries `make setup-envtest` already downloads: `envtest.Environment`
+plus `AddUser(...).KubeConfig()` is a real API server, and `helm install`
+against it is faithful for anything short of pods running. That is how the
+"you cannot bundle a chart that ships a custom resource of another chart's
+CRD" rule below was established rather than guessed — four candidate
+workarounds, each disproved in about a minute. Note that cert-manager's
+`startupapicheck` hook Job can never finish there (no scheduler), so pass
+`--set cert-manager.enabled=false` to any full-chart install.
+
 ## Chart conventions
 
 - **CRDs are ordinary templates, not `crds/` files.** Helm never upgrades files
@@ -155,6 +172,20 @@ release simply fails.
 
 When adding a dependency that ships an admission webhook for its own CRs,
 assume its CRs belong in the operator.
+
+**A chart cannot bundle a dependency that ships a custom resource of another
+chart's CRD.** Helm builds and validates a release's whole manifest against the
+API server before it applies any of it, so a CR whose CRD arrives in the same
+release never resolves. That is why KEDA and its HTTP add-on are the one
+platform dependency Kitchen does *not* bundle, despite owning its cluster: the
+add-on autoscales its own interceptor with a `keda.sh` ScaledObject, whose CRD
+comes from the KEDA chart. A `pre-install` hook does not help (the main
+manifest is built first), `crds/` fixes install but is never applied on
+upgrade, and a bundled copy also collides with a cluster that already runs
+KEDA, because Helm will not adopt CRDs another release owns. `scaleToZero`
+therefore carries the interceptor's address instead of installing it, and
+`EnvironmentReconciler` writes the per-environment `HTTPScaledObject` — one per
+Environment, so that was never a template either.
 
 cert-manager's kinds are addressed as `unstructured` objects rather than
 through its Go types, to avoid tying the build to its release cadence.
@@ -215,6 +246,21 @@ through its Go types, to avoid tying the build to its release cadence.
   `helm uninstall` deletes the namespace and every PVC in it, so removing the
   release would destroy the accounts database and the telemetry store. Any
   change to that template must keep the annotation.
+- **An idling Deployment's replica count belongs to KEDA, not to the
+  reconciler.** While an Environment is allowed to scale to zero,
+  `applyDeployment` does not touch `spec.replicas` at all: the number it would
+  write is the one the autoscaler has just moved, so writing it back would undo
+  every scale decision — including the zero the feature exists for. The
+  fallback path (idling off, or the add-on's API unavailable) sets it again,
+  which is what brings a parked environment back.
+- **Routing an idling environment means replacing the application's address,
+  wherever it appears.** For an open environment that is the HTTPRoute's
+  backend; for a *protected* preview the route still points at the forward-auth
+  gate, and it is the gate's upstream header that has to name the interceptor
+  instead — pointing the route at the interceptor there would take the gate out
+  of the path and publish the preview. Both work because everything in front
+  keeps the visitor's `Host` header, which is the only thing the interceptor
+  routes on.
 - **Anything that should appear in the component survey needs
   `app.kubernetes.io/part-of: kitchen`** and, to be readable,
   `app.kubernetes.io/component`. The survey selects on the former rather than on

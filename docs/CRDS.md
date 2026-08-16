@@ -73,6 +73,12 @@ spec:
   builds:
     defaultStrategy: auto               # auto (detect) | dockerfile | buildpacks
     concurrency: 2
+  scaleToZero:
+    enabled: true                       # off by default; needs KEDA + the HTTP add-on
+    interceptor:                        # what an idling environment's URL points at
+      service: keda-add-ons-http-interceptor-proxy
+      namespace: kitchen-system
+      port: 8080
   observability:
     clickhouse:
       retentionDays: 30                 # TTL the operator keeps on the telemetry tables
@@ -132,6 +138,10 @@ spec:
     enabled: true
     protected: true                     # gate preview URLs behind platform login (default)
     ttlAfterClosed: 1h                  # grace period before teardown
+  scaleToZero:                          # only does anything where the platform allows it
+    mode: previews                      # previews (default) | always | never
+    idleAfter: 5m                       # quiet for this long, then no pods at all
+    maxReplicas: 5                      # ceiling for a cold-started environment
   env:                                  # env vars with per-environment-type overlay
     - name: DATABASE_URL
       fromResourceClaim: { name: shop-db, key: url }   # injected by claim binding
@@ -246,7 +256,8 @@ status:
       reason: promoted                  # promoted | rolledBack | superseded
       by: my-shop-bld-abc123def456-xk2p9   # the promoting Build, or the API caller
   conditions: [...]                     # Ready, RouteProgrammed, WorkloadAvailable,
-                                        # PreviewProtected (previews only)
+                                        # PreviewProtected (previews only),
+                                        # ScaleToZero (where the platform idles anything)
 ```
 
 `history` answers what `releaseRef` alone cannot: **how** the environment moved off each
@@ -269,6 +280,16 @@ requests land on the platform login and only signed-in ones reach the applicatio
 needs no changes — see [AUTH.md](AUTH.md). Production environments are never gated. If
 protection is asked for on a platform that runs no gate, the Environment gets **no route
 at all** rather than a public one, and says so in `PreviewProtected`.
+
+Where the platform idles environments (`Kitchen.spec.scaleToZero.enabled`) and the
+Project's `spec.scaleToZero` covers this type, the reconciler also writes an
+`HTTPScaledObject` for it and addresses the application through the KEDA HTTP add-on's
+interceptor rather than directly — as the Gateway's backend on an open environment, as
+the gate's upstream on a protected one. The workload's replica count then belongs to
+KEDA: the reconciler stops writing it, because the number it would write is the one the
+autoscaler just moved. Everything that can go wrong here falls back to plain Deployment
+routing with the environment's own replicas, and says why in `ScaleToZero` — an
+application parked behind an interceptor nothing is watching would never come back.
 
 ## `Domain` (namespaced: kitchen-system)
 

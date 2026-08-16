@@ -17,6 +17,8 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"time"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -88,6 +90,101 @@ func (p PreviewsSpec) IsProtected() bool {
 	return p.Protected == nil || *p.Protected
 }
 
+// ScaleToZeroMode says which of a Project's environments may idle down to no
+// pods at all.
+// +kubebuilder:validation:Enum=previews;always;never
+type ScaleToZeroMode string
+
+const (
+	// ScaleToZeroPreviews idles preview environments and leaves production
+	// running. It is the default: an open pull request costs nothing while
+	// nobody is looking at it, and the environment real users are on never
+	// pays a cold start.
+	ScaleToZeroPreviews ScaleToZeroMode = "previews"
+	// ScaleToZeroAlways idles production too — the explicit opt-in without
+	// which a production environment never drops below its replica count.
+	ScaleToZeroAlways ScaleToZeroMode = "always"
+	// ScaleToZeroNever keeps every environment of the Project on plain
+	// Deployment routing.
+	ScaleToZeroNever ScaleToZeroMode = "never"
+)
+
+// DefaultIdleAfter and DefaultMaxReplicas match the CRD defaults, for Projects
+// written before the fields existed.
+const (
+	DefaultIdleAfter   = 5 * time.Minute
+	DefaultMaxReplicas = int32(5)
+)
+
+// ScaleToZeroPolicy is a Project's idle policy: which of its environments may
+// park at zero pods, how long they have to be quiet first, and how far a
+// cold-started one may scale up.
+//
+// It is a policy of the Project rather than part of a Release's frozen
+// runtime, deliberately. The snapshot exists so a rollback runs the exact code
+// and capacity it ran before; whether an idle environment is allowed to park
+// is a running-cost decision about the environment as it stands today.
+// Rolling back should not quietly un-park an environment, and turning the
+// policy on should not have to wait for the next build.
+type ScaleToZeroPolicy struct {
+	// +kubebuilder:default=previews
+	// +optional
+	Mode ScaleToZeroMode `json:"mode,omitempty"`
+
+	// IdleAfter is how long an environment goes without a request before it
+	// is scaled to zero. Shorter saves more and cold-starts more often.
+	// +kubebuilder:default="5m"
+	// +optional
+	IdleAfter *metav1.Duration `json:"idleAfter,omitempty"`
+
+	// MaxReplicas caps how far request pressure may scale an idling
+	// environment up. It is raised to the environment's own replica count
+	// where that is higher, so idling can never shrink an environment.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:default=5
+	// +optional
+	MaxReplicas *int32 `json:"maxReplicas,omitempty"`
+}
+
+// EffectiveMode reads the policy's mode. A Project written before the field
+// existed idles its previews: the feature does nothing at all unless the
+// platform turns it on, and a platform that has turned it on wants idle
+// previews — that is what it is for.
+func (p ScaleToZeroPolicy) EffectiveMode() ScaleToZeroMode {
+	if p.Mode == "" {
+		return ScaleToZeroPreviews
+	}
+	return p.Mode
+}
+
+// Covers reports whether an environment of this type may idle to zero.
+func (p ScaleToZeroPolicy) Covers(envType EnvironmentType) bool {
+	switch p.EffectiveMode() {
+	case ScaleToZeroAlways:
+		return true
+	case ScaleToZeroNever:
+		return false
+	default:
+		return envType == EnvironmentPreview
+	}
+}
+
+// IdleAfterOrDefault is how long an environment stays quiet before it parks.
+func (p ScaleToZeroPolicy) IdleAfterOrDefault() time.Duration {
+	if p.IdleAfter != nil && p.IdleAfter.Duration > 0 {
+		return p.IdleAfter.Duration
+	}
+	return DefaultIdleAfter
+}
+
+// MaxReplicasOrDefault is the ceiling a cold-started environment may reach.
+func (p ScaleToZeroPolicy) MaxReplicasOrDefault() int32 {
+	if p.MaxReplicas != nil && *p.MaxReplicas > 0 {
+		return *p.MaxReplicas
+	}
+	return DefaultMaxReplicas
+}
+
 // ProjectSpec defines the desired state of a Project: a repository that
 // becomes a running application.
 type ProjectSpec struct {
@@ -100,6 +197,14 @@ type ProjectSpec struct {
 
 	// +optional
 	Previews PreviewsSpec `json:"previews,omitempty"`
+
+	// Which of this Project's environments may idle down to no pods at all,
+	// cold-starting on the next request. It does nothing unless the platform
+	// runs the machinery for it — `spec.scaleToZero.enabled` on the Kitchen
+	// object — and every environment then stays on plain Deployment routing.
+	// +kubebuilder:default={}
+	// +optional
+	ScaleToZero ScaleToZeroPolicy `json:"scaleToZero,omitempty"`
 
 	// Environment variables, overlaid per environment type.
 	// +optional

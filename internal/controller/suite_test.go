@@ -84,6 +84,10 @@ var _ = BeforeSuite(func() {
 			// a typo in those specs into a failing assertion here rather than
 			// a passing round-trip.
 			filepath.Join("..", "..", "test", "crd", "cert-manager"),
+			// The KEDA HTTP add-on's HTTPScaledObject, for the same reason.
+			// It comes from a chart the platform does *not* install, so it is
+			// fetched from the add-on release rather than from charts/.
+			filepath.Join("..", "..", "test", "crd", "keda-http"),
 		},
 		ErrorIfCRDPathMissing: true,
 	}

@@ -256,6 +256,12 @@ visitors to the identity provider and proxies the ones that come back — the
 deployed app needs no changes. Turn it off per project with
 `spec.previews.protected: false`.
 
+Idle environments can cost nothing: with KEDA and its HTTP add-on in the
+cluster (two `helm install`s of their own) and `scaleToZero.enabled`, an
+environment nobody is using drops to no pods at all until the next request to
+its URL starts it again. Previews idle by default, production only when a
+project asks — see [the chart README](charts/kitchen/README.md#scale-to-zero).
+
 Reconcilers: Kitchen (shared Gateway, optional cloudflared, telemetry schema,
 the preview gate and its OAuth client), Project (webhook registration,
 namespace, connection validation), Build, Environment. The Helm chart ships the

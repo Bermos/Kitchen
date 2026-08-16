@@ -995,6 +995,51 @@ spec:
                         type: string
                     type: object
                 type: object
+              scaleToZero:
+                default: {}
+                description: |-
+                  ScaleToZeroSpec is the platform switch for idling environments down to no
+                  pods at all. It is off by default: it needs KEDA and its HTTP add-on running
+                  in the cluster, and those are the one platform dependency Kitchen's chart
+                  cannot install for you.
+
+                  With it on, each Project decides for itself which of its environments idle,
+                  through its own `spec.scaleToZero`.
+                properties:
+                  enabled:
+                    default: false
+                    type: boolean
+                  interceptor:
+                    default: {}
+                    description: |-
+                      InterceptorSpec locates the KEDA HTTP add-on's interceptor proxy: the
+                      component that sits between the shared Gateway and an idling application,
+                      holds the first request while KEDA scales the workload back up, and forwards
+                      it once there is a pod to forward it to.
+
+                      The add-on is a Helm release of its own rather than part of Kitchen's — it
+                      cannot be a sub-chart of anything, see the chart's Chart.yaml — so this is
+                      how the operator is told where it went.
+                    properties:
+                      namespace:
+                        default: keda
+                        description: Namespace the interceptor runs in.
+                        type: string
+                      port:
+                        default: 8080
+                        description: Port the proxy accepts live traffic on.
+                        format: int32
+                        maximum: 65535
+                        minimum: 1
+                        type: integer
+                      service:
+                        default: keda-add-ons-http-interceptor-proxy
+                        description: |-
+                          Service name of the interceptor's proxy. The add-on names it after its
+                          own chart rather than after the release, so this is stable.
+                        type: string
+                    type: object
+                type: object
               tls:
                 description: |-
                   TLSSpec configures platform-wide TLS defaults. acme mode cannot be
@@ -1647,6 +1692,40 @@ spec:
                           More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                         type: object
                     type: object
+                type: object
+              scaleToZero:
+                default: {}
+                description: |-
+                  Which of this Project's environments may idle down to no pods at all,
+                  cold-starting on the next request. It does nothing unless the platform
+                  runs the machinery for it — `spec.scaleToZero.enabled` on the Kitchen
+                  object — and every environment then stays on plain Deployment routing.
+                properties:
+                  idleAfter:
+                    default: 5m
+                    description: |-
+                      IdleAfter is how long an environment goes without a request before it
+                      is scaled to zero. Shorter saves more and cold-starts more often.
+                    type: string
+                  maxReplicas:
+                    default: 5
+                    description: |-
+                      MaxReplicas caps how far request pressure may scale an idling
+                      environment up. It is raised to the environment's own replica count
+                      where that is higher, so idling can never shrink an environment.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  mode:
+                    default: previews
+                    description: |-
+                      ScaleToZeroMode says which of a Project's environments may idle down to no
+                      pods at all.
+                    enum:
+                    - previews
+                    - always
+                    - never
+                    type: string
                 type: object
               source:
                 description: GitSourceSpec links a Project to a repository via a gitSource

@@ -47,7 +47,7 @@ These aren't nice-to-haves — the first three are the product.
 
 7. **Rollbacks & revision history.** Deployments as immutable revisions (image digest + config snapshot) → instant rollback comes for free. Vercel-table-stakes.
 
-8. **Runtime scaling.** Decide the story: plain Deployments + HPA (simple) vs. scale-to-zero via Knative/KEDA (serverless feel, big dependency). See open decisions.
+8. **Runtime scaling.** ✅ Decided and shipped: plain Deployments by default, with optional scale-to-zero through KEDA's HTTP add-on rather than Knative — replica counts on the Deployments the operator already creates, not a second serving model. An idle preview drops to no pods and cold-starts on the next request; production stays on its replica count unless a Project opts in. Scaling *up* under load beyond that ceiling is still to come: an HTTP-driven autoscaler exists for the environments that idle, and nothing yet scales one that never does.
 
 9. **Operator state.** ✅ Decided: CRDs (etcd) are the source of truth for all config and management state — no extra database for the control plane. ClickHouse stays analytics-only. The things that genuinely don't fit CRDs — accounts, sessions, OAuth clients — belong to the identity provider and live in its Postgres, not in the operator.
 
@@ -72,12 +72,26 @@ These aren't nice-to-haves — the first three are the product.
 - **ClickHouse gets everything analytical**: logs, metrics, traces, build logs, mesh traffic data — one store, one query surface for the UI.
 - **Mesh purpose: traffic observability only.** No mTLS or policy-enforcement goals. The mesh exists so you can see per-service traffic (rates, errors, latency, who-talks-to-whom) for troubleshooting, without touching app code — and export it all to ClickHouse.
 - **Mesh implementation: Cilium.** Assumed to already be the cluster's CNI (e.g. a Talos cluster configured with Cilium) — Kitchen does not install it, and handling its absence is out of scope for now. Hubble provides the traffic observability (eBPF flow logs, service map, L7 visibility), exported into ClickHouse.
-- **Scale-to-zero via KEDA** (when it lands): KEDA's HTTP add-on parks an interceptor
-  in front of idle apps, scales them to zero, and cold-starts on the next request —
-  which makes open preview environments nearly free. Chosen over Knative because it
-  only manages replica counts on our existing Deployments instead of taking over the
-  serving model. Touches the Environment reconciler's routing (interceptor sits
-  between Gateway and Service).
+- **Scale-to-zero via KEDA.** ✅ Shipped, off by default. KEDA's HTTP add-on parks an
+  interceptor in front of idle apps, scales them to zero, and cold-starts on the next
+  request — which makes open preview environments nearly free. Chosen over Knative
+  because it only manages replica counts on our existing Deployments instead of taking
+  over the serving model. The operator writes one `HTTPScaledObject` per idling
+  environment and addresses the application through the interceptor instead of directly
+  — as the Gateway's backend where the environment is open, as the preview gate's
+  upstream where it is protected. Which environments idle is each Project's own
+  `spec.scaleToZero`: previews by default, production only when asked. Turning it on
+  costs the first visitor a cold start, which is why the interceptor's readiness
+  timeout is a documented value rather than a hidden one.
+  - **KEDA is the one platform dependency Kitchen does not bundle**, against the usual
+    rule. The HTTP add-on ships a `ScaledObject` of KEDA's own CRD, and Helm builds and
+    validates a release's entire manifest before applying any of it, so a chart
+    containing both never installs — nor does a `pre-install` hook (built after the main
+    manifest) or a `crds/` directory (never applied on upgrade), and a bundled copy
+    collides with a cluster that already runs KEDA, since Helm will not adopt CRDs
+    another release owns. Two releases, as upstream ships them. `scaleToZero.enabled`
+    carries the interceptor's address rather than installing it, and an environment on a
+    platform that lacks it stays on plain Deployment routing and says so.
 - **Preview protection is an in-path proxy, not a Gateway filter.** Gateway API has no external-authorization filter and Cilium's implementation exposes none of Envoy's `ext_authz`; injecting one through `CiliumEnvoyConfig` would tie routing to Cilium. Instead a protected preview's `HTTPRoute` simply points at the gate, with the application's address in a header the Gateway sets — something every Gateway API implementation can do. See [AUTH.md](AUTH.md).
 - **No separate ingress controller.** The operator programs **Gateway API** resources (`Gateway`/`HTTPRoute`), and Cilium's built-in Gateway API implementation (embedded Envoy) serves them. Gateway API is the abstraction, so another implementation (Envoy Gateway, Istio) could slot in later without touching the operator's routing logic. When cloudflared is enabled, the tunnel points at the Gateway service — cloudflared is the edge, but all traffic still flows through one routing layer with uniform telemetry.
   - Documented cluster prerequisites this implies: Cilium with `gatewayAPI.enabled=true` + kube-proxy replacement, Gateway API CRDs at the version Cilium pins, a default StorageClass (ClickHouse and the auth Postgres take the cluster default and stay `Pending` without one), and a LoadBalancer address for the Gateway.
@@ -111,4 +125,4 @@ have to rediscover it:
 
 - **MVP**: operator + CRDs, Helm chart, git webhook → BuildKit build → registry → Deployment + Gateway route, generated URLs on a wildcard domain, build/runtime logs in ClickHouse, minimal Vue UI, local-admin auth.
 - **v1**: preview deployments, custom domains + cert-manager/cloudflared, Infisical integration, Neon + registry plugins as a proper plugin interface, metrics dashboards, rollbacks, OIDC + teams.
-- **Later**: CLI, scale-to-zero, more plugins, notifications, cron jobs.
+- **Later**: CLI, more plugins, notifications, cron jobs.

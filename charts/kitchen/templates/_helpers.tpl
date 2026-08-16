@@ -513,4 +513,16 @@ does not run in.
 {{- fail "previewGate.replicas must be at least 1: protected previews route through the gate, so none running means none reachable." }}
 {{- end }}
 {{- end }}
+{{- if .Values.scaleToZero.enabled }}
+{{- if not .Values.scaleToZero.interceptor.service }}
+{{- fail "scaleToZero.interceptor.service is required when scaleToZero.enabled: an idling environment has no pods of its own, so the operator has to route its URL at the interceptor that starts them. Leave it at the default unless the HTTP add-on was installed under another name." }}
+{{- end }}
+{{- if not .Values.scaleToZero.interceptor.namespace }}
+{{- fail "scaleToZero.interceptor.namespace is required when scaleToZero.enabled: the KEDA HTTP add-on is its own Helm release, so the operator has to be told which namespace it went into." }}
+{{- end }}
+{{- $port := int .Values.scaleToZero.interceptor.port }}
+{{- if or (lt $port 1) (gt $port 65535) }}
+{{- fail (printf "scaleToZero.interceptor.port must be a TCP port between 1 and 65535 (got %d)" $port) }}
+{{- end }}
+{{- end }}
 {{- end }}

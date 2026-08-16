@@ -619,6 +619,36 @@ previewGate:
   # to the identity provider.
   sessionTTL: 8h
 
+# Scale-to-zero: an environment nobody is using drops to no pods at all, and
+# the next request to its URL starts it again. It is what makes a dozen open
+# pull requests nearly free — a preview costs a URL and a Deployment record
+# until someone opens it.
+#
+# This is the one platform feature with a prerequisite the chart does not
+# install: KEDA and its HTTP add-on go in as their own Helm releases, which is
+# how upstream ships them and the only way Helm can install them at all (see
+# the chart README, and the reasoning in Chart.yaml). Turning this on without
+# them costs nothing — every environment stays on plain Deployment routing and
+# says so in its ScaleToZero condition.
+#
+# Which environments actually idle is each Project's own decision, through
+# `spec.scaleToZero` — previews by default, production only when asked.
+scaleToZero:
+  # -- Idle unused environments down to zero pods. Requires KEDA and the KEDA
+  # HTTP add-on in the cluster; see the chart README for the two commands.
+  enabled: false
+  # The add-on's interceptor: what an idling environment's URL points at, since
+  # it has no pods of its own. The defaults describe the add-on installed the
+  # way the README describes; change them to match wherever yours runs.
+  interceptor:
+    # -- Name of the interceptor's proxy Service. The add-on names it after its
+    # own chart rather than after the release, so this is a constant.
+    service: keda-add-ons-http-interceptor-proxy
+    # -- Namespace the interceptor runs in.
+    namespace: keda
+    # -- Port the proxy accepts live traffic on.
+    port: 8080
+
 healthProbe:
   # -- Port the /healthz and /readyz endpoints bind to.
   port: 8081

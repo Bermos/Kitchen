@@ -25,6 +25,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/utils/ptr"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
@@ -234,6 +235,52 @@ func TestObjectsCarryTheMaterializedManifests(t *testing.T) {
 	}
 	if view.Objects[2].Kind != "HTTPRoute" || !view.Objects[2].Present {
 		t.Fatalf("want the HTTPRoute present, got %+v", view.Objects[2])
+	}
+}
+
+func TestObjectsCarryTheScaledObjectOnlyWhereSomethingIdles(t *testing.T) {
+	// The scaled object is listed off the Environment's own condition. On a
+	// platform without the HTTP add-on that API is not served at all, and an
+	// entry for it on every environment would be an error line for an object
+	// none of them were ever meant to have.
+	h := newHarness(t, nil, append(fixtures(), workloadFixtures()...)...)
+	view := decode[objectsView](t, h.do(t, http.MethodGet,
+		"/api/v1/environments/shop-production/objects", ""))
+	for _, object := range view.Objects {
+		if object.Kind == "HTTPScaledObject" {
+			t.Fatalf("want no scaled object on a platform that idles nothing, got %+v", view.Objects)
+		}
+	}
+
+	gvk := controller.HTTPScaledObjectGVK()
+	scaled := &unstructured.Unstructured{}
+	scaled.SetGroupVersionKind(gvk)
+	scaled.SetName(testEnvironment)
+	scaled.SetNamespace(appNamespace)
+
+	objects := append(fixtures(), workloadFixtures()...)
+	for _, object := range objects {
+		env, ok := object.(*kitchenv1alpha1.Environment)
+		if !ok || env.Name != testEnvironment {
+			continue
+		}
+		env.Status.Conditions = []metav1.Condition{{
+			Type:               controller.ConditionScaleToZero,
+			Status:             metav1.ConditionTrue,
+			Reason:             "IdlesToZero",
+			LastTransitionTime: metav1.Now(),
+		}}
+	}
+	h = newHarness(t, nil, append(objects, scaled)...)
+
+	view = decode[objectsView](t, h.do(t, http.MethodGet,
+		"/api/v1/environments/shop-production/objects", ""))
+	if len(view.Objects) != 4 {
+		t.Fatalf("want the scaled object listed as well, got %+v", view.Objects)
+	}
+	last := view.Objects[3]
+	if last.Kind != gvk.Kind || last.APIVersion != gvk.GroupVersion().String() || !last.Present {
+		t.Fatalf("want the scaled object present and named, got %+v", last)
 	}
 }
 

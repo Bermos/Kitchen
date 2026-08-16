@@ -38,6 +38,11 @@ cert-manager is **not** in that list either: the chart ships it as a sub-chart
 installed into. Set `cert-manager.enabled=false` for a cluster that already
 runs one.
 
+One optional feature does add a prerequisite: **KEDA and its HTTP add-on**, if
+you want `scaleToZero.enabled`. They cannot be sub-charts of anything — see
+[Scale to zero](#scale-to-zero) — so they are two `helm install` commands of
+their own. Without them the feature simply stays off.
+
 In `acme` mode the **operator**, not the chart, creates the `ClusterIssuer` and
 the wildcard `Certificate` from `kitchen.tls.acme`. That split is deliberate:
 cert-manager's webhook admits both objects, so on a first install neither can
@@ -447,6 +452,146 @@ rotates it, which signs every preview visitor out; deleting the client secret
 makes the operator register a new client on the next reconcile (the old one is
 then orphaned at the identity provider).
 
+## Scale to zero
+
+An environment nobody is using can drop to no pods at all, and the next request
+to its URL starts it again. That is what makes a dozen open pull requests
+nearly free: a preview costs a URL and a Deployment record until someone opens
+it.
+
+It is off by default, and it is the one platform feature with a prerequisite
+this chart does not install: [KEDA](https://keda.sh) and its
+[HTTP add-on](https://github.com/kedacore/http-add-on) go in as their own Helm
+releases, which is how upstream ships them and — see
+[why they are not sub-charts](#why-keda-is-not-a-sub-chart) — the only way Helm
+can install them at all.
+
+```sh
+helm repo add kedacore https://kedacore.github.io/charts
+helm install keda kedacore/keda --namespace keda --create-namespace
+helm install keda-add-ons-http kedacore/keda-add-ons-http --namespace keda \
+  --set interceptor.readinessTimeout=90s
+```
+
+Then point Kitchen at them — the defaults already match the commands above:
+
+```sh
+--set scaleToZero.enabled=true
+--set scaleToZero.interceptor.namespace=keda
+```
+
+Turning the switch on without them costs nothing: every environment stays on
+plain Deployment routing and says so in its `ScaleToZero` condition. The
+operator never routes an application through an interceptor it cannot find.
+
+**On an installation that already exists, `--set scaleToZero.enabled=true`
+alone changes nothing.** The switch lives on the Kitchen singleton, which is a
+post-install hook: `helm upgrade` deliberately leaves it alone so that edits
+made in the UI survive (see [Values](#values), `kitchen.applyOnUpgrade`). Add
+`--set kitchen.applyOnUpgrade=true` to let the chart own it, or turn it on
+where it lives:
+
+```sh
+kubectl patch kitchen default --type=merge \
+  -p '{"spec":{"scaleToZero":{"enabled":true}}}'
+```
+
+Either way the operator re-reconciles every Environment, because it watches the
+singleton — the switch reaches environments that have no other reason to change.
+
+Which environments actually idle is then each project's own decision:
+
+```yaml
+spec:
+  scaleToZero:
+    mode: previews     # previews (default) | always | never
+    idleAfter: 5m      # quiet for this long, then no pods
+    maxReplicas: 5     # ceiling once traffic arrives
+```
+
+`previews` idles preview environments and leaves production running — the
+default, because an open pull request costs nothing while nobody is looking at
+it and real users should never pay a cold start. `always` idles production too;
+it is deliberately an opt-in, and until it is given a production environment
+never drops below `spec.runtime.replicas`. A `maxReplicas` below the replica
+count the environment already runs is raised to it, so idling can never shrink
+an environment.
+
+### Why KEDA is not a sub-chart
+
+Kitchen bundles cert-manager rather than asking for it, so the obvious thing
+would be to bundle these too. It cannot be done, and the reason is worth
+writing down because it looks like a packaging preference and is not:
+
+The HTTP add-on ships a `keda.sh/v1alpha1` **ScaledObject** of its own — it
+autoscales its own interceptor fleet — while that CRD comes from the KEDA
+chart. Helm builds and validates a release's entire manifest against the API
+server *before* applying any of it, so a custom resource whose CRD arrives in
+the same release can never resolve:
+
+```
+Error: INSTALLATION FAILED: unable to build kubernetes objects from release
+manifest: resource mapping not found for name: "keda-add-ons-http-interceptor"
+... no matches for kind "ScaledObject" in version "keda.sh/v1alpha1"
+```
+
+Neither escape hatch covers both paths. A `pre-install` hook is built *after*
+the main manifest, so it fails identically. A `crds/` directory works on
+install but is never applied on upgrade — the same reason Kitchen ships its own
+CRDs as templates — so a KEDA version bump would leave stale schemas behind,
+and keeping a second copy as templates makes Helm refuse the install for
+ownership metadata it cannot template. A bundled copy also breaks the cluster
+that already runs KEDA, since Helm will not adopt CRDs another release owns.
+
+Two releases, as upstream documents them, has none of these problems: KEDA
+upgrades its own CRDs through its own chart, and Kitchen's chart carries only
+the address.
+
+### What the first request pays
+
+An idling environment's URL does not point at the application any more: it
+points at the add-on's **interceptor**, which holds the request, asks KEDA to
+scale the workload up, and forwards it once a pod answers. That wait is the
+cold start, and it is real — a few seconds where the image is already on the
+node, considerably longer where it has to be pulled first. The interceptor
+gives up after its `interceptor.readinessTimeout`, a value on the *add-on's*
+release, so a genuinely broken environment fails visibly instead of hanging:
+
+```sh
+helm upgrade keda-add-ons-http kedacore/keda-add-ons-http --namespace keda \
+  --set interceptor.readinessTimeout=3m
+```
+
+Protected previews compose with it: the route still goes to the forward-auth
+gate, and it is the gate that is pointed at the interceptor. A visitor signs in
+first and cold-starts the application second.
+
+### Watching it
+
+The Environment says what it decided and why:
+
+```sh
+kubectl get environment shop-pr-42 \
+  -o jsonpath='{.status.conditions[?(@.type=="ScaleToZero")].message}'
+kubectl -n kitchen-shop get httpscaledobject
+```
+
+Nothing here is allowed to take an application off the air. If the
+`HTTPScaledObject` API is not served — the switch turned on without the
+add-on, or the add-on still starting — the environment falls back to plain
+Deployment routing with its own replicas and says so in that condition, rather
+than parking behind an interceptor with nothing to wake it.
+
+### On a cluster that already runs KEDA
+
+Nothing to install — point `scaleToZero.interceptor.*` at the add-on you have.
+Kitchen never touches KEDA's own objects, so the two installations stay
+independent.
+
+Turning `scaleToZero.enabled` back off returns every environment to plain
+Deployment routing on the next reconcile and deletes the scaled objects it
+created. KEDA and the add-on are yours to uninstall separately, whenever.
+
 ## Platform health
 
 The operator surveys the platform's workloads on every reconcile and records
@@ -757,6 +902,10 @@ kubectl delete namespace kitchen-system
 | `previewGate.host` | `""` | Where logins come back to. Defaults to `previews.<baseDomain>`. |
 | `previewGate.replicas` | `2` | The gate is in the request path of every protected preview. |
 | `previewGate.sessionTTL` | `8h` | How long a visitor stays signed in to a preview. |
+| `scaleToZero.enabled` | `false` | Idle environments down to no pods. Needs KEDA and the HTTP add-on in the cluster, installed separately — see [Scale to zero](#scale-to-zero). |
+| `scaleToZero.interceptor.service` | `keda-add-ons-http-interceptor-proxy` | Interceptor Service idling environments are routed through. The add-on names it after its own chart, so this is a constant. |
+| `scaleToZero.interceptor.namespace` | `keda` | Namespace the HTTP add-on was installed into. |
+| `scaleToZero.interceptor.port` | `8080` | Port the interceptor accepts traffic on. |
 | `api.port` | `8092` | Container port for the REST API. |
 | `api.service.type` / `.port` / `.annotations` | `ClusterIP` / `80` / `{}` | |
 | `api.route.enabled` | `true` | Publish the API on the shared Gateway under `/api/`. |
