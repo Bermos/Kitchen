@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -169,7 +170,15 @@ func (r *ConnectionReconciler) probe(
 		setCond(condCredentialsValid, metav1.ConditionFalse, reasonCredentialsRejected, result.Message)
 		return connectionRecheckInterval
 	default:
-		setCond(condCredentialsValid, metav1.ConditionTrue, "Validated", result.Message)
+		// A credential the provider accepted can still be short of a
+		// permission the platform wants. That is not a failed condition — the
+		// platform works — so it rides along in the message rather than
+		// turning the connection red.
+		message := result.Message
+		if len(result.Warnings) > 0 {
+			message += " — " + strings.Join(result.Warnings, "; ")
+		}
+		setCond(condCredentialsValid, metav1.ConditionTrue, "Validated", message)
 		return connectionRecheckInterval
 	}
 }

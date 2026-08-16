@@ -35,12 +35,18 @@ export function instanceOrigin(apiUrl: string | undefined): string | undefined {
 // A fine-grained GitHub token page takes its permissions as query parameters
 // (`contents=read`, `repository_hooks=write`), which is the whole reason the
 // link is worth offering: it opens on a form that is already correct.
+//
+// It asks for more than the platform uses today. Registering the webhook is
+// the live requirement; commit statuses, deployments and pull-request
+// comments are what deploy reporting (issue #71) will post, and asking for
+// them now is the difference between that landing quietly and every
+// installation having to mint its tokens again.
 const githubTokenLink =
   "https://github.com/settings/personal-access-tokens/new" +
   "?name=Kitchen" +
   "&description=" +
   encodeURIComponent("Kitchen deploys from the repositories this token can reach") +
-  "&contents=read&repository_hooks=write";
+  "&contents=read&repository_hooks=write&statuses=write&deployments=write&pull_requests=write";
 
 export function providerGuidance(provider: string, apiUrl?: string): ProviderGuidance | undefined {
   const origin = instanceOrigin(apiUrl);
@@ -49,10 +55,11 @@ export function providerGuidance(provider: string, apiUrl?: string): ProviderGui
       return {
         tokenLabel: "Personal access token",
         purpose:
-          "Kitchen registers the repository's push and pull-request webhook with this token, and reads the repository to build it.",
+          "Kitchen registers the repository's push and pull-request webhook with this token, reads the repository to build it, and reports each deploy back on the commit and the pull request.",
         permissions: [
-          "Fine-grained: Contents → Read-only and Webhooks → Read and write, on the repositories you deploy.",
-          "Classic: the repo scope, which already covers webhooks — or admin:repo_hook alone for public repositories.",
+          "Fine-grained: Contents → Read-only, Webhooks → Read and write, and Commit statuses, Deployments and Pull requests → Read and write, on the repositories you deploy.",
+          "Classic: the repo scope covers all of it — public_repo is enough when every repository is public.",
+          "Only the webhook permission is used today; the rest is deploy reporting, so a token made now keeps working when it lands.",
         ],
         // A self-hosted instance gets its own token page; the prefilled
         // parameters are a github.com feature, so an Enterprise link points at

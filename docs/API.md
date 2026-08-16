@@ -307,10 +307,14 @@ is what builds authenticate against:
 `config` is the provider's own configuration and passes through as given — a
 self-hosted GitHub names its API endpoint as `{"apiUrl": "https://github.internal/api/v3"}`.
 
-A `github` token registers the repository's webhook and reads the repository,
-so it needs **Contents: read-only** and **Webhooks: read and write** as a
-fine-grained token, or the `repo` scope — which already covers webhooks — as a
-classic one; `admin:repo_hook` alone is enough for a public repository. A
+A `github` token registers the repository's webhook, reads the repository, and
+— once deploy reporting lands ([#71](https://github.com/Bermos/Kitchen/issues/71))
+— posts the commit status, the deployment and the pull-request comment. As a
+fine-grained token that is **Contents: read-only**, **Webhooks: read and
+write**, and **Commit statuses**, **Deployments** and **Pull requests: read and
+write**; as a classic one the `repo` scope covers all of it, or `public_repo`
+where every repository is public. Only the webhook permission is exercised
+today; the rest is asked for now so a token does not have to be minted twice. A
 `neon` credential is an API key that can create projects.
 
 `POST /connections/test` runs that credential past the provider **without
@@ -336,6 +340,22 @@ implement yet), and one that refused the credential are three different
 answers. `message` is the provider's own words and never contains the
 credential. A malformed request — a provider nothing knows, a token provider
 given a username — is a `400`.
+
+A credential the provider accepted can still be short of a permission, which
+comes back as `warnings` rather than as a failure, and rides along in the
+`CredentialsValid` condition's message so an existing connection reports it
+too:
+
+```json
+{"reachable": true, "credentialChecked": true, "credentialValid": true,
+ "message": "authenticated as octocat (token scopes: admin:repo_hook)",
+ "warnings": ["this token cannot post commit statuses on builds: add the repo:status scope"]}
+```
+
+That is read from GitHub's `X-OAuth-Scopes` header, which only a classic token
+sends: a fine-grained token reports no permissions and GitHub offers no way to
+ask, so it is never warned about — the form's guidance is what gets those
+right.
 
 `PATCH /connections/{name}` rotates the credential (`credential`), replaces
 the config (`config`), or both; fields left out keep what is stored. The

@@ -292,6 +292,10 @@ type connectionTestView struct {
 	CredentialChecked bool   `json:"credentialChecked"`
 	CredentialValid   bool   `json:"credentialValid"`
 	Message           string `json:"message"`
+	// Warnings are what an accepted credential still cannot do — a GitHub
+	// token that registers webhooks but could not post a commit status. The
+	// connection works; something the platform wants would not.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // testConnection runs the credential probe the ConnectionReconciler runs, and
@@ -418,6 +422,7 @@ func (s *Server) testConnection(w http.ResponseWriter, req *http.Request) {
 		CredentialChecked: result.CredentialChecked,
 		CredentialValid:   result.CredentialValid,
 		Message:           result.Message,
+		Warnings:          result.Warnings,
 	})
 }
 

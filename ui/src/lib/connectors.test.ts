@@ -6,12 +6,23 @@ describe("connectors", () => {
     const guidance = providerGuidance("github");
     expect(guidance?.purpose).toContain("webhook");
     // Both token flavours, named the way GitHub's own form names them.
-    expect(guidance?.permissions.join(" ")).toContain("Webhooks");
-    expect(guidance?.permissions.join(" ")).toContain("admin:repo_hook");
+    const permissions = guidance?.permissions.join(" ") ?? "";
+    expect(permissions).toContain("Webhooks");
+    expect(permissions).toContain("repo scope");
     // The link opens a form that is already correct.
     expect(guidance?.link?.href).toContain("settings/personal-access-tokens/new");
     expect(guidance?.link?.href).toContain("repository_hooks=write");
     expect(guidance?.link?.href).toContain("contents=read");
+  });
+
+  it("asks for the deploy-reporting permissions before deploy reporting exists", () => {
+    // A token minted today should not have to be minted again when the commit
+    // status, the deployment and the pull-request comment start being posted.
+    const guidance = providerGuidance("github");
+    for (const permission of ["statuses=write", "deployments=write", "pull_requests=write"]) {
+      expect(guidance?.link?.href).toContain(permission);
+    }
+    expect(guidance?.permissions.join(" ")).toContain("Only the webhook permission is used today");
   });
 
   it("points a self-hosted GitHub at its own token page", () => {

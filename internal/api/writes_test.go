@@ -424,7 +424,7 @@ func TestPatchingAConnectionWithNothingToChange(t *testing.T) {
 
 // fakeGitHub answers /user the way GitHub does: the token decides, and a good
 // one comes back with a login and its scopes.
-func fakeGitHub(t *testing.T, goodToken string) *httptest.Server {
+func fakeGitHub(t *testing.T, goodToken, scopes string) *httptest.Server {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		if req.URL.Path != "/user" {
@@ -436,7 +436,7 @@ func fakeGitHub(t *testing.T, goodToken string) *httptest.Server {
 			_, _ = w.Write([]byte(`{"message": "Bad credentials"}`))
 			return
 		}
-		w.Header().Set("X-OAuth-Scopes", "admin:repo_hook, repo")
+		w.Header().Set("X-OAuth-Scopes", scopes)
 		_, _ = w.Write([]byte(`{"login": "octocat"}`))
 	}))
 	t.Cleanup(server.Close)
@@ -458,7 +458,7 @@ func testConnection(t *testing.T, h *harness, body string) connectionTestView {
 
 func TestTestingACredentialBeforeItIsStored(t *testing.T) {
 	h := newHarness(t, nil, fixtures()...)
-	github := fakeGitHub(t, "ghp_good")
+	github := fakeGitHub(t, "ghp_good", "admin:repo_hook, repo")
 
 	view := testConnection(t, h, `{"name": "hub", "provider": "github",
 		"config": {"apiUrl": "`+github.URL+`"}, "credential": {"token": "ghp_good"}}`)
@@ -482,9 +482,24 @@ func TestTestingACredentialBeforeItIsStored(t *testing.T) {
 	}
 }
 
+func TestTestingACredentialThatIsShortAPermission(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+	// Webhooks and nothing else: valid, and not enough for deploy reporting.
+	github := fakeGitHub(t, "ghp_good", "admin:repo_hook")
+
+	view := testConnection(t, h, `{"provider": "github",
+		"config": {"apiUrl": "`+github.URL+`"}, "credential": {"token": "ghp_good"}}`)
+	if !view.CredentialValid {
+		t.Fatalf("a narrow token is still a working token: %+v", view)
+	}
+	if len(view.Warnings) == 0 || !strings.Contains(strings.Join(view.Warnings, " "), "repo:status") {
+		t.Fatalf("the verdict does not say what the token cannot do: %+v", view)
+	}
+}
+
 func TestTestingACredentialTheProviderRejects(t *testing.T) {
 	h := newHarness(t, nil, fixtures()...)
-	github := fakeGitHub(t, "ghp_good")
+	github := fakeGitHub(t, "ghp_good", "admin:repo_hook, repo")
 
 	view := testConnection(t, h, `{"provider": "github",
 		"config": {"apiUrl": "`+github.URL+`"}, "credential": {"token": "ghp_stale"}}`)
@@ -510,7 +525,7 @@ func TestTestingAProviderThatCannotBeReached(t *testing.T) {
 }
 
 func TestTestingAStoredCredential(t *testing.T) {
-	github := fakeGitHub(t, "ghp_stored")
+	github := fakeGitHub(t, "ghp_stored", "admin:repo_hook, repo")
 	connection := &kitchenv1alpha1.Connection{
 		ObjectMeta: metav1.ObjectMeta{Name: "hub", Namespace: testNamespace},
 		Spec: kitchenv1alpha1.ConnectionSpec{
