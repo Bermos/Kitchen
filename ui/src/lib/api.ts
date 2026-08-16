@@ -428,6 +428,37 @@ export interface LogPattern {
   lastSeen: string;
 }
 
+/** A question about the logs that was worth keeping (GET /logs/saved). It is
+ * the observability view's own URL state, named — so it can be found by
+ * someone who was never sent the link. */
+export interface SavedQuery {
+  name: string;
+  title: string;
+  description?: string;
+  query?: string;
+  where?: string;
+  /** The window it is asked over, relative to whenever it is opened. 0 means
+   * everything retained. */
+  rangeMinutes: number;
+  limit?: number;
+  view?: "lines" | "patterns";
+  includeCluster?: boolean;
+  savedBy?: string;
+  createdAt: string;
+}
+
+/** What POST /logs/saved accepts. */
+export interface NewSavedQuery {
+  title: string;
+  description?: string;
+  query?: string;
+  where?: string;
+  rangeMinutes?: number;
+  limit?: number;
+  view?: "lines" | "patterns";
+  includeCluster?: boolean;
+}
+
 /** One bucket of an environment's resource history. CPU and memory are summed
  * across the environment's containers; `replicas` is how many distinct pods
  * reported in the bucket, which is the only way to see one idle to zero and
@@ -793,6 +824,12 @@ export const api = {
     if (limit) params.set("limit", String(limit));
     return request<{ items: LogPattern[] }>("GET", `/logs/patterns?${params}`).then((b) => b.items);
   },
+
+  // A question worth keeping. The URL already makes any selection a link;
+  // this is what makes one findable by whoever did not get the link.
+  savedQueries: list<SavedQuery>("/logs/saved"),
+  saveQuery: (query: NewSavedQuery) => request<SavedQuery>("POST", "/logs/saved", query),
+  deleteSavedQuery: (name: string) => request<SavedQuery>("DELETE", `/logs/saved/${encodeURIComponent(name)}`),
 
   // Live tails of the same log endpoints, as Server-Sent Events.
   streamBuildLogs: (name: string, query: LogQuery, onLine: (line: LogLine) => void, signal: AbortSignal) =>

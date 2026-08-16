@@ -9,6 +9,7 @@ import {
   type LogLine,
   type LogPattern,
   type LogSelection,
+  type SavedQuery,
 } from "../lib/api";
 import { compactCount, formatBytes } from "../lib/format";
 import { clausesOf, hasClause, isEditable, removeClause, toggleClause, type Clause } from "../lib/logquery";
@@ -30,6 +31,7 @@ import StatusDot from "../components/StatusDot.vue";
 
 const route = useRoute();
 const router = useRouter();
+const toast = useToast();
 
 type Mode = "query" | "clickhouse";
 const mode = ref<Mode>(route.query.where ? "clickhouse" : "query");
@@ -295,6 +297,103 @@ function isActive(field: string, value: string): boolean {
   return hasClause(query.value, { field, value, negated: false });
 }
 
+// Saved queries: this page's own state, named.
+//
+// The URL already carries the whole selection, so any question here is a link.
+// A link is not findable, though — it lives in whoever's history, and the
+// person who needs it next is usually not that person. A saved query is the
+// same selection with a name on it, shared by everyone on the platform.
+const saved = useAsync(() => api.savedQueries());
+const naming = ref(false);
+const savedTitle = ref("");
+const savedDescription = ref("");
+const savingQuery = ref(false);
+const removing = ref<SavedQuery | null>(null);
+
+/** The window as something worth saving: an absolute range dragged out of the
+ * histogram is kept as the span it covers, because "the spike on Tuesday" is a
+ * screenshot rather than a question, and the retention would delete it out
+ * from under its own name. */
+function savedRange(): number {
+  if (!pinned.value) return rangeMinutes.value;
+  const span = new Date(pinned.value.until).getTime() - new Date(pinned.value.since).getTime();
+  return Math.max(Math.round(span / 60000), 1);
+}
+
+async function saveQuery() {
+  if (!savedTitle.value.trim()) return;
+  savingQuery.value = true;
+  try {
+    await api.saveQuery({
+      title: savedTitle.value.trim(),
+      description: savedDescription.value.trim() || undefined,
+      query: query.value.trim() || undefined,
+      where: mode.value === "clickhouse" ? where.value.trim() || undefined : undefined,
+      rangeMinutes: savedRange(),
+      limit: limit.value,
+      view: tab.value,
+      includeCluster: includeCluster.value,
+    });
+    toast.add({ title: `Saved “${savedTitle.value.trim()}”`, color: "success", icon: "i-lucide-bookmark" });
+    naming.value = false;
+    savedTitle.value = "";
+    savedDescription.value = "";
+    await saved.refresh();
+  } catch (err) {
+    toast.add({
+      title: "The query could not be saved",
+      description: err instanceof Error ? err.message : String(err),
+      color: "error",
+    });
+  } finally {
+    savingQuery.value = false;
+  }
+}
+
+/** Applying one restores every part of the selection, including which tab it
+ * was read in: a query saved because its patterns were the point should open
+ * on them. */
+function applySaved(entry: SavedQuery) {
+  mode.value = entry.where ? "clickhouse" : "query";
+  query.value = entry.query ?? "";
+  where.value = entry.where ?? "";
+  limit.value = entry.limit || 200;
+  rangeMinutes.value = entry.rangeMinutes;
+  pinned.value = null;
+  tab.value = entry.view === "patterns" ? "patterns" : "lines";
+  includeCluster.value = entry.includeCluster ?? false;
+  void run();
+}
+
+/** Whether what is on screen is that saved query, so the strip can say which
+ * one is being read. */
+function isCurrent(entry: SavedQuery): boolean {
+  return (
+    (entry.query ?? "") === query.value.trim() &&
+    (entry.where ?? "") === (mode.value === "clickhouse" ? where.value.trim() : "") &&
+    !pinned.value &&
+    entry.rangeMinutes === rangeMinutes.value
+  );
+}
+
+async function removeSaved() {
+  const entry = removing.value;
+  if (!entry) return;
+  try {
+    await api.deleteSavedQuery(entry.name);
+    toast.add({ title: `Removed “${entry.title}”`, color: "success", icon: "i-lucide-trash-2" });
+    await saved.refresh();
+  } catch (err) {
+    toast.add({
+      title: "The saved query could not be removed",
+      description: err instanceof Error ? err.message : String(err),
+      color: "error",
+    });
+  } finally {
+    removing.value = null;
+  }
+}
+
 function facetLabel(field: string): string {
   return field.charAt(0).toUpperCase() + field.slice(1);
 }
@@ -417,7 +516,42 @@ const placeholder = computed(() =>
         />
       </div>
       <USelect v-model="limit" :items="limits" size="sm" class="w-24" @update:model-value="run" />
+      <UButton
+        color="neutral"
+        variant="subtle"
+        icon="i-lucide-bookmark"
+        title="Keep this question under a name everyone can find"
+        aria-label="Save this query"
+        @click="naming = true"
+      />
       <UButton icon="i-lucide-play" :loading="loading" @click="run">Run</UButton>
+    </div>
+
+    <!-- The questions someone thought worth keeping. -->
+    <div v-if="saved.data.value?.length" class="flex items-center gap-1.5 flex-wrap -mt-2 text-[11px]">
+      <span class="text-dimmed mr-0.5">Saved:</span>
+      <span
+        v-for="entry in saved.data.value"
+        :key="entry.name"
+        class="inline-flex items-center rounded border"
+        :class="isCurrent(entry) ? 'border-accented bg-elevated' : 'border-default'"
+      >
+        <button
+          class="px-1.5 py-0.5 text-toned hover:text-highlighted"
+          :title="entry.description || entry.query || entry.where || 'Everything in the window'"
+          @click="applySaved(entry)"
+        >
+          {{ entry.title }}
+        </button>
+        <button
+          class="px-1 py-0.5 text-dimmed hover:text-error"
+          :title="`Remove ${entry.title}`"
+          :aria-label="`Remove ${entry.title}`"
+          @click="removing = entry"
+        >
+          ×
+        </button>
+      </span>
     </div>
 
     <!-- What the query is currently narrowed by, and the way back out. -->
@@ -603,5 +737,54 @@ const placeholder = computed(() =>
         <p class="text-dimmed leading-relaxed">Counts are over the whole window, not the returned page.</p>
       </aside>
     </div>
+
+    <UModal
+      :open="naming"
+      title="Save this query"
+      description="The query, the window, the limit and the tab it is read in — kept under a name, for everyone on this platform. The window is saved as a duration, so it follows the clock rather than pinning a moment that retention will delete."
+      @update:open="(open: boolean) => { naming = open; }"
+    >
+      <template #body>
+        <div class="space-y-3">
+          <UFormField label="Name" required>
+            <UInput v-model="savedTitle" placeholder="Checkout 500s" autofocus @keydown.enter="saveQuery" />
+          </UFormField>
+          <UFormField label="What it is for" hint="optional">
+            <UInput v-model="savedDescription" placeholder="Errors from the checkout service, last hour" />
+          </UFormField>
+          <p class="text-xs text-muted font-mono break-all">
+            {{ mode === "clickhouse" ? where.trim() || "1 = 1" : query.trim() || "everything in the window" }}
+          </p>
+        </div>
+      </template>
+      <template #footer>
+        <div class="flex justify-end gap-2 w-full">
+          <UButton color="neutral" variant="subtle" @click="naming = false">Cancel</UButton>
+          <UButton
+            color="primary"
+            icon="i-lucide-bookmark"
+            :loading="savingQuery"
+            :disabled="!savedTitle.trim()"
+            @click="saveQuery"
+          >
+            Save
+          </UButton>
+        </div>
+      </template>
+    </UModal>
+
+    <UModal
+      :open="removing !== null"
+      :title="`Remove “${removing?.title}”?`"
+      description="Only the saved question goes; nothing that was collected is touched."
+      @update:open="(open: boolean) => { if (!open) removing = null; }"
+    >
+      <template #footer>
+        <div class="flex justify-end gap-2 w-full">
+          <UButton color="neutral" variant="subtle" @click="removing = null">Cancel</UButton>
+          <UButton color="error" icon="i-lucide-trash-2" @click="removeSaved">Remove</UButton>
+        </div>
+      </template>
+    </UModal>
   </div>
 </template>
