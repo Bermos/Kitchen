@@ -671,7 +671,12 @@ export const api = {
   logFacets: (selection: LogSelection, fields?: string[]) => {
     const params = selectionParams(selection);
     if (fields?.length) params.set("fields", fields.join(","));
-    return request<{ items: LogFacet[] }>("GET", `/logs/facets?${params}`).then((b) => b.items);
+    // A facet no line in the window holds has no values. An operator running
+    // an older API against this dashboard gets `null` there rather than an
+    // empty list, so it is normalised here and the type stays honest.
+    return request<{ items: LogFacet[] }>("GET", `/logs/facets?${params}`).then((b) =>
+      b.items.map((facet) => ({ ...facet, values: facet.values ?? [] })),
+    );
   },
   logPatterns: (selection: LogSelection, limit?: number) => {
     const params = selectionParams(selection);
