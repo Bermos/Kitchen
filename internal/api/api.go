@@ -132,6 +132,9 @@ type logReader interface {
 	QueryEvents(ctx context.Context, query clickhouse.EventQuery) ([]clickhouse.Event, error)
 	TrafficEdges(ctx context.Context, query clickhouse.TrafficQuery) ([]clickhouse.TrafficEdge, error)
 	MetricsOverview(ctx context.Context, query clickhouse.MetricsQuery) (clickhouse.MetricsOverview, error)
+	ResourceSeries(ctx context.Context, query clickhouse.ResourceSeriesQuery) (clickhouse.ResourceSeries, error)
+	Traces(ctx context.Context, query clickhouse.TraceQuery) ([]clickhouse.Trace, error)
+	Trace(ctx context.Context, traceID string) ([]clickhouse.Span, error)
 }
 
 // Start implements manager.Runnable.
@@ -214,6 +217,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/v1/environments/{name}", s.deleteEnvironment)
 	mux.HandleFunc("GET /api/v1/environments/{name}/logs", s.environmentLogs)
 	mux.HandleFunc("GET /api/v1/environments/{name}/workload", s.environmentWorkload)
+	mux.HandleFunc("GET /api/v1/environments/{name}/metrics", s.environmentMetrics)
 	mux.HandleFunc("GET /api/v1/environments/{name}/objects", s.environmentObjects)
 
 	mux.HandleFunc("GET /api/v1/logs", s.queryLogs)
@@ -224,6 +228,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/events", s.listEvents)
 	mux.HandleFunc("GET /api/v1/metrics/overview", s.metricsOverview)
 	mux.HandleFunc("GET /api/v1/traffic", s.traffic)
+
+	mux.HandleFunc("GET /api/v1/traces", s.listTraces)
+	mux.HandleFunc("GET /api/v1/traces/{traceId}", s.getTrace)
 
 	mux.HandleFunc("GET /api/v1/status", s.getStatus)
 
@@ -389,6 +396,20 @@ func intParam(req *http.Request, name string, fallback int) (int, error) {
 	value, err := strconv.Atoi(raw)
 	if err != nil || value < 1 {
 		return 0, fmt.Errorf("%s must be a positive integer (got %q)", name, raw)
+	}
+	return value, nil
+}
+
+// floatParam reads a non-negative decimal query parameter. Zero, and the
+// absence of the parameter, both mean "no bound".
+func floatParam(req *http.Request, name string) (float64, error) {
+	raw := strings.TrimSpace(req.URL.Query().Get(name))
+	if raw == "" {
+		return 0, nil
+	}
+	value, err := strconv.ParseFloat(raw, 64)
+	if err != nil || value < 0 {
+		return 0, fmt.Errorf("%s must be a non-negative number (got %q)", name, raw)
 	}
 	return value, nil
 }
