@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Environment, ReleaseHistoryEntry } from "./api";
-import { phaseTone, releaseHistoryLabel, statusDetail, unhealthyConditions } from "./status";
+import { conditionsTone, phaseTone, releaseHistoryLabel, statusDetail, unhealthyConditions } from "./status";
 
 describe("status", () => {
   it("maps every documented phase to a tone", () => {
@@ -24,6 +24,18 @@ describe("status", () => {
     expect(statusDetail(conditions)).toBe("previews need the gate");
     expect(statusDetail([])).toBe("");
     expect(statusDetail(undefined)).toBe("");
+  });
+
+  it("tones a conditions-only object by its worst condition", () => {
+    const condition = (status: string) => ({ type: "CredentialsValid", status, lastTransitionTime: "" });
+    expect(conditionsTone([condition("True")])).toBe("success");
+    // A rejected credential outranks an Unknown one: False wins over Unknown.
+    expect(conditionsTone([condition("Unknown"), condition("False")])).toBe("error");
+    // Unchecked (a provider the platform cannot probe yet) is a caution, not a failure.
+    expect(conditionsTone([condition("True"), condition("Unknown")])).toBe("warning");
+    // No conditions yet — the operator has not looked, which is not a green light.
+    expect(conditionsTone([])).toBe("neutral");
+    expect(conditionsTone(undefined)).toBe("neutral");
   });
 
   it("labels past releases from the environment's history", () => {

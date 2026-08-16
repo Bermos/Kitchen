@@ -53,6 +53,17 @@ export function unhealthyConditions(conditions: Condition[] | undefined): Condit
   return (conditions ?? []).filter((c) => c.status !== "True");
 }
 
+/** The dot for an object summarized by its conditions alone. False is broken
+ * and Unknown is unassessed — a credential the operator could not check is a
+ * different message from one a provider rejected — while no conditions at all
+ * means the operator has not looked yet. */
+export function conditionsTone(conditions: Condition[] | undefined): Tone {
+  if (!conditions?.length) return "neutral";
+  if (conditions.some((c) => c.status === "False")) return "error";
+  if (conditions.some((c) => c.status === "Unknown")) return "warning";
+  return "success";
+}
+
 /** One line of status detail: the message of the worst condition, if any. */
 export function statusDetail(conditions: Condition[] | undefined): string {
   const bad = unhealthyConditions(conditions);

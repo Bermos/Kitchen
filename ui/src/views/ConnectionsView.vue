@@ -3,7 +3,7 @@ import { ref } from "vue";
 import { api, type Connection } from "../lib/api";
 import { timeAgo } from "../lib/format";
 import { operatorMode } from "../lib/mode";
-import { unhealthyConditions } from "../lib/status";
+import { conditionsTone, statusDetail } from "../lib/status";
 import { useAsync } from "../lib/useAsync";
 import ConditionsTable from "../components/ConditionsTable.vue";
 import ConnectionModal from "../components/ConnectionModal.vue";
@@ -70,7 +70,7 @@ async function deleteConnection() {
 
     <div v-for="connection in data ?? []" :key="connection.name" class="rounded-md border border-default bg-muted">
       <div class="px-4 py-3 flex items-center gap-3 flex-wrap">
-        <StatusDot :tone="unhealthyConditions(connection.conditions).length ? 'error' : 'success'" />
+        <StatusDot :tone="conditionsTone(connection.conditions)" />
         <span class="text-highlighted font-medium">{{ connection.name }}</span>
         <UBadge color="neutral" variant="subtle" size="sm" class="font-mono">{{ connection.provider }}</UBadge>
         <span class="flex-1" />
@@ -96,6 +96,15 @@ async function deleteConnection() {
           @click="deleteTarget = connection"
         />
       </div>
+      <!-- Why the dot is not green, in the provider's own words — the full
+           conditions table stays an operator-mode detail. -->
+      <p
+        v-if="!operatorMode && statusDetail(connection.conditions)"
+        class="px-4 pb-3 text-xs"
+        :class="conditionsTone(connection.conditions) === 'warning' ? 'text-warning' : 'text-error'"
+      >
+        {{ statusDetail(connection.conditions) }}
+      </p>
       <div v-if="operatorMode" class="px-4 pb-3">
         <ConditionsTable :conditions="connection.conditions" />
       </div>
