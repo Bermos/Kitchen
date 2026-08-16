@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -58,6 +59,11 @@ const (
 	// a selector is a bug waiting for the first rename.
 	LabelEnvironment = "kitchen.bermos.dev/environment"
 
+	// LabelProject names the project everything an Environment materializes
+	// belongs to. The usage collector attributes a container's resources with
+	// it, which is the join a metrics scrape of the kubelet cannot make.
+	LabelProject = "kitchen.bermos.dev/project"
+
 	// AppContainerName is the container an Environment's pod runs the
 	// application in. The API reads the workload's image and resources back
 	// off it.
@@ -73,7 +79,7 @@ const (
 	// snapshot predates the field.
 	defaultContainerPort = int32(3000)
 
-	labelProject        = "kitchen.bermos.dev/project"
+	labelProject        = LabelProject
 	labelEnvironment    = LabelEnvironment
 	labelEnvironmentNS  = "kitchen.bermos.dev/environment-namespace"
 	labelManagedByKey   = "app.kubernetes.io/managed-by"
@@ -157,6 +163,11 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return r.notReady(ctx, env, "ClaimNotBound",
 			fmt.Errorf("a referenced ResourceClaim is not bound yet"))
 	}
+	// The platform's own variables go first, so that a project setting one of
+	// them wins: the kubelet takes the last value of a repeated name, and an
+	// application that has been told where to send its spans knows something
+	// the platform does not.
+	podEnv = append(telemetryEnv(kitchen, project.Name, env), podEnv...)
 
 	labels := childLabels(project.Name, env)
 	host := hostname(project.Name, env, kitchen.Spec.BaseDomain)
@@ -336,6 +347,48 @@ func (r *EnvironmentReconciler) resolveEnv(
 		}
 	}
 	return out, false, nil
+}
+
+// telemetryEnv is what the platform tells an application about itself: where
+// the trace receiver is, and who is calling.
+//
+// This is the whole of Kitchen's tracing setup as far as an application is
+// concerned. Every OpenTelemetry SDK reads these variables, so instrumenting
+// an application is adding the SDK — there is no endpoint to look up, no
+// collector to deploy, and no resource attributes to remember to set. The
+// project and environment go in as attributes because the application has no
+// way of knowing them and the trace view needs them to say where a span ran.
+//
+// Nothing is injected when the platform does not collect traces: an
+// application pointed at an endpoint that refuses its exports would spend the
+// rest of its life retrying them.
+func telemetryEnv(
+	kitchen *kitchenv1alpha1.Kitchen,
+	projectName string,
+	env *kitchenv1alpha1.Environment,
+) []corev1.EnvVar {
+	traces := kitchen.Spec.Observability.Traces
+	endpoint := strings.TrimSpace(traces.Endpoint)
+	if !traces.Enabled || endpoint == "" {
+		return nil
+	}
+	// One service per project, not per environment: production and a preview
+	// of the same application are the same service seen at two moments, and
+	// splitting them would make every preview a new entry in the service list
+	// that is never seen again. Which is which is an attribute — the one
+	// semantic conventions define for exactly this.
+	attributes := []string{
+		"service.name=" + projectName,
+		"kitchen.project=" + projectName,
+		"kitchen.environment=" + env.Name,
+		"deployment.environment.name=" + env.Name,
+	}
+	return []corev1.EnvVar{
+		{Name: "OTEL_EXPORTER_OTLP_ENDPOINT", Value: endpoint},
+		{Name: "OTEL_EXPORTER_OTLP_PROTOCOL", Value: "http/protobuf"},
+		{Name: "OTEL_SERVICE_NAME", Value: projectName},
+		{Name: "OTEL_RESOURCE_ATTRIBUTES", Value: strings.Join(attributes, ",")},
+	}
 }
 
 // desiredReplicas is how many pods an Environment runs when it is not idling.

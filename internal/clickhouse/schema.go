@@ -38,6 +38,29 @@ const EventsTable = "events"
 // collector saw. The traffic view's service map is aggregated out of it.
 const FlowsTable = "flows"
 
+// MetricsTable holds resource telemetry: one row per container per sample, as
+// the operator's usage collector reads it off the kubelet and off the pods
+// themselves. It is what turns "what is this environment using" from an
+// instant into a history.
+//
+// MetricsRollupTable is the same data pre-aggregated into five-minute buckets
+// by MetricsRollupView, and MetricsRollupSeconds is that bucket width. A
+// window wider than a few hours is answered from the rollup: the raw table
+// stays for the resolutions a rollup cannot serve, and both live under the one
+// retention.
+const (
+	MetricsTable         = "metrics"
+	MetricsRollupTable   = "metrics_5m"
+	MetricsRollupView    = "metrics_5m_mv"
+	MetricsRollupSeconds = 300
+)
+
+// TracesTable holds spans, one row each, as instrumented applications send
+// them to the platform's OTLP receiver. Hubble sees who talked to whom; only
+// the application knows what it was doing, which is why nothing here is
+// derived from the flow data.
+const TracesTable = "traces"
+
 // Log sources, as written into the `source` column by the collector's
 // transform in charts/kitchen/templates/logs/configmap.yaml.
 //
@@ -58,10 +81,11 @@ const (
 // created with.
 var ttlIntervalPattern = regexp.MustCompile(`toIntervalDay\((\d+)\)`)
 
-// EnsureTelemetrySchema creates every telemetry table — logs, events, flows —
-// and keeps their TTLs in step with the retention configured on the Kitchen
-// object. One retention knob covers all three: they are facets of the same
-// telemetry store, and a second knob would be a second thing to explain.
+// EnsureTelemetrySchema creates every telemetry table — logs, events, flows,
+// metrics and traces — and keeps their TTLs in step with the retention
+// configured on the Kitchen object. One retention knob covers all of them:
+// they are facets of the same telemetry store, and a second knob would be a
+// second thing to explain.
 func (c *Client) EnsureTelemetrySchema(ctx context.Context, retentionDays int32) error {
 	if err := c.EnsureLogsSchema(ctx, retentionDays); err != nil {
 		return err
@@ -69,7 +93,13 @@ func (c *Client) EnsureTelemetrySchema(ctx context.Context, retentionDays int32)
 	if err := c.EnsureEventsSchema(ctx, retentionDays); err != nil {
 		return err
 	}
-	return c.EnsureFlowsSchema(ctx, retentionDays)
+	if err := c.EnsureFlowsSchema(ctx, retentionDays); err != nil {
+		return err
+	}
+	if err := c.EnsureMetricsSchema(ctx, retentionDays); err != nil {
+		return err
+	}
+	return c.EnsureTracesSchema(ctx, retentionDays)
 }
 
 // EnsureLogsSchema creates the log table if it is missing and keeps its TTL in
@@ -87,6 +117,8 @@ func (c *Client) EnsureLogsSchema(ctx context.Context, retentionDays int32) erro
 	for _, column := range []string{
 		"level LowCardinality(String) AFTER stream",
 		"fields Map(String, String) AFTER labels",
+		"traceId String AFTER level",
+		"spanId String AFTER traceId",
 	} {
 		if err := c.Exec(ctx, fmt.Sprintf("ALTER TABLE %s.%s ADD COLUMN IF NOT EXISTS %s",
 			quoteIdentifier(c.cfg.Database), quoteIdentifier(LogsTable), column)); err != nil {
@@ -106,9 +138,41 @@ func (c *Client) EnsureFlowsSchema(ctx context.Context, retentionDays int32) err
 	return c.ensureTable(ctx, FlowsTable, createFlowsTable(c.cfg.Database, retentionDays), retentionDays)
 }
 
+// EnsureMetricsSchema creates the resource telemetry table, its five-minute
+// rollup, and the materialized view that fills the rollup.
+//
+// The view is created last and unconditionally: it only ever sees rows
+// inserted after it exists, so an installation that had the raw table before
+// the rollup has a gap in the rollup rather than a wrong answer — and the
+// reader falls back to the raw table for any window the rollup cannot serve
+// anyway.
+func (c *Client) EnsureMetricsSchema(ctx context.Context, retentionDays int32) error {
+	if err := c.ensureTable(ctx, MetricsTable,
+		createMetricsTable(c.cfg.Database, retentionDays), retentionDays); err != nil {
+		return err
+	}
+	if err := c.ensureTableTTL(ctx, MetricsRollupTable,
+		createMetricsRollupTable(c.cfg.Database, retentionDays), "bucket", retentionDays); err != nil {
+		return err
+	}
+	return c.Exec(ctx, createMetricsRollupView(c.cfg.Database))
+}
+
+// EnsureTracesSchema creates the span table.
+func (c *Client) EnsureTracesSchema(ctx context.Context, retentionDays int32) error {
+	return c.ensureTable(ctx, TracesTable, createTracesTable(c.cfg.Database, retentionDays), retentionDays)
+}
+
 // ensureTable runs the idempotent CREATE and then brings the TTL in line,
 // altering only when the enforced retention actually differs.
 func (c *Client) ensureTable(ctx context.Context, table, ddl string, retentionDays int32) error {
+	return c.ensureTableTTL(ctx, table, ddl, "timestamp", retentionDays)
+}
+
+// ensureTableTTL is ensureTable for a table whose time column is not called
+// `timestamp` — the rollup buckets by `bucket`, and a MODIFY TTL naming the
+// wrong column is refused rather than ignored.
+func (c *Client) ensureTableTTL(ctx context.Context, table, ddl, column string, retentionDays int32) error {
 	if retentionDays < 1 {
 		return fmt.Errorf("retentionDays must be at least 1, got %d", retentionDays)
 	}
@@ -129,7 +193,7 @@ func (c *Client) ensureTable(ctx context.Context, table, ddl string, retentionDa
 		return nil
 	}
 	return c.Exec(ctx, fmt.Sprintf("ALTER TABLE %s.%s MODIFY TTL %s",
-		db, quoteIdentifier(table), ttlExpression(retentionDays)))
+		db, quoteIdentifier(table), ttlExpressionOn(column, retentionDays)))
 }
 
 // tableRetentionDays reads back the retention ClickHouse is enforcing. A table
@@ -155,7 +219,14 @@ func (c *Client) tableRetentionDays(ctx context.Context, table string) (int32, e
 }
 
 func ttlExpression(retentionDays int32) string {
-	return fmt.Sprintf("toDateTime(timestamp) + toIntervalDay(%d)", retentionDays)
+	return ttlExpressionOn("timestamp", retentionDays)
+}
+
+// ttlExpressionOn names the column the retention is measured from. It is a
+// name this package chose, never one that came from configuration, so it goes
+// into the statement as written.
+func ttlExpressionOn(column string, retentionDays int32) string {
+	return fmt.Sprintf("toDateTime(%s) + toIntervalDay(%d)", column, retentionDays)
 }
 
 // createLogsTable is the log schema, wide enough for the queries the UI and
@@ -173,6 +244,11 @@ func ttlExpression(retentionDays int32) string {
 // and an application field would be silent. A missing key of either reads as
 // the empty string, which is what makes `http.status:*` one test rather than
 // two.
+//
+// `traceId` is lifted out of those fields into a column of its own, with a
+// bloom filter over it, because it is the one field asked for by exact value
+// from outside the log page — a span in the trace view offering its lines, a
+// line offering its trace.
 func createLogsTable(database string, retentionDays int32) string {
 	return fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.%s
 (
@@ -187,10 +263,13 @@ func createLogsTable(database string, retentionDays int32) string {
     node        LowCardinality(String),
     stream      LowCardinality(String),
     level       LowCardinality(String),
+    traceId     String,
+    spanId      String,
     message     String,
     labels      Map(LowCardinality(String), String),
     fields      Map(String, String),
     INDEX idx_build build TYPE set(0) GRANULARITY 4,
+    INDEX idx_trace traceId TYPE bloom_filter GRANULARITY 4,
     INDEX idx_message message TYPE tokenbf_v1(32768, 3, 0) GRANULARITY 4
 )
 ENGINE = MergeTree
@@ -225,6 +304,150 @@ ENGINE = MergeTree
 PARTITION BY toDate(timestamp)
 ORDER BY (timestamp)
 TTL %s`, quoteIdentifier(database), quoteIdentifier(EventsTable), ttlExpression(retentionDays))
+}
+
+// createMetricsTable is the resource telemetry schema: one row per container
+// per sample. The ordering key is what the environment page filters on, which
+// is also what the rollup groups by.
+//
+// `restarts` is the container's lifetime count as Kubernetes reports it;
+// `restarted` and `oomKilled` are what happened *since the previous sample*,
+// which is the difference between a number that only ever climbs and a series
+// with a spike on it. A cumulative counter cannot be bucketed without losing
+// every transition that lands on a bucket boundary, so the collector — which
+// knows what it saw last time — does the differencing and the store keeps
+// events.
+//
+// The limits ride on every row rather than living in a table of their own:
+// they are what makes a usage number mean anything, they change only when a
+// release does, and LowCardinality columns of a repeated value cost close to
+// nothing.
+func createMetricsTable(database string, retentionDays int32) string {
+	return fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.%s
+(
+    timestamp        DateTime64(3, 'UTC'),
+    project          LowCardinality(String),
+    environment      LowCardinality(String),
+    namespace        LowCardinality(String),
+    pod              String,
+    container        LowCardinality(String),
+    node             LowCardinality(String),
+    cpuCores         Float64,
+    memoryBytes      UInt64,
+    cpuLimitCores    Float64,
+    memoryLimitBytes UInt64,
+    restarts         UInt32,
+    restarted        UInt16,
+    oomKilled        UInt8
+)
+ENGINE = MergeTree
+PARTITION BY toDate(timestamp)
+ORDER BY (project, environment, timestamp)
+TTL %s`, quoteIdentifier(database), quoteIdentifier(MetricsTable), ttlExpression(retentionDays))
+}
+
+// createMetricsRollupTable is the same data at five-minute resolution, kept as
+// aggregate states so that merging two buckets is exact rather than an average
+// of averages of different sample counts.
+//
+// It exists because the raw table is one row per container per sample: fine to
+// scan for the last hour, and a week of it for a busy platform is the read
+// that makes the environment page feel broken. The ordering key leads with the
+// same columns as the raw table so the same filter hits the primary index.
+func createMetricsRollupTable(database string, retentionDays int32) string {
+	return fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.%s
+(
+    bucket           DateTime('UTC'),
+    project          LowCardinality(String),
+    environment      LowCardinality(String),
+    namespace        LowCardinality(String),
+    pod              String,
+    container        LowCardinality(String),
+    cpuCores         AggregateFunction(avg, Float64),
+    cpuPeakCores     AggregateFunction(max, Float64),
+    memoryBytes      AggregateFunction(avg, UInt64),
+    memoryPeakBytes  AggregateFunction(max, UInt64),
+    cpuLimitCores    AggregateFunction(max, Float64),
+    memoryLimitBytes AggregateFunction(max, UInt64),
+    restarted        AggregateFunction(sum, UInt16),
+    oomKills         AggregateFunction(sum, UInt8)
+)
+ENGINE = AggregatingMergeTree
+PARTITION BY toDate(bucket)
+ORDER BY (project, environment, bucket, namespace, pod, container)
+TTL %s`, quoteIdentifier(database), quoteIdentifier(MetricsRollupTable),
+		ttlExpressionOn("bucket", retentionDays))
+}
+
+// createMetricsRollupView fills the rollup as rows arrive.
+//
+// Every column is read through the source table's alias. ClickHouse resolves a
+// bare name against the SELECT list's own aliases first, so `maxState(cpuCores)`
+// after `avgState(cpuCores) AS cpuCores` takes the max of an aggregate state
+// and the view is refused outright ("values of that data type are not
+// comparable"). Qualifying every argument is what keeps the state columns
+// nameable after the columns they aggregate. See timestampAlias in logs.go and
+// protocolAlias in flows.go for the same trap where it merely returns the wrong
+// answer.
+func createMetricsRollupView(database string) string {
+	return fmt.Sprintf(`CREATE MATERIALIZED VIEW IF NOT EXISTS %s.%s TO %s.%s AS
+SELECT
+    toDateTime(toStartOfInterval(m.timestamp, toIntervalSecond(%d)), 'UTC') AS bucket,
+    m.project AS project,
+    m.environment AS environment,
+    m.namespace AS namespace,
+    m.pod AS pod,
+    m.container AS container,
+    avgState(m.cpuCores) AS cpuCores,
+    maxState(m.cpuCores) AS cpuPeakCores,
+    avgState(m.memoryBytes) AS memoryBytes,
+    maxState(m.memoryBytes) AS memoryPeakBytes,
+    maxState(m.cpuLimitCores) AS cpuLimitCores,
+    maxState(m.memoryLimitBytes) AS memoryLimitBytes,
+    sumState(m.restarted) AS restarted,
+    sumState(m.oomKilled) AS oomKills
+FROM %s.%s AS m
+GROUP BY bucket, project, environment, namespace, pod, container`,
+		quoteIdentifier(database), quoteIdentifier(MetricsRollupView),
+		quoteIdentifier(database), quoteIdentifier(MetricsRollupTable),
+		MetricsRollupSeconds,
+		quoteIdentifier(database), quoteIdentifier(MetricsTable))
+}
+
+// createTracesTable is the span schema: one row per span an instrumented
+// application sent to the OTLP receiver.
+//
+// Traces are read two ways and the indexes are one for each: "what has this
+// service been doing lately", which the ordering key serves, and "give me
+// every span of this one trace", which arrives as an id out of a log line and
+// would otherwise scan the window. `attributes` are the span's own and
+// `resource` the emitting process's — two maps rather than one for the same
+// reason the log table keeps `labels` and `fields` apart.
+func createTracesTable(database string, retentionDays int32) string {
+	return fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.%s
+(
+    timestamp     DateTime64(6, 'UTC'),
+    traceId       String,
+    spanId        String,
+    parentSpanId  String,
+    name          LowCardinality(String),
+    kind          LowCardinality(String),
+    service       LowCardinality(String),
+    project       LowCardinality(String),
+    environment   LowCardinality(String),
+    durationMs    Float64,
+    statusCode    LowCardinality(String),
+    statusMessage String,
+    httpStatus    UInt16,
+    attributes    Map(String, String),
+    resource      Map(LowCardinality(String), String),
+    INDEX idx_trace traceId TYPE bloom_filter GRANULARITY 4,
+    INDEX idx_name name TYPE set(0) GRANULARITY 4
+)
+ENGINE = MergeTree
+PARTITION BY toDate(timestamp)
+ORDER BY (service, timestamp)
+TTL %s`, quoteIdentifier(database), quoteIdentifier(TracesTable), ttlExpression(retentionDays))
 }
 
 // createFlowsTable is the traffic schema: one row per flow observation the

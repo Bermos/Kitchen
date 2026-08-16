@@ -183,6 +183,58 @@ type HubbleSpec struct {
 	RelayAddress string `json:"relayAddress,omitempty"`
 }
 
+// MetricsSpec configures the resource telemetry pipeline: the operator
+// sampling what the platform's workloads are actually using, so that an
+// environment's CPU, memory, replica count and restarts are a history rather
+// than the instant the page happened to be opened.
+//
+// There is no collector to install. The join from a container back to the
+// project and environment that own it lives in the pod's labels, which a
+// Prometheus scrape of the kubelet does not carry and which the operator is
+// already reading — so the operator samples, and what would have been
+// kube-state-metrics is the API objects it already watches.
+type MetricsSpec struct {
+	// Enabled turns the sampler on. Off means the resource tables stay
+	// empty and the environment page shows the instant alone.
+	// +kubebuilder:default=true
+	// +optional
+	Enabled bool `json:"enabled"`
+
+	// IntervalSeconds between samples of every application container.
+	// Below the default the row count climbs faster than the answers
+	// improve; above about a minute a short-lived spike falls between two
+	// samples and is never seen at all.
+	// +kubebuilder:validation:Minimum=10
+	// +kubebuilder:validation:Maximum=300
+	// +kubebuilder:default=30
+	// +optional
+	IntervalSeconds int32 `json:"intervalSeconds,omitempty"`
+}
+
+// TracesSpec configures the platform's OTLP receiver.
+//
+// Traces come from the applications themselves: an application that is not
+// instrumented has no spans to send, and nothing the platform can see from
+// outside it — not Hubble's L7 data, not the Gateway's access logs — is a
+// substitute. What the platform does is remove every other obstacle: the
+// receiver is always there, and every environment is told where it is.
+type TracesSpec struct {
+	// Enabled runs the receiver and tells applications where it is, through
+	// the OTLP environment variables every SDK reads. Off means neither.
+	// +kubebuilder:default=true
+	// +optional
+	Enabled bool `json:"enabled"`
+
+	// Endpoint is the OTLP/HTTP base URL applications export to, as it is
+	// advertised to them. The default is the receiver's Service under the
+	// conventional release name; the chart always writes its own, because
+	// every name it generates carries the release's. Set it by hand only to
+	// put something else in front.
+	// +kubebuilder:default="http://kitchen-otlp.kitchen-system.svc.cluster.local:4318"
+	// +optional
+	Endpoint string `json:"endpoint,omitempty"`
+}
+
 // ObservabilitySpec configures the telemetry pipeline.
 type ObservabilitySpec struct {
 	// +optional
@@ -190,6 +242,12 @@ type ObservabilitySpec struct {
 
 	// +optional
 	Hubble HubbleSpec `json:"hubble,omitempty"`
+
+	// +optional
+	Metrics MetricsSpec `json:"metrics,omitempty"`
+
+	// +optional
+	Traces TracesSpec `json:"traces,omitempty"`
 }
 
 // APISpec configures how the operator's API is exposed.
