@@ -1,0 +1,134 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.17.2
+  name: savedqueries.kitchen.bermos.dev
+spec:
+  group: kitchen.bermos.dev
+  names:
+    kind: SavedQuery
+    listKind: SavedQueryList
+    plural: savedqueries
+    singular: savedquery
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.title
+      name: Title
+      type: string
+    - jsonPath: .spec.query
+      name: Query
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          SavedQuery is the Schema for the savedqueries API.
+
+          It has no status: there is no observed state, because nothing observes it.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              SavedQuerySpec is a question about the logs that was worth keeping.
+
+              The observability view already puts its whole selection in the URL, so any
+              question is a link. What a link cannot do is be found again by someone who
+              did not receive it — "the one that shows the checkout 500s" lives in a
+              person's history or nowhere. This is that question with a name on it,
+              shared by everyone on the platform.
+
+              It has no reconciler and needs none: unlike a Domain or a ResourceClaim,
+              which do nothing until something acts on them, a saved query has its whole
+              effect by existing. Reading it back is the feature.
+            properties:
+              description:
+                description: Description says what the query is for, when the title
+                  cannot.
+                maxLength: 500
+                type: string
+              includeCluster:
+                description: |-
+                  IncludeCluster keeps the logs of pods Kitchen did not deploy, which
+                  the view scopes out by default.
+                type: boolean
+              limit:
+                description: Limit is how many lines the query asks for.
+                format: int32
+                maximum: 5000
+                minimum: 1
+                type: integer
+              query:
+                description: 'Query is Kitchen''s log query language: `level:error
+                  service:shop`.'
+                maxLength: 2000
+                type: string
+              rangeMinutes:
+                description: |-
+                  RangeMinutes is the window the question is asked over, relative to
+                  whenever it is opened — which is what makes it worth saving. Zero
+                  means everything retained.
+
+                  An absolute window is deliberately not storable: "the spike on
+                  Tuesday" stops being a question and becomes a screenshot, and the
+                  retention deletes it out from under the name anyway.
+                format: int32
+                minimum: 0
+                type: integer
+              savedBy:
+                description: |-
+                  SavedBy is who saved it, as the API knew them. It is recorded rather
+                  than enforced: saved queries are the platform's, not a person's, and
+                  this is a byline.
+                type: string
+              title:
+                description: |-
+                  Title is what the query is called in the dashboard. It is free text,
+                  unlike the object's name, which has to be a DNS label.
+                maxLength: 120
+                minLength: 1
+                type: string
+              view:
+                description: |-
+                  View is which of the observability view's tabs the query is read in:
+                  `lines` or `patterns`. A query saved because its patterns are the
+                  interesting part should open on them.
+                enum:
+                - lines
+                - patterns
+                type: string
+              where:
+                description: |-
+                  Where is a ClickHouse expression, the escape hatch the query bar can
+                  be switched into. A saved query may carry either or both, exactly as
+                  the view composes them.
+                maxLength: 2000
+                type: string
+            required:
+            - title
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources: {}
