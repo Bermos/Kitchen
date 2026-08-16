@@ -224,17 +224,20 @@ traced back to what produced it:
 
 | Column | From |
 |---|---|
-| `source` | `build`, `runtime` or `platform`, derived from the labels below |
+| `source` | `build`, `runtime`, `platform` or `cluster`, derived from the labels below |
 | `project` | `kitchen.bermos.dev/project` |
 | `environment` | `kitchen.bermos.dev/environment` (production or a preview) |
 | `build` | `kitchen.bermos.dev/build` |
 | `namespace`, `pod`, `container`, `node`, `stream` | the pod that wrote the line |
 | `level` | best-effort severity (`trace`…`fatal`), parsed out of JSON logs or the common text spellings; `""` when the line says neither |
+| `traceId`, `spanId` | the line's own, lifted out of its structured fields — what makes a line and a trace two views of one request |
 | `message` | the line |
 | `labels` | every pod label, for anything the columns miss |
+| `fields` | a JSON line's own fields, flattened with dots |
 
-The tables (`logs`, plus `events` for the activity feed and `flows` for the
-traffic view) are created by the operator, not the chart — they are applied
+The tables (`logs`, plus `events` for the activity feed, `flows` for the
+traffic view, `metrics` and its five-minute rollup for the environment
+histories, and `traces` for spans) are created by the operator, not the chart — they are applied
 from `Kitchen.spec.observability.clickhouse`, and their TTL follows
 `retentionDays`, so changing retention in the UI or with `kubectl` is enough:
 
@@ -342,6 +345,80 @@ Fix it by labelling the namespace as described under
 [Prerequisites](#prerequisites), then `kubectl -n kitchen-system rollout restart
 ds -l app.kubernetes.io/component=logs`. The same message is on the Kitchen
 object's `logs` component, which is where to look first.
+
+## Resource metrics
+
+Every application container is sampled into the `metrics` table — CPU and
+memory off its node's kubelet, replicas and restarts off the pods themselves —
+which is what turns the dashboard's environment page from an instant into a
+history: whether it was always using this much memory, when it scaled, whether
+it was OOMKilled overnight.
+
+Nothing is installed for it. There is no Prometheus, no kube-state-metrics and
+no scrape configuration, because the join a metrics pipeline would need — from
+`(namespace, pod, container)` back to the project and environment that own the
+pod — lives in the pod's labels, which a scrape does not carry and the operator
+is already reading.
+
+```yaml
+kitchen:
+  observability:
+    metrics:
+      enabled: true
+      intervalSeconds: 30
+```
+
+The interval is the one knob worth touching. Below 30s the row count climbs
+faster than the answers improve; much above a minute and a short spike falls
+between two samples and is never seen. A window wider than a few hours is drawn
+from a five-minute rollup the store maintains itself, so widening the range
+costs the same as narrowing it.
+
+The operator needs `nodes/proxy` to reach the kubelets, which the chart's
+ClusterRole grants. On a cluster where that is unacceptable, switch sampling
+off: the replica and restart series come off the API server either way, and the
+CPU and memory columns simply stay empty.
+
+## Traces
+
+Traces are the one telemetry the platform cannot collect on an application's
+behalf. Logs are on the node, flows are in the CNI, resource usage is in the
+kubelet — but only the application knows that this request was a checkout and
+that it spent 380 of its 420 milliseconds waiting for a database.
+
+So the chart runs an OTLP/HTTP receiver in the operator and puts a ClusterIP
+Service in front of it, and the operator hands every environment its address
+through OpenTelemetry's own environment variables:
+
+```
+OTEL_EXPORTER_OTLP_ENDPOINT=http://kitchen-otlp.kitchen-system.svc.cluster.local:4318
+OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+OTEL_SERVICE_NAME=<project>
+OTEL_RESOURCE_ATTRIBUTES=service.name=<project>,kitchen.project=<project>,kitchen.environment=<environment>,deployment.environment.name=<environment>
+```
+
+Which means instrumenting an application is adding its language's SDK and
+nothing else — no endpoint to look up, no collector to deploy, no resource
+attributes to remember. Node:
+
+```sh
+npm install @opentelemetry/api @opentelemetry/auto-instrumentations-node
+NODE_OPTIONS="--require @opentelemetry/auto-instrumentations-node/register"
+```
+
+An application that sets any of those variables itself wins: the platform's go
+in first, and the kubelet takes the last value of a repeated name.
+
+The receiver deliberately has no HTTPRoute. Spans come from workloads already
+inside the cluster, and an OTLP endpoint on the public Gateway would be an
+unauthenticated write surface on the telemetry store. `traces.endpoint` exists
+for putting something else — a sampling collector, a second backend — in front
+of it.
+
+Log lines carry the trace id they were written under, when the application logs
+one: the collector lifts `trace_id`, `traceId`, `trace.id` and the other usual
+spellings into a column of their own. That is what makes the dashboard's link
+between a log line and the request it came out of work in both directions.
 
 ## Identity provider
 
@@ -844,6 +921,12 @@ kubectl delete namespace kitchen-system
 | `kitchen.builds.concurrency` | `2` | Builds running at once. |
 | `kitchen.observability.clickhouse.retentionDays` | `30` | Telemetry retention. |
 | `kitchen.observability.hubble.relayAddress` | `""` | host:port of Hubble Relay's gRPC endpoint (e.g. `hubble-relay.kube-system.svc.cluster.local:80`). When set, the operator ships flow observations into the telemetry store for the dashboard's traffic view. Empty disables flow collection. |
+| `kitchen.observability.metrics.enabled` | `true` | Sample every application container's resources into the store — what gives the environment page a history rather than an instant. The operator samples; there is no metrics collector to install. |
+| `kitchen.observability.metrics.intervalSeconds` | `30` | Seconds between samples. |
+| `kitchen.observability.traces.enabled` | `true` | Run the OTLP/HTTP receiver, and hand every environment its address through the standard OTLP environment variables. Off means neither. |
+| `kitchen.observability.traces.port` | `4318` | Port the receiver binds and its Service publishes — OTLP/HTTP's registered one. |
+| `kitchen.observability.traces.endpoint` | `""` | What applications are told to export to. Empty means the receiver's own in-cluster Service. |
+| `kitchen.observability.traces.service.annotations` | `{}` | |
 | `clickhouse.enabled` | `true` | Run a single-node ClickHouse in the release. |
 | `clickhouse.image.repository` / `.tag` | `clickhouse/clickhouse-server` / `26.3.17.110-alpine` | Current LTS line. |
 | `clickhouse.auth.database` / `.username` | `kitchen` / `kitchen` | Created on first start. |
@@ -861,6 +944,7 @@ kubectl delete namespace kitchen-system
 | `logs.excludePathsGlobPatterns` | `[]` | Extra log file globs to skip. |
 | `logs.globCooldownMs` | `5000` | How often the node is rescanned for new log files. |
 | `logs.maxStructuredFields` | `64` | Fields kept from a JSON line, queryable as `http.status:500`. Beyond it the line ships without them. |
+| `logs.traceIdFields` / `.spanIdFields` | `[trace_id, traceId, …]` | Structured fields a line's trace and span ids may be written under, first match wins. Lifting them into columns is what links a log line to its trace. |
 | `logs.batch.maxEvents` / `.timeoutSeconds` | `5000` / `5` | Insert batching; the timeout is log latency. |
 | `logs.buffer.maxEvents` | `20000` | Events held per node while the store is unreachable. |
 | `logs.serviceAccount.create` / `.name` / `.annotations` | `true` / `""` / `{}` | |

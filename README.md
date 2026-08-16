@@ -20,9 +20,13 @@ flow data — lands in ClickHouse.
 ## Layout
 
 - `api/v1alpha1/` — CRD types (`kitchen.bermos.dev/v1alpha1`): Kitchen, Connection,
-  Project, Build, Release, Environment, Domain, ResourceClaim
+  Project, Build, Release, Environment, Domain, ResourceClaim, PlatformUpdate,
+  SavedQuery
 - `internal/controller/` — one reconciler per CRD
 - `internal/api/` — the REST API, behind the platform's identity provider
+- `internal/flows/`, `internal/usage/`, `internal/otlp/` — the telemetry the
+  operator collects itself: Hubble flows, container resource samples, and the
+  OTLP receiver instrumented applications export spans to
 - `config/crd/bases/` — generated CRD manifests
 - `cmd/` — operator entrypoint
 - `auth/` — the identity provider (better-auth) served at `auth.<baseDomain>`

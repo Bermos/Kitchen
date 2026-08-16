@@ -21,6 +21,7 @@ graph LR
     RC[ResourceClaim<br/><i>e.g. Postgres via Neon</i>] -->|via| C
     RC -->|bound to| P
     PU[PlatformUpdate<br/><i>the platform's own upgrades</i>] -.->|upgrades| K
+    SQ[SavedQuery<br/><i>a log question worth keeping</i>]
 ```
 
 The chain is the product: **webhook → Build → Release → Environment → running pods + URL.**
@@ -83,6 +84,14 @@ spec:
     clickhouse:
       retentionDays: 30                 # TTL the operator keeps on the telemetry tables
       secretRef: { name: kitchen-clickhouse }   # written by the chart; the store's connection details
+    hubble:
+      relayAddress: hubble-relay.kube-system.svc.cluster.local:80   # flow collection; empty disables it
+    metrics:
+      enabled: true                     # the operator samples container CPU/memory off the kubelet,
+      intervalSeconds: 30               # and replicas/restarts off the pods themselves
+    traces:
+      enabled: true                     # the OTLP/HTTP receiver, and telling apps where it is
+      endpoint: http://kitchen-otlp.kitchen-system.svc.cluster.local:4318
 status:
   conditions: [...]                     # Ready, GatewayProgrammed, TunnelConnected,
                                         # TelemetrySchemaReady, PreviewGateReady
@@ -430,6 +439,41 @@ the one that started it.
 
 Needs `selfUpdate.enabled=true` on the chart; without it every PlatformUpdate is
 refused with a message saying so. See the [chart README](../charts/kitchen/README.md#letting-the-platform-update-itself).
+
+---
+
+## `SavedQuery` (namespaced: kitchen-system)
+
+A question about the logs, kept under a name. The observability view carries its whole
+selection in the URL, so any question is already a link; this is what makes one
+*findable* by someone who was never sent the link.
+
+```yaml
+apiVersion: kitchen.bermos.dev/v1alpha1
+kind: SavedQuery
+metadata:
+  name: checkout-500s                   # derived from the title by the API
+spec:
+  title: Checkout 500s
+  description: Errors from the checkout service
+  query: "level:error service:shop"     # Kitchen's log query language
+  where: ""                             # the ClickHouse escape hatch, if that is what was used
+  rangeMinutes: 60                      # relative window; 0 means everything retained
+  limit: 500
+  view: patterns                        # which tab it is read in: lines | patterns
+  includeCluster: false
+  savedBy: grace@example.com
+```
+
+It has **no status and no reconciler**, and that is the point rather than an omission.
+The rule that a write surface waits for its reconciler is about objects that do nothing
+until something acts on them — a `Domain` is not routed and a `ResourceClaim` is not
+provisioned until their controllers run. A saved query has its whole effect by existing:
+reading it back is the feature.
+
+The window is a duration and never an absolute range. "The spike last Tuesday" stops
+being a question and becomes a screenshot, and the retention deletes it out from under
+its own name.
 
 ---
 

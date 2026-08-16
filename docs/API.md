@@ -93,14 +93,20 @@ sent the request.
 | DELETE | `/environments/{name}` | Tear down a stuck preview. Previews only |
 | GET | `/environments/{name}/logs` | That environment's runtime logs |
 | GET | `/environments/{name}/workload` | What it is running: replicas, restarts, uptime, resources, pods |
+| GET | `/environments/{name}/metrics` | What it *has been* running: CPU, memory, replicas and restarts over a window |
 | GET | `/environments/{name}/objects` | The Kubernetes objects the operator materialized for it |
 | GET | `/logs` | The whole logs table, filtered by a query. `?q=`, `?where=` |
 | GET | `/logs/histogram` | The same selection counted over time — the shape of the window |
 | GET | `/logs/facets` | The same selection's distinct values per field, with counts |
 | GET | `/logs/patterns` | The same selection's messages collapsed into templates |
+| GET | `/logs/saved` | Saved queries — selections someone kept under a name |
+| POST | `/logs/saved` | Keep the current selection under a name |
+| DELETE | `/logs/saved/{name}` | Forget one |
 | GET | `/events` | The platform's recent activity, newest first. `?project=` and `?limit=` filter |
 | GET | `/metrics/overview` | The dashboard's numbers, pre-aggregated. `?project=` narrows |
 | GET | `/traffic` | The service map: aggregated flow edges. `?project=`, `?since=`, `?until=` |
+| GET | `/traces` | Traces in a window. `?project=`, `?environment=`, `?service=`, `?errors=1`, `?minDuration=` |
+| GET | `/traces/{traceId}` | One trace's spans, oldest first — the waterfall |
 | GET | `/status` | The platform as it is running: cluster, tunnel, build queue, components |
 | GET | `/settings` | The platform's settings — the `Kitchen` singleton |
 | PATCH | `/settings` | Change the build and telemetry defaults |
@@ -428,6 +434,48 @@ An environment with nothing materialized — a preview whose route is withheld,
 one the reconciler has not reached — answers `200` with no `deployment` and a
 `message` saying so. That is a state, not an error; the environment's own
 conditions carry why.
+
+### What an environment has been running
+
+`GET /environments/{name}/workload` answers the instant. `GET
+/environments/{name}/metrics` answers the history, out of the telemetry store,
+which is a different question and needs a different source: the API server
+keeps no record of what a pod used ten minutes ago, so "was it always using
+this much memory" and "did it get OOMKilled overnight" are unanswerable from
+the cluster's current state.
+
+```json
+{"start": "2026-08-16T09:00:00Z", "end": "2026-08-16T10:00:00Z",
+ "bucketSeconds": 60, "rollup": false,
+ "cpuLimitCores": 0.5, "memoryLimitBytes": 536870912,
+ "restarts": 1, "oomKills": 1,
+ "points": [{"start": "2026-08-16T09:00:00Z", "cpuCores": 0.24, "cpuPeakCores": 0.41,
+             "memoryBytes": 201326592, "memoryPeakBytes": 233123840,
+             "replicas": 3, "restarts": 0, "oomKills": 0}]}
+```
+
+`?since=`/`?until=` bound the window (an hour ending now by default) and
+`?points=` asks for a resolution, which is rounded up to a rung of a fixed
+ladder so that panning does not restripe the chart. Every bucket in the window
+is present, including the empty ones: a gap is a scaled-to-zero environment or
+a collector that was not running, and both are worth seeing.
+
+CPU and memory are summed across the environment's containers, which is what
+"what is this environment using" means; the peaks are the sum of each
+container's peak inside the bucket, a ceiling rather than a coincident total.
+`replicas` is how many distinct pods reported in the bucket — the same number
+an autoscaler works on, and the only way to see an environment idle to zero
+and come back. `restarts` and `oomKills` are events in that bucket rather than
+lifetime counters, because a counter bucketed in a store loses every
+transition that lands on a boundary.
+
+`rollup` says the five-minute rollup answered rather than the raw samples,
+which is why a wide window comes back coarser than the resolution asked for.
+
+The endpoint answers `503` where the installation has no telemetry store, and
+draws nothing where sampling is switched off
+(`Kitchen.spec.observability.metrics`) — deliberately, rather than a flat line
+at zero, which would claim the environment used nothing.
 
 ### The objects the operator materialized
 
@@ -799,6 +847,58 @@ Cilium's Hubble Relay, which the operator follows when
 `Kitchen.spec.observability.hubble.relayAddress` names it; without that the
 endpoint answers an empty list and the traffic view explains what to enable.
 
+### Traces
+
+`GET /traces` lists the traces in a window, newest first; `GET
+/traces/{traceId}` reads one trace's spans, oldest first, which is the order a
+waterfall is drawn in.
+
+```json
+{"items": [{"traceId": "9d8d0f…", "timestamp": "2026-08-16T10:00:00Z",
+            "name": "GET /checkout", "service": "shop", "environment": "shop-production",
+            "durationMs": 420.5, "spans": 7, "errors": 1, "services": 3, "httpStatus": 500}]}
+```
+
+`?errors=1` and `?minDuration=` are the two filters anyone opens a trace list
+for. Both are over the *trace*, not over its spans: one slow span makes a slow
+trace, and filtering the rows would drop the healthy half of a failed one.
+`?project=`, `?environment=` and `?service=` narrow the emitter, and
+`?since=`/`?until=` the window (the last hour by default).
+
+Reading one trace takes no window on purpose. A trace id arrives from a log
+line or from the list, and requiring the caller to also know when it happened
+would break the one link that makes traces worth collecting. A trace nothing
+was kept for answers `404` and says retention is the likely reason, rather
+than an empty list that reads as "this request did nothing".
+
+Spans come from the applications themselves, over the platform's OTLP/HTTP
+receiver — see [SCOPE.md](SCOPE.md) for why nothing here is derived from the
+flow data. Every environment the operator deploys is handed the receiver's
+address through OTLP's own environment variables, so instrumenting an
+application is adding its language's SDK and nothing else.
+
+### Saved queries
+
+`GET /logs/saved` lists the selections someone kept under a name; `POST`
+saves the current one and `DELETE /logs/saved/{name}` forgets it. A saved
+query is the observability view's own URL state — `query`, `where`,
+`rangeMinutes`, `limit`, `view`, `includeCluster` — with a `title` on it.
+
+```json
+{"name": "checkout-500s", "title": "Checkout 500s",
+ "query": "level:error service:shop", "rangeMinutes": 60, "limit": 500,
+ "view": "patterns", "savedBy": "grace@example.com", "createdAt": "2026-08-16T10:00:00Z"}
+```
+
+The object name is derived from the title, so nothing has to be invented; a
+second query that derives the same name answers `409` in the platform's words
+rather than the API server's. The window is stored as a duration and never as
+an absolute range: a saved "the spike last Tuesday" is a screenshot rather
+than a question, and the retention deletes it out from under its own name. The
+query is compiled before it is stored, because a saved query that cannot be
+run is found later, by someone who did not write it, at the moment they needed
+an answer.
+
 ## Status codes
 
 | Code | When |
@@ -826,6 +926,8 @@ endpoint answers an empty list and the traffic view explains what to enable.
 | Introspection shapes | Kubernetes' own vocabulary — replicas, restarts, manifests | The exception that proves the rule above: these endpoints exist to explain the platform's machinery, and a reader comparing them against `kubectl` should not have to translate |
 | Pods and nodes | Read uncached, straight from the API server | Serving them from the manager's cache would mean an informer over every pod in the cluster, kept warm for a question only an open dashboard asks |
 | The dashboard | Served by the same process, outside `/api/` | The SPA is public, stateless files plus `/config.json` (issuer, client id, audience — the same values every login redirect shows); everything with state stays behind the token check |
+| Trace ingest | Its own unauthenticated in-cluster port, never on the Gateway | Spans come from workloads already inside the cluster; an OTLP endpoint on the public Gateway would be an unauthenticated write surface on the telemetry store |
+| Saved queries | A `SavedQuery` object with no reconciler | The rule that a write waits for its reconciler is about objects that do nothing until something acts on them; a saved query has its whole effect by existing |
 | Webhook receiver | Stays signature-authenticated, not OIDC | A provider proving a payload is genuine is a different question from a caller proving who they are |
 
 ## Open
