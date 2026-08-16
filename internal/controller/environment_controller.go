@@ -290,10 +290,25 @@ func (r *EnvironmentReconciler) resolveEnv(
 			if claim.Status.SecretName == "" {
 				return nil, true, nil
 			}
+			secretName := claim.Status.SecretName
+			// A branching claim gives every preview its own database branch;
+			// the preview reads the branch's binding, and waits for it the
+			// same way an unbound claim is waited for.
+			if isPreview && claim.PreviewBranching() {
+				secretName = ""
+				for _, branch := range claim.Status.Branches {
+					if branch.Environment == env.Name {
+						secretName = branch.SecretName
+					}
+				}
+				if secretName == "" {
+					return nil, true, nil
+				}
+			}
 			out = append(out, corev1.EnvVar{
 				Name: v.Name,
 				ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: claim.Status.SecretName},
+					LocalObjectReference: corev1.LocalObjectReference{Name: secretName},
 					Key:                  v.FromResourceClaim.Key,
 				}},
 			})

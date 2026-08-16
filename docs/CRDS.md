@@ -326,18 +326,38 @@ spec:
   projectRef: { name: my-shop }
   connectionRef: { name: neon-prod }
   type: postgres
+  deletionPolicy: Retain                # Retain (default) | Delete — what deleting the claim does to the data
   config:
     previewBranching: true              # Neon: DB branch per preview Environment
 status:
-  phase: Bound
-  secretName: shop-db-binding           # per-environment keys: url, host, password...
-  conditions: [...]
+  phase: Bound                          # Pending | Bound | Failed
+  secretName: shop-db-binding           # binding keys: url, host, port, user, password, database
+  instanceID: proj-abc123               # provider-side ID, opaque; what deprovisioning addresses
+  branches:                             # one per preview Environment, with previewBranching
+    - environment: my-shop-pr-41
+      id: br-def456
+      secretName: shop-db-binding-my-shop-pr-41
+  conditions: [...]                     # Ready, Provisioned, PreviewBranchesReady
 ```
 
-Reconcile: call the plugin to provision, write bindings into a Secret in the project
-namespace, expose keys to `Project.spec.env` via `fromResourceClaim`. With
-`previewBranching`, preview Environments each get their own DB branch, cleaned up with
-the Environment — that plus preview URLs is the whole Vercel+Neon flow, self-hosted.
+Reconcile: require the `database` capability on the Connection (Pending, saying so,
+until the Connection reconciler has validated it), provision through the plugin
+(`internal/provider/database` — Neon today, generic enough for CloudNativePG), and
+write the binding into a Secret in the project namespace, whose keys
+`Project.spec.env` reads via `fromResourceClaim`. A provider refusal is phase
+`Failed` with the provider's own words in the `Ready` condition. With
+`previewBranching`, preview Environments each get their own DB branch and their own
+binding Secret (`<claim>-binding-<environment>`), which the Environment's workload
+reads instead of the shared one; the claim controller holds a finalizer on each
+branched Environment and tears branch and Secret down when the preview goes — that
+plus preview URLs is the whole Vercel+Neon flow, self-hosted.
+
+`spec.deletionPolicy` decides what deleting the *claim* does to the provisioned
+database: `Retain` (the default) keeps it at the provider, `Delete` deprovisions it
+with its data. Retain is the default because a claim can front a production
+database — destroying data is opted into, never implied. Branches and binding
+Secrets are cleaned up under either policy: they belong to the platform, not to the
+data.
 
 ---
 

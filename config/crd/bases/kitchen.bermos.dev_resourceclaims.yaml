@@ -67,6 +67,18 @@ spec:
                 required:
                 - name
                 type: object
+              deletionPolicy:
+                default: Retain
+                description: |-
+                  DeletionPolicy is what deleting the claim does to the provisioned
+                  resource. Retain is the default because a claim can own a production
+                  database: destroying data has to be opted into, never implied by
+                  removing the platform object in front of it. Preview branches and the
+                  binding Secrets are cleaned up under either policy.
+                enum:
+                - Retain
+                - Delete
+                type: string
               projectRef:
                 description: |-
                   LocalObjectReference references another Kitchen object by name within the
@@ -91,6 +103,33 @@ spec:
           status:
             description: ResourceClaimStatus defines the observed state of a ResourceClaim.
             properties:
+              branches:
+                description: |-
+                  Branches are the provider-side branches created for preview
+                  Environments, torn down with them.
+                items:
+                  description: |-
+                    ClaimBranch records one provider-side database branch the claim created for
+                    a preview Environment, and the Secret its binding was written into.
+                  properties:
+                    environment:
+                      description: Environment is the preview Environment the branch
+                        belongs to.
+                      type: string
+                    id:
+                      description: ID is the provider-side branch identifier.
+                      type: string
+                    secretName:
+                      description: |-
+                        SecretName is the per-environment binding Secret in the project
+                        namespace.
+                      type: string
+                  required:
+                  - environment
+                  - id
+                  - secretName
+                  type: object
+                type: array
               conditions:
                 items:
                   description: Condition contains details for one aspect of the current
@@ -147,6 +186,12 @@ spec:
                   - type
                   type: object
                 type: array
+              instanceID:
+                description: |-
+                  InstanceID is the provider-side identifier of the provisioned resource,
+                  opaque to the platform. It is what deprovisioning and branch operations
+                  address.
+                type: string
               phase:
                 description: ClaimPhase is the coarse lifecycle summary of a ResourceClaim.
                 enum:
