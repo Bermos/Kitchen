@@ -340,7 +340,13 @@ LIMIT {facetLimit:UInt32})`,
 	}
 	facets := make([]LogFacet, 0, len(fields))
 	for _, field := range fields {
+		// A field nothing in the window holds contributes no rows at all, and
+		// a nil slice marshals to `null` rather than `[]` — which is a facet
+		// the dashboard cannot iterate. An absent facet is an empty one.
 		values := byField[field]
+		if values == nil {
+			values = []LogFacetValue{}
+		}
 		slices.SortStableFunc(values, func(a, b LogFacetValue) int {
 			if a.Count != b.Count {
 				return cmp.Compare(b.Count, a.Count)

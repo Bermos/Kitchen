@@ -18,6 +18,7 @@ package clickhouse
 
 import (
 	"context"
+	"encoding/json"
 	"strconv"
 	"strings"
 	"testing"
@@ -138,6 +139,33 @@ func TestFacetsAreCountedOverTheWindow(t *testing.T) {
 	// One round trip, however many facets are shown.
 	if strings.Count(store.query, "UNION ALL") != 1 {
 		t.Fatalf("two facets should be one query:\n%s", store.query)
+	}
+}
+
+// A window where nothing carries a level still has a level facet, and it is an
+// empty list rather than a null: the sidebar iterates every facet it is given.
+func TestAFacetNothingHoldsIsEmptyRatherThanNull(t *testing.T) {
+	store := newFakeLogStore(t)
+	store.rows = `{"facet":"stream","value":"stderr","hits":"2"}`
+
+	facets, err := store.client(t).LogFacets(context.Background(), LogFacetQuery{
+		Fields: []string{"level", "stream"},
+	})
+	if err != nil {
+		t.Fatalf("LogFacets: %v", err)
+	}
+	if len(facets) != 2 || facets[0].Field != "level" {
+		t.Fatalf("an empty facet should still be asked and answered: %+v", facets)
+	}
+	if facets[0].Values == nil {
+		t.Fatal("an empty facet's values should be an empty list, not nil")
+	}
+	body, err := json.Marshal(facets[0])
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if !strings.Contains(string(body), `"values":[]`) {
+		t.Fatalf("an empty facet should serialise as an empty list: %s", body)
 	}
 }
 
