@@ -44,6 +44,75 @@ func TestGitHubProbeAcceptsAndReportsScopes(t *testing.T) {
 	if !strings.Contains(result.Message, "octocat") || !strings.Contains(result.Message, "admin:repo_hook") {
 		t.Errorf("expected login and scopes in message, got %q", result.Message)
 	}
+	// repo covers everything the platform does, deploy reporting included.
+	if len(result.Warnings) != 0 {
+		t.Errorf("expected no warnings for a repo-scoped token, got %v", result.Warnings)
+	}
+}
+
+// probeWithScopes runs the probe against a server that hands back the given
+// scope header. present=false is a fine-grained token, which sends no header
+// at all.
+func probeWithScopes(t *testing.T, scopes string, present bool) Result {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if present {
+			w.Header().Set("X-OAuth-Scopes", scopes)
+		}
+		_, _ = w.Write([]byte(`{"login": "octocat"}`))
+	}))
+	defer server.Close()
+	return (&GitHubProbe{APIURL: server.URL, Token: "tok"}).Probe(context.Background())
+}
+
+func TestGitHubProbeWarnsAboutWhatAScopeCannotDo(t *testing.T) {
+	// The webhook scope alone is enough for what the platform does today and
+	// for nothing it is about to do: the token stays valid, and each thing it
+	// cannot do names the scope that would fix it.
+	result := probeWithScopes(t, "admin:repo_hook", true)
+	if !result.CredentialValid {
+		t.Fatalf("a working token was not accepted: %+v", result)
+	}
+	warnings := strings.Join(result.Warnings, "\n")
+	for _, want := range []string{"commit statuses", "repo:status", "deployment statuses", "repo_deployment", "pull requests"} {
+		if !strings.Contains(warnings, want) {
+			t.Errorf("expected %q among the warnings, got %v", want, result.Warnings)
+		}
+	}
+	if strings.Contains(warnings, "webhook") {
+		t.Errorf("warned about the one thing the token can do: %v", result.Warnings)
+	}
+}
+
+func TestGitHubProbeReadsPublicRepoAsCoveringEverything(t *testing.T) {
+	if result := probeWithScopes(t, "public_repo", true); len(result.Warnings) != 0 {
+		t.Errorf("public_repo covers every use; got %v", result.Warnings)
+	}
+}
+
+func TestGitHubProbeWarnsAboutAScopelessToken(t *testing.T) {
+	result := probeWithScopes(t, "", true)
+	if len(result.Warnings) != len(githubTokenUses) {
+		t.Errorf("a token with no scopes can do nothing; got %v", result.Warnings)
+	}
+	if !strings.Contains(result.Message, "no scopes") {
+		t.Errorf("expected the message to say the token carries no scopes, got %q", result.Message)
+	}
+}
+
+func TestGitHubProbeJudgesNoFineGrainedToken(t *testing.T) {
+	// No scope header at all: GitHub offers no way to ask a fine-grained token
+	// what it may do, and a guess would be worse than silence.
+	result := probeWithScopes(t, "", false)
+	if !result.CredentialValid {
+		t.Fatalf("a working token was not accepted: %+v", result)
+	}
+	if len(result.Warnings) != 0 {
+		t.Errorf("expected no warnings for a token whose scopes cannot be read, got %v", result.Warnings)
+	}
+	if strings.Contains(result.Message, "scopes") {
+		t.Errorf("expected no scope talk for a fine-grained token, got %q", result.Message)
+	}
 }
 
 func TestGitHubProbeRejectsBadCredentials(t *testing.T) {

@@ -252,14 +252,26 @@ async function save() {
         <!-- The probe's verdict, in the provider's own words. Reachability and
              the credential are separate answers, and the alert's colour says
              which one is the problem. -->
-        <UAlert
-          v-if="testResult"
-          :color="testTone(testResult) === 'success' ? 'success' : testTone(testResult) === 'error' ? 'error' : 'warning'"
-          variant="soft"
-          :icon="testTone(testResult) === 'success' ? 'i-lucide-plug-zap' : 'i-lucide-triangle-alert'"
-          :title="testSummary(testResult)"
-          :description="testResult.message"
-        />
+        <div v-if="testResult" class="space-y-2">
+          <UAlert
+            :color="
+              testTone(testResult) === 'success' ? 'success' : testTone(testResult) === 'error' ? 'error' : 'warning'
+            "
+            variant="soft"
+            :icon="testTone(testResult) === 'success' ? 'i-lucide-plug-zap' : 'i-lucide-triangle-alert'"
+            :title="testSummary(testResult)"
+            :description="testResult.message"
+          />
+          <!-- An accepted credential that is still short of something. The
+               connection works, so this is a note beside the verdict rather
+               than a colour on it. -->
+          <ul v-if="testResult.warnings?.length" class="text-xs text-warning space-y-1 px-1">
+            <li v-for="warning in testResult.warnings" :key="warning" class="flex gap-1.5">
+              <UIcon name="i-lucide-triangle-alert" class="shrink-0 mt-0.5" />
+              <span>{{ warning }}</span>
+            </li>
+          </ul>
+        </div>
         <UAlert
           v-else-if="testError"
           color="error"

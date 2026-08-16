@@ -58,6 +58,18 @@ type Result struct {
 	// authenticates as on success, the provider's error otherwise. It never
 	// contains the credential.
 	Message string
+	// Warnings are things an accepted credential is nonetheless not allowed
+	// to do: a GitHub token that can register the repository's webhook but
+	// could not post a commit status. They are not failures — the platform
+	// works — and exist so a token is fixed while someone is looking at it
+	// rather than at the first request that needs the permission.
+	Warnings []string
+}
+
+// withWarnings attaches what an accepted credential still cannot do.
+func (r Result) withWarnings(warnings ...string) Result {
+	r.Warnings = append(r.Warnings, warnings...)
+	return r
 }
 
 // Probe validates one Connection's credential against the live provider.

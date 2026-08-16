@@ -133,6 +133,25 @@ var _ = Describe("Connection Controller", func() {
 			Expect(result.RequeueAfter).To(Equal(connectionRecheckInterval))
 		})
 
+		It("keeps a credential valid while saying what its scopes cannot do", func() {
+			// A token scoped for webhooks alone: enough for what the platform
+			// does today, short of what deploy reporting will need. That is a
+			// note on a green condition, never a red one.
+			narrow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("X-OAuth-Scopes", "admin:repo_hook")
+				_, _ = w.Write([]byte(`{"login": "octocat"}`))
+			}))
+			DeferCleanup(narrow.Close)
+
+			key := createGitHubConnection("gh-narrow", goodToken, narrow.URL)
+			reconcileOnce(key)
+
+			valid := meta.FindStatusCondition(getConnection(key).Status.Conditions, condCredentialsValid)
+			Expect(valid.Status).To(Equal(metav1.ConditionTrue))
+			Expect(valid.Message).To(ContainSubstring("octocat"))
+			Expect(valid.Message).To(ContainSubstring("repo:status"))
+		})
+
 		It("marks a rejected credential invalid on a provider that answered", func() {
 			key := createGitHubConnection("gh-bad", "the-wrong-token", github.URL)
 			reconcileOnce(key)

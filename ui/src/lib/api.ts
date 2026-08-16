@@ -246,6 +246,10 @@ export interface ConnectionTestResult {
   credentialChecked: boolean;
   credentialValid: boolean;
   message: string;
+  /** What an accepted credential still cannot do — a token that registers
+   * webhooks but could not post a commit status. The connection works;
+   * something the platform wants would not. */
+  warnings?: string[];
 }
 
 /** The DNS change that proves ownership of a custom domain, exactly as the
