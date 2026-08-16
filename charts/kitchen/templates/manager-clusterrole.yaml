@@ -34,6 +34,12 @@ rules:
 - apiGroups:
   - ""
   resources:
+  - nodes/proxy
+  verbs:
+  - get
+- apiGroups:
+  - ""
+  resources:
   - secrets
   - services
   verbs:

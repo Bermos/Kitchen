@@ -1,0 +1,33 @@
+{{- include "kitchen.validate" . -}}
+{{- if .Values.kitchen.observability.traces.enabled }}
+# The address instrumented applications export their spans to.
+#
+# It is a ClusterIP and deliberately has no HTTPRoute: spans come from
+# workloads that are already inside the cluster, and an OTLP endpoint on the
+# public Gateway would be an unauthenticated write surface on the telemetry
+# store. Every environment the operator deploys is handed this name through
+# OTLP's own environment variables, so nothing has to look it up.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "kitchen.otlpServiceName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kitchen.labels" . | nindent 4 }}
+    app.kubernetes.io/component: otlp
+  {{- with .Values.kitchen.observability.traces.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "kitchen.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: otlp-http
+      # OTLP/HTTP's registered port, on both sides: an SDK given only a
+      # hostname appends it, and the receiver binds it.
+      port: {{ int .Values.kitchen.observability.traces.port }}
+      targetPort: otlp
+      protocol: TCP
+{{- end }}

@@ -156,6 +156,33 @@ data:
             }
           }
 
+          # The line's trace and span ids, lifted into columns of their own.
+          #
+          # They are the one structured field asked for by exact value from
+          # outside the log page — a span offering its lines, a line offering
+          # its trace — and that lookup wants an indexed column rather than a
+          # map probe over the window. Every common spelling is accepted
+          # because the name is the instrumentation library's choice, not the
+          # application's: OpenTelemetry's own SDKs write `trace_id`, Go's
+          # slog handlers tend to `traceID`, and JSON loggers configured by
+          # hand write whatever was typed.
+          #
+          # They stay in `fields` as well. Removing them would make a line's
+          # expanded fields disagree with the JSON it was parsed from, which
+          # is a worse surprise than a duplicated value.
+          .traceId = ""
+          .spanId = ""
+          for_each([{{ range $i, $key := .Values.logs.traceIdFields }}{{ if $i }}, {{ end }}{{ $key | quote }}{{ end }}]) -> |_index, key| {
+            if .traceId == "" {
+              .traceId = to_string(get(.fields, [key]) ?? "") ?? ""
+            }
+          }
+          for_each([{{ range $i, $key := .Values.logs.spanIdFields }}{{ if $i }}, {{ end }}{{ $key | quote }}{{ end }}]) -> |_index, key| {
+            if .spanId == "" {
+              .spanId = to_string(get(.fields, [key]) ?? "") ?? ""
+            }
+          }
+
           # Everything the table has no column for. The sink skips unknown
           # fields anyway; dropping them here keeps the wire small.
           del(.kubernetes)
