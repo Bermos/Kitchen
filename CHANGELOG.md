@@ -1,5 +1,44 @@
 # Changelog
 
+## [0.4.0](https://github.com/Bermos/Kitchen/compare/v0.3.0...v0.4.0) (2026-08-16)
+
+
+### Features
+
+* **api:** attach and detach custom domains ([ab00c6e](https://github.com/Bermos/Kitchen/commit/ab00c6ea29912958eb5b38941e53bf9436ef4c0c))
+* **api:** create and delete resource claims ([98b1791](https://github.com/Bermos/Kitchen/commit/98b17914edd9727187b61743ca2fd72116525d94))
+* **api:** name a query worth keeping ([734f3a8](https://github.com/Bermos/Kitchen/commit/734f3a828151c4ec1d48c2633b4322dc3609a1c2))
+* **api:** serve resource history and traces ([7036059](https://github.com/Bermos/Kitchen/commit/70360598763030a8a6b6ae2651cf66a329f5b0b2))
+* **api:** test a connection's credential without storing it ([e54b983](https://github.com/Bermos/Kitchen/commit/e54b983147d19deae9607a2e9988f9100c538491))
+* **api:** warn when a connection's token cannot report deploys ([18afc14](https://github.com/Bermos/Kitchen/commit/18afc1491da2b6207352b1c674cdfe5cc78951bb))
+* **chart:** run the trace receiver and lift trace ids out of log lines ([2fd9408](https://github.com/Bermos/Kitchen/commit/2fd9408397f3c7ed510d389c29ef065cde2f2b1e))
+* **chart:** switch cert-manager's Gateway API support on ([8f5d5d6](https://github.com/Bermos/Kitchen/commit/8f5d5d6d9b7ef6f9a3e94298225e528324d8b54f))
+* **operator:** add a generic database provisioner with a neon implementation ([c53ec36](https://github.com/Bermos/Kitchen/commit/c53ec36a5f86e28ceeb7d1ebde117fc769b7d990))
+* **operator:** bind resource claims and branch databases per preview ([bb195e0](https://github.com/Bermos/Kitchen/commit/bb195e0f14e8c07a05a63925aec4b9d892bd6b01))
+* **operator:** collect resource usage and traces into the store ([e13251e](https://github.com/Bermos/Kitchen/commit/e13251e018a9cc66bc45c106006916bf5560cf10))
+* **operator:** validate connection credentials against their providers ([d1abb82](https://github.com/Bermos/Kitchen/commit/d1abb82afc6f0cdb2ef37d19e2a577b958f83628))
+* **operator:** verify, certify and route custom domains ([c816be5](https://github.com/Bermos/Kitchen/commit/c816be5053a0c4ed2de5e7983df6d31cfbf2e473))
+* **ui:** attach custom domains from the environment screen ([f9517dc](https://github.com/Bermos/Kitchen/commit/f9517dc29f0277ec17773cf65f6ad0e2a5916fdd))
+* **ui:** keep a question, and find it again ([0f74d5a](https://github.com/Bermos/Kitchen/commit/0f74d5a9bc3be334044ada4b5c0e632a19df9c00))
+* **ui:** make a broken connection legible on the connections page ([13dff26](https://github.com/Bermos/Kitchen/commit/13dff26526d1494822b0df048a64446a59d6a3ed))
+* **ui:** manage resource claims from the project screen ([4af3527](https://github.com/Bermos/Kitchen/commit/4af3527ec4bcf61c4e23f15d24d4a83a0b0f81fe))
+* **ui:** say what a connection's token needs, and test it ([610abba](https://github.com/Bermos/Kitchen/commit/610abba25875d8603d8703e5d057c7aca020d13d))
+* **ui:** show an environment's history and the requests behind it ([e1ef0af](https://github.com/Bermos/Kitchen/commit/e1ef0af57a42413fa1d8e35044755365987ed523))
+
+
+### Bug fixes
+
+* **api:** serialise an empty log facet as a list, not null ([d6f65c5](https://github.com/Bermos/Kitchen/commit/d6f65c59d92bd873add255a3907d2299baf4f444))
+* **operator:** keep sampling and traces on through an upgrade ([b8f7ff2](https://github.com/Bermos/Kitchen/commit/b8f7ff288b4ff9127179217810033b797b1cece8))
+* **operator:** let the operator create the database it was pointed at ([9dc4981](https://github.com/Bermos/Kitchen/commit/9dc49817a60acdae56f86ea347f0eaa05c279847))
+
+
+### Documentation
+
+* count the connection reconciler among the ones that exist ([99c6e93](https://github.com/Bermos/Kitchen/commit/99c6e935b6b3192631ba6a217325861b4eb2d702))
+* stop calling the reconcilers stubs ([53dda81](https://github.com/Bermos/Kitchen/commit/53dda8102a94b4c75dbac5725d7eb3f48100c5cc))
+* write down the telemetry the store actually holds now ([1277e63](https://github.com/Bermos/Kitchen/commit/1277e6317a432d17d84ec7f31a5192deccdc588d))
+
 ## [0.3.0](https://github.com/Bermos/Kitchen/compare/v0.2.0...v0.3.0) (2026-08-16)
 
 
