@@ -51,6 +51,7 @@ import (
 	"github.com/Bermos/Kitchen/internal/chartrepo"
 	"github.com/Bermos/Kitchen/internal/clickhouse"
 	"github.com/Bermos/Kitchen/internal/controller"
+	"github.com/Bermos/Kitchen/internal/provider"
 )
 
 // maxRequestBody bounds the request bodies the API accepts. Everything it
@@ -83,6 +84,11 @@ type Server struct {
 	// Activity records the writes this API carries out — a project created,
 	// a release promoted — into the platform's activity feed. May be nil.
 	Activity *activity.Recorder
+
+	// Probes resolves the credential probe a connection test runs, the same
+	// way the ConnectionReconciler does. Nil means provider.Default; tests
+	// inject fakes.
+	Probes provider.Factory
 
 	// Version is the release this binary was built from, reported by the
 	// updates endpoints as what the platform is currently running.
@@ -230,6 +236,7 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("GET /api/v1/connections", s.listConnections)
 	mux.HandleFunc("POST /api/v1/connections", s.createConnection)
+	mux.HandleFunc("POST /api/v1/connections/test", s.testConnection)
 	mux.HandleFunc("GET /api/v1/connections/{name}", s.getConnection)
 	mux.HandleFunc("PATCH /api/v1/connections/{name}", s.patchConnection)
 	mux.HandleFunc("DELETE /api/v1/connections/{name}", s.deleteConnection)

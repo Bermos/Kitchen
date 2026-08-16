@@ -109,6 +109,7 @@ sent the request.
 | GET | `/updates/{name}` | One upgrade |
 | GET | `/connections` | Every connection (never their credentials) |
 | POST | `/connections` | Create one — the credential goes in, and never comes back out |
+| POST | `/connections/test` | Try a credential against its provider, storing nothing |
 | GET | `/connections/{name}` | One connection |
 | PATCH | `/connections/{name}` | Rotate the credential, change the config, or both |
 | DELETE | `/connections/{name}` | Delete it, unless something still uses it |
@@ -305,6 +306,36 @@ is what builds authenticate against:
 
 `config` is the provider's own configuration and passes through as given — a
 self-hosted GitHub names its API endpoint as `{"apiUrl": "https://github.internal/api/v3"}`.
+
+A `github` token registers the repository's webhook and reads the repository,
+so it needs **Contents: read-only** and **Webhooks: read and write** as a
+fine-grained token, or the `repo` scope — which already covers webhooks — as a
+classic one; `admin:repo_hook` alone is enough for a public repository. A
+`neon` credential is an API key that can create projects.
+
+`POST /connections/test` runs that credential past the provider **without
+storing anything**: no Secret is written and no connection is created, so a
+token that turns out to be wrong leaves nothing to clean up. It takes the same
+`provider`, `config` and `credential` a create does — or just the `name` of a
+connection that exists, to re-check the credential already stored for it:
+
+```sh
+curl -sS -X POST -H "authorization: Bearer $TOKEN" \
+  -d '{"provider": "github", "credential": {"token": "github_pat_…"}}' \
+  https://kitchen.apps.example.com/api/v1/connections/test
+{"reachable": true, "credentialChecked": true, "credentialValid": true,
+ "message": "authenticated as octocat (token scopes: admin:repo_hook, repo)"}
+```
+
+The verdict comes in the same three parts the `Connected` and
+`CredentialsValid` conditions are written from, because it is the same probe
+the `ConnectionReconciler` runs: a provider that is down
+(`reachable: false`), one that answered without ruling
+(`credentialChecked: false` — including a provider the platform does not
+implement yet), and one that refused the credential are three different
+answers. `message` is the provider's own words and never contains the
+credential. A malformed request — a provider nothing knows, a token provider
+given a username — is a `400`.
 
 `PATCH /connections/{name}` rotates the credential (`credential`), replaces
 the config (`config`), or both; fields left out keep what is stored. The
