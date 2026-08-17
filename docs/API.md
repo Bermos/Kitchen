@@ -314,14 +314,14 @@ is what builds authenticate against:
 self-hosted GitHub names its API endpoint as `{"apiUrl": "https://github.internal/api/v3"}`.
 
 A `github` token registers the repository's webhook, reads the repository, and
-— once deploy reporting lands ([#71](https://github.com/Bermos/Kitchen/issues/71))
-— posts the commit status, the deployment and the pull-request comment. As a
+posts the commit status, the deployment and the pull-request comment. As a
 fine-grained token that is **Contents: read-only**, **Webhooks: read and
 write**, and **Commit statuses**, **Deployments** and **Pull requests: read and
 write**; as a classic one the `repo` scope covers all of it, or `public_repo`
-where every repository is public. Only the webhook permission is exercised
-today; the rest is asked for now so a token does not have to be minted twice. A
-`neon` credential is an API key that can create projects.
+where every repository is public. A token short of the reporting permissions
+still builds and deploys — the connection carries a warning saying what it
+cannot post, and nothing goes red. A `neon` credential is an API key that can
+create projects.
 
 `POST /connections/test` runs that credential past the provider **without
 storing anything**: no Secret is written and no connection is created, so a

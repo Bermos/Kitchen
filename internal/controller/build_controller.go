@@ -39,6 +39,7 @@ import (
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/activity"
 	"github.com/Bermos/Kitchen/internal/clickhouse"
+	"github.com/Bermos/Kitchen/internal/gitprovider"
 )
 
 const (
@@ -59,6 +60,12 @@ const (
 	// object names no limit. It is exported because the API reports the queue
 	// against it, and a status bar reading "1 of 0" would be its own bug.
 	DefaultBuildConcurrency = 2
+
+	// reasonBuildFailed marks the one failure that is the repository's own:
+	// the build ran and the image did not come out. Every other reason is
+	// the platform failing to run it at all, which reports differently on
+	// the commit.
+	reasonBuildFailed = "BuildFailed"
 )
 
 // registryConfig is the expected shape of a dockerRegistry Connection's config.
@@ -76,6 +83,16 @@ type BuildReconciler struct {
 	Scheme *runtime.Scheme
 	// Activity feeds the dashboard's recent-activity feed. May be nil.
 	Activity *activity.Recorder
+	// GitProviders resolves a Provider for a Connection, for reporting the
+	// build's outcome back onto its commit. Defaults to gitprovider.Default;
+	// tests inject fakes.
+	GitProviders gitprovider.Factory
+}
+
+// git reports the build's progress back to the repository the commit came
+// from. Posting is best effort: it never fails a build.
+func (r *BuildReconciler) git() gitReporting {
+	return gitReporting{Client: r.Client, Factory: r.GitProviders}
 }
 
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=builds,verbs=get;list;watch;create;update;patch;delete
@@ -111,7 +128,7 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		strategy = kitchenv1alpha1.BuildStrategyDockerfile
 	}
 	if strategy != kitchenv1alpha1.BuildStrategyDockerfile {
-		return r.fail(ctx, build, "StrategyUnsupported",
+		return r.fail(ctx, build, project, "StrategyUnsupported",
 			fmt.Sprintf("build strategy %q is not supported yet", strategy))
 	}
 
@@ -152,6 +169,10 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 			Type: condReady, Status: metav1.ConditionFalse, Reason: "BuildRunning",
 			Message: "build job is running", ObservedGeneration: build.Generation,
 		})
+		// The commit gets its pending check here and its verdict when the
+		// job finishes: both phases are entered once, since a terminal
+		// Build returns above and a running one never comes back here.
+		r.git().reportBuild(ctx, project, build, gitprovider.CommitPending, "the build is running")
 		return ctrl.Result{}, r.Status().Update(ctx, build)
 	case err != nil:
 		return ctrl.Result{}, err
@@ -162,7 +183,7 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	case complete:
 		return r.succeed(ctx, build, project, job, appNS, tagRef)
 	case failed:
-		return r.fail(ctx, build, "BuildFailed", message)
+		return r.fail(ctx, build, project, reasonBuildFailed, message)
 	default:
 		if build.Status.Phase != kitchenv1alpha1.BuildRunning {
 			build.Status.Phase = kitchenv1alpha1.BuildRunning
@@ -381,6 +402,7 @@ func (r *BuildReconciler) succeed(
 		Message: fmt.Sprintf("build %s succeeded", build.Name),
 		Value:   buildDurationSeconds(build),
 	})
+	r.git().reportBuild(ctx, project, build, gitprovider.CommitSuccess, succeededDescription(build))
 	return ctrl.Result{}, r.Status().Update(ctx, build)
 }
 
@@ -536,6 +558,7 @@ func (r *BuildReconciler) pending(
 func (r *BuildReconciler) fail(
 	ctx context.Context,
 	build *kitchenv1alpha1.Build,
+	project *kitchenv1alpha1.Project,
 	reason, message string,
 ) (ctrl.Result, error) {
 	build.Status.Phase = kitchenv1alpha1.BuildFailed
@@ -544,6 +567,14 @@ func (r *BuildReconciler) fail(
 		Type: condReady, Status: metav1.ConditionFalse, Reason: reason,
 		Message: message, ObservedGeneration: build.Generation,
 	})
+	// A build the platform could not run at all is an error rather than a
+	// failure: the distinction is the provider's, and it separates "your
+	// Dockerfile is broken" from "the platform is".
+	state := gitprovider.CommitFailure
+	if reason != reasonBuildFailed {
+		state = gitprovider.CommitError
+	}
+	r.git().reportBuild(ctx, project, build, state, message)
 	r.Activity.Record(ctx, clickhouse.Event{
 		Type:    clickhouse.EventBuildFailed,
 		Project: build.Spec.ProjectRef.Name,
@@ -552,6 +583,17 @@ func (r *BuildReconciler) fail(
 		Value:   buildDurationSeconds(build),
 	})
 	return ctrl.Result{}, r.Status().Update(ctx, build)
+}
+
+// succeededDescription is the line a status check carries on a green build.
+// How long it took is the one thing a reader of a commit wants from it that
+// the commit does not already say.
+func succeededDescription(build *kitchenv1alpha1.Build) string {
+	seconds := buildDurationSeconds(build)
+	if seconds <= 0 {
+		return "the image was built and pushed"
+	}
+	return fmt.Sprintf("image built and pushed in %s", (time.Duration(seconds) * time.Second).String())
 }
 
 // buildDurationSeconds is how long a finished build ran, 0 when unknown.

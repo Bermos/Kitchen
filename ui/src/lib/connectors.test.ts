@@ -15,14 +15,15 @@ describe("connectors", () => {
     expect(guidance?.link?.href).toContain("contents=read");
   });
 
-  it("asks for the deploy-reporting permissions before deploy reporting exists", () => {
-    // A token minted today should not have to be minted again when the commit
-    // status, the deployment and the pull-request comment start being posted.
+  it("asks for the deploy-reporting permissions", () => {
+    // The commit status, the deployment and the pull-request comment are each
+    // posted with this token, and each needs its own permission.
     const guidance = providerGuidance("github");
     for (const permission of ["statuses=write", "deployments=write", "pull_requests=write"]) {
       expect(guidance?.link?.href).toContain(permission);
     }
-    expect(guidance?.permissions.join(" ")).toContain("Only the webhook permission is used today");
+    // Short of them the platform still deploys; it just goes unannounced.
+    expect(guidance?.permissions.join(" ")).toContain("still builds and deploys");
   });
 
   it("points a self-hosted GitHub at its own token page", () => {

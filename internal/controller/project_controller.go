@@ -278,18 +278,13 @@ func (r *ProjectReconciler) checkConnection(
 		setCond(condType, metav1.ConditionFalse, "ConnectionMissing", err.Error())
 		return nil, err
 	}
-	if len(conn.Status.Capabilities) > 0 {
-		found := false
-		for _, c := range conn.Status.Capabilities {
-			if c == capability {
-				found = true
-			}
-		}
-		if !found {
-			err := fmt.Errorf("connection %q does not provide the %s capability", name, capability)
-			setCond(condType, metav1.ConditionFalse, "CapabilityMissing", err.Error())
-			return nil, err
-		}
+	// A Connection whose reconciler has not looked at it yet claims nothing,
+	// which is not the same as claiming it cannot: the project waits for the
+	// verdict rather than being refused on an empty one.
+	if len(conn.Status.Capabilities) > 0 && !connectionProvides(conn, capability) {
+		err := fmt.Errorf("connection %q does not provide the %s capability", name, capability)
+		setCond(condType, metav1.ConditionFalse, "CapabilityMissing", err.Error())
+		return nil, err
 	}
 	setCond(condType, metav1.ConditionTrue, "Connected", "connection is available")
 	return conn, nil
