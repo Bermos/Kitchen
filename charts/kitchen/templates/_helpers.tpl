@@ -384,30 +384,73 @@ one it was pointed at. Both cases produce the same connection secret.
 {{- end }}
 
 {{/*
-The log collector. It is only rendered when there is somewhere to ship to:
+The telemetry agent. It is only rendered when there is somewhere to ship to:
 `clickhouse.acknowledgeNoStore` is an explicit choice to install without
 telemetry, and a DaemonSet crash-looping against a store that does not exist
 is not a useful way to report that.
 */}}
-{{- define "kitchen.logsEnabled" -}}
-{{- if and .Values.logs.enabled (eq (include "kitchen.hasTelemetryStore" .) "true") }}true{{ end }}
+{{- define "kitchen.collectorEnabled" -}}
+{{- if and .Values.collector.enabled (eq (include "kitchen.hasTelemetryStore" .) "true") }}true{{ end }}
 {{- end }}
 
-{{- define "kitchen.logsFullname" -}}
-{{- printf "%s-logs" (include "kitchen.fullname" .) }}
+{{- define "kitchen.collectorFullname" -}}
+{{- printf "%s-collector" (include "kitchen.fullname" .) }}
 {{- end }}
 
-{{- define "kitchen.logsSelectorLabels" -}}
-app.kubernetes.io/name: {{ include "kitchen.name" . }}-logs
+{{- define "kitchen.collectorSelectorLabels" -}}
+app.kubernetes.io/name: {{ include "kitchen.name" . }}-collector
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
-{{- define "kitchen.logsServiceAccountName" -}}
-{{- if .Values.logs.serviceAccount.create }}
-{{- default (include "kitchen.logsFullname" .) .Values.logs.serviceAccount.name }}
+{{- define "kitchen.collectorServiceAccountName" -}}
+{{- if .Values.collector.serviceAccount.create }}
+{{- default (include "kitchen.collectorFullname" .) .Values.collector.serviceAccount.name }}
 {{- else }}
-{{- default "default" .Values.logs.serviceAccount.name }}
+{{- default "default" .Values.collector.serviceAccount.name }}
 {{- end }}
+{{- end }}
+
+{{/*
+Where the collector keeps its file offsets inside the container, and the port
+its health endpoint answers on. Neither is configurable: the first is the mount
+point of a hostPath whose node-side path is, and the second is reached only by
+the kubelet's probes.
+*/}}
+{{- define "kitchen.collectorStateDir" -}}
+/var/lib/otelcol
+{{- end }}
+
+{{- define "kitchen.collectorHealthPort" -}}
+13133
+{{- end }}
+
+{{/*
+`kitchen.source`: what produced a signal, so the dashboard can ask for one kind
+without knowing which labels imply it. k8s_attributes cannot express a
+conditional, which is why this one attribute is OTTL.
+
+The chain reads as an if/else-if: the namespace decides first, then a build
+label, then any project or environment, and everything else is the cluster's.
+That last name matters — the agent tails every container on the
+node, so "no Kitchen label" is not "a platform component", it is Cilium,
+cert-manager, a CSI sidecar, whatever else the cluster runs. Calling those
+`platform` made the platform's own diagnostic facet return the entire cluster,
+and other people's warnings read as Kitchen faults.
+
+Every statement is guarded on the attribute still being unset, which is what
+makes the chain an if/else-if — and also what leaves alone a value the sender
+supplied: the operator stamps `kitchen.source` on the usage metrics it exports
+over OTLP, and those describe a pod other than the one that sent them.
+
+Paths are written `resource.attributes[...]` even though the statements
+declare `context: resource`. An unqualified path still works, but the parser
+rewrites it and logs what it rewrote on every start.
+*/}}
+{{- define "kitchen.collectorSourceStatements" -}}
+- set(resource.attributes["kitchen.source"], "platform") where resource.attributes["kitchen.source"] == nil and resource.attributes["k8s.namespace.name"] == {{ .Release.Namespace | quote }}
+- set(resource.attributes["kitchen.source"], "build") where resource.attributes["kitchen.source"] == nil and resource.attributes["kitchen.build"] != nil
+- set(resource.attributes["kitchen.source"], "runtime") where resource.attributes["kitchen.source"] == nil and (resource.attributes["kitchen.project"] != nil or resource.attributes["deployment.environment.name"] != nil)
+- set(resource.attributes["kitchen.source"], "cluster") where resource.attributes["kitchen.source"] == nil
 {{- end }}
 
 {{/*
@@ -488,14 +531,25 @@ does not run in.
 {{- if and .Values.namespace.create (not (has .Values.namespace.podSecurity (list "privileged" "baseline" "restricted"))) }}
 {{- fail (printf "namespace.podSecurity must be one of privileged, baseline, restricted (got %q)" .Values.namespace.podSecurity) }}
 {{- end }}
-{{- if and .Values.namespace.create .Values.logs.enabled (ne .Values.namespace.podSecurity "privileged") }}
-{{- fail (printf "namespace.podSecurity is %q but logs.enabled is true: the collector mounts the node's /var/log, and Pod Security admits hostPath at the privileged level alone, so its pods would be refused at admission and no logs would be collected. Set namespace.podSecurity=privileged, or logs.enabled=false." .Values.namespace.podSecurity) }}
+{{- if and .Values.namespace.create .Values.collector.enabled (ne .Values.namespace.podSecurity "privileged") }}
+{{- fail (printf "namespace.podSecurity is %q but collector.enabled is true: the telemetry agent mounts the node's log directory and root filesystem, and Pod Security admits hostPath at the privileged level alone, so its pods would be refused at admission and no logs, metrics or traces would be collected at all. Set namespace.podSecurity=privileged, or collector.enabled=false." .Values.namespace.podSecurity) }}
 {{- end }}
-{{- if and .Values.logs.enabled (lt (int .Values.logs.batch.maxEvents) 1) }}
-{{- fail "logs.batch.maxEvents must be at least 1: a batch of nothing never ships." }}
+{{- if .Values.collector.enabled }}
+{{- if lt (int .Values.collector.export.batch.minSize) 1 }}
+{{- fail "collector.export.batch.minSize must be at least 1: a batch of nothing never ships." }}
 {{- end }}
-{{- if and .Values.logs.enabled (lt (int .Values.logs.buffer.maxEvents) (int .Values.logs.batch.maxEvents)) }}
-{{- fail "logs.buffer.maxEvents must be at least logs.batch.maxEvents, otherwise the collector drops events it could never batch up." }}
+{{- if lt (int .Values.collector.export.queueSize) (int .Values.collector.export.batch.minSize) }}
+{{- fail "collector.export.queueSize must be at least collector.export.batch.minSize, otherwise the queue is full before it holds a batch and the collector drops signals it could never have written." }}
+{{- end }}
+{{- if and (gt (int .Values.collector.export.batch.maxSize) 0) (lt (int .Values.collector.export.batch.maxSize) (int .Values.collector.export.batch.minSize)) }}
+{{- fail "collector.export.batch.maxSize must be 0 (no ceiling) or at least collector.export.batch.minSize: a ceiling below the floor is a batch that can never be formed." }}
+{{- end }}
+{{- if lt (int .Values.collector.metrics.intervalSeconds) 1 }}
+{{- fail "collector.metrics.intervalSeconds must be at least 1: a scrape interval of zero is not a scrape." }}
+{{- end }}
+{{- if eq (int .Values.collector.otlp.grpcPort) (int .Values.kitchen.observability.traces.port) }}
+{{- fail (printf "collector.otlp.grpcPort and kitchen.observability.traces.port are both %d: OTLP/gRPC and OTLP/HTTP are two listeners in one container, so they cannot share a port." (int .Values.collector.otlp.grpcPort)) }}
+{{- end }}
 {{- end }}
 {{- if and .Values.postgres.enabled .Values.postgres.external.host }}
 {{- fail "postgres.enabled and postgres.external.host are mutually exclusive: either the chart runs Postgres or it points at yours." }}

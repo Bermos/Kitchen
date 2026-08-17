@@ -85,10 +85,16 @@ jobs:
                  --set clickhouse.auth.password=hunter2
           render ${CHART_BASE} ${CHART_ACME} \
                  --set clickhouse.enabled=false --set clickhouse.acknowledgeNoStore=true
-          render ${CHART_BASE} ${CHART_ACME} --set logs.enabled=false
+          render ${CHART_BASE} ${CHART_ACME} --set collector.enabled=false
           render ${CHART_BASE} ${CHART_ACME} \
-                 --set logs.extraLabelSelector=app.kubernetes.io/part-of=kitchen \
-                 --set logs.extraFieldSelector=metadata.namespace!=kube-system
+                 --set 'collector.logs.excludeNamespaces={kube-system}' \
+                 --set 'collector.logs.exclude={/var/log/pods/*_noisy-*/**/*.log}'
+          # One signal at a time: each pipeline keeps its OTLP receiver, so
+          # none of these leaves a pipeline with nothing feeding it.
+          render ${CHART_BASE} ${CHART_ACME} --set collector.logs.enabled=false
+          render ${CHART_BASE} ${CHART_ACME} \
+                 --set collector.metrics.kubelet.enabled=false \
+                 --set collector.metrics.node.enabled=false
           render ${CHART_BASE} ${CHART_ACME} \
                  --set auth.enabled=false --set postgres.enabled=false \
                  --set previewGate.enabled=false
@@ -193,13 +199,14 @@ jobs:
           namespace=$(helm template kitchen charts/kitchen --namespace kitchen-system \
             ${CHART_BASE} ${CHART_ACME} -s templates/namespace.yaml)
 
-          # hostPath is admitted at the privileged level alone, and the log
-          # collector mounts the node's /var/log. Anything stricter here and
-          # its pods are refused at admission — with no pod created, so
-          # nothing anywhere looks unhealthy.
+          # hostPath is admitted at the privileged level alone, and the
+          # telemetry agent mounts the node's log directory and root
+          # filesystem. Anything stricter here and its pods are refused at
+          # admission — with no pod created, so nothing anywhere looks
+          # unhealthy.
           echo "${namespace}" | grep -q 'pod-security.kubernetes.io/enforce: "privileged"' || {
             echo "::error::the platform namespace must enforce privileged Pod Security by default," \
-                 "or the log collector's pods are refused at admission."
+                 "or the telemetry agent's pods are refused at admission."
             exit 1
           }
           # Without this the namespace is deleted with the release, and the
@@ -210,12 +217,12 @@ jobs:
             exit 1
           }
 
-          # A stricter level with the collector still on is a silent no-logs
+          # A stricter level with the agent still on is a silent no-telemetry
           # install, so the chart refuses to render it.
           if helm template kitchen charts/kitchen --namespace kitchen-system \
               ${CHART_BASE} ${CHART_ACME} \
               --set namespace.podSecurity=baseline >/dev/null 2>&1; then
-            echo "::error::expected rendering to fail: namespace.podSecurity=baseline with logs enabled"
+            echo "::error::expected rendering to fail: namespace.podSecurity=baseline with the collector enabled"
             exit 1
           fi
 
@@ -227,14 +234,29 @@ jobs:
               | grep -c 'kind: DaemonSet' || true
           }
           [ "$(collector ${CHART_BASE} ${CHART_ACME})" = 1 ] || {
-            echo "::error::the log collector should be installed by default"
+            echo "::error::the telemetry agent should be installed by default"
             exit 1
           }
           # Acknowledging no telemetry store must not leave a DaemonSet
           # crash-looping against a ClickHouse that was never installed.
           [ "$(collector ${CHART_BASE} ${CHART_ACME} \
                  --set clickhouse.enabled=false --set clickhouse.acknowledgeNoStore=true)" = 0 ] || {
-            echo "::error::the log collector was rendered without a telemetry store"
+            echo "::error::the telemetry agent was rendered without a telemetry store"
+            exit 1
+          }
+          # The OTLP Service fronts the agent, so it must not outlive it: a
+          # name that resolves to no endpoints is a worse answer for an
+          # application's exporter than a name that does not resolve.
+          otlp() {
+            helm template kitchen charts/kitchen --namespace kitchen-system "$@" \
+              -s templates/service-otlp.yaml 2>/dev/null | grep -c 'kind: Service' || true
+          }
+          [ "$(otlp ${CHART_BASE} ${CHART_ACME})" = 1 ] || {
+            echo "::error::the OTLP Service should be installed by default"
+            exit 1
+          }
+          [ "$(otlp ${CHART_BASE} ${CHART_ACME} --set collector.enabled=false)" = 0 ] || {
+            echo "::error::the OTLP Service was rendered with no agent behind it"
             exit 1
           }
 
@@ -307,9 +329,13 @@ jobs:
           # No telemetry store at all, unacknowledged.
           expect_failure kitchen-system ${CHART_BASE} ${CHART_ACME} \
             --set clickhouse.enabled=false
-          # A collector buffer too small to hold a single batch.
+          # An export queue too small to hold a single batch.
           expect_failure kitchen-system ${CHART_BASE} ${CHART_ACME} \
-            --set logs.batch.maxEvents=5000 --set logs.buffer.maxEvents=100
+            --set collector.export.batch.minSize=5000 --set collector.export.queueSize=100
+          # OTLP/gRPC and OTLP/HTTP on one port, which is two listeners in one
+          # container and one of them never binding.
+          expect_failure kitchen-system ${CHART_BASE} ${CHART_ACME} \
+            --set collector.otlp.grpcPort=4318
           # The identity provider without a database to keep accounts in.
           expect_failure kitchen-system ${CHART_BASE} ${CHART_ACME} \
             --set postgres.enabled=false
@@ -409,7 +435,7 @@ jobs:
           }
           clickhouse_image=$(template templates/clickhouse/statefulset.yaml)
           postgres_image=$(template templates/postgres/statefulset.yaml)
-          collector_image=$(template templates/logs/daemonset.yaml)
+          collector_image=$(template templates/collector/daemonset.yaml)
           # The scale-to-zero step later installs the HTTP add-on as its own
           # release and waits for the interceptor, so its image is on that
           # step's critical path even though this install has nothing to do
@@ -739,7 +765,7 @@ jobs:
               ;;
           esac
 
-      - name: Verify the log pipeline
+      - name: Verify the telemetry pipeline
         run: |
           set -euo pipefail
           password=$(kubectl -n kitchen-system get secret kitchen-clickhouse \
@@ -750,24 +776,29 @@ jobs:
               --database kitchen --query "$1"
           }
 
-          kubectl -n kitchen-system rollout status ds/kitchen-logs --timeout=5m
+          kubectl -n kitchen-system rollout status ds/kitchen-collector --timeout=5m
 
           # The operator applies the schema from the Kitchen object, so the
           # table carries the chart's default retention. The Kitchen object is
           # a post-install hook and the reconcile that follows it takes as long
           # as ClickHouse takes to accept a connection, so wait for the table
           # rather than reading once and calling an empty answer a failure.
+          #
+          # The agent cannot connect until that has happened at all — with
+          # create_schema off the exporter opens the database directly — so a
+          # collector that restarts a few times here is the ordering, not a
+          # fault.
           engine=""
           for _ in $(seq 30); do
-            engine=$(ch "SELECT engine_full FROM system.tables WHERE database = 'kitchen' AND name = 'logs'")
+            engine=$(ch "SELECT engine_full FROM system.tables WHERE database = 'kitchen' AND name = 'otel_logs'")
             case "${engine}" in *"toIntervalDay(30)"*) break ;; esac
             sleep 5
           done
-          echo "logs engine: ${engine}"
+          echo "otel_logs engine: ${engine}"
           case "${engine}" in
             *"toIntervalDay(30)"*) ;;
             *)
-              echo "::error::the logs table is missing the 30 day TTL"
+              echo "::error::the otel_logs table is missing the 30 day TTL"
               kubectl get kitchen default -o jsonpath='{.status.conditions}'
               exit 1
               ;;
@@ -778,31 +809,63 @@ jobs:
           # certain to be running and logging here.
           collected=0
           for _ in $(seq 60); do
-            collected=$(ch "SELECT count() FROM logs WHERE namespace = 'kitchen-system' AND source = 'platform' AND container = 'manager'")
+            collected=$(ch "SELECT count() FROM otel_logs WHERE namespace = 'kitchen-system' AND source = 'platform' AND container = 'manager'")
             [ "${collected}" -gt 0 ] && break
             sleep 5
           done
           [ "${collected}" -gt 0 ] || {
             echo "::error::no operator logs reached ClickHouse"
-            kubectl -n kitchen-system logs ds/kitchen-logs --tail=100
-            ch "SELECT count() FROM logs" || true
+            kubectl -n kitchen-system logs ds/kitchen-collector --tail=100
+            ch "SELECT count() FROM otel_logs" || true
             exit 1
           }
           echo "collected ${collected} operator log lines"
+
+          # The other half of what the agent is for: the kubelet's numbers for
+          # the same pod, on the same rows of the same store. This is the path
+          # that used to be the operator writing ClickHouse itself.
+          sampled=0
+          for _ in $(seq 60); do
+            sampled=$(ch "SELECT count() FROM otel_metrics_sum WHERE MetricName = 'container.cpu.time' AND namespace = 'kitchen-system'")
+            [ "${sampled}" -gt 0 ] && break
+            sleep 5
+          done
+          [ "${sampled}" -gt 0 ] || {
+            echo "::error::no kubelet metrics reached ClickHouse"
+            kubectl -n kitchen-system logs ds/kitchen-collector --tail=100
+            ch "SELECT DISTINCT MetricName FROM otel_metrics_sum" || true
+            ch "SELECT DISTINCT MetricName FROM otel_metrics_gauge" || true
+            exit 1
+          }
+          echo "collected ${sampled} container CPU samples"
+
+          # And the operator as an OTLP client of the agent: restarts, limits
+          # and replica counts exist in no receiver, so this is the only proof
+          # that half still arrives.
+          usage=0
+          for _ in $(seq 60); do
+            usage=$(ch "SELECT count() FROM otel_metrics_gauge WHERE MetricName = 'kitchen.environment.replicas'")
+            [ "${usage}" -gt 0 ] && break
+            sleep 5
+          done
+          [ "${usage}" -gt 0 ] || {
+            echo "::warning::the operator's own usage metrics have not arrived;" \
+                 "this needs an environment to be running, which this job does not deploy"
+          }
 
           # Retention is runtime configuration: changing it on the Kitchen
           # object has to reach the table.
           kubectl patch kitchen default --type=merge \
             -p '{"spec":{"observability":{"clickhouse":{"retentionDays":7}}}}'
           for _ in $(seq 30); do
-            engine=$(ch "SELECT engine_full FROM system.tables WHERE database = 'kitchen' AND name = 'logs'")
+            engine=$(ch "SELECT engine_full FROM system.tables WHERE database = 'kitchen' AND name = 'otel_logs'")
             case "${engine}" in *"toIntervalDay(7)"*) break ;; esac
             sleep 5
           done
           case "${engine}" in
             *"toIntervalDay(7)"*) ;;
             *)
-              echo "::error::the retention change did not reach the logs table: ${engine}"
+              echo "::error::the retention change did not reach the otel_logs table: ${engine}"
               kubectl get kitchen default -o jsonpath='{.status.conditions}'
               exit 1
               ;;

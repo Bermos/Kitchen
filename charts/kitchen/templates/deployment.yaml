@@ -51,7 +51,6 @@ spec:
             - --health-probe-bind-address=:{{ .Values.healthProbe.port }}
             - --git-webhook-bind-address=:{{ .Values.webhookReceiver.port }}
             - --api-bind-address=:{{ .Values.api.port }}
-            - --otlp-bind-address=:{{ int .Values.kitchen.observability.traces.port }}
             {{- with .Values.api.extraAudiences }}
             - --api-audiences={{ join "," . }}
             {{- end }}
@@ -107,11 +106,10 @@ spec:
             - name: api
               containerPort: {{ .Values.api.port }}
               protocol: TCP
-            {{- if .Values.kitchen.observability.traces.enabled }}
-            - name: otlp
-              containerPort: {{ int .Values.kitchen.observability.traces.port }}
-              protocol: TCP
-            {{- end }}
+            {{- /*
+            No OTLP port: the receiver moved to the node agent, and the
+            operator is now a client of it like any application.
+            */}}
             {{- if .Values.metrics.enabled }}
             - name: {{ if .Values.metrics.secure }}https{{ else }}http{{ end }}
               containerPort: {{ .Values.metrics.port }}

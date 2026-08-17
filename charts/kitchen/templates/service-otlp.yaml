@@ -1,12 +1,29 @@
 {{- include "kitchen.validate" . -}}
-{{- if .Values.kitchen.observability.traces.enabled }}
-# The address instrumented applications export their spans to.
+{{- if eq (include "kitchen.collectorEnabled" .) "true" }}
+# The address instrumented applications — and the operator — export their
+# telemetry to.
 #
-# It is a ClusterIP and deliberately has no HTTPRoute: spans come from
+# It is a ClusterIP and deliberately has no HTTPRoute: OTLP comes from
 # workloads that are already inside the cluster, and an OTLP endpoint on the
 # public Gateway would be an unauthenticated write surface on the telemetry
 # store. Every environment the operator deploys is handed this name through
 # OTLP's own environment variables, so nothing has to look it up.
+#
+# `internalTrafficPolicy: Local` is what makes one stable DNS name mean "the
+# agent on your own node": kube-proxy answers with the local endpoint and never
+# leaves the node, so a pod's telemetry is enriched by the agent that can see
+# its log files and its kubelet, and no signal crosses the cluster twice.
+#
+# The cost is honest and was chosen: when no agent pod is Ready on the caller's
+# node — during a rolling update of the DaemonSet, or on a node the agent does
+# not tolerate — there is no local endpoint, and kube-proxy drops the
+# connection rather than falling back to another node. That applies to the
+# operator as much as to an application: it exports its own usage metrics here
+# from whichever node its Deployment happens to run on, with the same node-local
+# dependency. The alternative was a gateway Deployment in front of the agents,
+# which trades that window for a second hop, a second copy of every signal in
+# flight and a component that has to be scaled; for a fleet where the agent is
+# on every node by construction, the window is the cheaper failure.
 apiVersion: v1
 kind: Service
 metadata:
@@ -21,13 +38,18 @@ metadata:
   {{- end }}
 spec:
   type: ClusterIP
+  internalTrafficPolicy: Local
   selector:
-    {{- include "kitchen.selectorLabels" . | nindent 4 }}
+    {{- include "kitchen.collectorSelectorLabels" . | nindent 4 }}
   ports:
     - name: otlp-http
       # OTLP/HTTP's registered port, on both sides: an SDK given only a
       # hostname appends it, and the receiver binds it.
       port: {{ int .Values.kitchen.observability.traces.port }}
       targetPort: otlp
+      protocol: TCP
+    - name: otlp-grpc
+      port: {{ int .Values.collector.otlp.grpcPort }}
+      targetPort: otlp-grpc
       protocol: TCP
 {{- end }}

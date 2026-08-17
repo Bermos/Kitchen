@@ -1,223 +1,472 @@
-{{- if eq (include "kitchen.logsEnabled" .) "true" }}
+{{- if eq (include "kitchen.collectorEnabled" .) "true" }}
 {{- /*
-The collector's configuration. One source (every container log file on the
-node), one transform (lift the Kitchen labels into columns), one sink (the
-telemetry store).
+The collector's configuration. Three pipelines out of one process: the node's
+container log files, the kubelet's and the node's own metrics, and whatever
+applications and the operator export over OTLP — all of them stamped with the
+same Kitchen resource attributes and written straight into the telemetry
+store.
 
 Where the store is and who connects to it is chart configuration and is
-rendered here; the password is not. Vector resolves `SECRET[...]` at startup
-from the mounted connection secret, so the credential never lands in a
-ConfigMap. Environment interpolation is deliberately not used — Vector
-disables it unless run with --dangerously-allow-env-var-interpolation, which
-would expose every variable in the pod to the config.
+rendered here; the password is not. The collector resolves `${env:...}` out of
+its own environment while it loads the config, and the environment carries the
+value from the connection secret, so the credential never lands in a
+ConfigMap.
 */}}
+{{- $collector := .Values.collector }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: {{ include "kitchen.logsFullname" . }}
+  name: {{ include "kitchen.collectorFullname" . }}
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "kitchen.labels" . | nindent 4 }}
-    app.kubernetes.io/component: logs
+    app.kubernetes.io/component: collector
 data:
-  vector.yaml: |
-    data_dir: /vector-data-dir
+  config.yaml: |
+    extensions:
+      # Read offsets for the log files, so a restarted collector resumes where
+      # it left off instead of re-shipping every file it can still see.
+      file_storage:
+        directory: {{ include "kitchen.collectorStateDir" . }}
+        timeout: 10s
+        compaction:
+          on_start: true
+          directory: {{ include "kitchen.collectorStateDir" . }}
+      # The pod's probes. This matters more than it looks: the OTLP Service is
+      # `internalTrafficPolicy: Local`, so an agent that is not Ready leaves
+      # the pods on its node with nowhere to export to.
+      health_check:
+        endpoint: 0.0.0.0:{{ int (include "kitchen.collectorHealthPort" .) }}
 
-    secret:
-      clickhouse:
-        type: directory
-        # The connection secret, mounted key by key.
-        path: /etc/kitchen/clickhouse
-        remove_trailing_whitespace: true
+    receivers:
+      # What applications and the operator export to. The receiver binds
+      # localhost unless told otherwise, which in a pod means nothing outside
+      # the container can reach it.
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:{{ int $collector.otlp.grpcPort }}
+          http:
+            endpoint: 0.0.0.0:{{ int .Values.kitchen.observability.traces.port }}
+      {{- if $collector.logs.enabled }}
 
-    sources:
-      containers:
-        type: kubernetes_logs
-        # self_node_name is left at its default, which reads
-        # VECTOR_SELF_NODE_NAME from the pod's downward API environment.
-        #
-        # Kitchen's own workloads come and go with every build and deploy, so
-        # new log files are picked up far more eagerly than Vector's default
-        # minute.
-        glob_minimum_cooldown_ms: {{ int .Values.logs.globCooldownMs }}
-        {{- with .Values.logs.extraLabelSelector }}
-        extra_label_selector: {{ . | quote }}
-        {{- end }}
-        {{- with .Values.logs.extraFieldSelector }}
-        extra_field_selector: {{ . | quote }}
-        {{- end }}
-        exclude_paths_glob_patterns:
-          - "**/*.gz"
-          - "**/*.tmp"
-          # Shipping the collector's own output would feed every failed
-          # insert back into the batch that failed.
-          - "/var/log/pods/{{ .Release.Namespace }}_{{ include "kitchen.logsFullname" . }}-*/**"
-          {{- range .Values.logs.excludePathsGlobPatterns }}
+      # Every container log file the kubelet writes on this node.
+      #
+      # It reads files rather than the container runtime, so build jobs — which
+      # the operator creates and the cluster reclaims — are collected too,
+      # without the build pod having to know anything about telemetry.
+      #
+      # Node and system logs are deliberately absent, and a journald receiver
+      # is not the missing piece: the stock contrib image is FROM scratch and
+      # carries no `journalctl` for that receiver to shell out to, a receiver
+      # that errors from Start() aborts the whole collector — taking the log,
+      # metric and OTLP pipelines with it — and Talos, which Kitchen targets,
+      # has no journald at all. See the chart README.
+      file_log:
+        include:
+          - {{ printf "%s/pods/*/*/*.log" (trimSuffix "/" $collector.hostLogsPath) }}
+        exclude:
+          # Shipping the collector's own output would feed every failed insert
+          # back into the batch that failed.
+          - {{ printf "%s/pods/%s_%s-*/*/*.log" (trimSuffix "/" $collector.hostLogsPath) .Release.Namespace (include "kitchen.collectorFullname" .) }}
+          {{- range $collector.logs.excludeNamespaces }}
+          - {{ printf "%s/pods/%s_*/*/*.log" (trimSuffix "/" $collector.hostLogsPath) . }}
+          {{- end }}
+          {{- range $collector.logs.exclude }}
           - {{ . | quote }}
           {{- end }}
+        # A collector that has never run starts at the end of every file it
+        # finds. Anything else means a fresh install ships the node's entire
+        # log history as its first act.
+        start_at: end
+        storage: file_storage
+        # Not cosmetic: the `container` operator below reads log.file.path to
+        # work out which pod and container the file belongs to, and errors
+        # without it.
+        include_file_path: true
+        include_file_name: false
+        retry_on_failure:
+          enabled: true
+        operators:
+          # Detects docker/CRI-O/containerd on its own, rejoins the partial
+          # lines CRI runtimes split long output into, and sets k8s.pod.name,
+          # k8s.pod.uid, k8s.namespace.name, k8s.container.name and
+          # k8s.container.restart_count as resource attributes — which is what
+          # k8s_attributes then associates the pod by.
+          - type: container
 
-    transforms:
-      kitchen:
-        type: remap
-        inputs: [containers]
-        source: |
-          labels = object(.kubernetes.pod_labels) ?? {}
-          namespace_labels = object(.kubernetes.namespace_labels) ?? {}
-
-          .namespace = to_string(.kubernetes.pod_namespace) ?? ""
-
-          .project = to_string(get(labels, ["kitchen.bermos.dev/project"]) ?? "") ?? ""
-          # A project's namespace carries the project on the namespace itself,
-          # so anything running in one belongs to that project whether or not
-          # the pod was labelled — a claimed database, a sidecar someone added.
-          if .project == "" {
-            .project = to_string(get(namespace_labels, ["kitchen.bermos.dev/project"]) ?? "") ?? ""
-          }
-          .environment = to_string(get(labels, ["kitchen.bermos.dev/environment"]) ?? "") ?? ""
-          .build = to_string(get(labels, ["kitchen.bermos.dev/build"]) ?? "") ?? ""
-
-          # What produced the line, so the UI can ask for one kind without
-          # knowing which labels imply it.
+          # A JSON line's own fields, kept rather than thrown away. They land
+          # in LogAttributes, so `http.status:500` is a map lookup instead of a
+          # substring search of the message — which is the difference between
+          # asking a question and grepping for one.
           #
-          # The namespace decides whether the line is Kitchen's at all. This
-          # source tails every container on the node, so "no Kitchen label" is
-          # not "a platform component" — it is Cilium, cert-manager, a CSI
-          # sidecar, whatever else the cluster runs. Labelling those `platform`
-          # made the platform's own diagnostic facet return the entire cluster,
-          # and made other people's warnings read as Kitchen faults. They are
-          # still collected — a sick node is exactly when Kitchen looks broken
-          # — but under a name that says whose they are.
-          .source = if .namespace == {{ .Release.Namespace | quote }} {
-            "platform"
-          } else if .build != "" {
-            "build"
-          } else if .environment != "" || .project != "" {
-            "runtime"
-          } else {
-            "cluster"
-          }
-
-          .pod = to_string(.kubernetes.pod_name) ?? ""
-          .container = to_string(.kubernetes.container_name) ?? ""
-          .node = to_string(.kubernetes.pod_node_name) ?? ""
-          .stream = to_string(.stream) ?? ""
-          .message = to_string(.message) ?? ""
-          .labels = labels
-
-          # Best-effort severity, so the observability view can facet on
-          # `level` instead of only stdout/stderr. JSON logs are asked for
-          # their level field; plain text is matched against the common
-          # spellings. A line that says neither stays "" — honest, rather
-          # than guessing from the stream.
+          # It parses into a staging key rather than straight into the
+          # attributes, because what happens next (flattening, the cap, lifting
+          # the trace ids out) has to be able to tell the line's own fields
+          # from the ones the receiver set. The transform processor merges it
+          # up and removes the staging key.
           #
-          # `??` catches errors, not nulls, so the missing-field fallbacks are
-          # spelled out as null checks — and nothing here aborts the event: a
-          # line the parsers cannot read still ships, just without a level.
-          .level = ""
-          structured = object(parse_json(.message) ?? {}) ?? {}
-          raw_level = get(structured, ["level"]) ?? null
-          if raw_level == null { raw_level = get(structured, ["severity"]) ?? null }
-          if raw_level == null { raw_level = get(structured, ["lvl"]) ?? null }
-          if raw_level != null {
-            .level = downcase(to_string(raw_level) ?? "")
-          }
-          if .level == "" {
-            matched = parse_regex(.message, r'(?i)(?:^|[\s\[("=])(?P<level>trace|debug|info|warn|warning|error|fatal|critical|panic)(?:$|[\s\])":=,])') ?? {}
-            .level = downcase(to_string(get(matched, ["level"]) ?? "") ?? "")
-          }
-          # One spelling per severity, so `level = 'warn'` means every warning.
-          if .level == "warning" { .level = "warn" }
-          if .level == "critical" || .level == "panic" { .level = "fatal" }
+          # The `if` is what keeps a plain-text line a plain-text line, and
+          # `send_quiet` is what keeps a line that only looks like JSON: a
+          # parse failure ships the record with its body intact rather than
+          # dropping it or filling the log with its own errors.
+          - type: json_parser
+            if: 'body matches "^\\s*[{]"'
+            parse_from: body
+            parse_to: attributes.fields
+            on_error: send_quiet
 
-          # A JSON line's own fields, kept rather than thrown away once the
-          # level has been read out of them. They land in the `fields` map, so
-          # `http.status:500` is a column lookup instead of a substring search
-          # of the message — which is the difference between asking a question
-          # and grepping for one.
-          #
-          # Nesting is flattened with dots, so `{"http": {"status": 500}}` is
-          # `http.status`, and every value is stringified: the map is
-          # Map(String, String) because a log field has no schema and the
-          # query language compares numerically where it is asked to.
-          #
-          # A value `to_string` will not take — an array, which `flatten`
-          # leaves whole rather than exploding into keys — keeps its JSON
-          # instead of becoming an empty string, so `tags:/canary/` can still
-          # find it. A field that is present must not read as absent.
-          #
-          # The key count is capped. A line that carries hundreds of fields is
-          # a dump rather than a log, and letting one widen the map would put
-          # its keys in every part the batch writes.
-          .fields = {}
-          if length(structured) > 0 {
-            flat = object(flatten(structured, "."))
-            if length(flat) <= {{ int .Values.logs.maxStructuredFields }} {
-              .fields = map_values(flat) -> |value| { to_string(value) ?? encode_json(value) }
-            }
-          }
+          # Severity from a JSON line's own level field, so the observability
+          # view can facet on it instead of only stdout/stderr. Each spelling
+          # is guarded on the ones before it being absent, which makes the list
+          # first-match-wins rather than last-parser-wins. Only top-level keys
+          # are read: these run before the fields are flattened.
+          {{- range $i, $field := $collector.logs.levelFields }}
+          - type: severity_parser
+            if: '{{ range $prev := (slice $collector.logs.levelFields 0 $i) }}attributes?.fields?.{{ $prev }} == nil and {{ end }}attributes?.fields?.{{ $field }} != nil'
+            parse_from: attributes.fields.{{ $field }}
+            on_error: send_quiet
+            mapping:
+              # Everything else the platform sees is in the default mapping.
+              fatal:
+                - critical
+                - panic
+          {{- end }}
 
-          # The line's trace and span ids, lifted into columns of their own.
-          #
-          # They are the one structured field asked for by exact value from
-          # outside the log page — a span offering its lines, a line offering
-          # its trace — and that lookup wants an indexed column rather than a
-          # map probe over the window. Every common spelling is accepted
-          # because the name is the instrumentation library's choice, not the
-          # application's: OpenTelemetry's own SDKs write `trace_id`, Go's
-          # slog handlers tend to `traceID`, and JSON loggers configured by
-          # hand write whatever was typed.
-          #
-          # They stay in `fields` as well. Removing them would make a line's
-          # expanded fields disagree with the JSON it was parsed from, which
-          # is a worse surprise than a duplicated value.
-          .traceId = ""
-          .spanId = ""
-          for_each([{{ range $i, $key := .Values.logs.traceIdFields }}{{ if $i }}, {{ end }}{{ $key | quote }}{{ end }}]) -> |_index, key| {
-            if .traceId == "" {
-              .traceId = to_string(get(.fields, [key]) ?? "") ?? ""
-            }
-          }
-          for_each([{{ range $i, $key := .Values.logs.spanIdFields }}{{ if $i }}, {{ end }}{{ $key | quote }}{{ end }}]) -> |_index, key| {
-            if .spanId == "" {
-              .spanId = to_string(get(.fields, [key]) ?? "") ?? ""
-            }
-          }
+          # And for a line that is not JSON at all, the common spellings, in
+          # the shapes they are actually written in. A line that says none of
+          # them keeps no severity — honest, rather than guessing from the
+          # stream. The staging key is removed in the transform processor.
+          - type: regex_parser
+            if: 'body not matches "^\\s*[{]"'
+            parse_from: body
+            parse_to: attributes.scan
+            on_error: send_quiet
+            regex: '(?i)(?:^|[\s\[("=])(?P<level>trace|debug|info|warn|warning|error|fatal|critical|panic)(?:$|[\s\])":=,])'
+            severity:
+              parse_from: attributes.scan.level
+              mapping:
+                fatal:
+                  - critical
+                  - panic
+      {{- end }}
+      {{- if $collector.metrics.kubelet.enabled }}
 
-          # Everything the table has no column for. The sink skips unknown
-          # fields anyway; dropping them here keeps the wire small.
-          del(.kubernetes)
-          del(.file)
-          del(.source_type)
+      # Per-pod and per-container CPU and memory, read from the kubelet on this
+      # node. The endpoint is the node's address rather than its name: a node
+      # name is not required to resolve, and on a cluster where it does not,
+      # this is the failure that looks like "metrics stopped".
+      #
+      # It reports usage only. Restart counts, OOM kills, configured limits and
+      # replica counts exist in no receiver — they come from the API server, and
+      # the operator samples them and exports them here over OTLP.
+      kubelet_stats:
+        auth_type: serviceAccount
+        endpoint: ${env:K8S_NODE_IP}:10250
+        # The kubelet serves a certificate for its node name, which is not the
+        # address we just dialled.
+        insecure_skip_verify: true
+        collection_interval: {{ int $collector.metrics.intervalSeconds }}s
+        metric_groups:
+          - container
+          - pod
+          - node
+      {{- end }}
+      {{- if $collector.metrics.node.enabled }}
 
-    sinks:
+      # The node itself. root_path points at the host filesystem mounted into
+      # the pod, which is also why that mount needs HostToContainer
+      # propagation: without it the container's view of the mount table is
+      # frozen at start and every filesystem mounted afterwards is invisible.
+      host_metrics:
+        root_path: /hostfs
+        collection_interval: {{ int $collector.metrics.intervalSeconds }}s
+        scrapers:
+          cpu: {}
+          load: {}
+          memory: {}
+          network: {}
+          disk: {}
+          filesystem:
+            # A node runs one mount per container image layer and one per
+            # projected volume. Left in, they are thousands of series that
+            # describe nothing anyone asks about.
+            exclude_mount_points:
+              match_type: regexp
+              mount_points:
+                - /var/lib/kubelet/.*
+                - /var/lib/containers/.*
+                - /run/containerd/.*
+                - /run/k3s/.*
+                - /snap/.*
+            exclude_fs_types:
+              match_type: strict
+              fs_types:
+                - autofs
+                - binfmt_misc
+                - bpf
+                - cgroup2
+                - configfs
+                - debugfs
+                - devpts
+                - devtmpfs
+                - fusectl
+                - hugetlbfs
+                - iso9660
+                - mqueue
+                - nsfs
+                - overlay
+                - proc
+                - procfs
+                - pstore
+                - romfs
+                - rpc_pipefs
+                - securityfs
+                - selinuxfs
+                - squashfs
+                - sysfs
+                - tracefs
+      {{- end }}
+
+    processors:
+      # First in every pipeline, by requirement: it can only refuse data that
+      # has not been admitted yet. GOMEMLIMIT on the container is the other
+      # half — see the DaemonSet.
+      memory_limiter:
+        check_interval: 1s
+        limit_percentage: 80
+        spike_limit_percentage: 25
+
+      # The Kitchen labels, lifted onto every signal as resource attributes.
+      # The telemetry schema materializes its project, environment, build,
+      # namespace, pod, container and node columns out of exactly these keys.
+      k8s_attributes:
+        auth_type: serviceAccount
+        # A DaemonSet only ever enriches its own node's pods, and the processor
+        # has refused to start without this since v0.125 rather than watch
+        # every pod in the cluster from every node.
+        filter:
+          node_from_env_var: K8S_NODE_NAME
+        extract:
+          metadata:
+            - k8s.namespace.name
+            - k8s.pod.name
+            - k8s.pod.uid
+            - k8s.node.name
+          labels:
+            # The same tag_name twice is how the fallback is expressed: pod
+            # labels are applied first and the setter writes only where the key
+            # is still absent, and a pod that does not carry the label writes
+            # nothing at all. A project's namespace carries the project, so a
+            # claimed database or a sidecar nobody labelled still belongs to it.
+            - tag_name: kitchen.project
+              key: kitchen.bermos.dev/project
+              from: pod
+            - tag_name: kitchen.project
+              key: kitchen.bermos.dev/project
+              from: namespace
+            # OpenTelemetry's own name for the environment, which is the one
+            # the schema reads. kitchen.environment is written beside it
+            # because that is what applications are handed in
+            # OTEL_RESOURCE_ATTRIBUTES, and a key that exists on some rows only
+            # is worse than a duplicated value.
+            - tag_name: deployment.environment.name
+              key: kitchen.bermos.dev/environment
+              from: pod
+            - tag_name: kitchen.environment
+              key: kitchen.bermos.dev/environment
+              from: pod
+            - tag_name: kitchen.build
+              key: kitchen.bermos.dev/build
+              from: pod
+        # In order of how much they are trusted: the uid a log file's path
+        # carried, then the address an exporter connected from, then the
+        # connection itself.
+        pod_association:
+          - sources:
+              - from: resource_attribute
+                name: k8s.pod.uid
+          - sources:
+              - from: resource_attribute
+                name: k8s.pod.ip
+          - sources:
+              - from: connection
+
+      # Which node this is. Everything with a pod behind it gets the node name
+      # from k8s_attributes; the node's own metrics have no pod, so the name
+      # has to come from the downward API. `insert` never overwrites.
+      resource/node:
+        attributes:
+          - key: k8s.node.name
+            value: ${env:K8S_NODE_NAME}
+            action: insert
+
+      transform/kitchen:
+        # A signal that cannot be classified still ships.
+        error_mode: ignore
+        log_statements:
+          - context: resource
+            statements:
+              {{- include "kitchen.collectorSourceStatements" . | nindent 14 }}
+          - context: log
+            statements:
+              {{- if $collector.logs.enabled }}
+              # Nesting is flattened with dots, so `{"http": {"status": 500}}`
+              # is `http.status` — one flat map is what the query language
+              # compares against, and it is also what makes a `trace.id` field
+              # reachable by name below.
+              - flatten(log.attributes["fields"]) where log.attributes["fields"] != nil
+              # The line's trace and span ids, lifted into the columns of their
+              # own that otel_logs already has. They are the one field asked
+              # for by exact value from outside the log page — a span offering
+              # its lines, a line offering its trace — and that lookup wants an
+              # indexed column rather than a map probe over the window. Every
+              # common spelling is accepted because the name is the
+              # instrumentation library's choice, not the application's.
+              #
+              # An unset id is not the empty string, it is sixteen (or eight)
+              # zero bytes, which is what the guard compares against — and what
+              # makes the list first-match-wins and leaves an id an SDK already
+              # sent over OTLP alone.
+              #
+              # They stay in the fields as well. Removing them would make a
+              # line's expanded fields disagree with the JSON it was parsed
+              # from, which is a worse surprise than a duplicated value.
+              {{- range $collector.logs.traceIdFields }}
+              - set(log.trace_id.string, log.attributes["fields"][{{ . | quote }}]) where log.trace_id.string == "00000000000000000000000000000000" and log.attributes["fields"][{{ . | quote }}] != nil
+              {{- end }}
+              {{- range $collector.logs.spanIdFields }}
+              - set(log.span_id.string, log.attributes["fields"][{{ . | quote }}]) where log.span_id.string == "0000000000000000" and log.attributes["fields"][{{ . | quote }}] != nil
+              {{- end }}
+              # The key count is capped. A line that carries hundreds of fields
+              # is a dump rather than a log, and letting one widen the map
+              # would put its keys on every line written alongside it. Over the
+              # cap the line still ships, with its message intact and no
+              # fields.
+              - merge_maps(log.attributes, log.attributes["fields"], "upsert") where log.attributes["fields"] != nil and Len(log.attributes["fields"]) <= {{ int $collector.logs.maxStructuredFields }}
+              - delete_key(log.attributes, "fields")
+              - delete_key(log.attributes, "scan")
+              # The path was only ever the container operator's input. The
+              # table has no column for it, so keeping it would put the same
+              # sixty bytes on every line written.
+              - delete_key(log.attributes, "log.file.path")
+              {{- end }}
+              # One spelling per severity, so `severity_text = 'warn'` means
+              # every warning — whichever library wrote the line, and whether
+              # it arrived as a log file or over OTLP. The number is the
+              # parser's and is left alone; this is only the text beside it.
+              - set(log.severity_text, ConvertCase(log.severity_text, "lower")) where log.severity_text != ""
+              - set(log.severity_text, "warn") where log.severity_text == "warning"
+              - set(log.severity_text, "fatal") where log.severity_text == "critical" or log.severity_text == "panic"
+        metric_statements:
+          - context: resource
+            statements:
+              {{- include "kitchen.collectorSourceStatements" . | nindent 14 }}
+        trace_statements:
+          - context: resource
+            statements:
+              {{- include "kitchen.collectorSourceStatements" . | nindent 14 }}
+
+    exporters:
       clickhouse:
-        type: clickhouse
-        inputs: [kitchen]
-        endpoint: {{ printf "http://%s:%s" (include "kitchen.clickhouseHost" .) (include "kitchen.clickhouseHTTPPort" .) | quote }}
+        endpoint: {{ printf "tcp://%s:%s?dial_timeout=10s" (include "kitchen.clickhouseHost" .) (include "kitchen.clickhouseNativePort" .) | quote }}
         database: {{ .Values.clickhouse.auth.database | quote }}
-        # Created, and kept in step with the retention policy, by the
-        # operator from Kitchen.spec.observability.clickhouse.
-        table: logs
-        auth:
-          strategy: basic
-          user: {{ .Values.clickhouse.auth.username | quote }}
-          password: SECRET[clickhouse.password]
-        skip_unknown_fields: true
-        date_time_best_effort: true
-        # The store is a StatefulSet in the same release and the schema is
-        # applied by the operator afterwards, so on a fresh install the sink
-        # is unusable for a moment. Failing the healthcheck at boot would
-        # only crash-loop the collector while it waits.
-        healthcheck:
-          enabled: false
-        batch:
-          max_events: {{ int .Values.logs.batch.maxEvents }}
-          # Build logs are watched live, so latency matters more here than
-          # insert efficiency.
-          timeout_secs: {{ int .Values.logs.batch.timeoutSeconds }}
-        buffer:
-          type: memory
-          max_events: {{ int .Values.logs.buffer.maxEvents }}
-          # A wedged store must not stall the node's log collection.
-          when_full: drop_newest
+        username: {{ .Values.clickhouse.auth.username | quote }}
+        password: ${env:CLICKHOUSE_PASSWORD}
+        # Every table, index and TTL belongs to the operator, which applies
+        # them from Kitchen.spec.observability.clickhouse — Kitchen's ordering
+        # keys are project-scoped where upstream's are service-scoped, and the
+        # retention has to follow a value that can change at runtime. With this
+        # off the exporter connects straight to the database rather than to
+        # `default`, so on a first install it retries until the operator has
+        # created it. A collector that crash-loops for a minute on a fresh
+        # cluster and then settles is that, not a fault.
+        create_schema: false
+        logs_table_name: otel_logs
+        traces_table_name: otel_traces
+        metrics_tables:
+          gauge:
+            name: otel_metrics_gauge
+          sum:
+            name: otel_metrics_sum
+          summary:
+            name: otel_metrics_summary
+          histogram:
+            name: otel_metrics_histogram
+          # Spelled out because upstream's README documents a different default
+          # than its code uses, and the operator writes the DDL for one name.
+          exponential_histogram:
+            name: otel_metrics_exponential_histogram
+        retry_on_failure:
+          enabled: true
+          initial_interval: 5s
+          max_interval: 30s
+          max_elapsed_time: 300s
+        # Batching lives here and not in a `batch` processor, which every
+        # collector example on the internet has and which this exporter's own
+        # documentation is emphatic about: the standalone processor loses data
+        # with it, and sending_queue.batch is the supported mechanism.
+        #
+        # The queue is sized in items rather than requests so that both numbers
+        # mean log lines, spans and data points — the same unit an operator
+        # sizing a node thinks in. It is not persisted: when the store is
+        # unreachable for longer than the queue holds, the newest signals are
+        # dropped rather than collection stalling behind them.
+        sending_queue:
+          enabled: true
+          sizer: items
+          queue_size: {{ int $collector.export.queueSize }}
+          batch:
+            # Build logs are watched live, so this is latency, not throughput.
+            flush_timeout: {{ int $collector.export.batch.flushTimeoutSeconds }}s
+            min_size: {{ int $collector.export.batch.minSize }}
+            max_size: {{ int $collector.export.batch.maxSize }}
+
+    service:
+      extensions:
+        - file_storage
+        - health_check
+      pipelines:
+        logs:
+          receivers:
+            - otlp
+            {{- if $collector.logs.enabled }}
+            - file_log
+            {{- end }}
+          processors:
+            - memory_limiter
+            - k8s_attributes
+            - resource/node
+            - transform/kitchen
+          exporters:
+            - clickhouse
+        metrics:
+          receivers:
+            - otlp
+            {{- if $collector.metrics.kubelet.enabled }}
+            - kubelet_stats
+            {{- end }}
+            {{- if $collector.metrics.node.enabled }}
+            - host_metrics
+            {{- end }}
+          processors:
+            - memory_limiter
+            - k8s_attributes
+            - resource/node
+            - transform/kitchen
+          exporters:
+            - clickhouse
+        traces:
+          receivers:
+            - otlp
+          processors:
+            - memory_limiter
+            - k8s_attributes
+            - resource/node
+            - transform/kitchen
+          exporters:
+            - clickhouse
+      telemetry:
+        logs:
+          level: {{ $collector.logLevel | quote }}
 {{- end }}

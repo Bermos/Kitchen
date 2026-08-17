@@ -1,76 +1,121 @@
-{{- if eq (include "kitchen.logsEnabled" .) "true" }}
-# The log pipeline: one Vector per node, tailing every container log file the
-# kubelet writes and shipping the lines into ClickHouse, enriched with the
-# Kitchen labels that make them queryable by project, environment and build.
+{{- if eq (include "kitchen.collectorEnabled" .) "true" }}
+# The telemetry agent: one OpenTelemetry collector per node, which is where
+# every signal Kitchen holds enters the platform. It tails the container log
+# files the kubelet writes, scrapes the kubelet and the node itself, and
+# receives OTLP from applications and from the operator — enriching all of it
+# with the Kitchen labels that make it queryable by project, environment and
+# build, and writing ClickHouse directly.
 #
 # It runs as a DaemonSet rather than a sidecar per app so that build jobs —
-# which the operator creates and the cluster reclaims — are collected too,
-# without the build pod having to know anything about telemetry.
+# which the operator creates and the cluster reclaims — are collected too, and
+# so that an application's OTLP endpoint is a name on its own node rather than
+# a hop across the cluster.
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
-  name: {{ include "kitchen.logsFullname" . }}
+  name: {{ include "kitchen.collectorFullname" . }}
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "kitchen.labels" . | nindent 4 }}
-    app.kubernetes.io/component: logs
+    app.kubernetes.io/component: collector
 spec:
   selector:
     matchLabels:
-      {{- include "kitchen.logsSelectorLabels" . | nindent 6 }}
+      {{- include "kitchen.collectorSelectorLabels" . | nindent 6 }}
   updateStrategy:
     type: RollingUpdate
   template:
     metadata:
       labels:
-        {{- include "kitchen.logsSelectorLabels" . | nindent 8 }}
-        app.kubernetes.io/component: logs
+        {{- include "kitchen.collectorSelectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: collector
       annotations:
-        # Vector reads its configuration once, at startup.
-        checksum/config: {{ include (print $.Template.BasePath "/logs/configmap.yaml") . | sha256sum }}
-        {{- with .Values.logs.podAnnotations }}
+        # The collector reads its configuration once, at startup.
+        checksum/config: {{ include (print $.Template.BasePath "/collector/configmap.yaml") . | sha256sum }}
+        {{- with .Values.collector.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
     spec:
-      serviceAccountName: {{ include "kitchen.logsServiceAccountName" . }}
+      serviceAccountName: {{ include "kitchen.collectorServiceAccountName" . }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.logs.priorityClassName }}
+      {{- with .Values.collector.priorityClassName }}
       priorityClassName: {{ . }}
       {{- end }}
-      terminationGracePeriodSeconds: {{ int .Values.logs.terminationGracePeriodSeconds }}
+      terminationGracePeriodSeconds: {{ int .Values.collector.terminationGracePeriodSeconds }}
       containers:
-        - name: vector
-          image: {{ printf "%s:%s" .Values.logs.image.repository .Values.logs.image.tag }}
-          imagePullPolicy: {{ .Values.logs.image.pullPolicy }}
+        - name: collector
+          image: {{ printf "%s:%s" .Values.collector.image.repository .Values.collector.image.tag }}
+          imagePullPolicy: {{ .Values.collector.image.pullPolicy }}
           args:
             - --config
-            - /etc/vector/vector.yaml
+            - /conf/config.yaml
           env:
-            - name: VECTOR_SELF_NODE_NAME
+            # Which node this is, and how to reach its kubelet. The name is
+            # what k8s_attributes filters its pod informer by; the address is
+            # what kubelet_stats dials, because a node name is not required to
+            # resolve.
+            - name: K8S_NODE_NAME
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
-            - name: VECTOR_SELF_POD_NAME
+            - name: K8S_NODE_IP
               valueFrom:
                 fieldRef:
-                  fieldPath: metadata.name
-            - name: VECTOR_SELF_POD_NAMESPACE
+                  fieldPath: status.hostIP
+            # The store's password, read out of the connection secret rather
+            # than rendered into the ConfigMap beside the rest of the config.
+            - name: CLICKHOUSE_PASSWORD
               valueFrom:
-                fieldRef:
-                  fieldPath: metadata.namespace
-            {{- with .Values.logs.extraEnv }}
+                secretKeyRef:
+                  name: {{ include "kitchen.clickhouseSecretName" . }}
+                  key: password
+            # The other half of memory_limiter: it refuses data at a share of
+            # the container's limit, and this makes the Go runtime collect
+            # before the kernel's OOM killer decides for it. Keep it at roughly
+            # 80% of resources.limits.memory.
+            - name: GOMEMLIMIT
+              value: {{ .Values.collector.goMemLimit | quote }}
+            {{- with .Values.collector.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+          ports:
+            # The name the OTLP Service targets. Keeping it named is what lets
+            # the Service front whichever workload receives OTLP without the
+            # port number being written down twice.
+            - name: otlp
+              containerPort: {{ int .Values.kitchen.observability.traces.port }}
+              protocol: TCP
+            - name: otlp-grpc
+              containerPort: {{ int .Values.collector.otlp.grpcPort }}
+              protocol: TCP
+            - name: health
+              containerPort: {{ int (include "kitchen.collectorHealthPort" .) }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /
+              port: health
+            periodSeconds: 15
+            failureThreshold: 5
+          readinessProbe:
+            httpGet:
+              path: /
+              port: health
+            periodSeconds: 10
           resources:
-            {{- toYaml .Values.logs.resources | nindent 12 }}
+            {{- toYaml .Values.collector.resources | nindent 12 }}
           securityContext:
-            # The kubelet writes container logs root-owned; reading them is
-            # the whole job. Nothing is written back to the host except the
-            # collector's own read offsets.
+            # The kubelet writes container log files root-owned and mode 0640,
+            # and the read offsets are kept on the node, so the collector reads
+            # and writes as root. It gains nothing else: no privileged mode, no
+            # escalation, no capabilities, and a read-only root filesystem —
+            # everything it writes goes to the hostPath below.
             runAsUser: 0
+            runAsGroup: 0
+            privileged: false
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
             capabilities:
@@ -78,45 +123,53 @@ spec:
                 - ALL
           volumeMounts:
             - name: config
-              mountPath: /etc/vector
+              mountPath: /conf
               readOnly: true
-            - name: data
-              mountPath: /vector-data-dir
-            # The store's password, read by Vector's directory secret
-            # backend rather than passed through the environment. It sits
-            # outside /etc/vector so the config mount stays a flat mount.
-            - name: clickhouse
-              mountPath: /etc/kitchen/clickhouse
-              readOnly: true
+            - name: state
+              mountPath: {{ include "kitchen.collectorStateDir" . }}
             - name: var-log
-              mountPath: {{ .Values.logs.hostLogsPath | quote }}
+              mountPath: {{ .Values.collector.hostLogsPath | quote }}
               readOnly: true
+            - name: hostfs
+              mountPath: /hostfs
+              readOnly: true
+              # Without this the container's mount table is whatever it was at
+              # start, so every filesystem mounted afterwards — every volume
+              # every pod on this node attaches — is invisible to the node
+              # metrics scraper.
+              mountPropagation: HostToContainer
       volumes:
         - name: config
           configMap:
-            name: {{ include "kitchen.logsFullname" . }}
-        - name: clickhouse
-          secret:
-            secretName: {{ include "kitchen.clickhouseSecretName" . }}
-        # Read offsets, kept on the node so a restarted collector resumes
-        # where it left off instead of re-shipping every file it can see.
-        - name: data
+            name: {{ include "kitchen.collectorFullname" . }}
+        # Read offsets, kept on the node so a restarted collector resumes where
+        # it left off instead of starting again at the end of every file and
+        # losing whatever was written while it was down.
+        - name: state
           hostPath:
-            path: {{ .Values.logs.hostDataPath | quote }}
+            path: {{ .Values.collector.hostDataPath | quote }}
             type: DirectoryOrCreate
         - name: var-log
           hostPath:
-            path: {{ .Values.logs.hostLogsPath | quote }}
+            path: {{ .Values.collector.hostLogsPath | quote }}
             type: Directory
-      {{- with .Values.logs.nodeSelector }}
+        # The node's own filesystem, for the node metrics scraper. Mounted
+        # whether or not that scraper is on: what the pod may see is a property
+        # of the DaemonSet and of the namespace's Pod Security level, not of
+        # which pipeline happens to be enabled.
+        - name: hostfs
+          hostPath:
+            path: /
+            type: Directory
+      {{- with .Values.collector.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.logs.affinity }}
+      {{- with .Values.collector.affinity }}
       affinity:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.logs.tolerations }}
+      {{- with .Values.collector.tolerations }}
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
