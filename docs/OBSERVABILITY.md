@@ -1,10 +1,18 @@
 # Kitchen — Observability Design
 
-> Status: **design, awaiting approval**. Nothing in this document is
-> implemented yet; where it touches things that exist, it says what changes
-> and what stays. The verification record at the end says which claims were
-> established empirically, which come from documentation, and which one fact
-> still needs a cluster to prove.
+> Status: **implemented**, stages 0–4. This document is kept as the design it
+> was, in the present tense it was written in, because the reasoning is the
+> part worth keeping — what was rejected and why is not recoverable from the
+> code. Stage 5 (background evaluation, `signal_transitions`, the inbox and
+> delivery) is still designed-for and not built; §7's model is what makes it
+> additive.
+>
+> Two things the implementation learned that this text could not, both about
+> metrics the collector was assumed to emit and does not — see the verification
+> record, which now records them.
+>
+> The one fact stage 0 exists to prove still needs a cluster to prove: its CI
+> job is written and has not run against a real Cilium.
 
 Kitchen's observability serves two people. The developer who deployed an
 application wants to click their project, click Logs or Metrics, and have the
@@ -747,6 +755,36 @@ in Docker:
 - Cost measurements over 500 000 synthetic request rows: raw table 4.63 MiB
   compressed (≈ 9.7 bytes/row, 3.8× compression), 1m rollup 484 rows /
   714 KiB, 1h rollup 12 rows. The basis for §3.2's cost claim.
+
+Established during **implementation**, and worth recording because both
+corrected an assumption this document made. Each was found by running the
+pinned collector image against a real ClickHouse and reading the tables,
+rather than by reading its documentation:
+
+- **The utilisation metrics do not exist by default.**
+  `system.cpu.utilization`, `system.memory.utilization` and
+  `system.filesystem.utilization` are all disabled in the pinned contrib
+  build. A reader that asks for them finds nothing — and `node.saturated`
+  would have reported healthy nodes forever. Utilisation is derived instead:
+  CPU from the idle fraction of `system.cpu.time` across the bucket, memory
+  from `used` over the sum of the states, fill from `used/(used+free)`.
+- **`system.filesystem.usage` has a third state, `reserved`**, and it is
+  large: on the measurement host, 16.4 GB used, 23.3 GB free and 230 GB
+  reserved. Counting it as capacity renders a disk that is 41% full as 7%
+  full — the one direction of error `node.disk-filling` cannot afford. It is
+  excluded, so capacity means what a writer can actually use.
+- Two smaller ones: there is no `k8s.volume.used` metric at all (naming it
+  makes the collector refuse to start, so used is `capacity − available`),
+  and a claim is told apart from the projected-token mounts every pod carries
+  by its *claim name* attribute — the volume-type attribute comes back empty
+  for both.
+
+Also established in implementation, against ClickHouse **26.3**: the rollup
+reads answer only windows snapped to the rollup's own resolution (an
+unsnapped hourly read of a window starting at 12:34 matches no bucket and
+reports real traffic as zero), and `quantilesTDigestMerge` over an empty
+window returns `nan`, which parses and then makes `json.Marshal` refuse the
+response.
 
 Established from documentation, source and proto definitions (not
 re-verified live): the Hubble flow proto's `Layer7{type, latency_ns,
