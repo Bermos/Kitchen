@@ -24,6 +24,7 @@ import (
 	"sync"
 	"testing"
 
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
@@ -118,6 +119,21 @@ func TestASweepIsExportedPerResource(t *testing.T) {
 
 	if len(exporter.batches) != 3 {
 		t.Fatalf("want a batch per container and one for the environment, got %d", len(exporter.batches))
+	}
+
+	// Every container batch names the pod it describes by uid. Without it the
+	// collector's k8sattributes processor falls back to associating the record
+	// with whoever opened the connection — the operator — and stamps its
+	// metadata onto a sample about a different pod entirely.
+	for _, batch := range exporter.batches {
+		attributes := batch.Resource.Set()
+		if _, ok := attributes.Value(attrContainer); !ok {
+			continue // the environment batch describes no pod
+		}
+		uid, ok := attributes.Value(attrPodUID)
+		if !ok || uid.AsString() == "" {
+			t.Errorf("a container batch went out without %s: %v", attrPodUID, attributes.Encoded(attribute.DefaultEncoder()))
+		}
 	}
 }
 

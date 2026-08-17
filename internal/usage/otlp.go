@@ -81,8 +81,13 @@ const (
 	attrSource      = "kitchen.source"
 	attrNamespace   = "k8s.namespace.name"
 	attrPod         = "k8s.pod.name"
-	attrContainer   = "k8s.container.name"
-	attrNode        = "k8s.node.name"
+	// attrPodUID is what makes the collector associate these samples with the
+	// pod they describe rather than with the operator that sent them: the
+	// k8sattributes processor tries the uid first and the sender's connection
+	// last, and the operator is never the pod it is reporting on.
+	attrPodUID    = "k8s.pod.uid"
+	attrContainer = "k8s.container.name"
+	attrNode      = "k8s.node.name"
 )
 
 // scope names the operator as the origin of these metrics where they sit
@@ -135,6 +140,7 @@ func (s Sweep) ResourceMetrics() []*metricdata.ResourceMetrics {
 			attribute.String(attrSource, clickhouse.SourceRuntime),
 			attribute.String(attrNamespace, sample.Namespace),
 			attribute.String(attrPod, sample.Pod),
+			attribute.String(attrPodUID, sample.PodUID),
 			attribute.String(attrContainer, sample.Container),
 			attribute.String(attrNode, sample.Node),
 		), s.containerMetrics(sample)))

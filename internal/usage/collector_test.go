@@ -24,6 +24,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -77,6 +78,10 @@ func appPod(name string, options ...podOption) *corev1.Pod {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: appNamespace,
+			// Derived from the name rather than fixed: the uid is what the
+			// collector associates a sample with, so two pods sharing one
+			// would hide exactly the mix-up it exists to prevent.
+			UID: types.UID("uid-" + name),
 			Labels: map[string]string{
 				"kitchen.bermos.dev/project":     appProject,
 				"kitchen.bermos.dev/environment": appEnvironment,
