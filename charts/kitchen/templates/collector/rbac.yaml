@@ -15,16 +15,28 @@ metadata:
 {{- end }}
 {{- if .Values.collector.rbac.create }}
 ---
-# Two grants, and nothing else.
+# What the agent reads, and nothing else.
 #
 # Pods and namespaces are what every signal is enriched from — the Kitchen
 # labels that become the project, environment and build columns are on the pod,
 # and on the namespace where the pod was never labelled. ReplicaSets are how a
 # pod is traced back to the Deployment that owns it.
 #
-# nodes/stats is the kubelet's Summary API, which the metrics scraper reads
-# from the node it runs on. It is not read through the API server's proxy, so
-# nodes/proxy is not needed and is deliberately absent.
+# The last two are the kubelet's own API on the node the agent runs on, never
+# the API server's proxy to it: nodes/stats is the Summary endpoint every
+# kubelet metric is scraped from, and the /pods endpoint behind nodes/proxy is
+# where the volume group learns which PersistentVolumeClaim a mount belongs to
+# (see the collector ConfigMap).
+#
+# nodes/proxy reads worse than it is, and it is not interchangeable with
+# nodes/pods: the kubelet maps /pods to the `pods` subresource only where the
+# KubeletFineGrainedAuthz feature gate is on — 1.33 and later — and to `proxy`
+# on every release this chart supports. It admits the request if *either*
+# attribute is allowed, so both are granted and the older mapping is the one
+# that has to work. The agent already mounts the node's root filesystem, so
+# this is not reach it lacked. Getting it wrong does not cost a label: the
+# receiver fails the whole scrape when /pods answers 403, and container, pod
+# and node metrics stop along with the volume ones.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -62,6 +74,12 @@ rules:
       - get
       - watch
       - list
+  - apiGroups: [""]
+    resources:
+      - nodes/proxy
+      - nodes/pods
+    verbs:
+      - get
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

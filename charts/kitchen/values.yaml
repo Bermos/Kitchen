@@ -473,7 +473,11 @@ collector:
     annotations: {}
   rbac:
     # -- Create the ClusterRole/Binding letting the agent read pod and
-    # namespace metadata for enrichment, and the kubelet's stats endpoint.
+    # namespace metadata for enrichment, and the kubelet's stats and pods
+    # endpoints. Supplying the role yourself instead means granting all of
+    # them: the kubelet fails the whole scrape when /pods answers 403, so a
+    # role written for an earlier release stops CPU and memory too, not only
+    # the volume metrics that need it.
     create: true
   # -- Where the kubelet writes container logs on the node.
   hostLogsPath: /var/log

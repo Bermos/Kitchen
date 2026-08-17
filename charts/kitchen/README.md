@@ -12,6 +12,23 @@ Kitchen assumes these exist; the chart does **not** install them:
 - **Cilium as the cluster CNI** with `gatewayAPI.enabled=true` and kube-proxy
   replacement. Cilium's Gateway API implementation is the ingress; there is no
   separate ingress controller.
+
+  Turn **Hubble and Hubble Relay** on with it (`hubble.enabled=true`,
+  `hubble.relay.enabled=true`). Every request to every application crosses the
+  Gateway's Envoy, and Relay is the only place those observations can be read
+  from — without it the platform has no vantage point on its own traffic at
+  all, and `kitchen.observability.hubble.relayAddress` has nothing to point at.
+
+  Two of its settings are worth choosing rather than inheriting:
+
+  - `hubble.redact.http.urlQuery=true`. Kitchen does not store query strings,
+    and redacting at the source keeps a token somebody put in a URL out of the
+    flow stream as well — the same rule, enforced twice.
+  - `hubble.eventBufferCapacity`, the per-node ring buffer, which holds 4095
+    events by default. When it overflows Relay says so with a `LostEvent`
+    notice and what it dropped is simply absent: traffic and error rates
+    under-report, with no gap on the screen to say they are. Raise it on nodes
+    that carry sustained traffic.
 - **Gateway API CRDs**, at the version your Cilium release requires — Cilium
   pins this tightly and it moves quickly, so read its docs rather than assuming
   the newest is right. The release states it on its Gateway API page, and CI
@@ -413,12 +430,14 @@ kubectl -n kitchen-system logs ds/kitchen-collector --tail=50
 
 ## Resource metrics
 
-CPU and memory for every application container come off the node's kubelet,
-scraped by the agent every `collector.metrics.intervalSeconds`. What no receiver
-can see — restart counts, OOM kills, the limits a release configured, how many
-pods an environment is running — the operator reads from the API server and
-**exports to the agent over OTLP**, like any other workload. Both halves land in
-the same `otel_metrics_*` tables, on rows carrying the same project and
+CPU and memory for every application container, and the fill level of every
+volume its pods have mounted, come off the node's kubelet, scraped by the agent
+every `collector.metrics.intervalSeconds`. Nothing in the API server knows how
+full a volume is, so per-PVC usage arrives this way or not at all. What no
+receiver can see — restart counts, OOM kills, the limits a release configured,
+how many pods an environment is running — the operator reads from the API server
+and **exports to the agent over OTLP**, like any other workload. Both halves
+land in the same `otel_metrics_*` tables, on rows carrying the same project and
 environment, which is what turns the dashboard's environment page from an
 instant into a history: whether it was always using this much memory, when it
 scaled, whether it was OOMKilled overnight.
@@ -438,7 +457,7 @@ kitchen:
 collector:
   metrics:
     kubelet:
-      enabled: true          # CPU and memory per pod and container
+      enabled: true          # CPU and memory per pod and container, and volume usage per PVC
     node:
       enabled: true          # the node itself: CPU, load, memory, network, disk, filesystem
     intervalSeconds: 30
@@ -450,12 +469,19 @@ between two samples and is never seen. A window wider than a few hours is drawn
 from a five-minute rollup the store maintains itself, so widening the range
 costs the same as narrowing it.
 
-The agent reads the kubelet on its own node, over the kubelet's own port, which
-needs `nodes/stats`. It does **not** go through the API server's proxy, so the
-operator no longer needs `nodes/proxy` for this. Turning
-`collector.metrics.kubelet.enabled` off leaves the CPU and memory series empty;
-restarts, limits and replicas keep arriving, because they come from the API
-server either way.
+The agent reads the kubelet on its own node, over the kubelet's own port, and
+never through the API server's proxy to it. Two grants cover that: `nodes/stats`
+for the summary endpoint every metric is scraped from, and `nodes/proxy` for
+`/pods`, which is the only place the claim behind a mounted volume is named —
+without it a filling PVC can be measured but not identified, and every
+configMap and projected-token mount looks like a volume worth charting. The
+kubelet maps `/pods` to the narrower `nodes/pods` only where the
+`KubeletFineGrainedAuthz` feature gate is on (1.33 and later) and admits the
+request if either grant allows it, so the ClusterRole carries both.
+
+Turning `collector.metrics.kubelet.enabled` off leaves the CPU, memory and
+volume series empty; restarts, limits and replicas keep arriving, because they
+come from the API server either way.
 
 ## Traces
 
@@ -1064,7 +1090,7 @@ kubectl delete namespace kitchen-system
 | `collector.export.batch.minSize` / `.maxSize` / `.flushTimeoutSeconds` | `5000` / `0` / `5` | Insert batching, in the exporter's queue rather than a `batch` processor; the timeout is log latency. |
 | `collector.logLevel` | `info` | Log level of the agent itself. |
 | `collector.serviceAccount.create` / `.name` / `.annotations` | `true` / `""` / `{}` | |
-| `collector.rbac.create` | `true` | ClusterRole to read pod and namespace metadata and the kubelet's stats. |
+| `collector.rbac.create` | `true` | ClusterRole to read pod and namespace metadata and the kubelet's stats and pods endpoints. |
 | `collector.hostLogsPath` / `.hostDataPath` | `/var/log` / `/var/lib/kitchen/collector` | Node paths for logs and read offsets. |
 | `collector.goMemLimit` | `800MiB` | `GOMEMLIMIT`; keep at ~80% of `resources.limits.memory`. |
 | `collector.resources` | 100m/256Mi → 1Gi | See [Sizing the agent](#sizing-the-agent). |

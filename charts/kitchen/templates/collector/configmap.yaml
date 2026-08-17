@@ -152,10 +152,11 @@ data:
       {{- end }}
       {{- if $collector.metrics.kubelet.enabled }}
 
-      # Per-pod and per-container CPU and memory, read from the kubelet on this
-      # node. The endpoint is the node's address rather than its name: a node
-      # name is not required to resolve, and on a cluster where it does not,
-      # this is the failure that looks like "metrics stopped".
+      # Per-pod and per-container CPU and memory, and how full every volume
+      # mounted on this node is, read from the kubelet on this node. The
+      # endpoint is the node's address rather than its name: a node name is not
+      # required to resolve, and on a cluster where it does not, this is the
+      # failure that looks like "metrics stopped".
       #
       # It reports usage only. Restart counts, OOM kills, configured limits and
       # replica counts exist in no receiver — they come from the API server, and
@@ -167,10 +168,37 @@ data:
         # address we just dialled.
         insecure_skip_verify: true
         collection_interval: {{ int $collector.metrics.intervalSeconds }}s
+        # Asking for any extra metadata label is what makes the receiver read
+        # the kubelet's /pods endpoint beside /stats/summary, and that read is
+        # the only source of two attributes the volume group is useless without:
+        # k8s.volume.type, which is how a claim is told apart from the
+        # configMap, secret and projected-token mounts every pod also has, and
+        # k8s.persistentvolumeclaim.name. The summary names a volume the way the
+        # pod spec does — `data` — which is not the claim it is bound to, so
+        # without this a full PVC can be seen but not named.
+        #
+        # It also makes the whole scrape depend on that endpoint: a 403 there
+        # fails the receiver rather than the volume group, taking container, pod
+        # and node metrics down with it. The ClusterRole grants it for exactly
+        # this reason — see collector/rbac.yaml.
+        #
+        # k8s_api_config is deliberately absent. It only refines k8s.volume.type
+        # from `persistentVolumeClaim` into the cloud backend underneath, whose
+        # attributes upstream has already deprecated, and it costs a PVC and a
+        # PV read per volume whose failure *drops* that volume's metrics instead
+        # of shipping them with a coarser label.
+        extra_metadata_labels:
+          - k8s.volume.type
         metric_groups:
           - container
           - pod
           - node
+          # Capacity, free bytes and inodes for every volume on the node, which
+          # is where per-PVC usage comes from — nothing in the API server knows
+          # how full a volume is. Used bytes are `capacity - available`: the
+          # receiver's own used-bytes metric is off by default and is a Sum
+          # where these are gauges.
+          - volume
       {{- end }}
       {{- if $collector.metrics.node.enabled }}
 
