@@ -21,9 +21,10 @@ namespace:
   # namespace created any other way (`kubectl create namespace`) cannot be
   # adopted and fails the install; see the chart README.
   create: true
-  # -- Pod Security level enforced on the platform namespace. The log
-  # collector mounts the node's /var/log and `hostPath` is admitted at
-  # `privileged` alone, so anything stricter needs `logs.enabled=false`.
+  # -- Pod Security level enforced on the platform namespace. The telemetry
+  # agent mounts the node's log directory and root filesystem, and `hostPath`
+  # is admitted at `privileged` alone, so anything stricter needs
+  # `collector.enabled=false`.
   podSecurity: privileged
   # -- Extra labels for the platform namespace.
   labels: {}
@@ -183,24 +184,26 @@ kitchen:
       # Empty disables flow collection.
       relayAddress: ""
     metrics:
-      # -- Sample every application container's resource usage into the
-      # telemetry store, which is what gives the environment page a history
-      # rather than an instant. The operator does the sampling itself — there
-      # is no metrics collector to install.
+      # -- Sample what no receiver can see — container restarts, OOM kills,
+      # configured limits and replica counts — and export it to the node
+      # agent over OTLP, where it lands beside the CPU and memory the agent
+      # reads from the kubelet. Together they are what gives the environment
+      # page a history rather than an instant. Turning the agent off leaves
+      # this sampling with nowhere to export to.
       enabled: true
       # -- Seconds between samples. Below this the row count climbs faster
       # than the answers improve; much above a minute and a short spike falls
       # between two samples.
       intervalSeconds: 30
     traces:
-      # -- Run the OTLP/HTTP receiver instrumented applications export spans
-      # to, and hand every environment its address through the standard OTLP
-      # environment variables. Off means neither: no receiver, and no
-      # variables injected into application pods.
+      # -- Hand every environment the agent's OTLP address through the
+      # standard OTLP environment variables. The receiver itself belongs to
+      # the node agent and is always running with it — this decides only
+      # whether application pods are told where it is.
       enabled: true
-      # -- Port the receiver binds, and the port its Service publishes. This
-      # is OTLP/HTTP's registered port; an SDK given only a hostname assumes
-      # it.
+      # -- Port applications export to: the port the Service publishes and the
+      # port the agent's OTLP/HTTP receiver binds. This is OTLP/HTTP's
+      # registered port; an SDK given only a hostname assumes it.
       port: 4318
       # -- Endpoint applications are told to export to. Empty means the
       # receiver's own in-cluster Service, which is almost always right — set
@@ -362,105 +365,148 @@ clickhouse:
   # clickhouse.enabled=false and no external host.
   acknowledgeNoStore: false
 
-# The log pipeline: a Vector DaemonSet tailing every container log file the
-# kubelet writes and shipping the lines into ClickHouse. Kitchen's labels
-# (`kitchen.bermos.dev/project`, `/environment`, `/build`) become columns, so
-# the operator API and the UI can ask for one project's runtime logs or one
-# build's output. Nothing is rendered when there is no store to ship to.
-logs:
-  # -- Collect container logs.
+# The telemetry agent: one OpenTelemetry collector per node, and the only way
+# any signal enters the platform. It tails every container log file the kubelet
+# writes, scrapes the kubelet and the node, and receives OTLP from applications
+# and from the operator — writing all of it into ClickHouse. Kitchen's labels
+# (`kitchen.bermos.dev/project`, `/environment`, `/build`) become resource
+# attributes, and the schema materializes its project, environment and build
+# columns out of them, so the API and the dashboard can ask for one project's
+# logs, one environment's memory or one build's output. Nothing is rendered
+# when there is no store to ship to.
+collector:
+  # -- Run the telemetry agent. Off means no logs, no metrics and nowhere for
+  # applications to export OTLP to — the OTLP Service is not rendered either.
   enabled: true
   image:
-    repository: timberio/vector
-    tag: 0.57.0-alpine
+    repository: otel/opentelemetry-collector-contrib
+    # -- Pinned deliberately. The operator owns the DDL of the tables this
+    # writes, and that DDL tracks the exporter's INSERT column list for this
+    # exact version; contrib ships fortnightly. Move both together.
+    tag: 0.158.0
     pullPolicy: IfNotPresent
-  # -- Collect only from pods matching this label selector, e.g.
-  # `app.kubernetes.io/part-of=kitchen`. Empty collects every pod on the node,
-  # which is what makes cluster-wide troubleshooting possible.
-  extraLabelSelector: ""
-  # -- Collect only from pods matching this field selector, e.g.
-  # `metadata.namespace!=kube-system`.
-  extraFieldSelector: ""
-  # -- Extra log file globs to skip, on top of the collector's own output.
-  excludePathsGlobPatterns: []
-  # -- How often the node is rescanned for new log files. Builds and preview
-  # deployments are short-lived, so this is far below Vector's own default.
-  globCooldownMs: 5000
-  # -- How many fields of a JSON log line are kept as structured fields,
-  # queryable as `http.status:500`. Nesting is flattened with dots and counted
-  # after flattening. A line with more fields than this still ships, with its
-  # message intact and no structured fields — one dump should not widen the
-  # map for every line written alongside it.
-  maxStructuredFields: 64
-  # -- Structured fields a line's trace id may be written under, first match
-  # wins. The name belongs to whichever instrumentation library the
-  # application uses, so the collector accepts all the usual ones rather than
-  # asking every project to agree on one. Lifting it into a column is what
-  # makes a log line and a trace two views of the same request.
-  traceIdFields:
-    - trace_id
-    - traceId
-    - traceID
-    - trace.id
-    - dd.trace_id
-  # -- The same for a line's span id.
-  spanIdFields:
-    - span_id
-    - spanId
-    - spanID
-    - span.id
-    - dd.span_id
-  batch:
-    maxEvents: 5000
-    # -- How long a partial batch waits before it ships. Build logs are
-    # watched live, so this is latency, not throughput.
-    timeoutSeconds: 5
-  buffer:
-    # -- In-memory events held per node while the store is unreachable.
-    # Beyond this the newest lines are dropped rather than stalling
-    # collection.
-    maxEvents: 20000
+  logs:
+    # -- Tail the container log files on each node. Off leaves the OTLP
+    # receiver as the only source of logs, which collects applications that
+    # export them and nothing else.
+    enabled: true
+    # -- Namespaces whose containers are not tailed, e.g. `kube-system`. The
+    # default collects everything on the node, which is what makes
+    # cluster-wide troubleshooting possible — a sick node is exactly when
+    # Kitchen looks broken.
+    excludeNamespaces: []
+    # -- Extra log file globs to skip, on top of the agent's own output.
+    exclude: []
+    # -- How many fields of a JSON log line are kept as log attributes,
+    # queryable as `http.status:500`. Nesting is flattened with dots and
+    # counted after flattening. A line with more fields than this still ships,
+    # with its message intact and no attributes — one dump should not widen
+    # the map for every line written alongside it.
+    maxStructuredFields: 64
+    # -- Top-level fields of a JSON log line its severity may be written
+    # under, first match wins. A line that is not JSON is scanned for the
+    # common spellings instead; one that says nothing recognisable keeps no
+    # severity rather than being guessed at.
+    levelFields:
+      - level
+      - severity
+      - lvl
+    # -- Fields a line's trace id may be written under, first match wins, and
+    # lifted into `otel_logs`' own TraceId column. The name belongs to
+    # whichever instrumentation library the application uses, so the agent
+    # accepts all the usual ones rather than asking every project to agree on
+    # one. Lifting it into a column is what makes a log line and a trace two
+    # views of the same request. Nested names work: fields are flattened with
+    # dots first.
+    traceIdFields:
+      - trace_id
+      - traceId
+      - traceID
+      - trace.id
+      - dd.trace_id
+    # -- The same for a line's span id.
+    spanIdFields:
+      - span_id
+      - spanId
+      - spanID
+      - span.id
+      - dd.span_id
+  metrics:
+    kubelet:
+      # -- Scrape the node's kubelet for per-pod and per-container CPU and
+      # memory. This is what gives an environment's page a history rather than
+      # an instant.
+      enabled: true
+    node:
+      # -- Scrape the node itself: CPU, load, memory, network, disk and
+      # filesystem.
+      enabled: true
+    # -- Seconds between scrapes, for both. Below this the row count climbs
+    # faster than the answers improve; much above a minute and a short spike
+    # falls between two samples.
+    intervalSeconds: 30
+  otlp:
+    # -- Port the OTLP/gRPC receiver binds. OTLP/HTTP's port is
+    # `kitchen.observability.traces.port`, because that one is also the
+    # Service's and is what applications are handed.
+    grpcPort: 4317
+  export:
+    # -- Signals held per node while the store is unreachable, counted in log
+    # lines, spans and metric data points. Beyond this the newest are dropped
+    # rather than collection stalling behind a wedged store.
+    queueSize: 20000
+    batch:
+      # -- Signals an insert waits to accumulate before it ships.
+      minSize: 5000
+      # -- Ceiling on one insert, or 0 for none. A ceiling splits a batch that
+      # arrived all at once into several inserts.
+      maxSize: 0
+      # -- How long a partial batch waits before it ships anyway. Build logs
+      # are watched live, so this is latency, not throughput.
+      flushTimeoutSeconds: 5
+  # -- Log level of the agent itself: debug | info | warn | error.
+  logLevel: info
   serviceAccount:
     create: true
-    # -- Name of the collector's service account. Generated when empty.
+    # -- Name of the agent's service account. Generated when empty.
     name: ""
     annotations: {}
   rbac:
-    # -- Create the ClusterRole/Binding letting the collector read pod,
-    # namespace and node metadata for enrichment.
+    # -- Create the ClusterRole/Binding letting the agent read pod and
+    # namespace metadata for enrichment, and the kubelet's stats endpoint.
     create: true
   # -- Where the kubelet writes container logs on the node.
   hostLogsPath: /var/log
-  # -- Where the collector keeps its read offsets, so a restart resumes
-  # instead of re-shipping. Offsets are committed as it goes, so a process
-  # killed before its first commit resumes from wherever it last got to —
-  # which for a killed-on-startup collector is the beginning.
-  hostDataPath: /var/lib/kitchen/logs
+  # -- Where the agent keeps its read offsets, so a restart resumes instead of
+  # skipping whatever was written while it was down.
+  hostDataPath: /var/lib/kitchen/collector
+  # -- Soft memory limit for the Go runtime, which makes it collect before the
+  # kernel's OOM killer decides for it. Keep it at roughly 80% of
+  # `resources.limits.memory`; the two are not derived from each other because
+  # Helm cannot do arithmetic on a quantity like `1Gi`.
+  goMemLimit: 800MiB
   resources:
     requests:
-      # Steady state is ~35Mi: the collector tails files and forwards, and
-      # holds little. The request covers that with room and is deliberately
-      # nowhere near the limit, because the limit is sized for a burst that
-      # should be rare.
+      # Three pipelines in one process: tailing, two scrapers and an OTLP
+      # server. Steady state is well under this; the request is what keeps the
+      # agent off an already-full node rather than a measurement.
       cpu: 100m
-      memory: 128Mi
+      memory: 256Mi
     limits:
-      # Catching up on a backlog costs far more than steady state — measured
-      # at 1.2Gi against 16 hours of one quiet node's logs, roughly 35x what
-      # it settles at afterwards. This is sized for that burst, because being
-      # short here does not slow collection down, it stops it: the collector
-      # is killed before it can commit a read offset, so the next start
-      # re-reads the same backlog, and every cycle ships it all again. At
-      # 512Mi that loop ran for ten hours and wrote every line ~45 times.
-      memory: 2Gi
+      # The limit is a real ceiling here in a way it was not for the collector
+      # this replaces: `memory_limiter` refuses data at 80% of it and the
+      # export queue is bounded, so the failure mode under a backlog is
+      # dropped signals rather than an OOM kill, a lost checkpoint and a
+      # restart that reads the same backlog again.
+      memory: 1Gi
   # -- Run on every node, including tainted ones: a control-plane node's logs
   # are exactly the ones wanted when the platform itself misbehaves.
   tolerations:
     - operator: Exists
-  # -- Time Vector gets to flush its buffer on shutdown.
+  # -- Time the agent gets to drain its export queue on shutdown.
   terminationGracePeriodSeconds: 60
-  # -- Extra environment variables for the collector, interpolatable into the
-  # Vector configuration as `${NAME}`.
+  # -- Extra environment variables for the agent, readable from the collector
+  # configuration as `${env:NAME}`.
   extraEnv: []
   podAnnotations: {}
   nodeSelector: {}

@@ -1,55 +1,82 @@
-{{- if eq (include "kitchen.logsEnabled" .) "true" }}
-{{- if .Values.logs.serviceAccount.create }}
+{{- if eq (include "kitchen.collectorEnabled" .) "true" }}
+{{- if .Values.collector.serviceAccount.create }}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: {{ include "kitchen.logsServiceAccountName" . }}
+  name: {{ include "kitchen.collectorServiceAccountName" . }}
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "kitchen.labels" . | nindent 4 }}
-    app.kubernetes.io/component: logs
-  {{- with .Values.logs.serviceAccount.annotations }}
+    app.kubernetes.io/component: collector
+  {{- with .Values.collector.serviceAccount.annotations }}
   annotations:
     {{- toYaml . | nindent 4 }}
   {{- end }}
 {{- end }}
-{{- if .Values.logs.rbac.create }}
+{{- if .Values.collector.rbac.create }}
 ---
-# The collector enriches every log line with the metadata of the pod that
-# produced it, which it can only do by watching pods, namespaces and nodes
-# cluster-wide. It never reads anything else.
+# Two grants, and nothing else.
+#
+# Pods and namespaces are what every signal is enriched from — the Kitchen
+# labels that become the project, environment and build columns are on the pod,
+# and on the namespace where the pod was never labelled. ReplicaSets are how a
+# pod is traced back to the Deployment that owns it.
+#
+# nodes/stats is the kubelet's Summary API, which the metrics scraper reads
+# from the node it runs on. It is not read through the API server's proxy, so
+# nodes/proxy is not needed and is deliberately absent.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: {{ include "kitchen.logsFullname" . }}
+  name: {{ include "kitchen.collectorFullname" . }}
   labels:
     {{- include "kitchen.labels" . | nindent 4 }}
-    app.kubernetes.io/component: logs
+    app.kubernetes.io/component: collector
 rules:
   - apiGroups: [""]
     resources:
       - pods
       - namespaces
-      - nodes
+    verbs:
+      - get
+      - watch
+      - list
+  - apiGroups: ["apps"]
+    resources:
+      - replicasets
     verbs:
       - get
       - list
       - watch
+  - apiGroups: ["extensions"]
+    resources:
+      - replicasets
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups: [""]
+    resources:
+      - nodes/stats
+    verbs:
+      - get
+      - watch
+      - list
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: {{ include "kitchen.logsFullname" . }}
+  name: {{ include "kitchen.collectorFullname" . }}
   labels:
     {{- include "kitchen.labels" . | nindent 4 }}
-    app.kubernetes.io/component: logs
+    app.kubernetes.io/component: collector
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: {{ include "kitchen.logsFullname" . }}
+  name: {{ include "kitchen.collectorFullname" . }}
 subjects:
   - kind: ServiceAccount
-    name: {{ include "kitchen.logsServiceAccountName" . }}
+    name: {{ include "kitchen.collectorServiceAccountName" . }}
     namespace: {{ .Release.Namespace }}
 {{- end }}
 {{- end }}

@@ -86,14 +86,15 @@ brings a cluster up before DNS and certificates exist.
 
 `kitchen-system` is part of the release (`namespace.create`, on by default), so
 its Pod Security level is set rather than inherited. That matters because the
-log collector mounts the node's `/var/log`, and `hostPath` is admitted at the
-`privileged` level alone — `baseline` forbids it outright, so there is no
-narrower level that still collects logs. Clusters differ in what they default
-to: kind is `privileged` and notices nothing, Talos is `baseline` and the
-collector's pods are refused at admission with no pod ever created. The
-namespace therefore carries `pod-security.kubernetes.io/{enforce,audit,warn}`
-at `namespace.podSecurity`, and setting that stricter while `logs.enabled` is
-true is refused at render time rather than discovered later.
+telemetry agent mounts the node's log directory and root filesystem, and
+`hostPath` is admitted at the `privileged` level alone — `baseline` forbids it
+outright, so there is no narrower level that still collects anything. Clusters
+differ in what they default to: kind is `privileged` and notices nothing, Talos
+is `baseline` and the agent's pods are refused at admission with no pod ever
+created. The namespace therefore carries
+`pod-security.kubernetes.io/{enforce,audit,warn}` at `namespace.podSecurity`,
+and setting that stricter while `collector.enabled` is true is refused at render
+time rather than discovered later.
 
 Two consequences worth knowing:
 
@@ -192,7 +193,8 @@ build logs and Hubble flow data. It is not the system of record; the CRDs are.
 
 Connection details always land in the secret `<release>-clickhouse` (`host`,
 `httpPort`, `nativePort`, `database`, `username`, `password`, `dsn`), whether
-ClickHouse runs here or elsewhere, so the collectors have one place to look.
+ClickHouse runs here or elsewhere, so the agent and the operator have one place
+to look.
 
 The password is generated on install and read back from the cluster on upgrade,
 so it stays stable. Two consequences worth knowing:
@@ -216,30 +218,36 @@ Or install without a store at all — logs, metrics and traces then have nowhere
 to land — with `--set clickhouse.enabled=false --set
 clickhouse.acknowledgeNoStore=true`.
 
-## Logs
+## The telemetry agent
 
-A Vector DaemonSet tails every container log file the kubelet writes and ships
-the lines into ClickHouse. Kitchen's labels become columns, so a line can be
-traced back to what produced it:
+One OpenTelemetry collector runs on every node, and it is the only way any
+signal enters the platform. It tails every container log file the kubelet
+writes, scrapes the kubelet and the node itself, and receives OTLP from
+applications and from the operator — writing all of it straight into ClickHouse.
 
-| Column | From |
-|---|---|
-| `source` | `build`, `runtime`, `platform` or `cluster`, derived from the labels below |
-| `project` | `kitchen.bermos.dev/project` |
-| `environment` | `kitchen.bermos.dev/environment` (production or a preview) |
-| `build` | `kitchen.bermos.dev/build` |
-| `namespace`, `pod`, `container`, `node`, `stream` | the pod that wrote the line |
-| `level` | best-effort severity (`trace`…`fatal`), parsed out of JSON logs or the common text spellings; `""` when the line says neither |
-| `traceId`, `spanId` | the line's own, lifted out of its structured fields — what makes a line and a trace two views of one request |
-| `message` | the line |
-| `labels` | every pod label, for anything the columns miss |
-| `fields` | a JSON line's own fields, flattened with dots |
+Kitchen's labels become **resource attributes**, and the schema materializes a
+column out of each, so any row can be traced back to what produced it:
 
-The tables (`logs`, plus `events` for the activity feed, `flows` for the
-traffic view, `metrics` and its five-minute rollup for the environment
-histories, and `traces` for spans) are created by the operator, not the chart — they are applied
-from `Kitchen.spec.observability.clickhouse`, and their TTL follows
-`retentionDays`, so changing retention in the UI or with `kubectl` is enough:
+| Attribute | Column | From |
+|---|---|---|
+| `kitchen.project` | `project` | the pod's `kitchen.bermos.dev/project` label, falling back to the **namespace**'s — so a claimed database or a sidecar nobody labelled still belongs to its project |
+| `deployment.environment.name` | `environment` | `kitchen.bermos.dev/environment` (production or a preview) |
+| `kitchen.build` | `build` | `kitchen.bermos.dev/build` |
+| `kitchen.source` | `source` | `platform` in `kitchen-system`, else `build` if there is a build label, else `runtime` if there is a project or environment, else `cluster` |
+| `k8s.namespace.name`, `k8s.pod.name`, `k8s.container.name`, `k8s.node.name` | `namespace`, `pod`, `container`, `node` | the pod the signal came from |
+
+`cluster` is not a euphemism for "unlabelled Kitchen thing". The agent tails
+every container on the node, so a line with no Kitchen label is Cilium,
+cert-manager, a CSI sidecar — somebody else's. They are still collected, because
+a sick node is exactly when Kitchen looks broken, but under a name that says
+whose they are.
+
+The tables — `otel_logs`, `otel_traces`, the five `otel_metrics_*` and the
+five-minute rollup, plus `events` for the activity feed and `flows` for the
+traffic view — are created by the **operator**, not the chart and not the agent
+(`create_schema` is off). They are applied from
+`Kitchen.spec.observability.clickhouse`, and their TTL follows `retentionDays`,
+so changing retention in the UI or with `kubectl` is enough:
 
 ```sh
 kubectl patch kitchen default --type=merge \
@@ -249,82 +257,131 @@ kubectl patch kitchen default --type=merge \
 Watch it take: `kubectl get kitchen default -o jsonpath='{.status.conditions}'`
 carries a `TelemetrySchemaReady` condition.
 
+That ownership makes the first install ordered: with `create_schema` off the
+exporter opens the configured database directly instead of `default`, so until
+the operator has reconciled once there is nothing for the agent to connect to
+and it retries. **A collector that restarts a few times on a fresh cluster and
+then settles is that ordering, not a fault.**
+
 Ask the store what a build did:
 
 ```sql
-SELECT timestamp, message FROM logs
-WHERE build = 'shop-bld-8f3a2c1d0abc' ORDER BY timestamp
+SELECT Timestamp, Body FROM otel_logs
+WHERE build = 'shop-bld-8f3a2c1d0abc' ORDER BY Timestamp
 ```
 
 or what an app is doing right now:
 
 ```sql
-SELECT timestamp, container, message FROM logs
+SELECT Timestamp, container, Body FROM otel_logs
 WHERE project = 'shop' AND environment = 'shop-production'
-  AND timestamp > now() - INTERVAL 15 MINUTE
-ORDER BY timestamp DESC
+  AND Timestamp > now() - INTERVAL 15 MINUTE
+ORDER BY Timestamp DESC
 ```
 
 Build logs outlive the pods that wrote them: the build Job keeps its finished
-pod for an hour so the collector can catch up, and the lines are in ClickHouse
-long before that.
+pod for an hour so the agent can catch up, and the lines are in ClickHouse long
+before that.
+
+### What a log line carries
+
+A JSON line's own fields are parsed out and land in `LogAttributes`, flattened
+with dots — so `http.status` is a map lookup rather than a substring search of
+the message. The body is kept as it was written either way, and a line that is
+not JSON, or is malformed JSON, still ships with its message intact.
+
+The count is capped at `collector.logs.maxStructuredFields` (64). A line
+carrying hundreds of fields is a dump rather than a log, and letting one widen
+the map would put its keys on every line written beside it; over the cap the
+line ships with its body and no attributes.
+
+Two things are lifted out of those fields into columns of their own:
+
+- **Severity.** `SeverityText`/`SeverityNumber`, read from the line's `level`,
+  `severity` or `lvl` field, first match wins
+  (`collector.logs.levelFields`). A line that is not JSON is scanned for the
+  common spellings instead. One that says nothing recognisable keeps no
+  severity — honest, rather than guessed at from the stream. The text is
+  normalised to one spelling per severity, so `SeverityText = 'warn'` means
+  every warning however it was written.
+- **Trace and span ids.** `TraceId`/`SpanId`, from `trace_id`, `traceId`,
+  `trace.id` and the other usual spellings
+  (`collector.logs.traceIdFields`/`spanIdFields`). The name belongs to whichever
+  instrumentation library the application uses, not to the application. This is
+  what makes the dashboard's link between a log line and the request it came
+  out of work in both directions.
+
+Both leave the original field in place: a line's expanded fields should not
+disagree with the JSON it was parsed from.
+
+### What is not collected
+
+**Node and system logs.** The agent collects container logs only — nothing from
+the systemd journal, the kernel or the kubelet's own service. This is a
+decision, not a gap:
+
+- The stock `otel/opentelemetry-collector-contrib` image is built `FROM
+  scratch`. The journald receiver works by shelling out to `journalctl`, which
+  is not in the image.
+- A receiver that returns an error from `Start()` **aborts the whole
+  collector**, so a journald receiver on a node without journald would take the
+  log, metric and OTLP pipelines down with it. It cannot be added "just in
+  case".
+- Talos, which Kitchen targets, has no journald at all.
+
+If a node's own logs are what you need, they are on the node.
+
+### Narrowing what is collected
 
 By default every pod on every node is collected, including the platform's own
 components — that is what makes the store useful when Kitchen itself
-misbehaves. Narrow it with `logs.extraLabelSelector` (for example
-`app.kubernetes.io/part-of=kitchen`) or `logs.extraFieldSelector`, or turn the
-collector off entirely with `logs.enabled=false`. With no telemetry store
-configured the collector is not rendered at all.
-
-### Sizing the collector
-
-The collector's memory limit is set for the worst case rather than the normal
-one, and the gap between them is wide: it settles at roughly **35Mi** in steady
-state, and was measured at **1.2Gi** catching up on sixteen hours of a single
-quiet node's logs. Thirty-five times the steady figure, for a burst that ends.
-
-The limit is what it is because being short is not a slowdown, it is a loop.
-Vector commits its read offsets as it goes, so a process killed *before its
-first commit* has nothing newer to resume from and starts again at the
-beginning. On a backlog it cannot finish inside the limit, that means: read,
-die, re-read the same lines, die again — shipping the whole backlog every cycle
-while never getting to the end of it. Each restart also adds whatever
-accumulated meanwhile, so it moves away from finishing rather than towards it.
-
-Measured on a cluster where this ran at the old 512Mi default for ten hours:
-
-```
-total     distinct   factor
-7751294   173323     44.8x
-```
-
-Every line written about forty-five times, and the earliest line — from the
-cluster's first minutes — present in 1122 copies. The store was not empty, it
-was full of the same thing.
-
-Two things follow for anyone tuning this:
-
-- **Do not size the limit from steady-state usage.** `kubectl top pod` on a
-  healthy collector reports something in the tens of megabytes, and a limit
-  chosen from that number fails on the first restart after any outage.
-- **1Gi is not a safe halving.** It happens to sit just above steady state and
-  far below catch-up, so it looks fine indefinitely and then fails exactly when
-  the collector has work to do.
-
-The request stays small on purpose: 128Mi covers steady state with room, and
-reserving catch-up-sized memory on every node for a burst that is rare would
-cost far more than it buys. The trade-off is that a collector spiking to over a
-gigabyte is using much more than it requested, which makes it a likelier target
-if the node comes under memory pressure. On a node where that is a real risk,
-raise the request rather than the limit.
-
-### If no logs arrive
-
-Check the collector is actually running, which is not the same as checking that
-it was installed:
+misbehaves. To reduce the volume:
 
 ```sh
-kubectl -n kitchen-system get ds -l app.kubernetes.io/component=logs
+--set 'collector.logs.excludeNamespaces={kube-system}'   # skip a namespace
+--set collector.logs.enabled=false                       # no container log files at all
+--set collector.metrics.node.enabled=false               # no node metrics
+--set collector.enabled=false                            # no agent
+```
+
+There is no pod label or field selector. The agent chooses log *files* by path,
+not pods by query, and a file's path carries only the namespace, pod name, uid
+and container. `collector.logs.exclude` takes raw file globs for anything a
+namespace does not express.
+
+Note what `collector.enabled=false` costs, since the DaemonSet is no longer just
+a log collector: no container logs, no kubelet or node metrics, and **no OTLP
+endpoint** — applications and the operator both lose the address they export to.
+With no telemetry store configured it is not rendered at all anyway.
+
+### Sizing the agent
+
+Requests are 100m CPU and 256Mi; the limit is 1Gi with `GOMEMLIMIT` at 800MiB,
+which is the same number expressed to the Go runtime.
+
+The two halves are what make the limit a limit rather than a cliff. The
+`memory_limiter` processor refuses new data at 80% of the container's memory,
+and the export queue is bounded at `collector.export.queueSize` signals, so the
+behaviour under a backlog or a wedged store is **dropped signals** — visible,
+bounded, self-correcting once the store returns. The collector this replaced had
+neither, and its failure under the same conditions was an OOM kill before it
+could commit a read offset, then a restart that re-read the same backlog: a loop
+that shipped every line dozens of times rather than falling behind honestly.
+
+So if the agent is dropping data, raising the memory limit is the second thing
+to try. The first is `collector.export.queueSize` and
+`collector.export.batch.minSize`, because a queue that empties too slowly is
+usually a store that is too slow, not an agent that is too small. Raise
+`goMemLimit` with the limit whenever you do change it — a limit the runtime does
+not know about is a limit the kernel enforces.
+
+### If nothing arrives
+
+Check the agent is actually running, which is not the same as checking that it
+was installed:
+
+```sh
+kubectl -n kitchen-system get ds -l app.kubernetes.io/component=collector
 ```
 
 `DESIRED 1, AVAILABLE 0` with no pod anywhere means its pods are being refused
@@ -333,39 +390,58 @@ recorded as a `FailedCreate` event on the DaemonSet rather than as a pod in a
 bad state:
 
 ```sh
-kubectl -n kitchen-system describe ds -l app.kubernetes.io/component=logs
+kubectl -n kitchen-system describe ds -l app.kubernetes.io/component=collector
 ```
 
 ```
-Warning  FailedCreate  daemonset-controller  Error creating: pods "kitchen-logs-gc9m4" is
-forbidden: violates PodSecurity "baseline:latest": hostPath volumes (volumes "data", "var-log")
+Warning  FailedCreate  daemonset-controller  Error creating: pods "kitchen-collector-gc9m4" is
+forbidden: violates PodSecurity "baseline:latest": hostPath volumes (volumes "state", "var-log", "hostfs")
 ```
 
 Fix it by labelling the namespace as described under
 [Prerequisites](#prerequisites), then `kubectl -n kitchen-system rollout restart
-ds -l app.kubernetes.io/component=logs`. The same message is on the Kitchen
-object's `logs` component, which is where to look first.
+ds -l app.kubernetes.io/component=collector`. The same message is on the Kitchen
+object's `collector` component, which is where to look first.
+
+If the pods are running and the store is still empty, check the schema is there
+— the agent does not create it:
+
+```sh
+kubectl get kitchen default -o jsonpath='{.status.conditions[?(@.type=="TelemetrySchemaReady")].message}'
+kubectl -n kitchen-system logs ds/kitchen-collector --tail=50
+```
 
 ## Resource metrics
 
-Every application container is sampled into the `metrics` table — CPU and
-memory off its node's kubelet, replicas and restarts off the pods themselves —
-which is what turns the dashboard's environment page from an instant into a
-history: whether it was always using this much memory, when it scaled, whether
-it was OOMKilled overnight.
+CPU and memory for every application container come off the node's kubelet,
+scraped by the agent every `collector.metrics.intervalSeconds`. What no receiver
+can see — restart counts, OOM kills, the limits a release configured, how many
+pods an environment is running — the operator reads from the API server and
+**exports to the agent over OTLP**, like any other workload. Both halves land in
+the same `otel_metrics_*` tables, on rows carrying the same project and
+environment, which is what turns the dashboard's environment page from an
+instant into a history: whether it was always using this much memory, when it
+scaled, whether it was OOMKilled overnight.
 
-Nothing is installed for it. There is no Prometheus, no kube-state-metrics and
-no scrape configuration, because the join a metrics pipeline would need — from
-`(namespace, pod, container)` back to the project and environment that own the
-pod — lives in the pod's labels, which a scrape does not carry and the operator
-is already reading.
+Nothing else is installed for it. There is no Prometheus, no kube-state-metrics
+and no scrape configuration, because the join a scrape pipeline would need —
+from `(namespace, pod, container)` back to the project and environment that own
+the pod — lives in the pod's labels, and the agent already applies them to every
+signal it touches.
 
 ```yaml
 kitchen:
   observability:
     metrics:
-      enabled: true
+      enabled: true          # the operator's half: restarts, OOM kills, limits, replicas
       intervalSeconds: 30
+collector:
+  metrics:
+    kubelet:
+      enabled: true          # CPU and memory per pod and container
+    node:
+      enabled: true          # the node itself: CPU, load, memory, network, disk, filesystem
+    intervalSeconds: 30
 ```
 
 The interval is the one knob worth touching. Below 30s the row count climbs
@@ -374,10 +450,12 @@ between two samples and is never seen. A window wider than a few hours is drawn
 from a five-minute rollup the store maintains itself, so widening the range
 costs the same as narrowing it.
 
-The operator needs `nodes/proxy` to reach the kubelets, which the chart's
-ClusterRole grants. On a cluster where that is unacceptable, switch sampling
-off: the replica and restart series come off the API server either way, and the
-CPU and memory columns simply stay empty.
+The agent reads the kubelet on its own node, over the kubelet's own port, which
+needs `nodes/stats`. It does **not** go through the API server's proxy, so the
+operator no longer needs `nodes/proxy` for this. Turning
+`collector.metrics.kubelet.enabled` off leaves the CPU and memory series empty;
+restarts, limits and replicas keep arriving, because they come from the API
+server either way.
 
 ## Traces
 
@@ -386,9 +464,9 @@ behalf. Logs are on the node, flows are in the CNI, resource usage is in the
 kubelet — but only the application knows that this request was a checkout and
 that it spent 380 of its 420 milliseconds waiting for a database.
 
-So the chart runs an OTLP/HTTP receiver in the operator and puts a ClusterIP
-Service in front of it, and the operator hands every environment its address
-through OpenTelemetry's own environment variables:
+So the agent runs the OTLP receiver — OTLP/HTTP on 4318 and OTLP/gRPC on 4317 —
+the chart puts a ClusterIP Service in front of it, and the operator hands every
+environment its address through OpenTelemetry's own environment variables:
 
 ```
 OTEL_EXPORTER_OTLP_ENDPOINT=http://kitchen-otlp.kitchen-system.svc.cluster.local:4318
@@ -409,16 +487,25 @@ NODE_OPTIONS="--require @opentelemetry/auto-instrumentations-node/register"
 An application that sets any of those variables itself wins: the platform's go
 in first, and the kubelet takes the last value of a repeated name.
 
+That one name reaches the agent on the caller's **own node**: the Service is
+`internalTrafficPolicy: Local`, so kube-proxy answers with the local endpoint
+and the traffic never leaves the node. The cost is that when no agent pod is
+Ready there — during a rolling update of the DaemonSet, or on a node the agent
+does not tolerate — there is no local endpoint and the connection is dropped
+rather than falling back to another node. This was chosen over putting a gateway
+Deployment in front of the agents, which trades that window for a second hop, a
+second copy of every signal in flight and a component to scale. It applies to
+the operator too: it exports its own usage metrics to this Service from whichever
+node it happens to run on.
+
 The receiver deliberately has no HTTPRoute. Spans come from workloads already
 inside the cluster, and an OTLP endpoint on the public Gateway would be an
 unauthenticated write surface on the telemetry store. `traces.endpoint` exists
 for putting something else — a sampling collector, a second backend — in front
 of it.
 
-Log lines carry the trace id they were written under, when the application logs
-one: the collector lifts `trace_id`, `traceId`, `trace.id` and the other usual
-spellings into a column of their own. That is what makes the dashboard's link
-between a log line and the request it came out of work in both directions.
+Log lines carry the trace id they were written under whenever the application
+logs one; see [What a log line carries](#what-a-log-line-carries).
 
 ## Identity provider
 
@@ -695,9 +782,9 @@ kubectl get kitchen default -o jsonpath='{range .status.components[*]}{.name}{"\
 ```
 auth            1/1
 clickhouse      1/1
-controller      1/1
-logs            0/1     0 of 1 pods available: Error creating: pods "kitchen-logs-gc9m4" is
+collector       0/1     0 of 1 pods available: Error creating: pods "kitchen-collector-gc9m4" is
                         forbidden: violates PodSecurity "baseline:latest": hostPath volumes
+controller      1/1
 postgres        1/1
 preview-gate    2/2
 ```
@@ -804,6 +891,29 @@ It cannot rescue an installation that needs manual steps first: read
 and [Upgrading from 0.1.0](#upgrading-from-010) below, which are exactly the
 cases where a `helm upgrade` fails part-way and leaves the release mixed.
 
+### Upgrading to the telemetry agent
+
+The Vector log collector was replaced by an OpenTelemetry collector that also
+carries metrics and the OTLP receiver, so its values moved with it. `logs.*` is
+gone; the block is `collector.*`, and an upgrade that still passes `--set
+logs.enabled=false` (or a values file with a `logs:` key) is now setting nothing
+at all. The mapping:
+
+| Old | New |
+|---|---|
+| `logs.enabled` | `collector.enabled` — note it now governs metrics and the OTLP endpoint too |
+| `logs.excludePathsGlobPatterns` | `collector.logs.exclude` |
+| `logs.extraLabelSelector` / `.extraFieldSelector` | gone — the agent reads files, not the API server's pod list. Use `collector.logs.excludeNamespaces` |
+| `logs.globCooldownMs` | gone — new files are found by polling, with no cooldown to tune |
+| `logs.batch.*` / `logs.buffer.*` | `collector.export.batch.*` / `collector.export.queueSize` |
+| `logs.hostDataPath` | `collector.hostDataPath`, and its default moved to `/var/lib/kitchen/collector` |
+| everything else under `logs.` | the same name under `collector.` |
+
+The old `logs`, `metrics` and `traces` tables are **not** dropped. Nothing
+writes to them any more, and they age out on their own TTL — 30 days by default
+— so an installation that wants the space back sooner can drop them by hand once
+the new tables have the history it needs.
+
 ### Upgrading to a chart that owns the namespace
 
 Every release installed before `namespace.create` existed has a `kitchen-system`
@@ -879,7 +989,7 @@ kubectl delete namespace kitchen-system
 | `nameOverride` / `fullnameOverride` | `""` | Override generated resource names. |
 | `namespaceCheck` | `true` | Refuse to render outside `kitchen-system`. |
 | `namespace.create` | `true` | Manage the platform namespace as part of the release. Still needs `--create-namespace`; see [The chart owns the namespace](#the-chart-owns-the-namespace). |
-| `namespace.podSecurity` | `privileged` | Pod Security level on the platform namespace. Anything stricter needs `logs.enabled=false`. |
+| `namespace.podSecurity` | `privileged` | Pod Security level on the platform namespace. Anything stricter needs `collector.enabled=false`. |
 | `namespace.labels` | `{}` | Extra labels for the platform namespace. |
 | `image.repository` | `ghcr.io/bermos/kitchen` | Operator image. |
 | `image.tag` | `""` | Defaults to the chart's `appVersion`. |
@@ -921,11 +1031,11 @@ kubectl delete namespace kitchen-system
 | `kitchen.builds.concurrency` | `2` | Builds running at once. |
 | `kitchen.observability.clickhouse.retentionDays` | `30` | Telemetry retention. |
 | `kitchen.observability.hubble.relayAddress` | `""` | host:port of Hubble Relay's gRPC endpoint (e.g. `hubble-relay.kube-system.svc.cluster.local:80`). When set, the operator ships flow observations into the telemetry store for the dashboard's traffic view. Empty disables flow collection. |
-| `kitchen.observability.metrics.enabled` | `true` | Sample every application container's resources into the store — what gives the environment page a history rather than an instant. The operator samples; there is no metrics collector to install. |
+| `kitchen.observability.metrics.enabled` | `true` | The operator's half of the environment history: restarts, OOM kills, configured limits and replica counts, sampled off the API server and exported to the agent over OTLP. CPU and memory come from the agent's kubelet scrape instead. |
 | `kitchen.observability.metrics.intervalSeconds` | `30` | Seconds between samples. |
-| `kitchen.observability.traces.enabled` | `true` | Run the OTLP/HTTP receiver, and hand every environment its address through the standard OTLP environment variables. Off means neither. |
-| `kitchen.observability.traces.port` | `4318` | Port the receiver binds and its Service publishes — OTLP/HTTP's registered one. |
-| `kitchen.observability.traces.endpoint` | `""` | What applications are told to export to. Empty means the receiver's own in-cluster Service. |
+| `kitchen.observability.traces.enabled` | `true` | Hand every environment the agent's OTLP address through the standard OTLP environment variables. The receiver itself belongs to the agent and runs with it. |
+| `kitchen.observability.traces.port` | `4318` | Port applications export to: the agent's OTLP/HTTP receiver and its Service — OTLP/HTTP's registered one. |
+| `kitchen.observability.traces.endpoint` | `""` | What applications are told to export to. Empty means the agent's own in-cluster Service. |
 | `kitchen.observability.traces.service.annotations` | `{}` | |
 | `clickhouse.enabled` | `true` | Run a single-node ClickHouse in the release. |
 | `clickhouse.image.repository` / `.tag` | `clickhouse/clickhouse-server` / `26.3.17.110-alpine` | Current LTS line. |
@@ -938,21 +1048,28 @@ kubectl delete namespace kitchen-system
 | `clickhouse.extraConfig` | `{}` | Filename → XML for `config.d`, passed through `tpl`. |
 | `clickhouse.external.host` / `.httpPort` / `.nativePort` | `""` / `8123` / `9000` | Point at an existing ClickHouse. |
 | `clickhouse.acknowledgeNoStore` | `false` | Install with no telemetry store at all. |
-| `logs.enabled` | `true` | Run the Vector collector. Skipped when there is no store. |
-| `logs.image.repository` / `.tag` | `timberio/vector` / `0.57.0-alpine` | |
-| `logs.extraLabelSelector` / `.extraFieldSelector` | `""` | Narrow which pods are collected. |
-| `logs.excludePathsGlobPatterns` | `[]` | Extra log file globs to skip. |
-| `logs.globCooldownMs` | `5000` | How often the node is rescanned for new log files. |
-| `logs.maxStructuredFields` | `64` | Fields kept from a JSON line, queryable as `http.status:500`. Beyond it the line ships without them. |
-| `logs.traceIdFields` / `.spanIdFields` | `[trace_id, traceId, …]` | Structured fields a line's trace and span ids may be written under, first match wins. Lifting them into columns is what links a log line to its trace. |
-| `logs.batch.maxEvents` / `.timeoutSeconds` | `5000` / `5` | Insert batching; the timeout is log latency. |
-| `logs.buffer.maxEvents` | `20000` | Events held per node while the store is unreachable. |
-| `logs.serviceAccount.create` / `.name` / `.annotations` | `true` / `""` / `{}` | |
-| `logs.rbac.create` | `true` | ClusterRole to read pod/namespace/node metadata. |
-| `logs.hostLogsPath` / `.hostDataPath` | `/var/log` / `/var/lib/kitchen/logs` | Node paths for logs and read offsets. |
-| `logs.resources` | 100m/128Mi → 2Gi | The limit is sized for catching up on a backlog, not for steady state; see [Sizing the collector](#sizing-the-collector). |
-| `logs.tolerations` | `[{operator: Exists}]` | Collect from tainted nodes too. |
-| `logs.terminationGracePeriodSeconds` | `60` | Time to flush the buffer on shutdown. |
+| `collector.enabled` | `true` | Run the telemetry agent. Off means no logs, no metrics and no OTLP endpoint. Skipped when there is no store. |
+| `collector.image.repository` / `.tag` | `otel/opentelemetry-collector-contrib` / `0.158.0` | Pinned: the operator's DDL tracks this exporter version. |
+| `collector.logs.enabled` | `true` | Tail the node's container log files. |
+| `collector.logs.excludeNamespaces` | `[]` | Namespaces whose containers are not tailed. |
+| `collector.logs.exclude` | `[]` | Extra log file globs to skip. |
+| `collector.logs.maxStructuredFields` | `64` | Fields kept from a JSON line, queryable as `http.status:500`. Beyond it the line ships without them. |
+| `collector.logs.levelFields` | `[level, severity, lvl]` | JSON fields a line's severity may be written under, first match wins. Non-JSON lines are scanned for the common spellings. |
+| `collector.logs.traceIdFields` / `.spanIdFields` | `[trace_id, traceId, …]` | Fields a line's trace and span ids may be written under, first match wins. Lifting them into `TraceId`/`SpanId` is what links a log line to its trace. |
+| `collector.metrics.kubelet.enabled` | `true` | Scrape the node's kubelet for per-pod and per-container CPU and memory. |
+| `collector.metrics.node.enabled` | `true` | Scrape the node itself: CPU, load, memory, network, disk, filesystem. |
+| `collector.metrics.intervalSeconds` | `30` | Seconds between scrapes, for both. |
+| `collector.otlp.grpcPort` | `4317` | OTLP/gRPC port. OTLP/HTTP's is `kitchen.observability.traces.port`. |
+| `collector.export.queueSize` | `20000` | Signals held per node while the store is unreachable; beyond it the newest are dropped. |
+| `collector.export.batch.minSize` / `.maxSize` / `.flushTimeoutSeconds` | `5000` / `0` / `5` | Insert batching, in the exporter's queue rather than a `batch` processor; the timeout is log latency. |
+| `collector.logLevel` | `info` | Log level of the agent itself. |
+| `collector.serviceAccount.create` / `.name` / `.annotations` | `true` / `""` / `{}` | |
+| `collector.rbac.create` | `true` | ClusterRole to read pod and namespace metadata and the kubelet's stats. |
+| `collector.hostLogsPath` / `.hostDataPath` | `/var/log` / `/var/lib/kitchen/collector` | Node paths for logs and read offsets. |
+| `collector.goMemLimit` | `800MiB` | `GOMEMLIMIT`; keep at ~80% of `resources.limits.memory`. |
+| `collector.resources` | 100m/256Mi → 1Gi | See [Sizing the agent](#sizing-the-agent). |
+| `collector.tolerations` | `[{operator: Exists}]` | Collect from tainted nodes too. |
+| `collector.terminationGracePeriodSeconds` | `60` | Time to drain the export queue on shutdown. |
 | `postgres.enabled` | `true` | Run a single-node Postgres for the identity provider. |
 | `postgres.image.repository` / `.tag` | `postgres` / `17.6-alpine` | |
 | `postgres.auth.database` / `.username` | `kitchen_auth` / `kitchen` | Created on first start. |

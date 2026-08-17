@@ -156,22 +156,24 @@ Connection details for the collectors live in the secret
 {{ include "kitchen.clickhouseSecretName" . }} (host, ports, database, username, password, dsn).
 {{- end }}
 
-{{ if eq (include "kitchen.logsEnabled" .) "true" -}}
-Container logs are collected on every node and shipped into the `logs` table,
-which the operator creates and keeps at {{ .Values.kitchen.observability.clickhouse.retentionDays }} days of retention:
+{{ if eq (include "kitchen.collectorEnabled" .) "true" -}}
+A telemetry agent runs on every node: container logs into `otel_logs`, the
+kubelet's and the node's metrics into `otel_metrics_*`, and whatever
+applications export over OTLP into those and `otel_traces`. The operator
+creates every table and keeps it at {{ .Values.kitchen.observability.clickhouse.retentionDays }} days of retention:
 
-  kubectl -n {{ .Release.Namespace }} rollout status ds/{{ include "kitchen.logsFullname" . }}
+  kubectl -n {{ .Release.Namespace }} rollout status ds/{{ include "kitchen.collectorFullname" . }}
   kubectl get kitchen default -o jsonpath='{.status.conditions[?(@.type=="TelemetrySchemaReady")].message}'
 
 Then ask for a project's logs, or a build's:
 
-  SELECT timestamp, message FROM logs WHERE project = '<project>' ORDER BY timestamp DESC LIMIT 100
-  SELECT timestamp, message FROM logs WHERE build = '<build>' ORDER BY timestamp
-{{- else if .Values.logs.enabled }}
-No log collector was installed: there is no telemetry store to ship to.
+  SELECT Timestamp, Body FROM otel_logs WHERE project = '<project>' ORDER BY Timestamp DESC LIMIT 100
+  SELECT Timestamp, Body FROM otel_logs WHERE build = '<build>' ORDER BY Timestamp
+{{- else if .Values.collector.enabled }}
+No telemetry agent was installed: there is no telemetry store to ship to.
 {{- else }}
-The log collector is disabled (logs.enabled=false). Nothing ships container or
-build logs into ClickHouse.
+The telemetry agent is disabled (collector.enabled=false). Nothing collects
+logs or metrics, and applications have nowhere to export OTLP to.
 {{- end }}
 
 Cluster prerequisites Kitchen assumes: Cilium as the CNI with
