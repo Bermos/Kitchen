@@ -94,6 +94,11 @@ sent the request.
 | GET | `/environments/{name}/logs` | That environment's runtime logs |
 | GET | `/environments/{name}/workload` | What it is running: replicas, restarts, uptime, resources, pods |
 | GET | `/environments/{name}/metrics` | What it *has been* running: CPU, memory, replicas and restarts over a window |
+| GET | `/environments/{name}/requests/summary` | The golden-signal header: traffic, error rate and latency over a window |
+| GET | `/environments/{name}/requests/series` | The same signals over time — the charts |
+| GET | `/environments/{name}/requests/routes` | One row per route template, sortable — the per-path breakdown |
+| GET | `/environments/{name}/requests` | The requests themselves, newest first. Filterable, and live-tails like logs |
+| GET | `/environments/{name}/diagnostics` | The crash report: everything about the last abnormal termination, assembled |
 | GET | `/environments/{name}/objects` | The Kubernetes objects the operator materialized for it |
 | GET | `/logs` | The whole logs table, filtered by a query. `?q=`, `?where=` |
 | GET | `/logs/histogram` | The same selection counted over time — the shape of the window |
@@ -480,6 +485,219 @@ limits the usage is drawn against go uncollected. What was never collected
 draws nothing, deliberately, rather than a flat line at zero, which would
 claim the environment used nothing.
 
+### What the internet asked of an environment
+
+`…/workload` and `…/metrics` answer what the platform ran. These four answer
+what was asked of it, and they cost the application nothing: every request to
+every Kitchen application crosses the shared Gateway's proxy, so an application
+nobody instrumented still has traffic, error and latency numbers. They are the
+four golden signals, minus saturation, which `…/metrics` already answers.
+
+All four take the same scope:
+
+| Parameter | Meaning |
+|---|---|
+| `since` / `until` | RFC 3339 bounds on the window. An hour ending now by default |
+| `route` | One route template, spelled as the route table spells it — what clicking a row filters the rest by |
+
+`GET /environments/{name}/requests/summary` is the header:
+
+```json
+{"environment": "shop-production", "edge": {"routed": true},
+ "since": "2026-08-16T09:00:00Z", "until": "2026-08-16T10:00:00Z", "rollup": "1m",
+ "requests": 3600, "requestsPerSecond": 1, "errors": 36, "errorRate": 0.01,
+ "p50Ms": 12, "p95Ms": 240, "p99Ms": 900}
+```
+
+`since` and `until` are the window that was *answered*, not the one that was
+asked for: these numbers are read off pre-aggregated buckets, a bucket is
+indivisible, and a window that starts inside one takes the whole bucket. The
+start therefore comes back snapped to `rollup`'s resolution — `1m` or `1h` —
+and `requestsPerSecond` is per the window reported here. `errors` is answers of
+500 and above; a 4xx is the caller's fault and belongs in the route table's
+breakdown rather than in the number that says the service is broken.
+
+`GET /environments/{name}/requests/series` is the same signals over time, for
+the charts. `?buckets=` asks for a resolution (60 by default, capped at 480),
+rounded up to a rung of a fixed ladder so that panning does not restripe the
+chart:
+
+```json
+{"environment": "shop-production", "edge": {"routed": true},
+ "start": "2026-08-16T09:00:00Z", "end": "2026-08-16T10:00:00Z",
+ "bucketSeconds": 60, "rollup": "1m",
+ "points": [{"start": "2026-08-16T09:00:00Z", "requests": 60, "requestsPerSecond": 1,
+             "errors": 1, "errorRate": 0.0166, "p50Ms": 11, "p95Ms": 230, "p99Ms": 880}]}
+```
+
+Every bucket in the window is present, including the empty ones: a gap is an
+environment that served nothing, which on a traffic chart is the most
+interesting shape there is.
+
+`GET /environments/{name}/requests/routes` breaks the window down per route
+template — the per-path view, which works because the set of templates is
+bounded at ingest:
+
+```json
+{"environment": "shop-production", "edge": {"routed": true},
+ "items": [{"route": "/checkout/:id", "requests": 400, "requestsPerSecond": 0.11,
+            "errors": 4, "errorRate": 0.01, "p50Ms": 30, "p95Ms": 310, "p99Ms": 900}]}
+```
+
+`?sort=` is one of `requests` (the default), `errors`, `errorRate` or `p95`,
+and `?limit=` how many rows come back (100 by default, capped at 500). The sort
+is a query rather than a presentation detail, because it decides which rows
+survive the limit: the ten busiest routes and the ten slowest are not the same
+ten. A sort nobody offers is a `400` naming the ones that exist.
+
+A path is templated where it is collected, not here: `/users/12345` is
+`/users/:id`, a UUID is `:uuid`, a content-hashed asset is `*.js`. Each
+environment gets 300 templates, and everything past that is recorded as the
+overflow route `/…` — a row that says the classifier missed an identifier
+scheme, rather than a rollup quietly growing a series per user id.
+
+`GET /environments/{name}/requests` is the requests themselves, newest first:
+
+```json
+{"environment": "shop-production", "edge": {"routed": true},
+ "items": [{"timestamp": "2026-08-16T09:59:58.412Z", "host": "shop.apps.example.com",
+            "method": "POST", "path": "/checkout/9182", "route": "/checkout/:id",
+            "status": 503, "durationMs": 12.5, "protocol": "HTTP/1.1", "source": "gateway"}]}
+```
+
+| Parameter | Meaning |
+|---|---|
+| `method` | One verb. Case-insensitive; the follower stores them canonicalised |
+| `status` | A *class* of answer — `5xx`, or plainly `5`. One exact code is not offered |
+| `errors` | `1` keeps what the signals count as an error (500 and above). Composes with `status` |
+| `limit` | Rows to return, default 200, capped at 5000. The newest are kept |
+
+`path` is the raw path with its query string already gone, and `route` is what
+it was templated to; both are kept, because the template is what groups and the
+raw path is what makes a mis-templated route diagnosable. The list streams when
+asked to, exactly as the log endpoints do — `Accept: text/event-stream` answers
+the current page and then every request that arrives after it, one `data:`
+event per row. A plain GET on the same URL still answers the bounded page.
+
+Raw rows are kept for at most seven days, while the aggregates the other three
+endpoints read are kept for the platform's whole retention and the hourly ones
+for far longer — so a listing reaches back less far than a summary of the same
+window does, and a wide window is cheap for the three and expensive for this
+one.
+
+#### What a request row cannot tell you
+
+The vantage point is the platform's ingress, which sees everything that enters
+and nothing that stays inside. Four consequences, none of which these endpoints
+paper over:
+
+- **No build and no release.** The edge routes to a Service, not to a pod, and
+  during a rollout both revisions answer under one route. Rows carry project
+  and environment, never a build or a release — correlate with the activity
+  feed's deploy entries by time instead.
+- **No query strings.** They are stripped before the row is written and never
+  stored: privacy and path cardinality settled in one move.
+- **gRPC errors are not counted.** A failed gRPC call is an HTTP 200 with a
+  `grpc-status` trailer the edge does not read, so `errors` and `errorRate` are
+  transport-level for an HTTP/2 service. The route table's `protocol` is where
+  that shows.
+- **Nothing east-west.** Service-to-service calls inside the cluster never
+  cross the Gateway; `/traffic` sees them as L4 edges, and no request row
+  exists for them.
+
+#### Environments the golden signals do not fit
+
+A worker, a cron job, an environment whose route is withheld: not everything
+the platform runs is on the edge, and four charts of zeroes would describe the
+platform rather than the application. Every one of the four answers carries
+`edge`, which is what tells that case from a quiet hour:
+
+```json
+{"edge": {"routed": false, "message": "no HTTP traffic reaches this environment through the platform's edge: …"}}
+```
+
+`routed: false` says nothing publishes this environment on the shared Gateway,
+so there is nothing there to observe — the screen says so and leads with what
+is real for such a workload: its logs, its resource usage against the release's
+limits, and its restarts. `routed: true` with `requests: 0` is the other
+answer: it is on the edge, and nothing was asked of it in this window.
+`routed` is false only where the platform is *sure*; a route that could not be
+read (Gateway API CRDs a version behind, a ClusterRole that may not read them)
+leaves it true with a `message` saying the check did not happen, because
+declaring an application off the edge on the strength of a failed read is the
+loud way to be wrong.
+
+### The crash report
+
+`GET /environments/{name}/diagnostics` answers everything the platform knows
+about a container that died, assembled — which is the whole point of it. The
+parts exist separately already: the termination is on `…/workload`, the lines
+are in the log store, the memory series on `…/metrics`, the cluster's warnings
+and the edge's requests in their own tables. What nobody has is the join, and
+finding those five things in five places, each with its own window, is the work
+this endpoint deletes.
+
+```json
+{"environment": "shop-production", "namespace": "kitchen-shop",
+ "crashed": true, "restarts": 12,
+ "report": {
+   "crash": {"pod": "shop-production-7d9f4", "container": "app",
+             "reason": "OOMKilled", "oomKilled": true, "exitCode": 137,
+             "startedAt": "2026-08-16T09:57:11Z", "finishedAt": "2026-08-16T09:58:02Z",
+             "restarts": 12, "previous": true,
+             "waiting": "CrashLoopBackOff: back-off 5m0s restarting failed container"},
+   "since": "2026-08-16T09:28:02Z", "until": "2026-08-16T10:03:02Z",
+   "logs": [{"timestamp": "2026-08-16T09:58:01.902Z", "message": "heap limit reached", "…": "…"}],
+   "resources": {"memoryLimitBytes": 536870912, "oomKills": 1, "points": ["…"]},
+   "events": [{"timestamp": "2026-08-16T09:58:02Z", "reason": "OOMKilling",
+               "message": "Memory cgroup out of memory", "…": "…"}],
+   "requests": [{"timestamp": "2026-08-16T09:58:02.113Z", "method": "POST",
+                 "path": "/import", "status": 502, "durationMs": 30012, "…": "…"}]}}
+```
+
+`oomKilled` has its own field beside `reason` because "the kernel killed it for
+using too much memory" and "it crashed" are different problems with different
+fixes and the same exit code. `previous` says the termination ended the run
+*before* the current one, which is the ordinary shape of a crash loop — by the
+time anyone looks, the container is either serving again or waiting out its
+backoff, and `waiting` is that backoff. Init containers are read too: a
+workload that never starts because its init container dies is invisible in the
+app container's status.
+
+`since` and `until` bound the assembly, and the sections do not all use the
+whole span. The lines and the resource series stop at the termination instant,
+because they are what *led up to it* — the lines are the dead container's own,
+not the environment's, so that two healthy replicas do not bury the fifty that
+matter. The events run past it, because a crash loop keeps announcing itself
+and the `BackOff` is the cluster naming the loop. The requests are the ±30
+seconds around it, the same width the correlated-logs view uses: a 502 there is
+the edge noticing the pod go, and a slow 200 just before it is the load that
+preceded it. `resources` carries the memory series read against the limit the
+release set, and per bucket the restart trajectory — where in the window the
+restarts happened, rather than how many there have ever been.
+
+`?logs=` and `?requests=` size the two listings (50 each by default). This is
+one assembled screen rather than a search; `/logs` and `…/requests` are where
+someone goes when fifty is not enough.
+
+Nothing having crashed is an answer, not an empty report:
+
+```json
+{"environment": "shop-production", "namespace": "kitchen-shop", "crashed": false,
+ "restarts": 0, "message": "no container in this environment has terminated abnormally, …"}
+```
+
+An environment with no pods at all says that instead, and points at the
+`Environment`'s own conditions, which are where "nothing was ever materialized"
+is explained. A container that exited zero is not a crash — a completed job's
+pod, a sidecar told to stop — and calling it one would make the report cry wolf
+on every rollout.
+
+The report is all-or-nothing: one half failing fails the request and names the
+read that failed, because a section that silently came back empty would be read
+as "nothing was logged" or "no warning was raised". `503` where the
+installation has no telemetry store, like every other endpoint that reads it.
+
 ### The objects the operator materialized
 
 `GET /environments/{name}/objects` answers with the Kubernetes objects behind
@@ -847,7 +1065,19 @@ one shape:
   from the flow pipeline — zeroes when no flow collector is configured
 - log volume over 24 hours with a per-hour series
 - the store's own size and ingest rate
-- `projects`: per-project 24h traffic (requests, 5xx, p95, hourly series)
+- `projects`: per-project 24h traffic (requests, 5xx, p95, hourly series),
+  from the request pipeline
+
+The `projects` rows and the platform totals above them therefore come from two
+different sources, and where they disagree the rows are the ones to trust. The
+totals are aggregated from flows, which are attributed by the *destination*
+endpoint: a protected preview's traffic is credited to the forward-auth gate
+and an idling environment's to the KEDA interceptor, both of which live in the
+platform's own namespace — so both used to vanish from the project that served
+them. A request row is attributed by the `Host` header instead, which is the
+one thing every hop preserves and the only thing the interceptor routes on.
+Every project gets a row, at zero if nobody visited it: this is a list of
+projects with numbers on it, not a list of numbers.
 
 `?project=` narrows everything to one project and drops the `projects` join.
 There is deliberately no raw metrics query surface: the raw material is the
@@ -951,6 +1181,8 @@ an answer.
 | Write surface | The full project, connection and claim lifecycle, rebuild and cancel, promote/rollback, preview teardown, and the settings' runtime defaults | Nothing a user does in the platform's normal running should need `kubectl`; domain writes wait for their reconciler, because a write over objects nothing reconciles only looks like it works |
 | Credentials | Write-only: the operator stores them in Secrets and never echoes them | "Credentials never leave the operator" survives the API growing a write surface |
 | Introspection shapes | Kubernetes' own vocabulary — replicas, restarts, manifests | The exception that proves the rule above: these endpoints exist to explain the platform's machinery, and a reader comparing them against `kubectl` should not have to translate |
+| Empty request surfaces | `edge.routed` beside the numbers, on every request answer | "Nothing reaches this environment through the edge" and "nothing was asked of it in this window" are both zeroes and different sentences; four empty charts would describe the platform rather than the application |
+| The crash report | One endpoint that joins five sources, all-or-nothing | Troubleshooting should be reading rather than hunting, and a section that failed silently would be read as evidence that nothing happened |
 | Pods and nodes | Read uncached, straight from the API server | Serving them from the manager's cache would mean an informer over every pod in the cluster, kept warm for a question only an open dashboard asks |
 | The dashboard | Served by the same process, outside `/api/` | The SPA is public, stateless files plus `/config.json` (issuer, client id, audience — the same values every login redirect shows); everything with state stays behind the token check |
 | OTLP ingest | The node collector's own unauthenticated in-cluster port, never on the Gateway | Spans come from workloads already inside the cluster; an OTLP endpoint on the public Gateway would be an unauthenticated write surface on the telemetry store |

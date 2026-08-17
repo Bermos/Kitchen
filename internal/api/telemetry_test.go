@@ -25,6 +25,9 @@ import (
 	"testing"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/clickhouse"
 )
 
@@ -57,37 +60,88 @@ func TestListEvents(t *testing.T) {
 	}
 }
 
-func TestMetricsOverviewJoinsProjects(t *testing.T) {
+// The per-project numbers are the request pipeline's, not the flow pipeline's.
+// Flows are keyed on the destination endpoint, so a protected preview's traffic
+// was credited to the forward-auth gate and an idling environment's to the KEDA
+// interceptor — both of which live in the platform's namespace, so both simply
+// vanished from the project that actually served them.
+func TestMetricsOverviewCountsProjectTrafficFromTheRequestPipeline(t *testing.T) {
 	h := newHarness(t, nil, fixtures()...)
 	h.logs.overview = clickhouse.MetricsOverview{
 		Requests24h: 120,
-		Namespaces: []clickhouse.NamespaceTraffic{
-			// The project's app namespace, and one that belongs to no project.
-			{Namespace: "kitchen-shop", Requests24h: 100, Errors5xx24h: 3},
-			{Namespace: "kube-system", Requests24h: 20},
-		},
+		// What the flows saw of this project: four requests, because the gate
+		// answered the rest under its own namespace.
+		Namespaces: []clickhouse.NamespaceTraffic{{Namespace: "kitchen-shop", Requests24h: 4}},
 	}
+	h.logs.projectTraffic = []clickhouse.ProjectTraffic{{
+		Project:         feedProject,
+		Requests:        100,
+		Errors:          3,
+		P95Ms:           42,
+		RequestsPerHour: make([]uint64, 24),
+	}}
 
 	res := h.do(t, http.MethodGet, "/api/v1/metrics/overview", "")
 	if res.Code != http.StatusOK {
 		t.Fatalf("GET /metrics/overview = %d: %s", res.Code, res.Body.String())
 	}
 	body := decode[struct {
-		Requests24h uint64 `json:"requests24h"`
-		Projects    []struct {
-			Project     string `json:"project"`
-			Requests24h uint64 `json:"requests24h"`
-		} `json:"projects"`
-		Namespaces []any `json:"namespaces"`
+		Requests24h uint64           `json:"requests24h"`
+		Projects    []projectTraffic `json:"projects"`
+		Namespaces  []any            `json:"namespaces"`
 	}](t, res)
 	if body.Requests24h != 120 {
 		t.Errorf("requests24h = %d, want 120", body.Requests24h)
 	}
-	if len(body.Projects) != 1 || body.Projects[0].Project != feedProject || body.Projects[0].Requests24h != 100 {
-		t.Errorf("expected the shop project's traffic joined in, got %+v", body.Projects)
+	if len(body.Projects) != 1 {
+		t.Fatalf("expected one project row, got %+v", body.Projects)
+	}
+	row := body.Projects[0]
+	if row.Project != feedProject || row.Requests24h != 100 || row.Errors5xx24h != 3 || row.P95Ms != 42 {
+		t.Errorf("the project's row should be the request pipeline's, got %+v", row)
 	}
 	if body.Namespaces != nil {
 		t.Errorf("raw namespace rows should not reach the answer, got %+v", body.Namespaces)
+	}
+
+	// The window is whole hours ending with the one in progress, and the
+	// sparkline is asked for — a per-project row without one draws no chart.
+	asked := h.logs.lastProjectTraffic
+	if !asked.Sparkline {
+		t.Errorf("the overview needs the hourly series: %+v", asked)
+	}
+	if !asked.Since.Equal(asked.Since.Truncate(time.Hour)) || time.Since(asked.Since) < 23*time.Hour {
+		t.Errorf("expected a window of whole hours covering the last day, got %s", asked.Since)
+	}
+}
+
+// A project nobody visited still belongs in the table, at zero: the overview is
+// a list of projects with numbers on it, not a list of numbers.
+func TestMetricsOverviewKeepsProjectsWithNoTraffic(t *testing.T) {
+	quiet := &kitchenv1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: "blog", Namespace: testNamespace},
+		Spec: kitchenv1alpha1.ProjectSpec{
+			Source: kitchenv1alpha1.GitSourceSpec{
+				ConnectionRef: kitchenv1alpha1.LocalObjectReference{Name: "gh"},
+				Repo:          "acme/blog",
+			},
+		},
+	}
+	h := newHarness(t, nil, append(fixtures(), quiet)...)
+	h.logs.projectTraffic = []clickhouse.ProjectTraffic{{Project: feedProject, Requests: 100}}
+
+	res := h.do(t, http.MethodGet, "/api/v1/metrics/overview", "")
+	if res.Code != http.StatusOK {
+		t.Fatalf("GET /metrics/overview = %d: %s", res.Code, res.Body.String())
+	}
+	body := decode[struct {
+		Projects []projectTraffic `json:"projects"`
+	}](t, res)
+	if len(body.Projects) != 2 || body.Projects[0].Project != "blog" {
+		t.Fatalf("expected both projects, sorted by name, got %+v", body.Projects)
+	}
+	if body.Projects[0].Requests24h != 0 || len(body.Projects[0].RequestsPerHour) != 24 {
+		t.Errorf("a project with no traffic wants a row of zeroes and a flat sparkline, got %+v", body.Projects[0])
 	}
 }
 

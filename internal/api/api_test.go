@@ -289,6 +289,26 @@ type stubLogs struct {
 	spans       []clickhouse.Span
 	lastTraceID string
 	tracesErr   error
+
+	// The edge's requests. One error field stands in for every one of these
+	// reads, because they fail the same way — the query is the operator's, so
+	// what the caller is told is which read it was.
+	requestSummary     clickhouse.RequestSummary
+	lastRequestSummary clickhouse.RequestQuery
+	requestSeries      clickhouse.RequestSeries
+	lastRequestSeries  clickhouse.RequestSeriesQuery
+	requestRoutes      []clickhouse.RequestRoute
+	lastRequestRoutes  clickhouse.RequestRoutesQuery
+	requests           []clickhouse.Request
+	lastRequests       clickhouse.RequestListQuery
+	correlated         []clickhouse.Request
+	lastCorrelated     clickhouse.RequestCorrelationQuery
+	projectTraffic     []clickhouse.ProjectTraffic
+	lastProjectTraffic clickhouse.ProjectTrafficQuery
+	requestErr         error
+
+	k8sEvents     []clickhouse.K8sEvent
+	lastK8sEvents clickhouse.K8sEventQuery
 }
 
 func (s *stubLogs) SearchLogs(_ context.Context, query clickhouse.LogQuery) ([]clickhouse.LogLine, error) {
@@ -371,6 +391,80 @@ func (s *stubLogs) Trace(_ context.Context, traceID string) ([]clickhouse.Span, 
 		return nil, s.tracesErr
 	}
 	return s.spans, nil
+}
+
+func (s *stubLogs) RequestSummary(
+	_ context.Context,
+	query clickhouse.RequestQuery,
+) (clickhouse.RequestSummary, error) {
+	s.lastRequestSummary = query
+	if s.requestErr != nil {
+		return clickhouse.RequestSummary{}, s.requestErr
+	}
+	return s.requestSummary, nil
+}
+
+func (s *stubLogs) RequestSeries(
+	_ context.Context,
+	query clickhouse.RequestSeriesQuery,
+) (clickhouse.RequestSeries, error) {
+	s.lastRequestSeries = query
+	if s.requestErr != nil {
+		return clickhouse.RequestSeries{}, s.requestErr
+	}
+	return s.requestSeries, nil
+}
+
+func (s *stubLogs) RequestRoutes(
+	_ context.Context,
+	query clickhouse.RequestRoutesQuery,
+) ([]clickhouse.RequestRoute, error) {
+	s.lastRequestRoutes = query
+	if s.requestErr != nil {
+		return nil, s.requestErr
+	}
+	return s.requestRoutes, nil
+}
+
+func (s *stubLogs) QueryRequests(
+	_ context.Context,
+	query clickhouse.RequestListQuery,
+) ([]clickhouse.Request, error) {
+	s.lastRequests = query
+	if s.requestErr != nil {
+		return nil, s.requestErr
+	}
+	return s.requests, nil
+}
+
+func (s *stubLogs) CorrelatedRequests(
+	_ context.Context,
+	query clickhouse.RequestCorrelationQuery,
+) ([]clickhouse.Request, error) {
+	s.lastCorrelated = query
+	if s.requestErr != nil {
+		return nil, s.requestErr
+	}
+	return s.correlated, nil
+}
+
+func (s *stubLogs) ProjectTraffic(
+	_ context.Context,
+	query clickhouse.ProjectTrafficQuery,
+) ([]clickhouse.ProjectTraffic, error) {
+	s.lastProjectTraffic = query
+	if s.requestErr != nil {
+		return nil, s.requestErr
+	}
+	return s.projectTraffic, nil
+}
+
+func (s *stubLogs) QueryK8sEvents(
+	_ context.Context,
+	query clickhouse.K8sEventQuery,
+) ([]clickhouse.K8sEvent, error) {
+	s.lastK8sEvents = query
+	return s.k8sEvents, nil
 }
 
 type harness struct {
@@ -486,6 +580,11 @@ var routes = []struct {
 	{http.MethodGet, "/api/v1/environments/shop-production/workload"},
 	{http.MethodGet, "/api/v1/environments/shop-production/metrics"},
 	{http.MethodGet, "/api/v1/environments/shop-production/objects"},
+	{http.MethodGet, "/api/v1/environments/shop-production/requests"},
+	{http.MethodGet, "/api/v1/environments/shop-production/requests/summary"},
+	{http.MethodGet, "/api/v1/environments/shop-production/requests/series"},
+	{http.MethodGet, "/api/v1/environments/shop-production/requests/routes"},
+	{http.MethodGet, "/api/v1/environments/shop-production/diagnostics"},
 	{http.MethodGet, "/api/v1/status"},
 	{http.MethodGet, "/api/v1/logs"},
 	{http.MethodGet, "/api/v1/logs/histogram"},

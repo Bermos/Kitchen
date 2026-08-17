@@ -121,8 +121,8 @@ type chartVersions interface {
 }
 
 // logReader is the slice of the telemetry store the API depends on: logs, the
-// activity feed, traffic edges and the pre-aggregated metrics all live in the
-// same ClickHouse.
+// activity feed, traffic edges, the pre-aggregated metrics, the edge's requests
+// and the cluster's own warnings all live in the same ClickHouse.
 type logReader interface {
 	SearchLogs(ctx context.Context, query clickhouse.LogQuery) ([]clickhouse.LogLine, error)
 	FilterLogs(ctx context.Context, filter clickhouse.LogFilter) ([]clickhouse.LogLine, error)
@@ -135,6 +135,20 @@ type logReader interface {
 	ResourceSeries(ctx context.Context, query clickhouse.ResourceSeriesQuery) (clickhouse.ResourceSeries, error)
 	Traces(ctx context.Context, query clickhouse.TraceQuery) ([]clickhouse.Trace, error)
 	Trace(ctx context.Context, traceID string) ([]clickhouse.Span, error)
+
+	// The edge's requests: the golden signals off the rollups, the raw rows
+	// behind them, and the two joins — per project for the dashboard's
+	// overview, and around an instant for the crash report.
+	RequestSummary(ctx context.Context, query clickhouse.RequestQuery) (clickhouse.RequestSummary, error)
+	RequestSeries(ctx context.Context, query clickhouse.RequestSeriesQuery) (clickhouse.RequestSeries, error)
+	RequestRoutes(ctx context.Context, query clickhouse.RequestRoutesQuery) ([]clickhouse.RequestRoute, error)
+	QueryRequests(ctx context.Context, query clickhouse.RequestListQuery) ([]clickhouse.Request, error)
+	CorrelatedRequests(ctx context.Context, query clickhouse.RequestCorrelationQuery) ([]clickhouse.Request, error)
+	ProjectTraffic(ctx context.Context, query clickhouse.ProjectTrafficQuery) ([]clickhouse.ProjectTraffic, error)
+
+	// The cluster's Warning events, which are how a crash explains itself from
+	// the API server's side.
+	QueryK8sEvents(ctx context.Context, query clickhouse.K8sEventQuery) ([]clickhouse.K8sEvent, error)
 }
 
 // Start implements manager.Runnable.
@@ -219,6 +233,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/environments/{name}/workload", s.environmentWorkload)
 	mux.HandleFunc("GET /api/v1/environments/{name}/metrics", s.environmentMetrics)
 	mux.HandleFunc("GET /api/v1/environments/{name}/objects", s.environmentObjects)
+	mux.HandleFunc("GET /api/v1/environments/{name}/requests", s.environmentRequests)
+	mux.HandleFunc("GET /api/v1/environments/{name}/requests/summary", s.environmentRequestSummary)
+	mux.HandleFunc("GET /api/v1/environments/{name}/requests/series", s.environmentRequestSeries)
+	mux.HandleFunc("GET /api/v1/environments/{name}/requests/routes", s.environmentRequestRoutes)
+	mux.HandleFunc("GET /api/v1/environments/{name}/diagnostics", s.environmentDiagnostics)
 
 	mux.HandleFunc("GET /api/v1/logs", s.queryLogs)
 	mux.HandleFunc("GET /api/v1/logs/histogram", s.logHistogram)

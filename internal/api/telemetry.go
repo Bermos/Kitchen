@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"time"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -76,6 +77,11 @@ type metricsOverviewBody struct {
 	Projects []projectTraffic `json:"projects,omitempty"`
 }
 
+// overviewHours is the window the per-project numbers cover, in whole hours
+// ending with the one in progress — the same 24 the store's own hourly series
+// are drawn over, so the sparklines beside each other are the same shape.
+const overviewHours = 24
+
 type projectTraffic struct {
 	Project         string   `json:"project"`
 	Requests24h     uint64   `json:"requests24h"`
@@ -114,45 +120,65 @@ func (s *Server) metricsOverview(w http.ResponseWriter, req *http.Request) {
 
 	body := metricsOverviewBody{MetricsOverview: overview}
 	if query.Project == "" {
-		body.Projects, err = s.joinNamespaceTraffic(ctx, overview.Namespaces)
+		// The window is the current hour and the 23 before it, which is what
+		// makes the per-project sparkline 24 entries long and its last one the
+		// hour in progress — the shape the store's own hourly series have.
+		traffic, err := store.ProjectTraffic(ctx, clickhouse.ProjectTrafficQuery{
+			Since:     time.Now().UTC().Truncate(time.Hour).Add(-(overviewHours - 1) * time.Hour),
+			Sparkline: true,
+		})
+		if err != nil {
+			s.writeStoreError(w, err, "the per-project traffic query")
+			return
+		}
+		body.Projects, err = s.joinProjectTraffic(ctx, traffic)
 		if err != nil {
 			s.writeError(w, err)
 			return
 		}
 	}
-	// The namespace rows were only raw material for the join; the answer
-	// speaks in projects.
+	// The namespace rows are the flow pipeline's, and no longer the source of
+	// anything here; see joinProjectTraffic for why.
 	body.MetricsOverview.Namespaces = nil
 	writeJSON(w, http.StatusOK, body)
 }
 
-// joinNamespaceTraffic maps per-namespace traffic onto the projects whose app
-// namespaces they are. Every project gets a row — a project nobody visited
-// still belongs in the table, at zero — while namespaces that are no
-// project's (the platform's own, kube-system) fall away.
-func (s *Server) joinNamespaceTraffic(ctx context.Context, namespaces []clickhouse.NamespaceTraffic) ([]projectTraffic, error) {
+// joinProjectTraffic puts the request pipeline's per-project numbers onto the
+// projects that exist. Every project gets a row — a project nobody visited
+// still belongs in the table, at zero — and traffic for a project the platform
+// no longer has falls away.
+//
+// This reads the request rows rather than the flows the rest of the overview
+// still comes from, and that is a correction rather than a refactor. Flows are
+// attributed by the *destination* endpoint, so a protected preview's traffic
+// was credited to the forward-auth gate and an idling environment's to the KEDA
+// interceptor — both of which live in the platform's own namespace, so both
+// simply vanished from the project that served them. A request row is
+// attributed by the Host header, which is the one thing every hop preserves and
+// the only thing the interceptor routes on.
+func (s *Server) joinProjectTraffic(ctx context.Context, traffic []clickhouse.ProjectTraffic) ([]projectTraffic, error) {
 	list := &kitchenv1alpha1.ProjectList{}
 	if err := s.Client.List(ctx, list, client.InNamespace(s.Namespace)); err != nil {
 		return nil, err
 	}
 
-	byNamespace := make(map[string]clickhouse.NamespaceTraffic, len(namespaces))
-	for _, entry := range namespaces {
-		byNamespace[entry.Namespace] = entry
+	byProject := make(map[string]clickhouse.ProjectTraffic, len(traffic))
+	for _, entry := range traffic {
+		byProject[entry.Project] = entry
 	}
 
 	projects := make([]projectTraffic, 0, len(list.Items))
 	for _, project := range list.Items {
-		entry := byNamespace[controller.AppNamespace(project.Name)]
+		entry := byProject[project.Name]
 		row := projectTraffic{
 			Project:         project.Name,
-			Requests24h:     entry.Requests24h,
-			Errors5xx24h:    entry.Errors5xx24h,
+			Requests24h:     entry.Requests,
+			Errors5xx24h:    entry.Errors,
 			P95Ms:           entry.P95Ms,
 			RequestsPerHour: entry.RequestsPerHour,
 		}
 		if row.RequestsPerHour == nil {
-			row.RequestsPerHour = make([]uint64, 24)
+			row.RequestsPerHour = make([]uint64, overviewHours)
 		}
 		projects = append(projects, row)
 	}
