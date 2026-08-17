@@ -56,9 +56,11 @@ type Caller struct {
 	// ClientID is the OAuth client the token was issued to, when the token
 	// says so (`azp`). Empty for tokens minted straight from a session.
 	ClientID string
-	// Scopes the token was granted. Kitchen does not enforce scopes yet —
-	// teams and RBAC land with the organizations plugin — but they are
-	// carried through so that logs and future policy have them.
+	// Scopes the token was granted. Kitchen does not authorize on them and
+	// is not going to: the token says who the caller is, and Kitchen decides
+	// what they may do from the access recorded on its own objects
+	// (docs/AUTH.md, "Who may do what"). They are carried through because
+	// they say what the caller asked the issuer for, which is worth logging.
 	Scopes []string
 }
 
