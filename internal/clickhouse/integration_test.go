@@ -19,6 +19,7 @@ package clickhouse
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"net/url"
 	"os"
 	"strings"
@@ -86,12 +87,21 @@ func integrationClient(t *testing.T) *Client {
 	})
 }
 
-// every table the operator owns the TTL of.
+// every table whose TTL is the retention knob itself.
 func retainedTables() []string {
 	return []string{
 		LogsTable, EventsTable, FlowsTable, TracesTable, TracesIDLookupTable,
 		MetricsGaugeTable, MetricsSumTable, MetricsHistogramTable,
 		MetricsExponentialHistogramTable, MetricsSummaryTable, MetricsRollupTable,
+		K8sEventsTable, RequestsMinuteTable,
+	}
+}
+
+// and the two whose TTL is that knob scaled, per §5's derived ratios.
+func derivedRetentionTables(retentionDays int32) map[string]int32 {
+	return map[string]int32{
+		RequestsTable:     rawRequestRetention(retentionDays),
+		RequestsHourTable: hourlyRequestRetention(retentionDays),
 	}
 }
 
@@ -110,8 +120,8 @@ func TestIntegrationSchemaApplies(t *testing.T) {
 	}
 	// And that a retention change is applied rather than refused — each MODIFY
 	// TTL has to name that table's own time column, and there are five spellings
-	// of it across these eleven tables.
-	if err := client.EnsureTelemetrySchema(ctx, 7); err != nil {
+	// of it across these tables.
+	if err := client.EnsureTelemetrySchema(ctx, 9); err != nil {
 		t.Fatalf("EnsureTelemetrySchema at a new retention: %v", err)
 	}
 	for _, table := range retainedTables() {
@@ -119,8 +129,20 @@ func TestIntegrationSchemaApplies(t *testing.T) {
 		if err != nil {
 			t.Fatalf("reading %s's retention: %v", table, err)
 		}
-		if days != 7 {
-			t.Errorf("%s retains %d days, want 7", table, days)
+		if days != 9 {
+			t.Errorf("%s retains %d days, want 9", table, days)
+		}
+	}
+	// The request tables scale the knob rather than applying it, so a MODIFY
+	// TTL that passed the knob straight through would reset the ratios on every
+	// reconcile — and the reconcile after that would set them back.
+	for table, want := range derivedRetentionTables(9) {
+		days, err := client.tableRetentionDays(ctx, table)
+		if err != nil {
+			t.Fatalf("reading %s's retention: %v", table, err)
+		}
+		if days != want {
+			t.Errorf("%s retains %d days, want %d", table, days, want)
 		}
 	}
 	if err := client.EnsureTelemetrySchema(ctx, integrationRetained); err != nil {
@@ -584,6 +606,279 @@ func TestIntegrationMetricsOverview(t *testing.T) {
 	if overview.StoreRowsPerSecond == 0 {
 		t.Error("the line just written should count towards the ingest rate")
 	}
+}
+
+// TestIntegrationRequests is the request pipeline end to end: rows in, both
+// materialized views firing, and every golden-signal read coming back off the
+// states they wrote.
+//
+// It is the one thing the fake cannot answer. `countMergeIf` over a state
+// column named after the column it aggregates, a percentile read back out of a
+// t-digest, and a view whose GROUP BY has to agree with an AggregatingMergeTree
+// key are all statements that read perfectly and either fail or answer
+// something else.
+func TestIntegrationRequests(t *testing.T) {
+	client := integrationClient(t)
+	ctx := context.Background()
+	if err := client.EnsureRequestsSchema(ctx, integrationRetained); err != nil {
+		t.Fatalf("EnsureRequestsSchema: %v", err)
+	}
+
+	environment := uniqueEnvironment("requests")
+	host := environment + ".example.com"
+	// Five minutes of traffic ending a minute ago, so the window is closed and
+	// nothing lands in a bucket the read has not reached yet.
+	end := time.Now().UTC().Add(-time.Minute).Truncate(time.Minute)
+	start := end.Add(-5 * time.Minute)
+
+	requests := []Request{}
+	for i := 0; i < 300; i++ {
+		at := start.Add(time.Duration(i) * time.Second)
+		request := Request{
+			Timestamp:   at,
+			Project:     integrationProject,
+			Environment: environment,
+			Host:        host,
+			Method:      http.MethodGet,
+			Path:        fmt.Sprintf("/works/%d", i),
+			Route:       "/works/:id",
+			Status:      200,
+			DurationMs:  10,
+			Protocol:    "HTTP/1.1",
+		}
+		// Every tenth request fails and is slow, so the error rate is a tenth
+		// and the tail is somewhere the median is not.
+		if i%10 == 0 {
+			request.Status = 503
+			request.DurationMs = 500
+		}
+		requests = append(requests, request)
+	}
+	// One request for a host the platform never published, which is the
+	// unrouted bucket: no project, no environment.
+	unroutedHost := "stale-" + environment + ".example.com"
+	requests = append(requests, Request{
+		Timestamp: end.Add(-time.Second), Host: unroutedHost,
+		Method: http.MethodGet, Path: "/wp-login.php", Route: "/wp-login.php",
+		Status: 404, DurationMs: 1,
+	})
+	if err := client.InsertRequests(ctx, requests); err != nil {
+		t.Fatalf("InsertRequests: %v", err)
+	}
+
+	window := RequestQuery{
+		Project:     integrationProject,
+		Environment: environment,
+		Since:       start,
+		Until:       end,
+	}
+
+	summary, err := client.RequestSummary(ctx, window)
+	if err != nil {
+		t.Fatalf("RequestSummary: %v", err)
+	}
+	if summary.Requests != 300 || summary.Errors != 30 {
+		t.Fatalf("the rollup should hold every request: %+v", summary)
+	}
+	if summary.ErrorRate != 0.1 {
+		t.Errorf("30 of 300 is a tenth, got %v", summary.ErrorRate)
+	}
+	if summary.P50Ms != 10 {
+		t.Errorf("nine in ten requests took 10ms, so the median is 10, got %v", summary.P50Ms)
+	}
+	if summary.P99Ms <= summary.P50Ms {
+		t.Errorf("the slow tenth should be in the tail: p50 %v, p99 %v", summary.P50Ms, summary.P99Ms)
+	}
+
+	// The same window drawn as a chart: minute buckets off the same states.
+	series, err := client.RequestSeries(ctx, RequestSeriesQuery{RequestQuery: window, Buckets: 5})
+	if err != nil {
+		t.Fatalf("RequestSeries: %v", err)
+	}
+	if series.Rollup != RequestRollupMinute || series.BucketSeconds != 60 {
+		t.Fatalf("a five-minute window over five buckets is a minute each: %+v", series)
+	}
+	var charted uint64
+	for _, point := range series.Points {
+		charted += point.Requests
+	}
+	if charted != summary.Requests {
+		t.Errorf("the chart and the header disagree: %d charted, %d summarised", charted, summary.Requests)
+	}
+
+	routes, err := client.RequestRoutes(ctx, RequestRoutesQuery{RequestQuery: window})
+	if err != nil {
+		t.Fatalf("RequestRoutes: %v", err)
+	}
+	if len(routes) != 1 || routes[0].Route != "/works/:id" {
+		t.Fatalf("want one templated route, got %+v", routes)
+	}
+	if routes[0].Requests != 300 || routes[0].Errors != 30 {
+		t.Errorf("the route table should hold the same numbers as the header: %+v", routes[0])
+	}
+
+	// And the rows themselves, which is what "show me the failing requests"
+	// actually asks for.
+	failures, err := client.QueryRequests(ctx, RequestListQuery{
+		Project: integrationProject, Environment: environment,
+		Since: start, Until: end, OnlyErrors: true, Limit: 5,
+	})
+	if err != nil {
+		t.Fatalf("QueryRequests: %v", err)
+	}
+	if len(failures) != 5 {
+		t.Fatalf("want the five newest failures, got %d", len(failures))
+	}
+	for _, failure := range failures {
+		if failure.Status < 500 {
+			t.Errorf("a listing of failures answered with %d", failure.Status)
+		}
+		// The raw path survives templating, which is what makes a
+		// mis-templated route diagnosable.
+		if !strings.HasPrefix(failure.Path, "/works/") || failure.Path == failure.Route {
+			t.Errorf("the raw path should be kept beside the template: %+v", failure)
+		}
+	}
+	if failures[0].Timestamp.Before(failures[1].Timestamp) {
+		t.Error("a request listing reads newest first")
+	}
+
+	// The unrouted bucket, which is the operator's signal rather than a
+	// project's traffic.
+	unrouted, err := client.UnroutedHosts(ctx, PlatformRequestsQuery{Since: start, Until: end})
+	if err != nil {
+		t.Fatalf("UnroutedHosts: %v", err)
+	}
+	found := false
+	for _, entry := range unrouted {
+		if entry.Host == unroutedHost {
+			found = true
+			if entry.Requests != 1 {
+				t.Errorf("the unrouted host was asked for once, got %d", entry.Requests)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("the host nothing published should be in the unrouted bucket, got %+v", unrouted)
+	}
+
+	// The platform's own view counts it, rather than quietly dropping the
+	// traffic it could not attribute.
+	platform, err := client.PlatformRequests(ctx, PlatformRequestsQuery{Since: start, Until: end})
+	if err != nil {
+		t.Fatalf("PlatformRequests: %v", err)
+	}
+	if platform.Requests < 301 {
+		t.Errorf("the platform served at least the 301 rows written here, got %d", platform.Requests)
+	}
+	if platform.Unrouted < 1 {
+		t.Errorf("the unrouted request should be counted, got %d", platform.Unrouted)
+	}
+
+	// The hour rollup is fed by its own view over the same raw rows, so a
+	// window wide enough to reach it has to agree with the minute one.
+	hourly, err := client.RequestSummary(ctx, RequestQuery{
+		Project:     integrationProject,
+		Environment: environment,
+		Since:       end.Add(-72 * time.Hour),
+		Until:       end,
+	})
+	if err != nil {
+		t.Fatalf("RequestSummary over the hour rollup: %v", err)
+	}
+	if hourly.Rollup != RequestRollupHour {
+		t.Fatalf("a three-day window should read the hour rollup, got %q", hourly.Rollup)
+	}
+	if hourly.Requests != summary.Requests || hourly.Errors != summary.Errors {
+		t.Errorf("the two rollups hold the same rows: %d/%d hourly, %d/%d by the minute",
+			hourly.Requests, hourly.Errors, summary.Requests, summary.Errors)
+	}
+
+	// The Edge screen's leaders, over the same states.
+	leaders, err := client.EdgeBreakdown(ctx, EdgeBreakdownQuery{
+		Since: start, Until: end, By: EdgeByEnvironment, SortBy: RouteSortLatency,
+	})
+	if err != nil {
+		t.Fatalf("EdgeBreakdown: %v", err)
+	}
+	if len(leaders) == 0 {
+		t.Error("the environments that served the window should be rankable")
+	}
+}
+
+// TestIntegrationClusterEvents writes the cluster's Warning events and reads
+// them back, including the ones that belong to no project — which are the ones
+// that explain an install that never came up.
+func TestIntegrationClusterEvents(t *testing.T) {
+	client := integrationClient(t)
+	ctx := context.Background()
+	if err := client.EnsureK8sEventsSchema(ctx, integrationRetained); err != nil {
+		t.Fatalf("EnsureK8sEventsSchema: %v", err)
+	}
+
+	at := time.Now().UTC().Add(-time.Minute)
+	name := uniqueEnvironment("collector")
+	if err := client.InsertK8sEvents(ctx, []K8sEvent{{
+		Timestamp: at,
+		Namespace: "kitchen-system",
+		Kind:      "DaemonSet",
+		Name:      name,
+		Reason:    "FailedCreate",
+		Message:   `pods "kitchen-collector" is forbidden: violates PodSecurity "baseline:latest"`,
+		Count:     12,
+		Node:      "node-1",
+	}}); err != nil {
+		t.Fatalf("InsertK8sEvents: %v", err)
+	}
+
+	events, err := client.QueryK8sEvents(ctx, K8sEventQuery{
+		Name:   name,
+		Search: "PodSecurity",
+		Since:  at.Add(-time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("QueryK8sEvents: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("want the one event just written, got %d", len(events))
+	}
+	if events[0].Count != 12 || events[0].Reason != "FailedCreate" {
+		t.Errorf("unexpected event: %+v", events[0])
+	}
+	if !events[0].Timestamp.Truncate(time.Second).Equal(at.Truncate(time.Second)) {
+		t.Errorf("the event happened at %s, read back as %s", at, events[0].Timestamp)
+	}
+}
+
+// TestIntegrationTelemetryFreshness proves the union of the two sources types
+// out: one branch maxes a DateTime64 and the other a DateTime, and a union
+// that could not reconcile them would be a query that never runs.
+func TestIntegrationTelemetryFreshness(t *testing.T) {
+	client := integrationClient(t)
+	ctx := context.Background()
+	if err := client.EnsureTelemetrySchema(ctx, integrationRetained); err != nil {
+		t.Fatalf("EnsureTelemetrySchema: %v", err)
+	}
+
+	environment := uniqueEnvironment("freshness")
+	resource := resourceAttributes(environment, "shop-0", "app")
+	if err := client.Exec(ctx, exporterLogInsert(client.cfg.Database, resource, time.Now())); err != nil {
+		t.Fatalf("writing a log line: %v", err)
+	}
+
+	freshness, err := client.TelemetryFreshness(ctx, time.Hour)
+	if err != nil {
+		t.Fatalf("TelemetryFreshness: %v", err)
+	}
+	for _, node := range freshness {
+		if node.Node == "node-1" {
+			if time.Since(node.LastSeen) > time.Hour {
+				t.Errorf("the line just written should be the newest thing node-1 sent: %s", node.LastSeen)
+			}
+			return
+		}
+	}
+	t.Errorf("the node that just sent a line should be in the answer, got %+v", freshness)
 }
 
 // uniqueEnvironment keeps one run's rows from being read by the next. The

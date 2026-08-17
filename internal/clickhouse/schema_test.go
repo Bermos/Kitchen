@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -239,8 +240,13 @@ func TestEnsureLogsSchemaLeavesAMatchingTTLAlone(t *testing.T) {
 // A MODIFY TTL naming a column the table does not have is refused rather than
 // ignored, and the tables do not agree on what their time column is called:
 // the exporter stamps `Timestamp` on logs and traces and `TimeUnix` on every
-// metric table, the trace lookup keeps the trace's `Start`, the rollup buckets
-// by `bucket`, and the two tables the operator writes itself use `timestamp`.
+// metric table, the trace lookup keeps the trace's `Start`, the rollups bucket
+// by `bucket`, and the tables the operator writes itself use `timestamp` —
+// except the request table, which is spelled the exporter's way.
+//
+// The days differ too, and only for the requests: §5 derives their retention
+// from the one knob rather than applying it, so a MODIFY TTL that used the
+// knob directly would quietly reset the ratios on every reconcile.
 func TestEveryTableGetsItsOwnTimeColumnInTheTTL(t *testing.T) {
 	store := newFakeStore(t)
 	store.engine = ""
@@ -249,23 +255,161 @@ func TestEveryTableGetsItsOwnTimeColumnInTheTTL(t *testing.T) {
 		t.Fatalf("EnsureTelemetrySchema: %v", err)
 	}
 
-	for table, column := range map[string]string{
-		LogsTable:                        timeColumnLogs,
-		TracesTable:                      timeColumnLogs,
-		TracesIDLookupTable:              timeColumnLookup,
-		MetricsGaugeTable:                timeColumnMetrics,
-		MetricsSumTable:                  timeColumnMetrics,
-		MetricsHistogramTable:            timeColumnMetrics,
-		MetricsExponentialHistogramTable: timeColumnMetrics,
-		MetricsSummaryTable:              timeColumnMetrics,
-		MetricsRollupTable:               timeColumnRollup,
-		EventsTable:                      timeColumnKitchen,
-		FlowsTable:                       timeColumnKitchen,
+	type retention struct {
+		column string
+		days   int32
+	}
+	for table, ttl := range map[string]retention{
+		LogsTable:                        {timeColumnLogs, 9},
+		TracesTable:                      {timeColumnLogs, 9},
+		TracesIDLookupTable:              {timeColumnLookup, 9},
+		MetricsGaugeTable:                {timeColumnMetrics, 9},
+		MetricsSumTable:                  {timeColumnMetrics, 9},
+		MetricsHistogramTable:            {timeColumnMetrics, 9},
+		MetricsExponentialHistogramTable: {timeColumnMetrics, 9},
+		MetricsSummaryTable:              {timeColumnMetrics, 9},
+		MetricsRollupTable:               {timeColumnRollup, 9},
+		EventsTable:                      {timeColumnKitchen, 9},
+		FlowsTable:                       {timeColumnKitchen, 9},
+		K8sEventsTable:                   {timeColumnKitchen, 9},
+		RequestsTable:                    {timeColumnRequests, 7},
+		RequestsMinuteTable:              {timeColumnRollup, 9},
+		RequestsHourTable:                {timeColumnRollup, 108},
 	} {
-		want := fmt.Sprintf("ALTER TABLE %s MODIFY TTL toDateTime(%s) + toIntervalDay(9)",
-			qualified(table), column)
+		want := fmt.Sprintf("ALTER TABLE %s MODIFY TTL toDateTime(%s) + toIntervalDay(%d)",
+			qualified(table), ttl.column, ttl.days)
 		if !store.sent(want) {
 			t.Errorf("expected %q, got:\n%s", want, store.transcript())
+		}
+	}
+}
+
+// The raw rows are the densest thing in the store and the shortest-lived, and
+// a retention below a week takes them with it rather than leaving one table
+// outliving the knob.
+func TestRequestRetentionIsDerivedFromTheOneKnob(t *testing.T) {
+	for _, retention := range []struct {
+		configured int32
+		raw        int32
+		hourly     int32
+	}{
+		{configured: 30, raw: 7, hourly: 360},
+		{configured: 7, raw: 7, hourly: 84},
+		{configured: 3, raw: 3, hourly: 36},
+		{configured: 1, raw: 1, hourly: 12},
+	} {
+		if got := rawRequestRetention(retention.configured); got != retention.raw {
+			t.Errorf("raw requests at a retention of %d: got %d days, want %d",
+				retention.configured, got, retention.raw)
+		}
+		if got := hourlyRequestRetention(retention.configured); got != retention.hourly {
+			t.Errorf("the hour rollup at a retention of %d: got %d days, want %d",
+				retention.configured, got, retention.hourly)
+		}
+	}
+
+	// A retention nothing would ever configure still has to produce a TTL that
+	// keeps rows: an int32 that wrapped would come back negative, and a
+	// negative TTL expires every row as it is written.
+	if got := hourlyRequestRetention(math.MaxInt32); got < 1 {
+		t.Errorf("the hour rollup's retention wrapped to %d", got)
+	}
+}
+
+// Both rollup views read the raw table. Feeding the hour rollup from the
+// minute one would be re-aggregating aggregate states through columns named
+// after the columns they aggregate, which is the shadowing that made the
+// metrics rollup's view refuse to be created at all.
+func TestBothRequestViewsReadTheRawTable(t *testing.T) {
+	for name, view := range map[string]string{
+		RequestsMinuteView: createRequestsMinuteView(testDatabase),
+		RequestsHourView:   createRequestsHourView(testDatabase),
+	} {
+		if !strings.Contains(view, "FROM "+qualified(RequestsTable)+" AS r") {
+			t.Errorf("%s should read the raw request table:\n%s", name, view)
+		}
+		for _, rollup := range []string{RequestsMinuteTable, RequestsHourTable} {
+			if strings.Contains(view, "FROM "+qualified(rollup)) {
+				t.Errorf("%s reads a rollup rather than the raw table:\n%s", name, view)
+			}
+		}
+		// Every argument is qualified, which is what keeps the state columns
+		// nameable after the columns they aggregate.
+		if !strings.Contains(view, "quantilesTDigestState(0.5, 0.95, 0.99)(r.duration_ms)") {
+			t.Errorf("%s should read the raw duration through the table's alias:\n%s", name, view)
+		}
+		if !strings.Contains(view, "countState() AS requests") {
+			t.Errorf("%s should keep the count as a state:\n%s", name, view)
+		}
+	}
+
+	if !strings.Contains(createRequestsMinuteView(testDatabase), "toStartOfMinute(r.Timestamp)") {
+		t.Error("the minute view should bucket by the minute")
+	}
+	if !strings.Contains(createRequestsHourView(testDatabase), "toStartOfHour(r.Timestamp)") {
+		t.Error("the hour view should bucket by the hour")
+	}
+}
+
+// Every product query is project-scoped, so every product table's ordering key
+// leads with the project. The rollups add the dimensions the screens group by,
+// because a key that stopped at the bucket would collapse them into one row.
+func TestTheRequestTablesAreOrderedForProjectScopedReads(t *testing.T) {
+	raw := createRequestsTable(testDatabase, 7)
+	if !strings.Contains(raw, "ORDER BY (project, environment, Timestamp)") {
+		t.Errorf("the request table is not ordered for a project's reads:\n%s", raw)
+	}
+	if !strings.Contains(raw, "PARTITION BY toDate(Timestamp)") {
+		t.Errorf("the request table should partition by the day:\n%s", raw)
+	}
+	// The route is a dictionary because the follower bounds the set; the path
+	// is not, because it is unbounded by definition.
+	if !strings.Contains(raw, "route         LowCardinality(String)") ||
+		!strings.Contains(raw, "path          String CODEC(ZSTD(1))") {
+		t.Errorf("the request table's route and path types are the cardinality argument:\n%s", raw)
+	}
+
+	key := "ORDER BY (project, environment, bucket, host, route, method, status)"
+	for name, ddl := range map[string]string{
+		RequestsMinuteTable: createRequestsMinuteTable(testDatabase, 30),
+		RequestsHourTable:   createRequestsHourTable(testDatabase, 360),
+	} {
+		if !strings.Contains(ddl, key) {
+			t.Errorf("%s should be keyed %s:\n%s", name, key, ddl)
+		}
+		if !strings.Contains(ddl, "ENGINE = AggregatingMergeTree") {
+			t.Errorf("%s has to merge states rather than rows:\n%s", name, ddl)
+		}
+		if !strings.Contains(ddl, "duration      AggregateFunction(quantilesTDigest(0.5, 0.95, 0.99), Float64)") {
+			t.Errorf("%s should keep the latency as a mergeable digest:\n%s", name, ddl)
+		}
+	}
+
+	// A year of daily partitions for a table holding a few thousand rows a day
+	// is 365 partitions; the hour rollup is monthly for that reason.
+	if !strings.Contains(createRequestsMinuteTable(testDatabase, 30), "PARTITION BY toDate(bucket)") {
+		t.Error("the minute rollup should partition by the day")
+	}
+	if !strings.Contains(createRequestsHourTable(testDatabase, 360), "PARTITION BY toYYYYMM(bucket)") {
+		t.Error("the hour rollup should partition by the month")
+	}
+}
+
+// The cluster's events are the operator's own table, keyed like every other
+// product table even though its most interesting rows — the ones explaining an
+// install that never came up — belong to no project at all.
+func TestTheClusterEventTableKeepsThePlatformsOwnEvents(t *testing.T) {
+	ddl := createK8sEventsTable(testDatabase, 30)
+	if !strings.Contains(ddl, "ORDER BY (project, environment, timestamp)") {
+		t.Errorf("the cluster event table is not ordered for a project's reads:\n%s", ddl)
+	}
+	for _, column := range []string{
+		"timestamp   DateTime64(3, 'UTC')", "namespace   LowCardinality(String)",
+		"kind        LowCardinality(String)", "reason      LowCardinality(String)",
+		"count       UInt32", "node        LowCardinality(String)",
+	} {
+		if !strings.Contains(ddl, column) {
+			t.Errorf("the cluster event table is missing %q:\n%s", column, ddl)
 		}
 	}
 }
@@ -282,15 +426,20 @@ func TestEnsureTelemetrySchemaCreatesEveryTable(t *testing.T) {
 		LogsTable, EventsTable, FlowsTable, TracesTable, TracesIDLookupTable,
 		MetricsGaugeTable, MetricsSumTable, MetricsHistogramTable,
 		MetricsExponentialHistogramTable, MetricsSummaryTable, MetricsRollupTable,
+		RequestsTable, RequestsMinuteTable, RequestsHourTable, K8sEventsTable,
 	} {
 		want := "CREATE TABLE IF NOT EXISTS " + qualified(table)
 		if !store.sent(want) {
 			t.Errorf("expected a statement containing %q, got:\n%s", want, store.transcript())
 		}
 	}
-	// The views: one that makes a trace findable by id, and two that fill the
-	// rollup from the two tables its numbers live in.
-	for _, view := range []string{TracesIDLookupView, MetricsRollupGaugeView, MetricsRollupSumView} {
+	// The views: one that makes a trace findable by id, two that fill the usage
+	// rollup from the two tables its numbers live in, and one per request
+	// rollup.
+	for _, view := range []string{
+		TracesIDLookupView, MetricsRollupGaugeView, MetricsRollupSumView,
+		RequestsMinuteView, RequestsHourView,
+	} {
 		want := "CREATE MATERIALIZED VIEW IF NOT EXISTS " + qualified(view)
 		if !store.sent(want) {
 			t.Errorf("expected a statement containing %q, got:\n%s", want, store.transcript())
