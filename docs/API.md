@@ -472,10 +472,13 @@ transition that lands on a boundary.
 `rollup` says the five-minute rollup answered rather than the raw samples,
 which is why a wide window comes back coarser than the resolution asked for.
 
-The endpoint answers `503` where the installation has no telemetry store, and
-draws nothing where sampling is switched off
-(`Kitchen.spec.observability.metrics`) — deliberately, rather than a flat line
-at zero, which would claim the environment used nothing.
+The endpoint answers `503` where the installation has no telemetry store.
+Switching `Kitchen.spec.observability.metrics` off stops the operator's half
+alone: CPU, memory and the replica count keep arriving, because they are read
+off the pods the node collector scraped, while restarts, OOM kills and the
+limits the usage is drawn against go uncollected. What was never collected
+draws nothing, deliberately, rather than a flat line at zero, which would
+claim the environment used nothing.
 
 ### The objects the operator materialized
 
@@ -512,7 +515,7 @@ question — the dashboard's status bar:
  "tunnel": {"enabled": true, "connected": true, "message": "cloudflared is available"},
  "builds": {"running": 1, "capacity": 2, "queued": 0},
  "gateway": {"address": "203.0.113.7", "programmed": true},
- "components": [{"name": "logs", "kind": "DaemonSet", "healthy": false,
+ "components": [{"name": "collector", "kind": "DaemonSet", "healthy": false,
    "available": 0, "desired": 3, "message": "0 of 3 pods available: …"}]}
 ```
 
@@ -604,9 +607,9 @@ for what enabling it grants.
 
 ### Logs
 
-Build and runtime logs come from ClickHouse, where the collector has been
-shipping them since the log pipeline landed — so a build's output survives the
-build pod, and a preview's logs outlive the preview.
+Build and runtime logs come from ClickHouse, where the node collector ships
+every container line it tails — so a build's output survives the build pod,
+and a preview's logs outlive the preview.
 
 ```
 GET /builds/{name}/logs?limit=200&search=error&since=2026-08-13T10:00:00Z
@@ -622,13 +625,13 @@ GET /environments/{name}/logs?limit=200&container=app
 
 Lines come back oldest first — a log reads forwards — as
 `{timestamp, source, project, environment, build, pod, container, stream, level, message, fields}`.
-`level` is the collector's best-effort read of the line's severity
-(`trace`/`debug`/`info`/`warn`/`error`/`fatal`, parsed out of JSON logs and the
-common text spellings), empty when the line says neither. `fields` is what the
-line itself said, when it was JSON: the collector flattens the object with dots
-(`{"http": {"status": 500}}` is `http.status`), stringifies every value, and
-leaves the field out entirely for a line that was not JSON or that carried more
-fields than `logs.maxStructuredFields`.
+`level` is the collector's best-effort read of the line's severity, folded to
+lower case (`trace`/`debug`/`info`/`warn`/`error`/`fatal`) so that `error` is
+one value however the line spelled it, and empty when the line said nothing.
+`fields` is what the line itself said, when it was JSON: the object is
+flattened with dots (`{"http": {"status": 500}}` is `http.status`), every value
+is stringified, and the field is left out entirely for a line that was not
+JSON.
 
 `source` says whose the line is. The collector tails every container on every
 node, so this is a real distinction and not a formality:
@@ -643,6 +646,10 @@ node, so this is a real distinction and not a formality:
 `cluster` lines are collected deliberately: a node whose storage or networking
 is failing is exactly when Kitchen looks broken, and the answer is in someone
 else's pod. The dashboard scopes them out by default and offers a switch.
+
+All four are containers. The node's own system logs are deliberately not
+collected — see [SCOPE.md](SCOPE.md) for why the collector cannot read a
+journal it has no `journalctl` for, and why Talos has none to read.
 
 An installation without a telemetry store answers `503`: there are no logs to
 read, which is a missing capability rather than a bad request.
@@ -708,17 +715,25 @@ each other are `AND`ed:
 | `a OR b`, `(a b) OR c` | Alternation and grouping |
 
 Columns are `source`, `project`, `environment`, `build`, `namespace`, `pod`,
-`container`, `node`, `stream`, `level` and `message`, plus the aliases
-`service`/`app` for `project`, `env` for `environment` and `msg` for `message`.
-`timestamp` is deliberately not addressable: the window is `since`/`until`, and
-a query that could move it would let the lines and the histogram disagree about
-what they are showing.
+`container`, `node`, `stream`, `level`, `message`, `traceId` and `spanId`, plus
+the aliases `service`/`app` for `project`, `env` for `environment`, `msg` for
+`message` and the usual spellings of the two id columns (`trace_id`,
+`trace.id`, `span_id`). `timestamp` is deliberately not addressable: the window
+is `since`/`until`, and a query that could move it would let the lines and the
+histogram disagree about what they are showing.
+
+Those are the query language's names, not the table's. The store is written by
+a stock OTel exporter whose column names are not Kitchen's to rename, so
+`level` and `message` read `SeverityText` and `Body` underneath; the
+translation lives in the operator rather than in `ALIAS` columns, which keeps
+the table the standard shape any OTel-aware tool expects. It only shows through
+in `where` below.
 
 Anything that is not a column is a **structured field** of the line, so
-`http.status:500` reads `fields['http.status']` — the collector's flattening of
-a JSON log. `labels.tier:web` reaches the pod's Kubernetes labels instead. This
-is the one place a typo goes quiet: `levl:error` asks for a field nothing writes
-and matches nothing rather than being refused.
+`http.status:500` reads `LogAttributes['http.status']`. `labels.tier:web`
+reaches the pod's Kubernetes labels instead. This is the one place a typo goes
+quiet: `levl:error` asks for a field nothing writes and matches nothing rather
+than being refused.
 
 Every value travels to ClickHouse as a bound parameter, never as query text.
 
@@ -728,8 +743,15 @@ Every value travels to ClickHouse as a bound parameter, never as query text.
 written — the query language is a front door, not a cage:
 
 ```
-GET /logs?where=match(message, 'GET /works\?page=\d+') AND environment = 'shop-production'
+GET /logs?where=match(Body, 'GET /works\?page=\d+') AND environment = 'shop-production'
 ```
+
+Its vocabulary is `otel_logs`'s own, which is the price of a store any
+OTel-shaped tool can read: `Body`, `SeverityText`, `LogAttributes['…']` where
+the query language says `message`, `level` and a field name. Kitchen's own
+columns — `project`, `environment`, `build`, `source`, `namespace`, `pod`,
+`container`, `node` — are real columns here and mean what they mean everywhere
+else, because they are what the table is ordered by.
 
 It reaches ClickHouse as query text, which is the point — and why it runs pinned
 read-only (`readonly=2`: no writes, no DDL) under an execution cap, as the
@@ -871,11 +893,16 @@ would break the one link that makes traces worth collecting. A trace nothing
 was kept for answers `404` and says retention is the likely reason, rather
 than an empty list that reads as "this request did nothing".
 
-Spans come from the applications themselves, over the platform's OTLP/HTTP
-receiver — see [SCOPE.md](SCOPE.md) for why nothing here is derived from the
-flow data. Every environment the operator deploys is handed the receiver's
+Spans come from the applications themselves, over the node collector's
+OTLP/HTTP endpoint — see [SCOPE.md](SCOPE.md) for why nothing here is derived
+from the flow data. Every environment the operator deploys is handed that
 address through OTLP's own environment variables, so instrumenting an
-application is adding its language's SDK and nothing else.
+application is adding its language's SDK and nothing else. Nothing about that
+changed when the receiver moved out of the operator and into the collector:
+same Service name, same port. The Service is `internalTrafficPolicy: Local`
+now, so one stable name means the agent on the caller's own node — and on a
+node where no agent is Ready, an export is dropped rather than sent to
+another.
 
 ### Saved queries
 
@@ -926,7 +953,7 @@ an answer.
 | Introspection shapes | Kubernetes' own vocabulary — replicas, restarts, manifests | The exception that proves the rule above: these endpoints exist to explain the platform's machinery, and a reader comparing them against `kubectl` should not have to translate |
 | Pods and nodes | Read uncached, straight from the API server | Serving them from the manager's cache would mean an informer over every pod in the cluster, kept warm for a question only an open dashboard asks |
 | The dashboard | Served by the same process, outside `/api/` | The SPA is public, stateless files plus `/config.json` (issuer, client id, audience — the same values every login redirect shows); everything with state stays behind the token check |
-| Trace ingest | Its own unauthenticated in-cluster port, never on the Gateway | Spans come from workloads already inside the cluster; an OTLP endpoint on the public Gateway would be an unauthenticated write surface on the telemetry store |
+| OTLP ingest | The node collector's own unauthenticated in-cluster port, never on the Gateway | Spans come from workloads already inside the cluster; an OTLP endpoint on the public Gateway would be an unauthenticated write surface on the telemetry store |
 | Saved queries | A `SavedQuery` object with no reconciler | The rule that a write waits for its reconciler is about objects that do nothing until something acts on them; a saved query has its whole effect by existing |
 | Webhook receiver | Stays signature-authenticated, not OIDC | A provider proving a payload is genuine is a different question from a caller proving who they are |
 
