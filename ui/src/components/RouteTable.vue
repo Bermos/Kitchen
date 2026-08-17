@@ -18,8 +18,11 @@ const props = defineProps<{
   /** The route the rest of the section is filtered to, if any. */
   selected: string | null;
   loading?: boolean;
-  /** Whether anything here was served over HTTP/2, which the error column has
-   * to footnote: gRPC failures are not in these numbers. */
+  /** Whether the environment serves HTTP/2, which the error column has to
+   * footnote: gRPC failures are not in these numbers. It is a fact about the
+   * environment and not about the rows on screen — these rows come off the
+   * rollups, which carry no protocol at all, so a table full of gRPC traffic
+   * looks exactly like one with none. */
   grpc?: boolean;
 }>();
 

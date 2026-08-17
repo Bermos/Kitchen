@@ -3,7 +3,7 @@ import { computed, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 import { api, type Certificate } from "../lib/api";
 import { compactCount, timeAgo } from "../lib/format";
-import { CERT_EXPIRY_DAYS } from "../lib/platform";
+import { certificateTrouble } from "../lib/platform";
 import { formatLatency, formatPercent, formatRate, type SignalTile } from "../lib/requests";
 import { useAsync, usePoll } from "../lib/useAsync";
 import EdgeRanking from "../components/EdgeRanking.vue";
@@ -80,11 +80,14 @@ const tiles = computed<SignalTile[]>(() => {
 
 const certificates = computed(() => data.value?.certificates?.items ?? []);
 
+// The row's verdict is the rule's, not a stricter reading of it: a certificate
+// inside its window with a renewal moving normally is one cert-manager is about
+// to replace, and the problems list says nothing about it. The State column
+// still reports Ready and Renewing verbatim beside this dot, so nothing the
+// certificate said is hidden by agreeing with `cert.expiring` here.
 function certificateTone(certificate: Certificate) {
-  if (!certificate.ready) return "error" as const;
-  if ((certificate.daysToExpiry ?? Infinity) <= CERT_EXPIRY_DAYS) return "warning" as const;
-  if (certificate.issuing) return "warning" as const;
-  return "success" as const;
+  if (!certificateTrouble(certificate)) return "success" as const;
+  return certificate.ready ? ("warning" as const) : ("error" as const);
 }
 
 function expiry(certificate: Certificate): string {
@@ -235,8 +238,12 @@ function expiry(certificate: Certificate): string {
       <div>
         <h2 class="text-sm font-medium text-highlighted mb-2">Gateways</h2>
         <div class="rounded-md border border-default divide-y divide-default overflow-hidden">
-          <p v-if="!data?.gateways?.length" class="px-4 py-3 text-xs text-muted">
-            No Gateway was found — nothing on this platform is published.
+          <!-- An empty list is two different answers: no Gateway at all, which
+               is the strongest claim this screen makes, and a list that could
+               not be read, which claims nothing. `gatewayMessage` is set only
+               for the second. -->
+          <p v-if="!data?.gateways?.length" class="px-4 py-3 text-xs" :class="data?.gatewayMessage ? 'text-warning' : 'text-muted'">
+            {{ data?.gatewayMessage || "No Gateway was found — nothing on this platform is published." }}
           </p>
           <div v-for="gateway in data?.gateways ?? []" :key="`${gateway.namespace}/${gateway.name}`" class="px-4 py-3">
             <div class="flex items-center gap-2 flex-wrap">
@@ -340,7 +347,7 @@ function expiry(certificate: Certificate): string {
                 </td>
                 <td
                   class="px-4 py-2.5 text-right font-mono text-xs tabular-nums"
-                  :class="(certificate.daysToExpiry ?? Infinity) <= CERT_EXPIRY_DAYS ? 'text-warning' : 'text-toned'"
+                  :class="certificateTrouble(certificate) ? 'text-warning' : 'text-toned'"
                 >
                   {{ expiry(certificate) }}
                 </td>

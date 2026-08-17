@@ -1112,6 +1112,11 @@ export interface PlatformEdge {
   gateways: EdgeGateway[];
   tunnel?: EdgeTunnel;
   certificates: CertificateTable;
+  /** Why the Gateway list is empty, absent when the platform genuinely has no
+   * Gateway. The two readings of an empty list are not the same answer: "no
+   * Gateway" means nothing this platform publishes is reachable, and a list
+   * that could not be read proves none of it. */
+  gatewayMessage?: string;
   /** The traffic half needs the store; the edge's own objects do not. */
   trafficMessage?: string;
 }
@@ -1520,7 +1525,8 @@ export const api = {
 
   // What the internet asked of an environment. The three aggregate reads come
   // off the rollups — a year-wide summary costs what an hour's does — and the
-  // listing off the raw rows, which are kept for seven days.
+  // listing off the raw rows, which are kept for the shorter of a week and the
+  // platform's retention.
   requestSummary: (name: string, window: RequestWindow = {}) =>
     request<RequestSummary>("GET", `/environments/${name}/requests/summary?${requestParams(window)}`),
   requestSeries: (name: string, window: RequestWindow & { buckets?: number } = {}) => {

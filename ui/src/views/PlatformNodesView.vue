@@ -408,8 +408,8 @@ function fullest(item: PlatformNode) {
       </div>
 
       <!-- An unmeasured node and an idle one must not draw the same chart, so
-           where nothing reads the series the columns are dashes with the reason
-           rather than flat lines at zero. -->
+           where the series could not be read the columns are dashes with the
+           reason rather than flat lines at zero. -->
       <p v-if="usageMessage" class="text-[11px] text-warning">{{ usageMessage }}</p>
       <p class="text-[11px] text-dimmed leading-relaxed">
         Freshness is the store's answer to “what has this node's collector written lately”, looked back over an hour. A

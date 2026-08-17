@@ -3,7 +3,7 @@ import { computed } from "vue";
 import { useRoute } from "vue-router";
 import { api } from "../lib/api";
 import { compactCount, formatBytes, formatDurationSeconds, timeAgo } from "../lib/format";
-import { formatFraction } from "../lib/platform";
+import { FLOWS_LOST_FIRING, flowsUnderReporting, formatFraction } from "../lib/platform";
 import { useAsync, usePoll } from "../lib/useAsync";
 import FillBar from "../components/FillBar.vue";
 import StatusDot from "../components/StatusDot.vue";
@@ -34,6 +34,19 @@ const volumes = computed(() => data.value?.items ?? []);
 const usageMessage = computed(() => data.value?.usageMessage ?? "");
 const store = computed(() => data.value?.store);
 const flows = computed(() => data.value?.flows);
+
+/** The ledger's verdict, decided where `ingest.flows-lost` decides it. A
+ * handful of dropped events is a momentary buffer overrun that no total will
+ * ever show; the counts below say what was lost either way, which is the point
+ * of the panel — but only the rule's own threshold paints it amber. */
+const underReporting = computed(() => flowsUnderReporting(flows.value));
+const ledger = computed(() => {
+  const loss = flows.value;
+  if (!loss) return "";
+  if (underReporting.value) return "Hubble reported dropping events — request counts under-report by an unknown amount.";
+  if (loss.lossless) return "Nothing was reported lost in the follower's trailing window.";
+  return `Something was lost, below the ${FLOWS_LOST_FIRING} events in a window the platform calls under-reporting: what survived is correct, and there are simply that many fewer rows than there were requests.`;
+});
 
 function highlighted(volume: { namespace: string; name: string }): boolean {
   if (!claim.value) return false;
@@ -228,25 +241,19 @@ function highlighted(volume: { namespace: string; name: string }): boolean {
 
         <div>
           <h2 class="text-sm font-medium text-highlighted mb-2">What the flow stream lost</h2>
-          <div
-            class="rounded-md border px-4 py-3"
-            :class="flows && !flows.lossless ? 'border-warning/40 bg-warning/5' : 'border-default'"
-          >
+          <div class="rounded-md border px-4 py-3" :class="underReporting ? 'border-warning/40 bg-warning/5' : 'border-default'">
             <template v-if="flows">
-              <p class="text-xs flex items-center gap-2" :class="flows.lossless ? 'text-muted' : 'text-warning'">
-                <StatusDot :tone="flows.lossless ? 'success' : 'warning'" />
-                <span>
-                  {{
-                    flows.lossless
-                      ? "Nothing was reported lost in the follower's trailing window."
-                      : "Hubble reported dropping events — request counts under-report by an unknown amount."
-                  }}
-                </span>
+              <p class="text-xs flex items-center gap-2" :class="underReporting ? 'text-warning' : 'text-muted'">
+                <StatusDot :tone="underReporting ? 'warning' : 'success'" />
+                <span>{{ ledger }}</span>
               </p>
               <div class="grid grid-cols-3 gap-3 text-xs mt-2">
                 <div>
                   <p class="text-[11px] text-muted">Events lost</p>
-                  <p class="font-mono" :class="flows.events ? 'text-warning' : 'text-toned'">
+                  <!-- Amber at the rule's own number, not at the first event:
+                       the count is worth reading at any size, and worth acting
+                       on only where the problems list agrees. -->
+                  <p class="font-mono" :class="flows.events >= FLOWS_LOST_FIRING ? 'text-warning' : 'text-toned'">
                     {{ compactCount(flows.events) }}
                   </p>
                 </div>

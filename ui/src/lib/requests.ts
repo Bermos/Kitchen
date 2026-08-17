@@ -138,6 +138,32 @@ export function statusClass(status: number | undefined): string {
 }
 
 /**
+ * How long the raw request rows live, which is not the platform's retention.
+ *
+ * The store keeps one knob (`retentionDays`, `logRetentionDays` on `/settings`)
+ * and derives every table's TTL from it: the rollups the charts and the route
+ * table read are kept for the whole of it, and the raw rows the listing reads
+ * for `min(7, retentionDays)` days — capped because a row per request is the
+ * expensive table, floored by nothing because an installation that keeps three
+ * days of logs did not ask to keep seven days of requests.
+ *
+ * A retention nobody has read yet is the cap: it is the widest the raw rows can
+ * ever reach, so a bound derived from it is a bound the store will honour or
+ * better — and the sentence beside it must not claim the number was checked.
+ */
+export const MAX_RAW_RETENTION_DAYS = 7;
+
+export function rawRetentionDays(retentionDays: number | undefined | null): number {
+  if (!retentionDays || !Number.isFinite(retentionDays) || retentionDays <= 0) return MAX_RAW_RETENTION_DAYS;
+  return Math.min(MAX_RAW_RETENTION_DAYS, retentionDays);
+}
+
+/** The oldest instant the raw rows can answer for, as an ISO timestamp. */
+export function rawRetentionStart(retentionDays?: number | null, now = Date.now()): string {
+  return new Date(now - rawRetentionDays(retentionDays) * 24 * 3600 * 1000).toISOString();
+}
+
+/**
  * Whether a row was served over HTTP/2 — the only place the platform can tell
  * anyone it might be looking at gRPC. A failed gRPC call is an HTTP 200 with a
  * `grpc-status` trailer the edge does not read, so the error numbers on this
@@ -148,12 +174,16 @@ export function isHTTP2(protocol: string | undefined): boolean {
   return /^\s*(http\/2(\.0)?|h2c?|grpc)\s*$/i.test(protocol ?? "");
 }
 
-/** The footnote the error column carries once HTTP/2 has been seen. */
+/** The footnote the error column carries once this environment has been seen
+ * serving HTTP/2 — a statement about what these numbers can count, not about
+ * the rows on screen, which is why nothing narrows it. */
 export const GRPC_FOOTNOTE =
-  "Served over HTTP/2. If this is gRPC, a failed call is an HTTP 200 with a grpc-status trailer the edge does not read — " +
-  "those failures are not counted here.";
+  "This environment serves HTTP/2. If that is gRPC, a failed call is an HTTP 200 with a grpc-status trailer the edge " +
+  "does not read — those failures are not counted here, in any route's row.";
 
-/** Whether any row of a listing was served over HTTP/2. */
+/** Whether any row of a listing was served over HTTP/2. Only ever adds to what
+ * is known about an environment: a page without one proves nothing, since the
+ * page is a sample and the rollups carry no protocol to check against. */
 export function anyHTTP2(rows: RequestRow[] | null | undefined): boolean {
   return (rows ?? []).some((row) => isHTTP2(row.protocol));
 }

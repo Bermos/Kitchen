@@ -291,9 +291,21 @@ signals model (§7) accommodates them without touching the collection layer.
 
 gRPC via the Gateway is HTTP/2 underneath: requests appear with their
 `POST /pkg.Service/Method` paths (templating leaves them alone — they are
-already templates), but status is transport-level. The route table labels
-protocol `h2`/gRPC and the error column footnotes that gRPC application
-errors are not counted — honest, until header capture is verified (§9).
+already templates), but status is transport-level. The error column footnotes
+that gRPC application errors are not counted — honest, until header capture is
+verified (§9).
+
+*Correction:* an earlier draft of this section had the route table **label**
+protocol `h2`/gRPC. It cannot: `protocol` is a column of the raw row and of
+nothing else — the rollups in §5 aggregate by host, route, method and status,
+and adding protocol to their ordering key would multiply every environment's
+series to buy one adjective. So the label was dropped and the footnote kept,
+which is the half that carries the warning. It is driven from the request
+rows, which do have the protocol, and it says something about the
+*environment* — whether these numbers can be counted on for it at all —
+rather than about whichever rows are on screen. Where this paragraph and §5
+disagree, §5 wins: it is the schema, and API.md says the same from the API's
+side.
 
 ### 3.5 The line this draws, restated
 

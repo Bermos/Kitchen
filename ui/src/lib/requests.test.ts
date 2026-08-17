@@ -12,6 +12,9 @@ import {
   formatRate,
   formatSaturation,
   isHTTP2,
+  MAX_RAW_RETENTION_DAYS,
+  rawRetentionDays,
+  rawRetentionStart,
   saturation,
   statusTone,
 } from "./requests";
@@ -120,6 +123,31 @@ describe("isHTTP2", () => {
     expect(anyHTTP2([{ ...row, protocol: "HTTP/1.1" }, { ...row, protocol: "HTTP/2" }])).toBe(true);
     expect(anyHTTP2([{ ...row, protocol: "HTTP/1.1" }])).toBe(false);
     expect(anyHTTP2(null)).toBe(false);
+  });
+});
+
+describe("rawRetentionDays", () => {
+  // The store keeps one knob and derives the rest: raw rows at
+  // `min(7, retentionDays)`, the rollups at the whole of it. A screen that
+  // hardcoded seven told an installation retaining three days that its listing
+  // should have reached back a week.
+  it("is the shorter of a week and the platform's retention", () => {
+    expect(rawRetentionDays(30)).toBe(MAX_RAW_RETENTION_DAYS);
+    expect(rawRetentionDays(7)).toBe(7);
+    expect(rawRetentionDays(3)).toBe(3);
+    expect(rawRetentionDays(1)).toBe(1);
+  });
+
+  it("assumes the cap where the retention has not been read, which is the widest it can be", () => {
+    expect(rawRetentionDays(undefined)).toBe(MAX_RAW_RETENTION_DAYS);
+    expect(rawRetentionDays(null)).toBe(MAX_RAW_RETENTION_DAYS);
+    expect(rawRetentionDays(0)).toBe(MAX_RAW_RETENTION_DAYS);
+  });
+
+  it("starts the protocol probe as far back as raw rows go", () => {
+    const now = Date.parse("2026-08-16T10:00:00.000Z");
+    expect(rawRetentionStart(30, now)).toBe("2026-08-09T10:00:00.000Z");
+    expect(rawRetentionStart(2, now)).toBe("2026-08-14T10:00:00.000Z");
   });
 });
 

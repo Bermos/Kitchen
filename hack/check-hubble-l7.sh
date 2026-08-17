@@ -6,11 +6,13 @@
 # flow record carrying the HTTP method, URL, status, protocol and a non-zero
 # latency, with no CiliumNetworkPolicy anywhere in the cluster. Everything the
 # design calls a request row is read off that record (§3.1a, §3.2), and its
-# named fallback — Envoy access logs injected through CiliumEnvoyConfig — is a
-# design nobody wants to arrive at by accident (§3.1b). It could not be settled
-# without a cluster: Kitchen's CI never installs Cilium, and the chart's kind
-# job deliberately leaves its Gateway unprogrammed, so there was no harness to
-# borrow. This is that harness.
+# named fallback — Envoy access logs, configured declaratively through
+# CiliumGatewayClassConfig's spec.telemetry.accessLogs and read off stdout by
+# the node collector — is a supported API rather than a fight with another
+# controller, but it is still a format to parse and a second way to lose rows
+# (§3.1b). It could not be settled without a cluster: Kitchen's CI never
+# installs Cilium, and the chart's kind job deliberately leaves its Gateway
+# unprogrammed, so there was no harness to borrow. This is that harness.
 #
 # It builds the cluster from nothing — kind without kube-proxy, Cilium at the
 # repository's pinned version with Gateway API and Hubble, an echo backend

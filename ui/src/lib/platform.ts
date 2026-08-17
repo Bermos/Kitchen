@@ -14,6 +14,7 @@
 import type {
   Certificate,
   ComponentStatus,
+  FlowLoss,
   NodeCondition,
   NodeTelemetry,
   PlatformEdge,
@@ -31,6 +32,46 @@ import type { Tone } from "./status";
 export const VOLUME_FULL_FRACTION = 0.85;
 export const NODE_SATURATION_FRACTION = 0.9;
 export const CERT_EXPIRY_DAYS = 21;
+export const FLOWS_LOST_FIRING = 100;
+
+/**
+ * Whether the flow ledger is where `ingest.flows-lost` fires, decided exactly
+ * as the rule decides it (`evaluateFlowsLost` in
+ * `internal/signals/storage.go`): a hundred events in the accounting window, or
+ * any reconnect at all.
+ *
+ * The number is not a rounding of "some": a handful of dropped events is a
+ * momentary buffer overrun that no total will ever show, and a screen that
+ * called it a problem would be pointing at a problems list that says nothing.
+ * A reconnect is different in kind rather than in size — the gap it left is of
+ * unknown width — so one is enough.
+ */
+export function flowsUnderReporting(flows: FlowLoss | undefined | null): boolean {
+  if (!flows) return false;
+  return flows.events >= FLOWS_LOST_FIRING || flows.reconnects > 0;
+}
+
+/**
+ * Whether a certificate is in trouble, decided exactly as `cert.expiring`
+ * decides it (`certificateTrouble` in `internal/signals/edge.go`).
+ *
+ * Nearing expiry is not by itself news: cert-manager renews at two thirds of
+ * the lifetime and says nothing while it works, and on a short-lived
+ * certificate *every* day is inside the window. The finding is the
+ * combination — inside the window **and** the renewal is not progressing —
+ * where a stuck renewal reports itself on the Issuing condition while Ready
+ * stays true on the still-valid old certificate. One that has never been
+ * issued is in trouble immediately, whatever the window says: there is no
+ * expiry to be near, and the Gateway's HTTPS listener is referencing a Secret
+ * that does not exist.
+ */
+export function certificateTrouble(certificate: Certificate): boolean {
+  // No expiry at all is a certificate that has never been issued: the API
+  // fills `notAfter` and `daysToExpiry` together or not at all.
+  if (certificate.daysToExpiry === undefined) return !certificate.ready;
+  if (certificate.daysToExpiry > CERT_EXPIRY_DAYS) return false;
+  return !certificate.ready || Boolean(certificate.issuing);
+}
 
 /**
  * The three readings of a node's telemetry.
@@ -267,15 +308,39 @@ export function ingestTile(ingest: PlatformIngest | null): HealthTile {
       detail: `${ingest.nodesWithoutCollector} node${ingest.nodesWithoutCollector === 1 ? " has" : "s have"} no collector pod at all`,
     };
   }
-  if (ingest.flows && !ingest.flows.lossless) {
-    return {
-      ...tile,
-      state: "problem",
-      tone: "warning",
-      detail: `Hubble reported dropping ${ingest.flows.events} flow events — request counts under-report`,
-    };
+  const flows = ingest.flows;
+  if (flows) {
+    if (flowsUnderReporting(flows)) {
+      return { ...tile, state: "problem", tone: "warning", detail: flowLossDetail(flows) };
+    }
+    // Something was lost, but less than the rule calls under-reporting. The
+    // count is worth carrying — it is the only number that ever hints the
+    // request charts are low — but it stays on a green tile, because a warning
+    // here beside a problems list that names nothing is exactly the
+    // disagreement this file exists to prevent.
+    if (flows.events > 0) {
+      return {
+        ...tile,
+        detail: `every node's collector is still shipping; ${flows.events} flow event${
+          flows.events === 1 ? "" : "s"
+        } lost, under the ${FLOWS_LOST_FIRING} that would mean request counts under-report`,
+      };
+    }
   }
   return tile;
+}
+
+/** What a ledger past the firing point says, in the two clauses the rule's own
+ * headline joins: what was dropped, and what reconnected. */
+function flowLossDetail(flows: FlowLoss): string {
+  const clauses: string[] = [];
+  if (flows.events > 0) clauses.push(`Hubble reported dropping ${flows.events} flow events`);
+  if (flows.reconnects > 0) {
+    clauses.push(
+      `the flow stream reconnected ${flows.reconnects} time${flows.reconnects === 1 ? "" : "s"}, each leaving a gap of unknown size`,
+    );
+  }
+  return `${clauses.join(" and ")} — request counts under-report`;
 }
 
 /** The telemetry store's own disk, read from the same query `store.disk` fires
@@ -321,6 +386,11 @@ export function edgeTile(edge: PlatformEdge | null): HealthTile {
 
   const gateways = edge.gateways ?? [];
   if (!gateways.length) {
+    // An empty list has two readings, and the difference between them is the
+    // whole tile: "no Gateway exists" is the strongest claim this strip makes,
+    // and a List that was refused produces the same empty slice while proving
+    // none of it. The API says which by setting `gatewayMessage`.
+    if (edge.gatewayMessage) return unknownTile("edge", "Edge", edge.gatewayMessage);
     return {
       key: "edge",
       label: "Edge",
@@ -366,8 +436,19 @@ export function edgeTile(edge: PlatformEdge | null): HealthTile {
   };
 }
 
-/** The certificate table's verdict. A stuck renewal reports itself only in
- * `issuing`: the Ready condition stays true on the still-valid old certificate. */
+/** What a troubled certificate is called where its Ready condition said
+ * nothing: renewing, never issued, or running out. */
+function certificateDetail(certificate: Certificate): string {
+  if (certificate.issuing) return `${certificate.name} is renewing: ${certificate.issuing}`;
+  if (certificate.daysToExpiry === undefined) {
+    return `${certificate.name} has never been issued — the HTTPS listener references a Secret that does not exist`;
+  }
+  return `${certificate.name} expires in ${Math.round(certificate.daysToExpiry)} days`;
+}
+
+/** The certificate table's verdict, over the certificates `cert.expiring`
+ * calls trouble. A stuck renewal reports itself only in `issuing`: the Ready
+ * condition stays true on the still-valid old certificate. */
 export function certificatesTile(edge: PlatformEdge | null): HealthTile {
   if (!edge) return unknownTile("certificates", "Certificates", "the certificate table could not be read");
   const table = edge.certificates;
@@ -379,27 +460,27 @@ export function certificatesTile(edge: PlatformEdge | null): HealthTile {
     return unknownTile("certificates", "Certificates", table?.message || "no certificates are managed on this platform");
   }
 
-  const broken = items.filter((certificate) => !certificate.ready);
-  const expiring = items.filter(
-    (certificate) => certificate.daysToExpiry !== undefined && certificate.daysToExpiry <= CERT_EXPIRY_DAYS,
-  );
-  const stuck = items.filter((certificate) => certificate.issuing);
+  // Exactly the certificates `cert.expiring` fires on, not every certificate
+  // whose expiry is close: an installation on short-lived certificates lives
+  // permanently inside the window, and a red tile over a problems list that
+  // names nothing is a tile nobody can act on.
+  const troubled = items.filter(certificateTrouble);
   const soonest = items.reduce<number | undefined>((least, certificate) => {
     if (certificate.daysToExpiry === undefined) return least;
     return least === undefined || certificate.daysToExpiry < least ? certificate.daysToExpiry : least;
   }, undefined);
 
-  const worst = broken[0] ?? expiring[0] ?? stuck[0];
+  // A certificate that is not Ready leads: it is the one with nothing valid
+  // behind it, where a stuck renewal still has the old certificate serving.
+  const worst = troubled.find((certificate) => !certificate.ready) ?? troubled[0];
   if (worst) {
     return {
       key: "certificates",
       label: "Certificates",
-      value: `${items.length - broken.length}/${items.length}`,
+      value: `${items.length - troubled.length}/${items.length}`,
       state: "problem",
-      tone: broken.length ? "error" : "warning",
-      detail:
-        worst.message ||
-        (worst.issuing ? `${worst.name} is renewing: ${worst.issuing}` : `${worst.name} expires in ${Math.round(worst.daysToExpiry ?? 0)} days`),
+      tone: worst.ready ? "warning" : "error",
+      detail: worst.message || certificateDetail(worst),
       to: "/platform/edge",
     };
   }

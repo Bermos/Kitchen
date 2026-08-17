@@ -1,11 +1,15 @@
 import { describe, expect, it } from "vitest";
-import type { PlatformEdge, PlatformIngest, PlatformStatus, PlatformStorage } from "./api";
+import type { Certificate, PlatformEdge, PlatformIngest, PlatformStatus, PlatformStorage } from "./api";
 import {
   buildsTile,
   certificatesTile,
+  certificateTrouble,
+  CERT_EXPIRY_DAYS,
   componentsTile,
   edgeTile,
   fillTone,
+  FLOWS_LOST_FIRING,
+  flowsUnderReporting,
   formatFraction,
   freshness,
   healthStrip,
@@ -234,6 +238,30 @@ describe("ingestTile", () => {
     expect(tile.detail).toContain("under-report");
   });
 
+  // The mirror itself: `ingest.flows-lost` fires at a hundred events or at any
+  // reconnect, and a tile that turned amber on the first lost event was a
+  // warning beside a problems list that named nothing.
+  it("turns at the same hundred `ingest.flows-lost` turns at, not at the first lost event", () => {
+    const under = ingestTile(ingest({ flows: { events: FLOWS_LOST_FIRING - 1, notices: 1, reconnects: 0, windowSeconds: 3600, lossless: false } }));
+    expect(under.state).toBe("ok");
+    expect(under.tone).toBe("success");
+    // Still said out loud: it is the only number that hints the charts are low.
+    expect(under.detail).toContain("99 flow events lost");
+    expect(under.detail).toContain(`under the ${FLOWS_LOST_FIRING}`);
+
+    const at = ingestTile(ingest({ flows: { events: FLOWS_LOST_FIRING, notices: 1, reconnects: 0, windowSeconds: 3600, lossless: false } }));
+    expect(at.state).toBe("problem");
+    expect(at.tone).toBe("warning");
+    expect(at.detail).toContain("under-report");
+  });
+
+  it("reports a single reconnect, whose gap is of unknown size", () => {
+    const tile = ingestTile(ingest({ flows: { events: 0, notices: 0, reconnects: 1, windowSeconds: 3600, lossless: false } }));
+    expect(tile.state).toBe("problem");
+    expect(tile.detail).toContain("reconnected 1 time");
+    expect(tile.detail).toContain("under-report");
+  });
+
   it("is unknown — not silent — when freshness itself could not be read", () => {
     const tile = ingestTile(ingest({ telemetryMessage: "the telemetry store could not be read" }));
     expect(tile.state).toBe("unknown");
@@ -302,7 +330,18 @@ describe("edgeTile", () => {
   });
 
   it("says so when there is no Gateway at all", () => {
-    expect(edgeTile(edge({ gateways: [] })).detail).toContain("nothing on this platform is published");
+    const tile = edgeTile(edge({ gateways: [] }));
+    expect(tile.state).toBe("problem");
+    expect(tile.detail).toContain("nothing on this platform is published");
+  });
+
+  // The same empty list, two different answers. "No Gateway" is the strongest
+  // claim this strip makes, and a List that was refused proves none of it.
+  it("does not make that claim over a Gateway list it could not read", () => {
+    const tile = edgeTile(edge({ gateways: [], gatewayMessage: "the platform's Gateways could not be read: forbidden" }));
+    expect(tile.state).toBe("unknown");
+    expect(tile.tone).toBe("neutral");
+    expect(tile.detail).toContain("could not be read");
   });
 });
 
@@ -334,24 +373,109 @@ describe("certificatesTile", () => {
     expect(tile.detail).toContain("NXDOMAIN");
   });
 
-  it("warns on a renewal in progress, which is where a failing one hides", () => {
+  it("warns on a renewal in progress inside the window, which is where a failing one hides", () => {
     const tile = certificatesTile(
       edge({
         certificates: {
           items: [
-            { namespace: "kitchen-system", name: "kitchen-wildcard", ready: true, daysToExpiry: 40, issuing: "Issuing: order pending" },
+            { namespace: "kitchen-system", name: "kitchen-wildcard", ready: true, daysToExpiry: 12, issuing: "Issuing: order pending" },
           ],
         },
       }),
     );
     expect(tile.state).toBe("problem");
     expect(tile.tone).toBe("warning");
+    expect(tile.detail).toContain("order pending");
+  });
+
+  // The mirror: `cert.expiring` is the *combination* — inside the window and
+  // the renewal not progressing — so a platform on short-lived certificates,
+  // permanently inside the window, does not carry a red tile over a problems
+  // list that names nothing.
+  it("leaves a ready certificate inside its window alone, as `cert.expiring` does", () => {
+    const tile = certificatesTile(
+      edge({
+        certificates: {
+          items: [{ namespace: "kitchen-system", name: "kitchen-wildcard", ready: true, daysToExpiry: 3 }],
+        },
+      }),
+    );
+    expect(tile.state).toBe("ok");
+    expect(tile.tone).toBe("success");
+    expect(tile.detail).toContain("3 days");
+  });
+
+  it("calls a certificate that has never been issued trouble at once", () => {
+    const tile = certificatesTile(
+      edge({
+        certificates: {
+          items: [{ namespace: "kitchen-system", name: "kitchen-wildcard", ready: false }],
+        },
+      }),
+    );
+    expect(tile.state).toBe("problem");
+    expect(tile.tone).toBe("error");
+    expect(tile.detail).toContain("never been issued");
   });
 
   it("has nothing to judge where cert-manager is not installed", () => {
     const tile = certificatesTile(edge({ certificates: { items: [], message: "cert-manager is not installed" } }));
     expect(tile.state).toBe("unknown");
     expect(tile.detail).toBe("cert-manager is not installed");
+  });
+});
+
+// The two predicates the screens share with the catalogue. They are tested on
+// their own as well as through the tiles, because what they are for is agreeing
+// with a rule in Go — the numbers and the shape of the condition both.
+describe("flowsUnderReporting", () => {
+  const loss = (events: number, reconnects: number) => ({
+    events,
+    notices: events ? 1 : 0,
+    reconnects,
+    windowSeconds: 3600,
+    lossless: events === 0 && reconnects === 0,
+  });
+
+  it("is `FlowsLost >= FlowsLostFiring || Reconnects > 0`, and that alone", () => {
+    expect(FLOWS_LOST_FIRING).toBe(100);
+    expect(flowsUnderReporting(loss(0, 0))).toBe(false);
+    expect(flowsUnderReporting(loss(1, 0))).toBe(false);
+    expect(flowsUnderReporting(loss(FLOWS_LOST_FIRING - 1, 0))).toBe(false);
+    expect(flowsUnderReporting(loss(FLOWS_LOST_FIRING, 0))).toBe(true);
+    expect(flowsUnderReporting(loss(0, 1))).toBe(true);
+  });
+
+  it("has no ledger to judge where no follower answered", () => {
+    expect(flowsUnderReporting(undefined)).toBe(false);
+  });
+});
+
+describe("certificateTrouble", () => {
+  const certificate = (over: Partial<Certificate> = {}): Certificate => ({
+    namespace: "kitchen-system",
+    name: "kitchen-wildcard",
+    ready: true,
+    daysToExpiry: 60,
+    ...over,
+  });
+
+  it("is trouble at once where nothing was ever issued", () => {
+    expect(certificateTrouble(certificate({ daysToExpiry: undefined, ready: false }))).toBe(true);
+    expect(certificateTrouble(certificate({ daysToExpiry: undefined, ready: true }))).toBe(false);
+  });
+
+  it("says nothing outside the window, whatever the certificate is doing", () => {
+    expect(certificateTrouble(certificate({ daysToExpiry: CERT_EXPIRY_DAYS + 1 }))).toBe(false);
+    expect(certificateTrouble(certificate({ daysToExpiry: 40, issuing: "Issuing: order pending" }))).toBe(false);
+    expect(certificateTrouble(certificate({ daysToExpiry: 40, ready: false }))).toBe(false);
+  });
+
+  it("inside the window, is the renewal not progressing rather than the date", () => {
+    expect(certificateTrouble(certificate({ daysToExpiry: CERT_EXPIRY_DAYS }))).toBe(false);
+    expect(certificateTrouble(certificate({ daysToExpiry: 1 }))).toBe(false);
+    expect(certificateTrouble(certificate({ daysToExpiry: 1, ready: false }))).toBe(true);
+    expect(certificateTrouble(certificate({ daysToExpiry: 1, issuing: "Issuing: order errored" }))).toBe(true);
   });
 });
 

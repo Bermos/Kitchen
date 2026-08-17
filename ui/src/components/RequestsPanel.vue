@@ -4,12 +4,14 @@ import { api, type RouteSort } from "../lib/api";
 import { bucketLabel, compactCount } from "../lib/format";
 import { renderClause } from "../lib/logquery";
 import {
+  anyHTTP2,
   deployMarks,
   edgeState,
   formatLatency,
   formatPercent,
   formatRate,
   formatSaturation,
+  rawRetentionStart,
   saturation,
   type SignalTile,
 } from "../lib/requests";
@@ -45,6 +47,12 @@ const props = defineProps<{
   /** Follow while something is moving — a deploying environment. */
   live?: boolean;
 }>();
+
+/** How many of the newest raw rows the protocol question is answered from. It
+ * is a sample rather than a scan because the store cannot be asked "any" — and
+ * a sample is enough for a footnote that is only ever added, never withheld on
+ * the strength of not having seen one. */
+const PROTOCOL_SAMPLE = 500;
 
 const ranges = [
   { label: "Last 15 minutes", value: 15 },
@@ -84,6 +92,11 @@ const resources = useAsync(() => api.environmentMetrics(props.environment, { sin
 // release that served it, so lining a change up with a moment in time is the
 // only honest way to see one.
 const events = useAsync(() => api.events({ project: props.project, limit: 200 }));
+// Whether this environment serves HTTP/2 at all — read separately from
+// everything above, and deliberately so. See `http2` below.
+const protocols = useAsync(() =>
+  api.requests(props.environment, { since: rawRetentionStart(), limit: PROTOCOL_SAMPLE }),
+);
 // Only for an environment the edge does not reach: what it wrote, since that is
 // what is real for a worker.
 const logShape = useAsync(
@@ -112,13 +125,19 @@ function reload() {
   void routes.refresh();
   void resources.refresh();
   void events.refresh();
+  // Its own window, not this one: it is a question about the environment.
+  void protocols.refresh();
   if (offEdge.value) void logShape.refresh();
 }
 
 watch([() => props.environment, rangeMinutes], ([environment], [previous]) => {
-  // A route template belongs to the environment it was read off; carrying one
-  // across would filter this environment by another's paths.
-  if (environment !== previous) selectedRoute.value = null;
+  if (environment !== previous) {
+    // A route template belongs to the environment it was read off; carrying one
+    // across would filter this environment by another's paths. The same goes
+    // for what the last environment's listing was seen serving.
+    selectedRoute.value = null;
+    listingSawHTTP2.value = false;
+  }
   reload();
 });
 // The route filter moves the header, the charts and the listing; the table and
@@ -234,9 +253,26 @@ const latency = computed(() =>
   points.value.map((point) => ({ start: point.start, base: point.p50Ms, value: point.p95Ms, peak: point.p99Ms })),
 );
 
-/** Whether anything in the listing came over HTTP/2, which decides the error
- * column's footnote: gRPC failures are HTTP 200s the edge cannot read. */
-const http2 = ref(false);
+/**
+ * Whether this *environment* serves HTTP/2, which is what the error column's
+ * footnote is a statement about: a failed gRPC call is an HTTP 200 with a
+ * trailer the edge does not read, so the route table's error counts are
+ * transport-level for such a service whichever route is selected and whichever
+ * page of the listing happens to be on screen. Driving the footnote off the
+ * listing took it away from a table still full of the rows it warns about.
+ *
+ * Protocol lives only on the raw rows — the rollups the table reads carry no
+ * protocol column at all (§5 of the observability design, and API.md says so
+ * on the request row) — so this is a second, deliberately unfiltered read of
+ * the listing endpoint over the whole span raw rows can answer, rather than
+ * over the window the section is showing.
+ *
+ * A sample of the newest rows can only ever prove the footnote *needed*, never
+ * that it is not, so what the listing below happens to show counts as well:
+ * `http2` only ever goes up, and is reset when the environment changes.
+ */
+const listingSawHTTP2 = ref(false);
+const http2 = computed(() => listingSawHTTP2.value || anyHTTP2(protocols.data.value?.items));
 
 const resolution = computed(() => bucketLabel(series.data.value?.bucketSeconds));
 
@@ -376,7 +412,7 @@ function clock(iso: string | undefined): string {
           :environment="environment"
           :since="windowStart"
           :route="selectedRoute"
-          @http2="(seen) => (http2 = seen)"
+          @http2="listingSawHTTP2 = true"
         />
       </template>
     </div>

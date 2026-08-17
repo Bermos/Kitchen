@@ -23,9 +23,10 @@ limitations under the License.
 // records carrying method, URL, status, protocol and a non-zero latency, with
 // no CiliumNetworkPolicy anywhere in the cluster. That fact is asserted here,
 // and this process exits non-zero when it does not hold — the design's whole
-// request pipeline hangs off it, and its named fallback (Envoy access logs
-// injected through CiliumEnvoyConfig) is a much worse design to fall back to
-// unknowingly.
+// request pipeline hangs off it, and its named fallback (Envoy access logs,
+// configured through CiliumGatewayClassConfig's spec.telemetry.accessLogs and
+// read off stdout by the node collector) is a supported API but a different
+// pipeline, and not one to arrive at unknowingly.
 //
 // Everything else printed is an observation and never a failure: the open
 // questions in §9 are questions the design flagged rather than guessed, and a
@@ -407,7 +408,12 @@ func vantageSection(proof probe, missing []string) section {
 		for _, reason := range missing {
 			s.lines = append(s.lines, "       "+reason)
 		}
-		s.lines = append(s.lines, "       the named fallback is Envoy access logs via CiliumEnvoyConfig (§3.1b)")
+		// The one line a reader of a failed stage-0 run acts on, so it names
+		// the fallback the design actually holds — not the CiliumEnvoyConfig
+		// injection §3.1b retracted.
+		s.lines = append(s.lines,
+			"       the named fallback is Envoy access logs, set through CiliumGatewayClassConfig's",
+			"       spec.telemetry.accessLogs and read off stdout by the node collector (§3.1b)")
 	}
 	return section{title: s.title, lines: append(s.lines, describe(proof)...)}
 }

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onScopeDispose, ref, watch } from "vue";
 import { api, type RequestListQuery, type RequestRow } from "../lib/api";
-import { anyHTTP2 } from "../lib/requests";
+import { anyHTTP2, MAX_RAW_RETENTION_DAYS, rawRetentionDays } from "../lib/requests";
 import { useAsync, usePoll } from "../lib/useAsync";
 import RequestRows from "./RequestRows.vue";
 import StatusDot from "./StatusDot.vue";
@@ -25,10 +25,13 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  /** Whether anything in the listing was served over HTTP/2 — the only place
-   * the platform can tell anyone it might be looking at gRPC, and the section
-   * above needs it for the error column's footnote. */
-  (event: "http2", seen: boolean): void;
+  /** That something in the listing was served over HTTP/2 — the only place the
+   * platform can tell anyone it might be looking at gRPC, and evidence the
+   * section above adds to its own for the error column's footnote. It is
+   * emitted only when true: a page with no HTTP/2 row is not evidence the
+   * environment has none, and the footnote is a statement about the
+   * environment. */
+  (event: "http2"): void;
 }>();
 
 const statuses = [
@@ -124,15 +127,41 @@ watch([() => props.environment, () => props.route, () => props.since, () => prop
 usePoll(() => void refresh(), 5000, () => live.value && !streaming.value);
 
 const http2 = computed(() => anyHTTP2(rows.value));
-watch(http2, (seen) => emit("http2", seen), { immediate: true });
+watch(
+  http2,
+  (seen) => {
+    if (seen) emit("http2");
+  },
+  { immediate: true },
+);
 
-/** Raw rows are kept for seven days while the aggregates behind the charts are
- * kept for the platform's whole retention, so a listing reaches back less far
- * than the summary above it. Saying so beats an empty table nobody can explain. */
+// The platform's one retention knob, which is what raw rows are kept for
+// `min(7, retentionDays)` days of. The number is worth a request of its own:
+// an install that keeps three days of telemetry keeps three days of requests,
+// and a listing that came back empty for that reason should say the reason
+// rather than a week nobody configured.
+const settings = useAsync(() => api.settings());
+const retentionDays = computed(() => settings.data.value?.logRetentionDays);
+/** What the raw rows actually reach back, and whether that was read or assumed. */
+const rawDays = computed(() => rawRetentionDays(retentionDays.value));
+const rawDaysKnown = computed(() => retentionDays.value !== undefined);
+
+/** Raw rows are kept for the shorter of a week and the platform's retention,
+ * while the aggregates behind the charts are kept for all of it — so a listing
+ * reaches back less far than the summary above it. Saying so beats an empty
+ * table nobody can explain. */
 const beyondRawRetention = computed(() => {
   if (!props.since) return false;
   const since = new Date(props.since).getTime();
-  return !Number.isNaN(since) && Date.now() - since > 7 * 24 * 3600 * 1000;
+  return !Number.isNaN(since) && Date.now() - since > rawDays.value * 24 * 3600 * 1000;
+});
+
+const retentionNote = computed(() => {
+  const days = `${rawDays.value} day${rawDays.value === 1 ? "" : "s"}`;
+  const kept = rawDaysKnown.value
+    ? `Requests themselves are kept for ${days} — the shorter of a week and this platform's ${retentionDays.value}-day retention.`
+    : `Requests themselves are kept for at most ${MAX_RAW_RETENTION_DAYS} days, and for less where this platform's retention is shorter — which could not be read just now.`;
+  return `${kept} The charts and the route table above read aggregates kept for the whole of that retention, so this window is complete up there and truncated down here.`;
 });
 </script>
 
@@ -174,10 +203,7 @@ const beyondRawRetention = computed(() => {
         :loading="loading"
         :empty="streaming ? 'Waiting for requests…' : 'No requests match in this window.'"
       />
-      <p v-if="beyondRawRetention" class="text-[11px] text-dimmed">
-        Requests themselves are kept for seven days; the charts and the route table above read aggregates kept for the
-        platform's whole retention. A window wider than a week is complete up there and truncated down here.
-      </p>
+      <p v-if="beyondRawRetention" class="text-[11px] text-dimmed">{{ retentionNote }}</p>
     </template>
   </div>
 </template>

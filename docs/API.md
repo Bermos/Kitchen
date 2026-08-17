@@ -827,7 +827,7 @@ than by drawing a zero:
 | Field | Present when |
 |---|---|
 | `telemetryMessage` | the store could not be read, so freshness is unknown rather than fine |
-| `usageMessage` | nothing reads the saturation or volume-fill series back out of the store in this operator |
+| `usageMessage` | the saturation or volume-fill series could not be read — an installation with no telemetry store, or a query that failed |
 | `eventsMessage` | the cluster's warnings could not be read, so a workload's refusal is missing its explanation |
 
 #### The problems list
@@ -867,7 +867,7 @@ the reason this screen exists:
             "allocatable": {"cpu": "8", "memory": "32Gi", "pods": "110"},
             "conditions": [{"type": "MemoryPressure", "status": "True", "reason": "…", "since": "…"}],
             "telemetry": {"silent": true}}],
- "usageMessage": "node saturation is collected, but this operator has no reader for host_metrics …"}
+ "usageMessage": "this installation has no telemetry store, so node saturation is absent rather than zero …"}
 ```
 
 `telemetry` is when the store last received anything from this node's
@@ -885,9 +885,12 @@ could reach must not make the whole cluster look silent, which is the same
 wrong answer this screen exists to prevent, arrived at from the other side.
 
 `?node=` narrows to one, which is where the findings' evidence links point.
-`usage` carries the node's CPU, memory and filesystem series where something
-reads `host_metrics` back out of the store; where nothing does, it is absent
-and `usageMessage` says so — an unmeasured node and an idle one must not draw
+`usage` carries the node's CPU, memory and filesystem series, read out of
+`host_metrics` over the same window and bucket width the `node.saturated` and
+`node.disk-filling` rules fire on, so the screen and the problems list cannot
+disagree about a number. An installation with no telemetry store has no series
+to read, and a query that failed has none either: `usage` is then absent, with
+`usageMessage` saying which — an unmeasured node and an idle one must not draw
 the same chart.
 
 #### Workloads
@@ -989,6 +992,13 @@ installation without telemetry still has a Gateway worth looking at, so the
 answer degrades to the objects with `trafficMessage` set rather than to a
 `503`.
 
+An empty `gateways` is two different answers, and `gatewayMessage` is which.
+Absent, the list is empty because the platform has no Gateway — the strongest
+claim this endpoint makes, since nothing it publishes is then reachable.
+Present, the list could not be read (the Gateway API kinds are not installed, or
+the read was refused), and the emptiness proves nothing at all: the health strip
+renders that as `unknown` rather than as the claim.
+
 #### Storage
 
 `GET /platform/storage` is every volume the platform holds, what mounts it, and
@@ -1005,7 +1015,7 @@ the health of the one database Kitchen runs itself:
  "store": {"bytesOnDisk": 5368709120, "capacityBytes": 53687091200, "usedFraction": 0.1,
            "claim": "data-kitchen-clickhouse-0", "rowsPerSecond": 42, "retentionDays": 30},
  "flows": {"events": 0, "notices": 0, "reconnects": 0, "windowSeconds": 3600, "lossless": true},
- "usageMessage": "volume fill is collected, but this operator has no reader …"}
+ "usageMessage": "this installation has no telemetry store, so how full each volume is is unknown rather than zero …"}
 ```
 
 They are called volumes and not claims throughout, because `/claims` already
@@ -1015,10 +1025,13 @@ one too many.
 
 An unbound volume names its own suspect: a claim Pending with no storage class
 is waiting for the cluster's default, and a cluster without one is the
-first-install hang the prerequisites warn about. `store` is the telemetry
-store's own size against the volume underneath it, read from the same query the
-`store.disk` signal fires on, so the screen and the finding cannot disagree
-about the number. `capacityBytes` is zero for an external store — the platform
+first-install hang the prerequisites warn about. Each row's `usage` is the
+kubelet's own volume stats, read out of the store; where the store is absent or
+the query failed, every row's usage is missing and `usageMessage` says so once
+rather than a hundred empty bars saying nothing — and `filling` is a measured
+zero only while that field is empty. `store` is the telemetry store's own size
+against the volume underneath it, read from the same query the `store.disk`
+signal fires on, so the screen and the finding cannot disagree about the number. `capacityBytes` is zero for an external store — the platform
 does not own that disk and has no business judging it. `retentionDays` is the
 one knob every table's TTL is derived from, which is the horizon past which the
 store deliberately holds nothing.
