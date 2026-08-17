@@ -66,6 +66,23 @@ function navActive(item: { name: string }): boolean {
   return route.name === item.name;
 }
 
+// The operator's section: the platform seen across every project, which is a
+// different question from any of the screens above and — one day — a
+// differently authorized one. It is shown in operator mode alone, but the
+// routes exist in both: a finding's evidence link is a link somebody pastes,
+// and it should land where it says it does.
+//
+// The paths are the ones the API emits as evidence, and they are load-bearing:
+// `internal/signals/evidence.go` names them.
+const platformNav = [
+  { label: "Overview", icon: "i-lucide-gauge", to: "/platform", name: "platform" },
+  { label: "Nodes", icon: "i-lucide-server", to: "/platform/nodes", name: "platform-nodes" },
+  { label: "Workloads", icon: "i-lucide-boxes", to: "/platform/workloads", name: "platform-workloads" },
+  { label: "Edge", icon: "i-lucide-globe", to: "/platform/edge", name: "platform-edge" },
+  { label: "Storage", icon: "i-lucide-hard-drive", to: "/platform/storage", name: "platform-storage" },
+  { label: "Events", icon: "i-lucide-list", to: "/platform/events", name: "platform-events" },
+];
+
 const activeProject = computed(() => {
   if (route.name === "project") return route.params.name as string;
   return null;
@@ -151,6 +168,26 @@ const userMenu = computed(() => [
           <span v-if="item.count !== undefined" class="ml-auto font-mono text-xs text-dimmed">{{ item.count }}</span>
         </RouterLink>
       </nav>
+
+      <!-- Operator mode's own section. Everything platform-scoped lives behind
+           one prefix and nothing project-scoped does. -->
+      <template v-if="operatorMode">
+        <div class="px-4 pt-4 pb-1">
+          <span class="text-[11px] font-medium tracking-wider text-dimmed uppercase">Platform</span>
+        </div>
+        <nav class="px-2 space-y-0.5">
+          <RouterLink
+            v-for="item in platformNav"
+            :key="item.name"
+            :to="item.to"
+            class="flex items-center gap-2.5 px-2.5 py-1.5 rounded-md text-sm hover:bg-elevated hover:text-highlighted"
+            :class="route.name === item.name ? 'bg-elevated text-highlighted' : 'text-toned'"
+          >
+            <UIcon :name="item.icon" class="size-4 shrink-0" />
+            {{ item.label }}
+          </RouterLink>
+        </nav>
+      </template>
 
       <div class="px-4 pt-4 pb-1 flex items-center justify-between">
         <span class="text-[11px] font-medium tracking-wider text-dimmed uppercase">Projects</span>

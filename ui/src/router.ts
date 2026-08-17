@@ -21,6 +21,19 @@ export const router = createRouter({
     },
     { path: "/traffic", name: "traffic", component: () => import("./views/TrafficView.vue") },
     { path: "/traces", name: "traces", component: () => import("./views/TracesView.vue") },
+    // The operator's own section. These paths are exactly the ones the API's
+    // findings emit as evidence (`internal/signals/evidence.go`), so renaming
+    // one here silently breaks every link on the problems list.
+    { path: "/platform", name: "platform", component: () => import("./views/PlatformView.vue") },
+    { path: "/platform/nodes", name: "platform-nodes", component: () => import("./views/PlatformNodesView.vue") },
+    {
+      path: "/platform/workloads",
+      name: "platform-workloads",
+      component: () => import("./views/PlatformWorkloadsView.vue"),
+    },
+    { path: "/platform/edge", name: "platform-edge", component: () => import("./views/PlatformEdgeView.vue") },
+    { path: "/platform/storage", name: "platform-storage", component: () => import("./views/PlatformStorageView.vue") },
+    { path: "/platform/events", name: "platform-events", component: () => import("./views/PlatformEventsView.vue") },
     { path: "/builds/:name", name: "build", component: () => import("./views/BuildView.vue") },
     {
       path: "/environments/:name",

@@ -771,6 +771,475 @@ export interface TrafficEdge {
   p95Ms: number;
 }
 
+/**
+ * How much of a hurry the reader is in. `unknown` is a rule that could not be
+ * evaluated because an input was unreadable — deliberately neither `info` nor
+ * `critical`, and never to be rendered as health.
+ */
+export type Severity = "critical" | "warning" | "unknown" | "info";
+
+/** What sort of thing a finding is about, which decides which of `FindingScope`'s
+ * fields carry anything. */
+export type ScopeKind =
+  | "platform"
+  | "project"
+  | "environment"
+  | "workload"
+  | "node"
+  | "volume"
+  | "domain"
+  | "build";
+
+/** The subject of a finding. A scope sets the fields that identify it and no
+ * more — the joined non-empty ones are the tail of its fingerprint. */
+export interface FindingScope {
+  kind: ScopeKind;
+  project?: string;
+  environment?: string;
+  /** Set only where it is not derivable from `project` — the platform's own. */
+  namespace?: string;
+  node?: string;
+  name?: string;
+}
+
+/** One firing condition: what is wrong, where, since when, and where to look. */
+export interface Finding {
+  /** The rule that produced it — `workload.crashloop`. */
+  signal: string;
+  severity: Severity;
+  scope: FindingScope;
+  /** Stable for the same underlying condition across evaluations, which is what
+   * will let a later release diff rounds instead of re-announcing. */
+  fingerprint: string;
+  /** The short human sentence: "crash-looping". */
+  title: string;
+  /** The numbers, and the suspect where a rule names one. Its first clause is
+   * the headline number, so a strip can render `title (first clause)`. */
+  detail: string;
+  since: string;
+  /** A dashboard path to the screen that shows the numbers behind it. */
+  evidence: string;
+}
+
+/** One input the evaluation could not read, named once with the reason. */
+export interface InputFailure {
+  input: string;
+  reason: string;
+}
+
+/** A round by severity. `unknown` is deliberately absent: a rule that could not
+ * be evaluated is in `unreadable`, not in the count of problems. */
+export interface SignalCounts {
+  critical: number;
+  warning: number;
+  info: number;
+}
+
+/**
+ * One evaluated round (GET /platform/signals, GET /environments/{name}/signals).
+ *
+ * `unreadable` is the field that keeps an empty `items` honest: no findings
+ * because nothing is wrong, and no findings because nothing could be read, are
+ * different answers, and the API never conflates them.
+ */
+export interface SignalsAnswer {
+  items: Finding[];
+  counts: SignalCounts;
+  unreadable?: InputFailure[];
+  /** When the snapshot was taken — findings are ephemeral, so this is how fresh
+   * the answer is. */
+  evaluatedAt: string;
+  project?: string;
+  environment?: string;
+}
+
+/** One bucket of a platform series. `value` is null for a bucket nothing was
+ * observed in, which is deliberately not zero: a scrape that did not happen is
+ * not a machine that was idle. */
+export interface UsagePoint {
+  start: string;
+  value: number | null;
+}
+
+/** One mounted filesystem's fill, as fractions in 0..1. */
+export interface NodeFilesystem {
+  mountPoint: string;
+  device?: string;
+  capacityBytes?: number;
+  used?: UsagePoint[];
+  /** The newest bucket that was actually measured. */
+  latest?: number;
+}
+
+/** One node's saturation over the recent window. */
+export interface NodeUsage {
+  bucketSeconds: number;
+  cpu?: UsagePoint[];
+  memory?: UsagePoint[];
+  filesystems?: NodeFilesystem[];
+}
+
+export interface NodeCondition {
+  type: string;
+  status: string;
+  reason?: string;
+  message?: string;
+  since: string;
+}
+
+/** What the node says it has to give, in the units it said it in. */
+export interface NodeCapacity {
+  cpu?: string;
+  memory?: string;
+  pods?: string;
+}
+
+/**
+ * When the store last received anything from this node's collector.
+ *
+ * `lastSeen` absent with `silent` true is a node that said nothing inside the
+ * lookback. Both absent is the freshness read not having happened at all —
+ * which is neither fresh nor silent, and must not render as either.
+ */
+export interface NodeTelemetry {
+  lastSeen?: string;
+  silent: boolean;
+  ageSeconds?: number;
+}
+
+export interface PlatformNode {
+  name: string;
+  ready: boolean;
+  /** The cordon, which is a decision somebody took rather than a fault. */
+  schedulable: boolean;
+  roles?: string[];
+  kubeletVersion?: string;
+  createdAt: string;
+  conditions?: NodeCondition[];
+  pods: number;
+  allocatable: NodeCapacity;
+  telemetry: NodeTelemetry;
+  usage?: NodeUsage;
+}
+
+export interface PlatformNodes {
+  items: PlatformNode[];
+  nodes: number;
+  readyNodes: number;
+  /** A measured zero only when `telemetryMessage` is empty. */
+  silentNodes: number;
+  /** Why freshness is missing, so a store nobody could reach does not make the
+   * whole cluster look silent. */
+  telemetryMessage?: string;
+  /** The same, about the saturation series: an unmeasured node and an idle one
+   * must not draw the same chart. */
+  usageMessage?: string;
+}
+
+/** One FailedCreate, as the cluster worded it — why a workload has no pods. */
+export interface AdmissionRefusal {
+  reason: string;
+  message: string;
+  count: number;
+  at: string;
+  /** What the message betrays where it betrays anything — Pod Security is the
+   * one this screen exists for. */
+  suspect?: string;
+}
+
+export interface PlatformWorkload {
+  kind: string;
+  namespace: string;
+  name: string;
+  project?: string;
+  environment?: string;
+  /** Names a platform workload. A workload is this or a project's, never both. */
+  component?: string;
+  desired: number;
+  ready: number;
+  available: number;
+  /** How many pods exist, which the replica counts cannot tell you: zero
+   * available is pods that are failing *or* pods that were never created. */
+  pods: number;
+  healthy: boolean;
+  admission?: AdmissionRefusal;
+}
+
+export interface PlatformPod {
+  namespace: string;
+  name: string;
+  node?: string;
+  /** The object a reader recognises: a Deployment rather than its ReplicaSet. */
+  workload?: string;
+  project?: string;
+  environment?: string;
+  phase: string;
+  ready: boolean;
+  restarts: number;
+  oomKilled: boolean;
+  startedAt?: string;
+  message?: string;
+}
+
+export interface PodTotals {
+  pods: number;
+  running: number;
+  pending: number;
+  failed: number;
+  notReady: number;
+  restarts: number;
+  oomKills: number;
+}
+
+export interface PlatformWorkloads {
+  items: PlatformWorkload[];
+  pods: PlatformPod[];
+  workloads: number;
+  unhealthy: number;
+  /** How many want pods and have none — the one number a pod listing can never
+   * contain. */
+  withoutPods: number;
+  totals: PodTotals;
+  /** The pod listing was cut at the limit. It is sorted worst first, so the cut
+   * never hides a problem. */
+  truncated: boolean;
+  /** Why the admission column is empty, when it is. */
+  eventsMessage?: string;
+}
+
+/** The edge's headline: everything that entered the platform in the window. */
+export interface PlatformRequests {
+  since: string;
+  until: string;
+  requests: number;
+  requestsPerSecond: number;
+  errors: number;
+  errorRate: number;
+  p50Ms: number;
+  p95Ms: number;
+  p99Ms: number;
+  /** The part of `requests` that asked for a host the platform never published. */
+  unrouted: number;
+  rollup: string;
+}
+
+/** One row of an edge ranking — a route, or a host. */
+export interface EdgeEntry {
+  key: string;
+  project?: string;
+  environment?: string;
+  requests: number;
+  requestsPerSecond: number;
+  errors: number;
+  errorRate: number;
+  p50Ms: number;
+  p95Ms: number;
+  p99Ms: number;
+}
+
+/** A host that reached the edge which the platform never published.
+ * `firstSeen`/`lastSeen` are what separate a scanner from a stale DNS record. */
+export interface UnroutedHost {
+  host: string;
+  requests: number;
+  requestsPerSecond: number;
+  firstSeen: string;
+  lastSeen: string;
+}
+
+export interface EdgeListener {
+  name: string;
+  port: number;
+  protocol: string;
+  attachedRoutes: number;
+  programmed: boolean;
+  message?: string;
+}
+
+export interface EdgeGateway {
+  namespace: string;
+  name: string;
+  class?: string;
+  addresses?: string[];
+  programmed: boolean;
+  accepted: boolean;
+  message?: string;
+  listeners?: EdgeListener[];
+}
+
+export interface EdgeTunnel {
+  name: string;
+  namespace: string;
+  desired: number;
+  ready: number;
+  available: number;
+  restarts: number;
+  healthy: boolean;
+  message?: string;
+}
+
+export interface Certificate {
+  namespace: string;
+  name: string;
+  dnsNames?: string[];
+  ready: boolean;
+  notAfter?: string;
+  daysToExpiry?: number;
+  renewalTime?: string;
+  /** For a stuck ACME order, the error the CA returned, verbatim — the one
+   * string on the screen that says what to fix. A healthy certificate has none. */
+  message?: string;
+  /** Set only while a renewal is in progress, which is the only place a renewal
+   * that keeps failing reports itself: `ready` stays true on the old one. */
+  issuing?: string;
+}
+
+export interface CertificateTable {
+  items: Certificate[];
+  /** cert-manager not being installed is a supported configuration, and answers
+   * an empty table with a message rather than an error. */
+  message?: string;
+}
+
+export interface PlatformEdge {
+  requests: PlatformRequests;
+  topRoutes: EdgeEntry[];
+  worstRoutes: EdgeEntry[];
+  topHosts: EdgeEntry[];
+  worstHosts: EdgeEntry[];
+  latencyLeaders: EdgeEntry[];
+  unrouted: UnroutedHost[];
+  gateways: EdgeGateway[];
+  tunnel?: EdgeTunnel;
+  certificates: CertificateTable;
+  /** The traffic half needs the store; the edge's own objects do not. */
+  trafficMessage?: string;
+}
+
+/** How full one volume is, as the kubelet measured it. */
+export interface VolumeUsage {
+  usedBytes: number;
+  capacityBytes: number;
+  usedFraction: number;
+}
+
+/** One PersistentVolumeClaim and what mounts it. Called a volume throughout,
+ * because `/claims` already means a `ResourceClaim` in this API. */
+export interface PlatformVolume {
+  namespace: string;
+  name: string;
+  project?: string;
+  phase: string;
+  bound: boolean;
+  storageClass?: string;
+  volume?: string;
+  requested?: string;
+  capacity?: string;
+  pods?: string[];
+  usage?: VolumeUsage;
+  /** Why an unbound claim is unbound — including the missing-default-
+   * StorageClass install the prerequisites warn about. */
+  message?: string;
+}
+
+/** The telemetry store's own state. */
+export interface StoreHealth {
+  bytesOnDisk: number;
+  /** Zero for an external store: the platform does not own that disk. */
+  capacityBytes?: number;
+  usedFraction?: number;
+  claim?: string;
+  rowsPerSecond: number;
+  /** The one knob every table's TTL is derived from. */
+  retentionDays?: number;
+  message?: string;
+}
+
+/** What the flow follower counted losing, over its trailing window. */
+export interface FlowLoss {
+  events: number;
+  notices: number;
+  reconnects: number;
+  windowSeconds: number;
+  latest?: string;
+  /** Stated rather than left to be inferred from three zeroes. */
+  lossless: boolean;
+}
+
+export interface PlatformStorage {
+  items: PlatformVolume[];
+  volumes: number;
+  unbound: number;
+  /** A measured zero only when `usageMessage` is empty. */
+  filling: number;
+  store: StoreHealth;
+  flows?: FlowLoss;
+  usageMessage?: string;
+}
+
+export interface EventFacetValue {
+  value: string;
+  count: number;
+}
+
+/** One field's distinct values, counted over the rows that came back — which is
+ * what `truncated` is there to say. */
+export interface EventFacet {
+  field: string;
+  values: EventFacetValue[];
+}
+
+export interface PlatformEvents {
+  items: K8sEvent[];
+  facets: EventFacet[];
+  truncated: boolean;
+}
+
+/** What the events explorer is asked over. Every field is also the deep link
+ * from another screen — "show me this pod's events". */
+export interface PlatformEventQuery {
+  since?: string;
+  until?: string;
+  project?: string;
+  environment?: string;
+  namespace?: string;
+  kind?: string;
+  name?: string;
+  reason?: string;
+  /** Full text over the message, case-insensitively. */
+  search?: string;
+  limit?: number;
+}
+
+/** The collector DaemonSet's own counts, which catch the one that never
+ * started: desired with nothing available and no pods anywhere is admission
+ * refusing them, and that leaves nothing for a pod listing to show. */
+export interface CollectorStatus {
+  present: boolean;
+  name?: string;
+  namespace?: string;
+  desired: number;
+  ready: number;
+  available: number;
+  message?: string;
+}
+
+export interface IngestNode {
+  node: string;
+  /** Why this node's collector pod is not serving, where it is not. */
+  collector?: string;
+  telemetry: NodeTelemetry;
+}
+
+export interface PlatformIngest {
+  items: IngestNode[];
+  silentNodes: number;
+  nodesWithoutCollector: number;
+  collector: CollectorStatus;
+  flows?: FlowLoss;
+  telemetryMessage?: string;
+}
+
 export class APIError extends Error {
   status: number;
   constructor(status: number, message: string) {
@@ -1163,6 +1632,43 @@ export const api = {
 
   // The platform as it is running: cluster, tunnel, build queue, components.
   status: () => request<PlatformStatus>("GET", "/status"),
+
+  // What is wrong with one environment right now — the diagnostics strip. The
+  // same catalogue and the same shape the problems list answers in, narrowed to
+  // this environment and its project.
+  environmentSignals: (name: string) => request<SignalsAnswer>("GET", `/environments/${name}/signals`),
+
+  // The operator's screens. Everything platform-scoped lives under this one
+  // prefix and nothing project-scoped does, which is what makes the
+  // authorization it is designed for a middleware rather than an audit.
+  platformSignals: () => request<SignalsAnswer>("GET", "/platform/signals"),
+  // `node` narrows to one, which is where the findings' evidence links point.
+  platformNodes: (query: { node?: string } = {}) =>
+    request<PlatformNodes>("GET", `/platform/nodes${query.node ? `?node=${encodeURIComponent(query.node)}` : ""}`),
+  platformWorkloads: (query: { namespace?: string; limit?: number } = {}) => {
+    const params = new URLSearchParams();
+    if (query.namespace) params.set("namespace", query.namespace);
+    if (query.limit) params.set("limit", String(query.limit));
+    return request<PlatformWorkloads>("GET", `/platform/workloads?${params}`);
+  },
+  // The window bounds the traffic tables; the Gateway, the tunnel and the
+  // certificates are read as they are, whatever it says.
+  platformEdge: (query: { since?: string; until?: string; limit?: number } = {}) => {
+    const params = new URLSearchParams();
+    if (query.since) params.set("since", query.since);
+    if (query.until) params.set("until", query.until);
+    if (query.limit) params.set("limit", String(query.limit));
+    return request<PlatformEdge>("GET", `/platform/edge?${params}`);
+  },
+  platformStorage: () => request<PlatformStorage>("GET", "/platform/storage"),
+  platformEvents: (query: PlatformEventQuery = {}) => {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(query)) {
+      if (value !== undefined && value !== "") params.set(key, String(value));
+    }
+    return request<PlatformEvents>("GET", `/platform/events?${params}`);
+  },
+  platformIngest: () => request<PlatformIngest>("GET", "/platform/ingest"),
 
   settings: () => request<Settings>("GET", "/settings"),
   updateSettings: (changes: Partial<Pick<Settings, "buildStrategy" | "buildConcurrency" | "logRetentionDays">>) =>

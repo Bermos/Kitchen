@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { bucketLabel, duration, shortImage, shortSHA, timeAgo, uptime } from "./format";
+import { bucketLabel, duration, formatDurationSeconds, shortImage, shortSHA, timeAgo, uptime } from "./format";
 
 describe("format", () => {
   it("durations read like the mockup", () => {
@@ -22,6 +22,15 @@ describe("format", () => {
     expect(uptime(new Date(Date.now() - (6 * 24 + 3) * 3600_000).toISOString())).toBe("6d 3h");
     expect(uptime("not a date")).toBe("—");
     expect(uptime(undefined)).toBe("—");
+  });
+
+  it("a span of seconds coarsens the same way", () => {
+    expect(formatDurationSeconds(42)).toBe("42s");
+    expect(formatDurationSeconds(2040)).toBe("34m");
+    expect(formatDurationSeconds(3600 + 5 * 60)).toBe("1h 5m");
+    expect(formatDurationSeconds(3 * 86400 + 4 * 3600)).toBe("3d 4h");
+    expect(formatDurationSeconds(undefined)).toBe("—");
+    expect(formatDurationSeconds(-1)).toBe("—");
   });
 
   it("images shorten to their digest", () => {

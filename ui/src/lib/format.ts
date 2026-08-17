@@ -35,20 +35,26 @@ export function duration(from?: string, to?: string): string {
   return `${minutes}m ${String(seconds % 60).padStart(2, "0")}s`;
 }
 
-/** How long something has been up, at the coarseness a status line reads:
- * `43s`, `12m`, `2h 14m`, `6d 3h`. */
-export function uptime(iso: string | undefined): string {
-  if (!iso) return "—";
-  const started = new Date(iso).getTime();
-  if (Number.isNaN(started)) return "—";
-  const seconds = Math.floor((Date.now() - started) / 1000);
-  if (seconds < 0) return "—";
-  if (seconds < 60) return `${seconds}s`;
-  const minutes = Math.floor(seconds / 60);
+/** A span of seconds at the coarseness a status line reads it: `43s`, `12m`,
+ * `2h 14m`, `6d 3h`. A couple of significant units and no more, which is how
+ * the operator's own findings say a duration. */
+export function formatDurationSeconds(seconds: number | undefined): string {
+  if (seconds === undefined || Number.isNaN(seconds) || seconds < 0) return "—";
+  const whole = Math.floor(seconds);
+  if (whole < 60) return `${whole}s`;
+  const minutes = Math.floor(whole / 60);
   if (minutes < 60) return `${minutes}m`;
   const hours = Math.floor(minutes / 60);
   if (hours < 24) return `${hours}h ${minutes % 60}m`;
   return `${Math.floor(hours / 24)}d ${hours % 24}h`;
+}
+
+/** How long something has been up, in the same units. */
+export function uptime(iso: string | undefined): string {
+  if (!iso) return "—";
+  const started = new Date(iso).getTime();
+  if (Number.isNaN(started)) return "—";
+  return formatDurationSeconds((Date.now() - started) / 1000);
 }
 
 export function shortSHA(sha: string | undefined): string {
