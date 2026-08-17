@@ -1,0 +1,74 @@
+name: Hubble flows
+
+on:
+  push:
+  pull_request:
+
+# Stage 0 of docs/OBSERVABILITY.md: prove the vantage point.
+#
+# The observability design reads every request row off Hubble's L7 flow records
+# for traffic through the shared Gateway (§3.1a). That the Gateway's Envoy
+# produces those records at all — with method, URL, status, protocol and a
+# non-zero latency, and with no CiliumNetworkPolicy anywhere — is the one fact
+# the design could not establish without a cluster, and the whole request
+# pipeline hangs off it. This job is its gate, and it is also the first CI
+# Kitchen has that exercises the flow pipeline at all.
+#
+# It is not a job in the Helm workflow because it is not about the chart: it
+# installs no Kitchen, and what it tests is the platform's CNI. The two kind
+# clusters differ deliberately —
+#
+#   - the chart's install job runs a plain kind cluster with no CNI of its own,
+#     where the shared Gateway is created but never programmed, because all it
+#     needs to prove is that the operator's RBAC lets it create one;
+#   - this one needs a Gateway that actually serves traffic, so it runs kind
+#     without kube-proxy (Cilium's Gateway API support requires the kube-proxy
+#     replacement), installs Cilium with Gateway API and Hubble, and gives kind
+#     the LoadBalancer address a Gateway needs before it reports Programmed —
+#     using Cilium's own LB IPAM, which is free here because Cilium is already
+#     the thing under test.
+#
+# Every version this needs is pinned in .github/workflows/helm.yml and read
+# from there by the script: CLAUDE.md's rule is that the Gateway API CRD
+# version belongs to Cilium and must not be written down twice, and a second
+# CILIUM_VERSION in this file would drift away from the first one the moment
+# either moved. That is why this workflow declares no versions of its own.
+#
+# The job also probes the questions §9 left open — Envoy's self-generated 503,
+# trace context at the edge, whether headers carry grpc-status, and how much
+# history Hubble's buffer holds. Those are printed to the log and to the step
+# summary and never asserted: they are open questions, and failing a job on one
+# would be asserting an answer nobody has.
+
+jobs:
+  vantage-point:
+    name: Gateway L7 flows on kind
+    runs-on: ubuntu-latest
+    # Building the cluster is most of the wall clock: kind, the Gateway API
+    # CRDs, Cilium and Hubble Relay all have to come up before the first
+    # request can be sent.
+    timeout-minutes: 35
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+
+      - name: Install the latest version of kind
+        run: |
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/latest/kind-linux-amd64
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+
+      # One script, so that a developer chasing a change in Cilium's flow
+      # records runs exactly what CI runs: ./hack/check-hubble-l7.sh --keep
+      # leaves the cluster behind to look at. It dumps Cilium's status, the
+      # Gateway's status and the flows it did see before it fails.
+      - name: Prove the Gateway's Envoy emits L7 flows
+        run: ./hack/check-hubble-l7.sh
