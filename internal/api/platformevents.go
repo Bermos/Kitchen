@@ -63,6 +63,7 @@ func (s *Server) platformEvents(w http.ResponseWriter, req *http.Request) {
 		Kind:        strings.TrimSpace(req.URL.Query().Get("kind")),
 		Name:        strings.TrimSpace(req.URL.Query().Get("name")),
 		Reason:      strings.TrimSpace(req.URL.Query().Get("reason")),
+		Node:        strings.TrimSpace(req.URL.Query().Get("node")),
 		// The full-text search is over the message, which is where the useful
 		// half of a Kubernetes warning lives: the reason names the category and
 		// the message names the object, the port, the policy.

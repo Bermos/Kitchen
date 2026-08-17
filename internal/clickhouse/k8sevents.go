@@ -129,12 +129,18 @@ type K8sEventQuery struct {
 	// same as a project named "".
 	Project     string
 	Environment string
-	// Namespace, Kind, Name and Reason are the explorer's facets, and the deep
-	// link from a workload row is Kind plus Name.
+	// Namespace, Kind, Name, Reason and Node are the explorer's facets, and the
+	// deep link from a workload row is Kind plus Name.
+	//
+	// Node is a filter here rather than something a screen applies to what came
+	// back, because these answers are truncated: filtering a page of the newest
+	// hundred events would answer "this node's events" with whichever of them
+	// happened to survive the limit, and say nothing about the rest.
 	Namespace string
 	Kind      string
 	Name      string
 	Reason    string
+	Node      string
 	// Search keeps events whose message contains it, case-insensitively.
 	Search string
 	// Since and Until bound the window. A zero Until means now; a zero Since
@@ -180,6 +186,7 @@ func (c *Client) QueryK8sEvents(ctx context.Context, query K8sEventQuery) ([]K8s
 	filter("kind", "kind", query.Kind)
 	filter("name", "name", query.Name)
 	filter("reason", "reason", query.Reason)
+	filter("node", "node", query.Node)
 	if query.Search != "" {
 		conditions = append(conditions, "positionCaseInsensitive(message, {search:String}) > 0")
 		params["search"] = query.Search

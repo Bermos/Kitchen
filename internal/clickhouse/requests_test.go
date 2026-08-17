@@ -270,11 +270,12 @@ func TestQueryK8sEventsFiltersAsParametersAndReadsARow(t *testing.T) {
 	store := newFakeLogStore(t)
 	store.rows = `{"ts":"2026-08-15T03:00:00.000000Z","project":"","environment":"",` +
 		`"namespace":"kitchen-system","kind":"DaemonSet","name":"kitchen-collector",` +
-		`"reason":"FailedCreate","message":"violates PodSecurity","count":12,"node":"node-1"}`
+		`"reason":"FailedCreate","message":"violates PodSecurity","count":12,"node":"` + integrationNode + `"}`
 
 	events, err := store.client(t).QueryK8sEvents(context.Background(), K8sEventQuery{
 		Reason: "FailedCreate'; DROP TABLE k8s_events; --",
 		Search: "PodSecurity",
+		Node:   integrationNode,
 	})
 	if err != nil {
 		t.Fatalf("QueryK8sEvents: %v", err)
@@ -285,10 +286,16 @@ func TestQueryK8sEventsFiltersAsParametersAndReadsARow(t *testing.T) {
 	if got := store.params.Get("param_search"); got != "PodSecurity" {
 		t.Errorf("the search should travel as a parameter, got %q", got)
 	}
+	// The node narrows in the store, not on the page: these answers are
+	// truncated, so filtering what came back would answer a question about one
+	// machine with whichever of its events survived the limit.
+	if got := store.params.Get("param_node"); got != integrationNode {
+		t.Errorf("the node should narrow the query, got %q", got)
+	}
 	if len(events) != 1 {
 		t.Fatalf("want one event, got %d", len(events))
 	}
-	if events[0].Count != 12 || events[0].Node != "node-1" {
+	if events[0].Count != 12 || events[0].Node != integrationNode {
 		t.Errorf("unexpected event: %+v", events[0])
 	}
 	if !events[0].Timestamp.Equal(time.Date(2026, 8, 15, 3, 0, 0, 0, time.UTC)) {

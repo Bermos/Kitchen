@@ -119,7 +119,7 @@ sent the request.
 | GET | `/platform/workloads` | Every workload and pod on the platform — and the workloads with no pods at all |
 | GET | `/platform/edge` | Cross-project traffic, the Gateway, the tunnel and the certificates |
 | GET | `/platform/storage` | Volumes and what mounts them, plus the telemetry store's own health |
-| GET | `/platform/events` | The cluster's Warning history, faceted. `?reason=`, `?kind=`, `?search=` |
+| GET | `/platform/events` | The cluster's Warning history, faceted. `?reason=`, `?kind=`, `?node=`, `?search=` |
 | GET | `/platform/ingest` | Collector presence and freshness, and what the flow follower lost |
 | GET | `/settings` | The platform's settings — the `Kitchen` singleton |
 | PATCH | `/settings` | Change the build and telemetry defaults |
@@ -1052,7 +1052,7 @@ about things that happened to it.
 |---|---|
 | `since` / `until` | RFC 3339 bounds. An hour ending now by default |
 | `project` / `environment` | One application's events. Platform objects carry neither |
-| `namespace` / `kind` / `name` / `reason` | The facets, as filters — and the deep link from any other screen |
+| `namespace` / `kind` / `name` / `reason` / `node` | The facets, as filters — and the deep link from any other screen |
 | `search` | Full text over the message, case-insensitively |
 | `limit` | Rows to return, default 100, capped at 1000 |
 

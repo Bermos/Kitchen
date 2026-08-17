@@ -22,7 +22,7 @@ const route = useRoute();
 const router = useRouter();
 
 /** The filters the store itself applies. */
-const FILTERS = ["project", "environment", "namespace", "kind", "name", "reason"] as const;
+const FILTERS = ["project", "environment", "namespace", "kind", "name", "reason", "node"] as const;
 
 const ranges = [
   { label: "Last hour", value: 60 },
@@ -40,9 +40,6 @@ function param(key: string): string {
 }
 const rangeMinutes = computed(() => Number(route.query.range ?? 60) || 60);
 const limit = computed(() => Number(route.query.limit ?? 100) || 100);
-/** `node` is a facet the store counts but does not filter on, so it is applied
- * here — and still lives in the URL, so the link still travels. */
-const node = computed(() => param("node"));
 
 function apply(patch: Record<string, string | number | undefined>) {
   const query: Record<string, string> = {};
@@ -77,17 +74,16 @@ watch(
 );
 usePoll(() => void refresh(), 30_000, () => true);
 
-const events = computed(() => (data.value?.items ?? []).filter((event) => !node.value || event.node === node.value));
+const events = computed(() => data.value?.items ?? []);
 const facets = computed(() => data.value?.facets ?? []);
 
 /** Every filter currently narrowing the screen, as removable chips. */
 const chips = computed(() => {
-  const active: { key: string; value: string; local?: boolean }[] = [];
+  const active: { key: string; value: string }[] = [];
   for (const key of FILTERS) {
     const value = param(key);
     if (value) active.push({ key, value });
   }
-  if (node.value) active.push({ key: "node", value: node.value, local: true });
   if (search.value.trim()) active.push({ key: "search", value: search.value.trim() });
   return active;
 });
@@ -179,7 +175,7 @@ function environmentOf(event: K8sEvent) {
         v-for="chip in chips"
         :key="chip.key"
         class="font-mono px-1.5 py-0.5 rounded border border-default text-toned hover:border-accented hover:text-error"
-        :title="chip.local ? 'Applied in the browser — the store does not filter on this field' : 'Remove this filter'"
+        title="Remove this filter"
         @click="drop(chip.key)"
       >
         {{ chip.key }}:{{ chip.value }} ×
@@ -270,9 +266,6 @@ function environmentOf(event: K8sEvent) {
         <div v-for="facet in facets" :key="facet.field">
           <p class="text-muted mb-1.5">
             {{ facetLabel(facet.field) }}
-            <span v-if="facet.field === 'node'" class="text-dimmed" title="Applied in the browser: the store counts this field but does not filter on it">
-              · local
-            </span>
           </p>
           <p v-if="!facet.values?.length" class="text-dimmed px-2">—</p>
           <button

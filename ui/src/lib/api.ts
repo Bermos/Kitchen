@@ -1206,6 +1206,7 @@ export interface PlatformEventQuery {
   kind?: string;
   name?: string;
   reason?: string;
+  node?: string;
   /** Full text over the message, case-insensitively. */
   search?: string;
   limit?: number;
