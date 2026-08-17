@@ -114,8 +114,14 @@ type ContainerSample struct {
 	Environment string
 	Namespace   string
 	Pod         string
-	Container   string
-	Node        string
+	// PodUID is carried for the collector's benefit rather than the store's.
+	// These samples describe pods the operator is not, and the k8sattributes
+	// processor associates a record with a pod by uid first and by the
+	// sender's connection last — so without it every sample would be enriched
+	// with the operator's own pod metadata. Nothing reads it back.
+	PodUID    string
+	Container string
+	Node      string
 
 	// Started is when the pod started, which is when the restart counter
 	// below started from zero. A cumulative sum has to say where it counts
@@ -365,6 +371,7 @@ func (c *Collector) Sample(ctx context.Context, at time.Time) (Sweep, error) {
 				Environment:      environment.environment,
 				Namespace:        pod.Namespace,
 				Pod:              pod.Name,
+				PodUID:           string(pod.UID),
 				Container:        status.Name,
 				Node:             pod.Spec.NodeName,
 				Started:          started,
