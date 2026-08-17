@@ -1,5 +1,40 @@
 # Changelog
 
+## [0.5.0](https://github.com/Bermos/Kitchen/compare/v0.4.0...v0.5.0) (2026-08-17)
+
+
+### ⚠ BREAKING CHANGES
+
+* the collector's ClusterRole now needs nodes/proxy and nodes/pods. Naming the claim behind a filling volume requires the kubelet's /pods endpoint, and a 403 there fails the whole kubelet scrape — CPU and memory collection stop along with the volume metrics. Installs that set collector.rbac.create=false and supply the role themselves must add both grants before upgrading.
+* **chart:** the `logs.*` values are replaced by `collector.*`. The chart README carries the old-to-new mapping. Installs that never overrode them need no change.
+
+### Features
+
+* **chart:** run one OpenTelemetry collector instead of Vector ([9bfe228](https://github.com/Bermos/Kitchen/commit/9bfe22865a71579756aa1bc0aa8438bf858aa8ec))
+* observe every request the edge serves, and tell the operator what is wrong ([#98](https://github.com/Bermos/Kitchen/issues/98)) ([bc2eb73](https://github.com/Bermos/Kitchen/commit/bc2eb738689a5562cce9d98a307f4947509d53fd))
+* **operator:** fill a request's trace id from the edge ([#99](https://github.com/Bermos/Kitchen/issues/99)) ([8023ba5](https://github.com/Bermos/Kitchen/commit/8023ba5ad54cb39bd26f086f177d4517041e2c6c))
+* **operator:** give the telemetry store OpenTelemetry's shape ([d24a85d](https://github.com/Bermos/Kitchen/commit/d24a85d3b91e72767daa46598097b46e7db1ebd0))
+* **operator:** report deploy status back on the commit ([0f9983c](https://github.com/Bermos/Kitchen/commit/0f9983cf10e1e337d9dfdebbd5b31b68c23083fc))
+
+
+### Bug fixes
+
+* **operator:** name the pod a sample is about, not the one that sent it ([8ee5b61](https://github.com/Bermos/Kitchen/commit/8ee5b61e2a65329a3eca7d0fe3f2017ef44fee6f))
+
+
+### Refactoring
+
+* **operator:** drop the RBAC the kubelet sampling needed ([1cc1998](https://github.com/Bermos/Kitchen/commit/1cc1998774156347cbabb26bad1db6e04c7318d4))
+* **operator:** hand telemetry ingest to the collector ([081144e](https://github.com/Bermos/Kitchen/commit/081144e964b2ad65076b8c8af04370985bda051f))
+* **operator:** let one package name each metric ([48b36c4](https://github.com/Bermos/Kitchen/commit/48b36c4d5c4f6ff04bc8e7cf4a3ae60e05c6527f))
+
+
+### Documentation
+
+* **api:** describe the arrangement that now exists ([5dcdcd9](https://github.com/Bermos/Kitchen/commit/5dcdcd91a3941d69c045fb4b17bbe1953fbc2575))
+* one collector, and what stays behind it ([c8ee09a](https://github.com/Bermos/Kitchen/commit/c8ee09ac68a7d486ccdc86805749f54b1916a970))
+* **operator:** say why stream is a column and not a probe ([5c368c8](https://github.com/Bermos/Kitchen/commit/5c368c82c26307743d84b9f5b4bf493c83479ce3))
+
 ## [0.4.0](https://github.com/Bermos/Kitchen/compare/v0.3.0...v0.4.0) (2026-08-16)
 
 
