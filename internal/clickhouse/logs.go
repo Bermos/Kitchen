@@ -36,15 +36,35 @@ const (
 
 // timestampAlias is the name the formatted timestamp is selected under.
 //
-// It is deliberately not `timestamp`: ClickHouse resolves a name in WHERE and
-// ORDER BY against the SELECT aliases before the table's columns, so aliasing
-// the formatted value to `timestamp` hides the DateTime64 column behind the
-// String this expression produces. The window then compares the two and the
+// It is deliberately not the time column's own name: ClickHouse resolves a name
+// in WHERE and ORDER BY against the SELECT aliases before the table's columns,
+// so aliasing the formatted value over the column hides the DateTime64 behind
+// the String this expression produces. The window then compares the two and the
 // query fails with "No operation greaterOrEquals between String and
 // DateTime64" — which is what the observability view showed on its very first
 // query, before a single line had been collected. The same shadowing would
 // catch any caller-written expression in FilterLogs that mentions the column.
 const timestampAlias = "ts"
+
+// logTimestampFormat renders the log time column into the shape
+// otelTimestampLayout reads back, and otelTimestampLayout is how Go reads it.
+//
+// ClickHouse's `%f` gives microseconds whatever the column's scale, so a
+// DateTime64(9) arrives with six fractional digits. Spans are read the same
+// way: microseconds are what a waterfall needs, because two nested spans can
+// start in the same millisecond and drawing them level is wrong.
+const (
+	logTimestampFormat  = `formatDateTime(Timestamp, '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC')`
+	otelTimestampLayout = "2006-01-02T15:04:05.999999Z"
+)
+
+// The window's two bounds. The column is DateTime64(9) and the value is parsed
+// at the same scale, so the comparison is between two of a kind rather than
+// through a widening cast on every row.
+const (
+	logSinceCondition = "Timestamp >= parseDateTime64BestEffort({since:String}, 9, 'UTC')"
+	logUntilCondition = "Timestamp <= parseDateTime64BestEffort({until:String}, 9, 'UTC')"
+)
 
 // LogQuery selects log lines. The zero value selects nothing: every caller
 // scopes the read to one build or one environment, because "every line in the
@@ -81,13 +101,14 @@ type LogLine struct {
 	Stream      string    `json:"stream,omitempty"`
 	Level       string    `json:"level,omitempty"`
 	Message     string    `json:"message"`
-	// TraceID and SpanID are the line's own, lifted out of its structured
-	// fields by the collector. They are what makes a log line and a trace two
-	// views of the same request rather than two searches.
+	// TraceID and SpanID are the line's own, correlated by the collector. They
+	// are what makes a log line and a trace two views of the same request
+	// rather than two searches.
 	TraceID string `json:"traceId,omitempty"`
 	SpanID  string `json:"spanId,omitempty"`
-	// Fields are the line's own structured fields — what the collector
-	// flattened a JSON line into. Empty for a line that was not JSON.
+	// Fields are the line's own attributes — what the collector parsed a JSON
+	// line into, plus whatever the receiver added. Empty for a line that
+	// carried nothing.
 	Fields map[string]string `json:"fields,omitempty"`
 }
 
@@ -110,12 +131,20 @@ type logRow struct {
 	Fields      map[string]string `json:"fields"`
 }
 
-// logColumns is the projection every line-returning query selects. It is one
-// constant because the two of them have to agree: a column added to one and
-// forgotten in the other is a field that is populated on a build's log page
-// and empty on the observability view.
-const logColumns = "source, project, environment, build, pod, container, stream, level, " +
-	"traceId, spanId, message, fields"
+// logColumns is the projection every line-returning query selects, and the one
+// place the OTel table is translated back into the shape the API answers with.
+// It is one constant because the two readers have to agree: a column added to
+// one and forgotten in the other is a field that is populated on a build's log
+// page and empty on the observability view.
+//
+// The Kitchen-named half needs no work — those columns are materialized under
+// these names. The rest is renaming, except `level`, which is folded to lower
+// case; see logLevelColumn for why that is the API's shape and not a
+// convenience.
+const logColumns = "source, project, environment, build, pod, container, stream, " +
+	logLevelColumn + " AS level, " +
+	"TraceId AS traceId, SpanId AS spanId, " +
+	logMessageColumn + " AS message, LogAttributes AS fields"
 
 // SearchLogs reads the lines matching the query, oldest first.
 //
@@ -147,15 +176,16 @@ func (c *Client) SearchLogs(ctx context.Context, query LogQuery) ([]LogLine, err
 	filter("container", "String", "container", query.Container)
 
 	if !query.Since.IsZero() {
-		conditions = append(conditions, "timestamp >= parseDateTime64BestEffort({since:String}, 3, 'UTC')")
+		conditions = append(conditions, logSinceCondition)
 		params["since"] = query.Since.UTC().Format(time.RFC3339Nano)
 	}
 	if !query.Until.IsZero() {
-		conditions = append(conditions, "timestamp <= parseDateTime64BestEffort({until:String}, 3, 'UTC')")
+		conditions = append(conditions, logUntilCondition)
 		params["until"] = query.Until.UTC().Format(time.RFC3339Nano)
 	}
 	if query.Search != "" {
-		conditions = append(conditions, "positionCaseInsensitive(message, {search:String}) > 0")
+		conditions = append(conditions,
+			fmt.Sprintf("positionCaseInsensitive(%s, {search:String}) > 0", logMessageColumn))
 		params["search"] = query.Search
 	}
 	if len(conditions) == 0 {
@@ -163,14 +193,14 @@ func (c *Client) SearchLogs(ctx context.Context, query LogQuery) ([]LogLine, err
 	}
 
 	statement := fmt.Sprintf(`SELECT
-    formatDateTime(timestamp, '%%Y-%%m-%%dT%%H:%%i:%%S.%%fZ', 'UTC') AS %s,
+    %s AS %s,
     %s
 FROM %s.%s
 WHERE %s
-ORDER BY timestamp DESC
+ORDER BY Timestamp DESC
 LIMIT {limit:UInt32}
 FORMAT JSONEachRow`,
-		timestampAlias, logColumns,
+		logTimestampFormat, timestampAlias, logColumns,
 		quoteIdentifier(c.cfg.Database), quoteIdentifier(LogsTable), strings.Join(conditions, " AND "))
 
 	body, err := c.QueryWithParams(ctx, statement, params)
@@ -195,6 +225,11 @@ type LogSelection struct {
 	// Where is a ClickHouse boolean expression over the table's columns,
 	// evaluated as written. It is the escape hatch, kept because it is
 	// genuinely more powerful than the query language and always will be.
+	//
+	// Its vocabulary is the table's, not the query language's: `Body`,
+	// `SeverityText`, `LogAttributes['…']`. The Kitchen-named columns
+	// (`project`, `environment`, `pod`, …) are real columns and mean here what
+	// they mean everywhere else.
 	Where string
 	// Since and Until bound the window on top of the query.
 	Since time.Time
@@ -224,11 +259,11 @@ func (s LogSelection) conditions() ([]string, map[string]string, error) {
 		conditions = append(conditions, "("+where+")")
 	}
 	if !s.Since.IsZero() {
-		conditions = append(conditions, "timestamp >= parseDateTime64BestEffort({since:String}, 3, 'UTC')")
+		conditions = append(conditions, logSinceCondition)
 		params["since"] = s.Since.UTC().Format(time.RFC3339Nano)
 	}
 	if !s.Until.IsZero() {
-		conditions = append(conditions, "timestamp <= parseDateTime64BestEffort({until:String}, 3, 'UTC')")
+		conditions = append(conditions, logUntilCondition)
 		params["until"] = s.Until.UTC().Format(time.RFC3339Nano)
 	}
 	return conditions, params, nil
@@ -279,14 +314,14 @@ func (c *Client) FilterLogs(ctx context.Context, filter LogFilter) ([]LogLine, e
 	params["limit"] = strconv.Itoa(limit)
 
 	statement := fmt.Sprintf(`SELECT
-    formatDateTime(timestamp, '%%Y-%%m-%%dT%%H:%%i:%%S.%%fZ', 'UTC') AS %s,
+    %s AS %s,
     %s
 FROM %s.%s
 %s
-ORDER BY timestamp DESC
+ORDER BY Timestamp DESC
 LIMIT {limit:UInt32}
 FORMAT JSONEachRow`,
-		timestampAlias, logColumns,
+		logTimestampFormat, timestampAlias, logColumns,
 		quoteIdentifier(c.cfg.Database), quoteIdentifier(LogsTable), where)
 
 	body, err := c.queryWithSettings(ctx, statement, params, readonlySettings)
@@ -310,7 +345,7 @@ func parseLogLines(body string, capacity int) ([]LogLine, error) {
 		if err := json.Unmarshal([]byte(raw), &row); err != nil {
 			return nil, fmt.Errorf("unreadable log row: %w", err)
 		}
-		timestamp, err := time.Parse("2006-01-02T15:04:05.999Z", row.Timestamp)
+		timestamp, err := time.Parse(otelTimestampLayout, row.Timestamp)
 		if err != nil {
 			return nil, fmt.Errorf("unreadable log timestamp %q: %w", row.Timestamp, err)
 		}

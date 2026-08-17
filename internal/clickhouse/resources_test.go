@@ -23,9 +23,15 @@ import (
 	"time"
 )
 
+// The fixtures every resource test scopes to.
+const (
+	testProject     = "shop"
+	testEnvironment = "production"
+)
+
 // The environment page's whole reason for existing: an hour of samples asked
-// for at a minute's resolution is bucketed off the raw table, and the answer
-// carries the empty buckets so that silence reads as silence.
+// for at a minute's resolution is bucketed off the metric tables, and the
+// answer carries the empty buckets so that silence reads as silence.
 func TestAResourceSeriesFillsEveryBucketInTheWindow(t *testing.T) {
 	store := newFakeLogStore(t)
 	start := time.Date(2026, 8, 16, 10, 0, 0, 0, time.UTC)
@@ -39,8 +45,8 @@ func TestAResourceSeriesFillsEveryBucketInTheWindow(t *testing.T) {
 	}, "\n")
 
 	series, err := store.client(t).ResourceSeries(context.Background(), ResourceSeriesQuery{
-		Project:     "shop",
-		Environment: "production",
+		Project:     testProject,
+		Environment: testEnvironment,
 		Since:       start,
 		Until:       start.Add(6 * time.Minute),
 		Buckets:     6,
@@ -73,10 +79,47 @@ func TestAResourceSeriesFillsEveryBucketInTheWindow(t *testing.T) {
 		t.Fatalf("the limits should come off the newest bucket that reported, got %d", series.MemoryLimitBytes)
 	}
 	if series.Rollup {
-		t.Fatal("a minute of resolution is finer than the rollup and has to come off the raw samples")
+		t.Fatal("a minute of resolution is finer than the rollup and has to come off the metric tables")
 	}
-	if !strings.Contains(store.query, "`kitchen`.`metrics`") {
-		t.Fatalf("the fine window should have read the raw table:\n%s", store.query)
+	if !strings.Contains(store.query, qualified(MetricsGaugeTable)) {
+		t.Fatalf("the fine window should have read the gauge table:\n%s", store.query)
+	}
+}
+
+// Usage and limits are gauges; restarts and OOM kills are delta sums. They live
+// in two tables, so a fine window is a UNION ALL over both — a single table
+// read would silently answer with half the numbers.
+func TestAFineWindowReadsBothMetricTables(t *testing.T) {
+	store := newFakeLogStore(t)
+
+	if _, err := store.client(t).ResourceSeries(context.Background(), ResourceSeriesQuery{
+		Project:     testProject,
+		Environment: testEnvironment,
+		Buckets:     120,
+	}); err != nil {
+		t.Fatalf("ResourceSeries: %v", err)
+	}
+	if !strings.Contains(store.query, "UNION ALL") {
+		t.Fatalf("the numbers live in two tables:\n%s", store.query)
+	}
+	for _, table := range []string{MetricsGaugeTable, MetricsSumTable} {
+		if !strings.Contains(store.query, qualified(table)) {
+			t.Fatalf("the fine window should read %s:\n%s", table, store.query)
+		}
+	}
+	// A metric table is one row per metric per scrape, so the metric name is
+	// what turns rows back into columns.
+	for _, want := range []string{
+		"avgIf(g.Value, g.MetricName = " + quoteLiteral(MetricContainerCPUUsage) + ")",
+		"avgIf(g.Value, g.MetricName = " + quoteLiteral(MetricContainerMemoryWorkingSet) + ")",
+		"maxIf(g.Value, g.MetricName = " + quoteLiteral(MetricContainerCPULimit) + ")",
+		"maxIf(g.Value, g.MetricName = " + quoteLiteral(MetricContainerMemoryLimit) + ")",
+		"sumIf(s.Value, s.MetricName = " + quoteLiteral(MetricContainerRestartsDelta) + ")",
+		"sumIf(s.Value, s.MetricName = " + quoteLiteral(MetricContainerOOMKilled) + ")",
+	} {
+		if !strings.Contains(store.query, want) {
+			t.Errorf("the read is missing %q:\n%s", want, store.query)
+		}
 	}
 }
 
@@ -87,8 +130,8 @@ func TestAWideWindowReadsTheRollup(t *testing.T) {
 	until := time.Date(2026, 8, 16, 10, 0, 0, 0, time.UTC)
 
 	series, err := store.client(t).ResourceSeries(context.Background(), ResourceSeriesQuery{
-		Project:     "shop",
-		Environment: "production",
+		Project:     testProject,
+		Environment: testEnvironment,
 		Since:       until.Add(-24 * time.Hour),
 		Until:       until,
 		Buckets:     60,
@@ -109,17 +152,21 @@ func TestAWideWindowReadsTheRollup(t *testing.T) {
 			t.Fatalf("the rollup read is missing %s:\n%s", merge, store.query)
 		}
 	}
+	// And the rollup is one table, so nothing is unioned into it.
+	if strings.Contains(store.query, "UNION ALL") {
+		t.Fatalf("the rollup already holds both halves:\n%s", store.query)
+	}
 }
 
 // Everything the caller supplied travels as a parameter. A project called
 // `'; DROP` matches nothing; it is not a statement.
 func TestAResourceSeriesPassesItsScopeAsParameters(t *testing.T) {
 	store := newFakeLogStore(t)
-	project := "shop'; DROP TABLE metrics --"
+	project := "shop'; DROP TABLE otel_metrics_gauge --"
 
 	_, err := store.client(t).ResourceSeries(context.Background(), ResourceSeriesQuery{
 		Project:     project,
-		Environment: "production",
+		Environment: testEnvironment,
 	})
 	if err != nil {
 		t.Fatalf("ResourceSeries: %v", err)
@@ -138,8 +185,8 @@ func TestAResourceSeriesPassesItsScopeAsParameters(t *testing.T) {
 func TestAResourceSeriesRefusesAnUnscopedQuery(t *testing.T) {
 	store := newFakeLogStore(t)
 	for _, query := range []ResourceSeriesQuery{
-		{Environment: "production"},
-		{Project: "shop"},
+		{Environment: testEnvironment},
+		{Project: testProject},
 		{},
 	} {
 		if _, err := store.client(t).ResourceSeries(context.Background(), query); err == nil {
@@ -153,8 +200,8 @@ func TestAResourceWindowMustEndAfterItStarts(t *testing.T) {
 	start := time.Date(2026, 8, 16, 10, 0, 0, 0, time.UTC)
 
 	_, err := store.client(t).ResourceSeries(context.Background(), ResourceSeriesQuery{
-		Project:     "shop",
-		Environment: "production",
+		Project:     testProject,
+		Environment: testEnvironment,
 		Since:       start,
 		Until:       start.Add(-time.Hour),
 	})
@@ -163,46 +210,36 @@ func TestAResourceWindowMustEndAfterItStarts(t *testing.T) {
 	}
 }
 
-// Samples are written as JSONEachRow, so a Go bool has to arrive as the UInt8
-// the column is.
-func TestInsertingSamplesWritesEveryColumn(t *testing.T) {
+// Nothing in this package writes resource telemetry any more: the kubelet's
+// half arrives through the collector and the operator emits the rest over
+// OTLP. Both land as ordinary OTel points, and the only thing that reads them
+// per environment is the two-level grouping below.
+func TestTheSeriesGroupsPerContainerBeforeItSumsTheEnvironment(t *testing.T) {
 	store := newFakeLogStore(t)
 
-	err := store.client(t).InsertResourceSamples(context.Background(), []ResourceSample{{
-		Timestamp:   time.Date(2026, 8, 16, 10, 0, 0, 0, time.UTC),
-		Project:     "shop",
-		Environment: "production",
-		Pod:         "production-abc-1",
-		Container:   "app",
-		CPUCores:    0.25,
-		MemoryBytes: 200000000,
-		Restarts:    3,
-		Restarted:   1,
-		OOMKilled:   true,
-	}})
-	if err != nil {
-		t.Fatalf("InsertResourceSamples: %v", err)
+	if _, err := store.client(t).ResourceSeries(context.Background(), ResourceSeriesQuery{
+		Project:     testProject,
+		Environment: testEnvironment,
+	}); err != nil {
+		t.Fatalf("ResourceSeries: %v", err)
 	}
-	for _, fragment := range []string{
-		"INSERT INTO `kitchen`.`metrics` FORMAT JSONEachRow",
-		`"oomKilled":1`,
-		`"restarted":1`,
-		`"restarts":3`,
-		`"timestamp":"2026-08-16 10:00:00.000"`,
-	} {
-		if !strings.Contains(store.query, fragment) {
-			t.Fatalf("the insert should have carried %s:\n%s", fragment, store.query)
-		}
+	// A container's usage over a bucket is its mean and an environment's is the
+	// sum of its containers. One pass would average across pods and turn three
+	// replicas at 100m into 100m.
+	if !strings.Contains(store.query, "GROUP BY slot, pod, container") {
+		t.Fatalf("the inner grouping should be per container:\n%s", store.query)
 	}
-}
-
-// An empty batch is not an empty INSERT.
-func TestInsertingNoSamplesAsksNothing(t *testing.T) {
-	store := newFakeLogStore(t)
-	if err := store.client(t).InsertResourceSamples(context.Background(), nil); err != nil {
-		t.Fatalf("InsertResourceSamples: %v", err)
+	if !strings.Contains(store.query, "toString(sum(cpu)) AS cpu") {
+		t.Fatalf("the outer grouping should sum the containers:\n%s", store.query)
 	}
-	if store.query != "" {
-		t.Fatalf("nothing should have been sent, got %q", store.query)
+	// `slot` is deliberately not `bucket`: the outer SELECT renders the bucket
+	// as a string, and a GROUP BY resolves against the aliases first.
+	if strings.Contains(store.query, "GROUP BY bucket") {
+		t.Fatalf("grouping by the rendered string would bucket by text:\n%s", store.query)
+	}
+	// Replicas are the distinct pods that reported, which is the only way to
+	// see an environment that idled to zero and came back.
+	if !strings.Contains(store.query, "uniqExact(pod)") {
+		t.Fatalf("replicas should be the distinct pods in the bucket:\n%s", store.query)
 	}
 }

@@ -33,86 +33,85 @@ func TestTheQueryLanguageCompiles(t *testing.T) {
 	}{{
 		name:       "a bare word searches the message",
 		query:      "timeout",
-		expression: "positionCaseInsensitive(`message`, {q0:String}) > 0",
+		expression: "positionCaseInsensitive(Body, {q0:String}) > 0",
 		values:     []string{"timeout"},
 	}, {
 		name:       "a phrase is one term",
 		query:      `"connection refused"`,
-		expression: "positionCaseInsensitive(`message`, {q0:String}) > 0",
+		expression: "positionCaseInsensitive(Body, {q0:String}) > 0",
 		values:     []string{"connection refused"},
 	}, {
 		name:       "a column is matched exactly",
 		query:      "level:error",
-		expression: "`level` = {q0:String}",
-		values:     []string{"error"},
+		expression: "lower(SeverityText) = {q0:String}",
+		values:     []string{levelError},
 	}, {
 		name:       "service is the project",
 		query:      "service:shop",
-		expression: "`project` = {q0:String}",
+		expression: "project = {q0:String}",
 		values:     []string{"shop"},
 	}, {
 		name:       "adjacency is an AND",
 		query:      "level:error service:shop",
-		expression: "(`level` = {q0:String} AND `project` = {q1:String})",
-		values:     []string{"error", "shop"},
+		expression: "(lower(SeverityText) = {q0:String} AND project = {q1:String})",
+		values:     []string{levelError, "shop"},
 	}, {
 		name:       "a leading dash negates",
 		query:      "-source:cluster",
-		expression: "NOT (`source` = {q0:String})",
+		expression: "NOT (source = {q0:String})",
 		values:     []string{"cluster"},
 	}, {
 		name:       "commas are alternatives",
 		query:      "level:error,fatal",
-		expression: "(`level` = {q0:String} OR `level` = {q1:String})",
-		values:     []string{"error", "fatal"},
+		expression: "(lower(SeverityText) = {q0:String} OR lower(SeverityText) = {q1:String})",
+		values:     []string{levelError, "fatal"},
 	}, {
 		name:       "a wildcard becomes a LIKE pattern",
 		query:      "pod:shop-*",
-		expression: "`pod` LIKE {q0:String}",
+		expression: "pod LIKE {q0:String}",
 		values:     []string{"shop-%"},
 	}, {
-		name:       "an unknown name is a structured field",
+		name:       "an unknown name is a log attribute",
 		query:      "http.status:500",
-		expression: "fields[{q0:String}] = {q1:String}",
+		expression: "LogAttributes[{q0:String}] = {q1:String}",
 		values:     []string{"http.status", "500"},
 	}, {
-		name:       "a numeric comparison casts the field",
+		name:       "a numeric comparison casts the attribute",
 		query:      "http.status:>=500",
-		expression: "toFloat64OrNull(fields[{q0:String}]) >= {q1:Float64}",
+		expression: "toFloat64OrNull(LogAttributes[{q0:String}]) >= {q1:Float64}",
 		values:     []string{"http.status", "500"},
 	}, {
-		name:       "a star asks whether the field is there at all",
+		name:       "a star asks whether the attribute is there at all",
 		query:      "request_id:*",
-		expression: "fields[{q0:String}] != ''",
+		expression: "LogAttributes[{q0:String}] != ''",
 		values:     []string{"request_id"},
 	}, {
-		// The collector lifts a line's trace id into a column of its own, so
-		// every spelling of it resolves there rather than to the field map it
-		// was flattened out of.
+		// A trace id is a column of the exporter's, so every spelling of it
+		// resolves there rather than to the attribute map a line carried it in.
 		name:       "a trace id is a column, however it is spelled",
 		query:      "trace_id:9d8d0f OR traceId:9d8d0f",
-		expression: "(`traceId` = {q0:String} OR `traceId` = {q1:String})",
+		expression: "(TraceId = {q0:String} OR TraceId = {q1:String})",
 		values:     []string{"9d8d0f", "9d8d0f"},
 	}, {
-		name:       "a pod label is addressed under its own name",
+		name:       "a pod label is a resource attribute under its own name",
 		query:      "labels.tier:web",
-		expression: "labels[{q0:String}] = {q1:String}",
+		expression: "ResourceAttributes[{q0:String}] = {q1:String}",
 		values:     []string{"tier", "web"},
 	}, {
 		name:       "slashes are a regular expression",
 		query:      `message:/GET \/works/`,
-		expression: "match(`message`, {q0:String})",
+		expression: "match(Body, {q0:String})",
 		values:     []string{`GET \/works`},
 	}, {
 		name:       "OR binds looser than adjacency",
 		query:      "level:error service:shop OR level:fatal",
-		expression: "((`level` = {q0:String} AND `project` = {q1:String}) OR `level` = {q2:String})",
-		values:     []string{"error", "shop", "fatal"},
+		expression: "((lower(SeverityText) = {q0:String} AND project = {q1:String}) OR lower(SeverityText) = {q2:String})",
+		values:     []string{levelError, "shop", "fatal"},
 	}, {
 		name:       "brackets regroup",
 		query:      "(level:error OR level:fatal) service:shop",
-		expression: "((`level` = {q0:String} OR `level` = {q1:String}) AND `project` = {q2:String})",
-		values:     []string{"error", "fatal", "shop"},
+		expression: "((lower(SeverityText) = {q0:String} OR lower(SeverityText) = {q1:String}) AND project = {q2:String})",
+		values:     []string{levelError, "fatal", "shop"},
 	}} {
 		t.Run(test.name, func(t *testing.T) {
 			compiled, err := CompileLogQuery(test.query)

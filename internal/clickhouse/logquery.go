@@ -18,7 +18,6 @@ package clickhouse
 
 import (
 	"fmt"
-	"slices"
 	"strconv"
 	"strings"
 	"unicode"
@@ -55,30 +54,72 @@ import (
 //	http.status:>=500             numeric comparison
 //	trace_id:*                    the field is present and non-empty
 //
-// Anything that is not a known column is a structured field of the line —
-// `http.status` reads `fields['http.status']`, which is what the collector
-// flattened the line's JSON into. That is deliberate (a user should not have to
-// know which of the things they can see is a column) and it is the one place a
-// typo goes quiet: `levl:error` asks for a field nothing writes and matches
-// nothing, rather than being refused.
+// Anything that is not a known column is an attribute of the line —
+// `http.status` reads `LogAttributes['http.status']`, which is where the
+// collector put the line's own structured fields. That is deliberate (a user
+// should not have to know which of the things they can see is a column) and it
+// is the one place a typo goes quiet: `levl:error` asks for an attribute
+// nothing writes and matches nothing, rather than being refused.
 
-// logQueryColumns are the table's own columns, addressable by name.
+// logQueryColumns maps the names Kitchen's query language speaks to what they
+// read in the OTel log table.
+//
+// The two vocabularies are deliberately not the same. Users type `level` and
+// `message`; the table holds `SeverityText` and `Body`, because the collector
+// writes it with a stock exporter and the exporter's schema is not ours to
+// rename. The translation lives here rather than in `ALIAS` columns so that
+// grepping for `SeverityText` finds every place Kitchen depends on it.
+//
 // `timestamp` is deliberately absent: the window is the window, set by the
 // caller's since/until, and a query that could move it would make the histogram
 // and the lines disagree about what they are showing.
-var logQueryColumns = []string{
-	"source", "project", "environment", "build",
-	"namespace", "pod", "container", "node",
-	"stream", "level", "traceId", "spanId", "message",
+var logQueryColumns = map[string]string{
+	// Kitchen's own, materialized out of the attributes the collector sets.
+	// These keep their names: the schema gives them the name the query language
+	// already used, so there is nothing to translate.
+	"source":      "source",
+	"project":     "project",
+	"environment": "environment",
+	"build":       "build",
+	"namespace":   "namespace",
+	"pod":         "pod",
+	"container":   "container",
+	"node":        "node",
+
+	"stream": "stream",
+
+	"level":   logLevelColumn,
+	"message": logMessageColumn,
+	"traceId": "TraceId",
+	"spanId":  "SpanId",
 }
+
+// The two log columns whose OTel spelling is not a rename but a decision.
+//
+// `level` reads a *lower-cased* SeverityText. Kitchen's levels have always been
+// lower case — the histogram counts `error` and `fatal`, the UI renders what it
+// is given, and a facet's values are what a user clicks to build their next
+// query. OTel leaves the spelling to whatever produced the line, so `ERROR`,
+// `Error` and `error` all arrive; folding here is what keeps `level:error` one
+// term instead of three, and keeps the facet from offering the same level twice.
+//
+// A line the collector parsed no severity out of has an empty SeverityText, and
+// so an empty level. That is deliberate: the facet drops empty values, so such
+// a window offers no level facet at all rather than one blank entry standing
+// for everything. Populating it is the collector's job — OTLP has a first-class
+// severity field and a receiver-side parser is what fills it.
+const (
+	logLevelColumn   = "lower(SeverityText)"
+	logMessageColumn = "Body"
+)
 
 // logFieldAliases are the names people reach for that are not what the column
 // is called. `service` is the one that matters — every log UI has it, and in
 // Kitchen the thing being served is the project.
 //
-// The trace columns are here as well as in logQueryColumns because a field
-// name is matched case-insensitively and those two columns are the only ones
-// that are not lower case. Their other spellings are the ones instrumentation
+// The trace keys are here as well as in logQueryColumns because a field name
+// is matched case-insensitively and those two entries are the only ones that
+// are not lower case. Their other spellings are the ones instrumentation
 // libraries actually write, and a query should not depend on guessing which
 // one this platform's collector settled on.
 var logFieldAliases = map[string]string{
@@ -352,7 +393,7 @@ func (p *logQueryParser) parsePrimary() (string, error) {
 func (p *logQueryParser) condition(term string) (string, error) {
 	field, value := splitFieldValue(term)
 	if field == "" {
-		return p.match(quoteIdentifier("message"), true, value)
+		return p.match(logMessageColumn, true, value)
 	}
 	if strings.TrimSpace(value) == "" {
 		return "", queryErrorf("%s: has nothing to match; write %s:value, or %s:* for any value", field, field, field)
@@ -399,19 +440,19 @@ func (p *logQueryParser) columnExpression(field string) (string, bool, error) {
 	if name == "timestamp" || name == "time" {
 		return "", false, queryErrorf("timestamp is not part of the query; the time range sets the window")
 	}
-	if slices.Contains(logQueryColumns, name) {
-		return quoteIdentifier(name), name == "message", nil
+	if column, ok := logQueryColumns[name]; ok {
+		return column, name == "message", nil
 	}
-	// The pod's Kubernetes labels are their own map, and are addressed under
-	// the name they have on the pod.
+	// The pod's Kubernetes labels ride in the resource attributes, under the
+	// name they have on the pod.
 	if key, ok := strings.CutPrefix(field, "labels."); ok {
-		return fmt.Sprintf("labels[{%s:String}]", p.param(key)), false, nil
+		return fmt.Sprintf("ResourceAttributes[{%s:String}]", p.param(key)), false, nil
 	}
 	key := field
 	if trimmed, ok := strings.CutPrefix(field, "fields."); ok {
 		key = trimmed
 	}
-	return fmt.Sprintf("fields[{%s:String}]", p.param(key)), false, nil
+	return fmt.Sprintf("LogAttributes[{%s:String}]", p.param(key)), false, nil
 }
 
 // comparisons are the numeric operators, longest first so `>=` is seen before
