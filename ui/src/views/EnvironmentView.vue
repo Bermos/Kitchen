@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { api, type LogLine, type LogQuery, type MaterializedObject, type Release, type WorkloadPod } from "../lib/api";
 import { shortImage, timeAgo, uptime } from "../lib/format";
@@ -7,9 +7,12 @@ import { operatorMode } from "../lib/mode";
 import type { Tone } from "../lib/status";
 import { useAsync, usePoll } from "../lib/useAsync";
 import ConditionsTable from "../components/ConditionsTable.vue";
+import CrashReport from "../components/CrashReport.vue";
 import DomainsPanel from "../components/DomainsPanel.vue";
+import FindingList from "../components/FindingList.vue";
 import LogViewer from "../components/LogViewer.vue";
 import PhaseBadge from "../components/PhaseBadge.vue";
+import RequestsPanel from "../components/RequestsPanel.vue";
 import ResourceHistory from "../components/ResourceHistory.vue";
 import StatusDot from "../components/StatusDot.vue";
 
@@ -34,6 +37,36 @@ usePoll(() => void refresh(), 5000, () => moving.value);
 const workload = useAsync(() => api.environmentWorkload(name.value));
 watch(name, () => void workload.refresh());
 usePoll(() => void workload.refresh(), 5000, () => moving.value);
+
+// The diagnostics strip: what is wrong with this environment right now, from
+// the same catalogue the operator's problems list reads, narrowed to this
+// environment and its project. A saturated node or an unprogrammed Gateway is
+// not on it — that belongs to the platform, and is on the operator's list.
+//
+// It is fetched apart from everything else and renders nothing when nothing is
+// firing, so an environment that is fine looks exactly as it did before.
+const signals = useAsync(() => api.environmentSignals(name.value));
+watch(name, () => void signals.refresh());
+usePoll(() => void signals.refresh(), 30_000, () => true);
+
+// Findings link at a section of this page rather than at the top of it, so a
+// `?section=` in the URL is scrolled to once there is something to scroll to.
+const sectionIds: Record<string, string> = {
+  requests: "section-requests",
+  resources: "section-resources",
+  workload: "section-workload",
+};
+watch(
+  [() => route.query.section, data],
+  async ([section, loaded]) => {
+    if (!section || !loaded) return;
+    const id = sectionIds[String(section)];
+    if (!id) return;
+    await nextTick();
+    document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
+  },
+  { immediate: true },
+);
 
 function podTone(pod: WorkloadPod): Tone {
   if (pod.ready) return "success";
@@ -174,6 +207,18 @@ function historyBy(entry: { reason: string; by?: string }): string {
         </div>
       </div>
 
+      <!-- What is wrong with it right now, if anything: the same findings the
+           operator's problems list carries, narrowed to this environment. It
+           renders nothing at all when nothing is firing and nothing went
+           unread — and says so loudly when something went unread, because an
+           empty strip is a claim that this environment is fine. -->
+      <FindingList
+        :answer="signals.data.value"
+        :loading="signals.loading.value"
+        :error="signals.error.value"
+        variant="strip"
+      />
+
       <!-- Preview deletion confirmation -->
       <UModal
         :open="confirmingDelete"
@@ -222,7 +267,19 @@ function historyBy(entry: { reason: string; by?: string }): string {
         </div>
       </div>
 
-      <div>
+      <!-- What the internet asked of it: the golden signals, the routes they
+           were asked of, and the requests themselves. The ids are where a
+           finding's `?section=` lands. -->
+      <div id="section-requests">
+        <RequestsPanel :environment="environment.name" :project="environment.project" :live="moving" />
+      </div>
+
+      <!-- A container that died, assembled: exit code, last lines, the memory
+           that led there, the cluster's warnings, the edge's requests. One line
+           when nothing has crashed, which is an answer rather than a shell. -->
+      <CrashReport :environment="environment.name" :live="moving" />
+
+      <div id="section-workload">
         <h2 class="text-sm font-medium text-highlighted mb-2">Workload</h2>
         <UAlert
           v-if="workload.error.value"
@@ -298,7 +355,9 @@ function historyBy(entry: { reason: string; by?: string }): string {
         </div>
       </div>
 
-      <ResourceHistory :environment="environment.name" :live="moving" />
+      <div id="section-resources">
+        <ResourceHistory :environment="environment.name" :live="moving" />
+      </div>
 
       <DomainsPanel :environment="environment.name" />
 

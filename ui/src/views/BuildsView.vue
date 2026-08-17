@@ -1,12 +1,22 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { api } from "../lib/api";
-import { duration, shortSHA, timeAgo } from "../lib/format";
+import { duration, formatDurationSeconds, shortSHA, timeAgo } from "../lib/format";
 import { useAsync, usePoll } from "../lib/useAsync";
 import PhaseBadge from "../components/PhaseBadge.vue";
 
 const { data, error, loading, refresh } = useAsync(() => api.builds());
 usePoll(() => void refresh(), 10000, () => true);
+
+// The queue is the gate's own state, which lives on /status rather than on any
+// build: a build cannot say what is in front of it. Its failure is not this
+// page's — the list of builds is still worth showing without it.
+const { data: status, refresh: refreshStatus } = useAsync(() => api.status());
+usePoll(() => void refreshStatus(), 10000, () => true);
+
+const queue = computed(() => status.value?.builds);
+/** A queue is only interesting while something is in it. */
+const waiting = computed(() => queue.value?.waiting ?? []);
 
 const project = ref<string>("");
 const projects = computed(() => [...new Set((data.value ?? []).map((b) => b.project))].sort());
@@ -29,6 +39,34 @@ const visible = computed(() => (project.value ? (data.value ?? []).filter((b) =>
     </div>
 
     <UAlert v-if="error" color="error" variant="soft" icon="i-lucide-triangle-alert" :title="error" />
+
+    <!-- Running against the limit, and what is behind it. The count says the
+         platform is busy; the wait is what says whether the queue is moving. -->
+    <div v-if="queue" class="flex items-center gap-4 text-sm">
+      <span class="text-muted">
+        <span class="text-highlighted font-medium">{{ queue.running }}</span>
+        of {{ queue.capacity }} building
+      </span>
+      <span v-if="queue.queued" class="text-muted">
+        <span class="text-highlighted font-medium">{{ queue.queued }}</span>
+        waiting for a slot<template v-if="queue.oldestWaitSeconds">
+          , longest {{ formatDurationSeconds(queue.oldestWaitSeconds) }}</template>
+      </span>
+      <span v-else class="text-dimmed">nothing waiting</span>
+    </div>
+
+    <div v-if="waiting.length" class="rounded border border-default divide-y divide-default text-sm">
+      <div
+        v-for="build in waiting"
+        :key="build.name"
+        class="flex items-center justify-between px-3 py-2"
+      >
+        <RouterLink :to="`/builds/${build.name}`" class="text-highlighted hover:underline">
+          {{ build.project }} · {{ build.name }}
+        </RouterLink>
+        <span class="text-muted">waiting {{ formatDurationSeconds(build.waitSeconds) }}</span>
+      </div>
+    </div>
 
     <div class="flex items-center gap-2 flex-wrap">
       <UButton

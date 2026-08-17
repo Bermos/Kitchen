@@ -19,7 +19,9 @@ package api
 import (
 	"context"
 	"net/http"
+	"sort"
 	"strings"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -141,8 +143,14 @@ func gatewayStatus(kitchen *kitchenv1alpha1.Kitchen) gatewayStatusView {
 	}
 }
 
-// buildQueue counts what the build controller's concurrency gate is currently
-// weighing: builds running against the limit, and builds waiting for a slot.
+// buildQueue reports what the build controller's concurrency gate is currently
+// weighing: builds running against the limit, and builds waiting for a slot —
+// with how long each has been waiting.
+//
+// The wait is the part worth reading. A queue's length says how busy the
+// platform is; only the wait says whether it is moving, and a build that has
+// been queued for half an hour against a gate with free capacity is a stuck
+// controller rather than a busy one.
 func (s *Server) buildQueue(ctx context.Context, kitchen *kitchenv1alpha1.Kitchen) (buildQueueView, error) {
 	capacity := kitchen.Spec.Builds.Concurrency
 	if capacity <= 0 {
@@ -154,13 +162,35 @@ func (s *Server) buildQueue(ctx context.Context, kitchen *kitchenv1alpha1.Kitche
 	if err := s.Client.List(ctx, builds, client.InNamespace(s.Namespace)); err != nil {
 		return buildQueueView{}, err
 	}
+	now := time.Now()
 	for i := range builds.Items {
-		switch builds.Items[i].Status.Phase {
+		build := &builds.Items[i]
+		switch build.Status.Phase {
 		case kitchenv1alpha1.BuildRunning:
 			view.Running++
 		case kitchenv1alpha1.BuildQueued:
 			view.Queued++
+			// A build is queued from the moment it exists: admission is what
+			// creates it, and the gate is the only thing between that and
+			// running.
+			queued := build.CreationTimestamp.Time
+			wait := int64(now.Sub(queued).Seconds())
+			if wait < 0 {
+				wait = 0
+			}
+			view.Waiting = append(view.Waiting, queuedBuildView{
+				Name:        build.Name,
+				Project:     build.Spec.ProjectRef.Name,
+				QueuedAt:    queued.UTC().Format(time.RFC3339),
+				WaitSeconds: wait,
+			})
 		}
+	}
+	sort.Slice(view.Waiting, func(i, j int) bool {
+		return view.Waiting[i].WaitSeconds > view.Waiting[j].WaitSeconds
+	})
+	if len(view.Waiting) > 0 {
+		view.OldestWaitSeconds = view.Waiting[0].WaitSeconds
 	}
 	return view, nil
 }

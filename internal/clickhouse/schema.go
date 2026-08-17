@@ -19,6 +19,7 @@ package clickhouse
 import (
 	"context"
 	"fmt"
+	"math"
 	"regexp"
 	"strconv"
 )
@@ -40,8 +41,9 @@ import (
 // is what lets a stock exporter write a table with a Kitchen-shaped ordering
 // key.
 //
-// Flows and events have no collector and no upstream shape; the operator
-// writes them itself, and they are unchanged.
+// Flows, events, requests and the cluster's events have no collector and no
+// upstream shape; the operator writes them itself, so their columns are named
+// the way this package reads them and nothing above applies.
 
 // LogsTable holds every log line Kitchen collects: application containers,
 // build jobs and the platform's own components. The collector writes it and
@@ -56,6 +58,40 @@ const EventsTable = "events"
 // FlowsTable holds network flow observations from Hubble, one row per flow the
 // collector saw. The traffic view's service map is aggregated out of it.
 const FlowsTable = "flows"
+
+// RequestsTable holds one row per HTTP request the platform's edge observed,
+// and the two rollups are what the golden-signal charts are actually read
+// from: a request rate over a week is millions of raw rows and a few thousand
+// buckets.
+//
+// Both views read the raw table. Chaining the hourly one off the minute
+// rollup would look like the obvious saving and is the bug the design names:
+// a view over aggregate states re-aggregates states, and the column names
+// that hold them are the same names as the columns they aggregate — see
+// createMetricsRollupGaugeView for what that shadowing costs.
+//
+// Requests are modelled apart from flows deliberately. Flows are edges of the
+// service map, keyed on who talked to whom; a request is keyed on the host it
+// asked for, which is the only attribution that survives a protected preview
+// (where the destination is the gate) or an idling environment (where it is
+// the interceptor).
+const (
+	RequestsTable       = "http_requests"
+	RequestsMinuteTable = "http_requests_1m"
+	RequestsHourTable   = "http_requests_1h"
+	RequestsMinuteView  = "http_requests_1m_mv"
+	RequestsHourView    = "http_requests_1h_mv"
+)
+
+// K8sEventsTable holds the cluster's Warning events, recorded by the operator
+// from the same watch the component survey reads one at a time. It is what
+// turns "what happened at 03:00" from an hour-lived mystery — a Kubernetes
+// event outlives its object by an hour — into a question with an answer.
+//
+// It is not EventsTable: that is the platform's own story (releases, builds,
+// previews), this is the cluster's, and a feed that mixed them would serve
+// neither.
+const K8sEventsTable = "k8s_events"
 
 // TracesTable holds spans, one row each, as the collector receives them over
 // OTLP from instrumented applications.
@@ -152,9 +188,45 @@ const (
 	timeColumnMetrics = "TimeUnix"
 	timeColumnLookup  = "Start"
 	timeColumnRollup  = "bucket"
-	// timeColumnKitchen is what the two tables the operator writes itself use.
+	// timeColumnKitchen is what the tables the operator writes itself use.
 	timeColumnKitchen = "timestamp"
+	// timeColumnRequests is the request table's, which the operator writes but
+	// spells the way the OTel tables do: the requests screen reads it beside
+	// the logs, and the design's verified DDL is this spelling.
+	timeColumnRequests = "Timestamp"
 )
+
+// The retention every table but the raw requests one gets, and the two ratios
+// §5 derives from that one knob.
+//
+// Raw request rows are the shortest-lived thing in the store because they are
+// the densest: a week of them is what "show me the failing requests" needs,
+// and the rollups carry the same window's shape for as long as anything else
+// is retained. The hour rollup is kept a year's worth of retentions so a
+// year-scale view has something to read. None of this is configurable — a
+// second knob is a second thing to explain, and installations do not need to
+// disagree about these ratios.
+const (
+	rawRequestRetentionDays = 7
+	hourlyRequestRatio      = 12
+)
+
+// rawRequestRetention is the raw table's window: a week, or the whole
+// retention where that is shorter, because retaining raw rows past everything
+// else would be the one table that outlives the store's own knob.
+func rawRequestRetention(retentionDays int32) int32 {
+	return min(rawRequestRetentionDays, retentionDays)
+}
+
+// hourlyRequestRetention saturates rather than wrapping. The knob is an int32
+// of days with no ceiling on it, and a retention that overflowed would come
+// back negative — a TTL that expires every row the moment it is written.
+func hourlyRequestRetention(retentionDays int32) int32 {
+	if retentionDays > math.MaxInt32/hourlyRequestRatio {
+		return math.MaxInt32
+	}
+	return retentionDays * hourlyRequestRatio
+}
 
 // ttlIntervalPattern pulls the retention out of a table's DDL. ClickHouse
 // normalizes `INTERVAL 30 DAY` to `toIntervalDay(30)`, whichever form it was
@@ -162,10 +234,12 @@ const (
 var ttlIntervalPattern = regexp.MustCompile(`toIntervalDay\((\d+)\)`)
 
 // EnsureTelemetrySchema creates every telemetry table — logs, events, flows,
-// metrics and traces — and keeps their TTLs in step with the retention
-// configured on the Kitchen object. One retention knob covers all of them:
-// they are facets of the same telemetry store, and a second knob would be a
-// second thing to explain.
+// requests, cluster events, metrics and traces — and keeps their TTLs in step
+// with the retention configured on the Kitchen object. One retention knob
+// covers all of them: they are facets of the same telemetry store, and a
+// second knob would be a second thing to explain. The request tables are the
+// one place that knob is scaled rather than applied, and the ratios are
+// derived from it rather than configured beside it.
 //
 // Kitchen's pre-collector `logs`, `traces` and `metrics` tables are
 // deliberately not dropped. They hold real history that this schema has no
@@ -179,6 +253,12 @@ func (c *Client) EnsureTelemetrySchema(ctx context.Context, retentionDays int32)
 		return err
 	}
 	if err := c.EnsureFlowsSchema(ctx, retentionDays); err != nil {
+		return err
+	}
+	if err := c.EnsureRequestsSchema(ctx, retentionDays); err != nil {
+		return err
+	}
+	if err := c.EnsureK8sEventsSchema(ctx, retentionDays); err != nil {
 		return err
 	}
 	if err := c.EnsureMetricsSchema(ctx, retentionDays); err != nil {
@@ -204,6 +284,39 @@ func (c *Client) EnsureEventsSchema(ctx context.Context, retentionDays int32) er
 // EnsureFlowsSchema creates the network flow table.
 func (c *Client) EnsureFlowsSchema(ctx context.Context, retentionDays int32) error {
 	return c.ensureTable(ctx, FlowsTable, createFlowsTable(c.cfg.Database, retentionDays), retentionDays)
+}
+
+// EnsureRequestsSchema creates the request table, its two rollups, and the
+// views that fill them.
+//
+// The views are created last and unconditionally, for the reason
+// EnsureMetricsSchema spells out: a view only ever sees rows inserted after it
+// exists, so an installation that had the raw table first has a gap in the
+// rollups rather than a wrong answer.
+func (c *Client) EnsureRequestsSchema(ctx context.Context, retentionDays int32) error {
+	raw := rawRequestRetention(retentionDays)
+	if err := c.ensureTableTTL(ctx, RequestsTable,
+		createRequestsTable(c.cfg.Database, raw), timeColumnRequests, raw); err != nil {
+		return err
+	}
+	if err := c.ensureTableTTL(ctx, RequestsMinuteTable,
+		createRequestsMinuteTable(c.cfg.Database, retentionDays), timeColumnRollup, retentionDays); err != nil {
+		return err
+	}
+	hourly := hourlyRequestRetention(retentionDays)
+	if err := c.ensureTableTTL(ctx, RequestsHourTable,
+		createRequestsHourTable(c.cfg.Database, hourly), timeColumnRollup, hourly); err != nil {
+		return err
+	}
+	if err := c.Exec(ctx, createRequestsMinuteView(c.cfg.Database)); err != nil {
+		return err
+	}
+	return c.Exec(ctx, createRequestsHourView(c.cfg.Database))
+}
+
+// EnsureK8sEventsSchema creates the cluster's Warning-event history.
+func (c *Client) EnsureK8sEventsSchema(ctx context.Context, retentionDays int32) error {
+	return c.ensureTable(ctx, K8sEventsTable, createK8sEventsTable(c.cfg.Database, retentionDays), retentionDays)
 }
 
 // EnsureMetricsSchema creates the five OTel metric tables, the five-minute
@@ -349,11 +462,12 @@ const kitchenColumns = `
 const logStreamColumnDDL = `
     stream      LowCardinality(String) MATERIALIZED LogAttributes['log.iostream'] CODEC(ZSTD(1)),`
 
-// otelSettings closes every OTel table. `ttl_only_drop_parts` is what makes
-// expiry a part drop rather than a rewrite of every part that holds one stale
-// row, which for a table this write-heavy is the difference between retention
-// costing nothing and costing a merge storm.
-const otelSettings = "SETTINGS index_granularity = 8192, ttl_only_drop_parts = 1"
+// writeHeavySettings closes every OTel table and the request table.
+// `ttl_only_drop_parts` is what makes expiry a part drop rather than a rewrite
+// of every part that holds one stale row, which for tables written at these
+// rates is the difference between retention costing nothing and costing a
+// merge storm.
+const writeHeavySettings = "SETTINGS index_granularity = 8192, ttl_only_drop_parts = 1"
 
 // createLogsTable is upstream's log schema plus kitchenColumns.
 //
@@ -414,7 +528,7 @@ ORDER BY (project, environment, Timestamp)
 TTL %s
 %s`,
 		quoteIdentifier(database), quoteIdentifier(LogsTable), kitchenColumns, logStreamColumnDDL,
-		ttlExpressionOn(timeColumnLogs, retentionDays), otelSettings)
+		ttlExpressionOn(timeColumnLogs, retentionDays), writeHeavySettings)
 }
 
 // createTracesTable is upstream's span schema plus kitchenColumns, ordered the
@@ -465,7 +579,7 @@ ORDER BY (project, environment, Timestamp)
 TTL %s
 %s`,
 		quoteIdentifier(database), quoteIdentifier(TracesTable), kitchenColumns,
-		ttlExpressionOn(timeColumnLogs, retentionDays), otelSettings)
+		ttlExpressionOn(timeColumnLogs, retentionDays), writeHeavySettings)
 }
 
 // createTracesIDLookupTable is upstream's trace-id companion: one row per
@@ -487,7 +601,7 @@ ORDER BY (TraceId, Start)
 TTL %s
 %s`,
 		quoteIdentifier(database), quoteIdentifier(TracesIDLookupTable),
-		ttlExpressionOn(timeColumnLookup, retentionDays), otelSettings)
+		ttlExpressionOn(timeColumnLookup, retentionDays), writeHeavySettings)
 }
 
 // createTracesIDLookupView fills the lookup as spans arrive.
@@ -604,7 +718,7 @@ ORDER BY (project, environment, MetricName, TimeUnix)
 TTL %s
 %s`,
 		quoteIdentifier(database), quoteIdentifier(table), body, kitchenColumns,
-		ttlExpressionOn(timeColumnMetrics, retentionDays), otelSettings)
+		ttlExpressionOn(timeColumnMetrics, retentionDays), writeHeavySettings)
 }
 
 // createEventsTable is the activity feed's schema: one row per thing that
@@ -772,4 +886,152 @@ ENGINE = MergeTree
 PARTITION BY toDate(timestamp)
 ORDER BY (sourceNamespace, source, destinationNamespace, destination, timestamp)
 TTL %s`, quoteIdentifier(database), quoteIdentifier(FlowsTable), ttlExpression(retentionDays))
+}
+
+// createRequestsTable is one row per request the edge observed.
+//
+// `route` is LowCardinality and `path` is not, and that asymmetry is the whole
+// cardinality argument: the follower templates the path into a route out of a
+// per-environment budget, so the route set is bounded and a dictionary pays
+// for itself, while the raw path is unbounded by definition and is kept only
+// because a mis-templated route has to stay diagnosable. Nothing here
+// normalises anything — doing it in SQL would mean the store had already seen
+// the unbounded set.
+//
+// `source` names the vantage point, which is `gateway` and nothing else today;
+// it exists so a second one (§3.1's eBPF successor) lands without a migration,
+// and `trace_id` exists for the same reason — whether Cilium can populate it
+// from an incoming `traceparent` is open, and a reserved column is cheaper
+// than finding out the answer is yes after the table is full.
+func createRequestsTable(database string, retentionDays int32) string {
+	return fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.%s
+(
+    Timestamp     DateTime64(9) CODEC(Delta(8), ZSTD(1)),
+    project       LowCardinality(String),
+    environment   LowCardinality(String),
+    host          LowCardinality(String),
+    method        LowCardinality(String),
+    path          String CODEC(ZSTD(1)),
+    route         LowCardinality(String),
+    status        UInt16,
+    duration_ms   Float64 CODEC(ZSTD(1)),
+    protocol      LowCardinality(String),
+    source        LowCardinality(String),
+    trace_id      String CODEC(ZSTD(1))
+)
+ENGINE = MergeTree
+PARTITION BY toDate(Timestamp)
+ORDER BY (project, environment, Timestamp)
+TTL %s
+%s`, quoteIdentifier(database), quoteIdentifier(RequestsTable),
+		ttlExpressionOn(timeColumnRequests, retentionDays), writeHeavySettings)
+}
+
+// createRequestsMinuteTable is the golden signals at minute resolution.
+//
+// The counts are kept as aggregate states rather than numbers for the reason
+// the metrics rollup keeps them: merging two buckets is then exact, and a
+// percentile is only mergeable at all as a state — a mean of per-minute p95s
+// is not a p95 of anything.
+func createRequestsMinuteTable(database string, retentionDays int32) string {
+	return createRequestsRollupTable(database, RequestsMinuteTable, "toDate(bucket)", retentionDays)
+}
+
+// createRequestsHourTable is the same shape an hour wide, partitioned by month
+// because a year of daily partitions is 365 of them for a table holding a few
+// thousand rows a day.
+func createRequestsHourTable(database string, retentionDays int32) string {
+	return createRequestsRollupTable(database, RequestsHourTable, "toYYYYMM(bucket)", retentionDays)
+}
+
+// createRequestsRollupTable is what the two rollups share, which is everything
+// but their partitioning and their retention.
+//
+// The ordering key leads with the project like every other product table, then
+// the bucket, so a window for one environment is a range read; host, route,
+// method and status follow because they are the dimensions the screens group
+// by and a key that stopped at the bucket would collapse them into one row.
+func createRequestsRollupTable(database, table, partition string, retentionDays int32) string {
+	return fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.%s
+(
+    bucket        DateTime,
+    project       LowCardinality(String),
+    environment   LowCardinality(String),
+    host          LowCardinality(String),
+    route         LowCardinality(String),
+    method        LowCardinality(String),
+    status        UInt16,
+    requests      AggregateFunction(count),
+    duration      AggregateFunction(quantilesTDigest(0.5, 0.95, 0.99), Float64)
+)
+ENGINE = AggregatingMergeTree
+PARTITION BY %s
+ORDER BY (project, environment, bucket, host, route, method, status)
+TTL %s`, quoteIdentifier(database), quoteIdentifier(table), partition,
+		ttlExpressionOn(timeColumnRollup, retentionDays))
+}
+
+// createRequestsMinuteView and createRequestsHourView fill the rollups as
+// requests arrive. Both read the raw table — see RequestsTable for why the
+// hourly one is not chained off the minute one.
+func createRequestsMinuteView(database string) string {
+	return createRequestsRollupView(database, RequestsMinuteView, RequestsMinuteTable, "toStartOfMinute")
+}
+
+func createRequestsHourView(database string) string {
+	return createRequestsRollupView(database, RequestsHourView, RequestsHourTable, "toStartOfHour")
+}
+
+// createRequestsRollupView is the aggregation both rollups are filled by, at
+// whichever resolution it is given.
+//
+// Every column is read through the source table's alias, which is not a style
+// choice: the state columns are named after what they aggregate, and
+// ClickHouse resolves a bare name against the SELECT list's own aliases first.
+// See createMetricsRollupGaugeView, where the same shadowing makes the view
+// refuse to be created at all.
+func createRequestsRollupView(database, view, table, bucket string) string {
+	return fmt.Sprintf(`CREATE MATERIALIZED VIEW IF NOT EXISTS %s.%s TO %s.%s AS
+SELECT
+    %s(r.Timestamp) AS bucket,
+    r.project AS project,
+    r.environment AS environment,
+    r.host AS host,
+    r.route AS route,
+    r.method AS method,
+    r.status AS status,
+    countState() AS requests,
+    quantilesTDigestState(0.5, 0.95, 0.99)(r.duration_ms) AS duration
+FROM %s.%s AS r
+GROUP BY bucket, project, environment, host, route, method, status`,
+		quoteIdentifier(database), quoteIdentifier(view),
+		quoteIdentifier(database), quoteIdentifier(table), bucket,
+		quoteIdentifier(database), quoteIdentifier(RequestsTable))
+}
+
+// createK8sEventsTable is the cluster's Warning events as a history.
+//
+// `project` is empty for platform and cluster objects, which is not a gap: the
+// events that explain an install that never came up are exactly the ones no
+// project owns, and the operator's Edge and Workloads screens read that bucket
+// on purpose. The ordering key still leads with it, because the environment
+// page's crash report is the other reader and it asks per project.
+func createK8sEventsTable(database string, retentionDays int32) string {
+	return fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.%s
+(
+    timestamp   DateTime64(3, 'UTC'),
+    project     LowCardinality(String),
+    environment LowCardinality(String),
+    namespace   LowCardinality(String),
+    kind        LowCardinality(String),
+    name        String,
+    reason      LowCardinality(String),
+    message     String,
+    count       UInt32,
+    node        LowCardinality(String)
+)
+ENGINE = MergeTree
+PARTITION BY toDate(timestamp)
+ORDER BY (project, environment, timestamp)
+TTL %s`, quoteIdentifier(database), quoteIdentifier(K8sEventsTable), ttlExpression(retentionDays))
 }

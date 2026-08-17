@@ -319,9 +319,9 @@ func wantsEventStream(req *http.Request) bool {
 }
 
 // How the follow loop paces itself: the store is polled at pollInterval —
-// live enough for a human watching a build, far apart enough that a hundred
-// open tails stay cheap — and a comment line goes out at heartbeatInterval so
-// proxies do not reap the idle connection.
+// live enough for a human watching a build or a request tail, far apart enough
+// that a hundred open tails stay cheap — and a comment line goes out at
+// heartbeatInterval so proxies do not reap the idle connection.
 const (
 	logPollInterval   = 2 * time.Second
 	heartbeatInterval = 15 * time.Second
@@ -331,15 +331,40 @@ const (
 // first, then whatever arrives after it, one `data:` event per line, until
 // the client goes away.
 //
-// The follow reads are the same bounded queries the plain endpoint runs, with
-// the window's start advanced to the newest line already sent. ClickHouse
-// timestamps are milliseconds and a busy pod can write twice in one, so the
-// boundary is re-read inclusively and the lines already sent at that exact
-// timestamp are dropped by key.
+// A log line is identified within one instant by where it was written and what
+// it said, which is what keeps a re-read boundary from sending it twice.
 func (s *Server) streamLogs(
 	w http.ResponseWriter,
 	req *http.Request,
 	fetch func(ctx context.Context, since time.Time) ([]clickhouse.LogLine, error),
+) {
+	streamRows(s, w, req, fetch,
+		func(line clickhouse.LogLine) time.Time { return line.Timestamp },
+		func(line clickhouse.LogLine) string {
+			return line.Pod + "\x00" + line.Container + "\x00" + line.Stream + "\x00" + line.Message
+		})
+}
+
+// streamRows is the follow loop both live tails are built from — log lines and
+// the edge's requests, which differ only in what a row is.
+//
+// The follow reads are the same bounded queries the plain endpoint runs, with
+// the window's start advanced to the newest row already sent. ClickHouse
+// timestamps are sub-second and a busy pod can write twice inside one tick, so
+// the boundary is re-read inclusively and the rows already sent at that exact
+// timestamp are dropped by key. Rows must arrive in time order, oldest first:
+// the boundary only ever moves forwards.
+//
+// It is a function rather than a method because Go has no generic methods, and
+// the alternative — a second copy of this loop for the second row type — is how
+// two tails end up disagreeing about deduplication.
+func streamRows[T any](
+	s *Server,
+	w http.ResponseWriter,
+	req *http.Request,
+	fetch func(ctx context.Context, since time.Time) ([]T, error),
+	at func(T) time.Time,
+	key func(T) string,
 ) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -351,26 +376,24 @@ func (s *Server) streamLogs(
 	var boundary time.Time
 	atBoundary := map[string]struct{}{}
 
-	lineKey := func(line clickhouse.LogLine) string {
-		return line.Pod + "\x00" + line.Container + "\x00" + line.Stream + "\x00" + line.Message
-	}
-	send := func(lines []clickhouse.LogLine) error {
-		for _, line := range lines {
-			if line.Timestamp.Before(boundary) {
+	send := func(rows []T) error {
+		for _, row := range rows {
+			timestamp := at(row)
+			if timestamp.Before(boundary) {
 				continue
 			}
-			key := lineKey(line)
-			if line.Timestamp.Equal(boundary) {
-				if _, sent := atBoundary[key]; sent {
+			rowKey := key(row)
+			if timestamp.Equal(boundary) {
+				if _, sent := atBoundary[rowKey]; sent {
 					continue
 				}
 			} else {
-				boundary = line.Timestamp
+				boundary = timestamp
 				atBoundary = map[string]struct{}{}
 			}
-			atBoundary[key] = struct{}{}
+			atBoundary[rowKey] = struct{}{}
 
-			payload, err := json.Marshal(line)
+			payload, err := json.Marshal(row)
 			if err != nil {
 				return err
 			}
@@ -412,7 +435,7 @@ func (s *Server) streamLogs(
 			}
 			flusher.Flush()
 		case <-poll.C:
-			lines, err := fetch(ctx, boundary)
+			rows, err := fetch(ctx, boundary)
 			if err != nil {
 				// The response is already streaming, so an error cannot
 				// become a status code any more; it becomes an event the
@@ -425,7 +448,7 @@ func (s *Server) streamLogs(
 				}
 				return
 			}
-			if err := send(lines); err != nil {
+			if err := send(rows); err != nil {
 				return
 			}
 		}

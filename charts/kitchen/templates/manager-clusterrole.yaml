@@ -15,6 +15,7 @@ rules:
   resources:
   - events
   - nodes
+  - persistentvolumeclaims
   - pods
   - serviceaccounts
   verbs:
@@ -48,6 +49,7 @@ rules:
   - apps
   resources:
   - daemonsets
+  - replicasets
   - statefulsets
   verbs:
   - get

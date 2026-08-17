@@ -53,7 +53,12 @@ Four things, none of which the chart installs:
 
 - **Cilium as the CNI**, with `gatewayAPI.enabled=true` and kube-proxy
   replacement. Its Gateway API implementation *is* the ingress; there is no
-  separate ingress controller.
+  separate ingress controller. Turn **Hubble and Hubble Relay** on with it:
+  every request to every application crosses the Gateway's Envoy, and Relay is
+  the only place the platform can observe them from. The chart README's
+  [prerequisites](charts/kitchen/README.md#prerequisites) name the two settings
+  worth choosing rather than inheriting — query-string redaction, and the
+  per-node event buffer that decides whether traffic numbers are complete.
 - **Gateway API CRDs**, at the version your Cilium requires — this moves faster
   than you would expect, so check Cilium's docs rather than guessing. CI does
   the same, resolving the version from the Cilium release it targets.

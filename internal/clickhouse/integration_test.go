@@ -19,6 +19,7 @@ package clickhouse
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"net/url"
 	"os"
 	"strings"
@@ -53,12 +54,15 @@ import (
 // It is not part of `make test` on purpose: CI has no ClickHouse, and a test
 // that silently needs one is a test that silently stops running.
 
-// The fixtures' names: the database the store is expected to hold, and the
-// project every row written here belongs to.
+// The fixtures' names: the database the store is expected to hold, the project
+// every row written here belongs to, the node every collected signal claims to
+// come from, and the one route the request fixtures template to.
 const (
 	integrationDatabase = "kitchen"
 	integrationProject  = "shop"
 	integrationRetained = 30
+	integrationNode     = "node-1"
+	integrationRoute    = "/works/:id"
 )
 
 // integrationClient resolves the store under test, or skips.
@@ -86,12 +90,21 @@ func integrationClient(t *testing.T) *Client {
 	})
 }
 
-// every table the operator owns the TTL of.
+// every table whose TTL is the retention knob itself.
 func retainedTables() []string {
 	return []string{
 		LogsTable, EventsTable, FlowsTable, TracesTable, TracesIDLookupTable,
 		MetricsGaugeTable, MetricsSumTable, MetricsHistogramTable,
 		MetricsExponentialHistogramTable, MetricsSummaryTable, MetricsRollupTable,
+		K8sEventsTable, RequestsMinuteTable,
+	}
+}
+
+// and the two whose TTL is that knob scaled, per §5's derived ratios.
+func derivedRetentionTables(retentionDays int32) map[string]int32 {
+	return map[string]int32{
+		RequestsTable:     rawRequestRetention(retentionDays),
+		RequestsHourTable: hourlyRequestRetention(retentionDays),
 	}
 }
 
@@ -110,8 +123,8 @@ func TestIntegrationSchemaApplies(t *testing.T) {
 	}
 	// And that a retention change is applied rather than refused — each MODIFY
 	// TTL has to name that table's own time column, and there are five spellings
-	// of it across these eleven tables.
-	if err := client.EnsureTelemetrySchema(ctx, 7); err != nil {
+	// of it across these tables.
+	if err := client.EnsureTelemetrySchema(ctx, 9); err != nil {
 		t.Fatalf("EnsureTelemetrySchema at a new retention: %v", err)
 	}
 	for _, table := range retainedTables() {
@@ -119,8 +132,20 @@ func TestIntegrationSchemaApplies(t *testing.T) {
 		if err != nil {
 			t.Fatalf("reading %s's retention: %v", table, err)
 		}
-		if days != 7 {
-			t.Errorf("%s retains %d days, want 7", table, days)
+		if days != 9 {
+			t.Errorf("%s retains %d days, want 9", table, days)
+		}
+	}
+	// The request tables scale the knob rather than applying it, so a MODIFY
+	// TTL that passed the knob straight through would reset the ratios on every
+	// reconcile — and the reconcile after that would set them back.
+	for table, want := range derivedRetentionTables(9) {
+		days, err := client.tableRetentionDays(ctx, table)
+		if err != nil {
+			t.Fatalf("reading %s's retention: %v", table, err)
+		}
+		if days != want {
+			t.Errorf("%s retains %d days, want %d", table, days, want)
 		}
 	}
 	if err := client.EnsureTelemetrySchema(ctx, integrationRetained); err != nil {
@@ -586,6 +611,510 @@ func TestIntegrationMetricsOverview(t *testing.T) {
 	}
 }
 
+// writeRequestFixture writes five minutes of traffic for one environment and
+// answers the window it covers, plus the unrouted host it also wrote.
+//
+// Every tenth request fails and is slow, so the error rate is exactly a tenth
+// and the tail sits somewhere the median does not. The window ends a minute in
+// the past, so a read of it is never racing the clock for its last bucket.
+func writeRequestFixture(t *testing.T, client *Client, prefix string) (RequestQuery, string) {
+	t.Helper()
+	ctx := context.Background()
+	if err := client.EnsureRequestsSchema(ctx, integrationRetained); err != nil {
+		t.Fatalf("EnsureRequestsSchema: %v", err)
+	}
+
+	environment := uniqueEnvironment(prefix)
+	host := environment + ".example.com"
+	end := time.Now().UTC().Add(-time.Minute).Truncate(time.Minute)
+	start := end.Add(-5 * time.Minute)
+
+	requests := []Request{}
+	for i := 0; i < 300; i++ {
+		request := Request{
+			Timestamp:   start.Add(time.Duration(i) * time.Second),
+			Project:     integrationProject,
+			Environment: environment,
+			Host:        host,
+			Method:      http.MethodGet,
+			Path:        fmt.Sprintf("/works/%d", i),
+			Route:       integrationRoute,
+			Status:      200,
+			DurationMs:  10,
+			Protocol:    "HTTP/1.1",
+		}
+		if i%10 == 0 {
+			request.Status = 503
+			request.DurationMs = 500
+		}
+		requests = append(requests, request)
+	}
+	// One request for a host the platform never published, which is the
+	// unrouted bucket: no project, no environment.
+	unroutedHost := "stale-" + environment + ".example.com"
+	requests = append(requests, Request{
+		Timestamp: end.Add(-time.Second), Host: unroutedHost,
+		Method: http.MethodGet, Path: "/wp-login.php", Route: "/wp-login.php",
+		Status: 404, DurationMs: 1,
+	})
+	if err := client.InsertRequests(ctx, requests); err != nil {
+		t.Fatalf("InsertRequests: %v", err)
+	}
+
+	return RequestQuery{
+		Project:     integrationProject,
+		Environment: environment,
+		Since:       start,
+		Until:       end,
+	}, unroutedHost
+}
+
+// TestIntegrationRequests is the developer's half of the request pipeline:
+// rows in, the minute view firing, and the golden signals coming back off the
+// states it wrote.
+//
+// It is the one thing the fake cannot answer. `countMergeIf` over a state
+// column named after the column it aggregates, a percentile read back out of a
+// t-digest, and a view whose GROUP BY has to agree with an AggregatingMergeTree
+// key are all statements that read perfectly and either fail or answer
+// something else.
+func TestIntegrationRequests(t *testing.T) {
+	client := integrationClient(t)
+	ctx := context.Background()
+	window, _ := writeRequestFixture(t, client, "requests")
+
+	summary, err := client.RequestSummary(ctx, window)
+	if err != nil {
+		t.Fatalf("RequestSummary: %v", err)
+	}
+	if summary.Requests != 300 || summary.Errors != 30 {
+		t.Fatalf("the rollup should hold every request: %+v", summary)
+	}
+	if summary.ErrorRate != 0.1 {
+		t.Errorf("30 of 300 is a tenth, got %v", summary.ErrorRate)
+	}
+	if summary.P50Ms != 10 {
+		t.Errorf("nine in ten requests took 10ms, so the median is 10, got %v", summary.P50Ms)
+	}
+	if summary.P99Ms <= summary.P50Ms {
+		t.Errorf("the slow tenth should be in the tail: p50 %v, p99 %v", summary.P50Ms, summary.P99Ms)
+	}
+
+	// The same window drawn as a chart: minute buckets off the same states.
+	series, err := client.RequestSeries(ctx, RequestSeriesQuery{RequestQuery: window, Buckets: 5})
+	if err != nil {
+		t.Fatalf("RequestSeries: %v", err)
+	}
+	if series.Rollup != RequestRollupMinute || series.BucketSeconds != 60 {
+		t.Fatalf("a five-minute window over five buckets is a minute each: %+v", series)
+	}
+	var charted uint64
+	for _, point := range series.Points {
+		charted += point.Requests
+	}
+	if charted != summary.Requests {
+		t.Errorf("the chart and the header disagree: %d charted, %d summarised", charted, summary.Requests)
+	}
+
+	routes, err := client.RequestRoutes(ctx, RequestRoutesQuery{RequestQuery: window})
+	if err != nil {
+		t.Fatalf("RequestRoutes: %v", err)
+	}
+	if len(routes) != 1 || routes[0].Route != integrationRoute {
+		t.Fatalf("want one templated route, got %+v", routes)
+	}
+	if routes[0].Requests != 300 || routes[0].Errors != 30 {
+		t.Errorf("the route table should hold the same numbers as the header: %+v", routes[0])
+	}
+
+	// And the rows themselves, which is what "show me the failing requests"
+	// actually asks for.
+	failures, err := client.QueryRequests(ctx, RequestListQuery{
+		Project: window.Project, Environment: window.Environment,
+		Since: window.Since, Until: window.Until, OnlyErrors: true, Limit: 5,
+	})
+	if err != nil {
+		t.Fatalf("QueryRequests: %v", err)
+	}
+	if len(failures) != 5 {
+		t.Fatalf("want the five newest failures, got %d", len(failures))
+	}
+	for _, failure := range failures {
+		if failure.Status < 500 {
+			t.Errorf("a listing of failures answered with %d", failure.Status)
+		}
+		// The raw path survives templating, which is what makes a
+		// mis-templated route diagnosable.
+		if !strings.HasPrefix(failure.Path, "/works/") || failure.Path == failure.Route {
+			t.Errorf("the raw path should be kept beside the template: %+v", failure)
+		}
+	}
+	if failures[0].Timestamp.Before(failures[1].Timestamp) {
+		t.Error("a request listing reads newest first")
+	}
+
+	// The hour rollup is fed by its own view over the same raw rows, so a
+	// window wide enough to reach it has to agree with the minute one.
+	hourly := window
+	hourly.Since = window.Until.Add(-72 * time.Hour)
+	wide, err := client.RequestSummary(ctx, hourly)
+	if err != nil {
+		t.Fatalf("RequestSummary over the hour rollup: %v", err)
+	}
+	if wide.Rollup != RequestRollupHour {
+		t.Fatalf("a three-day window should read the hour rollup, got %q", wide.Rollup)
+	}
+	if wide.Requests != summary.Requests || wide.Errors != summary.Errors {
+		t.Errorf("the two rollups hold the same rows: %d/%d hourly, %d/%d by the minute",
+			wide.Requests, wide.Errors, summary.Requests, summary.Errors)
+	}
+}
+
+// TestIntegrationPlatformRequests is the operator's half: the same rows read
+// across projects, including the ones that belong to none.
+func TestIntegrationPlatformRequests(t *testing.T) {
+	client := integrationClient(t)
+	ctx := context.Background()
+	window, unroutedHost := writeRequestFixture(t, client, "platform")
+	across := PlatformRequestsQuery{Since: window.Since, Until: window.Until}
+
+	// The unrouted bucket, which is the operator's signal rather than a
+	// project's traffic.
+	unrouted, err := client.UnroutedHosts(ctx, across)
+	if err != nil {
+		t.Fatalf("UnroutedHosts: %v", err)
+	}
+	found := false
+	for _, entry := range unrouted {
+		if entry.Host == unroutedHost {
+			found = true
+			if entry.Requests != 1 {
+				t.Errorf("the unrouted host was asked for once, got %d", entry.Requests)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("the host nothing published should be in the unrouted bucket, got %+v", unrouted)
+	}
+
+	// The platform's own numbers count it, rather than quietly dropping the
+	// traffic they could not attribute.
+	platform, err := client.PlatformRequests(ctx, across)
+	if err != nil {
+		t.Fatalf("PlatformRequests: %v", err)
+	}
+	if platform.Requests < 301 {
+		t.Errorf("the platform served at least the 301 rows written here, got %d", platform.Requests)
+	}
+	if platform.Unrouted < 1 {
+		t.Errorf("the unrouted request should be counted, got %d", platform.Unrouted)
+	}
+
+	// The Edge screen's leaders, over the same states.
+	leaders, err := client.EdgeBreakdown(ctx, EdgeBreakdownQuery{
+		Since: window.Since, Until: window.Until,
+		By: EdgeByEnvironment, SortBy: RouteSortLatency, MinRequests: 100,
+	})
+	if err != nil {
+		t.Fatalf("EdgeBreakdown: %v", err)
+	}
+	if len(leaders) == 0 {
+		t.Fatal("the environments that served the window should be rankable")
+	}
+	if leaders[0].P95Ms < leaders[len(leaders)-1].P95Ms {
+		t.Errorf("the latency leaders should lead: %+v", leaders)
+	}
+
+	// And what the dashboard's overview reads instead of aggregating flows by
+	// destination namespace.
+	traffic, err := client.ProjectTraffic(ctx, ProjectTrafficQuery{
+		Since: window.Since, Until: window.Until,
+		Project: integrationProject, Sparkline: true,
+	})
+	if err != nil {
+		t.Fatalf("ProjectTraffic: %v", err)
+	}
+	if len(traffic) != 1 || traffic[0].Project != integrationProject {
+		t.Fatalf("want the one project's traffic, got %+v", traffic)
+	}
+	if traffic[0].Requests < 300 || len(traffic[0].RequestsPerHour) == 0 {
+		t.Errorf("the overview's row should carry both the totals and the sparkline: %+v", traffic[0])
+	}
+}
+
+// TestIntegrationClusterEvents writes the cluster's Warning events and reads
+// them back, including the ones that belong to no project — which are the ones
+// that explain an install that never came up.
+func TestIntegrationClusterEvents(t *testing.T) {
+	client := integrationClient(t)
+	ctx := context.Background()
+	if err := client.EnsureK8sEventsSchema(ctx, integrationRetained); err != nil {
+		t.Fatalf("EnsureK8sEventsSchema: %v", err)
+	}
+
+	at := time.Now().UTC().Add(-time.Minute)
+	name := uniqueEnvironment("collector")
+	if err := client.InsertK8sEvents(ctx, []K8sEvent{{
+		Timestamp: at,
+		Namespace: "kitchen-system",
+		Kind:      "DaemonSet",
+		Name:      name,
+		Reason:    "FailedCreate",
+		Message:   `pods "kitchen-collector" is forbidden: violates PodSecurity "baseline:latest"`,
+		Count:     12,
+		Node:      integrationNode,
+	}}); err != nil {
+		t.Fatalf("InsertK8sEvents: %v", err)
+	}
+
+	events, err := client.QueryK8sEvents(ctx, K8sEventQuery{
+		Name:   name,
+		Search: "PodSecurity",
+		Since:  at.Add(-time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("QueryK8sEvents: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("want the one event just written, got %d", len(events))
+	}
+	if events[0].Count != 12 || events[0].Reason != "FailedCreate" {
+		t.Errorf("unexpected event: %+v", events[0])
+	}
+	if !events[0].Timestamp.Truncate(time.Second).Equal(at.Truncate(time.Second)) {
+		t.Errorf("the event happened at %s, read back as %s", at, events[0].Timestamp)
+	}
+}
+
+// TestIntegrationTelemetryFreshness proves the union of the two sources types
+// out: one branch maxes a DateTime64 and the other a DateTime, and a union
+// that could not reconcile them would be a query that never runs.
+func TestIntegrationTelemetryFreshness(t *testing.T) {
+	client := integrationClient(t)
+	ctx := context.Background()
+	if err := client.EnsureTelemetrySchema(ctx, integrationRetained); err != nil {
+		t.Fatalf("EnsureTelemetrySchema: %v", err)
+	}
+
+	environment := uniqueEnvironment("freshness")
+	resource := resourceAttributes(environment, "shop-0", "app")
+	if err := client.Exec(ctx, exporterLogInsert(client.cfg.Database, resource, time.Now())); err != nil {
+		t.Fatalf("writing a log line: %v", err)
+	}
+
+	freshness, err := client.TelemetryFreshness(ctx, time.Hour)
+	if err != nil {
+		t.Fatalf("TelemetryFreshness: %v", err)
+	}
+	for _, node := range freshness {
+		if node.Node == integrationNode {
+			if time.Since(node.LastSeen) > time.Hour {
+				t.Errorf("the line just written should be the newest thing %s sent: %s",
+					integrationNode, node.LastSeen)
+			}
+			return
+		}
+	}
+	t.Errorf("the node that just sent a line should be in the answer, got %+v", freshness)
+}
+
+// TestIntegrationNodeUsage writes an hour of a node's own scrapes and reads the
+// saturation back.
+//
+// The arithmetic is the reason this needs a real server. CPU is a cumulative
+// counter read as a delta within each bucket, memory is a level summed across
+// its states, and a filesystem's capacity is two of its three states added
+// together — three different readings of the same table, demultiplexed by a
+// metric name and an attribute, in one two-level aggregate. A fake that records
+// the statement cannot say whether ClickHouse agrees that it means that.
+func TestIntegrationNodeUsage(t *testing.T) {
+	client := integrationClient(t)
+	ctx := context.Background()
+	if err := client.EnsureMetricsSchema(ctx, integrationRetained); err != nil {
+		t.Fatalf("EnsureMetricsSchema: %v", err)
+	}
+
+	// The node's name is what keeps one run's rows out of the next one's
+	// answer, since this read is not scoped to a project at all.
+	node := uniqueEnvironment("node")
+	resource := hostResourceAttributes(node)
+	start := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Hour)
+
+	rows := []string{}
+	for i := 0; i < integrationScrapes; i++ {
+		at := start.Add(time.Duration(i) * integrationScrapeInterval)
+		// Nine seconds of work for every one idle, as counters since boot.
+		rows = append(rows,
+			hostSumValues(resource, MetricHostCPUTime, hostState(hostStateIdle), at, float64(i)*3),
+			hostSumValues(resource, MetricHostCPUTime, hostState("user"), at, float64(i)*27),
+			hostSumValues(resource, MetricHostMemoryUsage, hostState(hostStateUsed), at, 900),
+			hostSumValues(resource, MetricHostMemoryUsage, hostState(hostStateFree), at, 100),
+			// The disk fills from 60% to 90% over the hour, and reports a
+			// reservation beside it that nothing can write into.
+			hostSumValues(resource, MetricHostFilesystemUsage, hostFilesystemState(hostStateUsed), at,
+				60+30*float64(i)/float64(integrationScrapes-1)),
+			hostSumValues(resource, MetricHostFilesystemUsage, hostFilesystemState(hostStateFree), at,
+				40-30*float64(i)/float64(integrationScrapes-1)),
+			hostSumValues(resource, MetricHostFilesystemUsage, hostFilesystemState("reserved"), at, 5),
+		)
+	}
+	if err := client.Exec(ctx, exporterSumInsert(client.cfg.Database, rows)); err != nil {
+		t.Fatalf("writing host metric points: %v", err)
+	}
+
+	usage, err := client.NodeUsage(ctx, NodeUsageQuery{
+		Since:  start,
+		Until:  start.Add(time.Hour),
+		Bucket: 5 * time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("NodeUsage: %v", err)
+	}
+
+	var answer *NodeUsage
+	for i := range usage {
+		if usage[i].Node == node {
+			answer = &usage[i]
+		}
+	}
+	if answer == nil {
+		t.Fatalf("the node just written should be in the answer, got %d nodes", len(usage))
+	}
+	if answer.BucketSeconds != 300 {
+		t.Fatalf("a five-minute bucket is a rung of the ladder, got %ds", answer.BucketSeconds)
+	}
+
+	observed := 0
+	for _, bucket := range answer.CPU {
+		if !bucket.Observed {
+			continue
+		}
+		observed++
+		if delta := bucket.Value - 0.9; delta > 0.01 || delta < -0.01 {
+			t.Errorf("%s: cpu %v, want the nine tenths that were not idle", bucket.Start, bucket.Value)
+		}
+	}
+	if observed < 12 {
+		t.Errorf("want a full hour of five-minute buckets, got %d", observed)
+	}
+	for _, bucket := range answer.Memory {
+		if bucket.Observed && bucket.Value != 0.9 {
+			t.Errorf("%s: memory %v, want used over every state", bucket.Start, bucket.Value)
+		}
+	}
+
+	if len(answer.Filesystems) != 1 {
+		t.Fatalf("want the one filesystem, got %+v", answer.Filesystems)
+	}
+	filesystem := answer.Filesystems[0]
+	if filesystem.MountPoint != integrationMountPoint || filesystem.Device != integrationDevice {
+		t.Errorf("a filesystem is named by where it is mounted: %+v", filesystem)
+	}
+	// The reservation is not capacity: 60 used and 40 free is a full hundred,
+	// and counting the five reserved bytes in would read every disk as emptier
+	// than it is.
+	if filesystem.CapacityBytes != 100 {
+		t.Errorf("capacity should be used plus free, got %d", filesystem.CapacityBytes)
+	}
+	first, last := firstObserved(filesystem.Used), lastObserved(filesystem.Used)
+	if first.Value < 0.6 || first.Value > 0.65 || last.Value < 0.85 || last.Value > 0.9 {
+		t.Errorf("the disk should fill from about 60%% to about 90%%, got %v then %v",
+			first.Value, last.Value)
+	}
+}
+
+// TestIntegrationVolumeUsage proves the read that names a claim.
+//
+// Two things here only a real server settles: `argMaxIf` pairing each number
+// with the newest sample that carried it — the two are separate rows of the
+// same scrape — and the grouping that collapses a claim mounted by several pods
+// into the one volume it is.
+func TestIntegrationVolumeUsage(t *testing.T) {
+	client := integrationClient(t)
+	ctx := context.Background()
+	if err := client.EnsureMetricsSchema(ctx, integrationRetained); err != nil {
+		t.Fatalf("EnsureMetricsSchema: %v", err)
+	}
+
+	claim := uniqueEnvironment("claim")
+	namespace := "kitchen-app-" + integrationProject
+	older := time.Now().UTC().Add(-5 * time.Minute)
+	newer := time.Now().UTC().Add(-time.Minute)
+
+	rows := []string{}
+	for _, pod := range []string{"shop-0", "shop-1"} {
+		resource := volumeResourceAttributes(namespace, pod, claim)
+		rows = append(rows,
+			// The volume was half empty five minutes ago and is nine tenths
+			// full now; only the newer pair is the answer.
+			gaugeValues(resource, MetricVolumeCapacity, older, 10<<30),
+			gaugeValues(resource, MetricVolumeAvailable, older, 5<<30),
+			gaugeValues(resource, MetricVolumeCapacity, newer, 10<<30),
+			gaugeValues(resource, MetricVolumeAvailable, newer, 1<<30),
+		)
+	}
+	// And the projected token every pod carries, which is a volume and is not a
+	// claim.
+	token := volumeResourceAttributes(namespace, "shop-0", "")
+	rows = append(rows,
+		gaugeValues(token, MetricVolumeCapacity, newer, 10<<20),
+		gaugeValues(token, MetricVolumeAvailable, newer, 1<<20),
+	)
+	if err := client.Exec(ctx, exporterGaugeInsert(client.cfg.Database, rows)); err != nil {
+		t.Fatalf("writing volume points: %v", err)
+	}
+
+	volumes, err := client.VolumeUsage(ctx, VolumeUsageQuery{})
+	if err != nil {
+		t.Fatalf("VolumeUsage: %v", err)
+	}
+
+	matched := 0
+	for _, volume := range volumes {
+		if volume.Claim == "" {
+			t.Errorf("a volume with no claim behind it is not a claim: %+v", volume)
+		}
+		if volume.Claim != claim {
+			continue
+		}
+		matched++
+		if volume.CapacityBytes != 10<<30 || volume.UsedBytes != 9<<30 {
+			t.Errorf("used should be the newest capacity less the newest available: %+v", volume)
+		}
+		if volume.UsedFraction != 0.9 {
+			t.Errorf("want nine tenths of the claim used, got %v", volume.UsedFraction)
+		}
+		if volume.Namespace != namespace || volume.Project != integrationProject {
+			t.Errorf("a claim carries where it belongs: %+v", volume)
+		}
+	}
+	// Two pods mount it; it is one volume with one fill, and answering twice
+	// would raise the same warning twice.
+	if matched != 1 {
+		t.Errorf("want the claim once, got it %d times", matched)
+	}
+}
+
+// firstObserved and lastObserved are the ends of a series that reported,
+// which is what a fill is read between.
+func firstObserved(points []NodeUsagePoint) NodeUsagePoint {
+	for _, point := range points {
+		if point.Observed {
+			return point
+		}
+	}
+	return NodeUsagePoint{}
+}
+
+func lastObserved(points []NodeUsagePoint) NodeUsagePoint {
+	for i := len(points) - 1; i >= 0; i-- {
+		if points[i].Observed {
+			return points[i]
+		}
+	}
+	return NodeUsagePoint{}
+}
+
 // uniqueEnvironment keeps one run's rows from being read by the next. The
 // tables are not truncated between runs — they are a real store's, and a test
 // that dropped them would be a test that could not run against a live one.
@@ -599,11 +1128,11 @@ func uniqueEnvironment(prefix string) string {
 func resourceAttributes(environment, pod, container string) string {
 	return fmt.Sprintf(`map('kitchen.project', %s, 'deployment.environment.name', %s, `+
 		`'kitchen.build', '', 'kitchen.source', %s, 'k8s.namespace.name', %s, `+
-		`'k8s.pod.name', %s, 'k8s.container.name', %s, 'k8s.node.name', 'node-1', `+
+		`'k8s.pod.name', %s, 'k8s.container.name', %s, 'k8s.node.name', %s, `+
 		`'service.name', %s, 'tier', 'web')`,
 		quoteLiteral(integrationProject), quoteLiteral(environment), quoteLiteral(SourceRuntime),
 		quoteLiteral("kitchen-app-"+integrationProject), quoteLiteral(pod), quoteLiteral(container),
-		quoteLiteral(integrationProject))
+		quoteLiteral(integrationNode), quoteLiteral(integrationProject))
 }
 
 // stamped renders a time the way ClickHouse parses one at nanosecond scale.
@@ -733,4 +1262,61 @@ func exporterSummaryInsert(database, resource string) string {
     3, 1.5, [0.5, 0.95], [1.0, 2.0], 0)`,
 		quoteIdentifier(database), quoteIdentifier(MetricsSummaryTable),
 		resource, quoteLiteral(integrationProject))
+}
+
+// The node fixtures' shape: an hour of scrapes at the interval the chart sets,
+// on the one disk the node has.
+const (
+	integrationScrapes        = 120
+	integrationScrapeInterval = 30 * time.Second
+	integrationMountPoint     = "/"
+	integrationDevice         = "/dev/vda"
+)
+
+// hostResourceAttributes is what a node's own metrics carry, which is almost
+// nothing: no pod, no project, no environment. The node's name is put there by
+// the collector's `resource/node` processor out of the downward API, and it is
+// the only thing these rows can be found by.
+func hostResourceAttributes(node string) string {
+	return fmt.Sprintf(`map('kitchen.source', %s, 'k8s.node.name', %s)`,
+		quoteLiteral(SourceCluster), quoteLiteral(node))
+}
+
+// hostState and hostFilesystemState are the point attributes the host scrapers
+// break their metrics down by — the breakdown is the whole subject of the node
+// read, so unlike every other fixture here these rows carry attributes of their
+// own.
+func hostState(state string) string {
+	return fmt.Sprintf(`map(%s, %s)`, quoteLiteral(hostStateAttribute), quoteLiteral(state))
+}
+
+func hostFilesystemState(state string) string {
+	return fmt.Sprintf(`map(%s, %s, %s, %s, %s, %s, 'mode', 'rw', 'type', 'ext4')`,
+		quoteLiteral(hostStateAttribute), quoteLiteral(state),
+		quoteLiteral(hostMountPointAttribute), quoteLiteral(integrationMountPoint),
+		quoteLiteral(hostDeviceAttribute), quoteLiteral(integrationDevice))
+}
+
+// volumeResourceAttributes is what the kubelet's volume group carries, as the
+// receiver writes it beside the k8s_attributes processor's labels. An empty
+// claim is a volume that is not one — a projected token, a configMap — and the
+// receiver leaves the attribute off those entirely.
+func volumeResourceAttributes(namespace, pod, claim string) string {
+	attributes := fmt.Sprintf(`'kitchen.project', %s, 'deployment.environment.name', %s, `+
+		`'kitchen.source', %s, 'k8s.namespace.name', %s, 'k8s.pod.name', %s, `+
+		`'k8s.node.name', %s, 'k8s.volume.name', 'data', 'k8s.volume.type', 'persistentVolumeClaim'`,
+		quoteLiteral(integrationProject), quoteLiteral("production"), quoteLiteral(SourceRuntime),
+		quoteLiteral(namespace), quoteLiteral(pod), quoteLiteral(integrationNode))
+	if claim != "" {
+		attributes += fmt.Sprintf(`, %s, %s`, quoteLiteral(VolumeClaimAttribute), quoteLiteral(claim))
+	}
+	return "map(" + attributes + ")"
+}
+
+// hostSumValues is sumValues for a point whose breakdown lives in its own
+// attributes, and with no service behind it: a node's metrics belong to the
+// machine rather than to anything running on it.
+func hostSumValues(resource, metric, attributes string, at time.Time, value float64) string {
+	return fmt.Sprintf(`(%s, '', 'kitchen', '1.0', {}, 0, '', '', %s, '', '', %s, %s, %s, %v, 0, [], [], [], [], [], 1, false)`,
+		resource, quoteLiteral(metric), attributes, seconds(at), seconds(at), value)
 }

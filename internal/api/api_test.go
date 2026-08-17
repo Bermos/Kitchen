@@ -24,11 +24,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
@@ -53,6 +56,9 @@ const (
 	// testCaller is who the harness's token is signed for: the identity every
 	// write is recorded against.
 	testCaller = "grace@example.com"
+	// otherProject is the second project the fixtures know about: the one a
+	// read must not return, which is what most of the scoping assertions are.
+	otherProject = "blog"
 )
 
 // issuer is a stand-in for the platform's identity provider: it serves the
@@ -204,7 +210,7 @@ func fixtures() []runtime.Object {
 	other := &kitchenv1alpha1.Release{
 		ObjectMeta: metav1.ObjectMeta{Name: "blog-rel-0", Namespace: testNamespace},
 		Spec: kitchenv1alpha1.ReleaseSpec{
-			ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: "blog"},
+			ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: otherProject},
 			BuildRef:   kitchenv1alpha1.LocalObjectReference{Name: "blog-bld-000000000000"},
 			Image:      "registry.example.com/blog@sha256:2222",
 		},
@@ -261,17 +267,24 @@ func fixtures() []runtime.Object {
 
 // stubLogs stands in for the telemetry store.
 type stubLogs struct {
-	lines       []clickhouse.LogLine
-	last        clickhouse.LogQuery
-	lastFilter  clickhouse.LogFilter
-	filterErr   error
-	events      []clickhouse.Event
-	lastEvents  clickhouse.EventQuery
-	edges       []clickhouse.TrafficEdge
-	lastTraffic clickhouse.TrafficQuery
-	trafficErr  error
-	overview    clickhouse.MetricsOverview
-	lastMetrics clickhouse.MetricsQuery
+	lines         []clickhouse.LogLine
+	last          clickhouse.LogQuery
+	lastFilter    clickhouse.LogFilter
+	filterErr     error
+	events        []clickhouse.Event
+	lastEvents    clickhouse.EventQuery
+	edges         []clickhouse.TrafficEdge
+	lastTraffic   clickhouse.TrafficQuery
+	trafficErr    error
+	overview      clickhouse.MetricsOverview
+	lastMetrics   clickhouse.MetricsQuery
+	overviewReads int
+	// storeStats is the narrow store-health read, which is deliberately not
+	// part of the overview: the Storage screen and every signals evaluation
+	// want only these two numbers.
+	storeStats      clickhouse.StoreStats
+	storeStatsReads int
+	storeStatsErr   error
 
 	histogram     clickhouse.LogHistogram
 	lastHistogram clickhouse.LogHistogramQuery
@@ -289,6 +302,53 @@ type stubLogs struct {
 	spans       []clickhouse.Span
 	lastTraceID string
 	tracesErr   error
+
+	// The edge's requests. One error field stands in for every one of these
+	// reads, because they fail the same way — the query is the operator's, so
+	// what the caller is told is which read it was.
+	requestSummary     clickhouse.RequestSummary
+	lastRequestSummary clickhouse.RequestQuery
+	requestSeries      clickhouse.RequestSeries
+	lastRequestSeries  clickhouse.RequestSeriesQuery
+	requestRoutes      []clickhouse.RequestRoute
+	lastRequestRoutes  clickhouse.RequestRoutesQuery
+	requests           []clickhouse.Request
+	lastRequests       clickhouse.RequestListQuery
+	correlated         []clickhouse.Request
+	lastCorrelated     clickhouse.RequestCorrelationQuery
+	projectTraffic     []clickhouse.ProjectTraffic
+	lastProjectTraffic clickhouse.ProjectTrafficQuery
+	requestErr         error
+
+	// The platform reads, which are the same rollups asked across projects.
+	// platformRequests is answered whole for a window the caller did not
+	// bucket, and platformHours by hour for the ones it did; see the stub's
+	// PlatformRequests.
+	platformRequests    clickhouse.PlatformRequests
+	platformHours       map[int]clickhouse.PlatformRequests
+	platformQueries     []clickhouse.PlatformRequestsQuery
+	edgeEntries         map[string][]clickhouse.EdgeEntry
+	lastEdgeBreakdowns  []clickhouse.EdgeBreakdownQuery
+	unroutedHosts       []clickhouse.UnroutedHost
+	lastUnrouted        clickhouse.PlatformRequestsQuery
+	freshness           []clickhouse.NodeFreshness
+	lastFreshnessWithin time.Duration
+	platformErr         error
+	freshnessErr        error
+
+	k8sEvents     []clickhouse.K8sEvent
+	lastK8sEvents clickhouse.K8sEventQuery
+
+	nodeUsage       []clickhouse.NodeUsage
+	lastNodeUsage   clickhouse.NodeUsageQuery
+	nodeUsageErr    error
+	volumeUsage     []clickhouse.VolumeUsage
+	lastVolumeUsage clickhouse.VolumeUsageQuery
+	volumeUsageErr  error
+
+	// mu guards the fields the concurrent hourly reads touch. Nothing else in
+	// this stub is called from more than one goroutine.
+	mu sync.Mutex
 }
 
 func (s *stubLogs) SearchLogs(_ context.Context, query clickhouse.LogQuery) ([]clickhouse.LogLine, error) {
@@ -343,7 +403,18 @@ func (s *stubLogs) TrafficEdges(_ context.Context, query clickhouse.TrafficQuery
 
 func (s *stubLogs) MetricsOverview(_ context.Context, query clickhouse.MetricsQuery) (clickhouse.MetricsOverview, error) {
 	s.lastMetrics = query
+	s.overviewReads++
 	return s.overview, nil
+}
+
+func (s *stubLogs) StoreStats(context.Context) (clickhouse.StoreStats, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.storeStatsReads++
+	if s.storeStatsErr != nil {
+		return clickhouse.StoreStats{}, s.storeStatsErr
+	}
+	return s.storeStats, nil
 }
 
 func (s *stubLogs) ResourceSeries(
@@ -371,6 +442,157 @@ func (s *stubLogs) Trace(_ context.Context, traceID string) ([]clickhouse.Span, 
 		return nil, s.tracesErr
 	}
 	return s.spans, nil
+}
+
+func (s *stubLogs) RequestSummary(
+	_ context.Context,
+	query clickhouse.RequestQuery,
+) (clickhouse.RequestSummary, error) {
+	s.lastRequestSummary = query
+	if s.requestErr != nil {
+		return clickhouse.RequestSummary{}, s.requestErr
+	}
+	return s.requestSummary, nil
+}
+
+func (s *stubLogs) RequestSeries(
+	_ context.Context,
+	query clickhouse.RequestSeriesQuery,
+) (clickhouse.RequestSeries, error) {
+	s.lastRequestSeries = query
+	if s.requestErr != nil {
+		return clickhouse.RequestSeries{}, s.requestErr
+	}
+	return s.requestSeries, nil
+}
+
+func (s *stubLogs) RequestRoutes(
+	_ context.Context,
+	query clickhouse.RequestRoutesQuery,
+) ([]clickhouse.RequestRoute, error) {
+	s.lastRequestRoutes = query
+	if s.requestErr != nil {
+		return nil, s.requestErr
+	}
+	return s.requestRoutes, nil
+}
+
+func (s *stubLogs) QueryRequests(
+	_ context.Context,
+	query clickhouse.RequestListQuery,
+) ([]clickhouse.Request, error) {
+	s.lastRequests = query
+	if s.requestErr != nil {
+		return nil, s.requestErr
+	}
+	return s.requests, nil
+}
+
+func (s *stubLogs) CorrelatedRequests(
+	_ context.Context,
+	query clickhouse.RequestCorrelationQuery,
+) ([]clickhouse.Request, error) {
+	s.lastCorrelated = query
+	if s.requestErr != nil {
+		return nil, s.requestErr
+	}
+	return s.correlated, nil
+}
+
+func (s *stubLogs) ProjectTraffic(
+	_ context.Context,
+	query clickhouse.ProjectTrafficQuery,
+) ([]clickhouse.ProjectTraffic, error) {
+	s.lastProjectTraffic = query
+	if s.requestErr != nil {
+		return nil, s.requestErr
+	}
+	return s.projectTraffic, nil
+}
+
+func (s *stubLogs) QueryK8sEvents(
+	_ context.Context,
+	query clickhouse.K8sEventQuery,
+) ([]clickhouse.K8sEvent, error) {
+	s.lastK8sEvents = query
+	if s.platformErr != nil {
+		return nil, s.platformErr
+	}
+	return s.k8sEvents, nil
+}
+
+// PlatformRequests answers a whole window with platformRequests, and an hourly
+// bucket with whatever platformHours holds for that hour — which is how a test
+// can tell the day-wide read from the twenty-four the sparkline needs.
+func (s *stubLogs) PlatformRequests(
+	_ context.Context,
+	query clickhouse.PlatformRequestsQuery,
+) (clickhouse.PlatformRequests, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.platformQueries = append(s.platformQueries, query)
+	if s.platformErr != nil {
+		return clickhouse.PlatformRequests{}, s.platformErr
+	}
+	if query.Until.IsZero() {
+		return s.platformRequests, nil
+	}
+	return s.platformHours[query.Since.Hour()], nil
+}
+
+func (s *stubLogs) EdgeBreakdown(
+	_ context.Context,
+	query clickhouse.EdgeBreakdownQuery,
+) ([]clickhouse.EdgeEntry, error) {
+	s.lastEdgeBreakdowns = append(s.lastEdgeBreakdowns, query)
+	if s.platformErr != nil {
+		return nil, s.platformErr
+	}
+	return s.edgeEntries[query.By+"/"+query.SortBy], nil
+}
+
+func (s *stubLogs) UnroutedHosts(
+	_ context.Context,
+	query clickhouse.PlatformRequestsQuery,
+) ([]clickhouse.UnroutedHost, error) {
+	s.lastUnrouted = query
+	if s.platformErr != nil {
+		return nil, s.platformErr
+	}
+	return s.unroutedHosts, nil
+}
+
+func (s *stubLogs) TelemetryFreshness(
+	_ context.Context,
+	within time.Duration,
+) ([]clickhouse.NodeFreshness, error) {
+	s.lastFreshnessWithin = within
+	if s.freshnessErr != nil {
+		return nil, s.freshnessErr
+	}
+	return s.freshness, nil
+}
+
+func (s *stubLogs) NodeUsage(
+	_ context.Context,
+	query clickhouse.NodeUsageQuery,
+) ([]clickhouse.NodeUsage, error) {
+	s.lastNodeUsage = query
+	if s.nodeUsageErr != nil {
+		return nil, s.nodeUsageErr
+	}
+	return s.nodeUsage, nil
+}
+
+func (s *stubLogs) VolumeUsage(
+	_ context.Context,
+	query clickhouse.VolumeUsageQuery,
+) ([]clickhouse.VolumeUsage, error) {
+	s.lastVolumeUsage = query
+	if s.volumeUsageErr != nil {
+		return nil, s.volumeUsageErr
+	}
+	return s.volumeUsage, nil
 }
 
 type harness struct {
@@ -433,6 +655,12 @@ func newHarness(t *testing.T, kitchen *kitchenv1alpha1.Kitchen, objs ...runtime.
 	if err := gatewayv1.Install(scheme); err != nil {
 		t.Fatal(err)
 	}
+	// cert-manager's kinds are addressed as unstructured objects, here as in
+	// the operator, so the scheme only has to know the two names exist.
+	certificates := schema.GroupVersion{Group: "cert-manager.io", Version: "v1"}
+	scheme.AddKnownTypeWithName(certificates.WithKind("Certificate"), &unstructured.Unstructured{})
+	scheme.AddKnownTypeWithName(certificates.WithKind("CertificateList"), &unstructured.UnstructuredList{})
+	metav1.AddToGroupVersion(scheme, certificates)
 
 	if kitchen == nil {
 		kitchen = &kitchenv1alpha1.Kitchen{
@@ -486,7 +714,20 @@ var routes = []struct {
 	{http.MethodGet, "/api/v1/environments/shop-production/workload"},
 	{http.MethodGet, "/api/v1/environments/shop-production/metrics"},
 	{http.MethodGet, "/api/v1/environments/shop-production/objects"},
+	{http.MethodGet, "/api/v1/environments/shop-production/requests"},
+	{http.MethodGet, "/api/v1/environments/shop-production/requests/summary"},
+	{http.MethodGet, "/api/v1/environments/shop-production/requests/series"},
+	{http.MethodGet, "/api/v1/environments/shop-production/requests/routes"},
+	{http.MethodGet, "/api/v1/environments/shop-production/diagnostics"},
+	{http.MethodGet, "/api/v1/environments/shop-production/signals"},
 	{http.MethodGet, "/api/v1/status"},
+	{http.MethodGet, "/api/v1/platform/signals"},
+	{http.MethodGet, "/api/v1/platform/nodes"},
+	{http.MethodGet, "/api/v1/platform/workloads"},
+	{http.MethodGet, "/api/v1/platform/edge"},
+	{http.MethodGet, "/api/v1/platform/storage"},
+	{http.MethodGet, "/api/v1/platform/events"},
+	{http.MethodGet, "/api/v1/platform/ingest"},
 	{http.MethodGet, "/api/v1/logs"},
 	{http.MethodGet, "/api/v1/logs/histogram"},
 	{http.MethodGet, "/api/v1/logs/facets"},
@@ -646,12 +887,12 @@ func TestCreatingAProject(t *testing.T) {
 		t.Fatalf("want 201, got %d: %s", recorder.Code, recorder.Body.String())
 	}
 	view := decode[projectView](t, recorder)
-	if view.Name != "blog" || view.Repo != "acme/blog" || view.ProductionBranch != "trunk" || view.Previews {
+	if view.Name != otherProject || view.Repo != "acme/blog" || view.ProductionBranch != "trunk" || view.Previews {
 		t.Fatalf("the response does not echo the request: %+v", view)
 	}
 
 	stored := &kitchenv1alpha1.Project{}
-	if err := h.server.get(context.Background(), "blog", stored); err != nil {
+	if err := h.server.get(context.Background(), otherProject, stored); err != nil {
 		t.Fatal(err)
 	}
 	if stored.Spec.Source.ConnectionRef.Name != "gh" || stored.Spec.Registry.ConnectionRef.Name != "registry" {

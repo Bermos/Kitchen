@@ -378,6 +378,22 @@ type buildQueueView struct {
 	Running  int32 `json:"running"`
 	Capacity int32 `json:"capacity"`
 	Queued   int32 `json:"queued"`
+	// OldestWaitSeconds is how long the build that has been queued longest has
+	// been waiting. The count alone does not say whether a queue is moving:
+	// three builds waiting twenty seconds is a busy platform, and one waiting
+	// forty minutes is a stuck one.
+	OldestWaitSeconds int64 `json:"oldestWaitSeconds,omitempty"`
+	// Waiting is the queued builds themselves, longest wait first, so the
+	// screen can name what is stuck rather than only counting it.
+	Waiting []queuedBuildView `json:"waiting,omitempty"`
+}
+
+// queuedBuildView is one build that has been admitted but not started.
+type queuedBuildView struct {
+	Name        string `json:"name"`
+	Project     string `json:"project"`
+	QueuedAt    string `json:"queuedAt"`
+	WaitSeconds int64  `json:"waitSeconds"`
 }
 
 type gatewayStatusView struct {

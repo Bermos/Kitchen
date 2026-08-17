@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { duration, shortImage, shortSHA, timeAgo, uptime } from "./format";
+import { bucketLabel, duration, formatDurationSeconds, shortImage, shortSHA, timeAgo, uptime } from "./format";
 
 describe("format", () => {
   it("durations read like the mockup", () => {
@@ -24,6 +24,15 @@ describe("format", () => {
     expect(uptime(undefined)).toBe("—");
   });
 
+  it("a span of seconds coarsens the same way", () => {
+    expect(formatDurationSeconds(42)).toBe("42s");
+    expect(formatDurationSeconds(2040)).toBe("34m");
+    expect(formatDurationSeconds(3600 + 5 * 60)).toBe("1h 5m");
+    expect(formatDurationSeconds(3 * 86400 + 4 * 3600)).toBe("3d 4h");
+    expect(formatDurationSeconds(undefined)).toBe("—");
+    expect(formatDurationSeconds(-1)).toBe("—");
+  });
+
   it("images shorten to their digest", () => {
     expect(shortImage("registry.example.com/kitchen/shop@sha256:ab12f9deadbeef00")).toBe("sha256:ab12f9de…");
     expect(shortImage("registry.example.com/kitchen/shop:latest")).toBe("registry.example.com/kitchen/shop:latest");
@@ -33,5 +42,13 @@ describe("format", () => {
   it("shas shorten to seven characters", () => {
     expect(shortSHA("8f3a2c1d0000000")).toBe("8f3a2c1");
     expect(shortSHA(undefined)).toBe("—");
+  });
+
+  it("says how coarse a chart's buckets are", () => {
+    expect(bucketLabel(30)).toBe("30s buckets");
+    expect(bucketLabel(300)).toBe("5m buckets");
+    expect(bucketLabel(3600)).toBe("1h buckets");
+    expect(bucketLabel(0)).toBe("");
+    expect(bucketLabel(undefined)).toBe("");
   });
 });

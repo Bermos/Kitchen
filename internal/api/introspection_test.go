@@ -374,9 +374,16 @@ func TestStatusReportsTheClusterTheTunnelAndTheQueue(t *testing.T) {
 	if !status.Tunnel.Enabled || !status.Tunnel.Connected {
 		t.Fatalf("want the tunnel connected, got %+v", status.Tunnel)
 	}
-	want := buildQueueView{Running: 1, Capacity: 2, Queued: 1}
-	if status.Builds != want {
-		t.Fatalf("want the queue %+v, got %+v", want, status.Builds)
+	if status.Builds.Running != 1 || status.Builds.Capacity != 2 || status.Builds.Queued != 1 {
+		t.Fatalf("want one running and one queued against a limit of two, got %+v", status.Builds)
+	}
+	// The count says the queue is busy; only the wait says whether it is
+	// moving, so the queued build has to arrive with one.
+	if len(status.Builds.Waiting) != 1 || status.Builds.Waiting[0].Project != feedProject {
+		t.Fatalf("want the queued build named, got %+v", status.Builds.Waiting)
+	}
+	if status.Builds.OldestWaitSeconds < 1 || status.Builds.OldestWaitSeconds != status.Builds.Waiting[0].WaitSeconds {
+		t.Fatalf("want the longest wait reported and matching its build, got %+v", status.Builds)
 	}
 	if !status.Gateway.Programmed || status.Gateway.Address != "203.0.113.7" {
 		t.Fatalf("want the gateway programmed at its address, got %+v", status.Gateway)

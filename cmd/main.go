@@ -27,11 +27,15 @@ import (
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
@@ -45,6 +49,7 @@ import (
 	"github.com/Bermos/Kitchen/internal/api"
 	"github.com/Bermos/Kitchen/internal/controller"
 	"github.com/Bermos/Kitchen/internal/flows"
+	"github.com/Bermos/Kitchen/internal/k8sevents"
 	"github.com/Bermos/Kitchen/internal/receiver"
 	"github.com/Bermos/Kitchen/internal/ui"
 	"github.com/Bermos/Kitchen/internal/usage"
@@ -243,6 +248,18 @@ func main() {
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       "cc18c917.bermos.dev",
+		Cache: cache.Options{
+			ByObject: map[client.Object]cache.ByObject{
+				// The only thing that reads events through the cache is the
+				// Warning recorder, and a Normal event is the cluster
+				// narrating itself, so the informer is filtered at the API
+				// server rather than in Go: what it holds is then what
+				// somebody will actually ask about. The component survey is
+				// unaffected — it reads events through the uncached reader,
+				// because field selectors are not served by the cache.
+				&corev1.Event{}: {Field: fields.OneTermEqualSelector("type", corev1.EventTypeWarning)},
+			},
+		},
 		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
 		// when the Manager ends. This requires the binary to immediately end when the
 		// Manager is stopped, otherwise, this setting is unsafe. Setting this significantly
@@ -357,6 +374,23 @@ func main() {
 		os.Exit(1)
 	}
 
+	// The flow collector follows Hubble Relay and ships flow observations
+	// into the telemetry store — the traffic view's data, and one row per
+	// request the platform's edge served. It idles until the Kitchen object
+	// names a relay address, so it can be added unconditionally.
+	//
+	// It is built here rather than inline in the Add below because the API
+	// holds on to it: the follower is the only thing that sees Relay's
+	// LostEvent notices, so its loss ledger is the only evidence the platform
+	// has that a request count under-reports.
+	flowCollector := &flows.Collector{
+		Client: mgr.GetClient(),
+	}
+	if err := mgr.Add(flowCollector); err != nil {
+		setupLog.Error(err, "unable to add the flow collector to manager")
+		os.Exit(1)
+	}
+
 	// The REST API. It authenticates every request against the platform's
 	// identity provider, which it resolves from the Kitchen object at
 	// request time — so it can be added here without waiting for the
@@ -375,18 +409,15 @@ func main() {
 		Activity:       recorder,
 		Version:        version.Version,
 		SelfUpdate:     selfUpdate,
+		// The follower's own accounting of what Hubble told it it lost, which
+		// is what the ingest signal and the ingest screen are made of. Note
+		// that the counts are the *local* replica's: the follower runs on the
+		// leader alone, so a replica that is not the leader reports no loss
+		// because it did no following — which is why the screen says which
+		// window the counts cover rather than presenting them as a total.
+		Flows: flowCollector,
 	}); err != nil {
 		setupLog.Error(err, "unable to add the api server to manager")
-		os.Exit(1)
-	}
-
-	// The flow collector follows Hubble Relay and ships flow observations
-	// into the telemetry store — the traffic view's data. It idles until the
-	// Kitchen object names a relay address, so it can be added unconditionally.
-	if err := mgr.Add(&flows.Collector{
-		Client: mgr.GetClient(),
-	}); err != nil {
-		setupLog.Error(err, "unable to add the flow collector to manager")
 		os.Exit(1)
 	}
 
@@ -403,6 +434,21 @@ func main() {
 		Reader: mgr.GetAPIReader(),
 	}); err != nil {
 		setupLog.Error(err, "unable to add the usage collector to manager")
+		os.Exit(1)
+	}
+
+	// The event recorder keeps the cluster's Warning events, which the API
+	// server expires about an hour after they happen — turning the operator's
+	// existing watch into the history the Events screen and the crash report
+	// read. It idles until the Kitchen object names a store, so it too is
+	// added unconditionally.
+	if err := mgr.Add(&k8sevents.Recorder{
+		// The cached client, unlike the two collectors above: the recorder's
+		// watch is the event informer, and it resolves an event's project by
+		// reading the object the event is about rather than on a timer.
+		Client: mgr.GetClient(),
+	}); err != nil {
+		setupLog.Error(err, "unable to add the event recorder to manager")
 		os.Exit(1)
 	}
 

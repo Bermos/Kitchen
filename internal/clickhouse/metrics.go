@@ -26,20 +26,25 @@ import (
 )
 
 // The dashboard's numbers are not a fourth pipeline: they are aggregations
-// over what the store already holds. Requests, error rates and p95 come from
-// the flows the Hubble collector ships; deploys and build times from the
+// over what the store already holds. Deploys and build times come from the
 // activity feed's events; log volume from the logs themselves; and the store's
-// own size from ClickHouse's system tables. Where a source is not collected —
-// no flow collector configured, say — its numbers are zero and the UI says so,
-// rather than the platform pretending to measure something it does not.
+// own size and ingest rate from ClickHouse's system tables and a count of the
+// last five minutes of writes. Where a source is not collected, its numbers are
+// zero and the UI says so, rather than the platform pretending to measure
+// something it does not.
+//
+// The traffic numbers used to be here too, off the flows, and are not any
+// more: an edge request is attributed by its Host header, which only the
+// request pipeline carries. The fields remain on the answer and the API fills
+// them from the rollups; see api's fillOverviewTraffic.
 
 // MetricsQuery scopes the overview. The zero value is the whole platform.
 type MetricsQuery struct {
-	// Project narrows logs and events to one project.
+	// Project narrows logs and events to one project. It is the only scope
+	// left: the traffic half of this answer moved to the request pipeline,
+	// which is keyed on project rather than on the destination namespace the
+	// flows were attributed by.
 	Project string
-	// Namespace narrows flows to traffic into one namespace — the caller
-	// maps a project to its app namespace, which this package does not know.
-	Namespace string
 }
 
 // MetricsOverview is the pre-aggregated answer the dashboard draws from.
@@ -55,8 +60,10 @@ type MetricsOverview struct {
 	// 0 means no builds finished.
 	MedianBuildSeconds float64 `json:"medianBuildSeconds"`
 
-	// HTTP traffic over the last 24 hours, from the flow pipeline. All zero
-	// when no flow collector is configured.
+	// HTTP traffic over the last 24 hours. Nothing in this package fills
+	// these — they are the request pipeline's, and the API writes them over
+	// this answer — but they stay part of the shape because they are what the
+	// endpoint serves under these names.
 	Requests24h     uint64    `json:"requests24h"`
 	ErrorRate24h    float64   `json:"errorRate24h"`
 	P95Ms24h        float64   `json:"p95Ms24h"`
@@ -71,20 +78,17 @@ type MetricsOverview struct {
 	// The store itself.
 	StoreBytes         uint64  `json:"storeBytes"`
 	StoreRowsPerSecond float64 `json:"storeRowsPerSecond"`
-
-	// Namespaces is inbound traffic per destination namespace, filled only
-	// on the cluster-wide question — the caller joins namespaces back to
-	// projects, which is its vocabulary rather than the store's.
-	Namespaces []NamespaceTraffic `json:"namespaces,omitempty"`
 }
 
-// NamespaceTraffic is 24 hours of inbound HTTP traffic for one namespace.
-type NamespaceTraffic struct {
-	Namespace       string   `json:"namespace"`
-	Requests24h     uint64   `json:"requests24h"`
-	Errors5xx24h    uint64   `json:"errors5xx24h"`
-	P95Ms           float64  `json:"p95Ms"`
-	RequestsPerHour []uint64 `json:"requestsPerHour"`
+// StoreStats is the telemetry store's own size and ingest rate: what its active
+// parts occupy on disk, and how fast rows are arriving.
+type StoreStats struct {
+	// BytesOnDisk is what the database's active parts occupy.
+	BytesOnDisk uint64 `json:"bytesOnDisk"`
+	// RowsPerSecond is the recent ingest rate across the tables the collector
+	// fills and the operator writes. Zero while pods are running is the store's
+	// own stalled-ingest symptom.
+	RowsPerSecond float64 `json:"rowsPerSecond"`
 }
 
 const (
@@ -94,7 +98,15 @@ const (
 
 // MetricsOverview aggregates the dashboard's numbers out of the telemetry
 // tables. Each source is one bounded GROUP BY; a store that has never seen a
-// flow or an event simply contributes zeroes.
+// build or a log line simply contributes zeroes.
+//
+// The traffic fields are deliberately not filled here. They used to be, from
+// the flows, and they were wrong in the way api's fillOverviewTraffic
+// documents: a flow is attributed by its *destination* endpoint, so a protected
+// preview's requests were credited to the forward-auth gate and an idling
+// environment's to the KEDA interceptor. The API overwrites all six from the
+// request rollups, which are keyed on the Host header, so computing them again
+// here would only be a query nobody reads.
 func (c *Client) MetricsOverview(ctx context.Context, query MetricsQuery) (MetricsOverview, error) {
 	overview := MetricsOverview{
 		DeploysPerDay:   make([]uint64, dailyBuckets),
@@ -111,18 +123,15 @@ func (c *Client) MetricsOverview(ctx context.Context, query MetricsQuery) (Metri
 	if err := c.deployMetrics(ctx, query, dayStart, &overview); err != nil {
 		return overview, err
 	}
-	if err := c.trafficMetrics(ctx, query, hourStart, &overview); err != nil {
-		return overview, err
-	}
 	if err := c.logMetrics(ctx, query, hourStart, &overview); err != nil {
 		return overview, err
 	}
-	if query.Project == "" && query.Namespace == "" {
-		if err := c.namespaceMetrics(ctx, hourStart, &overview); err != nil {
-			return overview, err
-		}
+	stats, err := c.StoreStats(ctx)
+	if err != nil {
+		return overview, err
 	}
-	return overview, c.storeMetrics(ctx, &overview)
+	overview.StoreBytes, overview.StoreRowsPerSecond = stats.BytesOnDisk, stats.RowsPerSecond
+	return overview, nil
 }
 
 func (c *Client) deployMetrics(ctx context.Context, query MetricsQuery, dayStart time.Time, overview *MetricsOverview) error {
@@ -169,56 +178,6 @@ FORMAT JSONEachRow`,
 	return nil
 }
 
-func (c *Client) trafficMetrics(ctx context.Context, query MetricsQuery, hourStart time.Time, overview *MetricsOverview) error {
-	conditions, params := windowConditions(hourStart)
-	if query.Namespace != "" {
-		conditions = append(conditions, "destinationNamespace = {namespace:String}")
-		params["namespace"] = query.Namespace
-	}
-
-	statement := fmt.Sprintf(`SELECT
-    toString(toUnixTimestamp(toStartOfHour(timestamp))) AS bucket,
-    toString(countIf(protocol = 'HTTP')) AS requests,
-    toString(countIf(httpStatus >= 500)) AS errors,
-    quantileIf(0.95)(latencyMs, protocol = 'HTTP' AND latencyMs > 0) AS p95
-FROM %s.%s
-WHERE %s
-GROUP BY bucket
-FORMAT JSONEachRow`,
-		quoteIdentifier(c.cfg.Database), quoteIdentifier(FlowsTable), strings.Join(conditions, " AND "))
-
-	rows, err := c.aggregateRows(ctx, statement, params)
-	if err != nil {
-		return err
-	}
-
-	var errors uint64
-	var p95Sum float64
-	var p95Hours int
-	for _, row := range rows {
-		if i, ok := bucketIndex(row.Bucket, hourStart, time.Hour, hourlyBuckets); ok {
-			overview.RequestsPerHour[i] = row.uint("requests")
-			overview.ErrorsPerHour[i] = row.uint("errors")
-			overview.P95MsPerHour[i] = row.p95()
-			overview.Requests24h += row.uint("requests")
-			errors += row.uint("errors")
-			if row.p95() > 0 {
-				p95Sum += row.p95()
-				p95Hours++
-			}
-		}
-	}
-	if overview.Requests24h > 0 {
-		overview.ErrorRate24h = float64(errors) / float64(overview.Requests24h)
-	}
-	if p95Hours > 0 {
-		// The mean of the hourly p95s, which is an approximation and cheap;
-		// the per-hour series is right there for anyone who wants the shape.
-		overview.P95Ms24h = p95Sum / float64(p95Hours)
-	}
-	return nil
-}
-
 func (c *Client) logMetrics(ctx context.Context, query MetricsQuery, hourStart time.Time, overview *MetricsOverview) error {
 	conditions, params := windowConditionsOn(timeColumnLogs, hourStart)
 	if query.Project != "" {
@@ -248,64 +207,32 @@ FORMAT JSONEachRow`,
 	return nil
 }
 
-func (c *Client) namespaceMetrics(ctx context.Context, hourStart time.Time, overview *MetricsOverview) error {
-	conditions, params := windowConditions(hourStart)
-	statement := fmt.Sprintf(`SELECT
-    destinationNamespace AS bucket,
-    toString(toUnixTimestamp(toStartOfHour(timestamp))) AS hour,
-    toString(countIf(protocol = 'HTTP')) AS requests,
-    toString(countIf(httpStatus >= 500)) AS errors,
-    quantileIf(0.95)(latencyMs, protocol = 'HTTP' AND latencyMs > 0) AS p95
-FROM %s.%s
-WHERE %s AND destinationNamespace != ''
-GROUP BY bucket, hour
-FORMAT JSONEachRow`,
-		quoteIdentifier(c.cfg.Database), quoteIdentifier(FlowsTable), strings.Join(conditions, " AND "))
-
-	rows, err := c.aggregateRows(ctx, statement, params)
-	if err != nil {
-		return err
-	}
-
-	byNamespace := map[string]*NamespaceTraffic{}
-	p95Sum := map[string]float64{}
-	p95Hours := map[string]int{}
-	for _, row := range rows {
-		entry := byNamespace[row.Bucket]
-		if entry == nil {
-			entry = &NamespaceTraffic{Namespace: row.Bucket, RequestsPerHour: make([]uint64, hourlyBuckets)}
-			byNamespace[row.Bucket] = entry
-		}
-		entry.Requests24h += row.uint("requests")
-		entry.Errors5xx24h += row.uint("errors")
-		if i, ok := bucketIndex(row.string("hour"), hourStart, time.Hour, hourlyBuckets); ok {
-			entry.RequestsPerHour[i] = row.uint("requests")
-		}
-		if row.p95() > 0 {
-			p95Sum[row.Bucket] += row.p95()
-			p95Hours[row.Bucket]++
-		}
-	}
-	for namespace, entry := range byNamespace {
-		if hours := p95Hours[namespace]; hours > 0 {
-			entry.P95Ms = p95Sum[namespace] / float64(hours)
-		}
-		overview.Namespaces = append(overview.Namespaces, *entry)
-	}
-	return nil
-}
-
-func (c *Client) storeMetrics(ctx context.Context, overview *MetricsOverview) error {
+// StoreStats reads the store's own size and ingest rate, and nothing else.
+//
+// It is its own read rather than a field of the overview because two callers
+// want only these two numbers and want them often: the signals gatherer takes
+// the store's health on every `/platform/signals` and every environment's
+// diagnostics strip, and the Storage screen shows the same figures. Asking
+// MetricsOverview for them made each of those pay for a day of GROUP BYs over
+// the logs and the events as well — work whose answer was thrown away.
+//
+// MetricsOverview reads it too, so the size the dashboard shows and the size
+// `store.disk` fires on are one query and can never disagree.
+//
+// The two statements are the store's two vantage points: system.parts knows
+// what is on disk, and counting the last five minutes of writes knows whether
+// anything is still arriving. The logs are counted on the exporter's column
+// name and the two tables the operator writes on their own; see timeColumnLogs.
+func (c *Client) StoreStats(ctx context.Context) (StoreStats, error) {
+	var stats StoreStats
 	answer, err := c.Query(ctx, fmt.Sprintf(
 		"SELECT toString(sum(bytes_on_disk)) FROM system.parts WHERE database = %s AND active",
 		quoteLiteral(c.cfg.Database)))
 	if err != nil {
-		return err
+		return stats, err
 	}
-	overview.StoreBytes, _ = strconv.ParseUint(strings.TrimSpace(answer), 10, 64)
+	stats.BytesOnDisk, _ = strconv.ParseUint(strings.TrimSpace(answer), 10, 64)
 
-	// The logs are counted on the exporter's column name and the two tables
-	// the operator writes on their own; see timeColumnLogs.
 	db := quoteIdentifier(c.cfg.Database)
 	answer, err = c.Query(ctx, fmt.Sprintf(`SELECT toString(
     (SELECT count() FROM %s.%s WHERE %s >= now() - INTERVAL 5 MINUTE)
@@ -315,12 +242,16 @@ func (c *Client) storeMetrics(ctx context.Context, overview *MetricsOverview) er
 		db, quoteIdentifier(FlowsTable), timeColumnKitchen,
 		db, quoteIdentifier(EventsTable), timeColumnKitchen))
 	if err != nil {
-		return err
+		return stats, err
 	}
 	rows, _ := strconv.ParseUint(strings.TrimSpace(answer), 10, 64)
-	overview.StoreRowsPerSecond = float64(rows) / (5 * 60)
-	return nil
+	stats.RowsPerSecond = float64(rows) / storeIngestWindowSeconds
+	return stats, nil
 }
+
+// storeIngestWindowSeconds is the five minutes of writes the ingest rate is
+// averaged over, in the unit the rate is reported in.
+const storeIngestWindowSeconds = 5 * 60
 
 // aggregateRow is one JSONEachRow answer of an aggregation: a bucket key plus
 // whatever numeric columns the query selected, kept as raw strings because
@@ -338,19 +269,6 @@ func (r aggregateRow) string(name string) string {
 func (r aggregateRow) uint(name string) uint64 {
 	value, _ := strconv.ParseUint(r.string(name), 10, 64)
 	return value
-}
-
-// p95 reads the one float column the aggregations select. ClickHouse renders
-// a quantile over no rows as null, which reads back as 0 here.
-func (r aggregateRow) p95() float64 {
-	switch value := r.fields["p95"].(type) {
-	case float64:
-		return value
-	case string:
-		parsed, _ := strconv.ParseFloat(value, 64)
-		return parsed
-	}
-	return 0
 }
 
 func (c *Client) aggregateRows(ctx context.Context, statement string, params map[string]string) ([]aggregateRow, error) {

@@ -8,6 +8,7 @@ import { releaseHistoryEntry, releaseHistoryLabel } from "../lib/status";
 import { useAsync, usePoll } from "../lib/useAsync";
 import ClaimModal from "../components/ClaimModal.vue";
 import ConditionsTable from "../components/ConditionsTable.vue";
+import EnvironmentCard from "../components/EnvironmentCard.vue";
 import PhaseBadge from "../components/PhaseBadge.vue";
 import StatusDot from "../components/StatusDot.vue";
 
@@ -39,6 +40,14 @@ const production = computed(() =>
   data.value?.environments.find((e) => e.name === data.value?.project.productionEnvironment),
 );
 const previews = computed(() => (data.value?.environments ?? []).filter((e) => e.type === "preview"));
+// The mini-cards, production first: previews and production at a glance, with
+// what each one served, how much of it failed and how slow it was — so nobody
+// has to open five environments to find the one that is unwell.
+const environmentCards = computed(() => {
+  const environments = data.value?.environments ?? [];
+  const first = production.value;
+  return first ? [first, ...environments.filter((e) => e.name !== first.name)] : environments;
+});
 const latestBuild = computed(() => data.value?.builds[0]);
 const framework = computed(() => data.value?.builds.find((b) => b.detectedFramework)?.detectedFramework);
 
@@ -349,6 +358,12 @@ function host(url?: string): string {
           <p class="text-xs text-muted mb-1">Running since</p>
           <p class="text-sm text-toned">{{ timeAgo(production.createdAt) }}</p>
         </div>
+      </div>
+
+      <!-- Every environment the project runs, with the last day's traffic on
+           it. Health first: a Live environment answering 5xx is not green. -->
+      <div v-if="environmentCards.length" class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <EnvironmentCard v-for="environment in environmentCards" :key="environment.name" :environment="environment" />
       </div>
 
       <ConditionsTable v-if="operatorMode" :conditions="project.conditions" />

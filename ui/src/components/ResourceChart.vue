@@ -14,9 +14,16 @@ import { computed, ref } from "vue";
 const props = withDefaults(
   defineProps<{
     label: string;
-    points: { start: string; value: number; peak?: number }[];
+    /** `value` is the headline series; `peak` the higher one drawn dashed
+     * above it, `base` the lower one drawn faintly beneath. Two of the three
+     * are optional because most measurements are one line and a spike — the
+     * third is for latency, where p50 under p95 under p99 is the shape, and the
+     * distance between them is the whole reading. */
+    points: { start: string; value: number; peak?: number; base?: number }[];
     /** Renders a value for the header and the tooltip. */
     format: (value: number) => string;
+    /** What the series are, in a word, beside the label: `p50 · p95 · p99`. */
+    hint?: string;
     /** The ceiling this measurement runs under, drawn as a dashed line when
      * it is set. Zero means no limit, which is a fact and not a limit of
      * nothing. */
@@ -61,7 +68,7 @@ function y(value: number): number {
 
 /** The line itself. Stepped series hold their value until the next point,
  * which is what a replica count actually does. */
-function line(pick: (point: { value: number; peak?: number }) => number): string {
+function line(pick: (point: { value: number; peak?: number; base?: number }) => number): string {
   const points = props.points;
   if (!points.length) return "";
   const parts: string[] = [];
@@ -80,6 +87,9 @@ function line(pick: (point: { value: number; peak?: number }) => number): string
 const path = computed(() => line((point) => point.value));
 const peakPath = computed(() =>
   props.points.some((point) => (point.peak ?? 0) > point.value) ? line((point) => point.peak ?? point.value) : "",
+);
+const basePath = computed(() =>
+  props.points.some((point) => point.base !== undefined) ? line((point) => point.base ?? point.value) : "",
 );
 
 /** The same line closed against the baseline, so the magnitude reads at a
@@ -125,11 +135,19 @@ function time(iso: string): string {
 <template>
   <div class="rounded-md border border-default bg-muted px-3 py-2">
     <div class="flex items-baseline justify-between text-[11px] mb-1 gap-2">
-      <span class="text-muted truncate">{{ label }}</span>
+      <span class="text-muted truncate">
+        {{ label }}<span v-if="hint" class="text-dimmed ml-1">{{ hint }}</span>
+      </span>
       <span class="font-mono tabular-nums shrink-0" :class="empty ? 'text-dimmed' : 'text-highlighted'">
         <template v-if="current">
           <span v-if="hovered !== null" class="text-dimmed mr-1">{{ time(current.start) }}</span>
+          <!-- All three, where there are three: a p95 alone says nothing about
+               how far the tail runs past it. -->
+          <span v-if="current.base !== undefined" class="text-dimmed">{{ format(current.base) }} · </span>
           {{ format(current.value) }}
+          <span v-if="current.base !== undefined && current.peak !== undefined" class="text-dimmed">
+            · {{ format(current.peak) }}</span
+          >
           <span v-if="limit > 0" class="text-dimmed">/ {{ format(limit) }}</span>
         </template>
         <template v-else>—</template>
@@ -158,6 +176,17 @@ function time(iso: string): string {
         vector-effect="non-scaling-stroke"
       />
       <path v-if="area" :d="area" fill="currentColor" class="opacity-15" />
+      <!-- The lower series, where there is one: the median under the tail. -->
+      <path
+        v-if="basePath"
+        :d="basePath"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="1"
+        stroke-dasharray="1 3"
+        class="opacity-60"
+        vector-effect="non-scaling-stroke"
+      />
       <!-- The peak inside each bucket, where it differs from the mean: a mean
            that never touched the limit says nothing about a spike that did. -->
       <path

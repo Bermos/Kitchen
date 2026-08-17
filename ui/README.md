@@ -30,12 +30,20 @@ after the Kitchen design mockups (IBM Plex, dark, conditions-first).
 - **Status display.** Phases are the coarse summary; the views read
   `status.conditions` for detail (docs/CRDS.md), and the Operator toggle in
   the top bar surfaces the full condition tables on every object.
-- **"Live" logs.** The log endpoints are bounded queries, so live is honest
-  polling while a build runs or an environment deploys; streaming is an open
-  item on the API.
+- **"Live" logs.** The log endpoints stream as Server-Sent Events when asked to,
+  and the viewers fall back to re-running the bounded query every few seconds
+  where a stream cannot be established. The request list tails the same way.
 - **Navigation.** ⌘K opens a palette over everything the API lists — projects,
   environments, builds, domains, pages. The sidebar carries live counts from
   the same collections.
+- **Requests.** The environment page's Signals section reads the four request
+  endpoints: golden-signal tiles, traffic/error/latency charts marked with the
+  activity feed's deploys, a route table whose selected row filters the header,
+  the charts and the list, and the requests themselves — each one click from
+  the log lines the environment wrote around it. An environment nothing
+  publishes on the shared Gateway says exactly that and leads with what is real
+  for any workload instead: what it wrote, what it used against its limits, and
+  how often it restarted.
 - **Observability.** The query bar takes a real ClickHouse boolean expression
   over the logs table (`GET /api/v1/logs?where=…`, read-only and capped
   server-side), and a refused expression shows ClickHouse's own diagnostic.
