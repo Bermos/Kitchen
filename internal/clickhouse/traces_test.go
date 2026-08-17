@@ -67,7 +67,7 @@ func TestTraceFiltersAreOverTheTraceNotItsSpans(t *testing.T) {
 	if !strings.Contains(store.query, "HAVING") {
 		t.Fatalf("the filters belong in a HAVING:\n%s", store.query)
 	}
-	if strings.Contains(store.query, "WHERE statusCode") {
+	if strings.Contains(store.query, "WHERE "+spanStatusCode) {
 		t.Fatalf("filtering the spans would drop the healthy half of a failed trace:\n%s", store.query)
 	}
 	if got := store.params.Get("param_minDuration"); got != "250" {
@@ -114,6 +114,12 @@ func TestTracesScopeTravelsAsParameters(t *testing.T) {
 			t.Fatalf("%s should be %q, got %q", name, want, got)
 		}
 	}
+	// `service` is the emitting process's name, which is the exporter's
+	// column; the other two are Kitchen's own and are named the same on both
+	// sides.
+	if !strings.Contains(store.query, "ServiceName = {service:String}") {
+		t.Fatalf("the service filter should read the exporter's column:\n%s", store.query)
+	}
 }
 
 func TestATraceWindowMustEndAfterItStarts(t *testing.T) {
@@ -129,11 +135,15 @@ func TestATraceWindowMustEndAfterItStarts(t *testing.T) {
 	}
 }
 
-// One trace is read by id and nothing else. A window would break the one link
-// that makes traces worth collecting — a log line offering its trace.
+// One trace is read by an id and nothing else — a window the caller had to
+// know would break the one link that makes traces worth collecting, a log line
+// offering its trace. The bound the query does carry is found, not demanded:
+// see TestATraceIsBoundedByTheLookupTable.
 func TestOneTraceIsReadByIdAlone(t *testing.T) {
 	store := newFakeLogStore(t)
-	store.rows = strings.Join([]string{
+	// The lookup is asked first and has nothing to say, so the span read is
+	// unbounded and gets the rows.
+	store.answer = spanAnswer(strings.Join([]string{
 		`{"ts":"2026-08-16T10:00:00.000000Z","traceId":"9d8d0f","spanId":"s1","parentSpanId":"",` +
 			`"name":"GET /checkout","kind":"SERVER","service":"shop","project":"shop","environment":"production",` +
 			`"durationMs":420.5,"statusCode":"ERROR","statusMessage":"boom","httpStatus":"500",` +
@@ -142,7 +152,7 @@ func TestOneTraceIsReadByIdAlone(t *testing.T) {
 			`"name":"SELECT orders","kind":"CLIENT","service":"shop-db","project":"shop","environment":"production",` +
 			`"durationMs":390,"statusCode":"UNSET","statusMessage":"","httpStatus":"0",` +
 			`"attributes":{},"resource":{}}`,
-	}, "\n")
+	}, "\n"))
 
 	spans, err := store.client(t).Trace(context.Background(), "9d8d0f")
 	if err != nil {
@@ -170,9 +180,6 @@ func TestOneTraceIsReadByIdAlone(t *testing.T) {
 	if got := store.params.Get("param_traceId"); got != "9d8d0f" {
 		t.Fatalf("the id should have travelled as a parameter, got %q", got)
 	}
-	if strings.Contains(store.query, "timestamp >=") {
-		t.Fatalf("reading one trace should not need a window:\n%s", store.query)
-	}
 }
 
 func TestATraceNeedsAnId(t *testing.T) {
@@ -182,33 +189,130 @@ func TestATraceNeedsAnId(t *testing.T) {
 	}
 }
 
-func TestInsertingSpansWritesMicroseconds(t *testing.T) {
-	store := newFakeLogStore(t)
+func micros(at time.Time) string {
+	return stamp(at) + "000000"
+}
 
-	err := store.client(t).InsertSpans(context.Background(), []Span{{
-		Timestamp:  time.Date(2026, 8, 16, 10, 0, 0, 123456000, time.UTC),
-		TraceID:    "9d8d0f",
-		SpanID:     "s1",
-		Name:       "GET /checkout",
-		Service:    "shop",
-		DurationMs: 420.5,
-		StatusCode: StatusError,
-		HTTPStatus: 500,
-	}})
-	if err != nil {
-		t.Fatalf("InsertSpans: %v", err)
+// The lookup table earns its place here. The span table is ordered by
+// (project, environment, Timestamp), so an id lookup with no time bound reads
+// the retention; the lookup answers "when did this trace happen" in one point
+// read and the span query is bounded by it.
+func TestATraceIsBoundedByTheLookupTable(t *testing.T) {
+	store := newFakeLogStore(t)
+	start := time.Date(2026, 8, 16, 10, 0, 0, 0, time.UTC)
+	store.answer = lookupAnswer(
+		`{"first":"` + stamp(start) + `","last":"` + stamp(start.Add(time.Second)) + `","rows":"1"}`)
+
+	if _, err := store.client(t).Trace(context.Background(), "9d8d0f"); err != nil {
+		t.Fatalf("Trace: %v", err)
 	}
-	for _, fragment := range []string{
-		"INSERT INTO `kitchen`.`traces` FORMAT JSONEachRow",
-		`"timestamp":"2026-08-16 10:00:00.123456"`,
-		`"httpStatus":500`,
+	if !store.sawQuery("FROM " + qualified(TracesIDLookupTable)) {
+		t.Fatalf("the window should have been read out of the lookup table:\n%s", store.transcript())
+	}
+	if !store.sawQuery(spanSinceCondition) || !store.sawQuery(spanUntilCondition) {
+		t.Fatalf("the span read should be bounded by what the lookup answered:\n%s", store.transcript())
+	}
+	// The lookup keeps whole seconds where the spans keep nanoseconds, so the
+	// bounds are widened rather than compared as they are — a span 400ms into
+	// the trace's last second sits after the End the view recorded.
+	if got := store.params.Get("param_until"); !strings.HasPrefix(got, "2026-08-16T10:00:02") {
+		t.Fatalf("the upper bound should be widened past the recorded end, got %q", got)
+	}
+	if got := store.params.Get("param_since"); !strings.HasPrefix(got, "2026-08-16T09:59:59") {
+		t.Fatalf("the lower bound should be widened before the recorded start, got %q", got)
+	}
+}
+
+// A trace the lookup has never heard of is still read, unbounded. That is the
+// gap between a span being written and the materialized view's part becoming
+// visible, and answering "not found" there would make a fresh trace unopenable
+// for exactly the seconds that matter most.
+func TestATraceTheLookupHasNotSeenYetIsStillRead(t *testing.T) {
+	store := newFakeLogStore(t)
+	store.answer = lookupAnswer(`{"first":"0","last":"0","rows":"0"}`)
+
+	if _, err := store.client(t).Trace(context.Background(), "9d8d0f"); err != nil {
+		t.Fatalf("Trace: %v", err)
+	}
+	if store.sawQuery(spanSinceCondition) {
+		t.Fatalf("with no window to be had the read should not invent one:\n%s", store.transcript())
+	}
+	if !store.sawQuery("TraceId = {traceId:String}") {
+		t.Fatalf("the id is still the filter:\n%s", store.transcript())
+	}
+}
+
+// The exporter's units are not the API's: nanoseconds become milliseconds and
+// `Error` becomes ERROR. Both conversions happen in the projection, so every
+// caller sees one spelling.
+func TestSpansAreConvertedOutOfTheExportersUnits(t *testing.T) {
+	store := newFakeLogStore(t)
+	if _, err := store.client(t).Trace(context.Background(), "9d8d0f"); err != nil {
+		t.Fatalf("Trace: %v", err)
+	}
+	for _, want := range []string{
+		spanDurationMs + " AS durationMs",
+		spanStatusCode + " AS statusCode",
+		"SpanName AS name",
+		"SpanKind AS kind",
+		"ServiceName AS service",
 	} {
-		if !strings.Contains(store.query, fragment) {
-			t.Fatalf("the insert should have carried %s:\n%s", fragment, store.query)
+		if !store.sawQuery(want) {
+			t.Errorf("the projection is missing %q:\n%s", want, store.transcript())
 		}
 	}
 }
 
-func micros(at time.Time) string {
-	return stamp(at) + "000000"
+// The HTTP status is an attribute rather than a column, and semconv renamed it
+// — `http.status_code` was stable for years before `http.response.status_code`
+// replaced it. Both are still emitted in the wild, so both are read.
+func TestTheHTTPStatusReadsBothSemconvSpellings(t *testing.T) {
+	store := newFakeLogStore(t)
+	if _, err := store.client(t).Traces(context.Background(), TraceQuery{}); err != nil {
+		t.Fatalf("Traces: %v", err)
+	}
+	for _, attribute := range []string{"http.response.status_code", "http.status_code"} {
+		if !strings.Contains(store.query, "SpanAttributes['"+attribute+"']") {
+			t.Errorf("the status should be read from %q:\n%s", attribute, store.query)
+		}
+	}
+}
+
+// A trace's duration is the envelope of its spans, computed in the nanoseconds
+// the columns already hold and divided once — a span's Timestamp is its start,
+// so its end is that plus Duration.
+func TestTheTraceDurationIsTheEnvelopeInNanoseconds(t *testing.T) {
+	store := newFakeLogStore(t)
+	if _, err := store.client(t).Traces(context.Background(), TraceQuery{}); err != nil {
+		t.Fatalf("Traces: %v", err)
+	}
+	want := "(max(toUnixTimestamp64Nano(Timestamp) + toInt64(Duration)) - min(toUnixTimestamp64Nano(Timestamp))) / 1e6"
+	if !strings.Contains(store.query, want) {
+		t.Fatalf("want the envelope %q:\n%s", want, store.query)
+	}
+}
+
+// A Trace read is two round trips — the lookup for the window, then the spans —
+// and the two answer in different shapes. These serve one and leave the other
+// empty, so neither is handed the other's rows to parse.
+
+// lookupAnswer serves the trace-id lookup its row and the span query nothing.
+func lookupAnswer(row string) func(string) string {
+	return func(query string) string {
+		if strings.Contains(query, TracesIDLookupTable) {
+			return row
+		}
+		return ""
+	}
+}
+
+// spanAnswer serves the span query its rows and the lookup nothing, which is a
+// trace the lookup has not caught up with.
+func spanAnswer(rows string) func(string) string {
+	return func(query string) string {
+		if strings.Contains(query, TracesIDLookupTable) {
+			return ""
+		}
+		return rows
+	}
 }

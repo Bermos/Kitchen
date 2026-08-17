@@ -29,11 +29,20 @@ import (
 )
 
 // fakeLogStore answers log queries with rows, and records what it was asked.
+//
+// `query` is the last statement, which is all most readers send. `queries` is
+// every one of them, for the readers that take more than one round trip — see
+// Trace, which asks the lookup table when a trace happened before it asks for
+// its spans.
 type fakeLogStore struct {
-	server *httptest.Server
-	query  string
-	params url.Values
-	rows   string
+	server  *httptest.Server
+	query   string
+	queries []string
+	params  url.Values
+	rows    string
+	// answer overrides rows per statement, so a two-round-trip reader can be
+	// given a different answer for each.
+	answer func(query string) string
 }
 
 func newFakeLogStore(t *testing.T) *fakeLogStore {
@@ -42,11 +51,31 @@ func newFakeLogStore(t *testing.T) *fakeLogStore {
 	store.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		store.query = string(body)
+		store.queries = append(store.queries, store.query)
 		store.params = r.URL.Query()
-		_, _ = io.WriteString(w, store.rows)
+
+		rows := store.rows
+		if store.answer != nil {
+			rows = store.answer(store.query)
+		}
+		_, _ = io.WriteString(w, rows)
 	}))
 	t.Cleanup(store.server.Close)
 	return store
+}
+
+// sawQuery reports whether any statement carried the fragment.
+func (s *fakeLogStore) sawQuery(fragment string) bool {
+	for _, query := range s.queries {
+		if strings.Contains(query, fragment) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *fakeLogStore) transcript() string {
+	return strings.Join(s.queries, "\n---\n")
 }
 
 func (s *fakeLogStore) client(t *testing.T) *Client {
@@ -58,9 +87,9 @@ func (s *fakeLogStore) client(t *testing.T) *Client {
 	return New(Config{
 		Host:     endpoint.Hostname(),
 		HTTPPort: endpoint.Port(),
-		Database: "kitchen",
-		Username: "kitchen",
-		Password: "hunter2",
+		Database: testDatabase,
+		Username: testUsername,
+		Password: testPassword,
 	})
 }
 
@@ -164,7 +193,7 @@ func TestFilterLogsRunsTheExpressionReadOnly(t *testing.T) {
 	since := time.Date(2026, 8, 13, 9, 0, 0, 0, time.UTC)
 	lines, err := store.client(t).FilterLogs(context.Background(), LogFilter{
 		LogSelection: LogSelection{
-			Where: "project = 'shop' AND stream = 'stderr'",
+			Where: "project = 'shop' AND SeverityText = 'ERROR'",
 			Since: since,
 		},
 		Limit: 10,
@@ -179,7 +208,7 @@ func TestFilterLogsRunsTheExpressionReadOnly(t *testing.T) {
 	// The expression is the feature, so it appears in the query text as
 	// written — which is exactly why the query must be pinned read-only and
 	// time-capped.
-	if !strings.Contains(store.query, "(project = 'shop' AND stream = 'stderr')") {
+	if !strings.Contains(store.query, "(project = 'shop' AND SeverityText = 'ERROR')") {
 		t.Fatalf("the expression should reach the query text as written:\n%s", store.query)
 	}
 	if got := store.params.Get("readonly"); got != "2" {
@@ -222,13 +251,13 @@ func TestTheFormattedTimestampDoesNotShadowTheColumn(t *testing.T) {
 
 func assertNoShadow(t *testing.T, query string) {
 	t.Helper()
-	if strings.Contains(query, "AS timestamp") {
+	if strings.Contains(query, "AS "+timeColumnLogs) {
 		t.Fatalf("the formatted timestamp must not take the column's name:\n%s", query)
 	}
 	if !strings.Contains(query, "AS "+timestampAlias) {
 		t.Fatalf("the formatted timestamp should be selected as %q:\n%s", timestampAlias, query)
 	}
-	if !strings.Contains(query, "timestamp >= parseDateTime64BestEffort({since:String}, 3, 'UTC')") {
+	if !strings.Contains(query, logSinceCondition) {
 		t.Fatalf("the window should compare the column:\n%s", query)
 	}
 }
@@ -271,7 +300,10 @@ func TestARefusedQueryIsTypedAsTheCallersError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	client := New(Config{Host: endpoint.Hostname(), HTTPPort: endpoint.Port(), Database: "kitchen", Username: "kitchen"})
+	client := New(Config{
+		Host: endpoint.Hostname(), HTTPPort: endpoint.Port(),
+		Database: testDatabase, Username: testUsername,
+	})
 
 	_, err = client.FilterLogs(context.Background(), LogFilter{
 		LogSelection: LogSelection{Where: "projct = 'shop'"},
@@ -282,5 +314,80 @@ func TestARefusedQueryIsTypedAsTheCallersError(t *testing.T) {
 	}
 	if !strings.Contains(queryErr.Message, "Syntax error") {
 		t.Fatalf("the diagnostic should survive: %v", queryErr)
+	}
+}
+
+// The API's vocabulary is not the table's. The lines come back with Kitchen's
+// names because the projection renames them on the way out — there are no
+// ALIAS columns in the DDL doing it quietly.
+func TestTheProjectionTranslatesTheExportersColumns(t *testing.T) {
+	store := newFakeLogStore(t)
+	if _, err := store.client(t).FilterLogs(context.Background(), LogFilter{}); err != nil {
+		t.Fatalf("FilterLogs: %v", err)
+	}
+	for _, want := range []string{
+		"Body AS message",
+		"TraceId AS traceId",
+		"SpanId AS spanId",
+		"LogAttributes AS fields",
+		logLevelColumn + " AS level",
+	} {
+		if !strings.Contains(store.query, want) {
+			t.Errorf("the projection is missing %q:\n%s", want, store.query)
+		}
+	}
+	// The Kitchen columns are materialized under these names already, so
+	// nothing renames them.
+	for _, column := range []string{
+		"source", "project", "environment", "build", "pod", "container", "stream",
+	} {
+		if strings.Contains(store.query, column+" AS "+column) {
+			t.Errorf("%s is already its own name and should not be re-aliased:\n%s", column, store.query)
+		}
+	}
+	if !strings.Contains(store.query, "FROM "+qualified(LogsTable)) {
+		t.Errorf("the lines should come off the OTel log table:\n%s", store.query)
+	}
+}
+
+// The level is folded to lower case on the way out. OTel leaves the spelling of
+// SeverityText to whatever produced the line, and Kitchen's levels have always
+// been lower case — the histogram counts `error`, the facet offers `error`, and
+// clicking it has to produce a query that matches.
+func TestTheLevelIsFoldedRatherThanPassedThrough(t *testing.T) {
+	store := newFakeLogStore(t)
+	store.rows = `{"ts":"2026-08-13T10:00:01.000Z","level":"error","message":"boom"}`
+
+	lines, err := store.client(t).FilterLogs(context.Background(), LogFilter{
+		LogSelection: LogSelection{Query: "level:error"},
+	})
+	if err != nil {
+		t.Fatalf("FilterLogs: %v", err)
+	}
+	if len(lines) != 1 || lines[0].Level != levelError {
+		t.Fatalf("unexpected lines: %+v", lines)
+	}
+	if !strings.Contains(store.query, logLevelColumn+" = {q0:String}") {
+		t.Fatalf("the level query should compare the folded column:\n%s", store.query)
+	}
+}
+
+// A line's timestamp survives at microsecond resolution. The column is
+// DateTime64(9) and ClickHouse renders six fractional digits, which is finer
+// than the millisecond the pre-collector table kept.
+func TestALineKeepsItsMicroseconds(t *testing.T) {
+	store := newFakeLogStore(t)
+	store.rows = `{"ts":"2026-08-13T10:00:01.123456Z","message":"boom"}`
+
+	lines, err := store.client(t).FilterLogs(context.Background(), LogFilter{})
+	if err != nil {
+		t.Fatalf("FilterLogs: %v", err)
+	}
+	if len(lines) != 1 {
+		t.Fatalf("want one line, got %d", len(lines))
+	}
+	want := time.Date(2026, 8, 13, 10, 0, 1, 123456000, time.UTC)
+	if !lines[0].Timestamp.Equal(want) {
+		t.Fatalf("want %s, got %s", want, lines[0].Timestamp)
 	}
 }

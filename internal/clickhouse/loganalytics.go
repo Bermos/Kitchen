@@ -127,16 +127,16 @@ func (c *Client) LogHistogram(ctx context.Context, query LogHistogramQuery) (Log
 	params["bucket"] = strconv.Itoa(width)
 
 	statement := fmt.Sprintf(`SELECT
-    toString(toUnixTimestamp(toStartOfInterval(timestamp, toIntervalSecond({bucket:UInt32})))) AS bucket,
+    toString(toUnixTimestamp(toStartOfInterval(Timestamp, toIntervalSecond({bucket:UInt32})))) AS bucket,
     toString(count()) AS hits,
-    toString(countIf(level IN ('error', 'fatal'))) AS errors,
-    toString(countIf(level = 'warn')) AS warnings
-FROM %s.%s
-%s
+    toString(countIf(%[1]s IN ('error', 'fatal'))) AS errors,
+    toString(countIf(%[1]s = 'warn')) AS warnings
+FROM %[2]s.%[3]s
+%[4]s
 GROUP BY bucket
 ORDER BY bucket
 FORMAT JSONEachRow`,
-		quoteIdentifier(c.cfg.Database), quoteIdentifier(LogsTable), where)
+		logLevelColumn, quoteIdentifier(c.cfg.Database), quoteIdentifier(LogsTable), where)
 
 	rows, err := c.selectionRows(ctx, statement, params)
 	if err != nil {
@@ -195,8 +195,8 @@ func (c *Client) logWindow(ctx context.Context, selection LogSelection) (time.Ti
 		return time.Time{}, time.Time{}, err
 	}
 	statement := fmt.Sprintf(`SELECT
-    toString(toUnixTimestamp(min(timestamp))) AS first,
-    toString(toUnixTimestamp(max(timestamp))) AS last
+    toString(toUnixTimestamp(min(Timestamp))) AS first,
+    toString(toUnixTimestamp(max(Timestamp))) AS last
 FROM %s.%s
 %s
 FORMAT JSONEachRow`,
@@ -250,9 +250,9 @@ const MaxFacetValues = 20
 // LogFacetQuery asks what values a selection's lines actually hold.
 type LogFacetQuery struct {
 	LogSelection
-	// Fields names the columns to count. Anything that is not a column is a
-	// structured field of the line, exactly as in the query language, so
-	// `http.status` facets over `fields['http.status']`.
+	// Fields names the columns to count. Anything that is not a column is an
+	// attribute of the line, exactly as in the query language, so
+	// `http.status` facets over `LogAttributes['http.status']`.
 	Fields []string
 	// Limit is the values per facet, most common first.
 	Limit int
@@ -436,7 +436,7 @@ func (c *Client) LogPatterns(ctx context.Context, query LogPatternQuery) ([]LogP
 	params["limit"] = strconv.Itoa(limit)
 	params["scan"] = strconv.Itoa(scan)
 
-	normalised := "message"
+	normalised := logMessageColumn
 	for _, normaliser := range patternNormalisers {
 		normalised = fmt.Sprintf("replaceRegexpAll(%s, %s, %s)",
 			normalised, quoteLiteral(normaliser.pattern), quoteLiteral(normaliser.replacement))
@@ -447,20 +447,21 @@ func (c *Client) LogPatterns(ctx context.Context, query LogPatternQuery) ([]LogP
     toString(count()) AS hits,
     any(level) AS level,
     any(message) AS sample,
-    toString(toUnixTimestamp(min(timestamp))) AS first,
-    toString(toUnixTimestamp(max(timestamp))) AS last
+    toString(toUnixTimestamp(min(ts))) AS first,
+    toString(toUnixTimestamp(max(ts))) AS last
 FROM (
-    SELECT timestamp, level, message, %s AS pattern
+    SELECT Timestamp AS ts, %s AS level, %s AS message, %s AS pattern
     FROM %s.%s
     %s
-    ORDER BY timestamp DESC
+    ORDER BY Timestamp DESC
     LIMIT {scan:UInt32}
 )
 GROUP BY pattern
 ORDER BY count() DESC
 LIMIT {limit:UInt32}
 FORMAT JSONEachRow`,
-		normalised, quoteIdentifier(c.cfg.Database), quoteIdentifier(LogsTable), where)
+		logLevelColumn, logMessageColumn, normalised,
+		quoteIdentifier(c.cfg.Database), quoteIdentifier(LogsTable), where)
 
 	rows, err := c.selectionRows(ctx, statement, params)
 	if err != nil {

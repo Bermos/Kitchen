@@ -18,6 +18,7 @@ package clickhouse
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -27,6 +28,16 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
+
+// The fixture connection every test in this package builds a client from.
+const (
+	testDatabase = "kitchen"
+	testUsername = "kitchen"
+	testPassword = "hunter2"
+	// levelError is the severity the fixtures carry, asserted on in enough
+	// places that goconst objects to the literal.
+	levelError = "error"
 )
 
 // fakeStore records the statements it is sent and answers the one query the
@@ -68,9 +79,9 @@ func (s *fakeStore) client(t *testing.T) *Client {
 	return New(Config{
 		Host:     endpoint.Hostname(),
 		HTTPPort: endpoint.Port(),
-		Database: "kitchen",
-		Username: "kitchen",
-		Password: "hunter2",
+		Database: testDatabase,
+		Username: testUsername,
+		Password: testPassword,
 	})
 }
 
@@ -83,6 +94,15 @@ func (s *fakeStore) sent(fragment string) bool {
 	return false
 }
 
+func (s *fakeStore) transcript() string {
+	return strings.Join(s.queries, "\n---\n")
+}
+
+// qualified renders a table the way the DDL names it.
+func qualified(table string) string {
+	return fmt.Sprintf("%s.%s", quoteIdentifier(testDatabase), quoteIdentifier(table))
+}
+
 func TestEnsureLogsSchemaCreatesTheTable(t *testing.T) {
 	store := newFakeStore(t)
 	// A table that does not exist yet reports no engine at all.
@@ -93,63 +113,159 @@ func TestEnsureLogsSchemaCreatesTheTable(t *testing.T) {
 	}
 
 	for _, want := range []string{
-		"CREATE DATABASE IF NOT EXISTS `kitchen`",
-		"CREATE TABLE IF NOT EXISTS `kitchen`.`logs`",
-		"ORDER BY (project, environment, timestamp)",
-		"TTL toDateTime(timestamp) + toIntervalDay(14)",
+		"CREATE DATABASE IF NOT EXISTS " + quoteIdentifier(testDatabase),
+		"CREATE TABLE IF NOT EXISTS " + qualified(LogsTable),
+		// Project-scoped, which is the whole reason the operator owns this DDL
+		// rather than letting the exporter create its own.
+		"ORDER BY (project, environment, Timestamp)",
+		"TTL toDateTime(Timestamp) + toIntervalDay(14)",
+		"ttl_only_drop_parts = 1",
 	} {
 		if !store.sent(want) {
-			t.Errorf("expected a statement containing %q, got:\n%s", want, strings.Join(store.queries, "\n---\n"))
+			t.Errorf("expected a statement containing %q, got:\n%s", want, store.transcript())
 		}
+	}
+}
+
+// Kitchen's columns have to be MATERIALIZED, and that is not a style choice:
+// a materialized value is computed at insert, which is what lets it sit in the
+// ordering key, and it is absent from every INSERT column list, which is what
+// lets a stock exporter write this table without knowing Kitchen exists.
+func TestKitchenColumnsAreMaterializedAndOrderable(t *testing.T) {
+	ddl := createLogsTable(testDatabase, 30)
+
+	for _, want := range []string{
+		"project     LowCardinality(String) MATERIALIZED ResourceAttributes['kitchen.project']",
+		"environment LowCardinality(String) MATERIALIZED ResourceAttributes['deployment.environment.name']",
+		"build       LowCardinality(String) MATERIALIZED ResourceAttributes['kitchen.build']",
+		"source      LowCardinality(String) MATERIALIZED ResourceAttributes['kitchen.source']",
+		"namespace   LowCardinality(String) MATERIALIZED ResourceAttributes['k8s.namespace.name']",
+		"pod         String                 MATERIALIZED ResourceAttributes['k8s.pod.name']",
+		"container   LowCardinality(String) MATERIALIZED ResourceAttributes['k8s.container.name']",
+		"node        LowCardinality(String) MATERIALIZED ResourceAttributes['k8s.node.name']",
+	} {
+		if !strings.Contains(ddl, want) {
+			t.Errorf("the log table is missing %q:\n%s", want, ddl)
+		}
+	}
+
+	// Every OTel table carries the same set, because every one of them is read
+	// per project.
+	for name, table := range map[string]string{
+		LogsTable:         createLogsTable(testDatabase, 30),
+		TracesTable:       createTracesTable(testDatabase, 30),
+		MetricsGaugeTable: metricsTableDDL(testDatabase, 30)[MetricsGaugeTable],
+	} {
+		if !strings.Contains(table, kitchenColumns) {
+			t.Errorf("%s does not carry the Kitchen columns:\n%s", name, table)
+		}
+	}
+}
+
+// The base columns are the exporter's and are transcribed from its templates.
+// A column missing here is every insert failing at runtime, which is invisible
+// until a collector is actually running.
+func TestTheLogTableCarriesTheExportersColumns(t *testing.T) {
+	ddl := createLogsTable(testDatabase, 30)
+	for _, column := range []string{
+		"Timestamp DateTime64(9)", "TraceId String", "SpanId String", "TraceFlags UInt8",
+		"SeverityText LowCardinality(String)", "SeverityNumber UInt8",
+		"ServiceName LowCardinality(String)", "Body String",
+		"ResourceSchemaUrl LowCardinality(String)",
+		"ResourceAttributes Map(LowCardinality(String), String)",
+		"ScopeSchemaUrl LowCardinality(String)", "ScopeName String",
+		"ScopeVersion LowCardinality(String)",
+		"ScopeAttributes Map(LowCardinality(String), String)",
+		"LogAttributes Map(LowCardinality(String), String)",
+		// Optional upstream, and detected once by a DESC TABLE at collector
+		// startup — so it is included rather than added later.
+		"EventName String",
+	} {
+		if !strings.Contains(ddl, column) {
+			t.Errorf("the log table is missing the exporter's %q:\n%s", column, ddl)
+		}
+	}
+}
+
+// The schema no longer patches columns into a table an older Kitchen created:
+// the old `logs` table is not this one, and an ALTER against it would be a
+// statement about a table nothing writes any more.
+func TestTheSchemaNoLongerPatchesColumnsInPlace(t *testing.T) {
+	store := newFakeStore(t)
+	store.engine = "MergeTree TTL toDateTime(Timestamp) + toIntervalDay(30)"
+
+	if err := store.client(t).EnsureTelemetrySchema(context.Background(), 30); err != nil {
+		t.Fatalf("EnsureTelemetrySchema: %v", err)
+	}
+	if store.sent("ADD COLUMN") {
+		t.Errorf("no column is migrated in place any more, got:\n%s", store.transcript())
+	}
+	// And the tables it replaced are left to their own TTL rather than dropped
+	// out from under whatever is still reading them.
+	if store.sent("DROP TABLE") {
+		t.Errorf("the pre-collector tables age out, they are not dropped, got:\n%s", store.transcript())
 	}
 }
 
 func TestEnsureLogsSchemaAltersTTLWhenRetentionChanges(t *testing.T) {
 	store := newFakeStore(t)
 	// The table exists, retaining 30 days.
-	store.engine = "MergeTree PARTITION BY toDate(timestamp) ORDER BY (project, environment, timestamp) " +
-		"TTL toDateTime(timestamp) + toIntervalDay(30)"
+	store.engine = "MergeTree PARTITION BY toDate(Timestamp) ORDER BY (project, environment, Timestamp) " +
+		"TTL toDateTime(Timestamp) + toIntervalDay(30)"
 
 	if err := store.client(t).EnsureLogsSchema(context.Background(), 7); err != nil {
 		t.Fatalf("EnsureLogsSchema: %v", err)
 	}
 
-	want := "ALTER TABLE `kitchen`.`logs` MODIFY TTL toDateTime(timestamp) + toIntervalDay(7)"
+	want := "ALTER TABLE " + qualified(LogsTable) + " MODIFY TTL toDateTime(Timestamp) + toIntervalDay(7)"
 	if !store.sent(want) {
-		t.Errorf("expected %q, got:\n%s", want, strings.Join(store.queries, "\n---\n"))
+		t.Errorf("expected %q, got:\n%s", want, store.transcript())
 	}
 }
 
 func TestEnsureLogsSchemaLeavesAMatchingTTLAlone(t *testing.T) {
 	store := newFakeStore(t)
-	store.engine = "MergeTree TTL toDateTime(timestamp) + toIntervalDay(30)"
+	store.engine = "MergeTree TTL toDateTime(Timestamp) + toIntervalDay(30)"
 
 	if err := store.client(t).EnsureLogsSchema(context.Background(), 30); err != nil {
 		t.Fatalf("EnsureLogsSchema: %v", err)
 	}
 
 	if store.sent("MODIFY TTL") {
-		t.Errorf("the TTL already matched, no TTL change expected, got:\n%s", strings.Join(store.queries, "\n---\n"))
+		t.Errorf("the TTL already matched, no TTL change expected, got:\n%s", store.transcript())
 	}
 }
 
-func TestEnsureLogsSchemaAddsTheColumnsItGrew(t *testing.T) {
+// A MODIFY TTL naming a column the table does not have is refused rather than
+// ignored, and the tables do not agree on what their time column is called:
+// the exporter stamps `Timestamp` on logs and traces and `TimeUnix` on every
+// metric table, the trace lookup keeps the trace's `Start`, the rollup buckets
+// by `bucket`, and the two tables the operator writes itself use `timestamp`.
+func TestEveryTableGetsItsOwnTimeColumnInTheTTL(t *testing.T) {
 	store := newFakeStore(t)
-	store.engine = "MergeTree TTL toDateTime(timestamp) + toIntervalDay(30)"
+	store.engine = ""
 
-	if err := store.client(t).EnsureLogsSchema(context.Background(), 30); err != nil {
-		t.Fatalf("EnsureLogsSchema: %v", err)
+	if err := store.client(t).EnsureTelemetrySchema(context.Background(), 9); err != nil {
+		t.Fatalf("EnsureTelemetrySchema: %v", err)
 	}
 
-	// A table from before a column is migrated in place — CREATE TABLE IF NOT
-	// EXISTS would not touch it — and on a fresh table the same statement is a
-	// no-op thanks to IF NOT EXISTS.
-	for _, want := range []string{
-		"ALTER TABLE `kitchen`.`logs` ADD COLUMN IF NOT EXISTS level LowCardinality(String) AFTER stream",
-		"ALTER TABLE `kitchen`.`logs` ADD COLUMN IF NOT EXISTS fields Map(String, String) AFTER labels",
+	for table, column := range map[string]string{
+		LogsTable:                        timeColumnLogs,
+		TracesTable:                      timeColumnLogs,
+		TracesIDLookupTable:              timeColumnLookup,
+		MetricsGaugeTable:                timeColumnMetrics,
+		MetricsSumTable:                  timeColumnMetrics,
+		MetricsHistogramTable:            timeColumnMetrics,
+		MetricsExponentialHistogramTable: timeColumnMetrics,
+		MetricsSummaryTable:              timeColumnMetrics,
+		MetricsRollupTable:               timeColumnRollup,
+		EventsTable:                      timeColumnKitchen,
+		FlowsTable:                       timeColumnKitchen,
 	} {
+		want := fmt.Sprintf("ALTER TABLE %s MODIFY TTL toDateTime(%s) + toIntervalDay(9)",
+			qualified(table), column)
 		if !store.sent(want) {
-			t.Errorf("expected %q, got:\n%s", want, strings.Join(store.queries, "\n---\n"))
+			t.Errorf("expected %q, got:\n%s", want, store.transcript())
 		}
 	}
 }
@@ -162,14 +278,58 @@ func TestEnsureTelemetrySchemaCreatesEveryTable(t *testing.T) {
 		t.Fatalf("EnsureTelemetrySchema: %v", err)
 	}
 
-	for _, want := range []string{
-		"CREATE TABLE IF NOT EXISTS `kitchen`.`logs`",
-		"CREATE TABLE IF NOT EXISTS `kitchen`.`events`",
-		"CREATE TABLE IF NOT EXISTS `kitchen`.`flows`",
+	for _, table := range []string{
+		LogsTable, EventsTable, FlowsTable, TracesTable, TracesIDLookupTable,
+		MetricsGaugeTable, MetricsSumTable, MetricsHistogramTable,
+		MetricsExponentialHistogramTable, MetricsSummaryTable, MetricsRollupTable,
 	} {
+		want := "CREATE TABLE IF NOT EXISTS " + qualified(table)
 		if !store.sent(want) {
-			t.Errorf("expected a statement containing %q, got:\n%s", want, strings.Join(store.queries, "\n---\n"))
+			t.Errorf("expected a statement containing %q, got:\n%s", want, store.transcript())
 		}
+	}
+	// The views: one that makes a trace findable by id, and two that fill the
+	// rollup from the two tables its numbers live in.
+	for _, view := range []string{TracesIDLookupView, MetricsRollupGaugeView, MetricsRollupSumView} {
+		want := "CREATE MATERIALIZED VIEW IF NOT EXISTS " + qualified(view)
+		if !store.sent(want) {
+			t.Errorf("expected a statement containing %q, got:\n%s", want, store.transcript())
+		}
+	}
+}
+
+// The rollup is fed from two tables because its numbers live in two: usage and
+// limits are gauges, restarts and OOM kills are delta sums. A view reads one
+// table, so there are two of them writing the same key.
+func TestTheRollupIsFedFromBothMetricTables(t *testing.T) {
+	gauge := createMetricsRollupGaugeView(testDatabase)
+	if !strings.Contains(gauge, "FROM "+qualified(MetricsGaugeTable)) {
+		t.Errorf("the gauge view should read the gauge table:\n%s", gauge)
+	}
+	for _, metric := range []string{
+		MetricContainerCPUUsage, MetricContainerMemoryWorkingSet,
+		MetricContainerCPULimit, MetricContainerMemoryLimit,
+	} {
+		if !strings.Contains(gauge, quoteLiteral(metric)) {
+			t.Errorf("the gauge view should read %s:\n%s", metric, gauge)
+		}
+	}
+
+	sum := createMetricsRollupSumView(testDatabase)
+	if !strings.Contains(sum, "FROM "+qualified(MetricsSumTable)) {
+		t.Errorf("the sum view should read the sum table:\n%s", sum)
+	}
+	for _, metric := range []string{MetricContainerRestartsDelta, MetricContainerOOMKilled} {
+		if !strings.Contains(sum, quoteLiteral(metric)) {
+			t.Errorf("the sum view should read %s:\n%s", metric, sum)
+		}
+	}
+
+	// Both write the same key, which is what lets AggregatingMergeTree put the
+	// two halves of a bucket back together.
+	key := "GROUP BY bucket, project, environment, namespace, pod, container"
+	if !strings.Contains(gauge, key) || !strings.Contains(sum, key) {
+		t.Error("both rollup views have to group by the same key")
 	}
 }
 
@@ -210,7 +370,7 @@ func TestQuerySendsCredentialsAndDatabase(t *testing.T) {
 	endpoint, _ := url.Parse(server.URL)
 	client := New(Config{
 		Host: endpoint.Hostname(), HTTPPort: endpoint.Port(),
-		Database: "kitchen", Username: "kitchen", Password: "hunter2",
+		Database: testDatabase, Username: testUsername, Password: testPassword,
 	})
 
 	answer, err := client.Query(context.Background(), "SELECT 1")
@@ -220,7 +380,7 @@ func TestQuerySendsCredentialsAndDatabase(t *testing.T) {
 	if answer != "1" {
 		t.Errorf("answer = %q, want %q", answer, "1")
 	}
-	if user != "kitchen" || key != "hunter2" || database != "kitchen" {
+	if user != testUsername || key != testPassword || database != testDatabase {
 		t.Errorf("sent user=%q key=%q database=%q", user, key, database)
 	}
 }
@@ -231,9 +391,9 @@ func TestConfigFromSecret(t *testing.T) {
 		Data: map[string][]byte{
 			SecretKeyHost:     []byte("kitchen-clickhouse.kitchen-system.svc"),
 			SecretKeyHTTPPort: []byte("8123"),
-			SecretKeyDatabase: []byte("kitchen"),
-			SecretKeyUsername: []byte("kitchen"),
-			SecretKeyPassword: []byte("hunter2"),
+			SecretKeyDatabase: []byte(testDatabase),
+			SecretKeyUsername: []byte(testUsername),
+			SecretKeyPassword: []byte(testPassword),
 		},
 	}
 
@@ -258,7 +418,7 @@ func TestConfigFromSecret(t *testing.T) {
 	// A database name that is not an identifier would be interpolated into
 	// DDL; it is rejected rather than quoted and hoped for.
 	secret.Data[SecretKeyHost] = []byte("clickhouse")
-	secret.Data[SecretKeyUsername] = []byte("kitchen")
+	secret.Data[SecretKeyUsername] = []byte(testUsername)
 	secret.Data[SecretKeyDatabase] = []byte("kitchen`; DROP DATABASE kitchen; --")
 	if _, err := ConfigFromSecret(secret); err == nil {
 		t.Fatal("expected an unusable database name to be rejected")

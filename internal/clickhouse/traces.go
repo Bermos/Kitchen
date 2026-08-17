@@ -25,14 +25,18 @@ import (
 	"time"
 )
 
-// Spans, as instrumented applications send them to the platform's OTLP
-// receiver.
+// Spans, as instrumented applications send them to the collector over OTLP.
 //
 // Nothing here is derived from the flow data. Hubble sees that one workload
 // called another and how long the call took; only the application knows that
 // the call was "checkout" and that it spent its time in a database. Promoting
 // L7 flows into trace-shaped rows would produce something that looked like
 // tracing and answered none of the questions tracing exists for.
+//
+// The table is the exporter's, so three of its conventions have to be undone on
+// the way out: `Duration` is nanoseconds where Kitchen's API is milliseconds,
+// `StatusCode` is `Unset`/`Ok`/`Error` where Kitchen's is upper case, and the
+// HTTP status is an attribute rather than a column.
 
 // DefaultTraceLimit is how many traces a list request returns when it does not
 // ask for a number; MaxTraceLimit is the ceiling. MaxTraceSpans bounds one
@@ -44,11 +48,40 @@ const (
 	MaxTraceSpans     = 2000
 )
 
-// Status codes, as OTLP spells them.
+// Status codes, as Kitchen's API spells them.
+//
+// The exporter writes `Unset`/`Ok`/`Error`, and an SDK that sets the status
+// itself may write either casing. Every comparison and every projection folds
+// through `upper()` for that reason, which is also what keeps these three
+// constants the only spelling this package knows.
 const (
 	StatusUnset = "UNSET"
 	StatusOK    = "OK"
 	StatusError = "ERROR"
+)
+
+// spanStatusCode is StatusCode normalised to the spelling above.
+const spanStatusCode = "upper(StatusCode)"
+
+// spanDurationMs converts the span's nanoseconds into the milliseconds the API
+// answers with.
+const spanDurationMs = "Duration / 1e6"
+
+// spanHTTPStatus lifts the response status out of the span's attributes.
+//
+// It is two names because semconv renamed it: `http.status_code` was stable for
+// years and `http.response.status_code` replaced it in 1.21. Both are still in
+// the wild — the name depends on the age of the SDK, not on anything Kitchen
+// controls — so the new one wins and the old one is the fallback. A span that
+// carries neither reads as 0, which is what `omitempty` drops.
+const spanHTTPStatus = `toUInt16OrZero(if(SpanAttributes['http.response.status_code'] != '', ` +
+	`SpanAttributes['http.response.status_code'], SpanAttributes['http.status_code']))`
+
+// The span window's two bounds, matching the column's own scale. See
+// logSinceCondition.
+const (
+	spanSinceCondition = "Timestamp >= parseDateTime64BestEffort({since:String}, 9, 'UTC')"
+	spanUntilCondition = "Timestamp <= parseDateTime64BestEffort({until:String}, 9, 'UTC')"
 )
 
 // Span is one operation inside one trace.
@@ -58,7 +91,8 @@ type Span struct {
 	SpanID       string    `json:"spanId"`
 	ParentSpanID string    `json:"parentSpanId,omitempty"`
 	Name         string    `json:"name"`
-	// Kind is OTLP's: SERVER, CLIENT, INTERNAL, PRODUCER, CONSUMER.
+	// Kind is OTLP's, as the exporter spells it: Internal, Server, Client,
+	// Producer, Consumer.
 	Kind string `json:"kind,omitempty"`
 	// Service is the emitting process's `service.name`; Project and
 	// Environment are Kitchen's own, which the platform puts into every
@@ -72,47 +106,12 @@ type Span struct {
 	StatusCode    string  `json:"statusCode,omitempty"`
 	StatusMessage string  `json:"statusMessage,omitempty"`
 	// HTTPStatus is lifted out of the attributes, because "show me the 500s"
-	// should not be a map lookup over every span in the window.
+	// should read one expression rather than two map lookups spelled out at
+	// every call site.
 	HTTPStatus uint16 `json:"httpStatus,omitempty"`
 
 	Attributes map[string]string `json:"attributes,omitempty"`
 	Resource   map[string]string `json:"resource,omitempty"`
-}
-
-// InsertSpans writes a batch of spans.
-func (c *Client) InsertSpans(ctx context.Context, spans []Span) error {
-	if len(spans) == 0 {
-		return nil
-	}
-	rows := make([]string, 0, len(spans))
-	for _, span := range spans {
-		row, err := json.Marshal(map[string]any{
-			// Microseconds, because a span's whole point is that it is short:
-			// milliseconds would round two nested spans onto the same instant.
-			"timestamp":     span.Timestamp.UTC().Format("2006-01-02 15:04:05.000000"),
-			"traceId":       span.TraceID,
-			"spanId":        span.SpanID,
-			"parentSpanId":  span.ParentSpanID,
-			"name":          span.Name,
-			"kind":          span.Kind,
-			"service":       span.Service,
-			"project":       span.Project,
-			"environment":   span.Environment,
-			"durationMs":    span.DurationMs,
-			"statusCode":    span.StatusCode,
-			"statusMessage": span.StatusMessage,
-			"httpStatus":    span.HTTPStatus,
-			"attributes":    span.Attributes,
-			"resource":      span.Resource,
-		})
-		if err != nil {
-			return err
-		}
-		rows = append(rows, string(row))
-	}
-	statement := fmt.Sprintf("INSERT INTO %s.%s FORMAT JSONEachRow\n%s",
-		quoteIdentifier(c.cfg.Database), quoteIdentifier(TracesTable), strings.Join(rows, "\n"))
-	return c.Exec(ctx, statement)
 }
 
 // TraceQuery selects traces. The zero value answers the last hour, whatever
@@ -184,26 +183,25 @@ func (c *Client) Traces(ctx context.Context, query TraceQuery) ([]Trace, error) 
 		limit = MaxTraceLimit
 	}
 
-	conditions := []string{
-		"timestamp >= parseDateTime64BestEffort({since:String}, 6, 'UTC')",
-		"timestamp <= parseDateTime64BestEffort({until:String}, 6, 'UTC')",
-	}
+	conditions := []string{spanSinceCondition, spanUntilCondition}
 	params := map[string]string{
 		"since": since.UTC().Format(time.RFC3339Nano),
 		"until": until.UTC().Format(time.RFC3339Nano),
 		"limit": strconv.Itoa(limit),
 	}
-	for _, filter := range []struct{ column, value string }{
-		{"service", query.Service},
-		{"project", query.Project},
-		{"environment", query.Environment},
+	// `service` is the emitting process's name and lives in a column of the
+	// exporter's; the other two are Kitchen's materialized columns and are
+	// named the same on both sides.
+	for _, filter := range []struct{ column, name, value string }{
+		{"ServiceName", "service", query.Service},
+		{"project", "project", query.Project},
+		{"environment", "environment", query.Environment},
 	} {
 		if filter.value == "" {
 			continue
 		}
-		conditions = append(conditions,
-			fmt.Sprintf("%s = {%s:String}", quoteIdentifier(filter.column), filter.column))
-		params[filter.column] = filter.value
+		conditions = append(conditions, fmt.Sprintf("%s = {%s:String}", filter.column, filter.name))
+		params[filter.name] = filter.value
 	}
 
 	// The window bounds the spans; these bound the traces, so they are a
@@ -211,7 +209,7 @@ func (c *Client) Traces(ctx context.Context, query TraceQuery) ([]Trace, error) 
 	// makes a slow trace, and one failed span makes a failed trace.
 	having := []string{}
 	if query.OnlyErrors {
-		having = append(having, fmt.Sprintf("countIf(statusCode = %s) > 0", quoteLiteral(StatusError)))
+		having = append(having, fmt.Sprintf("countIf(%s = %s) > 0", spanStatusCode, quoteLiteral(StatusError)))
 	}
 	if query.MinDurationMs > 0 {
 		having = append(having, "traceDurationMs >= {minDuration:Float64}")
@@ -226,25 +224,31 @@ func (c *Client) Traces(ctx context.Context, query TraceQuery) ([]Trace, error) 
 	// column: ClickHouse resolves a name in HAVING and ORDER BY against the
 	// SELECT aliases first, so an alias called `durationMs` would silently
 	// turn "the trace took 500ms" into "some span in it did".
+	//
+	// The envelope is computed in the nanoseconds the columns are already in
+	// and divided once at the end. A span's Timestamp is its start, so its end
+	// is that plus Duration, and the trace's span is the last end minus the
+	// first start — not the sum of its spans, which double-counts every nested
+	// call, and not the longest span, which misses a sequence of short ones.
 	statement := fmt.Sprintf(`SELECT
-    traceId,
-    toString(toUnixTimestamp64Micro(min(timestamp))) AS traceStart,
-    max(toUnixTimestamp64Micro(timestamp) / 1000 + durationMs) - min(toUnixTimestamp64Micro(timestamp) / 1000) AS traceDurationMs,
-    if(countIf(parentSpanId = '') > 0, anyIf(name, parentSpanId = ''), argMin(name, timestamp)) AS rootName,
-    if(countIf(parentSpanId = '') > 0, anyIf(service, parentSpanId = ''), argMin(service, timestamp)) AS rootService,
-    argMin(project, timestamp) AS traceProject,
-    argMin(environment, timestamp) AS traceEnvironment,
+    TraceId AS traceId,
+    toString(toUnixTimestamp64Micro(min(Timestamp))) AS traceStart,
+    (max(toUnixTimestamp64Nano(Timestamp) + toInt64(Duration)) - min(toUnixTimestamp64Nano(Timestamp))) / 1e6 AS traceDurationMs,
+    if(countIf(ParentSpanId = '') > 0, anyIf(SpanName, ParentSpanId = ''), argMin(SpanName, Timestamp)) AS rootName,
+    if(countIf(ParentSpanId = '') > 0, anyIf(ServiceName, ParentSpanId = ''), argMin(ServiceName, Timestamp)) AS rootService,
+    argMin(project, Timestamp) AS traceProject,
+    argMin(environment, Timestamp) AS traceEnvironment,
     toString(count()) AS spans,
-    toString(countIf(statusCode = %s)) AS errors,
-    toString(uniqExact(service)) AS services,
-    toString(max(httpStatus)) AS httpStatus
+    toString(countIf(%s = %s)) AS errors,
+    toString(uniqExact(ServiceName)) AS services,
+    toString(max(%s)) AS httpStatus
 FROM %s.%s
 WHERE %s
 GROUP BY traceId%s
 ORDER BY traceStart DESC
 LIMIT {limit:UInt32}
 FORMAT JSONEachRow`,
-		quoteLiteral(StatusError),
+		spanStatusCode, quoteLiteral(StatusError), spanHTTPStatus,
 		quoteIdentifier(c.cfg.Database), quoteIdentifier(TracesTable),
 		strings.Join(conditions, " AND "), havingClause)
 
@@ -324,33 +328,57 @@ type spanRow struct {
 // Trace reads one trace's spans, oldest first — which is the order a waterfall
 // is drawn in.
 //
-// It is unwindowed on purpose: a trace id arrives from a log line or from the
-// list, and asking the caller to also know when it happened would make the one
-// link that matters — line to trace — impossible to follow. The bloom filter
-// on `traceId` is what keeps that from being a scan of the retention.
+// The caller supplies nothing but an id, on purpose: a trace id arrives from a
+// log line or from the list, and asking the caller to also know when it
+// happened would make the one link that matters — line to trace — impossible to
+// follow. The window is found rather than demanded, out of the trace-id lookup
+// table, which is one point read on a table ordered by exactly that. Without it
+// the span table's ordering key (project, environment, Timestamp) offers a
+// lookup by id nothing at all, and the bloom filter would be asked to skip
+// granules across the whole retention.
+//
+// A trace the lookup has never heard of is still read, unbounded. That is the
+// window between a span being written and the materialized view's part being
+// visible, and answering "not found" there would make a fresh trace unopenable
+// for the few seconds that matter most.
 func (c *Client) Trace(ctx context.Context, traceID string) ([]Span, error) {
 	traceID = strings.TrimSpace(traceID)
 	if traceID == "" {
 		return nil, fmt.Errorf("a trace id is required")
 	}
 
-	statement := fmt.Sprintf(`SELECT
-    formatDateTime(timestamp, '%%Y-%%m-%%dT%%H:%%i:%%S.%%fZ', 'UTC') AS ts,
-    traceId, spanId, parentSpanId, name, kind, service, project, environment,
-    durationMs, statusCode, statusMessage,
-    toString(httpStatus) AS httpStatus,
-    attributes, resource
-FROM %s.%s
-WHERE traceId = {traceId:String}
-ORDER BY timestamp ASC
-LIMIT {limit:UInt32}
-FORMAT JSONEachRow`,
-		quoteIdentifier(c.cfg.Database), quoteIdentifier(TracesTable))
-
-	body, err := c.QueryWithParams(ctx, statement, map[string]string{
+	params := map[string]string{
 		"traceId": traceID,
 		"limit":   strconv.Itoa(MaxTraceSpans),
-	})
+	}
+	conditions := []string{"TraceId = {traceId:String}"}
+	since, until, err := c.traceWindow(ctx, traceID)
+	if err != nil {
+		return nil, err
+	}
+	if !since.IsZero() {
+		conditions = append(conditions, spanSinceCondition, spanUntilCondition)
+		params["since"] = since.Format(time.RFC3339Nano)
+		params["until"] = until.Format(time.RFC3339Nano)
+	}
+
+	statement := fmt.Sprintf(`SELECT
+    %s AS ts,
+    TraceId AS traceId, SpanId AS spanId, ParentSpanId AS parentSpanId,
+    SpanName AS name, SpanKind AS kind, ServiceName AS service, project, environment,
+    %s AS durationMs, %s AS statusCode, StatusMessage AS statusMessage,
+    toString(%s) AS httpStatus,
+    SpanAttributes AS attributes, ResourceAttributes AS resource
+FROM %s.%s
+WHERE %s
+ORDER BY Timestamp ASC
+LIMIT {limit:UInt32}
+FORMAT JSONEachRow`,
+		logTimestampFormat, spanDurationMs, spanStatusCode, spanHTTPStatus,
+		quoteIdentifier(c.cfg.Database), quoteIdentifier(TracesTable),
+		strings.Join(conditions, " AND "))
+
+	body, err := c.QueryWithParams(ctx, statement, params)
 	if err != nil {
 		return nil, err
 	}
@@ -365,7 +393,7 @@ FORMAT JSONEachRow`,
 		if err := json.Unmarshal([]byte(raw), &row); err != nil {
 			return nil, fmt.Errorf("unreadable span row: %w", err)
 		}
-		timestamp, err := time.Parse("2006-01-02T15:04:05.999999Z", row.Timestamp)
+		timestamp, err := time.Parse(otelTimestampLayout, row.Timestamp)
 		if err != nil {
 			return nil, fmt.Errorf("unreadable span timestamp %q: %w", row.Timestamp, err)
 		}
@@ -395,4 +423,37 @@ FORMAT JSONEachRow`,
 		})
 	}
 	return spans, nil
+}
+
+// traceWindow asks the trace-id lookup when a trace happened. It answers zero
+// times for a trace the lookup has no row for, which the caller reads as "do
+// not bound".
+//
+// The bounds are widened by a second at each end. The lookup keeps whole
+// seconds where the spans keep nanoseconds, so a span 400ms into the trace's
+// last second sits after the `End` the view recorded, and comparing them
+// unwidened would drop it.
+func (c *Client) traceWindow(ctx context.Context, traceID string) (time.Time, time.Time, error) {
+	statement := fmt.Sprintf(`SELECT
+    toString(toUnixTimestamp(min(Start))) AS first,
+    toString(toUnixTimestamp(max(End))) AS last,
+    toString(count()) AS rows
+FROM %s.%s
+WHERE TraceId = {traceId:String}
+FORMAT JSONEachRow`,
+		quoteIdentifier(c.cfg.Database), quoteIdentifier(TracesIDLookupTable))
+
+	rows, err := c.selectionRows(ctx, statement, map[string]string{"traceId": traceID})
+	if err != nil {
+		return time.Time{}, time.Time{}, err
+	}
+	if len(rows) == 0 || parseUint(rows[0]["rows"]) == 0 {
+		return time.Time{}, time.Time{}, nil
+	}
+	first, last := parseUint(rows[0]["first"]), parseUint(rows[0]["last"])
+	if first == 0 || last < first {
+		return time.Time{}, time.Time{}, nil
+	}
+	return time.Unix(int64(first), 0).UTC().Add(-time.Second),
+		time.Unix(int64(last), 0).UTC().Add(time.Second), nil
 }

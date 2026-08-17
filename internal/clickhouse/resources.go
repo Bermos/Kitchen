@@ -18,7 +18,6 @@ package clickhouse
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -33,77 +32,16 @@ import (
 // using this much memory", "did it get OOMKilled overnight", "when did it
 // scale". Those are unanswerable from the current state of a Deployment, and
 // they are the reason any of this is collected at all.
-
-// ResourceSample is one container at one instant, as the usage collector saw
-// it. CPU is cores, memory is the working set.
 //
-// Restarts is the container's lifetime count; Restarted and OOMKilled are what
-// happened since the collector's previous sample of this same container, so
-// that a restart is an event on a series rather than a step in a counter. The
-// collector, not the store, does that differencing — see the comment on
-// createMetricsTable.
-type ResourceSample struct {
-	Timestamp   time.Time
-	Project     string
-	Environment string
-	Namespace   string
-	Pod         string
-	Container   string
-	Node        string
-
-	CPUCores    float64
-	MemoryBytes uint64
-
-	// The limits in force, 0 where the release set none.
-	CPULimitCores    float64
-	MemoryLimitBytes uint64
-
-	Restarts  uint32
-	Restarted uint16
-	OOMKilled bool
-}
-
-// InsertResourceSamples writes a batch of samples.
-func (c *Client) InsertResourceSamples(ctx context.Context, samples []ResourceSample) error {
-	if len(samples) == 0 {
-		return nil
-	}
-	rows := make([]string, 0, len(samples))
-	for _, sample := range samples {
-		oomKilled := 0
-		if sample.OOMKilled {
-			oomKilled = 1
-		}
-		row, err := json.Marshal(map[string]any{
-			"timestamp":        sample.Timestamp.UTC().Format("2006-01-02 15:04:05.000"),
-			"project":          sample.Project,
-			"environment":      sample.Environment,
-			"namespace":        sample.Namespace,
-			"pod":              sample.Pod,
-			"container":        sample.Container,
-			"node":             sample.Node,
-			"cpuCores":         sample.CPUCores,
-			"memoryBytes":      sample.MemoryBytes,
-			"cpuLimitCores":    sample.CPULimitCores,
-			"memoryLimitBytes": sample.MemoryLimitBytes,
-			"restarts":         sample.Restarts,
-			"restarted":        sample.Restarted,
-			"oomKilled":        oomKilled,
-		})
-		if err != nil {
-			return err
-		}
-		rows = append(rows, string(row))
-	}
-	statement := fmt.Sprintf("INSERT INTO %s.%s FORMAT JSONEachRow\n%s",
-		quoteIdentifier(c.cfg.Database), quoteIdentifier(MetricsTable), strings.Join(rows, "\n"))
-	return c.Exec(ctx, statement)
-}
+// Nothing in this file writes. The kubelet's usage arrives through the
+// collector and the operator's usage collector emits the rest over OTLP, so
+// both halves land in the metric tables as ordinary OTel points and this is
+// only their reader.
 
 // resourceBucketLadder is the ladder a resource window is quantised to. It is
 // the histogram's ladder trimmed at both ends: nothing below the collector's
-// sampling interval, because a bucket narrower than that draws gaps that are
-// only the sampler blinking, and every rung at or above five minutes is a
+// scrape interval, because a bucket narrower than that draws gaps that are
+// only the scraper blinking, and every rung at or above five minutes is a
 // multiple of it, because that is what makes the rollup summable into it.
 var resourceBucketLadder = []int{
 	30, 60, 120, 300, 600, 900, 1800,
@@ -173,17 +111,17 @@ type ResourceSeries struct {
 	OOMKills uint64 `json:"oomKills"`
 
 	// Rollup reports which table answered: the five-minute rollup, or the
-	// raw samples. It is the honest way to explain why a wide window has
-	// coarser points than the one that was asked for.
+	// metric tables themselves. It is the honest way to explain why a wide
+	// window has coarser points than the one that was asked for.
 	Rollup bool `json:"rollup"`
 }
 
 // ResourceSeries buckets one environment's samples across a window.
 //
 // A bucket at or above the rollup's own width is answered from the rollup and
-// anything narrower from the raw samples. The two agree — the rollup keeps
+// anything narrower from the metric tables. The two agree — the rollup keeps
 // aggregate states rather than pre-computed numbers, so merging five-minute
-// buckets into an hour is the same arithmetic as bucketing the samples into an
+// buckets into an hour is the same arithmetic as bucketing the points into an
 // hour directly.
 func (c *Client) ResourceSeries(ctx context.Context, query ResourceSeriesQuery) (ResourceSeries, error) {
 	if strings.TrimSpace(query.Project) == "" || strings.TrimSpace(query.Environment) == "" {
@@ -278,7 +216,7 @@ func (c *Client) ResourceSeries(ctx context.Context, query ResourceSeriesQuery) 
 	return series, nil
 }
 
-// resourceSeriesStatement is the same shape over either table: per (pod,
+// resourceSeriesStatement is the same shape over either source: per (pod,
 // container) inside the bucket first, then across the environment.
 //
 // The two-level grouping is not a flourish. A container's usage over a bucket
@@ -291,30 +229,96 @@ func (c *Client) ResourceSeries(ctx context.Context, query ResourceSeriesQuery) 
 // SELECT aliases before the columns, so the grouping would be by the rendered
 // string rather than by the time.
 func resourceSeriesStatement(database string, rollup bool) string {
-	inner := fmt.Sprintf(`SELECT
-        toStartOfInterval(timestamp, toIntervalSecond({width:UInt32})) AS slot,
-        pod, container,
-        avg(cpuCores) AS cpu,
-        max(cpuCores) AS cpuPeak,
-        avg(memoryBytes) AS mem,
-        max(memoryBytes) AS memPeak,
-        sum(restarted) AS restarts,
-        sum(oomKilled) AS oom,
-        max(cpuLimitCores) AS cpuLimit,
-        max(memoryLimitBytes) AS memLimit
-    FROM %s.%s
-    WHERE project = {project:String}
-      AND environment = {environment:String}
-      AND timestamp >= parseDateTime64BestEffort({since:String}, 3, 'UTC')
-      AND timestamp <= parseDateTime64BestEffort({until:String}, 3, 'UTC')
-    GROUP BY slot, pod, container`,
-		quoteIdentifier(database), quoteIdentifier(MetricsTable))
-
+	inner := rawResourceSelect(database)
 	if rollup {
-		// Every column is read through the table's alias for the reason
-		// createMetricsRollupView spells out: the state columns are named
-		// after the columns they aggregate.
-		inner = fmt.Sprintf(`SELECT
+		inner = rollupResourceSelect(database)
+	}
+
+	return fmt.Sprintf(`SELECT
+    toString(toUnixTimestamp(slot)) AS bucket,
+    toString(sum(cpu)) AS cpu,
+    toString(sum(cpuPeak)) AS cpuPeak,
+    toString(toUInt64(sum(mem))) AS memory,
+    toString(toUInt64(sum(memPeak))) AS memoryPeak,
+    toString(uniqExact(pod)) AS replicas,
+    toString(toUInt64(sum(restarts))) AS restarts,
+    toString(toUInt64(sum(oom))) AS oomKills,
+    toString(max(cpuLimit)) AS cpuLimit,
+    toString(toUInt64(max(memLimit))) AS memoryLimit
+FROM (
+    %s
+)
+GROUP BY slot
+ORDER BY slot
+FORMAT JSONEachRow`, inner)
+}
+
+// rawResourceSelect reads the metric tables directly, for a bucket finer than
+// the rollup's.
+//
+// It is a UNION ALL because the numbers live in two tables: usage and limits
+// are gauges, restarts and OOM kills are delta sums. Each branch contributes
+// its own columns and zero for the other's, which the outer sum adds up to the
+// same answer a single table would have given. `uniqExact(pod)` over the union
+// counts a pod that reported either, which is the honest reading of "how many
+// replicas were there".
+//
+// Within a branch the metric name does the demultiplexing: a metric table is
+// one row per metric per scrape, so CPU and memory for one container are
+// different rows and `avgIf(Value, MetricName = …)` is what makes them columns
+// again.
+func rawResourceSelect(database string) string {
+	return fmt.Sprintf(`SELECT
+        toStartOfInterval(g.TimeUnix, toIntervalSecond({width:UInt32})) AS slot,
+        g.pod AS pod, g.container AS container,
+        avgIf(g.Value, g.MetricName = %[3]s) AS cpu,
+        maxIf(g.Value, g.MetricName = %[3]s) AS cpuPeak,
+        avgIf(g.Value, g.MetricName = %[4]s) AS mem,
+        maxIf(g.Value, g.MetricName = %[4]s) AS memPeak,
+        toFloat64(0) AS restarts,
+        toFloat64(0) AS oom,
+        maxIf(g.Value, g.MetricName = %[5]s) AS cpuLimit,
+        maxIf(g.Value, g.MetricName = %[6]s) AS memLimit
+    FROM %[1]s.%[2]s AS g
+    WHERE g.project = {project:String}
+      AND g.environment = {environment:String}
+      AND g.MetricName IN (%[3]s, %[4]s, %[5]s, %[6]s)
+      AND g.TimeUnix >= parseDateTimeBestEffort({since:String}, 'UTC')
+      AND g.TimeUnix <= parseDateTimeBestEffort({until:String}, 'UTC')
+    GROUP BY slot, pod, container
+    UNION ALL
+    SELECT
+        toStartOfInterval(s.TimeUnix, toIntervalSecond({width:UInt32})) AS slot,
+        s.pod AS pod, s.container AS container,
+        toFloat64(0) AS cpu,
+        toFloat64(0) AS cpuPeak,
+        toFloat64(0) AS mem,
+        toFloat64(0) AS memPeak,
+        sumIf(s.Value, s.MetricName = %[8]s) AS restarts,
+        sumIf(s.Value, s.MetricName = %[9]s) AS oom,
+        toFloat64(0) AS cpuLimit,
+        toFloat64(0) AS memLimit
+    FROM %[1]s.%[7]s AS s
+    WHERE s.project = {project:String}
+      AND s.environment = {environment:String}
+      AND s.MetricName IN (%[8]s, %[9]s)
+      AND s.TimeUnix >= parseDateTimeBestEffort({since:String}, 'UTC')
+      AND s.TimeUnix <= parseDateTimeBestEffort({until:String}, 'UTC')
+    GROUP BY slot, pod, container`,
+		quoteIdentifier(database), quoteIdentifier(MetricsGaugeTable),
+		quoteLiteral(MetricContainerCPUUsage), quoteLiteral(MetricContainerMemoryWorkingSet),
+		quoteLiteral(MetricContainerCPULimit), quoteLiteral(MetricContainerMemoryLimit),
+		quoteIdentifier(MetricsSumTable),
+		quoteLiteral(MetricContainerRestartsDelta), quoteLiteral(MetricContainerOOMKilled))
+}
+
+// rollupResourceSelect reads the five-minute rollup, for anything wider.
+//
+// Every column is read through the table's alias for the reason
+// createMetricsRollupGaugeView spells out: the state columns are named after
+// the columns they aggregate.
+func rollupResourceSelect(database string) string {
+	return fmt.Sprintf(`SELECT
         toStartOfInterval(r.bucket, toIntervalSecond({width:UInt32})) AS slot,
         r.pod AS pod, r.container AS container,
         avgMerge(r.cpuCores) AS cpu,
@@ -328,29 +332,10 @@ func resourceSeriesStatement(database string, rollup bool) string {
     FROM %s.%s AS r
     WHERE r.project = {project:String}
       AND r.environment = {environment:String}
-      AND r.bucket >= parseDateTime64BestEffort({since:String}, 3, 'UTC')
-      AND r.bucket <= parseDateTime64BestEffort({until:String}, 3, 'UTC')
+      AND r.bucket >= parseDateTimeBestEffort({since:String}, 'UTC')
+      AND r.bucket <= parseDateTimeBestEffort({until:String}, 'UTC')
     GROUP BY slot, pod, container`,
-			quoteIdentifier(database), quoteIdentifier(MetricsRollupTable))
-	}
-
-	return fmt.Sprintf(`SELECT
-    toString(toUnixTimestamp(slot)) AS bucket,
-    toString(sum(cpu)) AS cpu,
-    toString(sum(cpuPeak)) AS cpuPeak,
-    toString(toUInt64(sum(mem))) AS memory,
-    toString(sum(memPeak)) AS memoryPeak,
-    toString(uniqExact(pod)) AS replicas,
-    toString(sum(restarts)) AS restarts,
-    toString(sum(oom)) AS oomKills,
-    toString(max(cpuLimit)) AS cpuLimit,
-    toString(max(memLimit)) AS memoryLimit
-FROM (
-    %s
-)
-GROUP BY slot
-ORDER BY slot
-FORMAT JSONEachRow`, inner)
+		quoteIdentifier(database), quoteIdentifier(MetricsRollupTable))
 }
 
 // resourceBucketSeconds picks the narrowest rung of the ladder that fits the

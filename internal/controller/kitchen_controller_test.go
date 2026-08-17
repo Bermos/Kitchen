@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -39,6 +40,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/clickhouse"
 )
 
 // telemetrySecretName mirrors what the chart writes for the release named
@@ -245,7 +247,8 @@ var _ = Describe("Kitchen Controller", func() {
 
 			reconcileOnce(KitchenSingletonName)
 
-			Expect(strings.Join(statements, "\n")).To(ContainSubstring("CREATE TABLE IF NOT EXISTS `kitchen`.`logs`"))
+			Expect(strings.Join(statements, "\n")).To(ContainSubstring(
+				fmt.Sprintf("CREATE TABLE IF NOT EXISTS `kitchen`.`%s`", clickhouse.LogsTable)))
 			Expect(strings.Join(statements, "\n")).To(ContainSubstring("toIntervalDay(7)"))
 
 			Expect(k8sClient.Get(ctx, singletonKey, kitchen)).To(Succeed())

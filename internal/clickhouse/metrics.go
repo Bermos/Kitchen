@@ -220,14 +220,14 @@ FORMAT JSONEachRow`,
 }
 
 func (c *Client) logMetrics(ctx context.Context, query MetricsQuery, hourStart time.Time, overview *MetricsOverview) error {
-	conditions, params := windowConditions(hourStart)
+	conditions, params := windowConditionsOn(timeColumnLogs, hourStart)
 	if query.Project != "" {
 		conditions = append(conditions, "project = {project:String}")
 		params["project"] = query.Project
 	}
 
 	statement := fmt.Sprintf(`SELECT
-    toString(toUnixTimestamp(toStartOfHour(timestamp))) AS bucket,
+    toString(toUnixTimestamp(toStartOfHour(Timestamp))) AS bucket,
     toString(count()) AS lines
 FROM %s.%s
 WHERE %s
@@ -304,12 +304,16 @@ func (c *Client) storeMetrics(ctx context.Context, overview *MetricsOverview) er
 	}
 	overview.StoreBytes, _ = strconv.ParseUint(strings.TrimSpace(answer), 10, 64)
 
+	// The logs are counted on the exporter's column name and the two tables
+	// the operator writes on their own; see timeColumnLogs.
 	db := quoteIdentifier(c.cfg.Database)
 	answer, err = c.Query(ctx, fmt.Sprintf(`SELECT toString(
-    (SELECT count() FROM %s.%s WHERE timestamp >= now() - INTERVAL 5 MINUTE)
-  + (SELECT count() FROM %s.%s WHERE timestamp >= now() - INTERVAL 5 MINUTE)
-  + (SELECT count() FROM %s.%s WHERE timestamp >= now() - INTERVAL 5 MINUTE))`,
-		db, quoteIdentifier(LogsTable), db, quoteIdentifier(FlowsTable), db, quoteIdentifier(EventsTable)))
+    (SELECT count() FROM %s.%s WHERE %s >= now() - INTERVAL 5 MINUTE)
+  + (SELECT count() FROM %s.%s WHERE %s >= now() - INTERVAL 5 MINUTE)
+  + (SELECT count() FROM %s.%s WHERE %s >= now() - INTERVAL 5 MINUTE))`,
+		db, quoteIdentifier(LogsTable), timeColumnLogs,
+		db, quoteIdentifier(FlowsTable), timeColumnKitchen,
+		db, quoteIdentifier(EventsTable), timeColumnKitchen))
 	if err != nil {
 		return err
 	}
@@ -370,9 +374,18 @@ func (c *Client) aggregateRows(ctx context.Context, statement string, params map
 	return rows, nil
 }
 
-// windowConditions bounds a query to [since, now].
+// windowConditions bounds a query to [since, now] over a table the operator
+// writes itself.
 func windowConditions(since time.Time) ([]string, map[string]string) {
-	return []string{"timestamp >= parseDateTime64BestEffort({metricsSince:String}, 3, 'UTC')"},
+	return windowConditionsOn(timeColumnKitchen, since)
+}
+
+// windowConditionsOn is windowConditions for a table whose time column the
+// exporter named. The column is one this package chose, never one that came
+// from a request, so it goes into the statement as written.
+func windowConditionsOn(column string, since time.Time) ([]string, map[string]string) {
+	return []string{fmt.Sprintf(
+			"%s >= parseDateTime64BestEffort({metricsSince:String}, 3, 'UTC')", column)},
 		map[string]string{"metricsSince": since.UTC().Format(time.RFC3339Nano)}
 }
 
