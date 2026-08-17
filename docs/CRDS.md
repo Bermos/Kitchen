@@ -119,8 +119,10 @@ status:
   capabilities: [gitSource, statusChecks]
 ```
 
-First-party providers: `github`/`gitlab`/`gitea` (capability `gitSource`), `dockerRegistry`
-(capability `imageStore`), `neon` (capability `database`). The operator matches on
+First-party providers: `github` (capabilities `gitSource` and `statusChecks`),
+`dockerRegistry` (capability `imageStore`), `neon` (capability `database`). `gitlab` and
+`gitea` pass admission and report **no** capabilities: nothing implements them yet, and a
+capability nothing can honor would only mislead the matcher. The operator matches on
 **capabilities**, not provider names, so CloudNativePG can later implement `database` too.
 
 ## `Project` (namespaced: kitchen-system)
@@ -264,6 +266,13 @@ status:
       to: "2026-08-14T10:30:00Z"
       reason: promoted                  # promoted | rolledBack | superseded
       by: my-shop-bld-abc123def456-xk2p9   # the promoting Build, or the API caller
+  gitReport:                            # what was last posted back to the git provider
+    revision: ab12cd34ef56              # absent where nothing is reported to
+    state: success                      # in_progress | success | failure | inactive
+    url: https://my-shop-pr-42.apps.example.com
+    commentID: "204819274"              # the PR comment that is rewritten in place
+    error: ""                           # why the last post did not land
+    at: "2026-08-14T10:30:04Z"
   conditions: [...]                     # Ready, RouteProgrammed, WorkloadAvailable,
                                         # PreviewProtected (previews only),
                                         # ScaleToZero (where the platform idles anything)
@@ -274,6 +283,12 @@ release. `promoted` — a fresh build's release was auto-promoted over it; `roll
 someone moved the environment back to an older release; `superseded` — anything else
 replaced it (a manual move forward through the API, or a direct spec edit, where `by`
 stays empty).
+
+`gitReport` is bookkeeping for [deploy status](#deploy-status-back-on-the-commit): an
+Environment reconciles far more often than it changes, and without a record of what was
+already said, every pass would post the same deployment status again. It is also where a
+refused post is recorded — never as a condition, because reporting is commentary on a
+deployment rather than a part of it.
 
 Reconcile (the heart of the operator): in the project namespace, ensure an apps/v1
 Deployment (from the Release's image + config snapshot), Service, `HTTPRoute` attached to
@@ -476,6 +491,38 @@ being a question and becomes a screenshot, and the retention deletes it out from
 its own name.
 
 ---
+
+## Deploy status back on the commit
+
+The half of git integration that faces the reviewer. A Connection reporting the
+`statusChecks` capability is one the platform posts back through; a Connection without it
+is used as a source and nothing more, silently — which is also what a provider that can
+be a source but cannot report anything yet gets, since the operator asks for the
+reporting half with a type assertion (`gitprovider.StatusReporter`) rather than assuming
+every provider has one.
+
+Three things are posted, all keyed so that several Kitchen projects can watch one
+repository without overwriting each other:
+
+- **A status check per Build**, in context `kitchen/<project>`: `pending` when the
+  BuildKit job starts, `success` when the image is pushed, `failure` when the build
+  failed and `error` when the platform could not run it at all. `target_url` is the
+  build's page in the dashboard.
+- **A deployment per Environment**, named after the Environment, carrying the URL:
+  `in_progress` while the workload comes up, `success` once it is available, `inactive`
+  when a preview is torn down. Previews are marked transient, production is marked
+  production.
+- **One comment per preview**, rewritten in place on every push rather than appended to,
+  found by an invisible `<!-- kitchen-preview: <environment> -->` marker and thereafter
+  by the ID recorded in `status.gitReport`. It states that a protected preview asks an
+  anonymous visitor to sign in, because a reviewer who is not a platform user would
+  otherwise read the gate as a broken link.
+
+**None of it can fail a deployment.** A revoked token is the Connection reconciler's
+business — it probes the credential and turns `CredentialsValid` red — and a build that
+produced an image produced it whether or not the provider heard about it. Posting
+failures are logged, and for an Environment recorded in `status.gitReport.error`, which
+is also what makes the next reconcile retry rather than treat the report as delivered.
 
 ## Flows, end to end
 

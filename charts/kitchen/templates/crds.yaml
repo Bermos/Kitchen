@@ -716,6 +716,40 @@ spec:
                   - type
                   type: object
                 type: array
+              gitReport:
+                description: |-
+                  GitReport is what was last posted back to the git provider about this
+                  Environment. Absent on a platform that reports nothing — a source
+                  connection without the statusChecks capability.
+                properties:
+                  at:
+                    description: At is when the last attempt ran.
+                    format: date-time
+                    type: string
+                  commentID:
+                    description: |-
+                      CommentID is the provider-side ID of the pull request comment the
+                      platform keeps up to date, so the next report rewrites that comment
+                      instead of hunting for it — or appending a second one.
+                    type: string
+                  error:
+                    description: |-
+                      Error is why the last attempt did not land, empty when it did. A
+                      provider that refuses the report is recorded here and nowhere else:
+                      posting is commentary on a deployment, never a condition of it.
+                    type: string
+                  revision:
+                    description: Revision is the commit the report was about.
+                    type: string
+                  state:
+                    description: |-
+                      State reported for the deployment, in the provider-neutral vocabulary
+                      (in_progress, success, failure, inactive).
+                    type: string
+                  url:
+                    description: URL published with the report.
+                    type: string
+                type: object
               history:
                 description: History of Releases that stopped being current, newest
                   first.

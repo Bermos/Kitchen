@@ -105,6 +105,59 @@ type ReleaseHistoryEntry struct {
 // not an archive.
 const MaxReleaseHistory = 10
 
+// GitReport is what the platform last told the git provider about this
+// Environment: the deploy status on the commit's deployment, and the pull
+// request comment carrying the preview URL.
+//
+// It is bookkeeping, in the same spirit as a Project's webhook ID: an
+// Environment reconciles far more often than it changes, and without a record
+// of what was already said, every pass would post the same deployment status
+// again. Repeating a report is only ever noise — never a second deploy — so
+// nothing here is load-bearing beyond keeping the platform quiet.
+type GitReport struct {
+	// Revision is the commit the report was about.
+	// +optional
+	Revision string `json:"revision,omitempty"`
+
+	// State reported for the deployment, in the provider-neutral vocabulary
+	// (in_progress, success, failure, inactive).
+	// +optional
+	State string `json:"state,omitempty"`
+
+	// URL published with the report.
+	// +optional
+	URL string `json:"url,omitempty"`
+
+	// CommentID is the provider-side ID of the pull request comment the
+	// platform keeps up to date, so the next report rewrites that comment
+	// instead of hunting for it — or appending a second one.
+	// +optional
+	CommentID string `json:"commentID,omitempty"`
+
+	// Error is why the last attempt did not land, empty when it did. A
+	// provider that refuses the report is recorded here and nowhere else:
+	// posting is commentary on a deployment, never a condition of it.
+	// +optional
+	Error string `json:"error,omitempty"`
+
+	// At is when the last attempt ran.
+	// +optional
+	At *metav1.Time `json:"at,omitempty"`
+}
+
+// Matches reports whether a report says the same thing about the same commit
+// as the one already posted. The comment ID and timestamp are deliberately
+// not compared: they are how the report was delivered, not what it said.
+func (g *GitReport) Matches(other *GitReport) bool {
+	if g == nil || other == nil {
+		return false
+	}
+	return g.Revision == other.Revision &&
+		g.State == other.State &&
+		g.URL == other.URL &&
+		g.Error == other.Error
+}
+
 // EnvironmentStatus defines the observed state of an Environment.
 type EnvironmentStatus struct {
 	// +optional
@@ -122,6 +175,12 @@ type EnvironmentStatus struct {
 	// +optional
 	// +kubebuilder:validation:MaxItems=10
 	History []ReleaseHistoryEntry `json:"history,omitempty"`
+
+	// GitReport is what was last posted back to the git provider about this
+	// Environment. Absent on a platform that reports nothing — a source
+	// connection without the statusChecks capability.
+	// +optional
+	GitReport *GitReport `json:"gitReport,omitempty"`
 
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`

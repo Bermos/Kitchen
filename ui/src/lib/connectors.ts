@@ -36,11 +36,11 @@ export function instanceOrigin(apiUrl: string | undefined): string | undefined {
 // (`contents=read`, `repository_hooks=write`), which is the whole reason the
 // link is worth offering: it opens on a form that is already correct.
 //
-// It asks for more than the platform uses today. Registering the webhook is
-// the live requirement; commit statuses, deployments and pull-request
-// comments are what deploy reporting (issue #71) will post, and asking for
-// them now is the difference between that landing quietly and every
-// installation having to mint its tokens again.
+// Every permission on it is used: webhooks to register the repository's hook,
+// contents to build it, and statuses, deployments and pull requests to report
+// each deploy back onto the commit and the pull request. A token short of the
+// reporting ones still deploys — the connection warns about what it cannot
+// post — but the reviewer never hears about the preview.
 const githubTokenLink =
   "https://github.com/settings/personal-access-tokens/new" +
   "?name=Kitchen" +
@@ -59,7 +59,7 @@ export function providerGuidance(provider: string, apiUrl?: string): ProviderGui
         permissions: [
           "Fine-grained: Contents → Read-only, Webhooks → Read and write, and Commit statuses, Deployments and Pull requests → Read and write, on the repositories you deploy.",
           "Classic: the repo scope covers all of it — public_repo is enough when every repository is public.",
-          "Only the webhook permission is used today; the rest is deploy reporting, so a token made now keeps working when it lands.",
+          "A token without the reporting permissions still builds and deploys — it just cannot tell the pull request about it.",
         ],
         // A self-hosted instance gets its own token page; the prefilled
         // parameters are a github.com feature, so an Enterprise link points at

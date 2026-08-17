@@ -88,12 +88,12 @@ func (g *GitHubProbe) Probe(ctx context.Context) Result {
 const githubScopesHeader = "X-OAuth-Scopes"
 
 // githubTokenUses is everything the platform does with a GitHub token, and the
-// classic scopes that allow each. Only the first is exercised today; the rest
-// is deploy reporting — a commit status per build, a deployment status per
-// preview environment, and the pull-request comment carrying the preview URL
-// (issue #71). They are checked now anyway, because the cost of a token minted
-// without them is minting it again later, and a warning while someone is
-// looking at the connection is much cheaper than a silent gap afterwards.
+// classic scopes that allow each: registering the repository's webhook, and
+// then reporting back what became of what it delivered — a commit status per
+// build, a deployment status per environment, and the pull request comment
+// carrying the preview URL. A warning while someone is looking at the
+// connection is much cheaper than the silent gap afterwards, since a report
+// the token cannot post is deliberately not an error anywhere else.
 var githubTokenUses = []struct {
 	// does is what the token would be doing, in the platform's terms.
 	does string

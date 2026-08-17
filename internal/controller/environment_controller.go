@@ -42,6 +42,7 @@ import (
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/activity"
 	"github.com/Bermos/Kitchen/internal/clickhouse"
+	"github.com/Bermos/Kitchen/internal/gitprovider"
 	"github.com/Bermos/Kitchen/internal/previewgate"
 )
 
@@ -102,14 +103,25 @@ type EnvironmentReconciler struct {
 	Scheme *runtime.Scheme
 	// Activity feeds the dashboard's recent-activity feed. May be nil.
 	Activity *activity.Recorder
+	// GitProviders resolves a Provider for a Connection, for reporting the
+	// deployment (and a preview's URL) back to the pull request. Defaults to
+	// gitprovider.Default; tests inject fakes.
+	GitProviders gitprovider.Factory
+}
+
+// git reports deploy status back to the repository the Environment's commit
+// came from. Posting is best effort: it never fails a deployment.
+func (r *EnvironmentReconciler) git() gitReporting {
+	return gitReporting{Client: r.Client, Factory: r.GitProviders}
 }
 
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=environments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=environments/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=environments/finalizers,verbs=update
-// +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=projects;releases;resourceclaims;domains,verbs=get;list;watch
+// +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=projects;releases;resourceclaims;domains;builds;connections,verbs=get;list;watch
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=kitchens,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;create
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes,verbs=get;list;watch;create;update;patch;delete
@@ -217,7 +229,7 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	log.Info("reconciled environment", "namespace", appNS, "host", host,
 		"protected", protected, "idlesToZero", idle != nil)
-	return r.updateStatus(ctx, env, release, kitchen, appNS, host, protected, idleCond)
+	return r.updateStatus(ctx, env, project, release, kitchen, appNS, host, protected, idleCond)
 }
 
 // finalize deletes the Environment's children and releases the finalizer. The
@@ -246,6 +258,11 @@ func (r *EnvironmentReconciler) finalize(ctx context.Context, env *kitchenv1alph
 	if err := r.deleteHTTPScaledObject(ctx, appNS, env.Name); err != nil {
 		return ctrl.Result{}, err
 	}
+
+	// Tell the pull request before the finalizer goes: once the Environment
+	// is gone, so is the record of what was posted about it, and the comment
+	// would go on advertising a URL that no longer answers.
+	r.git().retireEnvironment(ctx, env, env.Status.GitReport)
 
 	controllerutil.RemoveFinalizer(env, environmentFinalizer)
 	if err := r.Update(ctx, env); err != nil {
@@ -651,6 +668,7 @@ func (r *EnvironmentReconciler) deleteRoute(ctx context.Context, appNS, name str
 func (r *EnvironmentReconciler) updateStatus(
 	ctx context.Context,
 	env *kitchenv1alpha1.Environment,
+	project *kitchenv1alpha1.Project,
 	release *kitchenv1alpha1.Release,
 	kitchen *kitchenv1alpha1.Kitchen,
 	appNS string,
@@ -721,6 +739,8 @@ func (r *EnvironmentReconciler) updateStatus(
 		setCond(condReady, metav1.ConditionFalse, "WorkloadPending", "waiting for workload to become available")
 	}
 
+	r.reportDeployStatus(ctx, env, project, release, protected)
+
 	if err := r.Status().Update(ctx, env); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -728,6 +748,63 @@ func (r *EnvironmentReconciler) updateStatus(
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 	return ctrl.Result{}, nil
+}
+
+// reportDeployStatus posts the deployment — and a preview's URL, onto its
+// pull request — back to the git provider, and records what it said in
+// status.gitReport so the next reconcile stays quiet unless something moved.
+// It is called with the status already in its final shape and before it is
+// written, so the report and the status it describes land together.
+func (r *EnvironmentReconciler) reportDeployStatus(
+	ctx context.Context,
+	env *kitchenv1alpha1.Environment,
+	project *kitchenv1alpha1.Project,
+	release *kitchenv1alpha1.Release,
+	protected bool,
+) {
+	revision, ok := r.revisionOf(ctx, env, release)
+	if !ok {
+		// Without the commit there is nothing to report against: the
+		// Build the Release came from is gone, or was never named.
+		return
+	}
+
+	state := deploymentStateFor(env.Status.Phase)
+	// A report that repeats the last one is not posted. The comparison
+	// carries the empty error, so a report that failed last time is retried
+	// on the next pass rather than remembered as done.
+	candidate := &kitchenv1alpha1.GitReport{
+		Revision: revision.SHA,
+		State:    string(state),
+		URL:      env.Status.URL,
+	}
+	if candidate.Matches(env.Status.GitReport) {
+		return
+	}
+
+	env.Status.GitReport = r.git().reportEnvironment(
+		ctx, project, env, revision, state, protected, env.Status.GitReport)
+}
+
+// revisionOf is the commit an Environment is running: the Release names the
+// Build, and the Build names the commit.
+func (r *EnvironmentReconciler) revisionOf(
+	ctx context.Context,
+	env *kitchenv1alpha1.Environment,
+	release *kitchenv1alpha1.Release,
+) (kitchenv1alpha1.GitRevision, bool) {
+	if release.Spec.BuildRef.Name == "" {
+		return kitchenv1alpha1.GitRevision{}, false
+	}
+	build := &kitchenv1alpha1.Build{}
+	key := types.NamespacedName{Namespace: env.Namespace, Name: release.Spec.BuildRef.Name}
+	if err := r.Get(ctx, key, build); err != nil {
+		return kitchenv1alpha1.GitRevision{}, false
+	}
+	if build.Spec.Git.SHA == "" {
+		return kitchenv1alpha1.GitRevision{}, false
+	}
+	return build.Spec.Git, true
 }
 
 // unprotectable records a preview that asked to be gated on a platform with
