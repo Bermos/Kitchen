@@ -29,25 +29,28 @@ import (
 	"github.com/Bermos/Kitchen/internal/version"
 )
 
-// The metrics this package exports. The read path asks for them by these
-// exact names, so they are as much of an interface as a table column is.
+// The metrics this package exports. The read path asks for them by these exact
+// names, so the name is an interface between two packages — which is why these
+// alias the store's constants rather than repeating the strings. A metric
+// nothing reads is a metric that silently stopped working, and two spellings
+// of one name is how that happens.
 const (
 	// metricRestarts is the lifetime counter as the API server reports it,
 	// and metricRestartsDelta the change in it since the previous sweep. Both
 	// are exported: the counter answers "how bad is this container's life",
 	// the delta answers "what happened in this window", and neither can be
 	// derived from the other once the series has been bucketed.
-	metricRestarts      = "kitchen.container.restarts"
-	metricRestartsDelta = "kitchen.container.restarts.delta"
+	metricRestarts      = clickhouse.MetricContainerRestarts
+	metricRestartsDelta = clickhouse.MetricContainerRestartsDelta
 	// metricOOMKilled is 1 for the sweep that noticed an OOM kill, so that
 	// summing it over a window counts kills rather than sampling intervals.
-	metricOOMKilled = "kitchen.container.oom_killed"
+	metricOOMKilled = clickhouse.MetricContainerOOMKilled
 	// The limits, so a chart of usage from kubeletstats has a ceiling to draw
 	// against without the read path going back to the API server for it.
-	metricCPULimit    = "kitchen.container.cpu.limit"
-	metricMemoryLimit = "kitchen.container.memory.limit"
+	metricCPULimit    = clickhouse.MetricContainerCPULimit
+	metricMemoryLimit = clickhouse.MetricContainerMemoryLimit
 	// metricReplicas is how many pods the environment is running.
-	metricReplicas = "kitchen.environment.replicas"
+	metricReplicas = clickhouse.MetricEnvironmentReplicas
 )
 
 // Units, in UCUM as OTLP wants them: an annotation in braces for a count of
