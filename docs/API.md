@@ -599,8 +599,9 @@ paper over:
   stored: privacy and path cardinality settled in one move.
 - **gRPC errors are not counted.** A failed gRPC call is an HTTP 200 with a
   `grpc-status` trailer the edge does not read, so `errors` and `errorRate` are
-  transport-level for an HTTP/2 service. The route table's `protocol` is where
-  that shows.
+  transport-level for a gRPC service — a screen showing them for one has to say
+  so. The `protocol` on a request row (`HTTP/2`) is the only place the platform
+  can tell you it is looking at one; the aggregates carry no protocol at all.
 - **Nothing east-west.** Service-to-service calls inside the cluster never
   cross the Gateway; `/traffic` sees them as L4 edges, and no request row
   exists for them.
@@ -648,7 +649,7 @@ this endpoint deletes.
              "waiting": "CrashLoopBackOff: back-off 5m0s restarting failed container"},
    "since": "2026-08-16T09:28:02Z", "until": "2026-08-16T10:03:02Z",
    "logs": [{"timestamp": "2026-08-16T09:58:01.902Z", "message": "heap limit reached", "…": "…"}],
-   "resources": {"memoryLimitBytes": 536870912, "oomKills": 1, "points": ["…"]},
+   "resources": {"memoryLimitBytes": 536870912, "oomKills": 1, "points": [{"…": "…"}]},
    "events": [{"timestamp": "2026-08-16T09:58:02Z", "reason": "OOMKilling",
                "message": "Memory cgroup out of memory", "…": "…"}],
    "requests": [{"timestamp": "2026-08-16T09:58:02.113Z", "method": "POST",
@@ -695,8 +696,10 @@ on every rollout.
 
 The report is all-or-nothing: one half failing fails the request and names the
 read that failed, because a section that silently came back empty would be read
-as "nothing was logged" or "no warning was raised". `503` where the
-installation has no telemetry store, like every other endpoint that reads it.
+as "nothing was logged" or "no warning was raised". Assembling it needs the
+telemetry store, so an installation without one answers `503` — but only when
+there is something to assemble; whether anything crashed is read off the API
+server, and that answer costs the store nothing.
 
 ### The objects the operator materialized
 

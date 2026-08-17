@@ -17,6 +17,7 @@ limitations under the License.
 package api
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strings"
@@ -196,22 +197,24 @@ func (s *Server) environmentDiagnostics(w http.ResponseWriter, req *http.Request
 	}
 
 	crash := newestCrash(pods.Items)
-	switch {
-	case len(pods.Items) == 0:
-		view.Message = noPodsMessage
-	case crash == nil:
-		view.Message = nothingCrashedMessage
-	}
 	if crash == nil {
+		// Two different nothings: an environment with no pods at all sends the
+		// reader to the Environment's own conditions, a healthy one nowhere.
+		view.Message = nothingCrashedMessage
+		if len(pods.Items) == 0 {
+			view.Message = noPodsMessage
+		}
 		writeJSON(w, http.StatusOK, view)
 		return
 	}
 
+	// Only now is a store needed: whether anything crashed is the API server's
+	// answer, and an installation without telemetry can still be told no.
 	store := s.openLogStore(w, req)
 	if store == nil {
 		return
 	}
-	report, what, err := s.assembleCrashReport(req, store, env, *crash, lineLimit, requestLimit)
+	report, what, err := assembleCrashReport(ctx, store, env, *crash, lineLimit, requestLimit)
 	if err != nil {
 		// Four reads answer this endpoint, so the failure names which one it
 		// was; the store's own diagnostic stays in the operator's log.
@@ -229,16 +232,22 @@ func (s *Server) environmentDiagnostics(w http.ResponseWriter, req *http.Request
 // It is deliberately all-or-nothing: a report missing a section without saying
 // so is worse than an error, because whoever reads it concludes the section was
 // empty — that nothing was logged, that no warning was raised.
-func (s *Server) assembleCrashReport(
-	req *http.Request,
+func assembleCrashReport(
+	ctx context.Context,
 	store logReader,
 	env *kitchenv1alpha1.Environment,
 	crash crashView,
 	lineLimit, requestLimit int,
 ) (*crashReport, string, error) {
-	ctx := req.Context()
 	project := env.Spec.ProjectRef.Name
 	at := crash.FinishedAt
+	if at.IsZero() {
+		// A termination the kubelet stamped no finish time on is not a reason
+		// to read four windows around the year 1. They become the half hour
+		// ending now, and the report reports them, so what it covers is never
+		// something the reader has to guess at.
+		at = time.Now()
+	}
 	since, until := at.Add(-crashLookback), at.Add(crashLookahead)
 
 	report := &crashReport{Crash: crash, Since: since, Until: until}
