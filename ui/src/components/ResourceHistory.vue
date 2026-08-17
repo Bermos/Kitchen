@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { api, type ResourceSeries } from "../lib/api";
-import { compactCount, formatBytes } from "../lib/format";
+import { bucketLabel, compactCount, formatBytes } from "../lib/format";
 import { useAsync, usePoll } from "../lib/useAsync";
 import ResourceChart from "./ResourceChart.vue";
 
@@ -72,13 +72,7 @@ const count = (value: number) => compactCount(value);
 
 /** How coarse the answer actually is, which is not always what was asked for:
  * a wide window is drawn from the five-minute rollup. */
-const resolution = computed(() => {
-  const seconds = series.value?.bucketSeconds ?? 0;
-  if (!seconds) return "";
-  if (seconds < 60) return `${seconds}s buckets`;
-  if (seconds < 3600) return `${Math.round(seconds / 60)}m buckets`;
-  return `${Math.round(seconds / 3600)}h buckets`;
-});
+const resolution = computed(() => bucketLabel(series.value?.bucketSeconds));
 </script>
 
 <template>

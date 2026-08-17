@@ -84,6 +84,18 @@ export function formatBytes(bytes: number | undefined): string {
   return `${unit === 0 ? value : value.toFixed(2).replace(/\.?0+$/, "")} ${units[unit]}`;
 }
 
+/**
+ * How coarse an answer actually is, which is not always what was asked for: a
+ * wide window is drawn from a rollup, and a chart that does not say so invites
+ * someone to read a five-minute mean as an instant.
+ */
+export function bucketLabel(seconds: number | undefined): string {
+  if (!seconds || seconds <= 0) return "";
+  if (seconds < 60) return `${seconds}s buckets`;
+  if (seconds < 3600) return `${Math.round(seconds / 60)}m buckets`;
+  return `${Math.round(seconds / 3600)}h buckets`;
+}
+
 /** Seconds as a human duration: `43s`, `2m 05s`. */
 export function formatSeconds(seconds: number | undefined): string {
   if (!seconds || Number.isNaN(seconds) || seconds <= 0) return "—";

@@ -7,9 +7,11 @@ import { operatorMode } from "../lib/mode";
 import type { Tone } from "../lib/status";
 import { useAsync, usePoll } from "../lib/useAsync";
 import ConditionsTable from "../components/ConditionsTable.vue";
+import CrashReport from "../components/CrashReport.vue";
 import DomainsPanel from "../components/DomainsPanel.vue";
 import LogViewer from "../components/LogViewer.vue";
 import PhaseBadge from "../components/PhaseBadge.vue";
+import RequestsPanel from "../components/RequestsPanel.vue";
 import ResourceHistory from "../components/ResourceHistory.vue";
 import StatusDot from "../components/StatusDot.vue";
 
@@ -221,6 +223,15 @@ function historyBy(entry: { reason: string; by?: string }): string {
           <p v-else class="text-sm text-dimmed">no route — see conditions</p>
         </div>
       </div>
+
+      <!-- What the internet asked of it: the golden signals, the routes they
+           were asked of, and the requests themselves. -->
+      <RequestsPanel :environment="environment.name" :project="environment.project" :live="moving" />
+
+      <!-- A container that died, assembled: exit code, last lines, the memory
+           that led there, the cluster's warnings, the edge's requests. One line
+           when nothing has crashed, which is an answer rather than a shell. -->
+      <CrashReport :environment="environment.name" :live="moving" />
 
       <div>
         <h2 class="text-sm font-medium text-highlighted mb-2">Workload</h2>
