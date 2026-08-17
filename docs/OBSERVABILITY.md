@@ -144,13 +144,34 @@ What it cannot see: east-west traffic (stays L4), anything non-HTTP, and
 requests that die before Envoy. Accepted; §1 draws the line and §3.5 names
 the successors.
 
-**(b) Envoy access logs via `CiliumEnvoyConfig` — rejected.** Envoy can ship
-its access log natively (including as OTLP), but Cilium exposes no supported
-way to configure it for Gateway listeners; injecting it through CEC means
-patching objects Cilium's controller owns, breaking on every Cilium upgrade.
-The project already rejected CEC injection once, for `ext_authz` (see
-SCOPE.md, preview protection) — the same reasoning holds. It remains the
-named fallback if the Hubble path ever proves unavailable (§9).
+**(b) Envoy access logs — rejected as the foundation, but the fallback is
+cheaper than this section first claimed.** The original reasoning was that
+Cilium exposes no supported way to configure access logs for Gateway
+listeners, so reaching them meant injecting a `CiliumEnvoyConfig` over
+objects Cilium's controller owns — patching around a controller, breaking on
+every upgrade, and the same thing the project already rejected once for
+`ext_authz` (SCOPE.md, preview protection).
+
+That premise is false at the version Kitchen pins. Cilium 1.20 ships
+`CiliumGatewayClassConfig`, whose `spec.telemetry.accessLogs` configures
+access logging for every Gateway using that class through a
+`GatewayClass`'s `parametersRef` — supported, declarative, no CEC and
+nothing patched. Envoy writes them **to stdout**, which is the pipeline
+Kitchen's node collector already reads, so the fallback costs a
+`CiliumGatewayClassConfig` and a parser rather than a component.
+
+It is still not the foundation, for a reason unaffected by any of that:
+the Hubble path is *already ingested*. The follower holds the Relay stream,
+the leader election and the host map today, and the fields the golden
+signals need are ones it currently discards — so choosing it is deleting a
+`continue`, while choosing access logs is a new format to parse, a new
+failure mode when a log line is dropped, and traffic numbers that depend
+on log retention. Access logs also arrive with no endpoint identity
+attached, which is what §3.2's attribution would otherwise key on.
+
+What this changes is §9's risk: if stage 0 finds the L7 flows are not
+there, the fallback is a day's work on a supported API, not a fight with
+another controller.
 
 **(c) Hubble L7 visibility for pod-to-pod traffic — rejected as the
 foundation.** Cilium emits L7 flows for pod traffic only when a
@@ -693,8 +714,10 @@ Genuinely open, flagged rather than guessed:
 
 - **Does the Gateway's Envoy emit L7 flows with populated latency on a
   stock cluster?** The design's one load-bearing unverified fact; stage 0
-  is its gate, CEC-injected access logs its named fallback (§3.1b). See the
-  verification record for why it could not be settled here.
+  is its gate, and `CiliumGatewayClassConfig`'s access logs its named
+  fallback (§3.1b) — a supported API at the pinned Cilium version, which is
+  what keeps this risk small. See the verification record for why it could
+  not be settled here.
 - **gRPC status and header capture** — whether Hubble's header list can
   carry `grpc-status` without unacceptable cardinality/privacy cost. Until
   verified, gRPC error honesty is a screen footnote (§3.4).
