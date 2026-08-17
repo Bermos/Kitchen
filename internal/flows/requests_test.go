@@ -17,6 +17,7 @@ limitations under the License.
 package flows
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -71,11 +72,10 @@ func TestRequestOfReadsWhatTheEdgeObserved(t *testing.T) {
 	if request.Source != clickhouse.RequestSourceGateway {
 		t.Errorf("source = %q, want %q", request.Source, clickhouse.RequestSourceGateway)
 	}
-	// Reserved until something can genuinely fill it: whether Cilium populates
-	// trace context at the Gateway is an open question, and a guessed id would
-	// link a request to somebody else's trace.
+	// A request that carried no trace context — which is every request from an
+	// uninstrumented client — leaves the column empty.
 	if request.TraceID != "" {
-		t.Errorf("traceId = %q, want it left reserved", request.TraceID)
+		t.Errorf("traceId = %q, want it empty without a trace context", request.TraceID)
 	}
 	if request.Timestamp.UTC().Hour() != 9 {
 		t.Errorf("timestamp = %s, want the flow's own", request.Timestamp)
@@ -184,5 +184,50 @@ func TestRequestsForUnpublishedHostsShareOneBudget(t *testing.T) {
 	}
 	if got := budgets.route(owner.project, owner.environment, request.Path); got != overflowRoute {
 		t.Errorf("route past the shared budget = %q, want %q", got, overflowRoute)
+	}
+}
+
+// tracedFlow is a response flow whose request carried a `traceparent`, the way
+// the stage-0 job observed one arriving at the Gateway.
+func tracedFlow(traceID string) *flowpb.Flow {
+	flow := responseFlow("http://" + productionHost + "/checkout")
+	flow.TraceContext = &flowpb.TraceContext{
+		Parent: &flowpb.TraceParent{TraceId: traceID},
+	}
+	return flow
+}
+
+// The column the schema reserved is written now that the edge is known to
+// carry the id. What it must never carry is something a join cannot match: a
+// key that finds no span reads as a trace that was lost, which is a worse
+// answer than a request that was never traced.
+func TestRequestsCarryTheTraceIdTheEdgeSaw(t *testing.T) {
+	const wellFormed = "4bf92f3577b34da6a3ce929d0e0e4736"
+
+	for _, tc := range []struct {
+		name    string
+		traceID string
+		want    string
+	}{
+		{"the id the request carried", wellFormed, wellFormed},
+		// Out of spec, but the request is real and its spans are stored lower
+		// case, so the join has to be able to find them.
+		{"upper case is folded", strings.ToUpper(wellFormed), wellFormed},
+		// W3C defines the all-zero id as "no trace"; it is not an id.
+		{"the all-zero id is no trace", strings.Repeat("0", 32), ""},
+		{"too short", wellFormed[:31], ""},
+		{"too long", wellFormed + "0", ""},
+		{"not hex", strings.Repeat("z", 32), ""},
+		{"empty", "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			request, keep := requestOf(tracedFlow(tc.traceID))
+			if !keep {
+				t.Fatal("a traced request is still a request")
+			}
+			if request.TraceID != tc.want {
+				t.Errorf("traceId = %q, want %q", request.TraceID, tc.want)
+			}
+		})
 	}
 }

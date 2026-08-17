@@ -91,9 +91,10 @@ function millis(iso: string): string {
                   <UIcon name="i-lucide-scroll-text" class="size-3 align-[-2px]" />
                   logs ±30s
                 </RouterLink>
-                <!-- Reserved rather than speculative: the column exists so an
-                     instrumented application's requests link straight to their
-                     traces, and is empty until the edge can carry one. -->
+                <!-- Present when the request arrived carrying a traceparent,
+                     which the edge reads off the flow. An uninstrumented
+                     client sends none, so most rows have no link rather than
+                     a broken one. -->
                 <RouterLink
                   v-if="row.traceId"
                   :to="{ name: 'traces', query: { trace: row.traceId, range: '1440' } }"

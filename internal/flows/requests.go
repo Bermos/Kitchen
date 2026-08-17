@@ -57,12 +57,16 @@ var httpMethods = map[string]struct{}{
 // cold start visible as the tail latency of the first request rather than as
 // nothing at all.
 //
-// Two columns are deliberately left empty. `trace_id` stays reserved until
-// something can genuinely fill it — whether Cilium populates `trace_context`
-// from an incoming `traceparent` at the Gateway is §9's open question, and a
-// guessed id is worse than none. And no build or release is recorded at all:
-// the edge routes to a Service, so during a rollout both revisions answer
-// under one route and any release on the row would be a coin toss (§1).
+// `trace_id` is filled from the flow's trace context where the request carried
+// one. Whether Cilium populates it at the Gateway was §9's open question; the
+// stage-0 job answered it by sending a `traceparent` and reading the same id
+// back off the flow, so the column the schema reserved can be written without
+// a migration. A request that carried no trace context leaves it empty, which
+// is every request from an uninstrumented client.
+//
+// No build or release is recorded at all: the edge routes to a Service, so
+// during a rollout both revisions answer under one route and any release on
+// the row would be a coin toss (§1).
 func requestOf(flow *flowpb.Flow) (clickhouse.Request, bool) {
 	http := flow.GetL7().GetHttp()
 	if http == nil || flow.GetL7().GetType() != flowpb.L7FlowType_RESPONSE {
@@ -86,7 +90,51 @@ func requestOf(flow *flowpb.Flow) (clickhouse.Request, bool) {
 		DurationMs: float64(flow.GetL7().GetLatencyNs()) / 1e6,
 		Protocol:   http.GetProtocol(),
 		Source:     clickhouse.RequestSourceGateway,
+		TraceID:    traceIDOf(flow),
 	}, true
+}
+
+// traceIDLength is a W3C trace id in hex: sixteen bytes, thirty-two characters.
+const traceIDLength = 32
+
+// traceIDOf reads the id an incoming `traceparent` carried, or an empty string.
+//
+// It is validated rather than copied because the value arrives from whoever
+// made the request. The column exists so a request row can be joined to the
+// spans in `otel_traces`, and a join key nothing can match is worse than an
+// empty one: it looks like a trace that has been lost rather than a request
+// that was never traced. So anything that is not a well-formed id — wrong
+// length, not hex, or the all-zero id W3C defines as "no trace" — is dropped.
+//
+// Hex digits are folded to lower case because that is how the spans are
+// stored, and a join is a string comparison. A client sending upper case is
+// out of spec, but its request is real and its trace is findable.
+func traceIDOf(flow *flowpb.Flow) string {
+	id := flow.GetTraceContext().GetParent().GetTraceId()
+	if len(id) != traceIDLength {
+		return ""
+	}
+	lowered := make([]byte, 0, traceIDLength)
+	zero := true
+	for i := 0; i < len(id); i++ {
+		c := id[i]
+		switch {
+		case c >= '0' && c <= '9':
+			zero = zero && c == '0'
+		case c >= 'a' && c <= 'f':
+			zero = false
+		case c >= 'A' && c <= 'F':
+			zero = false
+			c += 'a' - 'A'
+		default:
+			return ""
+		}
+		lowered = append(lowered, c)
+	}
+	if zero {
+		return ""
+	}
+	return string(lowered)
 }
 
 // canonicalMethod folds a verb onto the known set. The exact spelling is tried

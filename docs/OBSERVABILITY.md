@@ -11,8 +11,9 @@
 > metrics the collector was assumed to emit and does not — see the verification
 > record, which now records them.
 >
-> The one fact stage 0 exists to prove still needs a cluster to prove: its CI
-> job is written and has not run against a real Cilium.
+> Stage 0 has since run against a real Cilium in CI and proved the one fact
+> this design rests on, along with four of §9's five open questions. The
+> readings are in the verification record.
 
 Kitchen's observability serves two people. The developer who deployed an
 application wants to click their project, click Logs or Metrics, and have the
@@ -86,9 +87,10 @@ platform controls.
 Where optional instrumentation slots in when someone wants the other side of
 the line: the OTLP endpoint every environment is already handed
 (`OTEL_EXPORTER_OTLP_ENDPOINT`, spans land in `otel_traces` today). A request
-row reserves a `trace_id` column so that the day the trace UI exists, an
-instrumented application's requests link straight to their traces with no
-schema migration. Nothing else in this design depends on instrumentation.
+row carries a `trace_id`, read off the flow's trace context where the request
+arrived with one, so an instrumented application's requests link straight to
+their traces. The column was reserved before anything could fill it, which is
+why filling it cost no migration. Nothing else in this design depends on instrumentation.
 
 ---
 
@@ -395,7 +397,7 @@ CREATE TABLE http_requests
     duration_ms   Float64 CODEC(ZSTD(1)),
     protocol      LowCardinality(String),
     source        LowCardinality(String),   -- 'gateway'; future vantage points get their own value
-    trace_id      String CODEC(ZSTD(1))     -- reserved; empty until a source exists (§1)
+    trace_id      String CODEC(ZSTD(1))     -- the id the request carried, where it carried one (§1)
 )
 ENGINE = MergeTree
 PARTITION BY toDate(Timestamp)
@@ -730,27 +732,34 @@ Settled by choosing a side, with the reason:
 - **Signals as versioned code vs. user-configurable rules** — code, until
   the alerting era forces the question with real requirements.
 
-Genuinely open, flagged rather than guessed:
+Flagged rather than guessed. **Stage 0's job has since run, and answered all
+five** — the readings are in the verification record; each is summarised here
+beside the question it settles, because the question is why the answer matters:
 
 - **Does the Gateway's Envoy emit L7 flows with populated latency on a
-  stock cluster?** The design's one load-bearing unverified fact; stage 0
-  is its gate, and `CiliumGatewayClassConfig`'s access logs its named
-  fallback (§3.1b) — a supported API at the pinned Cilium version, which is
-  what keeps this risk small. See the verification record for why it could
-  not be settled here.
+  stock cluster?** The design's one load-bearing unverified fact.
+  **Answered: yes**, with method, URL, status and non-zero latency, against a
+  cluster carrying no CiliumNetworkPolicy at all. `CiliumGatewayClassConfig`'s
+  access logs stay the named fallback (§3.1b) and are not needed.
 - **gRPC status and header capture** — whether Hubble's header list can
-  carry `grpc-status` without unacceptable cardinality/privacy cost. Until
-  verified, gRPC error honesty is a screen footnote (§3.4).
-- **Trace context at the edge** — the flow proto carries `trace_context`;
-  whether Cilium populates it from incoming `traceparent` headers for
-  Gateway traffic decides whether `trace_id` can be filled from the edge or
-  only ever by joining spans. Reserved column either way.
+  carry `grpc-status` without unacceptable cardinality/privacy cost.
+  **Half answered**: `Grpc-Status` is obtainable, so the remaining question is
+  the cost of keeping headers, which is a decision rather than an unknown.
+  gRPC error honesty stays a screen footnote (§3.4) until it is taken.
+- **Trace context at the edge** — whether Cilium populates `trace_context`
+  from an incoming `traceparent`. **Answered: yes**, the id the request
+  carried arrives on the flow, so `trace_id` is filled at the edge rather
+  than only by joining spans. The reserved column needed no migration, which
+  is what reserving it was for.
 - **Requests Envoy answers itself** (upstream timeout → 504, no backend →
-  503): whether these produce L7 flows or only the upstream-facing half.
-  Stage 0 should curl a dead backend and look.
-- **Hubble loss under sustained high rate** — the accounting (§3.2) makes
-  loss visible; whether default buffer sizing needs a prerequisites note at
-  Kitchen-realistic traffic is a stage-0 measurement.
+  503). **Answered**: they are recorded like any other response — a dead
+  backend produced a real 503 flow — so `env.no-backend` reads off request
+  rows rather than needing the upstream-facing half.
+- **Hubble loss under sustained high rate.** **Measured**: the 4095-event
+  default buffer held about ten minutes of history at 6.6 flows/s, and the
+  window shrinks in proportion to traffic. The accounting (§3.2) makes loss
+  visible when it happens; raising `hubble.eventBufferCapacity` before
+  driving real load is the cheaper move, and the chart README says so.
 
 ---
 
@@ -807,8 +816,26 @@ Cilium's agent↔Envoy access-log socket and L7-visibility mechanism (Cilium
 Envoy/observability docs); Hubble's default event buffer (4095) and
 `redact.http.urlQuery` option; OBI/Beyla's pre-1.0 status.
 
-Not verifiable in this environment, and gating stage 0: that Gateway API
-traffic emits L7 HTTP flows *without any CiliumNetworkPolicy*. Kitchen's CI
+**Settled by stage 0's CI job**, on kind with the pinned Cilium, Hubble and
+Hubble Relay, and asserted against a cluster the job checks is carrying no
+CiliumNetworkPolicy, no clusterwide policy and no NetworkPolicy:
+
+- L7 `RESPONSE` flows arrive for Gateway traffic with method, URL, status and
+  non-zero latency. This is the fact the whole design rests on.
+- `trace_context.parent.trace_id` is the id the request carried
+  (`4bf92f35…4736` sent, the same read back), so `trace_id` is filled at the
+  edge.
+- Envoy's self-generated answers are ordinary responses: a route with a dead
+  backend produced a `503` at 112µs.
+- Headers are populated and include `Grpc-Status`, so capturing it is a cost
+  decision rather than an open capability question.
+- The 4095-event ring buffer held 868 flows at 6.6 flows/s — about ten
+  minutes of history, shrinking in proportion to traffic. No lost-event
+  notices in the window.
+
+What follows is why that job did not exist when this was written, and stands
+as the record of the gap it closed. Not verifiable in the design-time sandbox:
+that Gateway API traffic emits L7 HTTP flows *without any CiliumNetworkPolicy*. Kitchen's CI
 never installs Cilium (the kind job's Gateway is deliberately never
 programmed), so there was no existing harness; a from-scratch kind + Cilium
 cluster could not run in the design-time sandbox (its kernel exposes only
