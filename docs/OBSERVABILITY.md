@@ -73,7 +73,7 @@ platform controls.
   close it later.
 - **gRPC failure semantics.** A gRPC error is HTTP 200 with a `grpc-status`
   trailer; the edge vantage records it as a success. Flagged on the screen
-  rather than silently wrong (§4.3).
+  rather than silently wrong (§3.4).
 
 Where optional instrumentation slots in when someone wants the other side of
 the line: the OTLP endpoint every environment is already handed
@@ -99,7 +99,7 @@ schema migration. Nothing else in this design depends on instrumentation.
 | Collector presence (derived) | store vs. API server | "node X has reported nothing for 10 minutes" — the silent-loss detector | new |
 
 Two sources were evaluated and deliberately not used, with reasons in §3 and
-§5: the KEDA interceptor (partial coverage by construction) and eBPF
+§4: the KEDA interceptor (partial coverage by construction) and eBPF
 auto-instrumentation (pre-1.0; the right *later* answer for east-west, the
 wrong foundation today).
 
@@ -150,7 +150,7 @@ way to configure it for Gateway listeners; injecting it through CEC means
 patching objects Cilium's controller owns, breaking on every Cilium upgrade.
 The project already rejected CEC injection once, for `ext_authz` (see
 SCOPE.md, preview protection) — the same reasoning holds. It remains the
-named fallback if the Hubble path ever proves unavailable (§10).
+named fallback if the Hubble path ever proves unavailable (§9).
 
 **(c) Hubble L7 visibility for pod-to-pod traffic — rejected as the
 foundation.** Cilium emits L7 flows for pod traffic only when a
@@ -192,7 +192,7 @@ gains a second output. For each L7 HTTP `RESPONSE` flow it derives:
   published every hostname (generated URLs and verified custom domains), so it
   maintains the host → environment map the way it already maintains routes. A
   host it never published lands in an *unrouted* bucket — which is itself an
-  operator signal (§8), catching stale DNS entries and scanners.
+  operator signal (§7), catching stale DNS entries and scanners.
 - **method** — canonicalised against the known verb set; anything else
   becomes `OTHER` (a cardinality guard against garbage requests).
 - **path and route** — the URL's path with the query string stripped and never
@@ -213,8 +213,8 @@ of silently showing fewer requests than happened.
 
 Raw rows are kept, not just aggregates, because goal 1 says *hand them
 everything it knows*: "show me the failing requests" is a row listing, and
-the crash-window view (§7.1) joins request rows to log lines by time. Rollups
-answer the charts (§6). Measured cost makes raw rows cheap: ~10 bytes per
+the crash-window view (§6.1) joins request rows to log lines by time. Rollups
+answer the charts (§5). Measured cost makes raw rows cheap: ~10 bytes per
 request compressed (verification record) — a sustained 100 req/s costs under
 1 GB per week of raw retention.
 
@@ -258,13 +258,13 @@ L4 flow edges (a queue worker's connection to its broker is visible traffic,
 just not HTTP). When cron jobs and background workers become first-class
 project shapes (SCOPE "nice-to-haves"), their native signals are
 runs/completions/failures — facts the operator already watches Jobs for; the
-signals model (§8) accommodates them without touching the collection layer.
+signals model (§7) accommodates them without touching the collection layer.
 
 gRPC via the Gateway is HTTP/2 underneath: requests appear with their
 `POST /pkg.Service/Method` paths (templating leaves them alone — they are
 already templates), but status is transport-level. The route table labels
 protocol `h2`/gRPC and the error column footnotes that gRPC application
-errors are not counted — honest, until header capture is verified (§10).
+errors are not counted — honest, until header capture is verified (§9).
 
 ### 3.5 The line this draws, restated
 
@@ -307,7 +307,7 @@ What runs where, after this design — **bold** marks what changes:
     operator is an existing watcher with the attribution knowledge. The
     activity feed (`events` table) is untouched; that is the platform's
     story, this is the cluster's.
-  - **the signals evaluator** (§8) — pure functions over the operator's
+  - **the signals evaluator** (§7) — pure functions over the operator's
     informer caches plus a few store queries; no background loop yet.
 - **ClickHouse** — single node, operator-owned schema, as today, plus the new
   tables in §5.
