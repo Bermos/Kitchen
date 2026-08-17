@@ -19,7 +19,6 @@ package main
 import (
 	"crypto/tls"
 	"flag"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -46,7 +45,6 @@ import (
 	"github.com/Bermos/Kitchen/internal/api"
 	"github.com/Bermos/Kitchen/internal/controller"
 	"github.com/Bermos/Kitchen/internal/flows"
-	"github.com/Bermos/Kitchen/internal/otlp"
 	"github.com/Bermos/Kitchen/internal/receiver"
 	"github.com/Bermos/Kitchen/internal/ui"
 	"github.com/Bermos/Kitchen/internal/usage"
@@ -80,7 +78,6 @@ func main() {
 	var gitWebhookAddr string
 	var previewGateImage string
 	var apiAddr string
-	var otlpAddr string
 	var apiAudiences string
 	var uiClientID string
 	var selfUpdate controller.SelfUpdateConfig
@@ -97,9 +94,6 @@ func main() {
 			"Without it, previews that ask to be protected get no route at all.")
 	flag.StringVar(&apiAddr, "api-bind-address", ":8092",
 		"The address the REST API binds to.")
-	flag.StringVar(&otlpAddr, "otlp-bind-address", fmt.Sprintf(":%d", otlp.DefaultPort),
-		"The address the OTLP/HTTP trace receiver binds to. It is OTLP's registered port, so an "+
-			"application configured with nothing but a hostname finds it.")
 	flag.StringVar(&apiAudiences, "api-audiences", "",
 		"Comma-separated token audiences the API accepts on top of the identity provider's issuer "+
 			"and the API's own external URL, both of which come from the Kitchen object.")
@@ -396,39 +390,19 @@ func main() {
 		os.Exit(1)
 	}
 
-	// The usage collector samples what the platform's workloads are using and
-	// ships the samples into the same store — the environment page's history.
-	// It idles until the Kitchen object names a store, so it too is added
-	// unconditionally. A sampler that cannot be built is not fatal: the
-	// replica and restart series come off the pods either way, and the CPU and
-	// memory columns stay zero rather than the operator refusing to start.
-	kubeletSampler, err := usage.NewKubeletSampler(mgr.GetConfig())
-	if err != nil {
-		setupLog.Error(err, "no kubelet client; resource usage will not be sampled")
-	}
+	// The usage collector samples what only the API server knows about the
+	// platform's workloads — restarts, OOM kills, limits, replica counts — and
+	// exports it to the node collector over OTLP, where it lands beside the
+	// CPU and memory the kubelet reports. It idles until the Kitchen object
+	// names an endpoint, so it too is added unconditionally.
 	if err := mgr.Add(&usage.Collector{
 		Client: mgr.GetClient(),
-		// Pods and nodes are read uncached for the same reason the API's
-		// introspection endpoints read them uncached: a warm informer over
-		// every pod in the cluster is a high price for a question asked on a
-		// timer.
-		Reader:  mgr.GetAPIReader(),
-		Sampler: kubeletSampler,
+		// Pods are read uncached for the same reason the API's introspection
+		// endpoints read them uncached: a warm informer over every pod in the
+		// cluster is a high price for a question asked on a timer.
+		Reader: mgr.GetAPIReader(),
 	}); err != nil {
 		setupLog.Error(err, "unable to add the usage collector to manager")
-		os.Exit(1)
-	}
-
-	// The OTLP receiver accepts spans from instrumented applications. It is
-	// the one telemetry pipeline the platform cannot fill on an application's
-	// behalf, so what it does instead is always be there: the Environment
-	// reconciler hands every workload this endpoint through OTLP's own
-	// environment variables.
-	if err := mgr.Add(&otlp.Receiver{
-		Client:   mgr.GetClient(),
-		BindAddr: otlpAddr,
-	}); err != nil {
-		setupLog.Error(err, "unable to add the otlp receiver to manager")
 		os.Exit(1)
 	}
 
