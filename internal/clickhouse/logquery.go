@@ -74,9 +74,10 @@ import (
 // caller's since/until, and a query that could move it would make the histogram
 // and the lines disagree about what they are showing.
 var logQueryColumns = map[string]string{
-	// Kitchen's own, materialized out of the attributes the collector sets.
-	// These keep their names: the schema gives them the name the query language
-	// already used, so there is nothing to translate.
+	// Kitchen's own, materialized under the names the query language already
+	// used, so there is nothing to translate. `stream` is one of these: the
+	// schema lifts it out of the record's attributes precisely so that it stays
+	// a column here and in the raw `where` surface.
 	"source":      "source",
 	"project":     "project",
 	"environment": "environment",
@@ -85,16 +86,16 @@ var logQueryColumns = map[string]string{
 	"pod":         "pod",
 	"container":   "container",
 	"node":        "node",
+	"stream":      "stream",
 
-	"stream": "stream",
-
-	"level":   logLevelColumn,
-	"message": logMessageColumn,
+	// The exporter's, under its names.
 	"traceId": "TraceId",
 	"spanId":  "SpanId",
+	"level":   logLevelColumn,
+	"message": logMessageColumn,
 }
 
-// The two log columns whose OTel spelling is not a rename but a decision.
+// The message is a plain rename. The level is not, and the difference matters.
 //
 // `level` reads a *lower-cased* SeverityText. Kitchen's levels have always been
 // lower case — the histogram counts `error` and `fatal`, the UI renders what it
@@ -103,11 +104,15 @@ var logQueryColumns = map[string]string{
 // `Error` and `error` all arrive; folding here is what keeps `level:error` one
 // term instead of three, and keeps the facet from offering the same level twice.
 //
-// A line the collector parsed no severity out of has an empty SeverityText, and
-// so an empty level. That is deliberate: the facet drops empty values, so such
-// a window offers no level facet at all rather than one blank entry standing
-// for everything. Populating it is the collector's job — OTLP has a first-class
-// severity field and a receiver-side parser is what fills it.
+// A line the collector parsed no severity out of has an empty SeverityText and
+// so an empty level. The facet drops empty values, so such a window offers no
+// level facet at all rather than one blank entry standing for everything — and
+// the histogram counts the lines while reporting no errors, which is honest but
+// is not the same as there being none. Filling it in is the collector's job:
+// OTLP has a first-class severity field and a receiver-side parser is what sets
+// it. The same is true of `TraceId` and `SpanId` above — they are populated
+// from the record's own OTLP fields, not from a JSON line's `trace_id`
+// attribute, which stays reachable only as `fields.trace_id`.
 const (
 	logLevelColumn   = "lower(SeverityText)"
 	logMessageColumn = "Body"
