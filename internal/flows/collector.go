@@ -254,8 +254,14 @@ func (c *Collector) follow(ctx context.Context, cfg config, budgets *routeBudget
 }
 
 // observe turns one Hubble flow into a store row, or nothing. Three kinds of
-// flow carry the signal the traffic view draws, everything else (per-packet
-// noise, replies, agent chatter) is dropped here rather than in the store:
+// flow carry the signal the traffic view draws, and everything else — replies,
+// per-packet noise, agent chatter — is dropped.
+//
+// Most of it is now refused by Relay before it is sent (streamFilters), which
+// is why the tests below matter more than they look: the filters are only the
+// server's approximation of these rules, and this is where the decision
+// actually is. Every check here is still made, on a stream that is a superset
+// of what it keeps.
 //
 //   - HTTP responses: one request served, with status and latency. The flow
 //     travels server→client, so the edge is recorded the way the request ran.

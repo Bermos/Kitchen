@@ -198,7 +198,10 @@ func newHostIndex(ctx context.Context, reader client.Client, log logr.Logger) *h
 // really are unrouted cannot turn every request into a listing.
 func (i *hostIndex) lookup(ctx context.Context, authority string) attribution {
 	owner := i.table.lookup(authority)
-	if owner.project != "" || time.Since(i.missed) < hostMissInterval {
+	// A request that named no host at all is not evidence of anything — no
+	// listing will ever produce a hostname for it — so it must not be able to
+	// keep the rebuild armed.
+	if owner.project != "" || authority == "" || time.Since(i.missed) < hostMissInterval {
 		return owner
 	}
 	i.missed = time.Now()

@@ -35,16 +35,16 @@ import (
 // The names the fixtures share. An assertion that disagrees with the route it
 // is about is the one mistake these tests cannot catch.
 const (
-	hostProject     = "shop"
-	hostProduction  = "production"
-	hostPreview     = "pr-41"
-	productionHost  = "shop.apps.example.com"
-	previewHost     = "shop-pr-41.apps.example.com"
-	customHost      = "www.shop.example.com"
-	dashboardHost   = "kitchen.example.com"
-	appNamespace    = "kitchen-app-shop"
-	platformNS      = "kitchen-system"
-	unroutedHostFor = "abandoned.apps.example.com"
+	hostProject    = "shop"
+	hostProduction = "production"
+	hostPreview    = "pr-41"
+	productionHost = "shop.apps.example.com"
+	previewHost    = "shop-pr-41.apps.example.com"
+	customHost     = "www.shop.example.com"
+	dashboardHost  = "kitchen.example.com"
+	appNamespace   = "kitchen-app-shop"
+	platformNS     = "kitchen-system"
+	unroutedHost   = "abandoned.apps.example.com"
 )
 
 func routeFor(name, project, environment string, hostnames ...string) gatewayv1.HTTPRoute {
@@ -101,7 +101,7 @@ func TestHostsFromRoutesAttributesEveryPublishedHostname(t *testing.T) {
 		{"fully qualified", productionHost + ".", hostProject, hostProduction},
 
 		// The unrouted bucket: a stale DNS entry, or a scanner guessing.
-		{"a host nobody published", unroutedHostFor, "", ""},
+		{"a host nobody published", unroutedHost, "", ""},
 		{"no host at all", "", "", ""},
 
 		// The platform's own surfaces belong to no project, and giving them

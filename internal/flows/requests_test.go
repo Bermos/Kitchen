@@ -177,7 +177,7 @@ func TestRequestsForUnpublishedHostsShareOneBudget(t *testing.T) {
 		t.Errorf("unrouted traffic opened %d budgets, want 1", got)
 	}
 
-	request, _ := requestOf(responseFlow("http://" + unroutedHostFor + "/probe"))
+	request, _ := requestOf(responseFlow("http://" + unroutedHost + "/probe"))
 	owner := table.lookup(request.Host)
 	if owner.project != "" || owner.environment != "" {
 		t.Errorf("an unpublished host attributed to %+v, want the unrouted bucket", owner)
