@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -77,10 +78,16 @@ type metricsOverviewBody struct {
 	Projects []projectTraffic `json:"projects,omitempty"`
 }
 
-// overviewHours is the window the per-project numbers cover, in whole hours
-// ending with the one in progress — the same 24 the store's own hourly series
-// are drawn over, so the sparklines beside each other are the same shape.
+// overviewHours is the window the traffic numbers cover, in whole hours ending
+// with the one in progress — the same 24 the store's own hourly series are
+// drawn over, so the sparklines beside each other are the same shape.
 const overviewHours = 24
+
+// overviewConcurrency bounds the hourly platform reads below. Four is the
+// signals gatherer's own bound, and for the same reason: enough that a day of
+// hours does not serialise, few enough that one screen refresh is not a load
+// test of a single-node ClickHouse.
+const overviewConcurrency = 4
 
 type projectTraffic struct {
 	Project         string   `json:"project"`
@@ -118,13 +125,19 @@ func (s *Server) metricsOverview(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// The window is the current hour and the 23 before it, which is what makes
+	// every sparkline on this screen 24 entries long and its last one the hour
+	// in progress.
+	hourStart := time.Now().UTC().Truncate(time.Hour).Add(-(overviewHours - 1) * time.Hour)
+
 	body := metricsOverviewBody{MetricsOverview: overview}
+	if what, err := fillOverviewTraffic(ctx, store, &body, query.Project, hourStart); err != nil {
+		s.writeStoreError(w, err, what)
+		return
+	}
 	if query.Project == "" {
-		// The window is the current hour and the 23 before it, which is what
-		// makes the per-project sparkline 24 entries long and its last one the
-		// hour in progress — the shape the store's own hourly series have.
 		traffic, err := store.ProjectTraffic(ctx, clickhouse.ProjectTrafficQuery{
-			Since:     time.Now().UTC().Truncate(time.Hour).Add(-(overviewHours - 1) * time.Hour),
+			Since:     hourStart,
 			Sparkline: true,
 		})
 		if err != nil {
@@ -141,6 +154,142 @@ func (s *Server) metricsOverview(w http.ResponseWriter, req *http.Request) {
 	// anything here; see joinProjectTraffic for why.
 	body.MetricsOverview.Namespaces = nil
 	writeJSON(w, http.StatusOK, body)
+}
+
+// fillOverviewTraffic replaces the flow pipeline's traffic numbers with the
+// request pipeline's, and is the last part of this endpoint to move.
+//
+// The correction is the one joinProjectTraffic documents, applied to the
+// totals: flows are attributed by the *destination* endpoint, so a protected
+// preview's traffic was credited to the forward-auth gate and an idling
+// environment's to the KEDA interceptor. Both live in the platform's own
+// namespace, so on the totals they were not lost but double-counted as
+// platform traffic — and on any project-scoped view of them, missing entirely.
+//
+// It cannot be arithmetic over the per-project rows this endpoint already
+// reads. Counts would add up; a p95 does not. The mean of twenty projects'
+// p95s is not the platform's p95, and neither is the largest of them, so the
+// percentile has to be merged from the states — which means reading the rollup
+// across projects rather than adding up reads of it within them.
+func fillOverviewTraffic(
+	ctx context.Context,
+	store logReader,
+	body *metricsOverviewBody,
+	project string,
+	hourStart time.Time,
+) (string, error) {
+	// The three series are replaced whole rather than written into, so that no
+	// bucket of the flow pipeline's answer survives in one the request
+	// pipeline did not fill.
+	body.RequestsPerHour = make([]uint64, overviewHours)
+	body.ErrorsPerHour = make([]uint64, overviewHours)
+	body.P95MsPerHour = make([]float64, overviewHours)
+
+	if project != "" {
+		return fillProjectOverviewTraffic(ctx, store, body, project, hourStart)
+	}
+
+	total, err := store.PlatformRequests(ctx, clickhouse.PlatformRequestsQuery{Since: hourStart})
+	if err != nil {
+		return whatPlatformTraffic, err
+	}
+	body.Requests24h, body.ErrorRate24h, body.P95Ms24h = total.Requests, total.ErrorRate, total.P95Ms
+
+	// One read per hour, because the series carries a percentile and a
+	// percentile is only mergeable inside the window it is merged over: there
+	// is no cross-project series read to ask for 24 buckets of, and inventing
+	// one out of the day-wide answer would be drawing a straight line. They run
+	// together rather than in sequence; each is a small merge over one hour of
+	// the minute rollup, and the whole set reads exactly the data the day-wide
+	// query above already read.
+	hours := make([]clickhouse.PlatformRequests, overviewHours)
+	if err := inParallel(overviewHours, overviewConcurrency, func(hour int) error {
+		start := hourStart.Add(time.Duration(hour) * time.Hour)
+		bucket, err := store.PlatformRequests(ctx, clickhouse.PlatformRequestsQuery{
+			Since: start,
+			Until: start.Add(time.Hour),
+		})
+		if err != nil {
+			return err
+		}
+		hours[hour] = bucket
+		return nil
+	}); err != nil {
+		return whatPlatformTraffic, err
+	}
+	for hour, bucket := range hours {
+		body.RequestsPerHour[hour] = bucket.Requests
+		body.ErrorsPerHour[hour] = bucket.Errors
+		body.P95MsPerHour[hour] = bucket.P95Ms
+	}
+	return "", nil
+}
+
+// fillProjectOverviewTraffic is the same correction for `?project=`, where the
+// store has a read shaped exactly right: one summary and one series, both
+// scoped to the project, both off the same rollups.
+func fillProjectOverviewTraffic(
+	ctx context.Context,
+	store logReader,
+	body *metricsOverviewBody,
+	project string,
+	hourStart time.Time,
+) (string, error) {
+	scope := clickhouse.RequestQuery{Project: project, Since: hourStart}
+	summary, err := store.RequestSummary(ctx, scope)
+	if err != nil {
+		return "the project traffic query", err
+	}
+	body.Requests24h, body.ErrorRate24h, body.P95Ms24h = summary.Requests, summary.ErrorRate, summary.P95Ms
+
+	series, err := store.RequestSeries(ctx, clickhouse.RequestSeriesQuery{
+		RequestQuery: scope,
+		Buckets:      overviewHours,
+	})
+	if err != nil {
+		return "the project traffic series query", err
+	}
+	// The series reports the width it chose rather than the one that was asked
+	// for, and the sparkline is 24 fixed hours: a bucket that does not land on
+	// one of them is dropped rather than stretched, which keeps the chart's
+	// x-axis the same on every screen that draws it.
+	for _, point := range series.Points {
+		hour := int(point.Start.Sub(hourStart) / time.Hour)
+		if hour < 0 || hour >= overviewHours {
+			continue
+		}
+		body.RequestsPerHour[hour] = point.Requests
+		body.ErrorsPerHour[hour] = point.Errors
+		body.P95MsPerHour[hour] = point.P95Ms
+	}
+	return "", nil
+}
+
+// inParallel runs `count` numbered reads, at most `concurrency` at a time, and
+// answers the first failure. It exists so that the hourly reads above are one
+// loop rather than a goroutine pattern written out in the middle of a handler.
+func inParallel(count, concurrency int, run func(int) error) error {
+	if concurrency < 1 {
+		concurrency = 1
+	}
+	var wait sync.WaitGroup
+	var once sync.Once
+	var failure error
+	slots := make(chan struct{}, concurrency)
+
+	for i := range count {
+		wait.Add(1)
+		go func(i int) {
+			defer wait.Done()
+			slots <- struct{}{}
+			defer func() { <-slots }()
+			if err := run(i); err != nil {
+				once.Do(func() { failure = err })
+			}
+		}(i)
+	}
+	wait.Wait()
+	return failure
 }
 
 // joinProjectTraffic puts the request pipeline's per-project numbers onto the

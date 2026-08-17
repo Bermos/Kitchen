@@ -99,6 +99,7 @@ sent the request.
 | GET | `/environments/{name}/requests/routes` | One row per route template, sortable — the per-path breakdown |
 | GET | `/environments/{name}/requests` | The requests themselves, newest first. Filterable, and live-tails like logs |
 | GET | `/environments/{name}/diagnostics` | The crash report: everything about the last abnormal termination, assembled |
+| GET | `/environments/{name}/signals` | What is wrong with it right now — the diagnostics strip |
 | GET | `/environments/{name}/objects` | The Kubernetes objects the operator materialized for it |
 | GET | `/logs` | The whole logs table, filtered by a query. `?q=`, `?where=` |
 | GET | `/logs/histogram` | The same selection counted over time — the shape of the window |
@@ -113,6 +114,13 @@ sent the request.
 | GET | `/traces` | Traces in a window. `?project=`, `?environment=`, `?service=`, `?errors=1`, `?minDuration=` |
 | GET | `/traces/{traceId}` | One trace's spans, oldest first — the waterfall |
 | GET | `/status` | The platform as it is running: cluster, tunnel, build queue, components |
+| GET | `/platform/signals` | Every finding firing anywhere on the platform, worst first — the problems list |
+| GET | `/platform/nodes` | Per node: conditions, pods, and when its collector last shipped anything |
+| GET | `/platform/workloads` | Every workload and pod on the platform — and the workloads with no pods at all |
+| GET | `/platform/edge` | Cross-project traffic, the Gateway, the tunnel and the certificates |
+| GET | `/platform/storage` | Volumes and what mounts them, plus the telemetry store's own health |
+| GET | `/platform/events` | The cluster's Warning history, faceted. `?reason=`, `?kind=`, `?search=` |
+| GET | `/platform/ingest` | Collector presence and freshness, and what the flow follower lost |
 | GET | `/settings` | The platform's settings — the `Kitchen` singleton |
 | PATCH | `/settings` | Change the build and telemetry defaults |
 | GET | `/updates` | The platform's own version, what it can upgrade to, and every upgrade it has attempted |
@@ -701,6 +709,47 @@ telemetry store, so an installation without one answers `503` — but only when
 there is something to assemble; whether anything crashed is read off the API
 server, and that answer costs the store nothing.
 
+### What is wrong with an environment
+
+`GET /environments/{name}/signals` is the diagnostics strip at the top of the
+environment page: *"2 problems: crash-looping (12 restarts in 30m), memory at
+96% of limit"*, each linking to the screen that shows the numbers behind it.
+
+```json
+{"project": "shop", "environment": "shop-production",
+ "evaluatedAt": "2026-08-16T10:00:00Z",
+ "counts": {"critical": 1, "warning": 1, "info": 0},
+ "items": [
+   {"signal": "workload.crashloop", "severity": "critical",
+    "scope": {"kind": "environment", "project": "shop", "environment": "shop-production", "name": "app"},
+    "fingerprint": "workload.crashloop/shop/shop-production/app",
+    "title": "crash-looping", "detail": "12 restarts in 30m; CrashLoopBackOff: back-off 5m0s …",
+    "since": "2026-08-16T09:31:00Z",
+    "evidence": "/environments/shop-production?section=workload"}],
+ "unreadable": [{"input": "http_requests_1m", "reason": "the request series query failed: …"}]}
+```
+
+The rules are a versioned catalogue in the operator, evaluated when a screen
+asks rather than on a timer: nothing is stored, and `evaluatedAt` is how fresh
+the answer is. `fingerprint` is stable for the same underlying condition across
+evaluations, which is what will let a later release diff rounds and record
+transitions instead of re-announcing the same problem every interval — the
+shape is designed for that and does not change when it arrives. `detail`'s
+first clause is the headline number, so a strip can render `title (first
+clause)` without knowing anything about the rule that produced it.
+
+Findings here are the environment's own and its project's; a saturated node or
+an unprogrammed Gateway belongs to the platform and is on the operator's list
+instead. `unreadable` is the one field worth reading when `items` is empty: it
+names each input the evaluation could not read, once, with the reason. An empty
+`items` with an empty `unreadable` means nothing is wrong; an empty `items`
+beside an unreadable `http_requests_1m` means nobody looked. The API never
+conflates them, and neither should a screen.
+
+An installation with no telemetry store is a third answer again: the rules that
+read it do not arise, so they are silently absent from both lists rather than
+reported as broken forever.
+
 ### The objects the operator materialized
 
 `GET /environments/{name}/objects` answers with the Kubernetes objects behind
@@ -753,6 +802,300 @@ A node count the operator's ClusterRole does not allow comes back as zero with
 the reason in `cluster.message`, rather than failing the request: an
 installation upgraded from before this endpoint should not lose its whole
 status bar over the one line it cannot fill in.
+
+### The operator's screens
+
+`/status` answers the status bar. `/platform/*` answers the section behind it:
+the platform seen across every project, which is a different question and —
+one day — a differently authorized one.
+
+**Everything platform-scoped lives under this prefix, and nothing
+project-scoped does.** Today the API authenticates every request and authorizes
+none of them (an open item in [AUTH.md](AUTH.md)), so the prefix enforces
+nothing yet. It is drawn now because the enforcement it is designed for is a
+middleware over a path prefix rather than an audit of every handler — which is
+also why a platform-wide question never appears as a query parameter on a
+project-scoped endpoint, however convenient that would be.
+
+None of these adds a watch. They read the cluster through the same uncached
+reader the introspection endpoints use and the store through the same client
+the logs do, so a screen nobody has open costs the platform nothing.
+
+Three of them can be answered only in part, and each says so in a field rather
+than by drawing a zero:
+
+| Field | Present when |
+|---|---|
+| `telemetryMessage` | the store could not be read, so freshness is unknown rather than fine |
+| `usageMessage` | nothing reads the saturation or volume-fill series back out of the store in this operator |
+| `eventsMessage` | the cluster's warnings could not be read, so a workload's refusal is missing its explanation |
+
+#### The problems list
+
+`GET /platform/signals` is every finding currently firing anywhere on the
+platform, worst first. It answers in exactly the shape
+`/environments/{name}/signals` does — same catalogue, same fingerprints, same
+`unreadable` list — narrowed to nothing instead of to one environment:
+
+```json
+{"evaluatedAt": "2026-08-16T10:00:00Z",
+ "counts": {"critical": 2, "warning": 3, "info": 0},
+ "items": [{"signal": "node.silent", "severity": "critical",
+            "scope": {"kind": "node", "node": "node-b"},
+            "fingerprint": "node.silent/node-b",
+            "title": "no telemetry", "detail": "nothing received for 34m …",
+            "since": "2026-08-16T09:26:00Z", "evidence": "/platform/nodes?node=node-b"}],
+ "unreadable": []}
+```
+
+Rules that could not be evaluated are *not* in `items`: they are in
+`unreadable`, named once each, because a store outage that darkened thirty
+rules should be one sentence at the top of the screen and not thirty rows in
+it. This screen is the alert inbox minus persistence — when background
+evaluation lands it reads recorded transitions instead of evaluating on view,
+and answers in this same shape.
+
+#### Nodes
+
+`GET /platform/nodes` is what the cluster is made of, plus the column that is
+the reason this screen exists:
+
+```json
+{"nodes": 3, "readyNodes": 3, "silentNodes": 1,
+ "items": [{"name": "node-b", "ready": true, "schedulable": true,
+            "roles": ["worker"], "kubeletVersion": "v1.34.1", "pods": 17,
+            "allocatable": {"cpu": "8", "memory": "32Gi", "pods": "110"},
+            "conditions": [{"type": "MemoryPressure", "status": "True", "reason": "…", "since": "…"}],
+            "telemetry": {"silent": true}}],
+ "usageMessage": "node saturation is collected, but this operator has no reader for host_metrics …"}
+```
+
+`telemetry` is when the store last received anything from this node's
+collector. A node whose collector is dead — or was never admitted, which is the
+Pod Security failure the platform namespace's own level exists to prevent —
+reads healthy everywhere else: its conditions are True, its pods are Running,
+and it simply stops contributing to every number the platform reports. Silence
+is reported as an *absence* of `lastSeen` rather than as an old timestamp,
+because that is the shape of the query behind it: it looks back an hour, and a
+node that said nothing in that hour is not in the answer at all.
+
+A freshness read that failed leaves every node neither fresh nor silent, with
+`telemetryMessage` saying why. That distinction is load-bearing: a store nobody
+could reach must not make the whole cluster look silent, which is the same
+wrong answer this screen exists to prevent, arrived at from the other side.
+
+`?node=` narrows to one, which is where the findings' evidence links point.
+`usage` carries the node's CPU, memory and filesystem series where something
+reads `host_metrics` back out of the store; where nothing does, it is absent
+and `usageMessage` says so — an unmeasured node and an idle one must not draw
+the same chart.
+
+#### Workloads
+
+`GET /platform/workloads` is every workload and every pod on the platform,
+applications and platform components alike — and, more to the point, the
+workloads that have *no pods at all*:
+
+```json
+{"workloads": 24, "unhealthy": 2, "withoutPods": 1,
+ "items": [{"kind": "DaemonSet", "namespace": "kitchen-system", "name": "kitchen-collector",
+            "component": "collector", "desired": 3, "ready": 0, "available": 0, "pods": 0,
+            "healthy": false,
+            "admission": {"reason": "FailedCreate", "count": 12, "at": "2026-08-16T09:00:00Z",
+                          "message": "pods \"kitchen-collector-\" is forbidden: violates PodSecurity …",
+                          "suspect": "Pod Security refused the pod: …"}}],
+ "pods": [{"namespace": "kitchen-shop", "name": "shop-production-5c9f7d6b4-abcde",
+           "workload": "ReplicaSet/shop-production-5c9f7d6b4", "project": "shop",
+           "environment": "shop-production", "node": "node-a", "phase": "Running",
+           "ready": false, "restarts": 3, "oomKilled": true,
+           "message": "CrashLoopBackOff: back-off 5m0s restarting failed container"}],
+ "totals": {"pods": 61, "running": 58, "pending": 2, "failed": 1, "notReady": 3,
+            "restarts": 14, "oomKills": 1},
+ "truncated": false}
+```
+
+The component survey's trick, applied cluster-wide: a workload whose pods are
+refused at admission has nothing to show — the pod never existed, so nothing is
+Pending and nothing is CrashLooping, and a listing of pods is a listing of the
+healthy ones. `pods` on a workload row is how many exist, which is not
+derivable from the replica counts beside it: zero available means pods that are
+failing *or* pods that were never created, and only this tells them apart.
+Where the two differ, `admission` carries the `FailedCreate` warning verbatim
+out of the recorded event history, with `suspect` naming Pod Security where the
+message betrays it.
+
+Pods are credited to the object a reader recognises: a Deployment rather than
+the ReplicaSet in between. `?namespace=` narrows both lists, `?limit=` bounds
+the pod listing (500 by default, capped at 2000) and `truncated` says the cut
+happened — the listing is sorted worst first, so what a limit drops is always
+pods that are running normally.
+
+#### Edge
+
+`GET /platform/edge` is the front door: what it served, across every project,
+and whether the door itself is in one piece.
+
+```json
+{"requests": {"since": "…", "until": "…", "requests": 120000, "requestsPerSecond": 1.4,
+              "errors": 240, "errorRate": 0.002, "p50Ms": 9, "p95Ms": 210, "p99Ms": 900,
+              "unrouted": 340, "rollup": "1m"},
+ "topRoutes": [{"key": "/api/:id", "project": "shop", "environment": "shop-production",
+                "requests": 90000, "errorRate": 0.001, "p95Ms": 180}],
+ "worstRoutes": [], "topHosts": [], "worstHosts": [], "latencyLeaders": [],
+ "unrouted": [{"host": "old.example.com", "requests": 400, "requestsPerSecond": 0.11,
+               "firstSeen": "…", "lastSeen": "…"}],
+ "gateways": [{"namespace": "kitchen-system", "name": "kitchen", "class": "cilium",
+               "addresses": ["203.0.113.7"], "programmed": true, "accepted": true,
+               "listeners": [{"name": "https", "port": 443, "protocol": "HTTPS",
+                              "attachedRoutes": 12, "programmed": true}]}],
+ "tunnel": {"name": "kitchen-cloudflared", "desired": 2, "ready": 2, "available": 2,
+            "restarts": 0, "healthy": true},
+ "certificates": {"items": [{"namespace": "kitchen-system", "name": "kitchen-wildcard",
+                             "dnsNames": ["*.apps.example.com"], "ready": false,
+                             "notAfter": "2026-08-26T00:00:00Z", "daysToExpiry": 9.6,
+                             "renewalTime": "2026-08-19T00:00:00Z",
+                             "message": "Failed to wait for order resource …: DNS problem: NXDOMAIN"}]}}
+```
+
+`?since=`/`?until=` bound the traffic window (an hour ending now by default)
+and `?limit=` how many rows each table carries (10 by default). The five
+rankings are five reads rather than one sorted five ways, because the sort
+decides which rows survive the limit — the ten busiest routes and the ten that
+fail most are rarely the same ten. The two ranked by error rate drop rows with
+too little traffic to rank, or the worst-performing host on the platform is
+whichever scanner asked once and got a 404.
+
+`unrouted` is the bucket of hosts that reached the edge which the platform
+never published: a stale DNS record, a scanner, or a custom domain whose object
+was removed while its record was not. `firstSeen`/`lastSeen` are what separate
+those — a host asked for once an hour ago is noise, one asked for continuously
+since a deploy is a route that stopped being published. It is read over its own
+window rather than the screen's, because "still asking" is a question about a
+stretch of time and not about wherever the chart was dragged to.
+
+The certificate table is the other half of the screen, and `message` is the
+most useful string on it: for a stuck ACME order it is the error the CA
+returned, verbatim, which is the one thing that says what to fix. A healthy
+certificate carries no message — cert-manager's "up to date and has not
+expired" is what `ready` already said. `issuing` is set only while a renewal is
+in progress, which is where a renewal that keeps failing reports itself: the
+`Ready` condition stays true on the still-valid old certificate, so that is the
+only place a stuck renewal says so. cert-manager not being installed is a
+supported configuration (TLS mode `none`, or a certificate supplied by hand)
+and answers an empty table with a message, not an error.
+
+The traffic half needs the store; the edge's own objects do not. An
+installation without telemetry still has a Gateway worth looking at, so the
+answer degrades to the objects with `trafficMessage` set rather than to a
+`503`.
+
+#### Storage
+
+`GET /platform/storage` is every volume the platform holds, what mounts it, and
+the health of the one database Kitchen runs itself:
+
+```json
+{"volumes": 4, "unbound": 1, "filling": 0,
+ "items": [{"namespace": "kitchen-shop", "name": "shop-data", "project": "shop",
+            "phase": "Pending", "bound": false, "requested": "10Gi",
+            "message": "this claim is not bound, so nothing that needs it can start; it names no storage class …"},
+           {"namespace": "kitchen-system", "name": "data-kitchen-clickhouse-0",
+            "phase": "Bound", "bound": true, "capacity": "50Gi",
+            "pods": ["kitchen-clickhouse-0"]}],
+ "store": {"bytesOnDisk": 5368709120, "capacityBytes": 53687091200, "usedFraction": 0.1,
+           "claim": "data-kitchen-clickhouse-0", "rowsPerSecond": 42, "retentionDays": 30},
+ "flows": {"events": 0, "notices": 0, "reconnects": 0, "windowSeconds": 3600, "lossless": true},
+ "usageMessage": "volume fill is collected, but this operator has no reader …"}
+```
+
+They are called volumes and not claims throughout, because `/claims` already
+means something else in this API — a `ResourceClaim`, the platform's own kind
+for a provisioned database — and two things called claims in one dashboard is
+one too many.
+
+An unbound volume names its own suspect: a claim Pending with no storage class
+is waiting for the cluster's default, and a cluster without one is the
+first-install hang the prerequisites warn about. `store` is the telemetry
+store's own size against the volume underneath it, read from the same query the
+`store.disk` signal fires on, so the screen and the finding cannot disagree
+about the number. `capacityBytes` is zero for an external store — the platform
+does not own that disk and has no business judging it. `retentionDays` is the
+one knob every table's TTL is derived from, which is the horizon past which the
+store deliberately holds nothing.
+
+`flows` is the loss the flow follower counted, and it is here as well as on
+`/platform/ingest` because losing rows before they are written and running out
+of disk to write them to are the same problem seen from two ends.
+
+#### Events
+
+`GET /platform/events` is the cluster's Warning history — `FailedScheduling`,
+`FailedCreate`, `FailedMount`, `OOMKilling` — which Kubernetes expires about an
+hour after the fact and the operator records so that "what happened at 03:00"
+has an answer. It is not the activity feed: `/events` is the platform's story,
+written by the reconcilers about things Kitchen did; this is the cluster's,
+about things that happened to it.
+
+```json
+{"items": [{"timestamp": "2026-08-16T03:14:00Z", "namespace": "kitchen-shop", "kind": "Pod",
+            "name": "shop-production-5c9f7d6b4-abcde", "reason": "FailedScheduling",
+            "message": "0/3 nodes are available: insufficient memory", "count": 12,
+            "node": "node-b", "project": "shop", "environment": "shop-production"}],
+ "facets": [{"field": "reason", "values": [{"value": "FailedScheduling", "count": 12}]},
+            {"field": "kind", "values": []},
+            {"field": "namespace", "values": []},
+            {"field": "node", "values": []}],
+ "truncated": false}
+```
+
+| Parameter | Meaning |
+|---|---|
+| `since` / `until` | RFC 3339 bounds. An hour ending now by default |
+| `project` / `environment` | One application's events. Platform objects carry neither |
+| `namespace` / `kind` / `name` / `reason` | The facets, as filters — and the deep link from any other screen |
+| `search` | Full text over the message, case-insensitively |
+| `limit` | Rows to return, default 100, capped at 1000 |
+
+This is the one platform screen that is nothing but a store read, so it is also
+the one that answers `503` on an installation without a telemetry store rather
+than degrading — there is no half of it to serve.
+
+The facets are counted over the rows that came back, not over the whole window,
+which is what `truncated` is there to say: at the limit they describe the page.
+That is the right trade at this size — the page is a thousand events at most,
+and a second aggregate per field would be four more queries for a number nobody
+sums. `count` on a row is Kubernetes' own repeat count for that event; the
+facet counts are rows, so the two deliberately do not add up to each other.
+
+#### Ingest
+
+`GET /platform/ingest` is whether the platform is still hearing from its own
+collection layer, and what it knows it has lost:
+
+```json
+{"silentNodes": 1, "nodesWithoutCollector": 1,
+ "items": [{"node": "node-b", "collector": "CrashLoopBackOff: back-off 5m0s …",
+            "telemetry": {"lastSeen": "2026-08-16T09:26:00Z", "silent": true, "ageSeconds": 2040}}],
+ "collector": {"present": true, "namespace": "kitchen-system", "name": "kitchen-collector",
+               "desired": 3, "ready": 2, "available": 2},
+ "flows": {"events": 4096, "notices": 3, "reconnects": 1,
+           "windowSeconds": 3600, "latest": "2026-08-16T09:58:00Z", "lossless": false}}
+```
+
+Three readings of the same question, because each catches a failure the others
+cannot. Per-node freshness catches a collector that stopped shipping. The
+DaemonSet's own counts catch the one that never started — `desired: 3` with
+nothing available and no pods on any node is admission refusing them, which
+leaves nothing for a pod listing to show. And `flows` is the only evidence that
+a *plausible* number is wrong: Hubble reports the events it dropped, so a
+request count that under-reports says so here instead of looking like a quiet
+hour. `lossless` is stated rather than left to be inferred from three zeroes,
+and `windowSeconds` is how far back the counts reach — they are the follower's
+trailing hour, not a total since start.
+
+The counts come from whichever replica answers the request, and the follower
+runs on the leader alone: a replica that never followed reports no loss because
+it did no following.
 
 ### Settings
 
@@ -1065,27 +1408,35 @@ one shape:
 - deploys over 7 days and a per-day series, plus the median build time, from
   the activity feed
 - requests, error rate and p95 latency over 24 hours with per-hour series,
-  from the flow pipeline — zeroes when no flow collector is configured
+  from the request pipeline
 - log volume over 24 hours with a per-hour series
 - the store's own size and ingest rate
 - `projects`: per-project 24h traffic (requests, 5xx, p95, hourly series),
-  from the request pipeline
+  from the same request pipeline
 
-The `projects` rows and the platform totals above them therefore come from two
-different sources, and where they disagree the rows are the ones to trust. The
-totals are aggregated from flows, which are attributed by the *destination*
+Every traffic number here is the edge's request rows — the totals as well as
+the rows, which was not always true. Flows are attributed by the *destination*
 endpoint: a protected preview's traffic is credited to the forward-auth gate
 and an idling environment's to the KEDA interceptor, both of which live in the
-platform's own namespace — so both used to vanish from the project that served
-them. A request row is attributed by the `Host` header instead, which is the
-one thing every hop preserves and the only thing the interceptor routes on.
-Every project gets a row, at zero if nobody visited it: this is a list of
-projects with numbers on it, not a list of numbers.
+platform's own namespace, so both vanished from the project that served them
+and swelled the platform's own numbers instead. A request row is attributed by
+the `Host` header, which is the one thing every hop preserves and the only
+thing the interceptor routes on. Every project gets a row, at zero if nobody
+visited it: this is a list of projects with numbers on it, not a list of
+numbers.
 
-`?project=` narrows everything to one project and drops the `projects` join.
-There is deliberately no raw metrics query surface: the raw material is the
-logs, events and flows tables, and `/logs` already exposes the store's own
-syntax for ad-hoc questions.
+The totals are read across projects rather than added up from the rows below
+them, because a p95 does not add up: the mean of twenty projects' p95s is not
+the platform's p95, and neither is the largest of them. The percentile has to
+be merged from the stored aggregate states, which is a read of its own — and
+the per-hour series is a read per hour, for the same reason applied to each
+bucket.
+
+`?project=` narrows everything to one project, drops the `projects` join, and
+answers the same numbers off that project's own rollups. There is deliberately
+no raw metrics query surface: the raw material is the logs, events and request
+tables, and `/logs` already exposes the store's own syntax for ad-hoc
+questions.
 
 ### Traffic
 
@@ -1186,6 +1537,8 @@ an answer.
 | Introspection shapes | Kubernetes' own vocabulary — replicas, restarts, manifests | The exception that proves the rule above: these endpoints exist to explain the platform's machinery, and a reader comparing them against `kubectl` should not have to translate |
 | Empty request surfaces | `edge.routed` beside the numbers, on every request answer | "Nothing reaches this environment through the edge" and "nothing was asked of it in this window" are both zeroes and different sentences; four empty charts would describe the platform rather than the application |
 | The crash report | One endpoint that joins five sources, all-or-nothing | Troubleshooting should be reading rather than hunting, and a section that failed silently would be read as evidence that nothing happened |
+| Operator screens | Their own `/platform/` prefix, never a parameter on a project-scoped endpoint | Authorization is not enforced yet; when it is, an operator-only surface separable by path is a middleware rather than a redesign |
+| Signals | Evaluated when a screen asks, and answered with what could *not* be read | Findings are ephemeral until a background loop records them, and an empty problems list is the strongest claim the platform makes — it may only be made about inputs that were actually read |
 | Pods and nodes | Read uncached, straight from the API server | Serving them from the manager's cache would mean an informer over every pod in the cluster, kept warm for a question only an open dashboard asks |
 | The dashboard | Served by the same process, outside `/api/` | The SPA is public, stateless files plus `/config.json` (issuer, client id, audience — the same values every login redirect shows); everything with state stays behind the token check |
 | OTLP ingest | The node collector's own unauthenticated in-cluster port, never on the Gateway | Spans come from workloads already inside the cluster; an OTLP endpoint on the public Gateway would be an unauthenticated write surface on the telemetry store |
@@ -1197,6 +1550,7 @@ an answer.
 - **Scopes and RBAC.** Tokens carry their scopes and the API records who asked
   for what, but nothing is enforced beyond "the issuer vouches for you". Teams
   and per-organisation roles land with the organizations plugin, and the token
-  shape follows them.
+  shape follows them. `/platform/*` is drawn to be the first thing that
+  enforcement applies to, and is not authorized today.
 - **Paging.** Collections answer in full. `{"items": …}` is an object rather
   than a bare array so a cursor can be added without breaking clients.

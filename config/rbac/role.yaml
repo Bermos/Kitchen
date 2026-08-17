@@ -9,6 +9,7 @@ rules:
   resources:
   - events
   - nodes
+  - persistentvolumeclaims
   - pods
   - serviceaccounts
   verbs:

@@ -374,6 +374,23 @@ func main() {
 		os.Exit(1)
 	}
 
+	// The flow collector follows Hubble Relay and ships flow observations
+	// into the telemetry store — the traffic view's data, and one row per
+	// request the platform's edge served. It idles until the Kitchen object
+	// names a relay address, so it can be added unconditionally.
+	//
+	// It is built here rather than inline in the Add below because the API
+	// holds on to it: the follower is the only thing that sees Relay's
+	// LostEvent notices, so its loss ledger is the only evidence the platform
+	// has that a request count under-reports.
+	flowCollector := &flows.Collector{
+		Client: mgr.GetClient(),
+	}
+	if err := mgr.Add(flowCollector); err != nil {
+		setupLog.Error(err, "unable to add the flow collector to manager")
+		os.Exit(1)
+	}
+
 	// The REST API. It authenticates every request against the platform's
 	// identity provider, which it resolves from the Kitchen object at
 	// request time — so it can be added here without waiting for the
@@ -392,18 +409,19 @@ func main() {
 		Activity:       recorder,
 		Version:        version.Version,
 		SelfUpdate:     selfUpdate,
+		// The follower's own accounting of what Hubble told it it lost, which
+		// is what the ingest signal and the ingest screen are made of. Note
+		// that the counts are the *local* replica's: the follower runs on the
+		// leader alone, so a replica that is not the leader reports no loss
+		// because it did no following — which is why the screen says which
+		// window the counts cover rather than presenting them as a total.
+		Flows: flowCollector,
+		// HostMetrics and VolumeUsage are deliberately unset. The collector
+		// ships host_metrics and the kubelet's volume group, and nothing reads
+		// either back out of the store yet; leaving them nil is what makes the
+		// three rules over them report nothing instead of reporting health.
 	}); err != nil {
 		setupLog.Error(err, "unable to add the api server to manager")
-		os.Exit(1)
-	}
-
-	// The flow collector follows Hubble Relay and ships flow observations
-	// into the telemetry store — the traffic view's data. It idles until the
-	// Kitchen object names a relay address, so it can be added unconditionally.
-	if err := mgr.Add(&flows.Collector{
-		Client: mgr.GetClient(),
-	}); err != nil {
-		setupLog.Error(err, "unable to add the flow collector to manager")
 		os.Exit(1)
 	}
 

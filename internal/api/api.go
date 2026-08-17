@@ -52,6 +52,7 @@ import (
 	"github.com/Bermos/Kitchen/internal/clickhouse"
 	"github.com/Bermos/Kitchen/internal/controller"
 	"github.com/Bermos/Kitchen/internal/provider"
+	"github.com/Bermos/Kitchen/internal/signals"
 )
 
 // maxRequestBody bounds the request bodies the API accepts. Everything it
@@ -85,6 +86,22 @@ type Server struct {
 	// a release promoted — into the platform's activity feed. May be nil.
 	Activity *activity.Recorder
 
+	// Flows is the Hubble follower, for its loss accounting alone. It is the
+	// only thing that sees Relay's LostEvent notices, so it is the only thing
+	// that can say the request counts under-report — see flowIngest. Nil on an
+	// installation whose follower was never added, where `ingest.flows-lost`
+	// stays quiet rather than reporting no loss it never measured.
+	Flows FlowFollower
+
+	// HostMetrics and VolumeUsage are the two store readers docs/OBSERVABILITY.md
+	// §7 names that nothing satisfies yet: node saturation out of `host_metrics`,
+	// and per-claim fill out of the kubelet's volume group. Both are deliberately
+	// nil here. The gatherer marks an unset source not-applicable, which keeps
+	// the three rules that need them quiet rather than falsely green, and the
+	// screens say the series are not collected rather than drawing zeroes.
+	HostMetrics signals.HostMetricsSource
+	VolumeUsage signals.VolumeUsageSource
+
 	// Probes resolves the credential probe a connection test runs, the same
 	// way the ConnectionReconciler does. Nil means provider.Default; tests
 	// inject fakes.
@@ -112,6 +129,11 @@ type Server struct {
 	// logStore builds the client the telemetry endpoints read through. It is
 	// a field so tests can serve telemetry without a ClickHouse.
 	logStore func(ctx context.Context) (logReader, error)
+
+	// resolver is how the platform resolves its own published names, for the
+	// one signal that probes DNS. A field for the same reason logStore is: a
+	// test must be able to answer without a network.
+	resolver signals.Resolver
 }
 
 // chartVersions lists the versions the platform's Helm chart has been
@@ -146,10 +168,28 @@ type logReader interface {
 	CorrelatedRequests(ctx context.Context, query clickhouse.RequestCorrelationQuery) ([]clickhouse.Request, error)
 	ProjectTraffic(ctx context.Context, query clickhouse.ProjectTrafficQuery) ([]clickhouse.ProjectTraffic, error)
 
+	// The same store read across projects rather than within one: the edge's
+	// own numbers, its busiest and worst routes and hosts, and the bucket of
+	// hosts nobody published. These answer the operator's screens, which is
+	// why they are here and not on any project-scoped read.
+	PlatformRequests(ctx context.Context, query clickhouse.PlatformRequestsQuery) (clickhouse.PlatformRequests, error)
+	EdgeBreakdown(ctx context.Context, query clickhouse.EdgeBreakdownQuery) ([]clickhouse.EdgeEntry, error)
+	UnroutedHosts(ctx context.Context, query clickhouse.PlatformRequestsQuery) ([]clickhouse.UnroutedHost, error)
+
+	// TelemetryFreshness is when each node's collector last shipped anything,
+	// which is the only reading in which a dead collector looks broken.
+	TelemetryFreshness(ctx context.Context, within time.Duration) ([]clickhouse.NodeFreshness, error)
+
 	// The cluster's Warning events, which are how a crash explains itself from
 	// the API server's side.
 	QueryK8sEvents(ctx context.Context, query clickhouse.K8sEventQuery) ([]clickhouse.K8sEvent, error)
 }
+
+// The store reads the signals gatherer needs are a subset of the ones above, so
+// anything this API can read telemetry through can also gather a snapshot. The
+// assertion is here rather than at the call site so that a read moving in either
+// package fails the build in one obvious place.
+var _ signals.Store = logReader(nil)
 
 // Start implements manager.Runnable.
 func (s *Server) Start(ctx context.Context) error {
@@ -238,6 +278,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/environments/{name}/requests/series", s.environmentRequestSeries)
 	mux.HandleFunc("GET /api/v1/environments/{name}/requests/routes", s.environmentRequestRoutes)
 	mux.HandleFunc("GET /api/v1/environments/{name}/diagnostics", s.environmentDiagnostics)
+	mux.HandleFunc("GET /api/v1/environments/{name}/signals", s.environmentSignals)
 
 	mux.HandleFunc("GET /api/v1/logs", s.queryLogs)
 	mux.HandleFunc("GET /api/v1/logs/histogram", s.logHistogram)
@@ -255,6 +296,18 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/traces/{traceId}", s.getTrace)
 
 	mux.HandleFunc("GET /api/v1/status", s.getStatus)
+
+	// The operator's own screens. Everything platform-scoped lives under this
+	// one prefix and nothing project-scoped does, so the authorization the
+	// dashboard's operator mode only pretends to have today is a middleware
+	// over a path prefix tomorrow rather than a redesign — see platform.go.
+	mux.HandleFunc("GET /api/v1/platform/signals", s.platformSignals)
+	mux.HandleFunc("GET /api/v1/platform/nodes", s.platformNodes)
+	mux.HandleFunc("GET /api/v1/platform/workloads", s.platformWorkloads)
+	mux.HandleFunc("GET /api/v1/platform/edge", s.platformEdge)
+	mux.HandleFunc("GET /api/v1/platform/storage", s.platformStorage)
+	mux.HandleFunc("GET /api/v1/platform/events", s.platformEvents)
+	mux.HandleFunc("GET /api/v1/platform/ingest", s.platformIngest)
 
 	mux.HandleFunc("GET /api/v1/settings", s.getSettings)
 	mux.HandleFunc("PATCH /api/v1/settings", s.patchSettings)
@@ -434,6 +487,28 @@ func floatParam(req *http.Request, name string) (float64, error) {
 		return 0, fmt.Errorf("%s must be a non-negative number (got %q)", name, raw)
 	}
 	return value, nil
+}
+
+// windowFrom reads the `?since=`/`?until=` pair every telemetry read is bounded
+// by. Both absent means the store's own default — an hour ending now — which is
+// why this answers zero times rather than filling them in here.
+//
+// The store guards the ordering too, but it guards it as a fault report: a
+// window the caller inverted is the caller's to fix, and saying so is a 400
+// rather than an internal error naming a read that never ran.
+func windowFrom(req *http.Request) (time.Time, time.Time, error) {
+	since, err := timeParam(req, "since")
+	if err != nil {
+		return time.Time{}, time.Time{}, err
+	}
+	until, err := timeParam(req, "until")
+	if err != nil {
+		return time.Time{}, time.Time{}, err
+	}
+	if !since.IsZero() && !until.IsZero() && !until.After(since) {
+		return time.Time{}, time.Time{}, errors.New("until must be after since")
+	}
+	return since, until, nil
 }
 
 // timeParam reads an RFC 3339 timestamp query parameter.

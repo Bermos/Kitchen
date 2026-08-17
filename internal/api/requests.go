@@ -58,19 +58,9 @@ import (
 // requestQueryFrom reads the window and the route filter the request reads
 // share. An absent window is the store's own default — the hour ending now.
 func requestQueryFrom(req *http.Request, env *kitchenv1alpha1.Environment) (clickhouse.RequestQuery, error) {
-	since, err := timeParam(req, "since")
+	since, until, err := windowFrom(req)
 	if err != nil {
 		return clickhouse.RequestQuery{}, err
-	}
-	until, err := timeParam(req, "until")
-	if err != nil {
-		return clickhouse.RequestQuery{}, err
-	}
-	// The store guards this too, but it guards it as a fault report: a window
-	// the caller inverted is the caller's to fix, and saying so is a 400 rather
-	// than an internal error naming a read that never ran.
-	if !since.IsZero() && !until.IsZero() && !until.After(since) {
-		return clickhouse.RequestQuery{}, fmt.Errorf("until must be after since")
 	}
 	return clickhouse.RequestQuery{
 		// Every request read is project-scoped, and the project is the

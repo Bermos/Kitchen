@@ -60,18 +60,28 @@ func TestListEvents(t *testing.T) {
 	}
 }
 
-// The per-project numbers are the request pipeline's, not the flow pipeline's.
-// Flows are keyed on the destination endpoint, so a protected preview's traffic
-// was credited to the forward-auth gate and an idling environment's to the KEDA
-// interceptor — both of which live in the platform's namespace, so both simply
-// vanished from the project that actually served them.
-func TestMetricsOverviewCountsProjectTrafficFromTheRequestPipeline(t *testing.T) {
+// Every traffic number on the overview is the request pipeline's, not the flow
+// pipeline's — the totals as well as the per-project rows. Flows are keyed on
+// the destination endpoint, so a protected preview's traffic was credited to
+// the forward-auth gate and an idling environment's to the KEDA interceptor;
+// both live in the platform's namespace, so both vanished from the project that
+// served them and swelled the platform's own numbers instead.
+func TestMetricsOverviewCountsTrafficFromTheRequestPipeline(t *testing.T) {
 	h := newHarness(t, nil, fixtures()...)
+	// What the flow pipeline still answers, and what none of it may reach.
 	h.logs.overview = clickhouse.MetricsOverview{
-		Requests24h: 120,
-		// What the flows saw of this project: four requests, because the gate
-		// answered the rest under its own namespace.
-		Namespaces: []clickhouse.NamespaceTraffic{{Namespace: "kitchen-shop", Requests24h: 4}},
+		Requests24h:     120,
+		ErrorRate24h:    0.5,
+		P95Ms24h:        900,
+		RequestsPerHour: repeated(24, 5),
+		Namespaces:      []clickhouse.NamespaceTraffic{{Namespace: "kitchen-shop", Requests24h: 4}},
+	}
+	h.logs.platformRequests = clickhouse.PlatformRequests{Requests: 900, ErrorRate: 0.02, P95Ms: 42}
+	// One hour of the day had traffic, and its p95 is the hour's own — not the
+	// day's, and not an average of anything.
+	hour := time.Now().UTC().Truncate(time.Hour).Hour()
+	h.logs.platformHours = map[int]clickhouse.PlatformRequests{
+		hour: {Requests: 300, Errors: 6, P95Ms: 77},
 	}
 	h.logs.projectTraffic = []clickhouse.ProjectTraffic{{
 		Project:         feedProject,
@@ -86,13 +96,33 @@ func TestMetricsOverviewCountsProjectTrafficFromTheRequestPipeline(t *testing.T)
 		t.Fatalf("GET /metrics/overview = %d: %s", res.Code, res.Body.String())
 	}
 	body := decode[struct {
-		Requests24h uint64           `json:"requests24h"`
-		Projects    []projectTraffic `json:"projects"`
-		Namespaces  []any            `json:"namespaces"`
+		Requests24h     uint64           `json:"requests24h"`
+		ErrorRate24h    float64          `json:"errorRate24h"`
+		P95Ms24h        float64          `json:"p95Ms24h"`
+		RequestsPerHour []uint64         `json:"requestsPerHour"`
+		ErrorsPerHour   []uint64         `json:"errorsPerHour"`
+		P95MsPerHour    []float64        `json:"p95MsPerHour"`
+		Projects        []projectTraffic `json:"projects"`
+		Namespaces      []any            `json:"namespaces"`
 	}](t, res)
-	if body.Requests24h != 120 {
-		t.Errorf("requests24h = %d, want 120", body.Requests24h)
+
+	if body.Requests24h != 900 || body.ErrorRate24h != 0.02 || body.P95Ms24h != 42 {
+		t.Errorf("the totals should be the platform read's, got %d / %v / %v",
+			body.Requests24h, body.ErrorRate24h, body.P95Ms24h)
 	}
+	if len(body.RequestsPerHour) != 24 || len(body.ErrorsPerHour) != 24 || len(body.P95MsPerHour) != 24 {
+		t.Fatalf("the sparklines are 24 hours long: %+v", body)
+	}
+	// The last bucket is the hour in progress, which is the one the fixture
+	// filled — and nothing of the flow pipeline's flat five survives.
+	if body.RequestsPerHour[23] != 300 || body.ErrorsPerHour[23] != 6 || body.P95MsPerHour[23] != 77 {
+		t.Errorf("the hour in progress should carry its own numbers: %+v", body)
+	}
+	if body.RequestsPerHour[0] != 0 {
+		t.Errorf("an hour the request pipeline did not fill must not keep the flow pipeline's: %+v",
+			body.RequestsPerHour)
+	}
+
 	if len(body.Projects) != 1 {
 		t.Fatalf("expected one project row, got %+v", body.Projects)
 	}
@@ -113,13 +143,70 @@ func TestMetricsOverviewCountsProjectTrafficFromTheRequestPipeline(t *testing.T)
 	if !asked.Since.Equal(asked.Since.Truncate(time.Hour)) || time.Since(asked.Since) < 23*time.Hour {
 		t.Errorf("expected a window of whole hours covering the last day, got %s", asked.Since)
 	}
+	// One day-wide read and one per hour: the percentile series cannot be
+	// derived from the day's answer, which is the reason there are 25 of them.
+	if len(h.logs.platformQueries) != 1+overviewHours {
+		t.Errorf("expected the day and its 24 hours, got %d reads", len(h.logs.platformQueries))
+	}
+}
+
+// repeated is a series of one number, for the flow pipeline's answer that must
+// not survive the switch.
+func repeated(count int, value uint64) []uint64 {
+	series := make([]uint64, count)
+	for i := range series {
+		series[i] = value
+	}
+	return series
+}
+
+// `?project=` narrows the same correction to one project, where the store has a
+// read shaped for it: a summary and a series rather than a day of hours.
+func TestMetricsOverviewScopedToAProjectReadsTheRequestPipeline(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+	h.logs.overview = clickhouse.MetricsOverview{Requests24h: 120, P95Ms24h: 900}
+	h.logs.requestSummary = clickhouse.RequestSummary{Requests: 100, ErrorRate: 0.03, P95Ms: 42}
+	start := time.Now().UTC().Truncate(time.Hour).Add(-23 * time.Hour)
+	h.logs.requestSeries = clickhouse.RequestSeries{
+		BucketSeconds: 3600,
+		Points: []clickhouse.RequestPoint{
+			{Start: start, Requests: 10, Errors: 1, P95Ms: 30},
+			{Start: start.Add(23 * time.Hour), Requests: 90, Errors: 2, P95Ms: 50},
+		},
+	}
+
+	res := h.do(t, http.MethodGet, "/api/v1/metrics/overview?project=shop", "")
+	if res.Code != http.StatusOK {
+		t.Fatalf("GET /metrics/overview?project=shop = %d: %s", res.Code, res.Body.String())
+	}
+	body := decode[struct {
+		Requests24h     uint64    `json:"requests24h"`
+		P95Ms24h        float64   `json:"p95Ms24h"`
+		RequestsPerHour []uint64  `json:"requestsPerHour"`
+		P95MsPerHour    []float64 `json:"p95MsPerHour"`
+	}](t, res)
+
+	if body.Requests24h != 100 || body.P95Ms24h != 42 {
+		t.Errorf("the project's totals should be its own rollup's, got %d / %v", body.Requests24h, body.P95Ms24h)
+	}
+	if body.RequestsPerHour[0] != 10 || body.RequestsPerHour[23] != 90 || body.P95MsPerHour[23] != 50 {
+		t.Errorf("the series should land on the hours it reported: %+v", body)
+	}
+	if h.logs.lastRequestSummary.Project != feedProject || h.logs.lastRequestSummary.Environment != "" {
+		t.Errorf("the read is the whole project's: %+v", h.logs.lastRequestSummary)
+	}
+	// The platform read is for the platform. A project's numbers never come
+	// from it, or one project's page would report another's traffic.
+	if len(h.logs.platformQueries) != 0 {
+		t.Errorf("a project-scoped overview should not read across projects: %+v", h.logs.platformQueries)
+	}
 }
 
 // A project nobody visited still belongs in the table, at zero: the overview is
 // a list of projects with numbers on it, not a list of numbers.
 func TestMetricsOverviewKeepsProjectsWithNoTraffic(t *testing.T) {
 	quiet := &kitchenv1alpha1.Project{
-		ObjectMeta: metav1.ObjectMeta{Name: "blog", Namespace: testNamespace},
+		ObjectMeta: metav1.ObjectMeta{Name: otherProject, Namespace: testNamespace},
 		Spec: kitchenv1alpha1.ProjectSpec{
 			Source: kitchenv1alpha1.GitSourceSpec{
 				ConnectionRef: kitchenv1alpha1.LocalObjectReference{Name: "gh"},
@@ -137,7 +224,7 @@ func TestMetricsOverviewKeepsProjectsWithNoTraffic(t *testing.T) {
 	body := decode[struct {
 		Projects []projectTraffic `json:"projects"`
 	}](t, res)
-	if len(body.Projects) != 2 || body.Projects[0].Project != "blog" {
+	if len(body.Projects) != 2 || body.Projects[0].Project != otherProject {
 		t.Fatalf("expected both projects, sorted by name, got %+v", body.Projects)
 	}
 	if body.Projects[0].Requests24h != 0 || len(body.Projects[0].RequestsPerHour) != 24 {
