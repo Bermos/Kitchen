@@ -82,21 +82,45 @@ spec:
       port: 8080
   observability:
     clickhouse:
-      retentionDays: 30                 # TTL the operator keeps on the telemetry tables
+      retentionDays: 30                 # TTL the operator keeps on every telemetry table,
+                                        # the collector's included
       secretRef: { name: kitchen-clickhouse }   # written by the chart; the store's connection details
     hubble:
       relayAddress: hubble-relay.kube-system.svc.cluster.local:80   # flow collection; empty disables it
     metrics:
-      enabled: true                     # the operator samples container CPU/memory off the kubelet,
-      intervalSeconds: 30               # and replicas/restarts off the pods themselves
+      enabled: true                     # the operator samples restarts, OOM kills, limits and
+      intervalSeconds: 30               # replicas; CPU and memory are the collector's kubelet scrape
     traces:
-      enabled: true                     # the OTLP/HTTP receiver, and telling apps where it is
-      endpoint: http://kitchen-otlp.kitchen-system.svc.cluster.local:4318
+      enabled: true                     # tell applications where to send their spans
+      endpoint: http://kitchen-otlp.kitchen-system.svc.cluster.local:4318   # the collector, and where
+                                        # the operator exports its own samples
 status:
   conditions: [...]                     # Ready, GatewayProgrammed, TunnelConnected,
                                         # TelemetrySchemaReady, PreviewGateReady
   gatewayAddress: 203.0.113.7
 ```
+
+`observability` is one retention over a store that two things write. An
+OpenTelemetry collector DaemonSet fills the logs, traces and metrics tables
+with the stock ClickHouse exporter; the operator fills flows and the activity
+feed, and owns the DDL and the TTLs for all of them, including the tables it
+never inserts a row into. The exporter runs with `create_schema: false`, so
+`retentionDays` moving is still one operator reconcile away from every table,
+and the collector on a fresh cluster retries until that reconcile has created
+the database.
+
+Both switches govern less than their names suggest, and in opposite
+directions. `metrics.enabled` turns the operator's sampler on and off: CPU and
+memory come off the kubelet through the collector either way, and what it
+decides is whether restarts, OOM kills, resource limits and replica counts are
+collected at all. Those are facts about API objects rather than about a
+running process, which is why no receiver exposes them — and the restart
+differencing has to happen where the previous sample is remembered, because a
+lifetime counter bucketed for a chart loses every transition that lands on a
+bucket boundary. `traces.enabled` decides whether `traces.endpoint` is
+advertised to the environments the operator deploys, through the OTLP
+variables every SDK reads; the collector receives either way, and the same
+address is where the operator sends its own samples as an ordinary client.
 
 ## `Connection` (namespaced: kitchen-system)
 

@@ -7,7 +7,8 @@ A self-hosted Vercel alternative for people who bring their own Kubernetes clust
 
 Deploys as a single Helm chart. Assumes Cilium as the cluster CNI (Hubble for traffic
 observability, Cilium Gateway API for ingress). All telemetry — logs, metrics, traces,
-flow data — lands in ClickHouse.
+flow data — lands in ClickHouse: one OpenTelemetry collector per node writes the first
+three, and the operator writes the flows and owns the schema under all of it.
 
 ## Docs
 
@@ -24,9 +25,13 @@ flow data — lands in ClickHouse.
   SavedQuery
 - `internal/controller/` — one reconciler per CRD
 - `internal/api/` — the REST API, behind the platform's identity provider
-- `internal/flows/`, `internal/usage/`, `internal/otlp/` — the telemetry the
-  operator collects itself: Hubble flows, container resource samples, and the
-  OTLP receiver instrumented applications export spans to
+- `internal/flows/`, `internal/usage/` — the telemetry no collector produces:
+  Hubble flow observations, and the restarts, OOM kills, resource limits and
+  replica counts the operator samples off the API server and exports to the
+  node collector over OTLP
+- `internal/clickhouse/` — the telemetry store's schema, which the operator
+  owns for every table including the ones only the collector writes, and every
+  query the API answers out of it
 - `config/crd/bases/` — generated CRD manifests
 - `cmd/` — operator entrypoint
 - `auth/` — the identity provider (better-auth) served at `auth.<baseDomain>`
@@ -97,10 +102,10 @@ provider at `auth.apps.example.com` with its Postgres.
 
 **Use `--create-namespace`, and do not create the namespace yourself.** The
 chart manages `kitchen-system` so its Pod Security level is set rather than
-inherited: the log collector mounts the node's `/var/log`, and `hostPath` is
+inherited: the collector mounts the node's `/var/log`, and `hostPath` is
 admitted at the `privileged` level alone, so on a cluster defaulting to
-`baseline` — Talos is one — an unlabelled namespace means no logs are ever
-collected. Helm writes its release record into the namespace before applying
+`baseline` — Talos is one — an unlabelled namespace means nothing is collected
+at all. Helm writes its release record into the namespace before applying
 any manifest, so the chart cannot bootstrap the namespace it installs into; it
 can only adopt the empty one `--create-namespace` just made. A namespace
 created with `kubectl create namespace` carries no Helm ownership metadata and
@@ -276,8 +281,9 @@ Reconcilers: Kitchen (shared Gateway, optional cloudflared, telemetry schema,
 the preview gate and its OAuth client), Project (webhook registration,
 namespace, connection validation), Connection (credential probes against the
 live provider, capabilities), Build, Environment. The Helm chart ships the
-operator, its CRDs, the git webhook route, the REST API, ClickHouse with a
-Vector DaemonSet shipping container and build logs into it, and the identity
+operator, its CRDs, the git webhook route, the REST API, ClickHouse with the
+OpenTelemetry collector DaemonSet that fills it — container and build logs,
+pod and node metrics, and the OTLP applications export — and the identity
 provider with its Postgres; tagged releases publish both images and the chart
 to GHCR.
 
@@ -299,4 +305,4 @@ their connection (Neon Postgres first, a DB branch per preview with
 `previewBranching`) with create/delete in the dashboard, and custom domains
 attach from the environment screen — the dashboard shows the DNS record to
 create and tracks verification, certificate and routing live. Still missing:
-`oidcClient` claims, metrics/traces/flow collection, and Infisical sync.
+`oidcClient` claims and Infisical sync.
