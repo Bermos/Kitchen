@@ -332,6 +332,13 @@ type stubLogs struct {
 	k8sEvents     []clickhouse.K8sEvent
 	lastK8sEvents clickhouse.K8sEventQuery
 
+	nodeUsage       []clickhouse.NodeUsage
+	lastNodeUsage   clickhouse.NodeUsageQuery
+	nodeUsageErr    error
+	volumeUsage     []clickhouse.VolumeUsage
+	lastVolumeUsage clickhouse.VolumeUsageQuery
+	volumeUsageErr  error
+
 	// mu guards the fields the concurrent hourly reads touch. Nothing else in
 	// this stub is called from more than one goroutine.
 	mu sync.Mutex
@@ -546,6 +553,28 @@ func (s *stubLogs) TelemetryFreshness(
 		return nil, s.freshnessErr
 	}
 	return s.freshness, nil
+}
+
+func (s *stubLogs) NodeUsage(
+	_ context.Context,
+	query clickhouse.NodeUsageQuery,
+) ([]clickhouse.NodeUsage, error) {
+	s.lastNodeUsage = query
+	if s.nodeUsageErr != nil {
+		return nil, s.nodeUsageErr
+	}
+	return s.nodeUsage, nil
+}
+
+func (s *stubLogs) VolumeUsage(
+	_ context.Context,
+	query clickhouse.VolumeUsageQuery,
+) ([]clickhouse.VolumeUsage, error) {
+	s.lastVolumeUsage = query
+	if s.volumeUsageErr != nil {
+		return nil, s.volumeUsageErr
+	}
+	return s.volumeUsage, nil
 }
 
 type harness struct {

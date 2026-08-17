@@ -93,15 +93,6 @@ type Server struct {
 	// stays quiet rather than reporting no loss it never measured.
 	Flows FlowFollower
 
-	// HostMetrics and VolumeUsage are the two store readers docs/OBSERVABILITY.md
-	// §7 names that nothing satisfies yet: node saturation out of `host_metrics`,
-	// and per-claim fill out of the kubelet's volume group. Both are deliberately
-	// nil here. The gatherer marks an unset source not-applicable, which keeps
-	// the three rules that need them quiet rather than falsely green, and the
-	// screens say the series are not collected rather than drawing zeroes.
-	HostMetrics signals.HostMetricsSource
-	VolumeUsage signals.VolumeUsageSource
-
 	// Probes resolves the credential probe a connection test runs, the same
 	// way the ConnectionReconciler does. Nil means provider.Default; tests
 	// inject fakes.
@@ -183,6 +174,13 @@ type logReader interface {
 	// The cluster's Warning events, which are how a crash explains itself from
 	// the API server's side.
 	QueryK8sEvents(ctx context.Context, query clickhouse.K8sEventQuery) ([]clickhouse.K8sEvent, error)
+
+	// Node saturation and per-claim fill. These are here, rather than handed to
+	// the Server once at startup, because they are read from the same store as
+	// everything above and it is resolved per request off the Kitchen singleton:
+	// a store that appears after the operator started answers these reads too.
+	NodeUsage(ctx context.Context, query clickhouse.NodeUsageQuery) ([]clickhouse.NodeUsage, error)
+	VolumeUsage(ctx context.Context, query clickhouse.VolumeUsageQuery) ([]clickhouse.VolumeUsage, error)
 }
 
 // The store reads the signals gatherer needs are a subset of the ones above, so
@@ -190,6 +188,15 @@ type logReader interface {
 // assertion is here rather than at the call site so that a read moving in either
 // package fails the build in one obvious place.
 var _ signals.Store = logReader(nil)
+
+// The same holds for the two optional sources: the reads behind node saturation
+// and volume fill are on the store as well, so the adapters that light
+// node.saturated, node.disk-filling and pvc.filling are built from whatever this
+// API is already reading telemetry through.
+var (
+	_ signals.NodeUsageReader   = logReader(nil)
+	_ signals.VolumeUsageReader = logReader(nil)
+)
 
 // Start implements manager.Runnable.
 func (s *Server) Start(ctx context.Context) error {

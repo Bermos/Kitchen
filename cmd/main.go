@@ -416,10 +416,6 @@ func main() {
 		// because it did no following — which is why the screen says which
 		// window the counts cover rather than presenting them as a total.
 		Flows: flowCollector,
-		// HostMetrics and VolumeUsage are deliberately unset. The collector
-		// ships host_metrics and the kubelet's volume group, and nothing reads
-		// either back out of the store yet; leaving them nil is what makes the
-		// three rules over them report nothing instead of reporting health.
 	}); err != nil {
 		setupLog.Error(err, "unable to add the api server to manager")
 		os.Exit(1)

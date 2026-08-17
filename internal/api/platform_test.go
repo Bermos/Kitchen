@@ -93,6 +93,17 @@ func TestPlatformNodesReportsTheSilentOnes(t *testing.T) {
 	h.logs.freshness = []clickhouse.NodeFreshness{{
 		Node: quietNode, LastSeen: time.Now().Add(-time.Minute).UTC(),
 	}}
+	// The node that is still reporting is also the only one with saturation to
+	// draw, for the same reason: node-b is shipping nothing.
+	h.logs.nodeUsage = []clickhouse.NodeUsage{{
+		Node: quietNode, BucketSeconds: 300,
+		CPU:    []clickhouse.NodeUsagePoint{{Value: 0.9, Observed: true}},
+		Memory: []clickhouse.NodeUsagePoint{{Value: 0.4, Observed: true}},
+		Filesystems: []clickhouse.NodeFilesystemUsage{{
+			MountPoint: "/", Device: "/dev/sda1", CapacityBytes: 100 << 30,
+			Used: []clickhouse.NodeUsagePoint{{Value: 0.72, Observed: true}},
+		}},
+	}}
 
 	res := h.do(t, http.MethodGet, "/api/v1/platform/nodes", "")
 	if res.Code != http.StatusOK {
@@ -121,10 +132,19 @@ func TestPlatformNodesReportsTheSilentOnes(t *testing.T) {
 	if len(sick.Conditions) != 2 {
 		t.Errorf("expected both conditions on %s: %+v", sickNode, sick.Conditions)
 	}
-	// Nothing reads host_metrics in this operator, so the series are absent and
-	// the screen says why rather than drawing zeroes.
-	if !strings.Contains(body.UsageMessage, "host_metrics") || quiet.Usage != nil {
-		t.Errorf("saturation is not measured here, and should say so: %q / %+v", body.UsageMessage, quiet.Usage)
+	// Saturation is read off the same store as everything else, so a node the
+	// collector reported on carries its series rather than a message.
+	if body.UsageMessage != "" {
+		t.Errorf("the store answered, so there is nothing to apologise for: %q", body.UsageMessage)
+	}
+	if quiet.Usage == nil || len(quiet.Usage.CPU) == 0 {
+		t.Fatalf("the node's saturation should be drawn: %+v", quiet.Usage)
+	}
+	if cpu := quiet.Usage.CPU[0].Value; cpu == nil || *cpu < 0.89 || *cpu > 0.91 {
+		t.Errorf("the fraction should arrive intact: %+v", quiet.Usage.CPU[0])
+	}
+	if len(quiet.Usage.Filesystems) != 1 || quiet.Usage.Filesystems[0].MountPoint != "/" {
+		t.Errorf("the filesystem the node reported should be there: %+v", quiet.Usage.Filesystems)
 	}
 }
 
@@ -417,6 +437,13 @@ func TestPlatformStorageReportsUnboundClaimsAndTheStore(t *testing.T) {
 
 	h := newHarness(t, nil, append(fixtures(), pending, store, mounted)...)
 	h.logs.overview = clickhouse.MetricsOverview{StoreBytes: 5 << 30, StoreRowsPerSecond: 42}
+	// The kubelet reports fill for the claim it can see mounted; the unbound one
+	// has no volume yet, so nothing measures it and it simply has no usage.
+	h.logs.volumeUsage = []clickhouse.VolumeUsage{{
+		Namespace: controller.PlatformNamespace, Claim: "data-kitchen-clickhouse-0",
+		Pod: "kitchen-clickhouse-0", CapacityBytes: 10 << 30, UsedBytes: 87 << 28,
+		UsedFraction: 0.87,
+	}}
 
 	res := h.do(t, http.MethodGet, "/api/v1/platform/storage", "")
 	if res.Code != http.StatusOK {
@@ -449,8 +476,13 @@ func TestPlatformStorageReportsUnboundClaimsAndTheStore(t *testing.T) {
 	if body.Store.UsedFraction < 0.49 || body.Store.UsedFraction > 0.51 {
 		t.Errorf("used against capacity is the number that matters: %+v", body.Store)
 	}
-	if body.UsageMessage == "" || telemetry.Usage != nil {
-		t.Errorf("nothing measures volume fill here, and the screen must say so: %q", body.UsageMessage)
+	// Fill comes off the store like everything else on this screen, so a claim
+	// the kubelet reported on carries a number rather than a message.
+	if body.UsageMessage != "" {
+		t.Errorf("the store answered, so there is nothing to apologise for: %q", body.UsageMessage)
+	}
+	if telemetry.Usage == nil || telemetry.Usage.UsedFraction < 0.86 || telemetry.Usage.UsedFraction > 0.88 {
+		t.Errorf("the claim's fill should be drawn: %+v", telemetry.Usage)
 	}
 }
 

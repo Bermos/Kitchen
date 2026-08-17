@@ -163,27 +163,54 @@ func newSignalsBody(findings signals.Findings, snapshot *signals.Snapshot) signa
 
 // signalSources is where a snapshot comes from, on this side of the operator.
 func (s *Server) signalSources(ctx context.Context) signals.Sources {
+	store := s.signalStore(ctx)
 	sources := signals.Sources{
 		Client:   cachelessClient{Client: s.Client, reader: s.reader()},
-		Store:    s.signalStore(ctx),
+		Store:    store,
 		Resolver: s.dnsResolver(),
-		// Whatever the caller wired up, which today is nothing: the two
-		// optional sources are host saturation and volume fill, and a nil one
-		// is marked not-applicable by the gatherer — so the three rules over
-		// them stay dark rather than reporting health nobody measured.
-		//
-		// They are fields rather than adapters built here because the store is
-		// resolved per request from the Kitchen singleton, so whoever connects
-		// them decides whether they follow that resolution or are handed in
-		// once at startup. Either way the rules need no change: they were
-		// written against these interfaces before anything satisfied them.
-		HostMetrics: s.HostMetrics,
-		VolumeUsage: s.VolumeUsage,
 	}
+	sources.HostMetrics = hostMetricsOf(store)
+	sources.VolumeUsage = volumeUsageOf(store)
 	if s.Flows != nil {
 		sources.Ingest = flowIngest{follower: s.Flows}
 	}
 	return sources
+}
+
+// hostMetricsSource and volumeUsageSource are the two screens' way in to the
+// same readers the catalogue uses, so a series drawn on the Nodes or Storage
+// screen and the rule that fires on it are one reading rather than two that can
+// disagree. Nil means the question does not arise; see [hostMetricsOf].
+func (s *Server) hostMetricsSource(ctx context.Context) signals.HostMetricsSource {
+	return hostMetricsOf(s.signalStore(ctx))
+}
+
+func (s *Server) volumeUsageSource(ctx context.Context) signals.VolumeUsageSource {
+	return volumeUsageOf(s.signalStore(ctx))
+}
+
+// hostMetricsOf and volumeUsageOf adapt a resolved store, and they follow its
+// resolution exactly: nil for an installation with no telemetry, and a source
+// that fails every read when the store is configured and unreachable.
+//
+// The distinction is the whole point. Adapting a nil store would produce a
+// source that is not nil and cannot answer, which the gatherer reads as
+// unreadable — "measured, and we cannot see it" — when the truth is that
+// nothing was ever measured.
+func hostMetricsOf(store signals.Store) signals.HostMetricsSource {
+	reader, ok := store.(signals.NodeUsageReader)
+	if !ok {
+		return nil
+	}
+	return signals.StoreHostMetrics(reader)
+}
+
+func volumeUsageOf(store signals.Store) signals.VolumeUsageSource {
+	reader, ok := store.(signals.VolumeUsageReader)
+	if !ok {
+		return nil
+	}
+	return signals.StoreVolumeUsage(reader)
 }
 
 // signalStore resolves the telemetry store for an evaluation, and the two ways
@@ -338,4 +365,22 @@ func (u unreachableStore) MetricsOverview(
 	context.Context, clickhouse.MetricsQuery,
 ) (clickhouse.MetricsOverview, error) {
 	return clickhouse.MetricsOverview{}, u.err
+}
+
+// The two optional sources fail the same way, which is the point of spelling
+// them out here: a store nobody can reach must make node saturation and volume
+// fill unreadable, not absent. Absent is what an installation without telemetry
+// looks like, and the difference is the difference between "not measured" and
+// "measured, and we cannot see it".
+
+func (u unreachableStore) NodeUsage(
+	context.Context, clickhouse.NodeUsageQuery,
+) ([]clickhouse.NodeUsage, error) {
+	return nil, u.err
+}
+
+func (u unreachableStore) VolumeUsage(
+	context.Context, clickhouse.VolumeUsageQuery,
+) ([]clickhouse.VolumeUsage, error) {
+	return nil, u.err
 }

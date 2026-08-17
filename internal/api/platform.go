@@ -80,10 +80,10 @@ const (
 		"so nothing measured over time can be shown here"
 	noFreshnessMessage = "the telemetry store could not be read, " +
 		"so which nodes are still reporting is unknown rather than fine"
-	noHostMetricsMessage = "node saturation is collected, but this operator has no reader for host_metrics " +
-		"wired up, so these series are absent rather than zero"
-	noVolumeUsageMessage = "volume fill is collected, but this operator has no reader for the kubelet's " +
-		"volume stats wired up, so usage is unknown rather than zero"
+	noHostMetricsMessage = "this installation has no telemetry store, so node saturation is absent " +
+		"rather than zero — the nodes are not idle, they are unmeasured"
+	noVolumeUsageMessage = "this installation has no telemetry store, so how full each volume is " +
+		"is unknown rather than zero"
 )
 
 // platformNodes answers the Nodes screen: what the cluster is made of, and
@@ -231,11 +231,12 @@ type usagePoint struct {
 // series a screen draws and the series `node.saturated` fires on are the same
 // numbers rather than two readings that can disagree.
 func (s *Server) nodeUsage(ctx context.Context) (map[string]*nodeUsageView, string) {
-	if s.HostMetrics == nil {
+	source := s.hostMetricsSource(ctx)
+	if source == nil {
 		return nil, noHostMetricsMessage
 	}
 	now := time.Now().UTC()
-	nodes, err := s.HostMetrics.NodeUsage(ctx, now.Add(-signals.ResourceWindow), now, signals.ResourceBucket)
+	nodes, err := source.NodeUsage(ctx, now.Add(-signals.ResourceWindow), now, signals.ResourceBucket)
 	if err != nil {
 		s.log().Error(err, "the node saturation query failed")
 		return nil, "node saturation could not be read, so these series are absent rather than zero"

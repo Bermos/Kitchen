@@ -176,10 +176,11 @@ type volumeUsageView struct {
 // asks is how full a volume is, and the trend that turns that into a date is
 // the disk-filling signal's, not this table's.
 func (s *Server) volumeUsage(ctx context.Context) (map[string]*volumeUsageView, string) {
-	if s.VolumeUsage == nil {
+	source := s.volumeUsageSource(ctx)
+	if source == nil {
 		return nil, noVolumeUsageMessage
 	}
-	volumes, err := s.VolumeUsage.VolumeUsage(ctx, time.Now().UTC())
+	volumes, err := source.VolumeUsage(ctx, time.Now().UTC())
 	if err != nil {
 		s.log().Error(err, "the volume usage query failed")
 		return nil, "how full each volume is could not be read, so usage is unknown rather than zero"

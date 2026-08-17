@@ -194,16 +194,52 @@ func TestSignalSourcesWiring(t *testing.T) {
 	if health.FlowsLost != 900 || health.Reconnects != 2 || health.Window != flows.LossWindow {
 		t.Errorf("the ledger should arrive intact: %+v", health)
 	}
-	// Left unset on purpose: the gatherer marks an absent source
-	// not-applicable, which keeps the rules over it quiet rather than green.
-	if sources.HostMetrics != nil || sources.VolumeUsage != nil {
-		t.Errorf("these two are the caller's to wire up: %+v / %+v", sources.HostMetrics, sources.VolumeUsage)
+	// Both come off the store this harness has, so the three rules over them
+	// are lit rather than dark.
+	if sources.HostMetrics == nil || sources.VolumeUsage == nil {
+		t.Errorf("a readable store lights both: %+v / %+v", sources.HostMetrics, sources.VolumeUsage)
 	}
 	if sources.Resolver == nil {
 		t.Error("the DNS rule needs a resolver")
 	}
 	if sources.Client == nil || sources.Store == nil {
 		t.Error("the cluster and the store are both readable in this harness")
+	}
+}
+
+// The two optional sources follow the store's own resolution, and the two ways
+// it can be missing are not the same answer. Getting this backwards is how a
+// screen ends up saying a disk is fine because nothing ever measured it.
+func TestOptionalSourcesFollowTheStore(t *testing.T) {
+	unreachable := errors.New("dial tcp 10.0.0.1:8123: connect: connection refused")
+	for _, tc := range []struct {
+		name  string
+		err   error
+		wired bool
+	}{
+		{"no store at all leaves them unset", errNoLogStore, false},
+		{"an unreachable store still wires them", unreachable, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t, nil, fixtures()...)
+			h.server.logStore = func(context.Context) (logReader, error) { return nil, tc.err }
+
+			sources := h.server.signalSources(context.Background())
+			if wired := sources.HostMetrics != nil; wired != tc.wired {
+				t.Errorf("host metrics wired = %v, want %v", wired, tc.wired)
+			}
+			if wired := sources.VolumeUsage != nil; wired != tc.wired {
+				t.Errorf("volume usage wired = %v, want %v", wired, tc.wired)
+			}
+			if !tc.wired {
+				return
+			}
+			// Wired, and every read fails with the reason — which is what makes
+			// the gatherer call the input unreadable rather than absent.
+			if _, err := sources.VolumeUsage.VolumeUsage(context.Background(), time.Now()); !errors.Is(err, unreachable) {
+				t.Errorf("an unreachable store has to fail the read, got %v", err)
+			}
+		})
 	}
 }
 
