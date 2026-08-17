@@ -112,7 +112,6 @@ func (s *Server) metricsOverview(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 		query.Project = project
-		query.Namespace = controller.AppNamespace(project)
 	}
 
 	store := s.openLogStore(w, req)
@@ -150,9 +149,6 @@ func (s *Server) metricsOverview(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 	}
-	// The namespace rows are the flow pipeline's, and no longer the source of
-	// anything here; see joinProjectTraffic for why.
-	body.MetricsOverview.Namespaces = nil
 	writeJSON(w, http.StatusOK, body)
 }
 

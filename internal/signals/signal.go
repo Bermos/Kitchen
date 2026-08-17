@@ -59,12 +59,19 @@ const (
 
 	// From the telemetry store.
 	InputClusterEvents Input = "k8s_events"
-	InputRequests      Input = "http_requests_1m"
-	InputResources     Input = "metrics_5m"
-	InputHostMetrics   Input = "host_metrics"
-	InputVolumeStats   Input = "kubelet_volume_stats"
-	InputFreshness     Input = "telemetry_freshness"
-	InputStore         Input = "clickhouse_system"
+	// InputRawRequests is the request rows themselves and InputRequests the
+	// minute rollup over them. They are two inputs rather than one because they
+	// fail separately and are read by different rules: only the unrouted bucket
+	// groups over the raw table, and marking the rollup for its failure would
+	// both name a table the failing query never touched and darken the six
+	// rules that do read the rollup.
+	InputRawRequests Input = "http_requests"
+	InputRequests    Input = "http_requests_1m"
+	InputResources   Input = "metrics_5m"
+	InputHostMetrics Input = "host_metrics"
+	InputVolumeStats Input = "kubelet_volume_stats"
+	InputFreshness   Input = "telemetry_freshness"
+	InputStore       Input = "clickhouse_system"
 
 	// Derived by the operator itself.
 	InputDNS    Input = "dns"

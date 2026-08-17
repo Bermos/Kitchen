@@ -267,17 +267,24 @@ func fixtures() []runtime.Object {
 
 // stubLogs stands in for the telemetry store.
 type stubLogs struct {
-	lines       []clickhouse.LogLine
-	last        clickhouse.LogQuery
-	lastFilter  clickhouse.LogFilter
-	filterErr   error
-	events      []clickhouse.Event
-	lastEvents  clickhouse.EventQuery
-	edges       []clickhouse.TrafficEdge
-	lastTraffic clickhouse.TrafficQuery
-	trafficErr  error
-	overview    clickhouse.MetricsOverview
-	lastMetrics clickhouse.MetricsQuery
+	lines         []clickhouse.LogLine
+	last          clickhouse.LogQuery
+	lastFilter    clickhouse.LogFilter
+	filterErr     error
+	events        []clickhouse.Event
+	lastEvents    clickhouse.EventQuery
+	edges         []clickhouse.TrafficEdge
+	lastTraffic   clickhouse.TrafficQuery
+	trafficErr    error
+	overview      clickhouse.MetricsOverview
+	lastMetrics   clickhouse.MetricsQuery
+	overviewReads int
+	// storeStats is the narrow store-health read, which is deliberately not
+	// part of the overview: the Storage screen and every signals evaluation
+	// want only these two numbers.
+	storeStats      clickhouse.StoreStats
+	storeStatsReads int
+	storeStatsErr   error
 
 	histogram     clickhouse.LogHistogram
 	lastHistogram clickhouse.LogHistogramQuery
@@ -396,7 +403,18 @@ func (s *stubLogs) TrafficEdges(_ context.Context, query clickhouse.TrafficQuery
 
 func (s *stubLogs) MetricsOverview(_ context.Context, query clickhouse.MetricsQuery) (clickhouse.MetricsOverview, error) {
 	s.lastMetrics = query
+	s.overviewReads++
 	return s.overview, nil
+}
+
+func (s *stubLogs) StoreStats(context.Context) (clickhouse.StoreStats, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.storeStatsReads++
+	if s.storeStatsErr != nil {
+		return clickhouse.StoreStats{}, s.storeStatsErr
+	}
+	return s.storeStats, nil
 }
 
 func (s *stubLogs) ResourceSeries(

@@ -326,7 +326,8 @@ func gatherStore(ctx context.Context, sources Sources, snapshot *Snapshot, optio
 
 	if sources.Store == nil {
 		for _, input := range []Input{
-			InputRequests, InputResources, InputClusterEvents, InputFreshness, InputStore,
+			InputRawRequests, InputRequests, InputResources,
+			InputClusterEvents, InputFreshness, InputStore,
 		} {
 			snapshot.MarkNotApplicable(input, "no telemetry store is configured")
 		}
@@ -405,14 +406,19 @@ func gatherFreshness(ctx context.Context, store Store, snapshot *Snapshot) {
 // gatherStoreHealth reads the store's own size, and the size of the volume it
 // writes to — which comes from the API server, because ClickHouse knows how
 // much it has written and nothing about the disk underneath.
+//
+// It asks for exactly those two numbers. This runs on every evaluation of the
+// catalogue, which is every platform screen and every environment's diagnostics
+// strip, so a read that also aggregated a day of logs and events here would be
+// work the whole platform paid for and nothing read.
 func gatherStoreHealth(ctx context.Context, store Store, snapshot *Snapshot) {
-	overview, err := store.MetricsOverview(ctx, clickhouse.MetricsQuery{})
+	stats, err := store.StoreStats(ctx)
 	if err != nil {
 		snapshot.MarkUnreadable(InputStore, err.Error())
 		return
 	}
-	snapshot.Store.BytesOnDisk = overview.StoreBytes
-	snapshot.Store.RowsPerSecond = overview.StoreRowsPerSecond
+	snapshot.Store.BytesOnDisk = stats.BytesOnDisk
+	snapshot.Store.RowsPerSecond = stats.RowsPerSecond
 	snapshot.Store.CapacityBytes = storeCapacity(snapshot)
 }
 
@@ -481,13 +487,18 @@ func gatherProjectTraffic(ctx context.Context, store Store, snapshot *Snapshot) 
 	snapshot.ProjectTrafficBaseline = baseline
 }
 
+// gatherUnroutedHosts reads the bucket of hosts nobody published, which is a
+// group-by over the raw request rows rather than over the minute rollup —
+// unattributed traffic is exactly what the rollup's project key cannot carry.
+// So a failure here marks the raw table's input and leaves the rollup's rules
+// alone.
 func gatherUnroutedHosts(ctx context.Context, store Store, snapshot *Snapshot) {
 	hosts, err := store.UnroutedHosts(ctx, clickhouse.PlatformRequestsQuery{
 		Since: snapshot.Now.Add(-UnroutedWindow),
 		Until: snapshot.Now,
 	})
 	if err != nil {
-		snapshot.MarkUnreadable(InputRequests, err.Error())
+		snapshot.MarkUnreadable(InputRawRequests, err.Error())
 		return
 	}
 	snapshot.UnroutedHosts = hosts

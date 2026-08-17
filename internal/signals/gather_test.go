@@ -81,11 +81,23 @@ func kitchenSingleton(cloudflared bool) *kitchenv1alpha1.Kitchen {
 	}
 }
 
+// testStoreBytes is what the stubbed store reports occupying, and the number
+// the capacity assertions are read against.
+const testStoreBytes = 10 << 30
+
 // stubStore answers every read with what it was given, or fails every read.
 type stubStore struct {
 	err       error
 	freshness []clickhouse.NodeFreshness
 	events    []clickhouse.K8sEvent
+	// storeStatsReads counts the store-health reads one gather makes, which is
+	// how the "one narrow read, not the dashboard's overview" contract is
+	// asserted rather than assumed.
+	storeStatsReads int
+	// unroutedErr fails the unrouted-host read alone. It is its own field
+	// because that read is the only one in a gather that goes to the raw
+	// request rows rather than to the minute rollup over them.
+	unroutedErr error
 }
 
 func (s *stubStore) RequestSeries(context.Context, clickhouse.RequestSeriesQuery) (clickhouse.RequestSeries, error) {
@@ -101,6 +113,9 @@ func (s *stubStore) ProjectTraffic(context.Context, clickhouse.ProjectTrafficQue
 }
 
 func (s *stubStore) UnroutedHosts(context.Context, clickhouse.PlatformRequestsQuery) ([]clickhouse.UnroutedHost, error) {
+	if s.unroutedErr != nil {
+		return nil, s.unroutedErr
+	}
 	return nil, s.err
 }
 
@@ -112,8 +127,9 @@ func (s *stubStore) TelemetryFreshness(context.Context, time.Duration) ([]clickh
 	return s.freshness, s.err
 }
 
-func (s *stubStore) MetricsOverview(context.Context, clickhouse.MetricsQuery) (clickhouse.MetricsOverview, error) {
-	return clickhouse.MetricsOverview{StoreBytes: 10 << 30}, s.err
+func (s *stubStore) StoreStats(context.Context) (clickhouse.StoreStats, error) {
+	s.storeStatsReads++
+	return clickhouse.StoreStats{BytesOnDisk: testStoreBytes}, s.err
 }
 
 // stubResolver answers a fixed map, and anything not in it either does not
@@ -180,7 +196,9 @@ func TestGatherWithAnUnreachableStoreDegradesHonestly(t *testing.T) {
 		Now:    func() time.Time { return testNow },
 	}, Options{})
 
-	for _, input := range []Input{InputRequests, InputClusterEvents, InputFreshness, InputStore} {
+	for _, input := range []Input{
+		InputRawRequests, InputRequests, InputClusterEvents, InputFreshness, InputStore,
+	} {
 		if snapshot.Available(input) {
 			t.Errorf("%s was reported available against a store that refused every read", input)
 		}
@@ -199,6 +217,49 @@ func TestGatherWithAnUnreachableStoreDegradesHonestly(t *testing.T) {
 	}
 	if unknown == 0 {
 		t.Fatalf("no rule reported that it could not be evaluated: %s", describe(findings))
+	}
+}
+
+// The unrouted bucket is the one read in a gather that groups over the raw
+// http_requests rows; every other traffic read is over the minute rollup. So a
+// failure there marks the raw table and nothing else — naming the rollup would
+// tell the operator a table the failing query never touched could not be read,
+// and would take the six rules that do read the rollup dark along with it.
+func TestGatherMarksTheRawRequestTableForTheUnroutedRead(t *testing.T) {
+	snapshot := Gather(context.Background(), Sources{
+		Client: testClient(t, kitchenSingleton(false)),
+		Store:  &stubStore{unroutedErr: storeDown},
+		Now:    func() time.Time { return testNow },
+	}, Options{})
+
+	if snapshot.Available(InputRawRequests) {
+		t.Fatal("the query that failed was over the raw request rows, and nothing says so")
+	}
+	if !snapshot.Available(InputRequests) {
+		t.Fatal("the minute rollup answered, and must not be marked for another table's failure")
+	}
+	failures := snapshot.Unreadable()
+	if len(failures) != 1 || failures[0].Input != InputRawRequests {
+		t.Fatalf("want the raw table named once and nothing else: %+v", failures)
+	}
+	if failures[0].Reason == "" {
+		t.Errorf("an unreadable input has to say why: %+v", failures[0])
+	}
+
+	// The rule over the raw table says it could not be evaluated; the rules over
+	// the rollup carry on as normal.
+	if finding := expectOne(t, evaluate(t, SignalUnroutedHosts, snapshot)); finding.Severity != SeverityUnknown {
+		t.Fatalf("severity = %q, want unknown", finding.Severity)
+	}
+	for _, id := range []ID{
+		SignalErrorRate, SignalLatencyRegressed, SignalTrafficVanished, SignalNoBackend,
+		SignalLatencyCorrelated, SignalErrorCorrelated,
+	} {
+		for _, finding := range evaluate(t, id, snapshot) {
+			if finding.Severity == SeverityUnknown {
+				t.Errorf("%s went dark for a failure in a table it does not read: %s", id, finding.Detail)
+			}
+		}
 	}
 }
 
@@ -402,17 +463,26 @@ func TestGatherReadsTheStoresCapacityFromItsClaim(t *testing.T) {
 	bound := claim(controller.PlatformNamespace, "data-kitchen-clickhouse-0", corev1.ClaimBound)
 	bound.Status.Capacity = corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("50Gi")}
 
+	store := &stubStore{}
 	snapshot := Gather(context.Background(), Sources{
 		Client: testClient(t, kitchenSingleton(false), &bound),
-		Store:  &stubStore{},
+		Store:  store,
 		Now:    func() time.Time { return testNow },
 	}, Options{})
 
 	if snapshot.Store.CapacityBytes != 50<<30 {
 		t.Fatalf("capacity = %d, want 50Gi from the claim", snapshot.Store.CapacityBytes)
 	}
-	if snapshot.Store.BytesOnDisk != 10<<30 {
+	if snapshot.Store.BytesOnDisk != testStoreBytes {
 		t.Fatalf("bytes on disk = %d, want what the store reported", snapshot.Store.BytesOnDisk)
+	}
+	// The store's health is two numbers, and it is read once per gather through
+	// the read that answers only those two. It used to come off the dashboard's
+	// overview, which also aggregated a day of flows, logs and events on every
+	// platform screen and every diagnostics strip, and threw all of it away.
+	if store.storeStatsReads != 1 {
+		t.Errorf("the store's health was read %d times, want exactly one narrow read",
+			store.storeStatsReads)
 	}
 }
 

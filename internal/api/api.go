@@ -145,6 +145,10 @@ type logReader interface {
 	QueryEvents(ctx context.Context, query clickhouse.EventQuery) ([]clickhouse.Event, error)
 	TrafficEdges(ctx context.Context, query clickhouse.TrafficQuery) ([]clickhouse.TrafficEdge, error)
 	MetricsOverview(ctx context.Context, query clickhouse.MetricsQuery) (clickhouse.MetricsOverview, error)
+	// StoreStats is the store's own size and ingest rate alone, which is what
+	// the Storage screen and the signals gatherer want — and all they want, so
+	// neither pays for the overview's aggregations to get at two numbers.
+	StoreStats(ctx context.Context) (clickhouse.StoreStats, error)
 	ResourceSeries(ctx context.Context, query clickhouse.ResourceSeriesQuery) (clickhouse.ResourceSeries, error)
 	Traces(ctx context.Context, query clickhouse.TraceQuery) ([]clickhouse.Trace, error)
 	Trace(ctx context.Context, traceID string) ([]clickhouse.Span, error)

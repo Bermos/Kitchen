@@ -17,6 +17,7 @@ limitations under the License.
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
@@ -25,11 +26,15 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	"github.com/Bermos/Kitchen/internal/clickhouse"
 	"github.com/Bermos/Kitchen/internal/controller"
@@ -364,6 +369,96 @@ func TestPlatformEdgeReadsTrafficAndTheEdgesOwnObjects(t *testing.T) {
 	}
 }
 
+// gatewayListFails refuses the Gateways' list and answers every other read,
+// which is how a cluster whose RBAC or CRDs will not serve that one kind
+// behaves.
+type gatewayListFails struct {
+	client.Reader
+	err error
+}
+
+func (r gatewayListFails) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+	if _, gateways := list.(*gatewayv1.GatewayList); gateways {
+		return r.err
+	}
+	return r.Reader.List(ctx, list, opts...)
+}
+
+// An empty Gateway list is the strongest claim this screen makes — nothing on
+// this platform is published — so a read that failed must never render as one.
+// Before the message existed the two were the same bytes on the wire, and every
+// consumer read the failure as the claim.
+func TestPlatformEdgeSaysWhenTheGatewaysCouldNotBeRead(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+	h.server.APIReader = gatewayListFails{
+		Reader: h.server.Client,
+		err:    errors.New("gateways.gateway.networking.k8s.io is forbidden"),
+	}
+
+	res := h.do(t, http.MethodGet, "/api/v1/platform/edge", "")
+	if res.Code != http.StatusOK {
+		t.Fatalf("GET /platform/edge = %d: %s", res.Code, res.Body.String())
+	}
+	body := decode[edgeBody](t, res)
+	if len(body.Gateways) != 0 {
+		t.Fatalf("a refused list has no Gateways to report: %+v", body.Gateways)
+	}
+	if body.GatewayMessage == "" {
+		t.Fatal("a refused list and a platform with no Gateway must not render alike")
+	}
+	if !strings.Contains(body.GatewayMessage, "could not be read") {
+		t.Errorf("the message should say the list failed, got %q", body.GatewayMessage)
+	}
+	// The rest of the screen is unaffected: the certificates and the tunnel are
+	// their own reads, and the traffic tables are the store's.
+	if body.Certificates.Message != "" {
+		t.Errorf("one refused kind should not darken the others: %q", body.Certificates.Message)
+	}
+}
+
+// A cluster without the Gateway API kinds is a third answer again, and a
+// definite one — but still not an empty list on its own.
+func TestPlatformEdgeSaysWhenTheGatewayKindIsAbsent(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+	h.server.APIReader = gatewayListFails{
+		Reader: h.server.Client,
+		err: &meta.NoKindMatchError{
+			GroupKind: schema.GroupKind{Group: gatewayv1.GroupName, Kind: "Gateway"},
+		},
+	}
+
+	res := h.do(t, http.MethodGet, "/api/v1/platform/edge", "")
+	if res.Code != http.StatusOK {
+		t.Fatalf("GET /platform/edge = %d: %s", res.Code, res.Body.String())
+	}
+	body := decode[edgeBody](t, res)
+	if !strings.Contains(body.GatewayMessage, "not installed") {
+		t.Errorf("the message should name the missing kind, got %q", body.GatewayMessage)
+	}
+}
+
+// A platform that genuinely has a Gateway says nothing, because there is
+// nothing to explain — the message is for an empty list, not for every answer.
+func TestPlatformEdgeExplainsNothingWhenTheGatewaysRead(t *testing.T) {
+	gateway := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{Namespace: controller.PlatformNamespace, Name: "kitchen"},
+		Spec:       gatewayv1.GatewaySpec{GatewayClassName: "cilium"},
+	}
+	h := newHarness(t, nil, append(fixtures(), gateway)...)
+
+	res := h.do(t, http.MethodGet, "/api/v1/platform/edge", "")
+	if res.Code != http.StatusOK {
+		t.Fatalf("GET /platform/edge = %d: %s", res.Code, res.Body.String())
+	}
+	body := decode[edgeBody](t, res)
+	if len(body.Gateways) != 1 || body.Gateways[0].Class != "cilium" {
+		t.Fatalf("the Gateway should be reported: %+v", body.Gateways)
+	}
+	if body.GatewayMessage != "" {
+		t.Errorf("nothing went wrong, so nothing should be explained: %q", body.GatewayMessage)
+	}
+}
+
 // The traffic queries are the operator's own, so a store that refuses one is
 // reporting a fault in Kitchen: the caller is told which read failed, and
 // ClickHouse's diagnostic stays in the operator's log.
@@ -436,7 +531,7 @@ func TestPlatformStorageReportsUnboundClaimsAndTheStore(t *testing.T) {
 	}}
 
 	h := newHarness(t, nil, append(fixtures(), pending, store, mounted)...)
-	h.logs.overview = clickhouse.MetricsOverview{StoreBytes: 5 << 30, StoreRowsPerSecond: 42}
+	h.logs.storeStats = clickhouse.StoreStats{BytesOnDisk: 5 << 30, RowsPerSecond: 42}
 	// The kubelet reports fill for the claim it can see mounted; the unbound one
 	// has no volume yet, so nothing measures it and it simply has no usage.
 	h.logs.volumeUsage = []clickhouse.VolumeUsage{{
@@ -472,6 +567,18 @@ func TestPlatformStorageReportsUnboundClaimsAndTheStore(t *testing.T) {
 	// The store's own disk, judged against the claim underneath it.
 	if body.Store.BytesOnDisk != 5<<30 || body.Store.CapacityBytes != 10<<30 {
 		t.Fatalf("the store's size and its volume both belong here: %+v", body.Store)
+	}
+	if body.Store.RowsPerSecond != 42 {
+		t.Errorf("the ingest rate comes off the same read: %+v", body.Store)
+	}
+	// And it comes off the narrow read rather than the dashboard's overview,
+	// which would aggregate a day of logs and events to answer two numbers.
+	if h.logs.storeStatsReads != 1 {
+		t.Errorf("the store's health was read %d times, want one narrow read", h.logs.storeStatsReads)
+	}
+	if h.logs.overviewReads != 0 {
+		t.Errorf("this screen asked for the dashboard's overview %d times, and needs none of it",
+			h.logs.overviewReads)
 	}
 	if body.Store.UsedFraction < 0.49 || body.Store.UsedFraction > 0.51 {
 		t.Errorf("used against capacity is the number that matters: %+v", body.Store)

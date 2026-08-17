@@ -132,25 +132,31 @@ func (r *Registry) Evaluate(snapshot *Snapshot) Findings {
 			}
 			continue
 		}
-		findings = append(findings, dated(signal.Evaluate(snapshot), snapshot.Now)...)
+		findings = append(findings, stamped(signal.Evaluate(snapshot), signal, snapshot.Now)...)
 	}
 	findings.Sort()
 	return findings
 }
 
-// dated applies [Finding.Since]'s fallback in one place rather than in
-// thirty-six.
+// stamped applies the two things every finding carries that the rule producing
+// it cannot know, in one place rather than in thirty-six.
 //
-// Most rules date a finding from something the snapshot can prove — a
-// condition's last transition, an event's first occurrence, the start of the
-// run that made it sustained — but some conditions have nothing to date them
-// by, and an object whose creation timestamp is missing would otherwise be
-// reported as having been broken since the year one.
-func dated(findings []Finding, now time.Time) []Finding {
+// [Finding.Since] is the first. Most rules date a finding from something the
+// snapshot can prove — a condition's last transition, an event's first
+// occurrence, the start of the run that made it sustained — but some conditions
+// have nothing to date them by, and an object whose creation timestamp is
+// missing would otherwise be reported as having been broken since the year one.
+//
+// [Finding.Audience] is the second, and it is here because the registry is the
+// only place that holds both a rule and what the rule produced. It is what
+// [Findings.ForEnvironment] filters on, so a finding that arrived without it
+// would be an operator's problem rendered on a developer's diagnostics strip.
+func stamped(findings []Finding, signal Signal, now time.Time) []Finding {
 	for i := range findings {
 		if findings[i].Since.IsZero() {
 			findings[i].Since = now
 		}
+		findings[i].Audience = signal.Audience
 	}
 	return findings
 }
@@ -180,6 +186,7 @@ func unevaluable(signal Signal, snapshot *Snapshot) (*Finding, bool) {
 			// the rule's own, marked. See unevaluableMarker for why it cannot
 			// simply be the bare id.
 			finding.Fingerprint = string(signal.ID) + unevaluableMarker
+			finding.Audience = signal.Audience
 			return &finding, true
 		}
 	}

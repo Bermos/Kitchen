@@ -95,10 +95,12 @@ func (s *Server) platformEdge(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	gateways, gatewayMessage := s.gatewayViews(ctx)
 	body := edgeBody{
-		Gateways:     s.gatewayViews(ctx),
-		Tunnel:       s.tunnelView(ctx),
-		Certificates: s.certificateViews(ctx),
+		Gateways:       gateways,
+		GatewayMessage: gatewayMessage,
+		Tunnel:         s.tunnelView(ctx),
+		Certificates:   s.certificateViews(ctx),
 	}
 
 	// The traffic tables need the store; the edge's own objects do not. An
@@ -148,6 +150,16 @@ type edgeBody struct {
 	Gateways     []edgeGatewayView `json:"gateways"`
 	Tunnel       *edgeTunnelView   `json:"tunnel,omitempty"`
 	Certificates certificateTable  `json:"certificates"`
+
+	// GatewayMessage says why the Gateway list is empty, and is empty when the
+	// platform genuinely has no Gateway.
+	//
+	// It is the difference between the two readings of an empty list, and on
+	// this screen that difference is the whole answer: no Gateway means nothing
+	// this platform publishes is reachable, which is the strongest claim the
+	// health strip makes, and a List that failed produces the same empty slice
+	// while proving nothing at all.
+	GatewayMessage string `json:"gatewayMessage,omitempty"`
 
 	// TrafficMessage says why the traffic tables are empty, and is empty when
 	// they are simply empty.
@@ -244,15 +256,27 @@ type edgeListenerView struct {
 	Message        string `json:"message,omitempty"`
 }
 
-// gatewayViews reads the Gateways. A cluster whose Gateway API CRDs are not
-// installed answers nothing rather than failing: the traffic numbers are still
-// worth showing, and the Kitchen singleton's own condition already says the
-// Gateway is not programmed.
-func (s *Server) gatewayViews(ctx context.Context) []edgeGatewayView {
+// gatewayViews reads the Gateways, answering the list and — where it is empty
+// for a reason other than there being none — the sentence that says why.
+//
+// A read that failed must never come back as an empty list alone. Every
+// consumer of this field reads "no Gateway" as "nothing on this platform is
+// published", which is a definite and alarming claim, and a List that was
+// refused proves none of it. So the failure travels with the list, exactly as
+// certificateViews does it.
+//
+// A cluster whose Gateway API CRDs are not installed still answers rather than
+// failing: the traffic numbers are worth showing, and the Kitchen singleton's
+// own condition already says the Gateway is not programmed.
+func (s *Server) gatewayViews(ctx context.Context) ([]edgeGatewayView, string) {
 	list := &gatewayv1.GatewayList{}
 	if err := s.reader().List(ctx, list); err != nil {
+		if meta.IsNoMatchError(err) || apierrors.IsNotFound(err) {
+			return []edgeGatewayView{}, "the Gateway API kinds are not installed in this cluster, " +
+				"so there is no Gateway to publish anything"
+		}
 		s.log().Error(err, "cannot read the platform's Gateways")
-		return []edgeGatewayView{}
+		return []edgeGatewayView{}, "the platform's Gateways could not be read: " + err.Error()
 	}
 	views := make([]edgeGatewayView, 0, len(list.Items))
 	for i := range list.Items {
@@ -290,7 +314,7 @@ func (s *Server) gatewayViews(ctx context.Context) []edgeGatewayView {
 		}
 		return views[i].Name < views[j].Name
 	})
-	return views
+	return views, ""
 }
 
 // newListenerView joins a listener's reported status to the spec it came from,

@@ -52,8 +52,11 @@ type Store interface {
 	// A node absent from the answer reported nothing within the lookback,
 	// which is node.silent's whole subject.
 	TelemetryFreshness(ctx context.Context, within time.Duration) ([]clickhouse.NodeFreshness, error)
-	// MetricsOverview is asked only for the store's own size and ingest rate.
-	MetricsOverview(ctx context.Context, query clickhouse.MetricsQuery) (clickhouse.MetricsOverview, error)
+	// StoreStats is the store's own size and ingest rate. It is deliberately
+	// this read rather than the dashboard's overview: the two numbers store.disk
+	// and store.ingest-stalled need are all the gatherer wants, and every
+	// evaluation of the catalogue pays for whatever it asks for here.
+	StoreStats(ctx context.Context) (clickhouse.StoreStats, error)
 }
 
 // HostMetricsSource reads node saturation and filesystem fill out of the

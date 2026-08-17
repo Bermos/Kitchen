@@ -29,7 +29,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
-	"github.com/Bermos/Kitchen/internal/clickhouse"
 	"github.com/Bermos/Kitchen/internal/controller"
 	"github.com/Bermos/Kitchen/internal/signals"
 )
@@ -296,15 +295,16 @@ func (s *Server) storeHealth(ctx context.Context, claims []corev1.PersistentVolu
 		return view
 	}
 	// The same read the signals gatherer takes the store's health from, so the
-	// screen and the `store.disk` finding can never disagree about the number.
-	overview, err := store.MetricsOverview(ctx, clickhouse.MetricsQuery{})
+	// screen and the `store.disk` finding can never disagree about the number —
+	// and narrow, because these two figures are all either of them wants.
+	stats, err := store.StoreStats(ctx)
 	if err != nil {
 		s.log().Error(err, "the store health query failed")
 		view.Message = "the store's own size could not be read"
 		return view
 	}
-	view.BytesOnDisk = overview.StoreBytes
-	view.RowsPerSecond = overview.StoreRowsPerSecond
+	view.BytesOnDisk = stats.BytesOnDisk
+	view.RowsPerSecond = stats.RowsPerSecond
 	if view.CapacityBytes > 0 {
 		view.UsedFraction = float64(view.BytesOnDisk) / float64(view.CapacityBytes)
 	}

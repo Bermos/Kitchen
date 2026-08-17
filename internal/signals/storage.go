@@ -51,8 +51,15 @@ func storageSignals() []Signal {
 		Requires: []Input{InputClaims},
 		Evaluate: evaluatePVCPending,
 	}, {
-		ID:       SignalPVCFilling,
-		Version:  1,
+		ID:      SignalPVCFilling,
+		Version: 1,
+		// Deliberately developer, where §7 lists it under an operator table.
+		// A volume past 85% is scoped to the claim's project, and it is the
+		// owning developer who fills it and who can delete something or ask
+		// for more — unlike the two operator-audience rules beside it, which
+		// are a missing default StorageClass and a misbehaving CSI driver.
+		// Audience now drives ForEnvironment, so this line puts it on that
+		// project's diagnostics strip rather than merely labelling it.
 		Audience: AudienceDeveloper,
 		Summary:  "a volume is past 85% used",
 		Requires: []Input{InputVolumeStats},

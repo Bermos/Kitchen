@@ -19,6 +19,10 @@ package signals
 import (
 	"strings"
 	"testing"
+
+	corev1 "k8s.io/api/core/v1"
+
+	"github.com/Bermos/Kitchen/internal/controller"
 )
 
 // The fingerprint is the one thing in this package that a later release
@@ -116,11 +120,13 @@ func TestFindingsSortWorstFirstAndStably(t *testing.T) {
 
 func TestForEnvironmentKeepsTheProjectsOwnAndItsEnvironments(t *testing.T) {
 	findings := Findings{
-		{Fingerprint: "env", Scope: Scope{Project: testProject, Environment: testEnvironment}},
-		{Fingerprint: "project", Scope: Scope{Project: testProject}},
-		{Fingerprint: "other-env", Scope: Scope{Project: testProject, Environment: "production"}},
-		{Fingerprint: "other-project", Scope: Scope{Project: "blog"}},
-		{Fingerprint: "platform", Scope: Scope{Kind: ScopePlatform}},
+		{Fingerprint: "env", Audience: AudienceDeveloper,
+			Scope: Scope{Project: testProject, Environment: testEnvironment}},
+		{Fingerprint: "project", Audience: AudienceDeveloper, Scope: Scope{Project: testProject}},
+		{Fingerprint: "other-env", Audience: AudienceDeveloper,
+			Scope: Scope{Project: testProject, Environment: "production"}},
+		{Fingerprint: "other-project", Audience: AudienceDeveloper, Scope: Scope{Project: "blog"}},
+		{Fingerprint: "platform", Audience: AudienceOperator, Scope: Scope{Kind: ScopePlatform}},
 	}
 
 	kept := findings.ForEnvironment(testProject, testEnvironment)
@@ -129,6 +135,55 @@ func TestForEnvironmentKeepsTheProjectsOwnAndItsEnvironments(t *testing.T) {
 	}
 	if kept[0].Fingerprint != "env" || kept[1].Fingerprint != "project" {
 		t.Fatalf("kept the wrong findings: %s", describe(kept))
+	}
+}
+
+// Scope is not enough on its own, and this is the case that proves it: a claim
+// in the project's own namespace is scoped to the project, so a scope-only
+// filter puts "no default StorageClass" and "the CSI driver will not attach
+// this volume" on the strip of the developer whose preview happens to be down.
+// Both are the operator's, and neither is anything the developer can act on.
+func TestForEnvironmentDropsOperatorFindingsAboutTheProject(t *testing.T) {
+	findings := Findings{
+		{Signal: SignalPVCPending, Fingerprint: "pending", Audience: AudienceOperator,
+			Scope: Scope{Kind: ScopeVolume, Project: testProject, Name: testClaim}},
+		{Signal: SignalAttachFailed, Fingerprint: "attach", Audience: AudienceOperator,
+			Scope: Scope{Kind: ScopeVolume, Project: testProject, Name: testClaim}},
+		{Signal: SignalPVCFilling, Fingerprint: "filling", Audience: AudienceDeveloper,
+			Scope: Scope{Kind: ScopeVolume, Project: testProject, Name: testClaim}},
+	}
+
+	kept := findings.ForEnvironment(testProject, testEnvironment)
+	if len(kept) != 1 || kept[0].Fingerprint != "filling" {
+		t.Fatalf("the operator's storage findings reached a developer's strip: %s", describe(kept))
+	}
+}
+
+// The audience a rule declares has to be the audience its findings carry, or
+// the filter above is reading a field nothing sets. This is that wiring, end to
+// end through the registry.
+func TestEvaluateStampsTheSignalsAudienceOnItsFindings(t *testing.T) {
+	snapshot := newSnapshot()
+	snapshot.Claims = []corev1.PersistentVolumeClaim{claim(
+		controller.AppNamespace(testProject), testClaim, corev1.ClaimPending)}
+
+	finding := expectOne(t, evaluate(t, SignalPVCPending, snapshot))
+	if finding.Audience != AudienceOperator {
+		t.Fatalf("audience = %q, want the rule's own", finding.Audience)
+	}
+	if kept := (Findings{finding}).ForEnvironment(testProject, testEnvironment); len(kept) != 0 {
+		t.Fatalf("an operator rule about a project's claim reached its strip: %s", describe(kept))
+	}
+}
+
+// Every rule in the catalogue declares an audience, and every finding it
+// produces has to carry one — a finding with an empty audience is invisible to
+// the developer's strip whatever its scope says.
+func TestEveryFindingCarriesAnAudience(t *testing.T) {
+	for _, finding := range Catalogue().Evaluate(brokenSnapshot()) {
+		if finding.Audience != AudienceOperator && finding.Audience != AudienceDeveloper {
+			t.Errorf("%s produced a finding with audience %q", finding.Signal, finding.Audience)
+		}
 	}
 }
 

@@ -68,13 +68,15 @@ func TestListEvents(t *testing.T) {
 // served them and swelled the platform's own numbers instead.
 func TestMetricsOverviewCountsTrafficFromTheRequestPipeline(t *testing.T) {
 	h := newHarness(t, nil, fixtures()...)
-	// What the flow pipeline still answers, and what none of it may reach.
+	// The traffic fields the store still carries on this struct, and what none
+	// of them may reach. Nothing fills them any more — the flow aggregations
+	// that used to are gone — but the fields stay on the wire, so a value
+	// arriving in them must still be overwritten rather than merged.
 	h.logs.overview = clickhouse.MetricsOverview{
 		Requests24h:     120,
 		ErrorRate24h:    0.5,
 		P95Ms24h:        900,
 		RequestsPerHour: repeated(24, 5),
-		Namespaces:      []clickhouse.NamespaceTraffic{{Namespace: "kitchen-shop", Requests24h: 4}},
 	}
 	h.logs.platformRequests = clickhouse.PlatformRequests{Requests: 900, ErrorRate: 0.02, P95Ms: 42}
 	// One hour of the day had traffic, and its p95 is the hour's own — not the
@@ -130,6 +132,9 @@ func TestMetricsOverviewCountsTrafficFromTheRequestPipeline(t *testing.T) {
 	if row.Project != feedProject || row.Requests24h != 100 || row.Errors5xx24h != 3 || row.P95Ms != 42 {
 		t.Errorf("the project's row should be the request pipeline's, got %+v", row)
 	}
+	// The per-namespace flow rows were the last reader of an attribution this
+	// endpoint no longer uses, and the store stopped computing them: the key
+	// must be absent from the answer entirely.
 	if body.Namespaces != nil {
 		t.Errorf("raw namespace rows should not reach the answer, got %+v", body.Namespaces)
 	}
@@ -239,8 +244,11 @@ func TestMetricsOverviewScopedToAProject(t *testing.T) {
 	if res.Code != http.StatusOK {
 		t.Fatalf("GET /metrics/overview?project=shop = %d: %s", res.Code, res.Body.String())
 	}
-	if h.logs.lastMetrics.Project != feedProject || h.logs.lastMetrics.Namespace != "kitchen-shop" {
-		t.Errorf("expected the store query scoped to the project and its namespace, got %+v", h.logs.lastMetrics)
+	// Project is the only scope left: the traffic half of this answer comes off
+	// the request pipeline, which is keyed on the project rather than on the
+	// destination namespace the flows were attributed by.
+	if h.logs.lastMetrics.Project != feedProject {
+		t.Errorf("expected the store query scoped to the project, got %+v", h.logs.lastMetrics)
 	}
 
 	// A typo answers 404, not zeroes.

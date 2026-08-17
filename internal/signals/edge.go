@@ -52,8 +52,15 @@ func edgeSignals() []Signal {
 		Requires: []Input{InputGateways},
 		Evaluate: evaluateGatewayUnprogrammed,
 	}, {
-		ID:       SignalRouteRejected,
-		Version:  1,
+		ID:      SignalRouteRejected,
+		Version: 1,
+		// Deliberately developer, where §7 lists it under an operator table.
+		// An application's route carries the project and environment labels, so
+		// routeScope attributes the finding to the environment whose URL is
+		// answering 404 — and ResolvedRefs=False is the half a developer
+		// causes. Audience now drives ForEnvironment, so this line is what puts
+		// it on that environment's diagnostics strip; the operator sees it
+		// either way, since developer findings are additive.
 		Audience: AudienceDeveloper,
 		Summary:  "an HTTPRoute was not accepted, or its backends did not resolve",
 		Requires: []Input{InputRoutes},
@@ -84,7 +91,9 @@ func edgeSignals() []Signal {
 		Version:  1,
 		Audience: AudienceOperator,
 		Summary:  "the edge is being asked, persistently, for hosts the platform never published",
-		Requires: []Input{InputRequests},
+		// The raw rows, not the rollup: the unrouted bucket is a group-by over
+		// http_requests, and it is the only rule in the catalogue that reads it.
+		Requires: []Input{InputRawRequests},
 		Evaluate: evaluateUnroutedHosts,
 	}}
 }

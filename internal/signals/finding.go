@@ -156,6 +156,13 @@ type Finding struct {
 	Severity Severity `json:"severity"`
 	Scope    Scope    `json:"scope"`
 
+	// Audience is the producing signal's, stamped on by the registry because a
+	// rule cannot see its own catalogue entry. It is the other half of what
+	// [Findings.ForEnvironment] narrows on: scope says which environment a
+	// finding is about, and audience says whether that environment's developer
+	// is the person who should be reading it.
+	Audience Audience `json:"audience"`
+
 	// Fingerprint identifies the condition across evaluations. Two rounds that
 	// both find the same container crash-looping produce the same string, which
 	// is what lets a later release diff rounds and record transitions instead
@@ -210,10 +217,23 @@ func (f Findings) Sort() {
 }
 
 // ForEnvironment keeps the findings one environment's diagnostics strip
-// renders: its own, and those of the project it belongs to.
+// renders: the developer-audience ones about it, and those about the project it
+// belongs to.
+//
+// Audience narrows the scope filter rather than replacing it, because the two
+// answer different questions and both have to hold. Scope alone would put
+// `pvc.pending` and `volume.attach-failed` on a developer's strip — both are
+// scoped to a claim in the project's namespace, and both are the operator's
+// problem: a claim that will not bind is a cluster with no default
+// StorageClass, and a volume that will not attach is a CSI driver
+// misbehaving. Neither is anything the developer whose preview is down can do
+// a thing about.
 func (f Findings) ForEnvironment(project, environment string) Findings {
 	kept := make(Findings, 0, len(f))
 	for _, finding := range f {
+		if finding.Audience != AudienceDeveloper {
+			continue
+		}
 		if finding.Scope.Project != project {
 			continue
 		}

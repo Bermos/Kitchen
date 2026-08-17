@@ -361,10 +361,8 @@ func (u unreachableStore) TelemetryFreshness(
 	return nil, u.err
 }
 
-func (u unreachableStore) MetricsOverview(
-	context.Context, clickhouse.MetricsQuery,
-) (clickhouse.MetricsOverview, error) {
-	return clickhouse.MetricsOverview{}, u.err
+func (u unreachableStore) StoreStats(context.Context) (clickhouse.StoreStats, error) {
+	return clickhouse.StoreStats{}, u.err
 }
 
 // The two optional sources fail the same way, which is the point of spelling

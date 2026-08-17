@@ -26,6 +26,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
@@ -95,6 +96,48 @@ func TestEnvironmentSignalsAreTheEnvironmentsOwn(t *testing.T) {
 	}
 }
 
+// The strip is narrowed by audience as well as by scope, and this is the case
+// that needs both: an unbound claim in the project's own namespace is scoped to
+// the project, so a scope-only filter puts it on the developer's strip. It is
+// the operator's problem — a cluster with no default StorageClass — and the
+// developer whose preview will not start can do nothing at all about it.
+func TestEnvironmentSignalsLeaveTheOperatorsStorageProblemsAlone(t *testing.T) {
+	unbound := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: controller.AppNamespace(feedProject),
+			Name:      "shop-data",
+		},
+		Status: corev1.PersistentVolumeClaimStatus{Phase: corev1.ClaimPending},
+	}
+	h := newHarness(t, nil, append(fixtures(), unbound)...)
+
+	res := h.do(t, http.MethodGet, environmentSignalsPath, "")
+	if res.Code != http.StatusOK {
+		t.Fatalf("GET %s = %d: %s", environmentSignalsPath, res.Code, res.Body.String())
+	}
+	for _, finding := range decode[signalsBody](t, res).Items {
+		if finding.Audience != signals.AudienceDeveloper {
+			t.Errorf("an operator's finding reached a developer's strip: %+v", finding)
+		}
+		if finding.Signal == signals.SignalPVCPending {
+			t.Errorf("a cluster with no default StorageClass is not this developer's to fix: %+v", finding)
+		}
+	}
+
+	// And the operator does see it, because it is very much their problem.
+	res = h.do(t, http.MethodGet, platformSignalsPath, "")
+	if res.Code != http.StatusOK {
+		t.Fatalf("GET %s = %d: %s", platformSignalsPath, res.Code, res.Body.String())
+	}
+	var found bool
+	for _, finding := range decode[signalsBody](t, res).Items {
+		found = found || finding.Signal == signals.SignalPVCPending
+	}
+	if !found {
+		t.Error("the unbound claim belongs on the platform's problems list")
+	}
+}
+
 // The problems list is every firing finding, worst first.
 func TestPlatformSignalsListsWhatIsFiring(t *testing.T) {
 	h := newHarness(t, nil, append(fixtures(), crashLoopingPod("shop-production-7d9f4"))...)
@@ -146,10 +189,12 @@ func TestPlatformSignalsSayWhenTheStoreCannotBeRead(t *testing.T) {
 			t.Errorf("an unreadable input has to say why: %+v", failure)
 		}
 	}
-	// Every store-backed input, named once each rather than once per rule.
+	// Every store-backed input, named once each rather than once per rule. The
+	// raw request rows and the minute rollup over them are two of them, because
+	// they are two tables and a failure in one says nothing about the other.
 	for _, input := range []signals.Input{
-		signals.InputRequests, signals.InputResources, signals.InputClusterEvents,
-		signals.InputFreshness, signals.InputStore,
+		signals.InputRawRequests, signals.InputRequests, signals.InputResources,
+		signals.InputClusterEvents, signals.InputFreshness, signals.InputStore,
 	} {
 		if !inputs[string(input)] {
 			t.Errorf("%s could not be read and should say so: %+v", input, body.Unreadable)
