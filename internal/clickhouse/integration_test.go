@@ -918,6 +918,203 @@ func TestIntegrationTelemetryFreshness(t *testing.T) {
 	t.Errorf("the node that just sent a line should be in the answer, got %+v", freshness)
 }
 
+// TestIntegrationNodeUsage writes an hour of a node's own scrapes and reads the
+// saturation back.
+//
+// The arithmetic is the reason this needs a real server. CPU is a cumulative
+// counter read as a delta within each bucket, memory is a level summed across
+// its states, and a filesystem's capacity is two of its three states added
+// together — three different readings of the same table, demultiplexed by a
+// metric name and an attribute, in one two-level aggregate. A fake that records
+// the statement cannot say whether ClickHouse agrees that it means that.
+func TestIntegrationNodeUsage(t *testing.T) {
+	client := integrationClient(t)
+	ctx := context.Background()
+	if err := client.EnsureMetricsSchema(ctx, integrationRetained); err != nil {
+		t.Fatalf("EnsureMetricsSchema: %v", err)
+	}
+
+	// The node's name is what keeps one run's rows out of the next one's
+	// answer, since this read is not scoped to a project at all.
+	node := uniqueEnvironment("node")
+	resource := hostResourceAttributes(node)
+	start := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Hour)
+
+	rows := []string{}
+	for i := 0; i < integrationScrapes; i++ {
+		at := start.Add(time.Duration(i) * integrationScrapeInterval)
+		// Nine seconds of work for every one idle, as counters since boot.
+		rows = append(rows,
+			hostSumValues(resource, MetricHostCPUTime, hostState(hostStateIdle), at, float64(i)*3),
+			hostSumValues(resource, MetricHostCPUTime, hostState("user"), at, float64(i)*27),
+			hostSumValues(resource, MetricHostMemoryUsage, hostState(hostStateUsed), at, 900),
+			hostSumValues(resource, MetricHostMemoryUsage, hostState(hostStateFree), at, 100),
+			// The disk fills from 60% to 90% over the hour, and reports a
+			// reservation beside it that nothing can write into.
+			hostSumValues(resource, MetricHostFilesystemUsage, hostFilesystemState(hostStateUsed), at,
+				60+30*float64(i)/float64(integrationScrapes-1)),
+			hostSumValues(resource, MetricHostFilesystemUsage, hostFilesystemState(hostStateFree), at,
+				40-30*float64(i)/float64(integrationScrapes-1)),
+			hostSumValues(resource, MetricHostFilesystemUsage, hostFilesystemState("reserved"), at, 5),
+		)
+	}
+	if err := client.Exec(ctx, exporterSumInsert(client.cfg.Database, rows)); err != nil {
+		t.Fatalf("writing host metric points: %v", err)
+	}
+
+	usage, err := client.NodeUsage(ctx, NodeUsageQuery{
+		Since:  start,
+		Until:  start.Add(time.Hour),
+		Bucket: 5 * time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("NodeUsage: %v", err)
+	}
+
+	var answer *NodeUsage
+	for i := range usage {
+		if usage[i].Node == node {
+			answer = &usage[i]
+		}
+	}
+	if answer == nil {
+		t.Fatalf("the node just written should be in the answer, got %d nodes", len(usage))
+	}
+	if answer.BucketSeconds != 300 {
+		t.Fatalf("a five-minute bucket is a rung of the ladder, got %ds", answer.BucketSeconds)
+	}
+
+	observed := 0
+	for _, bucket := range answer.CPU {
+		if !bucket.Observed {
+			continue
+		}
+		observed++
+		if delta := bucket.Value - 0.9; delta > 0.01 || delta < -0.01 {
+			t.Errorf("%s: cpu %v, want the nine tenths that were not idle", bucket.Start, bucket.Value)
+		}
+	}
+	if observed < 12 {
+		t.Errorf("want a full hour of five-minute buckets, got %d", observed)
+	}
+	for _, bucket := range answer.Memory {
+		if bucket.Observed && bucket.Value != 0.9 {
+			t.Errorf("%s: memory %v, want used over every state", bucket.Start, bucket.Value)
+		}
+	}
+
+	if len(answer.Filesystems) != 1 {
+		t.Fatalf("want the one filesystem, got %+v", answer.Filesystems)
+	}
+	filesystem := answer.Filesystems[0]
+	if filesystem.MountPoint != integrationMountPoint || filesystem.Device != integrationDevice {
+		t.Errorf("a filesystem is named by where it is mounted: %+v", filesystem)
+	}
+	// The reservation is not capacity: 60 used and 40 free is a full hundred,
+	// and counting the five reserved bytes in would read every disk as emptier
+	// than it is.
+	if filesystem.CapacityBytes != 100 {
+		t.Errorf("capacity should be used plus free, got %d", filesystem.CapacityBytes)
+	}
+	first, last := firstObserved(filesystem.Used), lastObserved(filesystem.Used)
+	if first.Value < 0.6 || first.Value > 0.65 || last.Value < 0.85 || last.Value > 0.9 {
+		t.Errorf("the disk should fill from about 60%% to about 90%%, got %v then %v",
+			first.Value, last.Value)
+	}
+}
+
+// TestIntegrationVolumeUsage proves the read that names a claim.
+//
+// Two things here only a real server settles: `argMaxIf` pairing each number
+// with the newest sample that carried it — the two are separate rows of the
+// same scrape — and the grouping that collapses a claim mounted by several pods
+// into the one volume it is.
+func TestIntegrationVolumeUsage(t *testing.T) {
+	client := integrationClient(t)
+	ctx := context.Background()
+	if err := client.EnsureMetricsSchema(ctx, integrationRetained); err != nil {
+		t.Fatalf("EnsureMetricsSchema: %v", err)
+	}
+
+	claim := uniqueEnvironment("claim")
+	namespace := "kitchen-app-" + integrationProject
+	older := time.Now().UTC().Add(-5 * time.Minute)
+	newer := time.Now().UTC().Add(-time.Minute)
+
+	rows := []string{}
+	for _, pod := range []string{"shop-0", "shop-1"} {
+		resource := volumeResourceAttributes(namespace, pod, claim)
+		rows = append(rows,
+			// The volume was half empty five minutes ago and is nine tenths
+			// full now; only the newer pair is the answer.
+			gaugeValues(resource, MetricVolumeCapacity, older, 10<<30),
+			gaugeValues(resource, MetricVolumeAvailable, older, 5<<30),
+			gaugeValues(resource, MetricVolumeCapacity, newer, 10<<30),
+			gaugeValues(resource, MetricVolumeAvailable, newer, 1<<30),
+		)
+	}
+	// And the projected token every pod carries, which is a volume and is not a
+	// claim.
+	token := volumeResourceAttributes(namespace, "shop-0", "")
+	rows = append(rows,
+		gaugeValues(token, MetricVolumeCapacity, newer, 10<<20),
+		gaugeValues(token, MetricVolumeAvailable, newer, 1<<20),
+	)
+	if err := client.Exec(ctx, exporterGaugeInsert(client.cfg.Database, rows)); err != nil {
+		t.Fatalf("writing volume points: %v", err)
+	}
+
+	volumes, err := client.VolumeUsage(ctx, VolumeUsageQuery{})
+	if err != nil {
+		t.Fatalf("VolumeUsage: %v", err)
+	}
+
+	matched := 0
+	for _, volume := range volumes {
+		if volume.Claim == "" {
+			t.Errorf("a volume with no claim behind it is not a claim: %+v", volume)
+		}
+		if volume.Claim != claim {
+			continue
+		}
+		matched++
+		if volume.CapacityBytes != 10<<30 || volume.UsedBytes != 9<<30 {
+			t.Errorf("used should be the newest capacity less the newest available: %+v", volume)
+		}
+		if volume.UsedFraction != 0.9 {
+			t.Errorf("want nine tenths of the claim used, got %v", volume.UsedFraction)
+		}
+		if volume.Namespace != namespace || volume.Project != integrationProject {
+			t.Errorf("a claim carries where it belongs: %+v", volume)
+		}
+	}
+	// Two pods mount it; it is one volume with one fill, and answering twice
+	// would raise the same warning twice.
+	if matched != 1 {
+		t.Errorf("want the claim once, got it %d times", matched)
+	}
+}
+
+// firstObserved and lastObserved are the ends of a series that reported,
+// which is what a fill is read between.
+func firstObserved(points []NodeUsagePoint) NodeUsagePoint {
+	for _, point := range points {
+		if point.Observed {
+			return point
+		}
+	}
+	return NodeUsagePoint{}
+}
+
+func lastObserved(points []NodeUsagePoint) NodeUsagePoint {
+	for i := len(points) - 1; i >= 0; i-- {
+		if points[i].Observed {
+			return points[i]
+		}
+	}
+	return NodeUsagePoint{}
+}
+
 // uniqueEnvironment keeps one run's rows from being read by the next. The
 // tables are not truncated between runs — they are a real store's, and a test
 // that dropped them would be a test that could not run against a live one.
@@ -1065,4 +1262,61 @@ func exporterSummaryInsert(database, resource string) string {
     3, 1.5, [0.5, 0.95], [1.0, 2.0], 0)`,
 		quoteIdentifier(database), quoteIdentifier(MetricsSummaryTable),
 		resource, quoteLiteral(integrationProject))
+}
+
+// The node fixtures' shape: an hour of scrapes at the interval the chart sets,
+// on the one disk the node has.
+const (
+	integrationScrapes        = 120
+	integrationScrapeInterval = 30 * time.Second
+	integrationMountPoint     = "/"
+	integrationDevice         = "/dev/vda"
+)
+
+// hostResourceAttributes is what a node's own metrics carry, which is almost
+// nothing: no pod, no project, no environment. The node's name is put there by
+// the collector's `resource/node` processor out of the downward API, and it is
+// the only thing these rows can be found by.
+func hostResourceAttributes(node string) string {
+	return fmt.Sprintf(`map('kitchen.source', %s, 'k8s.node.name', %s)`,
+		quoteLiteral(SourceCluster), quoteLiteral(node))
+}
+
+// hostState and hostFilesystemState are the point attributes the host scrapers
+// break their metrics down by — the breakdown is the whole subject of the node
+// read, so unlike every other fixture here these rows carry attributes of their
+// own.
+func hostState(state string) string {
+	return fmt.Sprintf(`map(%s, %s)`, quoteLiteral(hostStateAttribute), quoteLiteral(state))
+}
+
+func hostFilesystemState(state string) string {
+	return fmt.Sprintf(`map(%s, %s, %s, %s, %s, %s, 'mode', 'rw', 'type', 'ext4')`,
+		quoteLiteral(hostStateAttribute), quoteLiteral(state),
+		quoteLiteral(hostMountPointAttribute), quoteLiteral(integrationMountPoint),
+		quoteLiteral(hostDeviceAttribute), quoteLiteral(integrationDevice))
+}
+
+// volumeResourceAttributes is what the kubelet's volume group carries, as the
+// receiver writes it beside the k8s_attributes processor's labels. An empty
+// claim is a volume that is not one — a projected token, a configMap — and the
+// receiver leaves the attribute off those entirely.
+func volumeResourceAttributes(namespace, pod, claim string) string {
+	attributes := fmt.Sprintf(`'kitchen.project', %s, 'deployment.environment.name', %s, `+
+		`'kitchen.source', %s, 'k8s.namespace.name', %s, 'k8s.pod.name', %s, `+
+		`'k8s.node.name', %s, 'k8s.volume.name', 'data', 'k8s.volume.type', 'persistentVolumeClaim'`,
+		quoteLiteral(integrationProject), quoteLiteral("production"), quoteLiteral(SourceRuntime),
+		quoteLiteral(namespace), quoteLiteral(pod), quoteLiteral(integrationNode))
+	if claim != "" {
+		attributes += fmt.Sprintf(`, %s, %s`, quoteLiteral(VolumeClaimAttribute), quoteLiteral(claim))
+	}
+	return "map(" + attributes + ")"
+}
+
+// hostSumValues is sumValues for a point whose breakdown lives in its own
+// attributes, and with no service behind it: a node's metrics belong to the
+// machine rather than to anything running on it.
+func hostSumValues(resource, metric, attributes string, at time.Time, value float64) string {
+	return fmt.Sprintf(`(%s, '', 'kitchen', '1.0', {}, 0, '', '', %s, '', '', %s, %s, %s, %v, 0, [], [], [], [], [], 1, false)`,
+		resource, quoteLiteral(metric), attributes, seconds(at), seconds(at), value)
 }

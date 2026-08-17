@@ -59,18 +59,16 @@ type Store interface {
 // HostMetricsSource reads node saturation and filesystem fill out of the
 // host_metrics the collector already ships.
 //
-// It is a separate, optional interface because internal/clickhouse has no
-// reader for those metrics yet — the collector writes them (see the chart's
-// host_metrics scrapers), the schema materializes a `node` column for them, and
-// nothing reads them back. node.saturated and node.disk-filling are written and
-// tested against this shape; until something satisfies it the gatherer marks
-// [InputHostMetrics] not-applicable and those two rules stay quiet rather than
-// claiming the nodes are fine.
+// It is a separate, optional interface because an installation can run without
+// a store at all: node.saturated and node.disk-filling are computed from
+// nothing else, so a nil source has the gatherer mark [InputHostMetrics]
+// not-applicable and those two rules stay quiet rather than claiming the nodes
+// are fine.
 //
-// The shape is deliberately the finished one: a window and a bucket width in,
-// per-node utilisation fractions and per-filesystem fill out. Whoever adds the
-// reader to the store package satisfies this and the rules start firing with no
-// change to them.
+// The shape is a window and a bucket width in, per-node utilisation fractions
+// and per-filesystem fill out — and it was the finished shape before anything
+// satisfied it, which is why the rules needed no change when something did.
+// [StoreHostMetrics] satisfies it from the telemetry store.
 type HostMetricsSource interface {
 	NodeUsage(ctx context.Context, since, until time.Time, bucket time.Duration) ([]NodeUsage, error)
 }
@@ -78,10 +76,10 @@ type HostMetricsSource interface {
 // VolumeUsageSource reads how full each mounted claim is, from the kubelet's
 // volume metric group.
 //
-// Same situation as [HostMetricsSource]: the chart turned the volume group on
-// and nothing reads it back yet. pvc.filling is written against this and stays
-// quiet until it exists — which is the honest state, because "no claim is over
-// 85%" and "nobody looked" must not render the same.
+// Same situation as [HostMetricsSource], and the same reason it stays optional:
+// pvc.filling is computed from this and nothing else, so without a source it
+// says nothing — because "no claim is over 85%" and "nobody looked" must not
+// render the same. [StoreVolumeUsage] satisfies it from the telemetry store.
 type VolumeUsageSource interface {
 	VolumeUsage(ctx context.Context, at time.Time) ([]VolumeUsage, error)
 }

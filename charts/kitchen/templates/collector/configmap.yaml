@@ -195,9 +195,10 @@ data:
           - node
           # Capacity, free bytes and inodes for every volume on the node, which
           # is where per-PVC usage comes from — nothing in the API server knows
-          # how full a volume is. Used bytes are `capacity - available`: the
-          # receiver's own used-bytes metric is off by default and is a Sum
-          # where these are gauges.
+          # how full a volume is. Used bytes are `capacity - available` because
+          # there is no used-bytes metric to ask for: naming one is not a
+          # setting the receiver ignores, it is a key it rejects, and the
+          # collector refuses to start.
           - volume
       {{- end }}
       {{- if $collector.metrics.node.enabled }}
