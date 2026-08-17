@@ -255,8 +255,9 @@ spec:
                       enabled:
                         default: true
                         description: |-
-                          Enabled turns the sampler on. Off means the resource tables stay
-                          empty and the environment page shows the instant alone.
+                          Enabled turns the sampler on. Off means restarts, limits and replica
+                          counts go uncollected; the collector's own CPU and memory are
+                          unaffected.
                         type: boolean
                       intervalSeconds:
                         default: 30
@@ -273,28 +274,36 @@ spec:
                   traces:
                     default: {}
                     description: |-
-                      TracesSpec configures the platform's OTLP receiver.
+                      TracesSpec configures where applications send their spans.
 
                       Traces come from the applications themselves: an application that is not
                       instrumented has no spans to send, and nothing the platform can see from
                       outside it — not Hubble's L7 data, not the Gateway's access logs — is a
                       substitute. What the platform does is remove every other obstacle: the
-                      receiver is always there, and every environment is told where it is.
+                      collector's OTLP endpoint is always there, and every environment is told
+                      where it is.
+
+                      The endpoint is also where the operator exports the metrics it samples, so
+                      switching this off leaves the collector receiving nothing at all.
                     properties:
                       enabled:
                         default: true
                         description: |-
-                          Enabled runs the receiver and tells applications where it is, through
-                          the OTLP environment variables every SDK reads. Off means neither.
+                          Enabled advertises the endpoint to applications, through the OTLP
+                          environment variables every SDK reads. The collector receives either
+                          way; off means applications are not told where to send.
                         type: boolean
                       endpoint:
                         default: http://kitchen-otlp.kitchen-system.svc.cluster.local:4318
                         description: |-
                           Endpoint is the OTLP/HTTP base URL applications export to, as it is
-                          advertised to them. The default is the receiver's Service under the
+                          advertised to them. The default is the collector's Service under the
                           conventional release name; the chart always writes its own, because
                           every name it generates carries the release's. Set it by hand only to
                           put something else in front.
+
+                          The Service routes to the collector pod on the caller's own node, so
+                          the name is stable but the path is node-local.
                         type: string
                     type: object
                 type: object
