@@ -14,13 +14,24 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package flows follows Cilium's Hubble Relay and ships flow observations
-// into the telemetry store — the data behind the dashboard's traffic view.
+// Package flows follows Cilium's Hubble Relay and ships what it observes into
+// the telemetry store: flow observations for the dashboard's traffic view, and
+// one row per HTTP request the platform's edge served for the golden signals.
 //
 // Cilium is the platform's CNI and Hubble Relay its cluster-wide flow API, so
 // nothing new runs on the nodes: the operator is a gRPC client of what is
-// already there. The one-store rule from docs/SCOPE.md holds — flows land in
-// the same ClickHouse the logs do, under the same retention.
+// already there. The one-store rule from docs/SCOPE.md holds — both outputs
+// land in the same ClickHouse the logs do, under the same retention.
+//
+// The request half is docs/OBSERVABILITY.md §3, and its argument is that the
+// vantage point was already plumbed. Every request to every Kitchen
+// application crosses the shared Gateway, which is Cilium's embedded Envoy;
+// Envoy streams its access records to the agent, and Hubble publishes them as
+// the same L7 flows this package has followed since it existed. The follower
+// keeps the method and the URL it used to discard, attributes the request to
+// an environment by the host (hosts.go), templates the path against a budget
+// (paths.go, budget.go) and writes a second row. No new component, no new
+// dependency, nothing added to the data path.
 package flows
 
 import (
@@ -55,6 +66,12 @@ const (
 	// memory and how large one insert grows.
 	flushInterval = 5 * time.Second
 	flushBatch    = 500
+	// requestFlushBatch is the same bound at request volumes (§5). A flow row
+	// is one connection opened or refused; a request row is one HTTP exchange,
+	// and a busy environment serves many of those over one connection. The
+	// insert path is identical either way — only the batch handed to the store
+	// grows, and a larger one is a cheaper insert per row.
+	requestFlushBatch = 2000
 )
 
 // Collector is a manager Runnable. It idles until the Kitchen singleton names
@@ -62,7 +79,17 @@ const (
 // and batches observations into ClickHouse.
 type Collector struct {
 	Client client.Client
+
+	// loss is what the follower knows it did not see. It is read from another
+	// goroutine — see Loss — and is the only field here that is.
+	loss lossLedger
 }
+
+// Loss reports what the follower knows it did not observe over the trailing
+// window, which is capped at LossWindow. It is safe to call while the stream
+// is being consumed, which is the point of it: §7's `ingest.flows-lost` signal
+// evaluates on request, from whichever goroutine is answering a screen.
+func (c *Collector) Loss(window time.Duration) Loss { return c.loss.snapshot(window) }
 
 // NeedLeaderElection makes the collector a singleton: every replica shipping
 // the same relay's flows would double-count every edge.
@@ -81,10 +108,15 @@ type config struct {
 // context ends: flow collection is an observability capability, and a relay
 // or store being down must not take the operator down with it.
 func (c *Collector) Start(ctx context.Context) error {
+	// The route budgets outlive any one stream. A reconnect is not a reason to
+	// forget which routes an environment already has, and re-learning them
+	// would let a relay that keeps dropping the stream mint a fresh 300
+	// templates every time round.
+	budgets := newRouteBudgets()
 	for {
 		cfg, err := c.resolve(ctx)
 		if err == nil && cfg.relayAddress != "" && cfg.hasStore {
-			c.follow(ctx, cfg)
+			c.follow(ctx, cfg, budgets)
 		}
 		select {
 		case <-ctx.Done():
@@ -120,7 +152,7 @@ func (c *Collector) resolve(ctx context.Context) (config, error) {
 
 // follow holds one stream against the relay, shipping batches until the
 // stream breaks, the configuration moves away, or the context ends.
-func (c *Collector) follow(ctx context.Context, cfg config) {
+func (c *Collector) follow(ctx context.Context, cfg config, budgets *routeBudgets) {
 	// In-cluster Hubble Relay serves plaintext gRPC by default; a TLS relay
 	// would need certificates the platform has no story for yet.
 	conn, err := grpc.NewClient(cfg.relayAddress, grpc.WithTransportCredentials(insecure.NewCredentials()))
@@ -132,7 +164,13 @@ func (c *Collector) follow(ctx context.Context, cfg config) {
 
 	streamCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	stream, err := observerpb.NewObserverClient(conn).GetFlows(streamCtx, &observerpb.GetFlowsRequest{Follow: true})
+	stream, err := observerpb.NewObserverClient(conn).GetFlows(streamCtx, &observerpb.GetFlowsRequest{
+		Follow: true,
+		// Ask for the three shapes that are kept, rather than for everything
+		// and a discard loop; see streamFilters for why the list is an *or*
+		// and why each of its filters is wider than what observe() keeps.
+		Whitelist: streamFilters(),
+	})
 	if err != nil {
 		c.log().V(1).Info("hubble stream refused", "address", cfg.relayAddress, "reason", err.Error())
 		return
@@ -141,19 +179,27 @@ func (c *Collector) follow(ctx context.Context, cfg config) {
 
 	store := clickhouse.New(cfg.store)
 	batch := make([]clickhouse.Flow, 0, flushBatch)
+	requests := make([]clickhouse.Request, 0, requestFlushBatch)
+	hosts := newHostIndex(ctx, c.Client, c.log())
 	lastFlush := time.Now()
 	lastConfigCheck := time.Now()
 
 	flush := func() {
-		if len(batch) == 0 {
-			return
+		if len(batch) > 0 {
+			if err := store.InsertFlows(ctx, batch); err != nil {
+				// Dropped observations, not a broken collector: the next batch
+				// tries again, and the traffic view simply has a gap.
+				c.log().V(1).Info("flow batch dropped", "flows", len(batch), "reason", err.Error())
+			}
+			batch = batch[:0]
 		}
-		if err := store.InsertFlows(ctx, batch); err != nil {
-			// Dropped observations, not a broken collector: the next batch
-			// tries again, and the traffic view simply has a gap.
-			c.log().V(1).Info("flow batch dropped", "flows", len(batch), "reason", err.Error())
+		if len(requests) > 0 {
+			if err := store.InsertRequests(ctx, requests); err != nil {
+				// The same bargain, one table over.
+				c.log().V(1).Info("request batch dropped", "requests", len(requests), "reason", err.Error())
+			}
+			requests = requests[:0]
 		}
-		batch = batch[:0]
 		lastFlush = time.Now()
 	}
 	defer flush()
@@ -162,6 +208,11 @@ func (c *Collector) follow(ctx context.Context, cfg config) {
 		response, err := stream.Recv()
 		if err != nil {
 			if ctx.Err() == nil {
+				// Nothing buffers on the operator's behalf while it is not
+				// connected, so a stream that ended is a gap of unknown size —
+				// counted beside the losses Relay reports rather than only
+				// logged, because the effect on the numbers is the same.
+				c.loss.reconnected()
 				c.log().V(1).Info("hubble stream ended", "reason", err.Error())
 				select {
 				case <-ctx.Done():
@@ -170,16 +221,29 @@ func (c *Collector) follow(ctx context.Context, cfg config) {
 			}
 			return
 		}
+		if lost := response.GetLostEvents(); lost != nil {
+			c.loss.lost(lost.GetNumEventsLost())
+			c.log().V(1).Info("hubble reported lost events",
+				"events", lost.GetNumEventsLost(), "source", lost.GetSource().String())
+		}
 		if flow := response.GetFlow(); flow != nil {
 			if observation, keep := observe(flow); keep {
 				batch = append(batch, observation)
 			}
+			if request, keep := requestOf(flow); keep {
+				owner := hosts.lookup(ctx, request.Host)
+				request.Project, request.Environment = owner.project, owner.environment
+				request.Route = budgets.route(owner.project, owner.environment, request.Path)
+				requests = append(requests, request)
+			}
 		}
-		if len(batch) >= flushBatch || time.Since(lastFlush) > flushInterval {
+		if len(batch) >= flushBatch || len(requests) >= requestFlushBatch ||
+			time.Since(lastFlush) > flushInterval {
 			flush()
 		}
 		if time.Since(lastConfigCheck) > configPollInterval {
 			lastConfigCheck = time.Now()
+			hosts.tick(ctx)
 			if current, err := c.resolve(ctx); err == nil &&
 				(current.relayAddress != cfg.relayAddress || !current.hasStore) {
 				c.log().Info("flow configuration changed, reconnecting")
