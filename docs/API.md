@@ -783,7 +783,9 @@ question — the dashboard's status bar:
 ```json
 {"cluster": {"name": "chef", "nodes": 8, "readyNodes": 8},
  "tunnel": {"enabled": true, "connected": true, "message": "cloudflared is available"},
- "builds": {"running": 1, "capacity": 2, "queued": 0},
+ "builds": {"running": 1, "capacity": 2, "queued": 1, "oldestWaitSeconds": 1920,
+   "waiting": [{"name": "shop-bld-abc123", "project": "shop",
+                "queuedAt": "2026-08-17T03:14:00Z", "waitSeconds": 1920}]},
  "gateway": {"address": "203.0.113.7", "programmed": true},
  "components": [{"name": "collector", "kind": "DaemonSet", "healthy": false,
    "available": 0, "desired": 3, "message": "0 of 3 pods available: …"}]}
@@ -793,7 +795,11 @@ question — the dashboard's status bar:
 to the first label of the base domain — Kitchen owns the cluster it is
 installed into, so naming it names the installation. `builds` is what the build
 controller's concurrency gate is weighing: builds running against
-`spec.builds.concurrency`, and how many are waiting for a slot. `components` is
+`spec.builds.concurrency`, how many are waiting for a slot, and how long each
+has waited — longest first, with `oldestWaitSeconds` repeating the head of the
+list. The wait is the half worth reading: a queue's length says the platform is
+busy, and only the wait says whether it is moving. Both are omitted when
+nothing is queued. `components` is
 the operator's own survey of every workload labelled
 `app.kubernetes.io/part-of: kitchen`, which is the only place a workload whose
 pods were refused at admission shows up at all — it has no pods to look at.

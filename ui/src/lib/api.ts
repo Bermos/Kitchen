@@ -193,7 +193,15 @@ export interface ComponentStatus {
 export interface PlatformStatus {
   cluster: { name?: string; nodes: number; readyNodes: number; message?: string };
   tunnel: { enabled: boolean; connected: boolean; message?: string };
-  builds: { running: number; capacity: number; queued: number };
+  builds: {
+    running: number;
+    capacity: number;
+    queued: number;
+    /** How long the build waiting longest has been waiting. Absent when none is. */
+    oldestWaitSeconds?: number;
+    /** The queued builds themselves, longest wait first. */
+    waiting?: { name: string; project: string; queuedAt: string; waitSeconds: number }[];
+  };
   gateway: { address?: string; programmed: boolean; message?: string };
   components?: ComponentStatus[];
 }
