@@ -197,7 +197,7 @@ type config struct {
 
 // Start implements manager.Runnable. Like the flow collector it never returns
 // an error before the context ends: sampling is an observability capability,
-// and a collector being down must not take the operator down.
+// and the node collector being down must not take the operator down.
 func (c *Collector) Start(ctx context.Context) error {
 	for {
 		cfg, err := c.resolve(ctx)
@@ -294,9 +294,9 @@ func (c *Collector) sweepOnce(ctx context.Context, exporter Exporter) {
 	for _, batch := range sweep.ResourceMetrics() {
 		if err := exporter.Export(ctx, batch); err != nil {
 			// A dropped export is a gap in the series, not a broken
-			// collector: the next sweep tries again. It is logged once per
-			// resource rather than once per sweep because an endpoint that
-			// refuses one refuses all of them, and the first line says why.
+			// sampler: the next sweep tries again. The rest of this one goes
+			// with it, because an endpoint that refuses one batch refuses the
+			// next two hundred and would say so two hundred times.
 			c.log().V(1).Info("sample export dropped", "reason", err.Error())
 			return
 		}
@@ -376,12 +376,14 @@ func (c *Collector) Sample(ctx context.Context, at time.Time) (Sweep, error) {
 			})
 		}
 	}
-	for i := range sweep.Environments {
-		sweep.Environments[i].Pods = int64(replicas[environmentKey{
-			project:     sweep.Environments[i].Project,
-			environment: sweep.Environments[i].Environment,
-			namespace:   sweep.Environments[i].Namespace,
-		}])
+	sweep.Environments = make([]EnvironmentSample, 0, len(order))
+	for _, environment := range order {
+		sweep.Environments = append(sweep.Environments, EnvironmentSample{
+			Project:     environment.project,
+			Environment: environment.environment,
+			Namespace:   environment.namespace,
+			Pods:        replicas[environment],
+		})
 	}
 
 	c.seen, c.last = seen, at
