@@ -41,8 +41,9 @@ import (
 // is what lets a stock exporter write a table with a Kitchen-shaped ordering
 // key.
 //
-// Flows and events have no collector and no upstream shape; the operator
-// writes them itself, and they are unchanged.
+// Flows, events, requests and the cluster's events have no collector and no
+// upstream shape; the operator writes them itself, so their columns are named
+// the way this package reads them and nothing above applies.
 
 // LogsTable holds every log line Kitchen collects: application containers,
 // build jobs and the platform's own components. The collector writes it and

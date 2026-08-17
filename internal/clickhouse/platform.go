@@ -49,6 +49,8 @@ type PlatformRequestsQuery struct {
 // PlatformRequests is the edge's headline: everything that entered the
 // platform in the window, however it was attributed.
 type PlatformRequests struct {
+	// Since and Until are the window that was actually answered; see
+	// RequestSummary's, which are snapped the same way.
 	Since             time.Time `json:"since"`
 	Until             time.Time `json:"until"`
 	Requests          uint64    `json:"requests"`
@@ -447,7 +449,9 @@ FORMAT JSONEachRow`,
 func (c *Client) fillProjectSparklines(
 	ctx context.Context, scope requestScope, group, columns string, traffic []ProjectTraffic,
 ) error {
-	start := scope.since.Truncate(time.Hour)
+	// The scope's start is already on an hour, since this reads the hour
+	// rollup and every rollup read is snapped to its resolution.
+	start := scope.since
 	hours := int(scope.until.Sub(start)/time.Hour) + 1
 	if hours < 1 {
 		return nil
@@ -469,6 +473,9 @@ FORMAT JSONEachRow`,
 		return err
 	}
 
+	// The two halves of a row's key are joined by a byte neither a project nor
+	// an environment name can contain, so a project "a-b" and a project "a"
+	// with an environment "b" cannot land on the same entry.
 	index := map[string]*ProjectTraffic{}
 	for i := range traffic {
 		traffic[i].RequestsPerHour = make([]uint64, hours)
@@ -566,6 +573,7 @@ func platformScope(since, until time.Time, rollup string) (requestScope, error) 
 	if rollup == requestRollupAuto {
 		rollup = rollupForSpan(resolvedUntil.Sub(resolvedSince))
 	}
+	resolvedSince = snapToRollup(resolvedSince, rollup)
 	scope := requestScope{
 		since:  resolvedSince,
 		until:  resolvedUntil,

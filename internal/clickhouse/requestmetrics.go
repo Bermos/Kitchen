@@ -172,6 +172,7 @@ func (q RequestQuery) scope(rollup string) (requestScope, error) {
 	if rollup == requestRollupAuto {
 		rollup = rollupForSpan(until.Sub(since))
 	}
+	since = snapToRollup(since, rollup)
 
 	scope := requestScope{
 		since:  since,
@@ -223,9 +224,36 @@ func rollupForWidth(width int) string {
 	return RequestRollupMinute
 }
 
+// rollupResolution is how wide one row of a rollup is.
+func rollupResolution(rollup string) time.Duration {
+	if rollup == RequestRollupHour {
+		return time.Hour
+	}
+	return time.Minute
+}
+
+// snapToRollup moves a window's start back to the rollup's own resolution.
+//
+// A bucket is indivisible: a window that begins inside one either takes the
+// whole bucket or misses it entirely, and missing it is not a rounding error.
+// A five-minute question of the hour rollup falls between buckets and answers
+// zero — traffic that plainly happened, reported as none. Every read then uses
+// the snapped bound for its rate and reports it as the window it answered, so
+// the numbers and the window they are per always agree.
+//
+// Go's Truncate is the right flooring here for both resolutions, since a minute
+// and an hour each divide a day; see LogHistogram for the widths where it is
+// not.
+func snapToRollup(since time.Time, rollup string) time.Time {
+	return since.Truncate(rollupResolution(rollup))
+}
+
 // RequestSummary is the golden-signal header for a window: how much traffic,
 // how much of it failed, and how slow it was.
 type RequestSummary struct {
+	// Since and Until are the window that was actually answered — the one that
+	// was asked for, with its start snapped back to the rollup's resolution.
+	// See snapToRollup; the rate below is per this window, not the other one.
 	Since             time.Time `json:"since"`
 	Until             time.Time `json:"until"`
 	Requests          uint64    `json:"requests"`

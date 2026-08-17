@@ -54,12 +54,15 @@ import (
 // It is not part of `make test` on purpose: CI has no ClickHouse, and a test
 // that silently needs one is a test that silently stops running.
 
-// The fixtures' names: the database the store is expected to hold, and the
-// project every row written here belongs to.
+// The fixtures' names: the database the store is expected to hold, the project
+// every row written here belongs to, the node every collected signal claims to
+// come from, and the one route the request fixtures template to.
 const (
 	integrationDatabase = "kitchen"
 	integrationProject  = "shop"
 	integrationRetained = 30
+	integrationNode     = "node-1"
+	integrationRoute    = "/works/:id"
 )
 
 // integrationClient resolves the store under test, or skips.
@@ -608,46 +611,38 @@ func TestIntegrationMetricsOverview(t *testing.T) {
 	}
 }
 
-// TestIntegrationRequests is the request pipeline end to end: rows in, both
-// materialized views firing, and every golden-signal read coming back off the
-// states they wrote.
+// writeRequestFixture writes five minutes of traffic for one environment and
+// answers the window it covers, plus the unrouted host it also wrote.
 //
-// It is the one thing the fake cannot answer. `countMergeIf` over a state
-// column named after the column it aggregates, a percentile read back out of a
-// t-digest, and a view whose GROUP BY has to agree with an AggregatingMergeTree
-// key are all statements that read perfectly and either fail or answer
-// something else.
-func TestIntegrationRequests(t *testing.T) {
-	client := integrationClient(t)
+// Every tenth request fails and is slow, so the error rate is exactly a tenth
+// and the tail sits somewhere the median does not. The window ends a minute in
+// the past, so a read of it is never racing the clock for its last bucket.
+func writeRequestFixture(t *testing.T, client *Client, prefix string) (RequestQuery, string) {
+	t.Helper()
 	ctx := context.Background()
 	if err := client.EnsureRequestsSchema(ctx, integrationRetained); err != nil {
 		t.Fatalf("EnsureRequestsSchema: %v", err)
 	}
 
-	environment := uniqueEnvironment("requests")
+	environment := uniqueEnvironment(prefix)
 	host := environment + ".example.com"
-	// Five minutes of traffic ending a minute ago, so the window is closed and
-	// nothing lands in a bucket the read has not reached yet.
 	end := time.Now().UTC().Add(-time.Minute).Truncate(time.Minute)
 	start := end.Add(-5 * time.Minute)
 
 	requests := []Request{}
 	for i := 0; i < 300; i++ {
-		at := start.Add(time.Duration(i) * time.Second)
 		request := Request{
-			Timestamp:   at,
+			Timestamp:   start.Add(time.Duration(i) * time.Second),
 			Project:     integrationProject,
 			Environment: environment,
 			Host:        host,
 			Method:      http.MethodGet,
 			Path:        fmt.Sprintf("/works/%d", i),
-			Route:       "/works/:id",
+			Route:       integrationRoute,
 			Status:      200,
 			DurationMs:  10,
 			Protocol:    "HTTP/1.1",
 		}
-		// Every tenth request fails and is slow, so the error rate is a tenth
-		// and the tail is somewhere the median is not.
 		if i%10 == 0 {
 			request.Status = 503
 			request.DurationMs = 500
@@ -666,12 +661,27 @@ func TestIntegrationRequests(t *testing.T) {
 		t.Fatalf("InsertRequests: %v", err)
 	}
 
-	window := RequestQuery{
+	return RequestQuery{
 		Project:     integrationProject,
 		Environment: environment,
 		Since:       start,
 		Until:       end,
-	}
+	}, unroutedHost
+}
+
+// TestIntegrationRequests is the developer's half of the request pipeline:
+// rows in, the minute view firing, and the golden signals coming back off the
+// states it wrote.
+//
+// It is the one thing the fake cannot answer. `countMergeIf` over a state
+// column named after the column it aggregates, a percentile read back out of a
+// t-digest, and a view whose GROUP BY has to agree with an AggregatingMergeTree
+// key are all statements that read perfectly and either fail or answer
+// something else.
+func TestIntegrationRequests(t *testing.T) {
+	client := integrationClient(t)
+	ctx := context.Background()
+	window, _ := writeRequestFixture(t, client, "requests")
 
 	summary, err := client.RequestSummary(ctx, window)
 	if err != nil {
@@ -710,7 +720,7 @@ func TestIntegrationRequests(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RequestRoutes: %v", err)
 	}
-	if len(routes) != 1 || routes[0].Route != "/works/:id" {
+	if len(routes) != 1 || routes[0].Route != integrationRoute {
 		t.Fatalf("want one templated route, got %+v", routes)
 	}
 	if routes[0].Requests != 300 || routes[0].Errors != 30 {
@@ -720,8 +730,8 @@ func TestIntegrationRequests(t *testing.T) {
 	// And the rows themselves, which is what "show me the failing requests"
 	// actually asks for.
 	failures, err := client.QueryRequests(ctx, RequestListQuery{
-		Project: integrationProject, Environment: environment,
-		Since: start, Until: end, OnlyErrors: true, Limit: 5,
+		Project: window.Project, Environment: window.Environment,
+		Since: window.Since, Until: window.Until, OnlyErrors: true, Limit: 5,
 	})
 	if err != nil {
 		t.Fatalf("QueryRequests: %v", err)
@@ -743,9 +753,34 @@ func TestIntegrationRequests(t *testing.T) {
 		t.Error("a request listing reads newest first")
 	}
 
+	// The hour rollup is fed by its own view over the same raw rows, so a
+	// window wide enough to reach it has to agree with the minute one.
+	hourly := window
+	hourly.Since = window.Until.Add(-72 * time.Hour)
+	wide, err := client.RequestSummary(ctx, hourly)
+	if err != nil {
+		t.Fatalf("RequestSummary over the hour rollup: %v", err)
+	}
+	if wide.Rollup != RequestRollupHour {
+		t.Fatalf("a three-day window should read the hour rollup, got %q", wide.Rollup)
+	}
+	if wide.Requests != summary.Requests || wide.Errors != summary.Errors {
+		t.Errorf("the two rollups hold the same rows: %d/%d hourly, %d/%d by the minute",
+			wide.Requests, wide.Errors, summary.Requests, summary.Errors)
+	}
+}
+
+// TestIntegrationPlatformRequests is the operator's half: the same rows read
+// across projects, including the ones that belong to none.
+func TestIntegrationPlatformRequests(t *testing.T) {
+	client := integrationClient(t)
+	ctx := context.Background()
+	window, unroutedHost := writeRequestFixture(t, client, "platform")
+	across := PlatformRequestsQuery{Since: window.Since, Until: window.Until}
+
 	// The unrouted bucket, which is the operator's signal rather than a
 	// project's traffic.
-	unrouted, err := client.UnroutedHosts(ctx, PlatformRequestsQuery{Since: start, Until: end})
+	unrouted, err := client.UnroutedHosts(ctx, across)
 	if err != nil {
 		t.Fatalf("UnroutedHosts: %v", err)
 	}
@@ -762,9 +797,9 @@ func TestIntegrationRequests(t *testing.T) {
 		t.Errorf("the host nothing published should be in the unrouted bucket, got %+v", unrouted)
 	}
 
-	// The platform's own view counts it, rather than quietly dropping the
-	// traffic it could not attribute.
-	platform, err := client.PlatformRequests(ctx, PlatformRequestsQuery{Since: start, Until: end})
+	// The platform's own numbers count it, rather than quietly dropping the
+	// traffic they could not attribute.
+	platform, err := client.PlatformRequests(ctx, across)
 	if err != nil {
 		t.Fatalf("PlatformRequests: %v", err)
 	}
@@ -775,34 +810,35 @@ func TestIntegrationRequests(t *testing.T) {
 		t.Errorf("the unrouted request should be counted, got %d", platform.Unrouted)
 	}
 
-	// The hour rollup is fed by its own view over the same raw rows, so a
-	// window wide enough to reach it has to agree with the minute one.
-	hourly, err := client.RequestSummary(ctx, RequestQuery{
-		Project:     integrationProject,
-		Environment: environment,
-		Since:       end.Add(-72 * time.Hour),
-		Until:       end,
-	})
-	if err != nil {
-		t.Fatalf("RequestSummary over the hour rollup: %v", err)
-	}
-	if hourly.Rollup != RequestRollupHour {
-		t.Fatalf("a three-day window should read the hour rollup, got %q", hourly.Rollup)
-	}
-	if hourly.Requests != summary.Requests || hourly.Errors != summary.Errors {
-		t.Errorf("the two rollups hold the same rows: %d/%d hourly, %d/%d by the minute",
-			hourly.Requests, hourly.Errors, summary.Requests, summary.Errors)
-	}
-
 	// The Edge screen's leaders, over the same states.
 	leaders, err := client.EdgeBreakdown(ctx, EdgeBreakdownQuery{
-		Since: start, Until: end, By: EdgeByEnvironment, SortBy: RouteSortLatency,
+		Since: window.Since, Until: window.Until,
+		By: EdgeByEnvironment, SortBy: RouteSortLatency, MinRequests: 100,
 	})
 	if err != nil {
 		t.Fatalf("EdgeBreakdown: %v", err)
 	}
 	if len(leaders) == 0 {
-		t.Error("the environments that served the window should be rankable")
+		t.Fatal("the environments that served the window should be rankable")
+	}
+	if leaders[0].P95Ms < leaders[len(leaders)-1].P95Ms {
+		t.Errorf("the latency leaders should lead: %+v", leaders)
+	}
+
+	// And what the dashboard's overview reads instead of aggregating flows by
+	// destination namespace.
+	traffic, err := client.ProjectTraffic(ctx, ProjectTrafficQuery{
+		Since: window.Since, Until: window.Until,
+		Project: integrationProject, Sparkline: true,
+	})
+	if err != nil {
+		t.Fatalf("ProjectTraffic: %v", err)
+	}
+	if len(traffic) != 1 || traffic[0].Project != integrationProject {
+		t.Fatalf("want the one project's traffic, got %+v", traffic)
+	}
+	if traffic[0].Requests < 300 || len(traffic[0].RequestsPerHour) == 0 {
+		t.Errorf("the overview's row should carry both the totals and the sparkline: %+v", traffic[0])
 	}
 }
 
@@ -826,7 +862,7 @@ func TestIntegrationClusterEvents(t *testing.T) {
 		Reason:    "FailedCreate",
 		Message:   `pods "kitchen-collector" is forbidden: violates PodSecurity "baseline:latest"`,
 		Count:     12,
-		Node:      "node-1",
+		Node:      integrationNode,
 	}}); err != nil {
 		t.Fatalf("InsertK8sEvents: %v", err)
 	}
@@ -871,9 +907,10 @@ func TestIntegrationTelemetryFreshness(t *testing.T) {
 		t.Fatalf("TelemetryFreshness: %v", err)
 	}
 	for _, node := range freshness {
-		if node.Node == "node-1" {
+		if node.Node == integrationNode {
 			if time.Since(node.LastSeen) > time.Hour {
-				t.Errorf("the line just written should be the newest thing node-1 sent: %s", node.LastSeen)
+				t.Errorf("the line just written should be the newest thing %s sent: %s",
+					integrationNode, node.LastSeen)
 			}
 			return
 		}
@@ -894,11 +931,11 @@ func uniqueEnvironment(prefix string) string {
 func resourceAttributes(environment, pod, container string) string {
 	return fmt.Sprintf(`map('kitchen.project', %s, 'deployment.environment.name', %s, `+
 		`'kitchen.build', '', 'kitchen.source', %s, 'k8s.namespace.name', %s, `+
-		`'k8s.pod.name', %s, 'k8s.container.name', %s, 'k8s.node.name', 'node-1', `+
+		`'k8s.pod.name', %s, 'k8s.container.name', %s, 'k8s.node.name', %s, `+
 		`'service.name', %s, 'tier', 'web')`,
 		quoteLiteral(integrationProject), quoteLiteral(environment), quoteLiteral(SourceRuntime),
 		quoteLiteral("kitchen-app-"+integrationProject), quoteLiteral(pod), quoteLiteral(container),
-		quoteLiteral(integrationProject))
+		quoteLiteral(integrationNode), quoteLiteral(integrationProject))
 }
 
 // stamped renders a time the way ClickHouse parses one at nanosecond scale.

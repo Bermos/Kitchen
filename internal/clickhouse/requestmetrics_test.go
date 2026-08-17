@@ -101,6 +101,41 @@ func TestAWideWindowIsAnsweredFromTheHourRollup(t *testing.T) {
 	}
 }
 
+// A rollup bucket is indivisible, so a window that starts inside one either
+// takes the whole bucket or misses it. Missing it is not a rounding error: an
+// hour-rollup read of a window that began at 12:34 would compare against a
+// bucket stamped 12:00, match nothing, and report traffic that plainly
+// happened as none.
+func TestARollupReadSnapsItsWindowBackToTheBucket(t *testing.T) {
+	store := newFakeLogStore(t)
+	until := time.Date(2026, 8, 16, 12, 34, 56, 0, time.UTC)
+
+	summary, err := store.client(t).RequestSummary(context.Background(), RequestQuery{
+		Project: testProject,
+		Since:   until.Add(-72 * time.Hour),
+		Until:   until,
+	})
+	if err != nil {
+		t.Fatalf("RequestSummary: %v", err)
+	}
+	if summary.Rollup != RequestRollupHour {
+		t.Fatalf("a three-day window should read the hour rollup, got %q", summary.Rollup)
+	}
+
+	since, err := time.Parse(time.RFC3339Nano, store.params.Get("param_since"))
+	if err != nil {
+		t.Fatalf("reading the window's start: %v", err)
+	}
+	if !since.Equal(since.Truncate(time.Hour)) {
+		t.Errorf("the hour rollup should be asked from the top of an hour, got %s", since)
+	}
+	// And the window it reports is the one it answered, so the rate below it
+	// is per something true.
+	if !summary.Since.Equal(since) {
+		t.Errorf("the reported window %s is not the one asked for, %s", summary.Since, since)
+	}
+}
+
 func TestRequestSummaryDerivesItsRatesFromTheCounts(t *testing.T) {
 	store := newFakeLogStore(t)
 	store.rows = `{"requests":"3600","errors":"36","p50":"10","p95":"42.5","p99":"90"}`
