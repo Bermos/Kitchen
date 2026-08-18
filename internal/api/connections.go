@@ -18,7 +18,6 @@ package api
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -96,14 +95,14 @@ const registryProvider = "dockerRegistry"
 // connectionSecretData turns a credential into the secret the reconcilers
 // expect for the provider: a `token` key, or a `.dockerconfigjson` for the
 // registry host named in the config.
-func connectionSecretData(provider string, config map[string]any, credential *connectionCredential) (map[string][]byte, corev1.SecretType, error) {
+func connectionSecretData(providerName string, config map[string]any, credential *connectionCredential) (map[string][]byte, corev1.SecretType, error) {
 	switch {
-	case tokenProviders[provider]:
+	case tokenProviders[providerName]:
 		if credential.Token == "" {
-			return nil, "", fmt.Errorf("provider %s authenticates with a token: pass {\"credential\": {\"token\": \"...\"}}", provider)
+			return nil, "", fmt.Errorf("provider %s authenticates with a token: pass {\"credential\": {\"token\": \"...\"}}", providerName)
 		}
 		return map[string][]byte{gitTokenKey: []byte(credential.Token)}, corev1.SecretTypeOpaque, nil
-	case provider == registryProvider:
+	case providerName == registryProvider:
 		if credential.Username == "" || credential.Password == "" {
 			return nil, "", fmt.Errorf("provider %s authenticates with a username and password: pass {\"credential\": {\"username\": \"...\", \"password\": \"...\"}}", registryProvider)
 		}
@@ -111,22 +110,13 @@ func connectionSecretData(provider string, config map[string]any, credential *co
 		if server == "" {
 			return nil, "", fmt.Errorf("provider %s needs the registry in config.url, e.g. {\"config\": {\"url\": \"harbor.example.com/kitchen\"}}", registryProvider)
 		}
-		auth := base64.StdEncoding.EncodeToString([]byte(credential.Username + ":" + credential.Password))
-		dockerConfig, err := json.Marshal(map[string]any{
-			"auths": map[string]any{
-				server: map[string]string{
-					"username": credential.Username,
-					"password": credential.Password,
-					"auth":     auth,
-				},
-			},
-		})
+		dockerConfig, err := provider.DockerConfigJSON(server, credential.Username, credential.Password)
 		if err != nil {
 			return nil, "", err
 		}
 		return map[string][]byte{corev1.DockerConfigJsonKey: dockerConfig}, corev1.SecretTypeDockerConfigJson, nil
 	default:
-		return nil, "", fmt.Errorf("unknown provider %q: one of github, gitlab, gitea, dockerRegistry, neon", provider)
+		return nil, "", fmt.Errorf("unknown provider %q: one of github, gitlab, gitea, dockerRegistry, neon", providerName)
 	}
 }
 

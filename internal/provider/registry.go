@@ -58,6 +58,29 @@ func newRegistryProbe(conn *kitchenv1alpha1.Connection, creds *corev1.Secret) (*
 	return &RegistryProbe{BaseURL: target.BaseURL, Username: username, Password: password}, nil
 }
 
+// DockerConfigJSON is the credential a registry Connection stores: a
+// dockerconfigjson naming one server. Everything that writes one goes through
+// here — the REST API when someone adds a registry, the operator when it
+// seeds the Connection for the bundled one — because registryCredentials
+// below reads it back and a second spelling of the format is a bug waiting
+// for the first rename.
+//
+// The `auth` field is redundant with username and password, and is written
+// anyway: it is what a container runtime reads, and what a config written by
+// hand often carries instead of the other two.
+func DockerConfigJSON(server, username, password string) ([]byte, error) {
+	auth := base64.StdEncoding.EncodeToString([]byte(username + ":" + password))
+	return json.Marshal(map[string]any{
+		"auths": map[string]any{
+			server: map[string]string{
+				"username": username,
+				"password": password,
+				"auth":     auth,
+			},
+		},
+	})
+}
+
 // registryCredentials reads the username and password back out of the
 // dockerconfigjson, preferring the entry for the server the probe targets.
 func registryCredentials(creds *corev1.Secret, server string) (username, password string, err error) {
