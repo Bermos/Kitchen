@@ -41,6 +41,18 @@ function withCapability(capability: string) {
 const sourceOptions = computed(() => withCapability("gitSource"));
 const registryOptions = computed(() => withCapability("imageStore"));
 
+// A field with exactly one answer is not a question. The platform seeds a
+// registry connection pointing at the one it runs itself, so on a fresh
+// installation this is the whole of choosing where images go — and the same
+// reasoning covers the single git connection most people have. Anything
+// already picked by hand is left alone.
+watch(registryOptions, (options) => {
+  if (!registry.value && options.length === 1) registry.value = options[0]!.value;
+});
+watch(sourceOptions, (options) => {
+  if (!connection.value && options.length === 1) connection.value = options[0]!.value;
+});
+
 // "acme/shop" suggests the name "shop", cut down to what the API accepts —
 // until the name is edited by hand, at which point it is the user's.
 watch(repo, (value) => {
