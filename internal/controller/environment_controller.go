@@ -203,7 +203,7 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, err
 	}
 
-	if err := r.applyDeployment(ctx, env, release, appNS, labels, podEnv, idle != nil); err != nil {
+	if err := r.applyDeployment(ctx, env, release, project, appNS, labels, podEnv, idle != nil); err != nil {
 		return ctrl.Result{}, err
 	}
 	if err := r.applyService(ctx, env, release, appNS, labels); err != nil {
@@ -449,6 +449,7 @@ func (r *EnvironmentReconciler) applyDeployment(
 	ctx context.Context,
 	env *kitchenv1alpha1.Environment,
 	release *kitchenv1alpha1.Release,
+	project *kitchenv1alpha1.Project,
 	appNS string,
 	labels map[string]string,
 	podEnv []corev1.EnvVar,
@@ -475,6 +476,14 @@ func (r *EnvironmentReconciler) applyDeployment(
 			MatchLabels: map[string]string{labelEnvironment: env.Name},
 		}
 		deploy.Spec.Template.Labels = labels
+		// A registry that wanted a credential to push wants one to pull. The
+		// build already put that docker config in this namespace, under a
+		// name derived from the same Connection, so the Deployment only has
+		// to name it — without which the pods sit in ImagePullBackOff while
+		// every other part of the environment reads as healthy.
+		deploy.Spec.Template.Spec.ImagePullSecrets = []corev1.LocalObjectReference{
+			{Name: registrySecretName(project.Spec.Registry.ConnectionRef.Name)},
+		}
 		deploy.Spec.Template.Spec.Containers = []corev1.Container{{
 			Name:      AppContainerName,
 			Image:     release.Spec.Image,

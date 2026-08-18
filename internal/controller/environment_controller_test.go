@@ -162,6 +162,12 @@ var _ = Describe("Environment Controller", func() {
 			// setting one of them wins.
 			Expect(container.Env[0]).To(Equal(corev1.EnvVar{Name: "PORT", Value: "8080"}))
 			Expect(container.Env[2].ValueFrom.SecretKeyRef.Name).To(Equal("shop-secrets"))
+			// The image came from a registry that wanted a credential to push
+			// and wants one to pull: the build left that docker config in this
+			// namespace, and without naming it the pods would sit in
+			// ImagePullBackOff with everything else reading as healthy.
+			Expect(deploy.Spec.Template.Spec.ImagePullSecrets).To(ConsistOf(
+				corev1.LocalObjectReference{Name: registrySecretName("registry")}))
 
 			By("checking the Service")
 			svc := &corev1.Service{}

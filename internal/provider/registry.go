@@ -44,45 +44,18 @@ type RegistryProbe struct {
 	HTTPClient *http.Client
 }
 
-// newRegistryProbe builds the probe from the Connection's config.url and the
-// dockerconfigjson secret internal/api writes for the registry provider.
+// newRegistryProbe builds the probe from the Connection's registry target and
+// the dockerconfigjson secret internal/api writes for the registry provider.
 func newRegistryProbe(conn *kitchenv1alpha1.Connection, creds *corev1.Secret) (*RegistryProbe, error) {
-	server, base, err := registryBaseURL(conn)
+	target, err := Registry(conn)
 	if err != nil {
 		return nil, err
 	}
-	username, password, err := registryCredentials(creds, server)
+	username, password, err := registryCredentials(creds, target.Server)
 	if err != nil {
 		return nil, err
 	}
-	return &RegistryProbe{BaseURL: base, Username: username, Password: password}, nil
-}
-
-// registryBaseURL derives the host builds authenticate against from the
-// registry prefix images are pushed under: "harbor.example.com/kitchen"
-// probes https://harbor.example.com. An explicit http:// prefix is kept — a
-// plaintext registry is unusual but real (and it is what tests use).
-func registryBaseURL(conn *kitchenv1alpha1.Connection) (server, base string, err error) {
-	var cfg struct {
-		URL string `json:"url"`
-	}
-	if conn.Spec.Config != nil {
-		if err := json.Unmarshal(conn.Spec.Config.Raw, &cfg); err != nil {
-			return "", "", fmt.Errorf("invalid dockerRegistry config: %w", err)
-		}
-	}
-	raw := strings.TrimSpace(cfg.URL)
-	if raw == "" {
-		return "", "", fmt.Errorf("dockerRegistry connection %q has no config.url", conn.Name)
-	}
-	scheme := "https"
-	if strings.HasPrefix(raw, "http://") {
-		scheme = "http"
-	}
-	raw = strings.TrimPrefix(raw, "https://")
-	raw = strings.TrimPrefix(raw, "http://")
-	server, _, _ = strings.Cut(raw, "/")
-	return server, scheme + "://" + server, nil
+	return &RegistryProbe{BaseURL: target.BaseURL, Username: username, Password: password}, nil
 }
 
 // registryCredentials reads the username and password back out of the
