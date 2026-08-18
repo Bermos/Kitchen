@@ -102,8 +102,9 @@ kubectl -n kitchen-system create secret generic cloudflare-api-token \
 
 That brings up cert-manager, the operator and its CRDs, the git webhook
 receiver, the REST API at `kitchen.apps.example.com/api/v1/`, a single-node
-ClickHouse for telemetry with the collector that fills it, and the identity
-provider at `auth.apps.example.com` with its Postgres.
+ClickHouse for telemetry with the collector that fills it, the identity
+provider at `auth.apps.example.com` with its Postgres, and an image registry at
+`registry.apps.example.com` for builds to push to.
 
 **Use `--create-namespace`, and do not create the namespace yourself.** The
 chart manages `kitchen-system` so its Pod Security level is set rather than
@@ -154,6 +155,13 @@ kubectl get kitchen default \
 A DNS-01 order takes a minute or two. Failures — a token without the right
 scopes, a zone it cannot see — are reported in that message.
 
+In `none` mode there is also **no bundled registry**: it is published on the
+base domain because the node's container runtime is what pulls an image, and
+the platform's own wildcard certificate is the only address every node already
+trusts. Without TLS there is nothing to trust, so nothing is published and the
+`RegistryReady` condition says so — projects then need a registry connection of
+their own. See [the bundled registry](charts/kitchen/README.md#the-bundled-registry).
+
 ### 6. Create the first administrator
 
 With the one-time link `helm install` prints:
@@ -177,6 +185,10 @@ Signing in lands on the dashboard, and from there nothing needs `kubectl`:
 connections, projects, builds, environments, domains — creating, changing and
 deleting them all have a screen, and everything a screen does goes through the
 same REST API a script can call.
+
+Creating a project asks for two connections: a git one, which is yours to add,
+and a registry, which the platform has already seeded pointing at the one it
+runs itself. Push, and the first build pushes an image and deploys it.
 
 ### Checking what is running
 
