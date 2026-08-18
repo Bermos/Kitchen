@@ -74,6 +74,8 @@ Preview URLs used to be public: anyone who guessed `shop-pr-42.apps.example.com`
 saw unreleased work. Now a preview is only useful to someone signed in to the
 platform, and the deployed application is not involved in that at all — it is
 not told to authenticate anything, and it never sees the platform's session.
+(Signed in is as far as the gate looks today; [Preview
+admission](#preview-admission) narrows it to the project's own people.)
 
 ### Why an in-path proxy and not a Gateway filter
 
@@ -194,6 +196,204 @@ operator learning anything new. The stored Secret is the source of truth: a
 client is registered again only when it is missing, or was registered for a
 different issuer or callback.
 
+## Who may do what
+
+Kitchen has two users, and one of them is currently pretending to be the other.
+The dashboard's operator mode changes what is *rendered*, not what is
+*permitted*: every valid token can call every route.
+
+**Nothing in this section is enforced yet.** It is the decided model, and
+[issue #100](https://github.com/Bermos/Kitchen/issues/100) tracks building it.
+It is written down before any of it is built on purpose — enforcement without a
+written model is how a permission system ends up meaning whatever the first
+three `if` statements happened to mean.
+
+### The two people it is for
+
+The developer and the operator, described in full under
+[Who it is for](SCOPE.md#who-it-is-for). Three things from there are what the
+roles below are built out of:
+
+- **The developer should never need the words "namespace" or "Deployment".** So
+  a role that can only be used by someone who knows what a Deployment is has
+  failed before it is enforced.
+- **The operator owns the cluster and wants the objects.** They are the only
+  person for whom the platform's own machinery is a useful answer.
+- **They are hats, not people.** In a single-person installation they are the
+  same human ten minutes apart, so nothing here needs two accounts — `operator`
+  below contains `developer` entirely.
+
+### What this protects against, and what it does not
+
+Every Kitchen custom resource lives in `kitchen-system`. Scoping access to a
+project is therefore an API-layer concern rather than a namespace one, which is
+far easier to build — and means **the API is the only thing enforcing it**.
+
+That is not a hole to be plugged later. It is the trust boundary:
+
+> **Cluster access is operator access.** Anyone holding kubectl on this cluster
+> is an operator whether or not Kitchen says so.
+
+What the roles do protect: accident, blast radius, and developers seeing each
+other's projects and unreleased work. What they do not protect against:
+somebody who already holds the cluster. Kitchen is [not a SaaS](SCOPE.md) and
+has no multi-tenant threat model, so these are the permissions a team of
+colleagues needs, not the ones a hosting provider needs.
+
+### The roles
+
+Two axes. One flat list cannot answer both "may Anna change the base domain?"
+and "may Anna deploy `billing`?", so there are two, each kept as small as it
+can be.
+
+**Platform role — exactly one per account.**
+
+| Role | What it is |
+|---|---|
+| `operator` | Owns the platform: everything, everywhere. Implies project `admin` on every project, present and future |
+| `member` | An ordinary account. No platform surface at all — it sees what project membership grants it, and it may create projects |
+
+**Project role — per account, per project.**
+
+| Role | What it is |
+|---|---|
+| `admin` | Everything `developer` may do, plus membership, the project's own settings (git source, registry, previews policy), and deleting it |
+| `developer` | The day job: builds, redeploys, rollbacks, environment variables, domains, claims, logs, deleting an environment |
+| `viewer` | Reads status, URLs, builds, releases and logs — and may open a protected preview. No writes |
+
+`operator` contains `developer` deliberately, for three reasons: a
+single-person installation needs one login that wears both hats; somebody has
+to be able to fix a project whose owner left; and the operator can reach
+everything through the cluster anyway, so withholding it in the API would be
+theatre.
+
+`viewer` exists because [preview protection](#preview-protection-forward-auth)
+shipped. Without a role meaning "may look, may not touch", the gate can only
+ask whether a visitor is signed in — and on a platform where everyone in the
+organisation has a login, that publishes every unreleased feature to all of
+them. It is also the role for the person a preview link gets pasted to.
+
+**Creating a project is self-service.** Any account may create one, and becomes
+its `admin`. The alternative — only operators create projects — makes rolling
+something out on a Saturday somebody else's weekend, which is the exact
+bottleneck the operator persona is trying to get out of. Project names share
+one flat namespace under the base domain, so they are first-come-first-served.
+
+There is no platform-wide read-only role. Reading `/platform/*` without being
+able to change anything is the most likely third platform role, and it waits
+until somebody asks for it.
+
+### Where membership lives
+
+**The token says who you are. Kitchen says what you may do.**
+
+Nothing new goes into the token: no scopes to enforce, no role claims, no
+project claims. Membership lives in Kitchen's own custom resources, on the
+object the access is about — `spec.access` on a Project, `spec.access.operators`
+on the Kitchen singleton.
+
+```yaml
+# Project
+spec:
+  access:
+    - subject: user_01H8X…       # the issuer's `sub`
+      email: anna@example.com    # informational, so the YAML reads
+      role: developer
+```
+
+The identity provider ships an organizations plugin, so putting membership
+there is the obvious move. It is the wrong one, for four reasons:
+
+- **It widens the contract this document rests on.** Kitchen integrates with
+  "an OIDC issuer that supports dynamic client registration" and nothing more.
+  Membership in better-auth organizations makes that "…*and* an organization
+  model with custom roles, exposed as claims" — a far narrower set of products,
+  and an issuer swap stops being a configuration change and becomes a data
+  migration.
+- **A claim is a stale snapshot.** An access token is good for an hour, so a
+  role carried inside one means removing somebody from a project leaves them on
+  it for up to an hour — unless every token they hold is torn down. Removal is
+  the case where that delay matters most.
+- **The operator already has the answer in memory.** It watches Projects, so
+  "is this subject on `shop`?" is a cache lookup. That keeps the stateless
+  request path the API already has, without adding anything to the token to
+  avoid a round trip.
+- **Membership is platform state, and platform state is custom resources.** In
+  the identity provider's Postgres, `kubectl get project -o yaml` stops telling
+  the whole truth, and nobody can declare access in git next to the Project it
+  is about.
+
+The canonical subject is the issuer's `sub`, which is opaque; the dashboard
+resolves an address to one when it writes a grant. Hand-written YAML may name
+an `email` subject instead, and that resolves against the token's `email` claim
+**only when `email_verified` is true** — an unverified-email grant is a grant to
+whoever can claim that address at the issuer.
+
+### What each surface requires
+
+| Surface | Role |
+|---|---|
+| `/platform/*`, `PATCH /settings`, `/connections/*`, `/updates`, `GET /environments/{name}/objects` | `operator` |
+| `GET /settings` | `operator` — it carries the base domain, the issuer and the gateway address |
+| `DELETE /projects/{name}`, the project's own settings, membership writes | project `admin` |
+| Builds and cancellations, releases, environment variables, environments, domains, claims | project `developer` |
+| Projects, builds, releases, environments, logs, metrics, requests, diagnostics, signals, traces | project `viewer` |
+| `POST /projects` | any account |
+| `GET /status` | any account, with a body that varies by role |
+| `/logs`, `/events`, `/traffic`, `/metrics/overview` | filtered to the projects the caller can see |
+
+Four rules go with that table:
+
+- **A whole route is the unit of authorization.** Filtering a response body by
+  role is the exception, and `GET /status` is the exception: it is the
+  dashboard's home page for both people, so it keeps the build queue for
+  everyone — "why is my build waiting" is a developer question — and drops the
+  tunnel, the gateway, the component survey and the node counts for a `member`.
+  A second endpoint would have doubled the surface for one payload.
+- **A field withheld by role is absent, never zeroed.** The dashboard has to be
+  able to tell "no tunnel is configured" from "you are not allowed to know", and
+  an empty component survey reads as a healthy platform running nothing.
+- **A refusal names the role it wanted** — *you have viewer on shop;
+  redeploying needs developer* — which is the rule `kitchen.validate` already
+  follows for chart guards: say what is wrong *and* what would fix it.
+- **`GET /environments/{name}/objects` is operator-only, and a developer
+  needing it is a bug.** It answers with Deployments, Services and HTTPRoutes,
+  and the premise of the platform is that a developer never needs them. If one
+  has to open it to answer a question, the missing thing is a product surface —
+  file it, rather than widening the role.
+
+### Machine accounts
+
+A CI key needs no role of its own. The api-key plugin runs with
+`enableSessionForAPIKeys`, so a key already stands in for a session and already
+*is* an identity with its own `sub`; what it is exchanged for at `GET /token`
+is an ordinary platform token. Granting that subject a project role in
+`spec.access` therefore makes a key a non-human member of exactly one project,
+which is what stops a key that can trigger a build from also being able to
+change the base domain — without a fourth role, and without storing permissions
+on the key. Revocation stays where it already is: one place, at the issuer.
+
+### Preview admission
+
+A protected preview admits anyone holding any role on that project, `viewer`
+included, plus operators. The gate resolves that itself, against its own cached
+client rather than by asking the REST API, so previews do not close when the API
+restarts and the membership rule has exactly one implementation.
+
+### Bootstrap, and what happens on upgrade
+
+The account created by the [bootstrap link](#bootstrap-settled) is the first
+operator. Nothing else grants the platform role implicitly.
+
+Installations that predate enforcement need care rather than a default. Today
+every authenticated account can call every route, which read honestly means
+every existing account **is** an operator; enforcing against an empty list would
+turn all of them into members with no projects — locked out of their own
+platform by a minor version bump, with no way back that does not involve
+kubectl. So an upgrade seeds the operator list from the accounts that exist,
+writes it out explicitly, and says so in the release notes. Narrowing it is then
+a decision somebody takes, rather than one that happens to them.
+
 ## Decisions
 
 | Decision | Choice | Why |
@@ -206,6 +406,11 @@ different issuer or callback.
 | Dashboard sessions | Rotating refresh tokens (`offline_access`), one per browser in `localStorage` | Renewal that needs no redirect and no framing of the login page; rotation is what makes browser storage defensible |
 | Preview protection | An in-path gate the routes pass through | Gateway API has no external-auth filter, and Cilium exposes none of Envoy's |
 | Gate's OAuth client | One client, one redirect URI, registered by the operator | Previews come and go without touching the client |
+| Authorization model | Two platform roles, three project roles, `operator` ⊇ `developer` | One axis cannot scope the platform and a project at once; anything more granular has to justify itself |
+| Where membership lives | Kitchen's custom resources, not the identity provider | Keeps the issuer contract at OIDC + DCR; a role claim inside an hour-long token is a stale snapshot |
+| Token shape | Identity only — no roles, no scopes to enforce | The operator resolves authorization from the cache it already keeps, so the token needs nothing added |
+| Project creation | Self-service; the creator becomes its `admin` | Shipping something new must not wait on whoever owns the cluster |
+| CI credentials' powers | A machine account holding a project role | A key is already an identity; no new role type, and no permissions stored on the key |
 | Sequencing | auth service → REST API behind it → forward-auth for previews → UI → app claims | The API should never exist without auth; the provider is the hard part, claims are known plumbing |
 
 ## What the chart deploys today
@@ -323,9 +528,5 @@ outside:
 
 ## Open items
 
-- **Token shape for the operator API**: scopes and claims for teams and RBAC
-  are deferred until the organizations plugin is wired up. Tokens carry their
-  scopes today and the API records who asked for what, but nothing is enforced
-  beyond the issuer vouching for the caller.
 - **Sign-in pages**: the service ships its own minimal login and consent
   pages. The Vue UI takes them over when it lands.
