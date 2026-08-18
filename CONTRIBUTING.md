@@ -154,6 +154,46 @@ the settings page. A local `make build` stamps `git describe`, so a
 development build identifies itself as what it is rather than claiming a
 release.
 
+## What CI runs, and when
+
+Every workflow that checks the tree — Tests, Lint, Dashboard, Auth service,
+Helm Chart, Hubble flows, E2E Tests — triggers on `pull_request` and on `push`
+to `main`, and on nothing else.
+
+The `push` filter is the point. Without it, pushing to a branch with a pull
+request open ran every job twice against the same commit: once for the branch
+push, once for the pull request. Nothing was learned the second time. A branch
+is covered by its pull request; a tag is covered by the `main` run of the
+commit it points at.
+
+The run on `main` is not a third copy of that, and it is worth its minutes:
+
+- **It is the last gate before a release.** `publish.yml` builds and ships; it
+  runs no tests. Nothing between a merge and a published chart re-checks the
+  tree, so if the merge result is broken, the `main` run is where that shows.
+- **A squash merge is a commit that was never tested.** What CI checked was the
+  branch; what lands is one new commit on a `main` that may have moved. Only
+  the `main` run sees the thing that actually exists.
+- **It is the only run whose caches other branches can read.** A GitHub Actions
+  cache is visible to the branch that wrote it, that branch's base, and the
+  default branch — so a cache written by one pull request is invisible to every
+  other one. `setup-go` and `setup-node` restore from `main`'s. Drop the `main`
+  runs and every pull request starts cold.
+
+Each workflow also declares a `concurrency` group keyed on the pull request
+number, or on the ref outside one. Superseded runs on a pull request are
+cancelled, since the push that replaced them is about to be checked anyway.
+Runs on `main` are never cancelled — for the three reasons above, each one has
+to finish.
+
+### Narrowing further
+
+Path filters are the next lever and are deliberately not pulled: a required
+status check that is filtered out never reports, and a pull request waiting on
+a check that will never run cannot merge. Adding `paths` to a workflow means
+first agreeing what stays required on `main` (Settings → Branches), which is a
+repository setting and not a file in this tree.
+
 ## Before you push
 
 ```sh
