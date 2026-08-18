@@ -689,6 +689,119 @@ auth:
   topologySpreadConstraints: []
   priorityClassName: ""
 
+# The image registry the platform runs for itself, so that a fresh install has
+# somewhere to push. Kitchen owns the cluster it is installed into, and every
+# install needs a registry — the same reasoning that bundles cert-manager
+# rather than listing it as a prerequisite.
+#
+# It is published on the shared Gateway at `registry.<baseDomain>`, on the
+# platform's own wildcard certificate, and that is what makes it work at all:
+# the node's container runtime is what pulls an image, and it trusts neither
+# the cluster's CA nor a plain-HTTP address unless the node is configured to.
+# Configuring nodes is what every other in-cluster registry needs and what
+# Kitchen cannot ask for. The cost is that image pulls leave the cluster and
+# come back in through the Gateway, and that `kitchen.tls.mode: none` does not
+# get this feature — there is no trusted certificate to pull over.
+#
+# The operator publishes the route and seeds a `dockerRegistry` Connection
+# pointing at it, so a new project's registry picker has a working default.
+# That Connection is an ordinary one: delete it and it stays deleted.
+registry:
+  # -- Run the bundled registry. Off means bringing your own — a
+  # `dockerRegistry` Connection created on the connections page.
+  enabled: true
+  image:
+    # -- zot: a CNCF sandbox registry that is a single Go binary with no
+    # database, and the one that reclaims disk **while running**. Distribution's
+    # garbage collector needs the registry stopped, which is a poor fit for the
+    # thing most likely to bite here: every build pushes a tag and nothing
+    # deletes any of them.
+    repository: ghcr.io/project-zot/zot
+    tag: v2.1.20
+    pullPolicy: IfNotPresent
+  auth:
+    # -- Username builds and pulls authenticate with.
+    username: kitchen
+    # -- Password for that user. Generated on install and preserved across
+    # upgrades when empty. Set it explicitly if you render manifests with
+    # `helm template`, which cannot read the existing secret back.
+    password: ""
+  # -- Hostname the registry is published on, and therefore the prefix images
+  # are pushed under: `<host>/<project>:<sha>`. Defaults to
+  # `registry.<baseDomain>`.
+  host: ""
+  service:
+    type: ClusterIP
+    # -- Service port fronting the registry, and the port zot binds.
+    port: 5000
+    annotations: {}
+  persistence:
+    # -- Back the image store with a PVC. Without it every image dies with the
+    # pod, which means every environment stops being able to pull the image it
+    # is running.
+    enabled: true
+    size: 20Gi
+    # -- StorageClass for the image store. Empty uses the cluster default.
+    storageClass: ""
+    accessModes:
+      - ReadWriteOnce
+  # Reclaiming disk. Every build pushes a tag and nothing else ever deletes
+  # one, so without this the volume fills and the platform stops being able to
+  # build — six months in, and all at once. zot enforces all of it online.
+  retention:
+    # -- Delete anything the policy no longer keeps. Off leaves the registry
+    # growing without bound, which is only sensible while you decide what to
+    # keep.
+    enabled: true
+    # -- Tagged images kept per repository, newest push first. A project's
+    # last few deploys are what a rollback reaches for; older ones are
+    # rebuildable from the commit.
+    keepTags: 20
+    # -- Also keep anything pushed within this window, however many newer tags
+    # there are — so a busy afternoon does not evict the release you shipped
+    # this morning.
+    keepPushedWithin: 720h
+    # -- Grace period before a manifest that policy has stopped keeping is
+    # actually removed. It is what stops a push and a pull that race from
+    # meeting a half-deleted image.
+    delay: 24h
+    # -- How often the collector runs, and how long a newly written blob is
+    # left alone by it. `gcDelay` has to outlast the slowest push: a blob
+    # uploaded but not yet referenced by a manifest looks exactly like a blob
+    # nothing references.
+    gcInterval: 24h
+    gcDelay: 2h
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 1Gi
+  podSecurityContext:
+    runAsNonRoot: true
+    # The image runs as root by default; nothing in zot needs it, and the
+    # image store is chowned to the group through fsGroup.
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop:
+        - ALL
+  # -- Log level of the registry: debug | info | warn | error.
+  logLevel: info
+  # -- Extra environment variables for the registry container.
+  extraEnv: []
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  priorityClassName: ""
+
 # The forward-auth gate: what makes a preview URL useless to anyone who has
 # not signed in to the platform. Protected previews route through it, it sends
 # anonymous visitors to the identity provider and proxies the ones that come

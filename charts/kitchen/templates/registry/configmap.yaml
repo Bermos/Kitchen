@@ -1,0 +1,78 @@
+{{- include "kitchen.validate" . -}}
+{{- if eq (include "kitchen.registryEnabled" .) "true" }}
+{{- /*
+zot's configuration. Two parts of it are the whole reason zot is here rather
+than Distribution.
+
+`storage.retention` is the first: every build pushes a tag and nothing else
+ever deletes one, so a registry with no policy fills its volume and takes the
+platform's ability to build down with it. zot enforces the policy online.
+Distribution's garbage collector needs the registry stopped.
+
+`http.auth` with no `anonymousPolicy` is the second: the registry is published
+on the base domain, which puts it on the internet, so its credential is doing
+real work rather than being a formality. `defaultPolicy` is what an
+authenticated user may do — everything, since the only account is the
+platform's own.
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "kitchen.registryFullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kitchen.labels" . | nindent 4 }}
+    app.kubernetes.io/component: registry
+data:
+  config.json: |
+    {
+      "distSpecVersion": "1.1.1",
+      "storage": {
+        "rootDirectory": "/var/lib/registry",
+        "dedupe": true,
+        {{- if .Values.registry.retention.enabled }}
+        "gcDelay": {{ .Values.registry.retention.gcDelay | quote }},
+        "gcInterval": {{ .Values.registry.retention.gcInterval | quote }},
+        "retention": {
+          "dryRun": false,
+          "delay": {{ .Values.registry.retention.delay | quote }},
+          "policies": [
+            {
+              "repositories": ["**"],
+              "deleteReferrers": true,
+              "deleteUntagged": true,
+              "keepTags": [
+                {
+                  "patterns": ["**"],
+                  "mostRecentlyPushedCount": {{ int .Values.registry.retention.keepTags }},
+                  "pushedWithin": {{ .Values.registry.retention.keepPushedWithin | quote }}
+                }
+              ]
+            }
+          ]
+        },
+        {{- end }}
+        "gc": {{ .Values.registry.retention.enabled }}
+      },
+      "http": {
+        "address": "0.0.0.0",
+        "port": {{ int .Values.registry.service.port | quote }},
+        "realm": "kitchen",
+        "auth": {
+          "htpasswd": {
+            "path": "/etc/zot/auth/htpasswd"
+          }
+        },
+        "accessControl": {
+          "repositories": {
+            "**": {
+              "defaultPolicy": ["read", "create", "update", "delete"]
+            }
+          }
+        }
+      },
+      "log": {
+        "level": {{ .Values.registry.logLevel | quote }}
+      }
+    }
+{{- end }}
