@@ -1,8 +1,25 @@
 name: Dashboard
 
+# A branch push and the pull request that carries it are the same commit, so
+# leaving `push` unfiltered ran every job here twice for every push to a branch
+# with a pull request open. `push` is narrowed to `main` for that reason: a
+# branch is covered by its pull request, and `main` is covered once, after the
+# merge.
+#
+# The run on `main` is deliberate and not a duplicate of the pull request's.
+# See CONTRIBUTING.md, "What CI runs, and when".
 on:
   push:
+    branches: [main]
   pull_request:
+
+# One run per branch or pull request. A pull request's older runs are
+# superseded by the push that follows them and are cancelled; `main`'s are
+# never cancelled, because they are the last gate before a release and the only
+# runs whose caches every other branch can restore from.
+concurrency:
+  group: ui-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 defaults:
   run:
