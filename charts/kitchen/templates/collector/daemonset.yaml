@@ -29,6 +29,11 @@ spec:
       labels:
         {{- include "kitchen.collectorSelectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: collector
+        # Not only on the DaemonSet: the platform's ingest screen counts the
+        # collector's pods by this label, and a DaemonSet that wants pods while
+        # none carry it reads exactly like admission refusing every one of
+        # them. It is deliberately not in the selector, which is immutable.
+        app.kubernetes.io/part-of: kitchen
       annotations:
         # The collector reads its configuration once, at startup.
         checksum/config: {{ include (print $.Template.BasePath "/collector/configmap.yaml") . | sha256sum }}
