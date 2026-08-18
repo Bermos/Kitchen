@@ -13,7 +13,7 @@ three, and the operator writes the flows and owns the schema under all of it.
 ## Docs
 
 - [Contributing](CONTRIBUTING.md) — commit conventions and how a release is cut
-- [Project scope](docs/SCOPE.md) — components, decisions, phasing
+- [Project scope](docs/SCOPE.md) — who it is for, components, decisions, phasing
 - [CRD schema](docs/CRDS.md) — the operator's data model and reconcile flows
 - [Auth architecture](docs/AUTH.md) — the platform's identity provider
 - [REST API](docs/API.md) — the endpoints, and how to get a token for them
