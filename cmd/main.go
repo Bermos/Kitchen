@@ -322,8 +322,9 @@ func main() {
 		os.Exit(1)
 	}
 	if err = (&controller.ReleaseReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Activity: recorder,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Release")
 		os.Exit(1)

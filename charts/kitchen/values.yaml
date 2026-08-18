@@ -172,6 +172,10 @@ kitchen:
     defaultStrategy: auto
     # -- Maximum number of builds running at once.
     concurrency: 2
+    # -- How many releases each project keeps. Every successful build leaves
+    # one behind; older ones are pruned, except any an environment still
+    # references. `0` keeps every release forever.
+    releaseRetention: 10
   observability:
     clickhouse:
       # -- Days to retain logs, metrics, traces and flow data.

@@ -33,6 +33,7 @@ const (
 	EventBuildFailed       = "build.failed"
 	EventReleasePromoted   = "release.promoted"
 	EventReleaseRolledBack = "release.rolledBack"
+	EventReleasePruned     = "release.pruned"
 	EventPreviewCreated    = "preview.created"
 	EventPreviewRemoved    = "preview.removed"
 	EventClaimBound        = "claim.bound"
