@@ -277,12 +277,18 @@ var _ = Describe("Deploy status on the commit", func() {
 		})
 
 		It("reports a build the platform could not run as an error, not a failure", func() {
+			build := &kitchenv1alpha1.Build{}
+			Expect(k8sClient.Get(ctx, buildKey, build)).To(Succeed())
 			project := &kitchenv1alpha1.Project{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: projectName, Namespace: namespace}, project)).To(Succeed())
-			project.Spec.Build.Strategy = kitchenv1alpha1.BuildStrategyBuildpacks
-			Expect(k8sClient.Update(ctx, project)).To(Succeed())
 
-			_, err := builds.Reconcile(ctx, reconcile.Request{NamespacedName: buildKey})
+			// A strategy the operator has no builder for is the platform
+			// failing to run the build, not the repository failing to build.
+			// It cannot be reached through a Project the API server accepts —
+			// the CRD's enum names only strategies that are implemented — so
+			// the reason goes in directly.
+			_, err := builds.fail(ctx, build, project, "StrategyUnsupported",
+				`build strategy "nixpacks" is not supported yet`)
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(reporter.statuses).To(HaveLen(1))

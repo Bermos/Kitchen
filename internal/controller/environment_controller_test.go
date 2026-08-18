@@ -158,7 +158,10 @@ var _ = Describe("Environment Controller", func() {
 			Expect(container.Ports[0].ContainerPort).To(Equal(int32(8080)))
 			Expect(*deploy.Spec.Replicas).To(Equal(int32(2)))
 			Expect(container.Env).To(ContainElement(corev1.EnvVar{Name: "PUBLIC_API", Value: "https://api.example.com"}))
-			Expect(container.Env[1].ValueFrom.SecretKeyRef.Name).To(Equal("shop-secrets"))
+			// The platform's own variables come first, so that a project
+			// setting one of them wins.
+			Expect(container.Env[0]).To(Equal(corev1.EnvVar{Name: "PORT", Value: "8080"}))
+			Expect(container.Env[2].ValueFrom.SecretKeyRef.Name).To(Equal("shop-secrets"))
 
 			By("checking the Service")
 			svc := &corev1.Service{}

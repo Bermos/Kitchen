@@ -274,6 +274,34 @@ through its Go types, to avoid tying the build to its release cadence.
   `helm uninstall` deletes the namespace and every PVC in it, so removing the
   release would destroy the accounts database and the telemetry store. Any
   change to that template must keep the annotation.
+- **The two build strategies are two different jobs, and only one of them
+  fetches its own source.** BuildKit takes the commit as a git context and
+  clones it itself; the Cloud Native Buildpacks lifecycle only ever builds a
+  directory, so `buildpacks` clones in an init container and hands `creator` a
+  path. They agree on the two things the reconciler needs: credentials come
+  from `DOCKER_CONFIG`, and the pushed image's digest is left in the pod's
+  termination message — BuildKit's as JSON, the lifecycle's as its TOML report,
+  which is why `digestFromTerminationMessage` reads both. The buildpacks pod
+  asks for none of the seccomp and AppArmor exemptions the BuildKit one does:
+  it enters as the builder image's own user, which is what makes the
+  lifecycle's chown-and-drop a no-op.
+- **Two things the CNB lifecycle will not infer, and both fail the build
+  outright.** It has no default platform API — without `CNB_PLATFORM_API` it
+  exits before it does anything, saying so. And it drops to `CNB_USER_ID`:`CNB_GROUP_ID`
+  from the builder image, which for the pinned Paketo jammy builder is
+  **1001:1000**, not the 1000:1000 everything else in this repository runs as;
+  a pod entering as a different unprivileged user cannot `setuid` to it and
+  dies in `Privileges()`. `cnbUID`/`cnbGID` sit next to `BuildpacksBuilderImage`
+  for that reason — bumping the builder means checking them. The clone runs as
+  the same user too, because buildpacks write into the application directory
+  (npm's modules, the Node buildpack's start script), so source owned by anyone
+  else fails the build halfway through.
+- **`PORT` is the platform's, and every environment gets it.** A
+  buildpacks-built image starts whatever process the buildpack chose, and every
+  buildpack's answer to which port that process listens on is `$PORT` — so an
+  application that never had a Dockerfile has no other way to be told. It is
+  injected ahead of the project's own variables, like the telemetry ones, so a
+  project that sets `PORT` still wins.
 - **An idling Deployment's replica count belongs to KEDA, not to the
   reconciler.** While an Environment is allowed to scale to zero,
   `applyDeployment` does not touch `spec.replicas` at all: the number it would

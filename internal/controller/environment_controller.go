@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -179,7 +180,7 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	// them wins: the kubelet takes the last value of a repeated name, and an
 	// application that has been told where to send its spans knows something
 	// the platform does not.
-	podEnv = append(telemetryEnv(kitchen, project.Name, env), podEnv...)
+	podEnv = append(platformEnv(kitchen, project.Name, env, release), podEnv...)
 
 	labels := childLabels(project.Name, env)
 	host := hostname(project.Name, env, kitchen.Spec.BaseDomain)
@@ -364,6 +365,25 @@ func (r *EnvironmentReconciler) resolveEnv(
 		}
 	}
 	return out, false, nil
+}
+
+// platformEnv is everything the platform tells an application about itself.
+//
+// PORT comes first because it is the one variable an application is expected
+// to have read before it can serve anything at all: a buildpacks-built image
+// starts whatever process the buildpack chose, and every buildpack's answer to
+// "which port" is $PORT. A Dockerfile build that ignores it is unaffected —
+// the value is the port the Service already routes to.
+func platformEnv(
+	kitchen *kitchenv1alpha1.Kitchen,
+	projectName string,
+	env *kitchenv1alpha1.Environment,
+	release *kitchenv1alpha1.Release,
+) []corev1.EnvVar {
+	port := containerPort(release.Spec.ConfigSnapshot.Runtime)
+	return append([]corev1.EnvVar{
+		{Name: "PORT", Value: strconv.Itoa(int(port))},
+	}, telemetryEnv(kitchen, projectName, env)...)
 }
 
 // telemetryEnv is what the platform tells an application about itself: where

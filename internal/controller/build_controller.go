@@ -20,6 +20,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
+	"strings"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -60,6 +62,16 @@ const (
 	// object names no limit. It is exported because the API reports the queue
 	// against it, and a status bar reading "1 of 0" would be its own bug.
 	DefaultBuildConcurrency = 2
+
+	// dockerConfigDir is where a build pod finds the registry credentials
+	// it pushes with, and the value of DOCKER_CONFIG in every builder.
+	dockerConfigDir = "/kitchen/.docker"
+
+	// terminationLogPath is where a builder writes what the reconciler needs
+	// back from it — the digest of the image it pushed. Kubernetes surfaces
+	// the file as the container's termination message, so nothing has to be
+	// read out of the pod's log.
+	terminationLogPath = "/dev/termination-log"
 
 	// reasonBuildFailed marks the one failure that is the repository's own:
 	// the build ran and the image did not come out. Every other reason is
@@ -121,13 +133,11 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		return r.pending(ctx, build, "ProjectMissing", err)
 	}
 
-	strategy := project.Spec.Build.Strategy
-	if strategy == "" || strategy == kitchenv1alpha1.BuildStrategyAuto {
-		// Framework detection is not implemented yet; auto falls back to
-		// a Dockerfile build.
-		strategy = kitchenv1alpha1.BuildStrategyDockerfile
-	}
-	if strategy != kitchenv1alpha1.BuildStrategyDockerfile {
+	builds := r.platformBuilds(ctx)
+	strategy := resolveStrategy(project, builds.DefaultStrategy)
+	switch strategy {
+	case kitchenv1alpha1.BuildStrategyDockerfile, kitchenv1alpha1.BuildStrategyBuildpacks:
+	default:
 		return r.fail(ctx, build, project, "StrategyUnsupported",
 			fmt.Sprintf("build strategy %q is not supported yet", strategy))
 	}
@@ -156,13 +166,14 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	err = r.Get(ctx, types.NamespacedName{Namespace: appNS, Name: build.Name}, job)
 	switch {
 	case apierrors.IsNotFound(err):
-		if waiting, res := r.gateConcurrency(ctx, build); waiting {
+		if waiting, res := r.gateConcurrency(ctx, build, builds.Concurrency); waiting {
 			return res, nil
 		}
-		if err := r.createJob(ctx, build, project, appNS, credsSecret, tagRef); err != nil {
+		if err := r.createJob(ctx, build, project, strategy, appNS, credsSecret, tagRef); err != nil {
 			return ctrl.Result{}, err
 		}
-		log.Info("build job created", "namespace", appNS, "job", build.Name, "image", tagRef)
+		log.Info("build job created",
+			"namespace", appNS, "job", build.Name, "image", tagRef, "strategy", strategy)
 		build.Status.Phase = kitchenv1alpha1.BuildRunning
 		build.Status.StartedAt = ptr.To(metav1.Now())
 		meta.SetStatusCondition(&build.Status.Conditions, metav1.Condition{
@@ -193,15 +204,48 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	}
 }
 
+// platformBuilds is the Kitchen singleton's build configuration, or its zero
+// value when the singleton cannot be read. Both fields have a defined meaning
+// when unset, so a build never waits on the platform object to answer.
+func (r *BuildReconciler) platformBuilds(ctx context.Context) kitchenv1alpha1.BuildsSpec {
+	kitchen := &kitchenv1alpha1.Kitchen{}
+	if err := r.Get(ctx, types.NamespacedName{Name: KitchenSingletonName}, kitchen); err != nil {
+		return kitchenv1alpha1.BuildsSpec{}
+	}
+	return kitchen.Spec.Builds
+}
+
+// resolveStrategy is how a build actually gets made. A Project that names a
+// strategy is obeyed; one left on "auto" takes the platform's default, which
+// is where an operator says what an unconfigured project should do.
+//
+// "auto" is meant to detect the framework and choose for itself, and does not
+// yet — issue #69. Until it does, a platform default of "auto" resolves to a
+// Dockerfile build, which is what every build did before buildpacks existed.
+func resolveStrategy(
+	project *kitchenv1alpha1.Project,
+	platformDefault kitchenv1alpha1.BuildStrategy,
+) kitchenv1alpha1.BuildStrategy {
+	strategy := project.Spec.Build.Strategy
+	if strategy == "" || strategy == kitchenv1alpha1.BuildStrategyAuto {
+		strategy = platformDefault
+	}
+	if strategy == "" || strategy == kitchenv1alpha1.BuildStrategyAuto {
+		return kitchenv1alpha1.BuildStrategyDockerfile
+	}
+	return strategy
+}
+
 // gateConcurrency keeps the Build queued while the platform-wide concurrency
 // limit is reached.
-func (r *BuildReconciler) gateConcurrency(ctx context.Context, build *kitchenv1alpha1.Build) (bool, ctrl.Result) {
+func (r *BuildReconciler) gateConcurrency(
+	ctx context.Context,
+	build *kitchenv1alpha1.Build,
+	concurrency int32,
+) (bool, ctrl.Result) {
 	limit := int32(DefaultBuildConcurrency)
-	kitchen := &kitchenv1alpha1.Kitchen{}
-	if err := r.Get(ctx, types.NamespacedName{Name: KitchenSingletonName}, kitchen); err == nil {
-		if kitchen.Spec.Builds.Concurrency > 0 {
-			limit = kitchen.Spec.Builds.Concurrency
-		}
+	if concurrency > 0 {
+		limit = concurrency
 	}
 
 	builds := &kitchenv1alpha1.BuildList{}
@@ -235,13 +279,50 @@ func (r *BuildReconciler) createJob(
 	ctx context.Context,
 	build *kitchenv1alpha1.Build,
 	project *kitchenv1alpha1.Project,
+	strategy kitchenv1alpha1.BuildStrategy,
 	appNS, credsSecret, tagRef string,
 ) error {
-	// TODO: derive the clone URL (and auth) from the project's git
-	// Connection once git providers beyond public GitHub are wired up.
-	gitURL := fmt.Sprintf("https://github.com/%s.git", project.Spec.Source.Repo)
-	buildContext := gitURL + "#" + build.Spec.Git.SHA
-	if root := project.Spec.Build.RootDirectory; root != "" && root != "." {
+	template := dockerfilePod(project, build, credsSecret, tagRef)
+	if strategy == kitchenv1alpha1.BuildStrategyBuildpacks {
+		template = buildpacksPod(project, build, credsSecret, tagRef)
+	}
+
+	labels := map[string]string{
+		labelProject:      project.Name,
+		labelBuild:        build.Name,
+		labelBuildNS:      build.Namespace,
+		labelManagedByKey: labelManagedByValue,
+	}
+	// The pod carries the same labels as the Job: they are what the log
+	// collector reads to file the build's output under its build.
+	template.Labels = labels
+
+	job := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{Name: build.Name, Namespace: appNS, Labels: labels},
+		Spec: batchv1.JobSpec{
+			// A rebuild is a new Build object, never a pod retry.
+			BackoffLimit: ptr.To(int32(0)),
+			// Keep the finished pod around long enough for the log
+			// collector to catch up with its output — the build log only
+			// exists on disk while the pod does — then let the cluster
+			// reclaim it. The logs themselves live on in ClickHouse.
+			TTLSecondsAfterFinished: ptr.To(int32(buildJobTTLSeconds)),
+			Template:                template,
+		},
+	}
+	return r.Create(ctx, job)
+}
+
+// dockerfilePod is a build that runs the repository's own Dockerfile through
+// BuildKit, which fetches the commit itself: the git context is the build's
+// only input, and the image comes out the far end pushed.
+func dockerfilePod(
+	project *kitchenv1alpha1.Project,
+	build *kitchenv1alpha1.Build,
+	credsSecret, tagRef string,
+) corev1.PodTemplateSpec {
+	buildContext := repoCloneURL(project) + "#" + build.Spec.Git.SHA
+	if root := buildRootDir(project); root != "" {
 		buildContext += ":" + root
 	}
 	dockerfile := project.Spec.Build.DockerfilePath
@@ -258,73 +339,77 @@ func (r *BuildReconciler) createJob(
 		// BuildKit writes its result metadata (including the image digest)
 		// to the termination log so the reconciler can read it from the
 		// pod status without any extra plumbing.
-		"--metadata-file", "/dev/termination-log",
+		"--metadata-file", terminationLogPath,
 		// One log line per step, no cursor tricks: the collector ships
 		// these lines into ClickHouse, and the interactive renderer would
 		// arrive there as a wall of escape codes.
 		"--progress", "plain",
 	}
 
-	labels := map[string]string{
-		labelProject:      project.Name,
-		labelBuild:        build.Name,
-		labelBuildNS:      build.Namespace,
-		labelManagedByKey: labelManagedByValue,
-	}
-
-	job := &batchv1.Job{
-		ObjectMeta: metav1.ObjectMeta{Name: build.Name, Namespace: appNS, Labels: labels},
-		Spec: batchv1.JobSpec{
-			// A rebuild is a new Build object, never a pod retry.
-			BackoffLimit: ptr.To(int32(0)),
-			// Keep the finished pod around long enough for the log
-			// collector to catch up with its output — the build log only
-			// exists on disk while the pod does — then let the cluster
-			// reclaim it. The logs themselves live on in ClickHouse.
-			TTLSecondsAfterFinished: ptr.To(int32(buildJobTTLSeconds)),
-			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: labels,
-					Annotations: map[string]string{
-						"container.apparmor.security.beta.kubernetes.io/buildkit": "unconfined",
-					},
-				},
-				Spec: corev1.PodSpec{
-					RestartPolicy: corev1.RestartPolicyNever,
-					Containers: []corev1.Container{{
-						Name:    "buildkit",
-						Image:   BuildkitImage,
-						Command: []string{"buildctl-daemonless.sh"},
-						Args:    args,
-						Env: []corev1.EnvVar{
-							{Name: "BUILDKITD_FLAGS", Value: "--oci-worker-no-process-sandbox"},
-							{Name: "DOCKER_CONFIG", Value: "/kitchen/.docker"},
-						},
-						VolumeMounts: []corev1.VolumeMount{{
-							Name:      "docker-config",
-							MountPath: "/kitchen/.docker",
-							ReadOnly:  true,
-						}},
-						SecurityContext: &corev1.SecurityContext{
-							RunAsUser:      ptr.To(int64(1000)),
-							SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeUnconfined},
-						},
-					}},
-					Volumes: []corev1.Volume{{
-						Name: "docker-config",
-						VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{
-							SecretName: credsSecret,
-							Items: []corev1.KeyToPath{{
-								Key:  corev1.DockerConfigJsonKey,
-								Path: "config.json",
-							}},
-						}},
-					}},
-				},
+	return corev1.PodTemplateSpec{
+		ObjectMeta: metav1.ObjectMeta{
+			Annotations: map[string]string{
+				"container.apparmor.security.beta.kubernetes.io/buildkit": "unconfined",
 			},
 		},
+		Spec: corev1.PodSpec{
+			RestartPolicy: corev1.RestartPolicyNever,
+			Containers: []corev1.Container{{
+				Name:    "buildkit",
+				Image:   BuildkitImage,
+				Command: []string{"buildctl-daemonless.sh"},
+				Args:    args,
+				Env: []corev1.EnvVar{
+					{Name: "BUILDKITD_FLAGS", Value: "--oci-worker-no-process-sandbox"},
+					{Name: "DOCKER_CONFIG", Value: dockerConfigDir},
+				},
+				VolumeMounts: []corev1.VolumeMount{dockerConfigMount()},
+				SecurityContext: &corev1.SecurityContext{
+					RunAsUser:      ptr.To(int64(1000)),
+					SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeUnconfined},
+				},
+			}},
+			Volumes: []corev1.Volume{dockerConfigVolume(credsSecret)},
+		},
 	}
-	return r.Create(ctx, job)
+}
+
+// repoCloneURL is where a build fetches the project's repository from.
+//
+// TODO: derive the clone URL (and auth) from the project's git Connection
+// once git providers beyond public GitHub are wired up.
+func repoCloneURL(project *kitchenv1alpha1.Project) string {
+	return fmt.Sprintf("https://github.com/%s.git", project.Spec.Source.Repo)
+}
+
+// buildRootDir is the directory within the repository the build builds, empty
+// when that is the repository itself.
+func buildRootDir(project *kitchenv1alpha1.Project) string {
+	root := project.Spec.Build.RootDirectory
+	if root == "." {
+		return ""
+	}
+	return strings.Trim(root, "/")
+}
+
+// dockerConfigVolume mounts the registry credentials the build pushes with.
+// Both strategies read them the same way: BuildKit and the CNB lifecycle
+// alike take a docker config directory from DOCKER_CONFIG.
+func dockerConfigVolume(credsSecret string) corev1.Volume {
+	return corev1.Volume{
+		Name: "docker-config",
+		VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{
+			SecretName: credsSecret,
+			Items: []corev1.KeyToPath{{
+				Key:  corev1.DockerConfigJsonKey,
+				Path: "config.json",
+			}},
+		}},
+	}
+}
+
+func dockerConfigMount() corev1.VolumeMount {
+	return corev1.VolumeMount{Name: "docker-config", MountPath: dockerConfigDir, ReadOnly: true}
 }
 
 // succeed records the digest, creates the Release, and promotes it when the
@@ -487,9 +572,10 @@ func previewsEnabled(project *kitchenv1alpha1.Project) bool {
 	return project.Spec.Previews.Enabled
 }
 
-// imageWithDigest reads BuildKit's metadata from the build pod's termination
-// message and returns the digest-qualified image reference. It falls back to
-// the tag reference when the digest cannot be found.
+// imageWithDigest reads the builder's own account of what it pushed from the
+// build pod's termination message, and returns the digest-qualified image
+// reference. It falls back to the tag reference when the digest cannot be
+// found.
 func (r *BuildReconciler) imageWithDigest(ctx context.Context, appNS, jobName, tagRef string) (string, bool) {
 	pods := &corev1.PodList{}
 	if err := r.List(ctx, pods, client.InNamespace(appNS), client.MatchingLabels{"job-name": jobName}); err != nil {
@@ -497,19 +583,39 @@ func (r *BuildReconciler) imageWithDigest(ctx context.Context, appNS, jobName, t
 	}
 	for _, pod := range pods.Items {
 		for _, cs := range pod.Status.ContainerStatuses {
-			if cs.State.Terminated == nil || cs.State.Terminated.Message == "" {
+			if cs.State.Terminated == nil {
 				continue
 			}
-			var metadata map[string]any
-			if err := json.Unmarshal([]byte(cs.State.Terminated.Message), &metadata); err != nil {
-				continue
-			}
-			if digest, ok := metadata["containerimage.digest"].(string); ok && digest != "" {
+			if digest := digestFromTerminationMessage(cs.State.Terminated.Message); digest != "" {
 				return tagRef + "@" + digest, true
 			}
 		}
 	}
 	return tagRef, false
+}
+
+// reportDigest matches the digest line of the CNB lifecycle's report, which is
+// TOML: `digest = "sha256:..."` under [image].
+var reportDigest = regexp.MustCompile(`digest\s*=\s*"(sha256:[a-fA-F0-9]+)"`)
+
+// digestFromTerminationMessage reads the pushed image's digest out of whatever
+// the builder left behind. The two builders write different files to the same
+// place: BuildKit its JSON metadata, the CNB lifecycle its TOML report. Both
+// say the same thing, and a build is only ever one of them, so trying each in
+// turn keeps the caller from having to know which ran.
+func digestFromTerminationMessage(message string) string {
+	if message == "" {
+		return ""
+	}
+	var metadata map[string]any
+	if err := json.Unmarshal([]byte(message), &metadata); err == nil {
+		digest, _ := metadata["containerimage.digest"].(string)
+		return digest
+	}
+	if match := reportDigest.FindStringSubmatch(message); match != nil {
+		return match[1]
+	}
+	return ""
 }
 
 // syncRegistrySecret copies the registry Connection's credentials into the

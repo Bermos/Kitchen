@@ -427,9 +427,11 @@ var _ = Describe("ResourceClaim Controller", func() {
 
 			deploy := &appsv1.Deployment{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: appNS, Name: previewEnvName}, deploy)).To(Succeed())
+			// The platform's PORT leads; the claim's binding is the
+			// project's one variable.
 			podEnv := deploy.Spec.Template.Spec.Containers[0].Env
-			Expect(podEnv).To(HaveLen(1))
-			Expect(podEnv[0].ValueFrom.SecretKeyRef.Name).To(Equal(claimName+"-binding-"+previewEnvName),
+			Expect(podEnv).To(HaveLen(2))
+			Expect(podEnv[1].ValueFrom.SecretKeyRef.Name).To(Equal(claimName+"-binding-"+previewEnvName),
 				"a branching claim's preview must read the branch binding, not the shared one")
 		})
 	})
