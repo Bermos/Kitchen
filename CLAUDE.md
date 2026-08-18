@@ -296,6 +296,13 @@ through its Go types, to avoid tying the build to its release cadence.
   the same user too, because buildpacks write into the application directory
   (npm's modules, the Node buildpack's start script), so source owned by anyone
   else fails the build halfway through.
+- **A private registry needs the credential twice: to push and to pull.** The
+  build syncs the registry Connection's docker config into the application
+  namespace, and the Environment's Deployment names that same Secret as its
+  `imagePullSecrets` — `registrySecretName()` is the one place the name is
+  spelled. Without it the pods sit in `ImagePullBackOff` while the build, the
+  release and the route all read as healthy, which is a long way to walk back
+  from.
 - **`PORT` is the platform's, and every environment gets it.** A
   buildpacks-built image starts whatever process the buildpack chose, and every
   buildpack's answer to which port that process listens on is `$PORT` — so an
