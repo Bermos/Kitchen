@@ -375,8 +375,11 @@ func (s *Server) patchProject(w http.ResponseWriter, req *http.Request) {
 		project.Spec.Env = env
 	}
 	if body.Port != nil {
-		if *body.Port < 1 || *body.Port > 65535 {
-			badRequest(w, "port must be between 1 and 65535 (got %d)", *body.Port)
+		// Zero is not "no port": it is the project handing the question back
+		// to the platform, which answers it from the framework each build
+		// detects. Anything else is a port someone chose.
+		if *body.Port < 0 || *body.Port > 65535 {
+			badRequest(w, "port must be between 1 and 65535, or 0 to derive it from the detected framework (got %d)", *body.Port)
 			return
 		}
 		project.Spec.Runtime.Port = *body.Port

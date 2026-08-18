@@ -51,6 +51,17 @@ func (f *fakeReporter) EnsureWebhook(context.Context, string, gitprovider.Webhoo
 	return "1", nil
 }
 
+// The reporter reads source as well, because the operator resolves one
+// Provider per Connection and narrows it to each half it needs: a build
+// detects its framework through the same provider that posts its status.
+func (f *fakeReporter) ListDir(ctx context.Context, repo, ref, dir string) ([]gitprovider.DirEntry, error) {
+	return repoWithDockerfile().ListDir(ctx, repo, ref, dir)
+}
+
+func (f *fakeReporter) ReadFile(ctx context.Context, repo, ref, path string) ([]byte, error) {
+	return repoWithDockerfile().ReadFile(ctx, repo, ref, path)
+}
+
 func (f *fakeReporter) DeleteWebhook(context.Context, string, string) error { return nil }
 
 func (f *fakeReporter) SetCommitStatus(_ context.Context, _ string, status gitprovider.CommitStatus) error {

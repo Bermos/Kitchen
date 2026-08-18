@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -41,6 +42,7 @@ import (
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/activity"
 	"github.com/Bermos/Kitchen/internal/clickhouse"
+	"github.com/Bermos/Kitchen/internal/framework"
 	"github.com/Bermos/Kitchen/internal/gitprovider"
 )
 
@@ -72,6 +74,17 @@ const (
 	// the file as the container's termination message, so nothing has to be
 	// read out of the pod's log.
 	terminationLogPath = "/dev/termination-log"
+
+	// reasonFrameworkNotDetected is a repository the platform read and did
+	// not recognise, with no Dockerfile to fall back to. It is the failure
+	// "auto" exists to be able to report: the alternative is a builder's own
+	// error about a file the repository never had.
+	reasonFrameworkNotDetected = "FrameworkNotDetected"
+
+	// reasonSourceUnreadable is the platform not being able to look at the
+	// repository at all. It keeps the Build queued rather than failing it —
+	// nothing about the commit caused it.
+	reasonSourceUnreadable = "SourceUnreadable"
 
 	// reasonBuildFailed marks the one failure that is the repository's own:
 	// the build ran and the image did not come out. Every other reason is
@@ -136,7 +149,8 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	builds := r.platformBuilds(ctx)
 	strategy := resolveStrategy(project, builds.DefaultStrategy)
 	switch strategy {
-	case kitchenv1alpha1.BuildStrategyDockerfile, kitchenv1alpha1.BuildStrategyBuildpacks:
+	case kitchenv1alpha1.BuildStrategyDockerfile, kitchenv1alpha1.BuildStrategyBuildpacks,
+		kitchenv1alpha1.BuildStrategyAuto:
 	default:
 		return r.fail(ctx, build, project, "StrategyUnsupported",
 			fmt.Sprintf("build strategy %q is not supported yet", strategy))
@@ -169,12 +183,21 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		if waiting, res := r.gateConcurrency(ctx, build, builds.Concurrency); waiting {
 			return res, nil
 		}
-		if err := r.createJob(ctx, build, project, strategy, appNS, credsSecret, tagRef); err != nil {
+		detected, stop, err := r.decide(ctx, build, project, strategy)
+		if stop != nil {
+			return *stop, err
+		}
+		if detected.Strategy != "" {
+			strategy = detected.Strategy
+		}
+		if err := r.createJob(ctx, build, project, strategy, detected, appNS, credsSecret, tagRef); err != nil {
 			return ctrl.Result{}, err
 		}
 		log.Info("build job created",
-			"namespace", appNS, "job", build.Name, "image", tagRef, "strategy", strategy)
+			"namespace", appNS, "job", build.Name, "image", tagRef,
+			"strategy", strategy, "framework", detected.Name)
 		build.Status.Phase = kitchenv1alpha1.BuildRunning
+		build.Status.DetectedFramework = detected.Name
 		build.Status.StartedAt = ptr.To(metav1.Now())
 		meta.SetStatusCondition(&build.Status.Conditions, metav1.Condition{
 			Type: condReady, Status: metav1.ConditionFalse, Reason: "BuildRunning",
@@ -215,13 +238,14 @@ func (r *BuildReconciler) platformBuilds(ctx context.Context) kitchenv1alpha1.Bu
 	return kitchen.Spec.Builds
 }
 
-// resolveStrategy is how a build actually gets made. A Project that names a
-// strategy is obeyed; one left on "auto" takes the platform's default, which
-// is where an operator says what an unconfigured project should do.
+// resolveStrategy is how a build gets made, as far as configuration decides
+// it. A Project that names a strategy is obeyed; one left on "auto" takes the
+// platform's default, which is where an operator says what an unconfigured
+// project should do.
 //
-// "auto" is meant to detect the framework and choose for itself, and does not
-// yet — issue #69. Until it does, a platform default of "auto" resolves to a
-// Dockerfile build, which is what every build did before buildpacks existed.
+// "auto" all the way down stays "auto", and is answered by reading the
+// repository — see decide. An operator who wants one strategy for everything
+// says so in Kitchen.spec.builds.defaultStrategy, and detection never runs.
 func resolveStrategy(
 	project *kitchenv1alpha1.Project,
 	platformDefault kitchenv1alpha1.BuildStrategy,
@@ -230,10 +254,54 @@ func resolveStrategy(
 	if strategy == "" || strategy == kitchenv1alpha1.BuildStrategyAuto {
 		strategy = platformDefault
 	}
-	if strategy == "" || strategy == kitchenv1alpha1.BuildStrategyAuto {
-		return kitchenv1alpha1.BuildStrategyDockerfile
+	if strategy == "" {
+		return kitchenv1alpha1.BuildStrategyAuto
 	}
 	return strategy
+}
+
+// decide turns the configured strategy into a framework, by reading the
+// repository where configuration left the question open.
+//
+// The two strategies ask for different things from detection. On "auto" it is
+// the decision itself, and a repository that cannot be read or cannot be
+// recognised has to stop the build — reporting that is the whole point of the
+// feature. On an explicit "buildpacks" the project has already decided, and
+// detection only adds what the lifecycle is told about a static site: it is
+// best effort there, and a failure to detect is logged and built through.
+//
+// A non-nil second return is the Build having been parked or failed: the
+// caller returns that result and error rather than building anything.
+func (r *BuildReconciler) decide(
+	ctx context.Context,
+	build *kitchenv1alpha1.Build,
+	project *kitchenv1alpha1.Project,
+	strategy kitchenv1alpha1.BuildStrategy,
+) (framework.Framework, *ctrl.Result, error) {
+	if strategy == kitchenv1alpha1.BuildStrategyDockerfile {
+		// Nothing to learn: the repository's Dockerfile is the instructions.
+		return framework.Framework{}, nil, nil
+	}
+
+	detected, err := r.detectFramework(ctx, project, build, strategy)
+	if err == nil {
+		return detected, nil, nil
+	}
+
+	if strategy == kitchenv1alpha1.BuildStrategyBuildpacks {
+		logf.FromContext(ctx).Info("building with buildpacks without a detected framework",
+			"project", project.Name, "build", build.Name, "cause", err.Error())
+		return framework.Framework{}, nil, nil
+	}
+
+	if errors.Is(err, errSourceUnreadable) {
+		// The platform cannot look right now. The Build waits rather than
+		// failing a commit for the provider being unreachable.
+		res, updateErr := r.pending(ctx, build, reasonSourceUnreadable, err)
+		return framework.Framework{}, &res, updateErr
+	}
+	res, updateErr := r.fail(ctx, build, project, reasonFrameworkNotDetected, err.Error())
+	return framework.Framework{}, &res, updateErr
 }
 
 // gateConcurrency keeps the Build queued while the platform-wide concurrency
@@ -280,11 +348,12 @@ func (r *BuildReconciler) createJob(
 	build *kitchenv1alpha1.Build,
 	project *kitchenv1alpha1.Project,
 	strategy kitchenv1alpha1.BuildStrategy,
+	detected framework.Framework,
 	appNS, credsSecret, tagRef string,
 ) error {
 	template := dockerfilePod(project, build, credsSecret, tagRef)
 	if strategy == kitchenv1alpha1.BuildStrategyBuildpacks {
-		template = buildpacksPod(project, build, credsSecret, tagRef)
+		template = buildpacksPod(project, build, detected, credsSecret, tagRef)
 	}
 
 	labels := map[string]string{
@@ -435,7 +504,7 @@ func (r *BuildReconciler) succeed(
 			Image:      image,
 			ConfigSnapshot: kitchenv1alpha1.ConfigSnapshot{
 				Env:     project.Spec.Env,
-				Runtime: project.Spec.Runtime,
+				Runtime: runtimeFor(project, build),
 			},
 		},
 	}
@@ -489,6 +558,26 @@ func (r *BuildReconciler) succeed(
 	})
 	r.git().reportBuild(ctx, project, build, gitprovider.CommitSuccess, succeededDescription(build))
 	return ctrl.Result{}, r.Status().Update(ctx, build)
+}
+
+// runtimeFor is the runtime the Release freezes: the project's own, with the
+// one thing a project may leave to the platform filled in.
+//
+// A project that names no port takes the detected framework's, because that
+// is the number the framework's own tooling uses and the one an application
+// that ignores $PORT will be listening on. It is resolved here, once, into
+// the snapshot — so a release keeps the port it was built with even if the
+// same project detects differently later, and so the number is visible rather
+// than implied.
+func runtimeFor(project *kitchenv1alpha1.Project, build *kitchenv1alpha1.Build) kitchenv1alpha1.RuntimeSpec {
+	runtimeSpec := project.Spec.Runtime
+	if runtimeSpec.Port != 0 {
+		return runtimeSpec
+	}
+	if detected, ok := framework.ByName(build.Status.DetectedFramework); ok {
+		runtimeSpec.Port = detected.Port
+	}
+	return runtimeSpec
 }
 
 // ensureEnvironment points the named Environment at the Release, creating it

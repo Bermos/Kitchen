@@ -69,10 +69,17 @@ type EnvVar struct {
 
 // RuntimeSpec describes how an application runs.
 type RuntimeSpec struct {
-	// Container port the application listens on.
+	// Container port the application listens on, and the value of PORT in
+	// every environment.
+	//
+	// Left unset it is derived from the framework the build detected — 8080
+	// for a static site, 8000 for Python — and falls back to 3000 when
+	// nothing was detected. It has no default for exactly that reason: a
+	// default here would be indistinguishable from someone having chosen
+	// 3000, and detection would never get to answer.
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=65535
-	// +kubebuilder:default=3000
+	// +optional
 	Port int32 `json:"port,omitempty"`
 
 	// Replica count for production environments. Previews always run 1.

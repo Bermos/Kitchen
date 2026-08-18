@@ -18,12 +18,15 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
@@ -33,6 +36,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/framework"
+	"github.com/Bermos/Kitchen/internal/gitprovider"
 )
 
 var _ = Describe("Build Controller", func() {
@@ -52,7 +57,12 @@ var _ = Describe("Build Controller", func() {
 		jobKey := types.NamespacedName{Name: buildName, Namespace: appNS}
 		wantTag := registryURL + "/" + projectName + ":" + sha[:12]
 
-		var reconciler *BuildReconciler
+		var (
+			reconciler *BuildReconciler
+			// source is the repository the project's provider serves. Tests
+			// that care what is in it rewrite it before reconciling.
+			source *fakeSource
+		)
 
 		reconcileOnce := func() {
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: buildKey})
@@ -101,7 +111,13 @@ var _ = Describe("Build Controller", func() {
 		}
 
 		BeforeEach(func() {
-			reconciler = &BuildReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			source = repoWithDockerfile()
+			reconciler = &BuildReconciler{
+				Client: k8sClient, Scheme: k8sClient.Scheme(),
+				GitProviders: func(*kitchenv1alpha1.Connection, string) (gitprovider.Provider, error) {
+					return source, nil
+				},
+			}
 
 			kitchen := &kitchenv1alpha1.Kitchen{
 				ObjectMeta: metav1.ObjectMeta{Name: KitchenSingletonName},
@@ -128,6 +144,26 @@ var _ = Describe("Build Controller", func() {
 				},
 			}
 			Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, registry))).To(Succeed())
+
+			gitCreds := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: "gh-build-creds", Namespace: namespace},
+				Data:       map[string][]byte{gitCredentialsTokenKey: []byte("gh-token")},
+			}
+			Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, gitCreds))).To(Succeed())
+
+			// Detection reads the repository through the source Connection,
+			// so a project that builds needs one that claims gitSource.
+			gh := &kitchenv1alpha1.Connection{
+				ObjectMeta: metav1.ObjectMeta{Name: "gh", Namespace: namespace},
+				Spec: kitchenv1alpha1.ConnectionSpec{
+					Provider:             "github",
+					CredentialsSecretRef: kitchenv1alpha1.LocalObjectReference{Name: "gh-build-creds"},
+				},
+			}
+			Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, gh))).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "gh", Namespace: namespace}, gh)).To(Succeed())
+			gh.Status.Capabilities = []kitchenv1alpha1.Capability{kitchenv1alpha1.CapabilityGitSource}
+			Expect(k8sClient.Status().Update(ctx, gh)).To(Succeed())
 
 			project := &kitchenv1alpha1.Project{
 				ObjectMeta: metav1.ObjectMeta{Name: projectName, Namespace: namespace},
@@ -175,7 +211,9 @@ var _ = Describe("Build Controller", func() {
 				&kitchenv1alpha1.Environment{ObjectMeta: metav1.ObjectMeta{Name: projectName + "-production", Namespace: namespace}},
 				&kitchenv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: projectName, Namespace: namespace}},
 				&kitchenv1alpha1.Connection{ObjectMeta: metav1.ObjectMeta{Name: "registry", Namespace: namespace}},
+				&kitchenv1alpha1.Connection{ObjectMeta: metav1.ObjectMeta{Name: "gh", Namespace: namespace}},
 				&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "registry-creds", Namespace: namespace}},
+				&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "gh-build-creds", Namespace: namespace}},
 				&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "kitchen-registry-registry", Namespace: appNS}},
 				&kitchenv1alpha1.Kitchen{ObjectMeta: metav1.ObjectMeta{Name: KitchenSingletonName}},
 			} {
@@ -272,6 +310,136 @@ var _ = Describe("Build Controller", func() {
 			job := &batchv1.Job{}
 			Expect(k8sClient.Get(ctx, jobKey, job)).To(Succeed())
 			Expect(job.Spec.Template.Spec.Containers[0].Image).To(Equal(BuildpacksBuilderImage))
+		})
+
+		It("detects the framework and builds it with buildpacks", func() {
+			source = &fakeSource{files: map[string]string{
+				"package.json": `{"dependencies":{"next":"15.0.0"},"scripts":{"build":"next build"}}`,
+			}}
+
+			reconcileOnce()
+
+			job := &batchv1.Job{}
+			Expect(k8sClient.Get(ctx, jobKey, job)).To(Succeed())
+			Expect(job.Spec.Template.Spec.Containers[0].Image).To(Equal(BuildpacksBuilderImage))
+
+			build := &kitchenv1alpha1.Build{}
+			Expect(k8sClient.Get(ctx, buildKey, build)).To(Succeed())
+			Expect(build.Status.DetectedFramework).To(Equal(framework.NextJS))
+			Expect(build.Status.Phase).To(Equal(kitchenv1alpha1.BuildRunning))
+		})
+
+		It("keeps letting a Dockerfile win, and says that is what it found", func() {
+			source = &fakeSource{files: map[string]string{
+				"Dockerfile":   "FROM scratch\n",
+				"package.json": `{"dependencies":{"next":"15.0.0"}}`,
+			}}
+
+			reconcileOnce()
+
+			job := &batchv1.Job{}
+			Expect(k8sClient.Get(ctx, jobKey, job)).To(Succeed())
+			Expect(job.Spec.Template.Spec.Containers[0].Image).To(Equal(BuildkitImage))
+
+			build := &kitchenv1alpha1.Build{}
+			Expect(k8sClient.Get(ctx, buildKey, build)).To(Succeed())
+			Expect(build.Status.DetectedFramework).To(Equal(framework.Dockerfile))
+		})
+
+		It("tells the lifecycle how to serve a single-page application", func() {
+			source = &fakeSource{files: map[string]string{
+				"package.json": `{"devDependencies":{"vite":"5.4.0"},"scripts":{"build":"vite build"}}`,
+				"index.html":   "<!doctype html>",
+			}}
+
+			reconcileOnce()
+
+			job := &batchv1.Job{}
+			Expect(k8sClient.Get(ctx, jobKey, job)).To(Succeed())
+			creator := job.Spec.Template.Spec.Containers[0]
+			Expect(creator.Image).To(Equal(BuildpacksBuilderImage))
+			// Without these the lifecycle builds an image with nothing to
+			// start: a Vite project has no server of its own.
+			Expect(creator.Env).To(ContainElement(corev1.EnvVar{Name: "BP_WEB_SERVER", Value: "nginx"}))
+			Expect(creator.Env).To(ContainElement(corev1.EnvVar{Name: "BP_WEB_SERVER_ROOT", Value: "dist"}))
+			Expect(creator.Env).To(ContainElement(corev1.EnvVar{Name: "BP_NODE_RUN_SCRIPTS", Value: "build"}))
+		})
+
+		It("detects from the project's root directory in a monorepo", func() {
+			project := &kitchenv1alpha1.Project{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: projectName, Namespace: namespace}, project)).To(Succeed())
+			project.Spec.Build.RootDirectory = "apps/shop"
+			Expect(k8sClient.Update(ctx, project)).To(Succeed())
+
+			source = &fakeSource{files: map[string]string{
+				// The repository root looks like nothing at all; only the
+				// project's own directory says what it is.
+				"README.md":              "# monorepo",
+				"apps/shop/package.json": `{"dependencies":{"nuxt":"3.14.0"}}`,
+			}}
+
+			reconcileOnce()
+
+			build := &kitchenv1alpha1.Build{}
+			Expect(k8sClient.Get(ctx, buildKey, build)).To(Succeed())
+			Expect(build.Status.DetectedFramework).To(Equal(framework.Nuxt))
+		})
+
+		It("fails with a sentence of its own when there is nothing to detect", func() {
+			source = &fakeSource{files: map[string]string{"README.md": "# nothing to build"}}
+
+			reconcileOnce()
+
+			Expect(apierrors.IsNotFound(k8sClient.Get(ctx, jobKey, &batchv1.Job{}))).To(BeTrue())
+
+			build := &kitchenv1alpha1.Build{}
+			Expect(k8sClient.Get(ctx, buildKey, build)).To(Succeed())
+			Expect(build.Status.Phase).To(Equal(kitchenv1alpha1.BuildFailed))
+			ready := meta.FindStatusCondition(build.Status.Conditions, condReady)
+			Expect(ready).NotTo(BeNil())
+			Expect(ready.Reason).To(Equal(reasonFrameworkNotDetected))
+			Expect(ready.Message).To(ContainSubstring("no Dockerfile and no framework detected"))
+		})
+
+		It("keeps the build queued while the repository cannot be read", func() {
+			source = &fakeSource{err: errors.New("502 Bad Gateway")}
+
+			result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: buildKey})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(BeNumerically(">", 0))
+
+			Expect(apierrors.IsNotFound(k8sClient.Get(ctx, jobKey, &batchv1.Job{}))).To(BeTrue())
+
+			build := &kitchenv1alpha1.Build{}
+			Expect(k8sClient.Get(ctx, buildKey, build)).To(Succeed())
+			// Nothing about the commit caused this, so the commit is not
+			// failed for it.
+			Expect(build.Status.Phase).To(Equal(kitchenv1alpha1.BuildQueued))
+			ready := meta.FindStatusCondition(build.Status.Conditions, condReady)
+			Expect(ready).NotTo(BeNil())
+			Expect(ready.Reason).To(Equal(reasonSourceUnreadable))
+		})
+
+		It("gives the release the detected framework's port when the project names none", func() {
+			project := &kitchenv1alpha1.Project{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: projectName, Namespace: namespace}, project)).To(Succeed())
+			project.Spec.Runtime.Port = 0
+			Expect(k8sClient.Update(ctx, project)).To(Succeed())
+
+			source = &fakeSource{files: map[string]string{"go.mod": "module shop\n"}}
+
+			reconcileOnce()
+			completeJob()
+			createBuildPod(`{"containerimage.digest":"sha256:feedface"}`)
+			reconcileOnce()
+
+			release := &kitchenv1alpha1.Release{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: releaseName(projectName, sha), Namespace: namespace,
+			}, release)).To(Succeed())
+			// A Go service is conventionally on 8080, and PORT is set to
+			// whatever the snapshot says.
+			Expect(release.Spec.ConfigSnapshot.Runtime.Port).To(Equal(int32(8080)))
 		})
 
 		It("records the digest the lifecycle reports", func() {
