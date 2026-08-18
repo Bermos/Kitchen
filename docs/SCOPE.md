@@ -9,6 +9,20 @@
 
 ---
 
+## Who it is for
+
+Two people. Most design arguments here resolve by asking which of them is in the room.
+
+**The developer** thinks *project → branch → URL*, and should never need the words "namespace" or "Deployment" — abstracting the cluster away *is* the product, not a convenience laid over it. They want a URL, a preview link they can paste to someone who does not write code, logs when it breaks, a rollback when it breaks badly, an environment variable, and above all to know whether a failure is theirs or the platform's. Node pressure, cert-manager conditions and the state of the tunnel are not merely useless to them; they suggest the developer is unqualified to use the tool. This is why a capability that only works through `kubectl` is an unfinished capability: a feature is done when it has a REST route and a screen, not when its reconciler works.
+
+**The operator** owns the cluster and the platform on it, is fluent in Kubernetes, and *wants* the objects. Theirs are the base domain, TLS, the ACME token, connections, the telemetry store, upgrades, and "why is nothing deploying" — a question that needs the platform to be legible from underneath, which is what `status.components`, the platform screens and the diagnostics surfaces are for. Their strongest motivation is not being a bottleneck: every developer question that reaches them is a product gap, and the fix is a surface the developer could have used rather than a wider grant.
+
+They are **hats, not people.** In a single-person installation they are the same human ten minutes apart, so nothing may require two accounts, two logins or two browsers in order to be both — see [Who may do what](AUTH.md#who-may-do-what), where the operator role contains the developer one for exactly that reason.
+
+A third identity is not a persona but needs a place in any model that grants powers: **CI**, which must be able to trigger a build for one project and must not be able to change the base domain.
+
+---
+
 ## Component inventory
 
 ### Core (the original list)
