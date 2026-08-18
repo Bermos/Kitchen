@@ -186,7 +186,7 @@ spec:
     - name: SESSION_SECRET
       secretRef: { name: shop-secrets, key: session }  # Infisical-synced
   runtime:
-    port: 3000
+    port: 3000                          # omit to take the detected framework's
     replicas: 2                         # previews always get 1
     resources: { cpu: 500m, memory: 512Mi }
 status:
@@ -244,9 +244,30 @@ Either builder reports the digest it pushed through the pod's termination messag
 BuildKit as JSON metadata, the lifecycle as its TOML report — which is what puts a
 digest rather than a tag in `status.image`.
 
-A project on `strategy: auto` takes `Kitchen.spec.builds.defaultStrategy`, and falls
-back to `dockerfile` when that is `auto` too: detecting the framework, and with it
-`status.detectedFramework`, is [issue #69](https://github.com/Bermos/Kitchen/issues/69).
+A project on `strategy: auto` takes `Kitchen.spec.builds.defaultStrategy`; when that
+is `auto` too, the platform reads the repository at the commit under build and decides
+for itself. It lists the build's root directory through the project's git Connection —
+no clone, two requests — and matches the first rule that fits: a Dockerfile wins over
+everything, then `package.json` and what is in its dependencies (`next`, `nuxt`,
+`@sveltejs/kit`, `@remix-run/*`, `@nestjs/core`, `astro`, `react-scripts`, `vite`),
+then `go.mod`, `requirements.txt`/`pyproject.toml`/`Pipfile`, `Gemfile`,
+`pom.xml`/`build.gradle`, a `.csproj`, and last a bare `index.html`. Whatever it finds
+lands in `status.detectedFramework`, and the build page shows it.
+
+A framework that has no server of its own — a Vite or create-react-app bundle, an Astro
+site with no adapter, a directory that is already a website — is built into an image
+that serves it with NGINX, by telling the lifecycle so (`BP_WEB_SERVER`,
+`BP_WEB_SERVER_ROOT`, and the project's own `build` script through
+`BP_NODE_RUN_SCRIPTS`).
+
+Two things do not happen. A repository nothing matches **fails the build** with *"no
+Dockerfile and no framework detected"* rather than handing a builder a repository it
+cannot build; and a repository the platform cannot *read* right now — a provider that is
+down, a credential that stopped working — leaves the Build `Queued` with reason
+`SourceUnreadable`, because nothing about the commit caused that. Detection runs only
+where configuration left the question open: `strategy: dockerfile` never reads the
+repository, and `strategy: buildpacks` reads it only to learn what to tell the
+lifecycle, building anyway if it cannot.
 
 The job's output reaches ClickHouse the same way every other container's does — the
 node's collector tails it — so the build pod is labelled `kitchen.bermos.dev/build`
@@ -273,7 +294,9 @@ spec:                                   # fully immutable (enforced by webhook)
   image: harbor.example.com/kitchen/my-shop@sha256:ab12...
   configSnapshot:                       # frozen copy of Project.spec.env + runtime
     env: [...]
-    runtime: { port: 3000, resources: {...} }
+    runtime: { port: 3000, resources: {...} }   # port resolved: a project that
+                                                # named none gets the detected
+                                                # framework's, frozen here
 status:
   environments: [my-shop-production, my-shop-pr-42]   # where it's live (informational)
 ```
