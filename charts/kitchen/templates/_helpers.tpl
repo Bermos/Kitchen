@@ -376,6 +376,87 @@ contributes is the switch, the hostname and the image.
 {{- end }}
 
 {{/*
+The bundled image registry: a name, the hostname it is published on, and the
+credential builds push with. The chart runs the registry, its Service and its
+volume; the operator publishes the route and seeds the Connection, because
+both need the shared Gateway it creates.
+*/}}
+{{- define "kitchen.registryFullname" -}}
+{{- printf "%s-registry" (include "kitchen.fullname" .) }}
+{{- end }}
+
+{{- define "kitchen.registrySecretName" -}}
+{{- printf "%s-registry" (include "kitchen.fullname" .) }}
+{{- end }}
+
+{{- define "kitchen.registrySelectorLabels" -}}
+app.kubernetes.io/name: {{ include "kitchen.name" . }}-registry
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end }}
+
+{{- define "kitchen.registryImage" -}}
+{{- printf "%s:%s" .Values.registry.image.repository .Values.registry.image.tag }}
+{{- end }}
+
+{{/*
+Where the registry is published. It is a hostname on the wildcard certificate
+and nothing else: the node pulls over it, so it has to be a name the node can
+resolve and a certificate the node already trusts.
+*/}}
+{{- define "kitchen.registryHost" -}}
+{{- if .Values.registry.host }}
+{{- .Values.registry.host }}
+{{- else if .Values.kitchen.baseDomain }}
+{{- printf "registry.%s" .Values.kitchen.baseDomain }}
+{{- end }}
+{{- end }}
+
+{{- define "kitchen.registryPassword" -}}
+{{- if .Values.registry.auth.password }}
+{{- .Values.registry.auth.password }}
+{{- else }}
+{{- $existing := lookup "v1" "Secret" .Release.Namespace (include "kitchen.registrySecretName" .) }}
+{{- if and $existing $existing.data (index (default dict $existing.data) "password") }}
+{{- index $existing.data "password" | b64dec }}
+{{- else }}
+{{- randAlphaNum 32 }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{/*
+The htpasswd line zot authenticates against — bcrypt, which is the only hash
+it reads. Hashing is salted, so a fresh hash every render would roll the
+Secret and restart the registry on every upgrade; the stored line is reused
+whenever it still describes the same username and password.
+*/}}
+{{- define "kitchen.registryHtpasswd" -}}
+{{- $username := .Values.registry.auth.username }}
+{{- $password := include "kitchen.registryPassword" . }}
+{{- $existing := lookup "v1" "Secret" .Release.Namespace (include "kitchen.registrySecretName" .) }}
+{{- $data := default dict (default dict $existing).data }}
+{{- $stored := "" }}
+{{- if index $data "htpasswd" }}{{- $stored = index $data "htpasswd" | b64dec }}{{- end }}
+{{- $sameUser := and (index $data "username") (eq (index $data "username" | b64dec) $username) }}
+{{- $samePassword := and (index $data "password") (eq (index $data "password" | b64dec) $password) }}
+{{- if and $stored $sameUser $samePassword }}
+{{- $stored }}
+{{- else }}
+{{- htpasswd $username $password }}
+{{- end }}
+{{- end }}
+
+{{/*
+Whether the platform actually gets a registry. It needs somewhere to be
+published and a certificate the node trusts to be published under, so
+`tls.mode: none` renders no registry at all rather than one nothing can pull
+from — the operator says the same thing in its RegistryReady condition.
+*/}}
+{{- define "kitchen.registryEnabled" -}}
+{{- if and .Values.registry.enabled (ne .Values.kitchen.tls.mode "none") }}true{{ end }}
+{{- end }}
+
+{{/*
 Whether there is a telemetry store to talk to at all — one the chart runs, or
 one it was pointed at. Both cases produce the same connection secret.
 */}}
@@ -583,6 +664,17 @@ does not run in.
 {{- end }}
 {{- if lt (int .Values.previewGate.replicas) 1 }}
 {{- fail "previewGate.replicas must be at least 1: protected previews route through the gate, so none running means none reachable." }}
+{{- end }}
+{{- end }}
+{{- if .Values.registry.enabled }}
+{{- if and .Values.kitchen.create (ne .Values.kitchen.tls.mode "none") (not (include "kitchen.registryHost" .)) }}
+{{- fail "registry.enabled needs a hostname: set kitchen.baseDomain or registry.host. The bundled registry is published on the shared Gateway, and the node pulls images over that name." }}
+{{- end }}
+{{- if not .Values.registry.auth.username }}
+{{- fail "registry.auth.username is required when registry.enabled: the registry admits no anonymous access, because publishing it on the base domain puts it on the internet." }}
+{{- end }}
+{{- if lt (int .Values.registry.retention.keepTags) 1 }}
+{{- fail "registry.retention.keepTags must be at least 1: keeping no tags at all would delete the image every environment is currently running." }}
 {{- end }}
 {{- end }}
 {{- if .Values.scaleToZero.enabled }}

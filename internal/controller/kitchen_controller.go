@@ -137,6 +137,7 @@ type KitchenReconciler struct {
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups="",resources=events,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
+// +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=connections,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=cert-manager.io,resources=clusterissuers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=cert-manager.io,resources=certificates,verbs=get;list;watch;create;update;patch;delete
 
@@ -184,6 +185,7 @@ func (r *KitchenReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	certReady := r.reconcileTLS(ctx, kitchen, setCond)
 	schemaReady := r.reconcileTelemetrySchema(ctx, kitchen, setCond)
 	gateReady := r.reconcilePreviewGate(ctx, kitchen, setCond)
+	registryReady := r.reconcileRegistry(ctx, kitchen, setCond)
 	programmed := r.observeGateway(ctx, kitchen, setCond)
 	componentsHealthy := r.surveyComponents(ctx, kitchen, setCond)
 	setCond(condReady, metav1.ConditionTrue, "Reconciled", "platform infrastructure is in place")
@@ -195,9 +197,10 @@ func (r *KitchenReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		"gatewayProgrammed", programmed,
 		"telemetrySchemaReady", schemaReady,
 		"previewGateReady", gateReady,
+		"registryReady", registryReady,
 		"certificateReady", certReady,
 		"componentsHealthy", componentsHealthy)
-	if !programmed || !schemaReady || !gateReady || !certReady || !componentsHealthy {
+	if !programmed || !schemaReady || !gateReady || !registryReady || !certReady || !componentsHealthy {
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 	return ctrl.Result{}, nil

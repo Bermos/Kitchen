@@ -74,6 +74,12 @@ spec:
   builds:
     defaultStrategy: auto               # dockerfile | buildpacks | auto (what a project on "auto" takes)
     concurrency: 2
+  registry:
+    enabled: true                       # the registry the platform runs for itself
+    host: registry.apps.example.com     # where it is published; defaults to registry.<baseDomain>
+    service: kitchen-registry           # what the route points at, written by the chart
+    port: 5000
+    secretRef: { name: kitchen-registry }   # written by the chart; the registry's own username and password
   scaleToZero:
     enabled: true                       # off by default; needs KEDA + the HTTP add-on
     interceptor:                        # what an idling environment's URL points at
@@ -96,9 +102,36 @@ spec:
                                         # the operator exports its own samples
 status:
   conditions: [...]                     # Ready, GatewayProgrammed, TunnelConnected,
-                                        # TelemetrySchemaReady, PreviewGateReady
+                                        # TelemetrySchemaReady, PreviewGateReady, RegistryReady
   gatewayAddress: 203.0.113.7
+  registry:
+    host: registry.apps.example.com
+    connection: kitchen-registry        # the Connection the operator seeded, once
 ```
+
+`registry` is why a fresh installation can build something without anyone
+having a registry account first. The chart runs zot and its volume; the
+operator publishes it on the shared Gateway and seeds a `dockerRegistry`
+Connection pointing at it, so a new project's registry picker has a working
+default.
+
+Publishing it on the base domain rather than reaching it in-cluster is the
+whole design. The node's container runtime is what pulls an image, and it
+trusts neither an in-cluster CA nor a plain-HTTP address unless the node is
+configured to — which is what every other in-cluster registry needs, and
+Kitchen is a chart installed into someone else's cluster. The platform's
+wildcard certificate is publicly trusted, so a route on it asks the node for
+nothing. The costs are stated rather than hidden: pulls leave the cluster and
+come back through the Gateway, the registry is reachable from outside (so it
+admits nobody anonymously), and in `tls.mode: none` there is no trusted
+certificate at all — `RegistryReady` is then False with `TLSModeNone` and
+nothing is published.
+
+`status.registry.connection` is written once and read forever after as "this
+has been seeded". A Connection someone deletes stays deleted: the seed is a
+good default, not a fixture the platform keeps reinstating. While it is still
+there and still labelled `app.kubernetes.io/managed-by: kitchen`, its URL and
+credential are kept in step with the registry.
 
 `observability` is one retention over a store that two things write. An
 OpenTelemetry collector DaemonSet fills the logs, traces and metrics tables
@@ -142,6 +175,12 @@ status:
   conditions: [...]                     # Connected, CredentialsValid
   capabilities: [gitSource, statusChecks]
 ```
+
+The Connection the operator seeds for the bundled registry is an ordinary one:
+`dockerRegistry`, with `config.url` naming the host it publishes and a
+credential the platform wrote and never reads back. Nothing downstream treats
+it as a special case — it is deletable, replaceable, and pickable exactly like
+one someone created on the connections page.
 
 First-party providers: `github` (capabilities `gitSource` and `statusChecks`),
 `dockerRegistry` (capability `imageStore`), `neon` (capability `database`). `gitlab` and

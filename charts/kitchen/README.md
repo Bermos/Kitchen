@@ -642,6 +642,109 @@ rotates it, which signs every preview visitor out; deleting the client secret
 makes the operator register a new client on the next reconcile (the old one is
 then orphaned at the identity provider).
 
+## The bundled registry
+
+A build has to push somewhere. Kitchen runs the somewhere: a
+[zot](https://zotregistry.dev/) registry with a PVC, published at
+`registry.<baseDomain>`, and a `dockerRegistry` Connection the operator seeds
+to point at it. `helm install`, open the dashboard, create a project from a
+repository, and the first build pushes and deploys — no registry account, no
+credential, no `kubectl`.
+
+### Why it is published on the internet rather than reached in-cluster
+
+**The kubelet pulls, not the pod.** The node's container runtime resolves and
+pulls every image, and it does not care what the cluster thinks of a
+certificate: a Service address with an in-cluster CA fails at the node, and
+plain HTTP fails for the same reason in reverse. Everyone who has solved this
+solved it by configuring the node — an insecure-registry entry on a localhost
+NodePort (MicroK8s, minikube), a CA pushed into CRI-O's trust store
+(OpenShift), a DaemonSet writing `/etc/containerd/certs.d` (Spegel) — and all
+of that is fine for a distribution that owns its nodes. Kitchen is a chart
+installed into someone else's cluster; Cilium and a StorageClass are the only
+prerequisites, and node configuration has never been one.
+
+A route on the shared Gateway uses the platform's own wildcard certificate,
+which is publicly trusted, so **every node already trusts it with nothing
+configured**. The costs, stated up front:
+
+- Image pulls leave the cluster and come back in through the Gateway.
+- The registry is reachable from outside, so its credential is doing real work
+  rather than being a formality: it admits nobody anonymously.
+- It needs the platform to actually have TLS. In `kitchen.tls.mode=none`
+  nothing is rendered and nothing is published; `RegistryReady` on the Kitchen
+  object is False with the reason `TLSModeNone`, and projects need a registry
+  connection of their own.
+
+`registry.<baseDomain>` resolves through the same wildcard DNS record as every
+other generated URL, and is covered by the same wildcard certificate.
+
+Two things follow from the traffic being external that are worth knowing before
+you rely on it:
+
+- **The push is external too.** A build pod resolves `registry.<baseDomain>`
+  and connects to the Gateway's own address from inside the cluster, so the
+  cluster has to be able to reach its own load balancer. Most CNIs hairpin
+  this without being asked and cloudflared makes it a genuine round trip, but a
+  cluster that cannot resolve its own base domain from the inside — the same
+  case `kitchen-auth`'s `internalURL` exists for — cannot use this registry.
+- **cloudflared caps request bodies.** A tunnel puts Cloudflare's proxy in
+  front of every push, and its body limit (100 MB on the free plan) applies to
+  image layers like anything else. A build whose layers exceed it needs a
+  registry reached some other way.
+
+### Why zot
+
+"Lightweight" and "garbage collection" turn out to be the same question. Every
+build pushes a tag and nothing else ever deletes one, so the registry that
+matters is the one that can reclaim disk **while running**: Distribution's
+garbage collector requires stopping the registry, and Harbor brings Postgres,
+Redis and Trivy to bundle. zot is a single Go binary with no database, is a
+CNCF sandbox project, speaks OCI 1.1, and enforces retention policies online.
+
+The default policy keeps the 20 most recently pushed tags per repository and
+anything pushed in the last 30 days, whichever is more, and deletes untagged
+manifests. Tune it, or turn it off and watch the volume yourself:
+
+```sh
+--set registry.retention.keepTags=50 \
+--set registry.retention.keepPushedWithin=2160h \
+--set registry.persistence.size=100Gi
+```
+
+### The seeded connection
+
+The operator creates the Connection **once** and remembers in
+`status.registry.connection` that it did. Delete it and it stays deleted: an
+installation that would rather use Harbor or GHCR should be able to end up with
+only its own connections, and a platform that kept reinstating this one would
+make that impossible. While it is there and still labelled
+`app.kubernetes.io/managed-by: kitchen`, its URL and credential are kept in
+step — a base domain that moves or a password that rotates would otherwise
+leave it quietly wrong.
+
+The route and the Connection are the operator's rather than this chart's, for
+the same reason as the preview gate: the shared Gateway is created by a
+reconciler, and a credential the API never reads back has to be written by
+something inside the cluster. So they appear a reconcile after install rather
+than with the release:
+
+```sh
+kubectl get kitchen default -o jsonpath='{.status.conditions[?(@.type=="RegistryReady")].message}'
+kubectl -n kitchen-system rollout status statefulset/kitchen-registry
+```
+
+### Bringing your own
+
+```sh
+--set registry.enabled=false
+```
+
+Turning it off deletes the route and the seeded Connection with it — a
+connection naming a registry nothing serves is a picker entry that fails every
+build chosen with it. Add your own registry on the connections page; nothing
+downstream treats the bundled one as a special case.
+
 ## Scale to zero
 
 An environment nobody is using can drop to no pods at all, and the next request
@@ -1131,6 +1234,21 @@ kubectl delete namespace kitchen-system
 | `previewGate.host` | `""` | Where logins come back to. Defaults to `previews.<baseDomain>`. |
 | `previewGate.replicas` | `2` | The gate is in the request path of every protected preview. |
 | `previewGate.sessionTTL` | `8h` | How long a visitor stays signed in to a preview. |
+| `registry.enabled` | `true` | Run the bundled image registry. See [The bundled registry](#the-bundled-registry). |
+| `registry.image.repository` / `.tag` | `ghcr.io/project-zot/zot` / `v2.1.20` | |
+| `registry.auth.username` | `kitchen` | The registry's one account. |
+| `registry.auth.password` | `""` | Generated on install, preserved on upgrade. |
+| `registry.host` | `""` | Defaults to `registry.<baseDomain>`. Also the prefix images are pushed under. |
+| `registry.service.type` / `.port` | `ClusterIP` / `5000` | |
+| `registry.persistence.enabled` | `true` | PVC for the image store. Every image dies with the pod without it. |
+| `registry.persistence.size` / `.storageClass` / `.accessModes` | `20Gi` / cluster default / `[ReadWriteOnce]` | |
+| `registry.retention.enabled` | `true` | Reclaim disk while the registry runs. Off means it grows without bound. |
+| `registry.retention.keepTags` | `20` | Tagged images kept per repository, newest push first. |
+| `registry.retention.keepPushedWithin` | `720h` | Keep anything pushed within this window whatever its rank. |
+| `registry.retention.delay` | `24h` | Grace period before a manifest policy stopped keeping is removed. |
+| `registry.retention.gcInterval` / `.gcDelay` | `24h` / `2h` | How often the collector runs, and how long a fresh blob is left alone. |
+| `registry.resources` | 50m/128Mi → 1Gi | |
+| `registry.logLevel` | `info` | |
 | `scaleToZero.enabled` | `false` | Idle environments down to no pods. Needs KEDA and the HTTP add-on in the cluster, installed separately — see [Scale to zero](#scale-to-zero). |
 | `scaleToZero.interceptor.service` | `keda-add-ons-http-interceptor-proxy` | Interceptor Service idling environments are routed through. The add-on names it after its own chart, so this is a constant. |
 | `scaleToZero.interceptor.namespace` | `keda` | Namespace the HTTP add-on was installed into. |

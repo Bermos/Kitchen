@@ -135,6 +135,18 @@ jobs:
                  --set postgres.enabled=false \
                  --set postgres.external.host=postgres.databases.svc \
                  --set postgres.auth.password=hunter2
+          # The bundled registry: on, off, and pointed somewhere else. In
+          # tls.mode none it renders nothing at all — there is no certificate
+          # a node would trust to pull over.
+          render ${CHART_BASE} ${CHART_ACME} \
+                 --set registry.enabled=false
+          render ${CHART_BASE} ${CHART_ACME} \
+                 --set registry.host=images.example.com \
+                 --set registry.persistence.enabled=false \
+                 --set registry.retention.enabled=false
+          render ${CHART_BASE} ${CHART_ACME} \
+                 --set registry.auth.password=hunter2 \
+                 --set registry.retention.keepTags=5
           # Scale-to-zero, at the interceptor the README installs and at one
           # somewhere else.
           render ${CHART_BASE} ${CHART_ACME} \
@@ -180,6 +192,34 @@ jobs:
             exit 1
           }
 
+      - name: Check the registry config is one the registry accepts
+        run: |
+          set -euo pipefail
+          # zot validates its whole configuration at startup and exits, so a
+          # config it dislikes is a CrashLoopBackOff that only the kind job
+          # notices, eight minutes in. The two fields worth checking are the
+          # ones that look alike and are not: `repositories` is a glob, while
+          # `keepTags.patterns` is a regex — and `**` in the regex field is
+          # "nothing to repeat", which zot refuses to start on.
+          helm template kitchen charts/kitchen --namespace kitchen-system \
+            ${CHART_BASE} ${CHART_ACME} -s templates/registry/configmap.yaml > /tmp/registry-cm.yaml
+          python3 <<'CHECK'
+          import json, re, sys, yaml
+
+          document = yaml.safe_load(open("/tmp/registry-cm.yaml").read().split("---", 1)[1])
+          config = json.loads(document["data"]["config.json"])
+          for policy in config["storage"].get("retention", {}).get("policies", []):
+              for keep in policy.get("keepTags", []):
+                  for pattern in keep.get("patterns", []):
+                      try:
+                          re.compile(pattern)
+                      except re.error as err:
+                          sys.exit(f"::error::keepTags.patterns {pattern!r} is not a regex ({err}). "
+                                   "zot refuses to start on it. Note that repositories is a glob "
+                                   "and this field is not.")
+          print("the registry config parses, and every tag pattern is a valid regex")
+          CHECK
+
       - name: Check no immutable field carries a versioned label
         run: |
           set -euo pipefail
@@ -196,7 +236,8 @@ jobs:
                      inside && /^  [^ #]/ { inside = 0 }
                      inside && !/^ *#/'
           }
-          for file in templates/clickhouse/statefulset.yaml templates/postgres/statefulset.yaml; do
+          for file in templates/clickhouse/statefulset.yaml templates/postgres/statefulset.yaml \
+                      templates/registry/statefulset.yaml; do
             block=$(claim_templates "${file}")
             [ -n "${block}" ] || {
               echo "::error::${file} rendered no volumeClaimTemplates to check"
@@ -296,10 +337,16 @@ jobs:
           fi
           # What it does carry is the address, and the operator looks that
           # Service up by name, so it has to be the one the add-on creates.
+          # Scoped to the interceptor block rather than the first match in the
+          # document: `service:` and `namespace:` are ordinary key names, and
+          # another block of the singleton that happens to use one (the
+          # registry does) would otherwise be what this reads.
           singleton() {
             helm template kitchen charts/kitchen --namespace kitchen-system \
               ${CHART_BASE} ${CHART_ACME} --set scaleToZero.enabled=true \
-              -s templates/kitchen.yaml | awk -v key="$1:" '$1 == key { print $2; exit }' | tr -d '"'
+              -s templates/kitchen.yaml \
+              | awk -v key="$1:" '/^ *interceptor:/ { inside = 1; next }
+                                  inside && $1 == key { print $2; exit }' | tr -d '"'
           }
           [ "$(singleton service)" = keda-add-ons-http-interceptor-proxy ] || {
             echo "::error::the Kitchen singleton points at '$(singleton service)'," \
