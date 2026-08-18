@@ -33,6 +33,7 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/provider"
 )
 
 // registryChartSecretName mirrors what the chart writes for the release named
@@ -70,13 +71,13 @@ var _ = Describe("The bundled registry", func() {
 		}
 	}
 
+	// Resolved the way the build reconciler resolves it, so that a seeded
+	// connection is asserted to be one a build could actually push through
+	// rather than merely one that stores the right string.
 	connectionURL := func(conn *kitchenv1alpha1.Connection) string {
-		var cfg struct {
-			URL string `json:"url"`
-		}
-		ExpectWithOffset(1, conn.Spec.Config).NotTo(BeNil())
-		ExpectWithOffset(1, json.Unmarshal(conn.Spec.Config.Raw, &cfg)).To(Succeed())
-		return cfg.URL
+		target, err := provider.Registry(conn)
+		ExpectWithOffset(1, err).NotTo(HaveOccurred())
+		return target.Prefix
 	}
 
 	BeforeEach(func() {
