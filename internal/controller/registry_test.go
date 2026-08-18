@@ -83,6 +83,14 @@ var _ = Describe("The bundled registry", func() {
 	BeforeEach(func() {
 		reconciler = &KitchenReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 
+		// The reconciler creates the platform namespace, but the chart's
+		// registry credential has to be there before the first reconcile —
+		// so the namespace has to exist before this spec writes it, whether
+		// or not another one got there first.
+		Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, &corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{Name: PlatformNamespace},
+		}))).To(Succeed())
+
 		Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{Name: registryChartSecretName, Namespace: PlatformNamespace},
 			StringData: map[string]string{"username": "kitchen", "password": "hunter2"},
