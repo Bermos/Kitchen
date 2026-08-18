@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.5.1](https://github.com/Bermos/Kitchen/compare/v0.5.0...v0.5.1) (2026-08-18)
+
+
+### Bug fixes
+
+* **chart:** label the collector's pods as part of kitchen ([fe1311f](https://github.com/Bermos/Kitchen/commit/fe1311f71bd435ed4834c6be05c20f6d01961dea))
+* **operator:** give the gate's probes a moment to lose the start-up race ([02035a5](https://github.com/Bermos/Kitchen/commit/02035a5d9d1aa2afa2d7e93641a7b36e313563ee))
+
+
+### Documentation
+
+* write down the developer/operator split, and give the personas a home ([#112](https://github.com/Bermos/Kitchen/issues/112)) ([65aa6af](https://github.com/Bermos/Kitchen/commit/65aa6af116af2b37a1f2cb57fad8447633d40967))
+
 ## [0.5.0](https://github.com/Bermos/Kitchen/compare/v0.4.0...v0.5.0) (2026-08-17)
 
 
