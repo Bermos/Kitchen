@@ -336,17 +336,25 @@ func (r *KitchenReconciler) applyPreviewGateWorkload(
 				{Name: "http", ContainerPort: previewGateContainerPort},
 				{Name: "health", ContainerPort: previewGateHealthPort},
 			},
+			// Both probes start a moment after the container does. The gate
+			// binds its listeners in the first instant of main, so a probe at
+			// zero seconds is a race the kubelet usually loses: it answers
+			// "connection refused", which is a Warning event on every pod of
+			// every rollout, and the noise is indistinguishable from a gate
+			// that genuinely never came up.
 			LivenessProbe: &corev1.Probe{
 				ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{
 					Path: "/healthz", Port: intstr.FromString("health"),
 				}},
-				PeriodSeconds: 20,
+				InitialDelaySeconds: 5,
+				PeriodSeconds:       20,
 			},
 			ReadinessProbe: &corev1.Probe{
 				ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{
 					Path: "/readyz", Port: intstr.FromString("health"),
 				}},
-				PeriodSeconds: 10,
+				InitialDelaySeconds: 2,
+				PeriodSeconds:       10,
 			},
 			Resources: corev1.ResourceRequirements{
 				Requests: corev1.ResourceList{
