@@ -141,6 +141,61 @@ type ScaleToZeroSpec struct {
 	Interceptor InterceptorSpec `json:"interceptor,omitempty"`
 }
 
+// ImageRegistrySpec configures the registry the platform runs for itself: the
+// one a fresh install pushes to, so that building a project needs no registry
+// account and no credential of anyone's.
+//
+// It is published on the shared Gateway at registry.<baseDomain>, on the
+// platform's own wildcard certificate, and that is the whole reason it works.
+// The node's container runtime is what pulls an image, and it trusts neither
+// the cluster's CA nor a plain-HTTP address without being configured to —
+// which is node configuration, and Kitchen is a chart installed into someone
+// else's cluster. A publicly trusted certificate is the one route that asks
+// the node for nothing.
+//
+// The corollary is that it needs TLS to exist: in tls.mode none there is no
+// certificate to be trusted and no HTTPS listener to serve it, so the
+// platform reports the registry as unavailable rather than publishing a
+// registry no node can pull from.
+type ImageRegistrySpec struct {
+	// Enabled publishes the bundled registry and seeds the Connection that
+	// points at it. Off means an installation brings its own registry, which
+	// is a Connection someone creates by hand.
+	// +kubebuilder:default=true
+	// +optional
+	Enabled bool `json:"enabled"`
+
+	// Host the registry is published on, and therefore the prefix images are
+	// pushed under: <host>/<project>:<sha>. Defaults to
+	// registry.<baseDomain>.
+	// +optional
+	Host string `json:"host,omitempty"`
+
+	// Service in the platform namespace the route sends traffic to. The
+	// chart writes it as <release>-registry.
+	// +optional
+	Service string `json:"service,omitempty"`
+
+	// Port the registry's Service publishes.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=65535
+	// +kubebuilder:default=5000
+	// +optional
+	Port int32 `json:"port,omitempty"`
+
+	// SecretRef names the Secret in the platform namespace holding the
+	// registry's own credential: the keys username and password. The chart
+	// writes it as <release>-registry, generating the password once and
+	// keeping it across upgrades. It is what the operator copies into the
+	// seeded Connection's credential.
+	//
+	// Left unset it is the conventional release name's, kitchen-registry —
+	// which is what makes the registry appear on an upgrade, where this
+	// object is not re-applied and so names none of these fields.
+	// +optional
+	SecretRef *LocalObjectReference `json:"secretRef,omitempty"`
+}
+
 // BuildsSpec configures platform-wide build defaults.
 type BuildsSpec struct {
 	// +kubebuilder:default=auto
@@ -376,6 +431,13 @@ type KitchenSpec struct {
 	// +optional
 	Builds BuildsSpec `json:"builds,omitempty"`
 
+	// The empty-object default is what gives an installation that predates
+	// the field a registry at all: structural defaulting only descends into
+	// objects that are present.
+	// +kubebuilder:default={}
+	// +optional
+	Registry ImageRegistrySpec `json:"registry,omitempty"`
+
 	// +kubebuilder:default={}
 	// +optional
 	ScaleToZero ScaleToZeroSpec `json:"scaleToZero,omitempty"`
@@ -417,6 +479,22 @@ type ComponentStatus struct {
 	Message string `json:"message,omitempty"`
 }
 
+// ImageRegistryStatus records what the operator did about the bundled
+// registry. Connection is the interesting half: it is written once, when the
+// operator seeds the Connection, and read forever after as "this has been
+// seeded". A Connection someone deletes stays deleted — the seed is a good
+// default, not a fixture the platform keeps reinstating.
+type ImageRegistryStatus struct {
+	// Host the registry is published on.
+	// +optional
+	Host string `json:"host,omitempty"`
+
+	// Connection the operator seeded, by name. Set once and never cleared
+	// while the registry stays enabled.
+	// +optional
+	Connection string `json:"connection,omitempty"`
+}
+
 // KitchenStatus defines the observed state of the platform.
 type KitchenStatus struct {
 	// +optional
@@ -425,6 +503,11 @@ type KitchenStatus struct {
 	// Externally reachable address of the shared Gateway, once programmed.
 	// +optional
 	GatewayAddress string `json:"gatewayAddress,omitempty"`
+
+	// Registry reports the bundled image registry: where it is published,
+	// and the Connection the operator seeded to point at it.
+	// +optional
+	Registry *ImageRegistryStatus `json:"registry,omitempty"`
 
 	// Components reports every platform workload the operator can see, in
 	// name order, whether or not it is healthy. Something missing from this
