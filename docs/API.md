@@ -255,7 +255,7 @@ curl -sS -X POST -H "authorization: Bearer $TOKEN" \
   https://kitchen.apps.example.com/api/v1/builds/shop-bld-abc123def456-xk2p9/cancel
 ```
 
-The BuildKit job is deleted, pod and all; the `Build` itself stays, phase
+The build job is deleted, pod and all; the `Build` itself stays, phase
 `Cancelled`, with who cancelled it in its condition — Builds are the history of
 who asked for what, so cancellation never removes one. A build that already
 finished answers `409`.

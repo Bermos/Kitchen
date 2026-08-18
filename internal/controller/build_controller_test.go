@@ -213,6 +213,86 @@ var _ = Describe("Build Controller", func() {
 			Expect(build.Status.StartedAt).NotTo(BeNil())
 		})
 
+		It("runs the lifecycle for a project that asks for buildpacks", func() {
+			project := &kitchenv1alpha1.Project{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: projectName, Namespace: namespace}, project)).To(Succeed())
+			project.Spec.Build.Strategy = kitchenv1alpha1.BuildStrategyBuildpacks
+			project.Spec.Build.RootDirectory = "apps/shop"
+			Expect(k8sClient.Update(ctx, project)).To(Succeed())
+
+			reconcileOnce()
+
+			job := &batchv1.Job{}
+			Expect(k8sClient.Get(ctx, jobKey, job)).To(Succeed())
+			pod := job.Spec.Template.Spec
+
+			Expect(pod.InitContainers).To(HaveLen(1))
+			clone := pod.InitContainers[0]
+			Expect(clone.Image).To(Equal(GitCloneImage))
+			// The repository and the commit are values, not script text: a
+			// repository name is not constrained to shell-safe characters.
+			Expect(clone.Env).To(ContainElement(corev1.EnvVar{
+				Name: "KITCHEN_GIT_URL", Value: "https://github.com/acme/shop.git",
+			}))
+			Expect(clone.Env).To(ContainElement(corev1.EnvVar{Name: "KITCHEN_GIT_SHA", Value: sha}))
+			Expect(strings.Join(clone.Command, " ")).NotTo(ContainSubstring("acme/shop"))
+
+			Expect(pod.Containers).To(HaveLen(1))
+			creator := pod.Containers[0]
+			Expect(creator.Image).To(Equal(BuildpacksBuilderImage))
+			Expect(creator.Command).To(Equal([]string{"/cnb/lifecycle/creator"}))
+			Expect(creator.Args).To(ContainElement("-app=/workspace/source/apps/shop"))
+			Expect(creator.Args).To(ContainElement("-report=/dev/termination-log"))
+			Expect(creator.Args[len(creator.Args)-1]).To(Equal(wantTag))
+			Expect(creator.Env).To(ContainElement(corev1.EnvVar{Name: "DOCKER_CONFIG", Value: dockerConfigDir}))
+			// The lifecycle has no default platform API, and will not start
+			// without being told one.
+			Expect(creator.Env).To(ContainElement(corev1.EnvVar{
+				Name: "CNB_PLATFORM_API", Value: BuildpacksPlatformAPI,
+			}))
+
+			// The lifecycle needs none of the privileges BuildKit does: it
+			// enters as the builder image's own unprivileged user and stays
+			// there.
+			Expect(pod.SecurityContext).NotTo(BeNil())
+			Expect(*pod.SecurityContext.RunAsUser).To(Equal(cnbUID))
+			Expect(*pod.SecurityContext.RunAsGroup).To(Equal(cnbGID))
+			Expect(job.Spec.Template.Annotations).To(BeEmpty())
+			Expect(job.Spec.Template.Labels).To(HaveKeyWithValue(labelBuild, buildName))
+		})
+
+		It("falls back to the platform's default strategy when the project is on auto", func() {
+			kitchen := &kitchenv1alpha1.Kitchen{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: KitchenSingletonName}, kitchen)).To(Succeed())
+			kitchen.Spec.Builds.DefaultStrategy = kitchenv1alpha1.BuildStrategyBuildpacks
+			Expect(k8sClient.Update(ctx, kitchen)).To(Succeed())
+
+			reconcileOnce()
+
+			job := &batchv1.Job{}
+			Expect(k8sClient.Get(ctx, jobKey, job)).To(Succeed())
+			Expect(job.Spec.Template.Spec.Containers[0].Image).To(Equal(BuildpacksBuilderImage))
+		})
+
+		It("records the digest the lifecycle reports", func() {
+			project := &kitchenv1alpha1.Project{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: projectName, Namespace: namespace}, project)).To(Succeed())
+			project.Spec.Build.Strategy = kitchenv1alpha1.BuildStrategyBuildpacks
+			Expect(k8sClient.Update(ctx, project)).To(Succeed())
+
+			reconcileOnce()
+			completeJob()
+			// The CNB lifecycle's report is TOML, where BuildKit's metadata
+			// is JSON. Both land in the same termination message.
+			createBuildPod("[image]\n  tags = [\"" + wantTag + "\"]\n  digest = \"sha256:cafed00d\"\n")
+			reconcileOnce()
+
+			build := &kitchenv1alpha1.Build{}
+			Expect(k8sClient.Get(ctx, buildKey, build)).To(Succeed())
+			Expect(build.Status.Phase).To(Equal(kitchenv1alpha1.BuildSucceeded))
+			Expect(build.Status.Image).To(Equal(wantTag + "@sha256:cafed00d"))
+		})
+
 		It("records the digest, creates a release and promotes production on success", func() {
 			reconcileOnce()
 			completeJob()

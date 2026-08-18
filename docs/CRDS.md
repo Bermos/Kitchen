@@ -72,7 +72,7 @@ spec:
       replicas: 2
       sessionTTL: 8h
   builds:
-    defaultStrategy: auto               # auto (detect) | dockerfile | buildpacks
+    defaultStrategy: auto               # dockerfile | buildpacks | auto (what a project on "auto" takes)
     concurrency: 2
   scaleToZero:
     enabled: true                       # off by default; needs KEDA + the HTTP add-on
@@ -164,9 +164,9 @@ spec:
     repo: bermos/my-shop
     productionBranch: main
   build:
-    strategy: auto                      # overrides Kitchen default
+    strategy: auto                      # auto takes the Kitchen default; dockerfile | buildpacks decide here
     dockerfilePath: ./Dockerfile        # when strategy: dockerfile
-    rootDirectory: ./                   # monorepo support
+    rootDirectory: ./                   # monorepo support; what buildpacks are pointed at too
   registry:
     connectionRef: { name: harbor }
   previews:
@@ -228,9 +228,25 @@ status:
   conditions: [...]
 ```
 
-Reconcile: run a BuildKit job in the project namespace, push to the registry Connection,
+Reconcile: run a build job in the project namespace, push to the registry Connection,
 post a status check back on the commit, and on success **create a Release**.
 Retention: keep the last N Builds per project (configurable).
+
+Which job that is comes from the strategy. `dockerfile` runs **BuildKit** on the
+repository's own Dockerfile, with the commit as a git context BuildKit fetches itself.
+`buildpacks` runs the **Cloud Native Buildpacks** lifecycle (`creator`, in Paketo's
+jammy builder) over the repository, which needs the source on disk first — so the job
+clones the commit in an init container and hands the lifecycle a directory. A buildpacks
+build needs none of the privileges a BuildKit one does: it runs as the builder image's
+own unprivileged user throughout.
+
+Either builder reports the digest it pushed through the pod's termination message —
+BuildKit as JSON metadata, the lifecycle as its TOML report — which is what puts a
+digest rather than a tag in `status.image`.
+
+A project on `strategy: auto` takes `Kitchen.spec.builds.defaultStrategy`, and falls
+back to `dockerfile` when that is `auto` too: detecting the framework, and with it
+`status.detectedFramework`, is [issue #69](https://github.com/Bermos/Kitchen/issues/69).
 
 The job's output reaches ClickHouse the same way every other container's does — the
 node's collector tails it — so the build pod is labelled `kitchen.bermos.dev/build`
