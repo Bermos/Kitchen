@@ -140,12 +140,31 @@ const settings = reactive({
   buildStrategy: "auto",
   dockerfilePath: "",
   rootDirectory: "",
-  port: 3000,
+  // 0 is "let the platform decide": the port then comes from the framework
+  // each build detects, and the field shows what that would be.
+  port: 0,
   replicas: 1,
   cpu: "",
   memory: "",
   env: [] as EnvVar[],
 });
+// An empty port field is not an unconfigured one: it is the framework's,
+// decided per build, so the field shows nothing and says where the number
+// comes from instead.
+const portField = computed({
+  get: () => (settings.port ? String(settings.port) : ""),
+  set: (value: string) => {
+    settings.port = Number(value) || 0;
+  },
+});
+const portHelp = computed(() =>
+  settings.port
+    ? "The application listens here, and PORT is set to it."
+    : framework.value
+      ? `From the detected framework (${framework.value}).`
+      : "From the detected framework.",
+);
+
 const strategyOptions = [
   { label: "auto — detect the framework", value: "auto" },
   { label: "dockerfile", value: "dockerfile" },
@@ -159,7 +178,7 @@ function loadSettings(from: Project) {
   settings.buildStrategy = from.buildStrategy || "auto";
   settings.dockerfilePath = from.dockerfilePath ?? "";
   settings.rootDirectory = from.rootDirectory ?? "";
-  settings.port = from.port ?? 3000;
+  settings.port = from.port ?? 0;
   settings.replicas = from.replicas ?? 1;
   settings.cpu = from.cpu ?? "";
   settings.memory = from.memory ?? "";
@@ -644,8 +663,8 @@ function host(url?: string): string {
           <div class="rounded-md border border-default bg-muted p-5 space-y-4">
             <h2 class="text-sm font-semibold text-highlighted">Runtime</h2>
             <div class="grid gap-4 sm:grid-cols-4">
-              <UFormField label="Port">
-                <UInput v-model.number="settings.port" type="number" class="w-full font-mono" />
+              <UFormField label="Port" :help="portHelp">
+                <UInput v-model="portField" type="number" min="0" placeholder="auto" class="w-full font-mono" />
               </UFormField>
               <UFormField label="Replicas" help="Previews always run 1.">
                 <UInput v-model.number="settings.replicas" type="number" min="1" class="w-full font-mono" />

@@ -42,14 +42,14 @@ func TestResolveStrategy(t *testing.T) {
 			platformDefault: kitchenv1alpha1.BuildStrategyBuildpacks,
 			want:            kitchenv1alpha1.BuildStrategyBuildpacks,
 		},
-		"auto all the way down is a Dockerfile build": {
+		"auto all the way down is left to detection": {
 			project:         kitchenv1alpha1.BuildStrategyAuto,
 			platformDefault: kitchenv1alpha1.BuildStrategyAuto,
-			want:            kitchenv1alpha1.BuildStrategyDockerfile,
+			want:            kitchenv1alpha1.BuildStrategyAuto,
 		},
 		"and so is a platform that has said nothing": {
 			project: kitchenv1alpha1.BuildStrategyAuto,
-			want:    kitchenv1alpha1.BuildStrategyDockerfile,
+			want:    kitchenv1alpha1.BuildStrategyAuto,
 		},
 	}
 

@@ -21,6 +21,7 @@ import (
 	"k8s.io/utils/ptr"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/framework"
 )
 
 const (
@@ -92,9 +93,15 @@ git checkout -q FETCH_HEAD`
 // `creator` is the whole lifecycle in one process (detect, restore, build,
 // export), which is what a build with no cache between phases wants: the
 // alternative is five containers passing volumes between them for no gain.
+//
+// What the lifecycle is told about the repository comes from detection: a
+// framework that starts a server of its own needs nothing, and one that
+// builds into a directory of files needs the web-server buildpack pointed at
+// that directory — there is no other way to say "serve this with NGINX".
 func buildpacksPod(
 	project *kitchenv1alpha1.Project,
 	build *kitchenv1alpha1.Build,
+	detected framework.Framework,
 	credsSecret, tagRef string,
 ) corev1.PodTemplateSpec {
 	appDir := buildpacksSourceDir
@@ -144,10 +151,10 @@ func buildpacksPod(
 					"-no-color",
 					tagRef,
 				},
-				Env: []corev1.EnvVar{
+				Env: append([]corev1.EnvVar{
 					{Name: "DOCKER_CONFIG", Value: dockerConfigDir},
 					{Name: "CNB_PLATFORM_API", Value: BuildpacksPlatformAPI},
-				},
+				}, frameworkEnv(detected)...),
 				VolumeMounts: []corev1.VolumeMount{workspace, layers, dockerConfigMount()},
 			}},
 			Volumes: []corev1.Volume{
@@ -157,4 +164,16 @@ func buildpacksPod(
 			},
 		},
 	}
+}
+
+// frameworkEnv is what detection tells the lifecycle, in the order the
+// framework package sorted it: a Job's pod template cannot be edited after it
+// is created, so the same repository has to produce the same spec every time
+// rather than one that depends on map iteration order.
+func frameworkEnv(detected framework.Framework) []corev1.EnvVar {
+	env := make([]corev1.EnvVar, 0, len(detected.BuildEnv))
+	for _, v := range detected.BuildEnv {
+		env = append(env, corev1.EnvVar{Name: v.Name, Value: v.Value})
+	}
+	return env
 }

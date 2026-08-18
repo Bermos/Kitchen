@@ -1753,8 +1753,15 @@ spec:
                 description: RuntimeSpec describes how an application runs.
                 properties:
                   port:
-                    default: 3000
-                    description: Container port the application listens on.
+                    description: |-
+                      Container port the application listens on, and the value of PORT in
+                      every environment.
+
+                      Left unset it is derived from the framework the build detected — 8080
+                      for a static site, 8000 for Python — and falls back to 3000 when
+                      nothing was detected. It has no default for exactly that reason: a
+                      default here would be indistinguishable from someone having chosen
+                      3000, and detection would never get to answer.
                     format: int32
                     maximum: 65535
                     minimum: 1
@@ -2107,8 +2114,15 @@ spec:
                     description: RuntimeSpec describes how an application runs.
                     properties:
                       port:
-                        default: 3000
-                        description: Container port the application listens on.
+                        description: |-
+                          Container port the application listens on, and the value of PORT in
+                          every environment.
+
+                          Left unset it is derived from the framework the build detected — 8080
+                          for a static site, 8000 for Python — and falls back to 3000 when
+                          nothing was detected. It has no default for exactly that reason: a
+                          default here would be indistinguishable from someone having chosen
+                          3000, and detection would never get to answer.
                         format: int32
                         maximum: 65535
                         minimum: 1
