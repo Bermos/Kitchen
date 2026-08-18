@@ -24,7 +24,7 @@ Connections.
 ## Components
 
 ```
-                      ┌─────────────────────────────┐
+                      ┌───────────────────────────┐
    dev browser ──────▶│  auth.<baseDomain>          │◀────── app users
                       │  better-auth (Node)         │
                       │  · OIDC Provider plugin     │
@@ -33,7 +33,7 @@ Connections.
                       │    2FA, API keys            │     external)
                       └──────────┬──────────────────┘
                  OIDC (JWKS)     │     dynamic client registration
-        ┌────────────────────────┼──────────────────────┐
+        ┌────────────────────────┼─────────────────────┐
         ▼                        ▼                      ▼
   Kitchen Vue UI          operator REST API      deployed apps
   (PKCE client)           (JWT middleware)       (clients via ResourceClaim)
@@ -210,23 +210,18 @@ three `if` statements happened to mean.
 
 ### The two people it is for
 
-**The developer** thinks *project → branch → URL*, and should never need the
-words "namespace" or "Deployment" — that is the premise of the whole platform.
-They want a URL, a preview link to share, logs when it breaks, a rollback when
-it breaks badly, an environment variable, and above all to know whether a
-failure is theirs or the platform's. Node pressure and cert-manager conditions
-are not merely useless to them; they suggest the developer is unqualified to
-use the tool.
+The developer and the operator, described in full under
+[Who it is for](SCOPE.md#who-it-is-for). Three things from there are what the
+roles below are built out of:
 
-**The operator** owns the cluster and the platform on it, is fluent in
-Kubernetes, and *wants* the objects. Theirs are the base domain, TLS, the ACME
-token, connections, the telemetry store, upgrades, and "why is nothing
-deploying". Their strongest motivation is not being a bottleneck: every
-developer question that reaches them is a product gap.
-
-They are **hats, not people.** In a single-person installation they are the
-same human ten minutes apart, so nothing here needs two accounts — `operator`
-below contains `developer` entirely.
+- **The developer should never need the words "namespace" or "Deployment".** So
+  a role that can only be used by someone who knows what a Deployment is has
+  failed before it is enforced.
+- **The operator owns the cluster and wants the objects.** They are the only
+  person for whom the platform's own machinery is a useful answer.
+- **They are hats, not people.** In a single-person installation they are the
+  same human ten minutes apart, so nothing here needs two accounts — `operator`
+  below contains `developer` entirely.
 
 ### What this protects against, and what it does not
 
