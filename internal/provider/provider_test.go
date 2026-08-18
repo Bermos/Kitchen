@@ -136,6 +136,53 @@ func TestRegistryProbeNeedsURLAndMatchingAuth(t *testing.T) {
 	}
 }
 
+func TestRegistryResolvesThePrefixIntoItsParts(t *testing.T) {
+	cases := map[string]struct{ url, prefix, server, baseURL string }{
+		"a prefix under a host": {
+			"harbor.example.com/kitchen", "harbor.example.com/kitchen", "harbor.example.com", "https://harbor.example.com",
+		},
+		"a bare host": {
+			"harbor.example.com", "harbor.example.com", "harbor.example.com", "https://harbor.example.com",
+		},
+		"an explicit scheme is stripped from the prefix but kept for the probe": {
+			"https://harbor.example.com/kitchen", "harbor.example.com/kitchen", "harbor.example.com", "https://harbor.example.com",
+		},
+		"a plaintext registry keeps its scheme": {
+			"http://registry.internal:5000/kitchen", "registry.internal:5000/kitchen", "registry.internal:5000", "http://registry.internal:5000",
+		},
+		"a trailing slash is not a path": {
+			"harbor.example.com/kitchen/", "harbor.example.com/kitchen", "harbor.example.com", "https://harbor.example.com",
+		},
+	}
+	for name, tc := range cases {
+		target, err := Registry(connection("dockerRegistry", `{"url": "`+tc.url+`"}`))
+		if err != nil {
+			t.Errorf("%s: %v", name, err)
+			continue
+		}
+		if target.Prefix != tc.prefix || target.Server != tc.server || target.BaseURL != tc.baseURL {
+			t.Errorf("%s: unexpected target %#v", name, target)
+		}
+	}
+}
+
+func TestRegistryRefusesWhatItCannotResolve(t *testing.T) {
+	if _, err := Registry(connection("dockerRegistry", "")); err == nil ||
+		!strings.Contains(err.Error(), "config.url") {
+		t.Errorf("expected a missing-url error, got %v", err)
+	}
+	if _, err := Registry(connection("dockerRegistry", `{"url": "https://"}`)); err == nil ||
+		!strings.Contains(err.Error(), "no host") {
+		t.Errorf("expected a missing-host error, got %v", err)
+	}
+	// The capability matcher should never hand one of these over, and a build
+	// pushing nowhere would be harder to read than one that says so.
+	if _, err := Registry(connection("github", "")); err == nil ||
+		!strings.Contains(err.Error(), "stores no images") {
+		t.Errorf("expected a wrong-provider error, got %v", err)
+	}
+}
+
 func TestCapabilitiesMatchWhatThePlatformImplements(t *testing.T) {
 	if got := Capabilities("github"); len(got) != 2 ||
 		got[0] != kitchenv1alpha1.CapabilityGitSource || got[1] != kitchenv1alpha1.CapabilityStatusChecks {

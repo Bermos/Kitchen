@@ -42,6 +42,7 @@ import (
 	"github.com/Bermos/Kitchen/internal/activity"
 	"github.com/Bermos/Kitchen/internal/clickhouse"
 	"github.com/Bermos/Kitchen/internal/gitprovider"
+	"github.com/Bermos/Kitchen/internal/provider"
 )
 
 const (
@@ -79,13 +80,6 @@ const (
 	// the commit.
 	reasonBuildFailed = "BuildFailed"
 )
-
-// registryConfig is the expected shape of a dockerRegistry Connection's config.
-type registryConfig struct {
-	// URL is the registry prefix images are pushed under, e.g.
-	// "harbor.example.com/kitchen".
-	URL string `json:"url"`
-}
 
 // BuildReconciler reconciles a Build: it runs a BuildKit Job for the commit,
 // records the pushed image digest, creates the resulting Release, and
@@ -146,7 +140,7 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	if err := r.Get(ctx, types.NamespacedName{Namespace: build.Namespace, Name: project.Spec.Registry.ConnectionRef.Name}, registryConn); err != nil {
 		return r.pending(ctx, build, "RegistryConnectionMissing", err)
 	}
-	registry, err := parseRegistryConfig(registryConn)
+	registry, err := provider.Registry(registryConn)
 	if err != nil {
 		return r.pending(ctx, build, "RegistryConfigInvalid", err)
 	}
@@ -160,7 +154,7 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		return r.pending(ctx, build, "RegistryCredentialsMissing", err)
 	}
 
-	tagRef := fmt.Sprintf("%s/%s:%s", registry.URL, project.Name, shortSHA(build.Spec.Git.SHA))
+	tagRef := fmt.Sprintf("%s/%s:%s", registry.Prefix, project.Name, shortSHA(build.Spec.Git.SHA))
 
 	job := &batchv1.Job{}
 	err = r.Get(ctx, types.NamespacedName{Namespace: appNS, Name: build.Name}, job)
@@ -629,7 +623,7 @@ func (r *BuildReconciler) syncRegistrySecret(
 	if err := r.Get(ctx, types.NamespacedName{Namespace: srcNS, Name: conn.Spec.CredentialsSecretRef.Name}, src); err != nil {
 		return "", err
 	}
-	name := "kitchen-registry-" + conn.Name
+	name := registrySecretName(conn.Name)
 	dst := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: appNS}}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, dst, func() error {
 		if dst.CreationTimestamp.IsZero() {
@@ -640,6 +634,13 @@ func (r *BuildReconciler) syncRegistrySecret(
 		return nil
 	})
 	return name, err
+}
+
+// registrySecretName is the docker config a project's application namespace
+// holds for one registry Connection. The environment reconciler pulls images
+// with the same secret, so the name is shared rather than spelled twice.
+func registrySecretName(connectionName string) string {
+	return "kitchen-registry-" + connectionName
 }
 
 func (r *BuildReconciler) pending(
@@ -740,19 +741,6 @@ func jobOutcome(job *batchv1.Job) (complete, failed bool, message string) {
 		}
 	}
 	return complete, failed, message
-}
-
-func parseRegistryConfig(conn *kitchenv1alpha1.Connection) (*registryConfig, error) {
-	cfg := &registryConfig{}
-	if conn.Spec.Config != nil {
-		if err := json.Unmarshal(conn.Spec.Config.Raw, cfg); err != nil {
-			return nil, fmt.Errorf("invalid registry config: %w", err)
-		}
-	}
-	if cfg.URL == "" {
-		return nil, fmt.Errorf("registry connection %q has no url configured", conn.Name)
-	}
-	return cfg, nil
 }
 
 func shortSHA(sha string) string {
