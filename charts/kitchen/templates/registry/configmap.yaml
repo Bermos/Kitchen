@@ -9,6 +9,12 @@ ever deletes one, so a registry with no policy fills its volume and takes the
 platform's ability to build down with it. zot enforces the policy online.
 Distribution's garbage collector needs the registry stopped.
 
+The two pattern fields are deliberately spelled differently, and zot refuses to
+start if they are confused: `repositories` is a **glob** (`**` is every
+repository), while `keepTags.patterns` is a **regex** (`.*` is every tag). A
+`**` in the regex field is "nothing to repeat", and it fails config validation
+outright — which is a CrashLoopBackOff, not a warning.
+
 `http.auth` with no `anonymousPolicy` is the second: the registry is published
 on the base domain, which puts it on the internet, so its credential is doing
 real work rather than being a formality. `defaultPolicy` is what an
@@ -43,7 +49,7 @@ data:
               "deleteUntagged": true,
               "keepTags": [
                 {
-                  "patterns": ["**"],
+                  "patterns": [".*"],
                   "mostRecentlyPushedCount": {{ int .Values.registry.retention.keepTags }},
                   "pushedWithin": {{ .Values.registry.retention.keepPushedWithin | quote }}
                 }
