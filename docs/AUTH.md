@@ -24,7 +24,7 @@ Connections.
 ## Components
 
 ```
-                      ┌───────────────────────────┐
+                      ┌─────────────────────────────┐
    dev browser ──────▶│  auth.<baseDomain>          │◀────── app users
                       │  better-auth (Node)         │
                       │  · OIDC Provider plugin     │
@@ -33,7 +33,7 @@ Connections.
                       │    2FA, API keys            │     external)
                       └──────────┬──────────────────┘
                  OIDC (JWKS)     │     dynamic client registration
-        ┌────────────────────────┼─────────────────────┐
+        ┌────────────────────────┼──────────────────────┐
         ▼                        ▼                      ▼
   Kitchen Vue UI          operator REST API      deployed apps
   (PKCE client)           (JWT middleware)       (clients via ResourceClaim)
