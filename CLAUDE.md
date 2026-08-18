@@ -192,8 +192,11 @@ The chart creates what Helm can create safely. The operator creates what needs
 to wait for something.
 
 Concretely: the shared Gateway, the cloudflared Deployment, the preview gate,
-the ACME `ClusterIssuer` and the wildcard `Certificate` are all created by
-`KitchenReconciler`, not by templates. For the cert-manager objects the reason
+the registry's route and its seeded Connection, the ACME `ClusterIssuer` and
+the wildcard `Certificate` are all created by `KitchenReconciler`, not by
+templates. (The registry itself — StatefulSet, Service, PVC — is a plain
+template; only the route needs the Gateway to exist first, and only the
+Connection needs a credential the API never reads back.) For the cert-manager objects the reason
 is hard — cert-manager's own webhook admits them, so on a first install they
 cannot exist until it is serving, and a reconcile loop can requeue where a Helm
 release simply fails.
@@ -303,6 +306,23 @@ through its Go types, to avoid tying the build to its release cadence.
   spelled. Without it the pods sit in `ImagePullBackOff` while the build, the
   release and the route all read as healthy, which is a long way to walk back
   from.
+- **The bundled registry is published on the internet on purpose.** The node's
+  container runtime is what pulls an image, and it trusts neither a Service
+  address with an in-cluster CA nor plain HTTP unless the node is configured
+  to. Every other in-cluster registry solves that at the node — an
+  insecure-registry entry, a CA in CRI-O's trust store, a DaemonSet writing
+  `certs.d` — and Kitchen is a chart installed into someone else's cluster,
+  where Cilium and a StorageClass are the only prerequisites. A route on the
+  shared Gateway rides the platform's own publicly trusted wildcard
+  certificate, which is the one address that asks the node for nothing. It
+  follows that the feature does not exist in `tls.mode: none`, and that the
+  registry admits nobody anonymously.
+- **The seeded registry Connection is a seed, not a fixture.** It is created
+  once and the fact is recorded in `status.registry.connection`; a Connection
+  someone deletes stays deleted, because an installation that would rather use
+  Harbor or GHCR has to be able to end up with only its own. It is still kept
+  in step — URL and credential — for as long as it exists and carries
+  `app.kubernetes.io/managed-by: kitchen`.
 - **`PORT` is the platform's, and every environment gets it.** A
   buildpacks-built image starts whatever process the buildpack chose, and every
   buildpack's answer to which port that process listens on is `$PORT` — so an
