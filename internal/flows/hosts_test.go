@@ -135,6 +135,55 @@ func TestHostsFromRoutesReadsWildcardHostnames(t *testing.T) {
 	}
 }
 
+// PublishedHosts answers the other question about the same routes: not whose
+// traffic this is, but whether the platform published the name at all. The
+// dashboard's is published and belongs to no project, and only this set says
+// both.
+func TestPublishedHostsCoversThePlatformsOwnSurfaces(t *testing.T) {
+	published := PublishedHosts([]gatewayv1.HTTPRoute{
+		routeFor(hostProduction, hostProject, hostProduction, productionHost, customHost),
+		platformRoute(),
+		// The HTTPS redirect on port 80: no hostname of its own.
+		routeFor("kitchen-https-redirect", "", ""),
+	})
+
+	for _, tc := range []struct {
+		name, authority string
+		covered         bool
+	}{
+		{"an environment's generated url", productionHost, true},
+		{"a verified custom domain", customHost, true},
+		{"the dashboard", dashboardHost, true},
+		{"the dashboard, shouted and with a port", "KITCHEN.example.com:443", true},
+		{"a host nobody published", unroutedHost, false},
+		{"no host at all", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if covered := published.Covers(tc.authority); covered != tc.covered {
+				t.Errorf("Covers(%q) = %v, want %v", tc.authority, covered, tc.covered)
+			}
+		})
+	}
+
+	// A hostname-less route publishes no name of its own. Counting it as a
+	// wildcard would make every host published and the unrouted signal mute.
+	if published.Len() != 3 {
+		t.Errorf("Len() = %d, want the three hostnames the routes name", published.Len())
+	}
+}
+
+func TestPublishedHostsReadsWildcardHostnames(t *testing.T) {
+	published := PublishedHosts([]gatewayv1.HTTPRoute{
+		routeFor(hostProduction, hostProject, hostProduction, "*.shop.example.com"),
+	})
+	if !published.Covers("checkout.shop.example.com") {
+		t.Error("the wildcard does not cover a name under it")
+	}
+	if published.Covers("notshop.example.com") {
+		t.Error("the wildcard covers a name that merely ends the same way")
+	}
+}
+
 func TestHostIndexRefreshesWhenAHostMisses(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := gatewayv1.Install(scheme); err != nil {

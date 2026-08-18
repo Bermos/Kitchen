@@ -28,6 +28,7 @@ import (
 
 	"github.com/Bermos/Kitchen/internal/clickhouse"
 	"github.com/Bermos/Kitchen/internal/controller"
+	"github.com/Bermos/Kitchen/internal/flows"
 )
 
 // The edge-and-certificates table of §7: the path between the internet and the
@@ -87,13 +88,24 @@ func edgeSignals() []Signal {
 		Requires: []Input{InputWorkloads},
 		Evaluate: evaluateTunnelDown,
 	}, {
-		ID:       SignalUnroutedHosts,
-		Version:  1,
+		ID: SignalUnroutedHosts,
+		// 2: the hostnames the platform's own routes publish are subtracted
+		// before a host counts as unrouted, which is what stops the dashboard's
+		// own URL being reported as traffic nobody published.
+		Version:  2,
 		Audience: AudienceOperator,
 		Summary:  "the edge is being asked, persistently, for hosts the platform never published",
 		// The raw rows, not the rollup: the unrouted bucket is a group-by over
 		// http_requests, and it is the only rule in the catalogue that reads it.
-		Requires: []Input{InputRawRequests},
+		//
+		// The routes are required beside them because the store's bucket is
+		// "not attributed to a project", which is a wider set than "not
+		// published": the dashboard, the API and the identity provider are
+		// served by routes carrying no project, so their traffic lands there
+		// too. Without the routes the rule would report the platform's own URL
+		// as a host nobody published, and a listing that failed must make it
+		// say so rather than accuse.
+		Requires: []Input{InputRawRequests, InputRoutes},
 		Evaluate: evaluateUnroutedHosts,
 	}}
 }
@@ -392,19 +404,35 @@ func tunnelRestarts(snapshot *Snapshot) int {
 // evaluateUnroutedHosts reports the hosts the edge is being asked for that the
 // platform never published.
 //
-// The sustain check is what separates the two causes. A scanner walking the
-// address space asks once and goes away; a name that was published and then
-// stopped being — a custom domain whose Domain object was deleted while its
-// record was not — keeps asking for as long as its users do, and those are
-// real people getting a 404.
+// The store's bucket is not that set, and the difference is the platform
+// itself. A request row is attributed by looking its host up in the routes
+// that carry a project, so the dashboard, the API and the identity provider —
+// published by routes that carry none, since their traffic belongs to no
+// project — land in the same unattributed bucket a stale DNS record does. The
+// routes are the operator's own knowledge of what it published, so the rule
+// subtracts them here: whatever any route names, whoever published it, is not
+// a host nobody published.
+//
+// The sustain check is what separates the two remaining causes. A scanner
+// walking the address space asks once and goes away; a name that was published
+// and then stopped being — a custom domain whose Domain object was deleted
+// while its record was not — keeps asking for as long as its users do, and
+// those are real people getting a 404.
 func evaluateUnroutedHosts(snapshot *Snapshot) []Finding {
 	findings := make([]Finding, 0, 1)
+	published := flows.PublishedHosts(snapshot.Routes)
 	hosts := append([]clickhouse.UnroutedHost(nil), snapshot.UnroutedHosts...)
 	sort.Slice(hosts, func(i, j int) bool { return hosts[i].Host < hosts[j].Host })
 
 	for _, host := range hosts {
 		span := host.LastSeen.Sub(host.FirstSeen)
 		if host.Requests < UnroutedMinRequests || span < UnroutedSustained {
+			continue
+		}
+		if published.Covers(host.Host) {
+			// Published, and merely unattributed: one of the platform's own
+			// surfaces, or an environment whose route the follower had not
+			// read yet when the traffic arrived.
 			continue
 		}
 		scope := Scope{Kind: ScopeDomain, Name: host.Host}

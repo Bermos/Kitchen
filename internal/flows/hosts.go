@@ -65,9 +65,10 @@ const (
 	hostMissInterval = 5 * time.Second
 )
 
-// attribution is whose request this was. Both fields empty is the unrouted
+// attribution is whose request this was. Both fields empty is the unattributed
 // bucket, which is a finding rather than a defect — §7's `edge.unrouted-hosts`
-// reads it to catch stale DNS entries and hosts nobody ever published.
+// reads it to catch stale DNS entries and hosts nobody ever published, once it
+// has subtracted the names the platform did publish (see PublishedHosts).
 type attribution struct {
 	project     string
 	environment string
@@ -94,7 +95,7 @@ type wildcardHost struct {
 
 // lookup attributes one authority.
 func (t hostTable) lookup(authority string) attribution {
-	host := normaliseHost(authority)
+	host := NormaliseHost(authority)
 	if host == "" {
 		return attribution{}
 	}
@@ -109,14 +110,14 @@ func (t hostTable) lookup(authority string) attribution {
 	return attribution{}
 }
 
-// normaliseHost reduces an authority to the name a route publishes: without
+// NormaliseHost reduces an authority to the name a route publishes: without
 // the userinfo Hubble redacts into the URL, without the port Envoy records
 // when the client named one, without the trailing dot a client is allowed to
 // write on a fully qualified name, and lower-cased, because DNS names are
 // case-insensitive and a `Host` header is whatever the client felt like
 // sending. Every one of those would otherwise be a second value for one host,
 // both in the map and in the store's host facet.
-func normaliseHost(authority string) string {
+func NormaliseHost(authority string) string {
 	host := strings.TrimSpace(authority)
 	if at := strings.LastIndexByte(host, '@'); at >= 0 {
 		host = host[at+1:]
@@ -141,8 +142,9 @@ func normaliseHost(authority string) string {
 // platform traffic on a project's charts. They land in the same unattributed
 // bucket a host nobody published lands in, which is a distinction a request
 // row has no column for and the `edge.unrouted-hosts` signal does not need one
-// for: it evaluates against the operator's informer caches, so it can subtract
-// the hostnames the platform did publish before calling anything unrouted.
+// for: it evaluates against the operator's informer caches, so it subtracts
+// the hostnames the platform did publish — PublishedHosts, below — before
+// calling anything unrouted.
 func hostsFromRoutes(routes []gatewayv1.HTTPRoute) hostTable {
 	table := hostTable{exact: make(map[string]attribution, len(routes))}
 	for i := range routes {
@@ -155,7 +157,7 @@ func hostsFromRoutes(routes []gatewayv1.HTTPRoute) hostTable {
 			continue
 		}
 		for _, hostname := range routes[i].Spec.Hostnames {
-			host := normaliseHost(string(hostname))
+			host := NormaliseHost(string(hostname))
 			switch {
 			case host == "":
 			case strings.HasPrefix(host, "*."):
@@ -169,6 +171,69 @@ func hostsFromRoutes(routes []gatewayv1.HTTPRoute) hostTable {
 		}
 	}
 	return table
+}
+
+// HostSet is a set of hostnames the platform published, wildcards included.
+type HostSet struct {
+	exact     map[string]struct{}
+	wildcards []string
+}
+
+// Covers reports whether an authority is one of the names in the set.
+func (s HostSet) Covers(authority string) bool {
+	host := NormaliseHost(authority)
+	if host == "" {
+		return false
+	}
+	if _, ok := s.exact[host]; ok {
+		return true
+	}
+	for _, suffix := range s.wildcards {
+		if strings.HasSuffix(host, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+// Len is how many names the set holds, which is what a reader over-fetching a
+// bounded list needs: at most this many of its rows can be published ones.
+func (s HostSet) Len() int {
+	return len(s.exact) + len(s.wildcards)
+}
+
+// PublishedHosts is every hostname the platform published, whoever published
+// it: the applications' routes and the platform's own surfaces alike.
+//
+// It is deliberately not hostsFromRoutes. That map answers "whose traffic is
+// this", so a route carrying no project labels is no answer and is skipped —
+// the dashboard's requests belong to no project and inventing one for them
+// would put platform traffic on a project's charts. This set answers the other
+// question, "did the platform publish this name at all", and there the
+// dashboard's own hostname is as published as any application's. It is what
+// `edge.unrouted-hosts` subtracts before calling a host unrouted, so that the
+// platform's own URL is not reported as traffic nobody published.
+//
+// A route with no hostnames publishes no name of its own — it serves whatever
+// its listener does — and is skipped rather than read as publishing
+// everything. The operator writes exactly one of those, the HTTPS redirect on
+// port 80, and treating it as a wildcard would silence the signal on every
+// acme installation.
+func PublishedHosts(routes []gatewayv1.HTTPRoute) HostSet {
+	set := HostSet{exact: make(map[string]struct{}, len(routes))}
+	for i := range routes {
+		for _, hostname := range routes[i].Spec.Hostnames {
+			host := NormaliseHost(string(hostname))
+			switch {
+			case host == "":
+			case strings.HasPrefix(host, "*."):
+				set.wildcards = append(set.wildcards, host[len("*"):])
+			default:
+				set.exact[host] = struct{}{}
+			}
+		}
+	}
+	return set
 }
 
 // hostIndex is the attribution table plus the policy that keeps it current. It

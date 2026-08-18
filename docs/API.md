@@ -976,7 +976,12 @@ whichever scanner asked once and got a 404.
 
 `unrouted` is the bucket of hosts that reached the edge which the platform
 never published: a stale DNS record, a scanner, or a custom domain whose object
-was removed while its record was not. `firstSeen`/`lastSeen` are what separate
+was removed while its record was not. The hostnames the platform's own routes
+publish are subtracted from it — the dashboard and the identity provider are
+served by routes that carry no project, so the store cannot attribute their
+traffic either, and listing them here would say the platform never published
+its own URL. The `unrouted` count on `requests` above still includes them,
+because that number is what the edge served. `firstSeen`/`lastSeen` are what separate
 those — a host asked for once an hour ago is noise, one asked for continuously
 since a deploy is a route that stopped being published. It is read over its own
 window rather than the screen's, because "still asking" is a question about a

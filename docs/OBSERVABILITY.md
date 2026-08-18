@@ -222,8 +222,14 @@ gains a second output. For each L7 HTTP `RESPONSE` flow it derives:
 - **project, environment** — from the operator's own routing knowledge: it
   published every hostname (generated URLs and verified custom domains), so it
   maintains the host → environment map the way it already maintains routes. A
-  host it never published lands in an *unrouted* bucket — which is itself an
-  operator signal (§7), catching stale DNS entries and scanners.
+  host it cannot attribute lands in an *unrouted* bucket — which is itself an
+  operator signal (§7), catching stale DNS entries and scanners. The bucket is
+  wider than that signal: the platform's own surfaces (the dashboard, the API,
+  the identity provider) are published by routes that carry no project, since
+  their traffic belongs to none, so they land there too. The signal subtracts
+  the hostnames the routes publish before it calls anything unrouted; the
+  bucket keeps them, because a count that quietly dropped them would disagree
+  with what the edge served.
 - **method** — canonicalised against the known verb set; anything else
   becomes `OTHER` (a cardinality guard against garbage requests).
 - **path and route** — the URL's path with the query string stripped and never
@@ -651,7 +657,7 @@ means it also surfaces on the environment's diagnostics strip.
 | `dns.mismatch` | a sampled `*.baseDomain` name does not resolve to the Gateway address | active resolution by the operator — cheap, and catches the "everything green, nothing reachable" install |
 | `cert.expiring` | certificate inside 21 days with renewal not progressing; ACME order error attached verbatim | cert-manager objects (unstructured, as the operator already addresses them) |
 | `tunnel.down` | cloudflared unavailable or flapping | Deployment status + restarts |
-| `edge.unrouted-hosts` | sustained requests for hosts the platform never published | `http_requests` unrouted bucket |
+| `edge.unrouted-hosts` | sustained requests for hosts no HTTPRoute publishes | `http_requests` unrouted bucket, minus every hostname the routes publish — the platform's own surfaces are unattributed, not unpublished |
 
 **Builds** (dev + operator)
 

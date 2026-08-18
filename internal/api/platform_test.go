@@ -369,6 +369,39 @@ func TestPlatformEdgeReadsTrafficAndTheEdgesOwnObjects(t *testing.T) {
 	}
 }
 
+// The dashboard is published by a route that carries no project — its traffic
+// belongs to none — so the store cannot attribute it and files it beside the
+// stale records. The screen must not then say the platform never published its
+// own URL.
+func TestPlatformEdgeDropsThePlatformsOwnHostsFromTheUnroutedBucket(t *testing.T) {
+	objects := append(fixtures(), &gatewayv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{Name: "kitchen-api", Namespace: controller.PlatformNamespace},
+		Spec: gatewayv1.HTTPRouteSpec{
+			Hostnames: []gatewayv1.Hostname{"kitchen.example.com"},
+		},
+	})
+	h := newHarness(t, nil, objects...)
+	h.logs.unroutedHosts = []clickhouse.UnroutedHost{
+		{Host: "kitchen.example.com", Requests: 521},
+		{Host: "stale.example.com", Requests: 400},
+	}
+
+	res := h.do(t, http.MethodGet, "/api/v1/platform/edge?limit=1", "")
+	if res.Code != http.StatusOK {
+		t.Fatalf("GET /platform/edge = %d: %s", res.Code, res.Body.String())
+	}
+	body := decode[edgeBody](t, res)
+	if len(body.Unrouted) != 1 || body.Unrouted[0].Host != "stale.example.com" {
+		t.Fatalf("the platform's own hostname is not a host nobody published: %+v", body.Unrouted)
+	}
+	// The rows are dropped after the limit, so the read has to ask for more
+	// than the table shows: the busiest name in the bucket is usually the
+	// dashboard's, and a table filtered down from one row would be empty.
+	if h.logs.lastUnrouted.Limit <= 1 {
+		t.Errorf("the unrouted read should over-fetch by the published names: %+v", h.logs.lastUnrouted)
+	}
+}
+
 // gatewayListFails refuses the Gateways' list and answers every other read,
 // which is how a cluster whose RBAC or CRDs will not serve that one kind
 // behaves.
