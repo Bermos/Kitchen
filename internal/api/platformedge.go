@@ -33,6 +33,7 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	"github.com/Bermos/Kitchen/internal/clickhouse"
+	"github.com/Bermos/Kitchen/internal/flows"
 	"github.com/Bermos/Kitchen/internal/signals"
 )
 
@@ -215,15 +216,63 @@ func (s *Server) fillEdgeTraffic(
 	// The unrouted bucket is read over its own window rather than the screen's:
 	// the question is whether a host has been asking *continuously*, which an
 	// arbitrary window the operator dragged cannot answer.
+	//
+	// It is over-fetched by the number of names the platform published, because
+	// the rows dropped below are dropped after the limit: the dashboard's own
+	// hostname is usually the busiest name in the bucket, so a table filtered
+	// down from exactly ten rows would answer with three.
+	published := s.publishedHosts(ctx)
 	unrouted, err := store.UnroutedHosts(ctx, clickhouse.PlatformRequestsQuery{
 		Since: time.Now().UTC().Add(-signals.UnroutedWindow),
-		Limit: query.Limit,
+		Limit: query.Limit + published.Len(),
 	})
 	if err != nil {
 		return "the unrouted host query", err
 	}
-	body.Unrouted = itemsOf(unrouted)
+	body.Unrouted = itemsOf(unroutedRows(unrouted, published, query.Limit))
 	return "", nil
+}
+
+// publishedHosts is every hostname the platform published, which is what tells
+// the two halves of the store's unattributed bucket apart.
+//
+// A request row is attributed by looking its host up in the routes that carry
+// a project, so the platform's own surfaces — the dashboard, the API, the
+// identity provider, all published by routes that carry none — land in the
+// same bucket a stale DNS record does. The table claims those rows were never
+// published, and for the dashboard's own URL that is simply untrue.
+//
+// A listing that failed leaves the bucket as the store returned it. The table
+// then over-reports, which is the behaviour an operator can see through; the
+// alternative, an empty table, would claim the edge served nothing it could
+// not place.
+func (s *Server) publishedHosts(ctx context.Context) flows.HostSet {
+	routes := &gatewayv1.HTTPRouteList{}
+	if err := s.reader().List(ctx, routes); err != nil {
+		s.log().Error(err, "cannot read the platform's routes to filter the unrouted bucket")
+		return flows.HostSet{}
+	}
+	return flows.PublishedHosts(routes.Items)
+}
+
+// unroutedRows drops the published hosts and trims what is left to the limit
+// the caller asked for.
+func unroutedRows(
+	hosts []clickhouse.UnroutedHost,
+	published flows.HostSet,
+	limit int,
+) []clickhouse.UnroutedHost {
+	rows := make([]clickhouse.UnroutedHost, 0, len(hosts))
+	for _, host := range hosts {
+		if published.Covers(host.Host) {
+			continue
+		}
+		rows = append(rows, host)
+		if limit > 0 && len(rows) == limit {
+			break
+		}
+	}
+	return rows
 }
 
 // edgeGatewayView is one Gateway and its listeners, as the API server reports

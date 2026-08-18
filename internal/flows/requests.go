@@ -81,7 +81,7 @@ func requestOf(flow *flowpb.Flow) (clickhouse.Request, bool) {
 	authority, path := splitURL(http.GetUrl())
 	return clickhouse.Request{
 		Timestamp: timestamp,
-		Host:      normaliseHost(authority),
+		Host:      NormaliseHost(authority),
 		Method:    canonicalMethod(http.GetMethod()),
 		Path:      truncatePath(path),
 		Status:    uint16(http.GetCode()),

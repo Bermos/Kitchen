@@ -278,6 +278,93 @@ func TestUnroutedHostsFiresOnSustainedTraffic(t *testing.T) {
 	}
 }
 
+// The platform's own surfaces are published by routes that carry no project,
+// so their traffic lands in the store's unattributed bucket beside the stale
+// records. The rule subtracts the routes before it accuses anybody.
+func TestUnroutedHostsIgnoresThePlatformsOwnHosts(t *testing.T) {
+	snapshot := newSnapshot()
+	snapshot.Routes = []gatewayv1.HTTPRoute{platformRoute("kitchen.example.com")}
+	snapshot.UnroutedHosts = []clickhouse.UnroutedHost{{
+		Host:      "kitchen.example.com",
+		Requests:  4000,
+		FirstSeen: testNow.Add(-50 * time.Minute),
+		LastSeen:  testNow.Add(-time.Minute),
+	}}
+	expectNone(t, evaluate(t, SignalUnroutedHosts, snapshot))
+}
+
+// A host the platform did publish, asked for with the port and the trailing
+// dot a client is free to send, is still that host.
+func TestUnroutedHostsMatchesRoutesLoosely(t *testing.T) {
+	snapshot := newSnapshot()
+	snapshot.Routes = []gatewayv1.HTTPRoute{
+		platformRoute("Kitchen.example.com"),
+		platformRoute("*.apps.example.com"),
+	}
+	snapshot.UnroutedHosts = []clickhouse.UnroutedHost{{
+		Host:      "kitchen.example.com.:443",
+		Requests:  4000,
+		FirstSeen: testNow.Add(-50 * time.Minute),
+		LastSeen:  testNow.Add(-time.Minute),
+	}, {
+		Host:      "shop.apps.example.com",
+		Requests:  4000,
+		FirstSeen: testNow.Add(-50 * time.Minute),
+		LastSeen:  testNow.Add(-time.Minute),
+	}}
+	expectNone(t, evaluate(t, SignalUnroutedHosts, snapshot))
+}
+
+// The HTTPS redirect the Kitchen reconciler writes on port 80 names no
+// hostname of its own. Reading that as "every host is published" would silence
+// the rule on every acme installation.
+func TestUnroutedHostsStillFiresBesideAHostnamelessRoute(t *testing.T) {
+	snapshot := newSnapshot()
+	snapshot.Routes = []gatewayv1.HTTPRoute{{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "kitchen-https-redirect",
+			Namespace: controller.PlatformNamespace,
+		},
+	}}
+	snapshot.UnroutedHosts = []clickhouse.UnroutedHost{{
+		Host:      "old.example.com",
+		Requests:  4000,
+		FirstSeen: testNow.Add(-50 * time.Minute),
+		LastSeen:  testNow.Add(-time.Minute),
+	}}
+	expectOne(t, evaluate(t, SignalUnroutedHosts, snapshot))
+}
+
+// A route listing that failed must make the rule say so rather than let it
+// accuse the platform's own hostname.
+func TestUnroutedHostsIsUnknownWithoutTheRoutes(t *testing.T) {
+	snapshot := newSnapshot()
+	snapshot.UnroutedHosts = []clickhouse.UnroutedHost{{
+		Host:      "kitchen.example.com",
+		Requests:  4000,
+		FirstSeen: testNow.Add(-50 * time.Minute),
+		LastSeen:  testNow.Add(-time.Minute),
+	}}
+	snapshot.MarkUnreadable(InputRoutes, "the api server said no")
+
+	finding := expectOne(t, evaluate(t, SignalUnroutedHosts, snapshot))
+	if finding.Severity != SeverityUnknown {
+		t.Fatalf("severity = %q", finding.Severity)
+	}
+}
+
+// platformRoute is one of the platform's own surfaces: published on the shared
+// Gateway, labelled with no project, because its traffic belongs to none.
+func platformRoute(host string) gatewayv1.HTTPRoute {
+	return gatewayv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "kitchen-api",
+			Namespace: controller.PlatformNamespace,
+		},
+		Spec: gatewayv1.HTTPRouteSpec{Hostnames: []gatewayv1.Hostname{gatewayv1.Hostname(host)}},
+	}
+}
+
 // A scanner asks once and goes away.
 func TestUnroutedHostsIgnoresABurst(t *testing.T) {
 	snapshot := newSnapshot()
