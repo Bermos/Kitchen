@@ -1127,6 +1127,57 @@ spec:
                         type: string
                     type: object
                 type: object
+              registry:
+                default: {}
+                description: |-
+                  The empty-object default is what gives an installation that predates
+                  the field a registry at all: structural defaulting only descends into
+                  objects that are present.
+                properties:
+                  enabled:
+                    default: true
+                    description: |-
+                      Enabled publishes the bundled registry and seeds the Connection that
+                      points at it. Off means an installation brings its own registry, which
+                      is a Connection someone creates by hand.
+                    type: boolean
+                  host:
+                    description: |-
+                      Host the registry is published on, and therefore the prefix images are
+                      pushed under: <host>/<project>:<sha>. Defaults to
+                      registry.<baseDomain>.
+                    type: string
+                  port:
+                    default: 5000
+                    description: Port the registry's Service publishes.
+                    format: int32
+                    maximum: 65535
+                    minimum: 1
+                    type: integer
+                  secretRef:
+                    description: |-
+                      SecretRef names the Secret in the platform namespace holding the
+                      registry's own credential: the keys username and password. The chart
+                      writes it as <release>-registry, generating the password once and
+                      keeping it across upgrades. It is what the operator copies into the
+                      seeded Connection's credential.
+
+                      Left unset it is the conventional release name's, kitchen-registry —
+                      which is what makes the registry appear on an upgrade, where this
+                      object is not re-applied and so names none of these fields.
+                    properties:
+                      name:
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  service:
+                    description: |-
+                      Service in the platform namespace the route sends traffic to. The
+                      chart writes it as <release>-registry.
+                    type: string
+                type: object
               scaleToZero:
                 default: {}
                 description: |-
@@ -1373,6 +1424,20 @@ spec:
                 description: Externally reachable address of the shared Gateway, once
                   programmed.
                 type: string
+              registry:
+                description: |-
+                  Registry reports the bundled image registry: where it is published,
+                  and the Connection the operator seeded to point at it.
+                properties:
+                  connection:
+                    description: |-
+                      Connection the operator seeded, by name. Set once and never cleared
+                      while the registry stays enabled.
+                    type: string
+                  host:
+                    description: Host the registry is published on.
+                    type: string
+                type: object
             type: object
         type: object
     served: true

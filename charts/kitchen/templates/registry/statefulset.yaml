@@ -1,0 +1,145 @@
+{{- include "kitchen.validate" . -}}
+{{- if eq (include "kitchen.registryEnabled" .) "true" }}
+# The bundled registry: one zot, one volume. A StatefulSet rather than a
+# Deployment because the image store is a directory on a ReadWriteOnce volume,
+# and two replicas rolling over each other would both want it.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "kitchen.registryFullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kitchen.labels" . | nindent 4 }}
+    app.kubernetes.io/component: registry
+spec:
+  replicas: 1
+  serviceName: {{ include "kitchen.registryFullname" . }}-headless
+  selector:
+    matchLabels:
+      {{- include "kitchen.registrySelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "kitchen.registrySelectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: registry
+      annotations:
+        # zot re-reads the htpasswd file by itself but not its configuration,
+        # so a changed config.json has to roll the pod.
+        checksum/config: {{ include (print $.Template.BasePath "/registry/configmap.yaml") . | sha256sum }}
+        {{- with .Values.registry.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.registry.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.registry.podSecurityContext | nindent 8 }}
+      containers:
+        - name: registry
+          image: {{ include "kitchen.registryImage" . }}
+          imagePullPolicy: {{ .Values.registry.image.pullPolicy }}
+          # The entrypoint is the zot binary, whose name carries the
+          # architecture it was built for, so only the arguments are replaced.
+          args:
+            - serve
+            - /etc/zot/config/config.json
+          {{- with .Values.registry.extraEnv }}
+          env:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ int .Values.registry.service.port }}
+              protocol: TCP
+          # zot answers these three without authentication, which is what
+          # makes them usable as probes on a registry that admits nobody
+          # anonymously.
+          startupProbe:
+            httpGet:
+              path: /startupz
+              port: http
+            periodSeconds: 5
+            failureThreshold: 60
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: http
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 10
+          securityContext:
+            {{- toYaml .Values.registry.securityContext | nindent 12 }}
+          resources:
+            {{- toYaml .Values.registry.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/registry
+            - name: config
+              mountPath: /etc/zot/config
+              readOnly: true
+            # A directory rather than a subPath: zot watches the htpasswd file
+            # and reloads it, and a subPath mount never sees the update.
+            - name: auth
+              mountPath: /etc/zot/auth
+              readOnly: true
+            # The root filesystem is read-only; blob uploads land here first.
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "kitchen.registryFullname" . }}
+        - name: auth
+          secret:
+            secretName: {{ include "kitchen.registrySecretName" . }}
+            items:
+              - key: htpasswd
+                path: htpasswd
+        - name: tmp
+          emptyDir: {}
+        {{- if not .Values.registry.persistence.enabled }}
+        - name: data
+          emptyDir: {}
+        {{- end }}
+      {{- with .Values.registry.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.registry.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.registry.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  {{- if .Values.registry.persistence.enabled }}
+  volumeClaimTemplates:
+    # Stable labels only: volumeClaimTemplates is immutable, so anything that
+    # moves with the chart version would make every upgrade an attempt to
+    # mutate an immutable field. Same reasoning as Postgres and ClickHouse.
+    - metadata:
+        name: data
+        labels:
+          {{- include "kitchen.registrySelectorLabels" . | nindent 10 }}
+          app.kubernetes.io/component: registry
+          app.kubernetes.io/part-of: kitchen
+      spec:
+        accessModes:
+          {{- toYaml .Values.registry.persistence.accessModes | nindent 10 }}
+        resources:
+          requests:
+            storage: {{ .Values.registry.persistence.size | quote }}
+        {{- with .Values.registry.persistence.storageClass }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+  {{- end }}
+{{- end }}

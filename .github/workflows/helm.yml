@@ -135,6 +135,18 @@ jobs:
                  --set postgres.enabled=false \
                  --set postgres.external.host=postgres.databases.svc \
                  --set postgres.auth.password=hunter2
+          # The bundled registry: on, off, and pointed somewhere else. In
+          # tls.mode none it renders nothing at all — there is no certificate
+          # a node would trust to pull over.
+          render ${CHART_BASE} ${CHART_ACME} \
+                 --set registry.enabled=false
+          render ${CHART_BASE} ${CHART_ACME} \
+                 --set registry.host=images.example.com \
+                 --set registry.persistence.enabled=false \
+                 --set registry.retention.enabled=false
+          render ${CHART_BASE} ${CHART_ACME} \
+                 --set registry.auth.password=hunter2 \
+                 --set registry.retention.keepTags=5
           # Scale-to-zero, at the interceptor the README installs and at one
           # somewhere else.
           render ${CHART_BASE} ${CHART_ACME} \
