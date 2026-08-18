@@ -74,6 +74,9 @@ spec:
   builds:
     defaultStrategy: {{ .Values.kitchen.builds.defaultStrategy | quote }}
     concurrency: {{ int .Values.kitchen.builds.concurrency }}
+    # How many releases a project keeps. A release an environment still points
+    # at is never pruned, so rollback targets survive the count.
+    releaseRetention: {{ int .Values.kitchen.builds.releaseRetention }}
   registry:
     # The registry the chart runs, published by the operator: the route on the
     # shared Gateway is the operator's because the Gateway is, and the seeded

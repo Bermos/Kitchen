@@ -205,6 +205,21 @@ type BuildsSpec struct {
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:default=2
 	Concurrency int32 `json:"concurrency,omitempty"`
+
+	// ReleaseRetention is how many Releases each Project keeps. Every
+	// successful build leaves one behind, so without a bound a busy project
+	// accumulates them — and the images they point at — forever.
+	//
+	// It is a build setting because a Release is what a build leaves behind.
+	// The count is per Project, and a Release an Environment references is
+	// never deleted however old it is: the newest ReleaseRetention are kept,
+	// and anything still serving is kept on top of them, so rollback targets
+	// do not vanish out from under a parked environment.
+	//
+	// 0 keeps every Release forever.
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:default=10
+	ReleaseRetention int32 `json:"releaseRetention,omitempty"`
 }
 
 // ClickHouseSpec configures the telemetry store.

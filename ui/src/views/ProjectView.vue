@@ -409,6 +409,20 @@ function host(url?: string): string {
                   {{ shortSHA(buildOf(release)?.git.sha) }} · {{ buildOf(release)?.git.branch || "—" }} ·
                   {{ buildOf(release)?.git.author || "—" }}
                 </p>
+                <!-- Where it is actually serving, from the release's own
+                     status. The badge beside it only ever speaks for
+                     production; a preview parked on an older release shows up
+                     nowhere else. -->
+                <p v-if="release.environments?.length" class="text-xs text-muted mt-1 flex flex-wrap gap-x-1.5">
+                  <span>Serving</span>
+                  <RouterLink
+                    v-for="name in release.environments"
+                    :key="name"
+                    :to="{ name: 'environment', params: { name } }"
+                    class="font-mono text-toned hover:text-highlighted hover:underline"
+                    >{{ name }}</RouterLink
+                  >
+                </p>
               </td>
               <td class="px-4 py-3 whitespace-nowrap">
                 <UBadge

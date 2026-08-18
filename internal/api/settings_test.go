@@ -53,12 +53,13 @@ func TestChangingTheSettings(t *testing.T) {
 	h := newHarness(t, nil)
 
 	recorder := h.do(t, http.MethodPatch, "/api/v1/settings",
-		`{"buildStrategy": "dockerfile", "buildConcurrency": 4, "logRetentionDays": 7}`)
+		`{"buildStrategy": "dockerfile", "buildConcurrency": 4, "releaseRetention": 25, "logRetentionDays": 7}`)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
 	}
 	body := decode[settingsView](t, recorder)
-	if body.BuildStrategy != "dockerfile" || body.BuildConcurrency != 4 || body.LogRetentionDays != 7 {
+	if body.BuildStrategy != "dockerfile" || body.BuildConcurrency != 4 ||
+		body.ReleaseRetention != 25 || body.LogRetentionDays != 7 {
 		t.Fatalf("the answer does not carry the change: %+v", body)
 	}
 
@@ -69,6 +70,7 @@ func TestChangingTheSettings(t *testing.T) {
 	}
 	if kitchen.Spec.Builds.DefaultStrategy != kitchenv1alpha1.BuildStrategyDockerfile ||
 		kitchen.Spec.Builds.Concurrency != 4 ||
+		kitchen.Spec.Builds.ReleaseRetention != 25 ||
 		kitchen.Spec.Observability.ClickHouse.RetentionDays != 7 {
 		t.Fatalf("the singleton was not updated: %+v", kitchen.Spec)
 	}
@@ -95,14 +97,39 @@ func TestChangingTheSettingsLeavesOmittedFieldsAlone(t *testing.T) {
 	}
 }
 
+// Zero is the one number here that means "no bound" rather than "unset": the
+// platform keeps every release a project ever built, which is what it did
+// before there was a count at all.
+func TestChangingTheSettingsAcceptsUnboundedReleases(t *testing.T) {
+	h := newHarness(t, nil)
+
+	if recorder := h.do(t, http.MethodPatch, "/api/v1/settings", `{"releaseRetention": 5}`); recorder.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	recorder := h.do(t, http.MethodPatch, "/api/v1/settings", `{"releaseRetention": 0}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+
+	kitchen := &kitchenv1alpha1.Kitchen{}
+	if err := h.server.Client.Get(context.Background(),
+		types.NamespacedName{Name: controller.KitchenSingletonName}, kitchen); err != nil {
+		t.Fatal(err)
+	}
+	if kitchen.Spec.Builds.ReleaseRetention != 0 {
+		t.Fatalf("the count was not cleared: %+v", kitchen.Spec.Builds)
+	}
+}
+
 func TestChangingTheSettingsRejectsNonsense(t *testing.T) {
 	h := newHarness(t, nil)
 
 	for name, body := range map[string]string{
-		"an unknown strategy":   `{"buildStrategy": "guess"}`,
-		"zero concurrency":      `{"buildConcurrency": 0}`,
-		"no retention at all":   `{"logRetentionDays": 0}`,
-		"a field it never knew": `{"baseDomain": "elsewhere.example.com"}`,
+		"an unknown strategy":      `{"buildStrategy": "guess"}`,
+		"zero concurrency":         `{"buildConcurrency": 0}`,
+		"no retention at all":      `{"logRetentionDays": 0}`,
+		"a negative release count": `{"releaseRetention": -1}`,
+		"a field it never knew":    `{"baseDomain": "elsewhere.example.com"}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			recorder := h.do(t, http.MethodPatch, "/api/v1/settings", body)

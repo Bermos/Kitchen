@@ -324,6 +324,9 @@ export interface Settings {
   authHost?: string;
   buildStrategy?: string;
   buildConcurrency?: number;
+  /** Releases a project keeps; 0 keeps every one. Always sent, since 0 is a
+   * setting rather than an absent value. */
+  releaseRetention: number;
   logRetentionDays?: number;
   gatewayAddress?: string;
   conditions?: Condition[];
@@ -1686,6 +1689,8 @@ export const api = {
   platformIngest: () => request<PlatformIngest>("GET", "/platform/ingest"),
 
   settings: () => request<Settings>("GET", "/settings"),
-  updateSettings: (changes: Partial<Pick<Settings, "buildStrategy" | "buildConcurrency" | "logRetentionDays">>) =>
+  updateSettings: (
+    changes: Partial<Pick<Settings, "buildStrategy" | "buildConcurrency" | "releaseRetention" | "logRetentionDays">>,
+  ) =>
     request<Settings>("PATCH", "/settings", changes),
 };

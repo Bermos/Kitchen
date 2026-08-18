@@ -31,12 +31,14 @@ const version = computed(() => {
 
 const strategy = ref<string>("auto");
 const concurrency = ref<number>(2);
+const releaseRetention = ref<number>(10);
 const retention = ref<number>(30);
 
 watch(settings, (value) => {
   if (!value) return;
   strategy.value = value.buildStrategy || "auto";
   concurrency.value = value.buildConcurrency ?? 2;
+  releaseRetention.value = value.releaseRetention ?? 10;
   retention.value = value.logRetentionDays ?? 30;
 });
 
@@ -46,6 +48,7 @@ const dirty = computed(() => {
   return (
     strategy.value !== (s.buildStrategy || "auto") ||
     concurrency.value !== (s.buildConcurrency ?? 2) ||
+    releaseRetention.value !== (s.releaseRetention ?? 10) ||
     retention.value !== (s.logRetentionDays ?? 30)
   );
 });
@@ -57,6 +60,7 @@ async function save() {
     await api.updateSettings({
       buildStrategy: strategy.value,
       buildConcurrency: concurrency.value,
+      releaseRetention: releaseRetention.value,
       logRetentionDays: retention.value,
     });
     toast.add({ title: "Settings saved", color: "success", icon: "i-lucide-check" });
@@ -174,6 +178,12 @@ async function startUpdate() {
         </UFormField>
         <UFormField label="Build concurrency" help="How many builds run at once, platform-wide.">
           <UInputNumber v-model="concurrency" :min="1" :max="32" class="w-40" />
+        </UFormField>
+        <UFormField
+          label="Releases kept per project"
+          help="Older releases are pruned. One an environment still runs is always kept, so a rollback target never disappears. 0 keeps every release."
+        >
+          <UInputNumber v-model="releaseRetention" :min="0" :max="500" class="w-40" />
         </UFormField>
         <UFormField label="Log retention (days)" help="TTL the operator keeps on the ClickHouse telemetry tables.">
           <UInputNumber v-model="retention" :min="1" :max="365" class="w-40" />

@@ -1158,6 +1158,7 @@ kubectl delete namespace kitchen-system
 | `kitchen.auth` | from `auth.*` / `previewGate.*` | The singleton's `auth` block mirrors `auth.enabled`, the resolved host, the secret the operator registers clients with, and the preview gate. |
 | `kitchen.builds.defaultStrategy` | `auto` | `auto`, `dockerfile` or `buildpacks`. |
 | `kitchen.builds.concurrency` | `2` | Builds running at once. |
+| `kitchen.builds.releaseRetention` | `10` | Releases each project keeps. Older ones are pruned, except any an environment still points at — a rollback target never disappears. `0` keeps every release forever. |
 | `kitchen.observability.clickhouse.retentionDays` | `30` | Telemetry retention. |
 | `kitchen.observability.hubble.relayAddress` | `""` | host:port of Hubble Relay's gRPC endpoint (e.g. `hubble-relay.kube-system.svc.cluster.local:80`). When set, the operator ships flow observations into the telemetry store for the dashboard's traffic view. Empty disables flow collection. |
 | `kitchen.observability.metrics.enabled` | `true` | The operator's half of the environment history: restarts, OOM kills, configured limits and replica counts, sampled off the API server and exported to the agent over OTLP. CPU and memory come from the agent's kubelet scrape instead. |

@@ -34,13 +34,16 @@ import (
 // it can be edited from here rather than through another `helm upgrade`.
 
 type settingsView struct {
-	BaseDomain       string          `json:"baseDomain"`
-	APIExternalURL   string          `json:"apiExternalURL,omitempty"`
-	GatewayClassName string          `json:"gatewayClassName,omitempty"`
-	AuthEnabled      bool            `json:"authEnabled"`
-	AuthHost         string          `json:"authHost,omitempty"`
-	BuildStrategy    string          `json:"buildStrategy,omitempty"`
-	BuildConcurrency int32           `json:"buildConcurrency,omitempty"`
+	BaseDomain       string `json:"baseDomain"`
+	APIExternalURL   string `json:"apiExternalURL,omitempty"`
+	GatewayClassName string `json:"gatewayClassName,omitempty"`
+	AuthEnabled      bool   `json:"authEnabled"`
+	AuthHost         string `json:"authHost,omitempty"`
+	BuildStrategy    string `json:"buildStrategy,omitempty"`
+	BuildConcurrency int32  `json:"buildConcurrency,omitempty"`
+	// No omitempty: 0 is a setting here — keep every release — not an absent
+	// one, and the dashboard has to be able to tell the two apart.
+	ReleaseRetention int32           `json:"releaseRetention"`
 	LogRetentionDays int32           `json:"logRetentionDays,omitempty"`
 	GatewayAddress   string          `json:"gatewayAddress,omitempty"`
 	Conditions       []conditionView `json:"conditions,omitempty"`
@@ -54,6 +57,7 @@ func newSettingsView(kitchen *kitchenv1alpha1.Kitchen) settingsView {
 		AuthEnabled:      kitchen.Spec.Auth.Enabled,
 		BuildStrategy:    string(kitchen.Spec.Builds.DefaultStrategy),
 		BuildConcurrency: kitchen.Spec.Builds.Concurrency,
+		ReleaseRetention: kitchen.Spec.Builds.ReleaseRetention,
 		LogRetentionDays: kitchen.Spec.Observability.ClickHouse.RetentionDays,
 		GatewayAddress:   kitchen.Status.GatewayAddress,
 		Conditions:       conditionViews(kitchen.Status.Conditions),
@@ -86,6 +90,7 @@ func (s *Server) getSettings(w http.ResponseWriter, req *http.Request) {
 type patchSettingsRequest struct {
 	BuildStrategy    *string `json:"buildStrategy"`
 	BuildConcurrency *int32  `json:"buildConcurrency"`
+	ReleaseRetention *int32  `json:"releaseRetention"`
 	LogRetentionDays *int32  `json:"logRetentionDays"`
 }
 
@@ -119,6 +124,16 @@ func (s *Server) patchSettings(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 		kitchen.Spec.Builds.Concurrency = *body.BuildConcurrency
+	}
+	if body.ReleaseRetention != nil {
+		// Zero is the one setting here that means "no bound": every release a
+		// project ever built is kept, which is what the platform did before
+		// there was a count at all.
+		if *body.ReleaseRetention < 0 {
+			badRequest(w, "releaseRetention cannot be negative (got %d); 0 keeps every release", *body.ReleaseRetention)
+			return
+		}
+		kitchen.Spec.Builds.ReleaseRetention = *body.ReleaseRetention
 	}
 	if body.LogRetentionDays != nil {
 		if *body.LogRetentionDays < 1 {

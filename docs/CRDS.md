@@ -327,7 +327,7 @@ kind: Release
 metadata:
   name: my-shop-rel-000042
   ownerReferences: [Project my-shop]
-spec:                                   # fully immutable (enforced by webhook)
+spec:                                   # fully immutable (CEL rule on the CRD)
   projectRef: { name: my-shop }
   buildRef: { name: my-shop-bld-8f3a2c1 }
   image: harbor.example.com/kitchen/my-shop@sha256:ab12...
@@ -339,6 +339,26 @@ spec:                                   # fully immutable (enforced by webhook)
 status:
   environments: [my-shop-production, my-shop-pr-42]   # where it's live (informational)
 ```
+
+Immutability is a CEL transition rule (`self == oldSelf`) on the CRD, not a webhook:
+the platform ships no admission webhook of its own, and the rule is stronger than one
+anyway — an edit is refused by the API server before it is ever written, with the
+message `Release spec is immutable`. A snapshot that could be edited afterwards would
+not be a snapshot, and instant rollback would stop being exact, which is the whole
+justification for the kind.
+
+Reconcile: **maintain `status.environments`** by watching Environments and mapping each
+back to the Release it references. The relationship is only declared in the other
+direction (`Environment.spec.releaseRef`), so without this, answering "which release is
+production on?" means listing every Environment and matching refs by hand. It is
+informational and eventually consistent by design.
+
+Retention: keep the newest `Kitchen.spec.builds.releaseRetention` Releases per project
+(10 by default; `0` keeps every one). A Release an Environment still points at is kept
+on top of that count however old it is — an environment parked on release 3 while forty
+more were built still has release 3 to roll back to. The image the pruned Release named
+is left in the registry: reclaiming that needs a per-provider delete API and a count of
+what else shares the digest.
 
 ## `Environment` (namespaced: kitchen-system)
 
@@ -645,7 +665,8 @@ exact (config was snapshotted). The UI's rollback button is a one-line patch.
 - Every CR uses `metav1.Conditions` in status; the UI reads conditions, not phases,
   for detail (phases are the coarse summary).
 - Owner references throughout: deleting a Project cascades to everything.
-- Builds/Releases are immutable after creation (validating webhook) and garbage-collected
-  by count per project, never by the operator "cleaning up" something an Environment
-  still references.
+- Builds/Releases are immutable after creation — a CEL transition rule on the CRD, so
+  the API server refuses the edit and no admission webhook is needed — and
+  garbage-collected by count per project, never by the operator "cleaning up" something
+  an Environment still references.
 - Cross-references are by name within `kitchen-system` — no cross-namespace refs in v1alpha1.
