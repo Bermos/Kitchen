@@ -759,6 +759,7 @@ func routes() []struct{ method, path string } {
 		}
 		pattern = strings.ReplaceAll(pattern, "{name}", "x")
 		pattern = strings.ReplaceAll(pattern, "{traceId}", "x")
+		pattern = strings.ReplaceAll(pattern, "{key}", "x")
 		out = append(out, struct{ method, path string }{method, pattern})
 	}
 	return out

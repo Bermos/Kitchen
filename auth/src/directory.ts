@@ -1,6 +1,13 @@
 import type { Auth } from "./auth.js";
-import { normalizeEmail, peopleOnly } from "./bootstrap.js";
 import type { Config } from "./config.js";
+import { isLabel, LABEL_RULE, listPeople, normalizeEmail } from "./identity.js";
+import {
+	createProjectKey,
+	deleteProjectKey,
+	KeyExistsError,
+	listProjectKeys,
+	type ProjectKey,
+} from "./keys.js";
 import { log } from "./log.js";
 
 /**
@@ -16,10 +23,13 @@ import { log } from "./log.js";
  * chart ships, which is why it is a private prefix rather than an extension
  * of anything standard.
  *
- * It is deliberately narrow. It reads accounts, and it does not create,
- * change or delete one: an account nobody can enumerate is an operator list
- * nobody can seed (issue #104) and a people-picker that cannot resolve an
- * address (issue #106), and that is the whole of the need.
+ * It is deliberately narrow. Over accounts it only reads — who exists, and
+ * who holds an address — because an account nobody can enumerate is an
+ * operator list nobody can seed (issue #104) and a people-picker that cannot
+ * resolve an address (issue #106). The one thing it writes is a CI key and
+ * the machine account that owns it (issue #111), which the operator cannot
+ * do for itself: a key has to exist at the issuer, because the issuer is
+ * where a key is verified and where revoking one takes effect.
  */
 export const KITCHEN_API_PREFIX = "/kitchen";
 
@@ -48,6 +58,8 @@ export interface KitchenRequest {
 	/** Path with the trailing slash already stripped, e.g. /kitchen/accounts. */
 	path: string;
 	query: URLSearchParams;
+	/** The decoded JSON body, or an empty object for a request without one. */
+	body: Record<string, unknown>;
 	apiKey: string | null;
 }
 
@@ -58,9 +70,9 @@ export interface KitchenResponse {
 }
 
 /**
- * A route under the prefix. Issue #111 adds API-key endpoints here by adding
- * entries to the table below; the credential check in front of it is the
- * prefix's, so a route added later cannot forget to make it.
+ * A route under the prefix. New endpoints are entries in the table below; the
+ * credential check in front of it is the prefix's, so a route added later
+ * cannot forget to make it.
  */
 interface KitchenRoute {
 	method: string;
@@ -70,6 +82,9 @@ interface KitchenRoute {
 
 const routes: KitchenRoute[] = [
 	{ method: "GET", path: `${KITCHEN_API_PREFIX}/accounts`, handle: getAccounts },
+	{ method: "GET", path: `${KITCHEN_API_PREFIX}/keys`, handle: getKeys },
+	{ method: "POST", path: `${KITCHEN_API_PREFIX}/keys`, handle: postKey },
+	{ method: "DELETE", path: `${KITCHEN_API_PREFIX}/keys`, handle: deleteKey },
 ];
 
 /** Whether a path belongs to this prefix at all. */
@@ -207,22 +222,85 @@ async function getAccounts(auth: Auth, config: Config, request: KitchenRequest):
 
 /** Every account that belongs to a person, oldest first. */
 async function listAccounts(auth: Auth, config: Config): Promise<Account[]> {
-	const ctx = await auth.$context;
-	const users = await ctx.adapter.findMany<{
-		id: string;
-		email: string;
-		name?: string | null;
-		emailVerified?: boolean | null;
-	}>({
-		model: "user",
-		where: peopleOnly(config),
-		sortBy: { field: "createdAt", direction: "asc" },
-	});
-
+	const users = await listPeople(auth, config);
 	return users.map((user) => ({
 		subject: user.id,
 		email: user.email,
 		name: user.name ?? "",
 		emailVerified: Boolean(user.emailVerified),
 	}));
+}
+
+/**
+ * The CI keys a project has, the one it is given, and the one it takes away.
+ *
+ * All three answer on `/kitchen/keys` and address a key by the two things
+ * that name it — its project and its name — rather than by the machine
+ * account's `sub`, which is opaque and which the operator would have to have
+ * looked up first to create anything at all.
+ *
+ * Only the creation reveals a key value, and only in that one response. There
+ * is no read that returns it and no way to recover it: the key is stored
+ * hashed, exactly as the api-key plugin stores every other one.
+ */
+async function getKeys(auth: Auth, _config: Config, request: KitchenRequest): Promise<KitchenResponse> {
+	const project = (request.query.get("project") ?? "").trim();
+	const refusal = badLabel("project", project);
+	if (refusal) {
+		return refusal;
+	}
+	return { status: 200, body: { keys: await listProjectKeys(auth, project) } };
+}
+
+async function postKey(auth: Auth, _config: Config, request: KitchenRequest): Promise<KitchenResponse> {
+	const project = text(request.body.project);
+	const name = text(request.body.name);
+	const refusal = badLabel("project", project) ?? badLabel("name", name);
+	if (refusal) {
+		return refusal;
+	}
+
+	try {
+		return { status: 201, body: await createProjectKey(auth, project, name) };
+	} catch (error) {
+		if (error instanceof KeyExistsError) {
+			return { status: 409, body: { error: error.message } };
+		}
+		throw error;
+	}
+}
+
+async function deleteKey(auth: Auth, _config: Config, request: KitchenRequest): Promise<KitchenResponse> {
+	const project = (request.query.get("project") ?? "").trim();
+	const name = (request.query.get("name") ?? "").trim();
+	const refusal = badLabel("project", project) ?? badLabel("name", name);
+	if (refusal) {
+		return refusal;
+	}
+
+	const removed: ProjectKey | null = await deleteProjectKey(auth, project, name);
+	if (!removed) {
+		return { status: 404, body: { error: `${project} has no key called ${name}` } };
+	}
+	return { status: 200, body: removed };
+}
+
+/** One string field of a request body, and the empty string for anything else. */
+function text(value: unknown): string {
+	return typeof value === "string" ? value.trim() : "";
+}
+
+/**
+ * The refusal for a project or key name that is not a label, or null when it
+ * is one. Both halves of a machine account's address have to be labels for
+ * the address to stay parseable — see src/identity.ts.
+ */
+function badLabel(field: string, value: string): KitchenResponse | null {
+	if (isLabel(value)) {
+		return null;
+	}
+	return {
+		status: 400,
+		body: { error: `${field} must be ${LABEL_RULE} (got ${JSON.stringify(value)})` },
+	};
 }

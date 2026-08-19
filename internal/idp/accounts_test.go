@@ -71,7 +71,7 @@ func newDirectoryServer(t *testing.T, accounts ...Account) *directoryServer {
 }
 
 func directoryConfig(server *directoryServer) Config {
-	return Config{Issuer: publicIssuer, BaseURL: server.URL, ServiceKey: "service-key"}
+	return Config{Issuer: publicIssuer, BaseURL: server.URL, ServiceKey: testServiceKey}
 }
 
 var (
@@ -91,7 +91,7 @@ func TestAccountsReadsTheDirectory(t *testing.T) {
 	if len(accounts) != 2 || accounts[0] != anna || accounts[1] != bo {
 		t.Fatalf("the directory answered %+v", accounts)
 	}
-	if server.request.apiKey != "service-key" {
+	if server.request.apiKey != testServiceKey {
 		t.Fatal("the read went out without the operator's credential")
 	}
 	// Reached at its Service address, the issuer is still asked for by name.

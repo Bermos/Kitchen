@@ -51,6 +51,15 @@ type stubDirectory struct {
 	accounts map[string]idp.Account
 	err      error
 	asked    []string
+
+	// The key half, which keys_test.go drives: one machine account per key,
+	// stored per project the way the identity provider stores them, and an
+	// error per operation for the paths where the issuer will not answer.
+	keys      map[string][]idp.Key
+	deleted   []string
+	keysErr   error
+	createErr error
+	deleteErr error
 }
 
 func (d *stubDirectory) AccountByEmail(_ context.Context, email string) (*idp.Account, error) {

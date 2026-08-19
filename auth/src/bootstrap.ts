@@ -1,33 +1,9 @@
 import { timingSafeEqual } from "node:crypto";
 
-import type { Where } from "better-auth/types";
-
 import type { Auth } from "./auth.js";
 import type { Config } from "./config.js";
+import { listPeople, normalizeEmail } from "./identity.js";
 import { log } from "./log.js";
-
-/**
- * Accounts that belong to a person.
- *
- * The service account that owns the operator's API key is a credential with a
- * row in the user table, not somebody who signs in — so it is not what makes
- * an installation bootstrapped, and it is not in the account directory the
- * operator seeds its operator list from. This is the one place that line is
- * drawn: two places drawing it slightly differently is how the platform ends
- * up believing it has an administrator it does not have.
- */
-export function peopleOnly(config: Config): Where[] {
-	return [{ field: "email", operator: "ne", value: config.serviceAccountEmail }];
-}
-
-/**
- * Normalises an email address for comparison: addresses are not
- * case-sensitive, so an account created as Anna@Example.com is the one a
- * lookup for anna@example.com means.
- */
-export function normalizeEmail(email: string): string {
-	return email.trim().toLowerCase();
-}
 
 /**
  * The first administrator.
@@ -38,13 +14,14 @@ export function normalizeEmail(email: string): string {
  * still lying around in the Secret. That makes the token one-time without
  * needing state of its own — the account it creates is the state.
  *
- * The service account that owns the operator's API key is not a person and
- * does not count.
+ * Only a person counts. The service account that owns the operator's API key
+ * does not, and neither does a machine account holding a CI key — both are
+ * credentials with a row in the user table, and an installation whose only
+ * accounts are credentials has nobody who can sign in. src/identity.ts is
+ * where that line is drawn, and this asks it rather than restating it.
  */
 export async function isBootstrapped(auth: Auth, config: Config): Promise<boolean> {
-	const ctx = await auth.$context;
-	const people = await ctx.adapter.count({ model: "user", where: peopleOnly(config) });
-	return people > 0;
+	return (await listPeople(auth, config)).length > 0;
 }
 
 export function tokenMatches(expected: string | undefined, provided: string | null): boolean {

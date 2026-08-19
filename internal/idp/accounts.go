@@ -17,6 +17,7 @@ limitations under the License.
 package idp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -117,14 +118,38 @@ func (c *Client) AccountByEmail(ctx context.Context, email string) (*Account, er
 	return account, nil
 }
 
-// getDirectory performs one authenticated read of the account directory.
-// what names the operation the error message is about.
+// getDirectory performs one authenticated read of the directory. `what` names
+// the operation the error message is about.
 func (c *Client) getDirectory(ctx context.Context, endpoint, what string) ([]byte, error) {
-	req, err := c.request(ctx, http.MethodGet, endpoint, nil)
+	return c.callDirectory(ctx, http.MethodGet, endpoint, nil, what)
+}
+
+// callDirectory performs one authenticated call into the operator's prefix on
+// the identity provider, and is the whole of how this package talks to it.
+//
+// The two statuses that mean something to a caller are lifted out as
+// sentinels: a 404 means the thing asked about is not there — or that the
+// issuer has never heard of the prefix, which a caller can only act on the
+// same way — and a 409 means the thing asked for is already there. Everything
+// else is a fault report, carrying the issuer's own words.
+func (c *Client) callDirectory(
+	ctx context.Context,
+	method, endpoint string,
+	body []byte,
+	what string,
+) ([]byte, error) {
+	var payload io.Reader
+	if body != nil {
+		payload = bytes.NewReader(body)
+	}
+	req, err := c.request(ctx, method, endpoint, payload)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("accept", "application/json")
+	if body != nil {
+		req.Header.Set("content-type", "application/json")
+	}
 	req.Header.Set(serviceKeyHeader, c.cfg.ServiceKey)
 
 	res, err := c.http.Do(req)
@@ -133,20 +158,26 @@ func (c *Client) getDirectory(ctx context.Context, endpoint, what string) ([]byt
 	}
 	defer func() { _ = res.Body.Close() }()
 
-	body, err := io.ReadAll(io.LimitReader(res.Body, 1<<20))
+	answer, err := io.ReadAll(io.LimitReader(res.Body, 1<<20))
 	if err != nil {
 		return nil, err
 	}
 	switch {
 	case res.StatusCode == http.StatusNotFound:
 		return nil, errDirectoryNotFound
-	case res.StatusCode != http.StatusOK:
-		return nil, fmt.Errorf("%s: %s: %s", what, res.Status, summarize(body))
+	case res.StatusCode == http.StatusConflict:
+		return nil, fmt.Errorf("%w: %s", errDirectoryConflict, summarize(answer))
+	case res.StatusCode < 200 || res.StatusCode > 299:
+		return nil, fmt.Errorf("%s: %s: %s", what, res.Status, summarize(answer))
 	}
-	return body, nil
+	return answer, nil
 }
 
 // errDirectoryNotFound is the unwrapped 404, which means one thing to a
 // listing and another to a lookup; each caller turns it into the one the
 // caller above it can act on.
 var errDirectoryNotFound = errors.New("404")
+
+// errDirectoryConflict is the unwrapped 409: the name a write asked for is
+// taken.
+var errDirectoryConflict = errors.New("409")

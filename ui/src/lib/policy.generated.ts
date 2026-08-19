@@ -64,6 +64,9 @@ export type Route =
   | "POST /api/v1/projects/{name}/members"
   | "PATCH /api/v1/projects/{name}/members"
   | "DELETE /api/v1/projects/{name}/members"
+  | "GET /api/v1/projects/{name}/keys"
+  | "POST /api/v1/projects/{name}/keys"
+  | "DELETE /api/v1/projects/{name}/keys/{key}"
   | "GET /api/v1/builds"
   | "GET /api/v1/builds/{name}"
   | "POST /api/v1/builds/{name}/cancel"
@@ -149,6 +152,9 @@ export const POLICY: Readonly<Record<Route, Requirement>> = {
   "POST /api/v1/projects/{name}/members": { kind: "projectRole", role: "admin", doing: "adding somebody to a project" },
   "PATCH /api/v1/projects/{name}/members": { kind: "projectRole", role: "admin", doing: "changing somebody's role on a project" },
   "DELETE /api/v1/projects/{name}/members": { kind: "projectRole", role: "admin", doing: "removing somebody from a project" },
+  "GET /api/v1/projects/{name}/keys": { kind: "projectRole", role: "admin", doing: "reading a project's CI keys" },
+  "POST /api/v1/projects/{name}/keys": { kind: "projectRole", role: "admin", doing: "issuing a CI key for a project" },
+  "DELETE /api/v1/projects/{name}/keys/{key}": { kind: "projectRole", role: "admin", doing: "revoking a project's CI key" },
   "GET /api/v1/builds": { kind: "visibleProjects" },
   "GET /api/v1/builds/{name}": { kind: "projectRole", role: "viewer", doing: "reading a build" },
   "POST /api/v1/builds/{name}/cancel": { kind: "projectRole", role: "developer", doing: "cancelling a build" },

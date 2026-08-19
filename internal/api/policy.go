@@ -202,6 +202,18 @@ func (s *Server) routes() []route {
 		{"DELETE /api/v1/projects/{name}/members", s.removeMember,
 			onProject(access.ProjectAdmin, ofProject, "removing somebody from a project")},
 
+		// CI keys. A key is a member of the project — a machine account with a
+		// grant in the same `spec.access` (keys.go) — so issuing one is adding
+		// a member, and adding a member is admin's. The list is admin's for
+		// the same reason the membership list is: it is the membership list,
+		// with the non-human half of it shown.
+		{"GET /api/v1/projects/{name}/keys", s.listKeys,
+			onProject(access.ProjectAdmin, ofProject, "reading a project's CI keys")},
+		{"POST /api/v1/projects/{name}/keys", s.createKey,
+			onProject(access.ProjectAdmin, ofProject, "issuing a CI key for a project")},
+		{"DELETE /api/v1/projects/{name}/keys/{key}", s.deleteKey,
+			onProject(access.ProjectAdmin, ofProject, "revoking a project's CI key")},
+
 		// Builds.
 		{"GET /api/v1/builds", s.listBuilds, acrossProjects()},
 		{"GET /api/v1/builds/{name}", s.getBuild, onProject(access.ProjectViewer, ofBuild, "reading a build")},

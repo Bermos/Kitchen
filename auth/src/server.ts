@@ -212,10 +212,24 @@ export function createServer(auth: Auth, config: Config, pool: Pool): Server {
 		// better-auth might route there later. They answer to the operator's
 		// service credential and to nothing else — see src/directory.ts.
 		if (isKitchenPath(path)) {
+			// A body is read only for the methods that carry one, so a GET or
+			// a DELETE under the prefix cannot be refused over a body it never
+			// sent. Unreadable JSON is the caller's fault and is said so here,
+			// before the routing table is consulted at all.
+			let body: Record<string, unknown> = {};
+			if (req.method === "POST" || req.method === "PUT" || req.method === "PATCH") {
+				try {
+					body = await readBody(req);
+				} catch (error) {
+					sendJSON(res, 400, { error: String(error instanceof Error ? error.message : error) });
+					return;
+				}
+			}
 			const answer = await handleKitchenRequest(auth, config, {
 				method: req.method ?? "GET",
 				path,
 				query: url.searchParams,
+				body,
 				apiKey: headerValue(req, "x-api-key"),
 			});
 			sendJSON(res, answer.status, answer.body);

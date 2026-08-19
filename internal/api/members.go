@@ -64,10 +64,39 @@ type memberView struct {
 	Subject string `json:"subject"`
 	Email   string `json:"email,omitempty"`
 	Role    string `json:"role"`
+	// Kind is what holds this grant: "account" for a person, "key" for the
+	// machine account behind a CI key (keys.go). Keys and people are one list
+	// — a key is a member of the project like anybody else — and this is what
+	// lets that list say which it is showing rather than rendering a robot as
+	// somebody with an odd address.
+	//
+	// It is derived from the address, which is the machine account's own, and
+	// it is a display rule and nothing more: no access decision anywhere reads
+	// it. internal/access resolves a role from the subject alone.
+	Kind string `json:"kind"`
+	// Name is the key's name, for a grant held by one. A person's grant
+	// carries no name — `spec.access` records a subject and an address — so
+	// it is empty there rather than guessed at.
+	Name string `json:"name,omitempty"`
 }
 
+// The two values Kind takes.
+const (
+	memberKindAccount = "account"
+	memberKindKey     = "key"
+)
+
 func newMemberView(grant kitchenv1alpha1.AccessGrant) memberView {
-	return memberView{Subject: grant.Subject, Email: grant.Email, Role: string(grant.Role)}
+	view := memberView{
+		Subject: grant.Subject,
+		Email:   grant.Email,
+		Role:    string(grant.Role),
+		Kind:    memberKindAccount,
+	}
+	if _, name, ok := idp.MachineIdentity(grant.Email); ok {
+		view.Kind, view.Name = memberKindKey, name
+	}
+	return view
 }
 
 // addMemberRequest adds somebody to a project.
@@ -113,11 +142,19 @@ type removeMemberRequest struct {
 }
 
 // accountDirectory is the slice of the identity provider this package needs:
-// an address resolved to the account that holds it. It is an interface for the
-// same reason logReader is — a test must be able to answer without an issuer
-// to talk to.
+// an address resolved to the account that holds it, and the machine accounts
+// a project's CI keys are (keys.go). It is an interface for the same reason
+// logReader is — a test must be able to answer without an issuer to talk to.
+//
+// The four are one interface because they are one connection, resolved off
+// the platform's own identity-provider secret. Splitting them would mean two
+// resolutions of the same thing, which is two ways for the platform to
+// disagree with itself about which issuer it is talking to.
 type accountDirectory interface {
 	AccountByEmail(ctx context.Context, email string) (*idp.Account, error)
+	Keys(ctx context.Context, project string) ([]idp.Key, error)
+	CreateKey(ctx context.Context, project, name string) (*idp.IssuedKey, error)
+	DeleteKey(ctx context.Context, project, name string) (*idp.Key, error)
 }
 
 // errNoAccountDirectory is what a resolution answers on an installation whose
@@ -539,8 +576,12 @@ func lastAdminRefusal(project *kitchenv1alpha1.Project, grant kitchenv1alpha1.Ac
 
 // describeMember is the member as a person reading a refusal knows them: the
 // address when the entry carries one, and the opaque subject when it does not,
-// which is at least the string they would have typed.
+// which is at least the string they would have typed. A machine account is
+// named as what it is, since nobody knows it by its address.
 func describeMember(grant kitchenv1alpha1.AccessGrant) string {
+	if project, name, ok := idp.MachineIdentity(grant.Email); ok {
+		return fmt.Sprintf("the key %s on %s", name, project)
+	}
 	if grant.Email != "" {
 		return grant.Email
 	}

@@ -64,6 +64,23 @@ That token's audience is the issuer, which the API accepts. The key itself
 never reaches the operator, so a leaked API key is revoked in one place and
 the operator has nothing to invalidate.
 
+**What that token may do is a project role, and nothing else.** A key belongs
+to a machine account created for it, and the project it was made for holds a
+grant for that account in `spec.access` — `developer` by default, which is the
+day job: builds, promotions, rollbacks, environment variables, logs. So a key
+is a member of exactly one project and has no platform surface at all: it can
+trigger a build on `shop` and it cannot change the base domain, read another
+project, or see that another project exists. Nothing about the role is stored
+on the key, and there is no fourth role for machines — it is an ordinary grant
+on an ordinary project, which is why a key can never outrank the project it was
+made for. See [Keys for CI](#keys-for-ci) for issuing one, and
+[AUTH.md](AUTH.md#machine-accounts) for why it is built this way.
+
+**Revocation is at the issuer.** Deleting a key stops it working immediately,
+and the operator has nothing to invalidate because it never held anything;
+`DELETE /projects/{name}/keys/{key}` deletes it there and takes the grant off
+the project in the same request.
+
 ## Authorization
 
 A token says **who** the caller is. What they may do is Kitchen's own answer,
@@ -141,6 +158,9 @@ sent the request. The `Requires` column is explained under
 | POST | `/projects/{name}/members` | Give somebody a role. The address is resolved to a `sub` before it is written | `admin` |
 | PATCH | `/projects/{name}/members` | Move a member to another role | `admin` |
 | DELETE | `/projects/{name}/members` | Take a member off the project | `admin` |
+| GET | `/projects/{name}/keys` | That project's CI keys — never their values | `admin` |
+| POST | `/projects/{name}/keys` | Issue one. The key is answered once, and the grant is written with it | `admin` |
+| DELETE | `/projects/{name}/keys/{key}` | Revoke one, and take its grant off the project | `admin` |
 | GET | `/builds` | Every build. `?project=` filters | any account — filtered |
 | GET | `/builds/{name}` | One build | `viewer` |
 | POST | `/builds/{name}/cancel` | Stop it — the Build stays, phase `Cancelled` | `developer` |
@@ -384,13 +404,15 @@ their role rather than adding a second entry.
 {"subject": "svc_ci", "role": "developer"}
 ```
 
-That is for an identity with no address to resolve — a machine account, whose
-API key is exchanged for an ordinary platform token — and for an installation
+That is for an identity with no address to resolve, and for an installation
 federated to an issuer that serves no account directory, where resolving an
 address answers `503` saying exactly this. Exactly one of `email` and
 `subject` is required, and a `subject` that looks like an address is refused:
 pass it as `email`, so it is resolved rather than stored as the weaker
-verified-address grant.
+verified-address grant. A CI key is a machine account and so is one of these
+grants, but it is not written this way — [`POST
+/projects/{name}/keys`](#keys-for-ci) creates the account, the credential and
+the grant together, which is the only way to end up with all three.
 
 **A member is addressed by `subject` in the body, not in the path**, on both of
 the writes that change one:
@@ -431,6 +453,96 @@ a project short of deleting it, and — like a deletion — removing one leaves 
 trace anywhere else once the entry is gone. The writes also carry the caller's
 `resourceVersion`, so two admins editing the list at the same time get a `409`
 rather than one of them silently overwriting the other's decision.
+
+### Keys for CI
+
+A key is a member of the project, so its routes sit next to the membership
+ones and want the same role: **project `admin`**, because issuing a key is
+adding a member.
+
+**A key is owned by a machine account created for it.** That is the part worth
+knowing, because the obvious reading is wrong: the identity provider's api-key
+plugin runs with `enableSessionForAPIKeys`, and the session it mints for a key
+is a session for *the account the key belongs to*. So the `sub` in the token a
+key is exchanged for is its owner's, and granting "the key's subject" a role
+would grant it to whoever created the key, on their own account. Every key
+therefore gets an owner of its own — an account that is not a person, holds
+that one key, and exists only to have a `sub` the project can grant a role to.
+
+```sh
+curl -sS -X POST -H "authorization: Bearer $TOKEN" \
+  -d '{"name": "nightly"}' \
+  https://kitchen.apps.example.com/api/v1/projects/shop/keys
+{"name": "nightly", "subject": "user_01K4M…",
+ "email": "shop.nightly@machines.kitchen.local", "role": "developer",
+ "prefix": "9f3a1c", "created": "2026-08-19T09:12:44Z",
+ "key": "9f3a1c…"}
+```
+
+**`key` is in that response and in no other.** It is stored hashed, exactly as
+every other key at the issuer is, so a lost key is deleted and reissued rather
+than looked up. Every read answers the `prefix` alone, which is enough to tell
+two keys apart and useless as a credential.
+
+**Creating writes both halves, or neither.** The key at the issuer and the
+grant in `spec.access` are the whole of the feature: a key nothing has granted
+anything to authenticates and can do nothing, which reads as a broken platform.
+So if the grant cannot be written the key is taken back before the request
+answers, and in the one case where it cannot be taken back either, the error
+says so and names the key rather than leaving a credential nobody knows about.
+
+`role` is optional and defaults to `developer`. `viewer` is the other value, for
+a key that only reads; `admin` is refused, because admin is the role that issues
+keys and a credential in a build pipeline that can mint its own successors is one
+nobody can account for. A narrower role than `developer` — a `deployer` that can
+build and promote and nothing else — is
+[deliberately open](AUTH.md#machine-accounts) and would arrive as another value
+here.
+
+**A key name is a DNS label**, lowercase letters, digits and dashes, at most 32
+characters — it addresses the key in the path, and it is half of the machine
+account's own address at the issuer. One name per project: the same name twice
+is a `409`, because two credentials behind one grant would make "revoke that
+key" ambiguous.
+
+```sh
+curl -sS -H "authorization: Bearer $TOKEN" \
+  https://kitchen.apps.example.com/api/v1/projects/shop/keys
+{"items": [
+   {"name": "nightly", "subject": "user_01K4M…",
+    "email": "shop.nightly@machines.kitchen.local", "role": "developer",
+    "prefix": "9f3a1c", "created": "2026-08-19T09:12:44Z",
+    "lastUsed": "2026-08-19T09:40:02Z"}]}
+
+curl -sS -X DELETE -H "authorization: Bearer $TOKEN" \
+  https://kitchen.apps.example.com/api/v1/projects/shop/keys/nightly
+```
+
+`role` on a listed key is read from `spec.access`, not from anything stored on
+the key. A key listed with no role is one whose grant has been removed — it can
+authenticate and do nothing, and the listing says so rather than hiding it.
+
+**`DELETE` revokes and un-grants, in that order**, and answers `204`. The
+credential goes first because that is the half that matters: a grant naming an
+account that no longer exists is a line to tidy up, and a key that still works
+is not. Both writes are recorded in the [audit log](#the-audit-log) as updates
+to the `Project`, the same way a membership change is.
+
+**Keys and people are one list.** A key's grant appears in
+`GET /projects/{name}/members` like anybody else's, carrying `"kind": "key"`
+and the key's name so it reads as what it is rather than as a stranger with an
+odd address:
+
+```json
+{"subject": "user_01K4M…", "email": "shop.nightly@machines.kitchen.local",
+ "role": "developer", "kind": "key", "name": "nightly"}
+```
+
+`kind` is derived from the address and is a display rule only — no access
+decision anywhere reads it, and a role is resolved from the subject alone.
+
+An installation federated to an issuer of its own serves no key endpoints: all
+three answer `503` saying so, because keys are that issuer's to hand out.
 
 ### Deleting a project
 
@@ -1924,6 +2036,7 @@ for that reader anyway.
 | Token validation | Stateless, against the issuer's JWKS | No session state in the operator; the identity provider stays swappable |
 | Token audience | The API's own URL (`resource=`), or the issuer | A resource server should be able to tell a token meant for it from a token meant for everything |
 | CI tokens | better-auth's api-key plugin, exchanged for a JWT at the issuer | The plugin already holds the operator's own credential; keeping key lookup at the issuer keeps the operator's request path stateless |
+| What a CI key may do | A project role on a machine account created for the key, in the same `spec.access` as everybody else's | A key that carried permissions of its own would be a second permission system; a grant on the project means a key cannot outrank the project it was made for, and revocation stays at the issuer |
 | Response shapes | The API's own vocabulary, not raw custom resources | A stable contract for the UI, and freedom to change how state is stored |
 | Write surface | The full project, connection and claim lifecycle, rebuild and cancel, promote/rollback, preview teardown, and the settings' runtime defaults | Nothing a user does in the platform's normal running should need `kubectl`; domain writes wait for their reconciler, because a write over objects nothing reconciles only looks like it works |
 | Credentials | Write-only: the operator stores them in Secrets and never echoes them | "Credentials never leave the operator" survives the API growing a write surface |

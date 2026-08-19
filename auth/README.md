@@ -21,6 +21,7 @@ Everything is mounted at the root, so the issuer is the origin itself:
 | `/oauth2/register` | Dynamic client registration (authenticated) |
 | `/login`, `/consent` | The hosted pages the provider redirects to |
 | `/bootstrap` | First-administrator flow, see below |
+| `/kitchen/*` | Kitchen's own prefix, for the operator's service credential only — see below |
 | `/healthz`, `/readyz` | Probes; readiness additionally requires Postgres |
 
 Plugins: OAuth/OIDC provider, SSO (upstream OIDC and SAML providers), social
@@ -60,6 +61,51 @@ start, owned by a machine account. The operator sends it as `x-api-key` and can
 then register OAuth clients — the mechanism behind `ResourceClaim` type
 `oidcClient`. Rotating the value in the Secret and restarting replaces the key;
 the previous one is dropped.
+
+## The operator's own prefix
+
+`/kitchen/*` is Kitchen's, not better-auth's. It answers to the operator's
+service credential and to nothing else — not to a signed-in administrator, and
+not to a CI key, which is an ordinary account's credential. It exists because
+the platform needs two things OpenID Connect has no answer to.
+
+| | |
+|---|---|
+| `GET /kitchen/accounts` | Every account that belongs to a **person**, or the one holding `?email=`. It is what the operator list is seeded from and what the dashboard's people picker resolves an address with |
+| `GET /kitchen/keys?project=` | A project's CI keys: name, subject, address, prefix, created, last used. Never a key value |
+| `POST /kitchen/keys` | Create a machine account and the one key it owns. The key value is in this response and in no other |
+| `DELETE /kitchen/keys?project=&name=` | Revoke the key and delete the machine account, answering the subject so the caller can take the grant off the project |
+
+### Machine accounts, and why keys need them
+
+The api-key plugin runs with `enableSessionForAPIKeys`, which is easy to read
+as "a key is an identity". It is not: the session the plugin mints for a key is
+a session for the account the key's `referenceId` points at, so the `sub` in the
+token a key is exchanged for at `/token` is **its owner's**. Granting "the key's
+subject" a project role would therefore grant it to whoever created the key, on
+their own account.
+
+So every CI key gets an owner of its own — a machine account holding that one
+key — and it is that account's `sub` the project grants a role to
+([docs/AUTH.md](../docs/AUTH.md#machine-accounts)). The convention lives in
+`src/identity.ts`:
+
+- A machine account's address is `<project>.<key>@machines.kitchen.local`. Both
+  halves are DNS labels, so the split is unambiguous, and the user table's
+  unique address is what enforces one key per name per project. The `.local`
+  domain is reserved (RFC 6762), so no real mailbox can collide with one.
+- The address is **never verified**. An access entry naming an address is
+  honoured only for a verified one, so a hand-written grant can never resolve
+  to a machine account by address — the only way to grant a key anything is its
+  `sub`.
+- Neither a machine account nor the service account is a **person**. That line
+  is drawn in one place, `isPerson`, and both `isBootstrapped` and the account
+  directory ask it: an installation whose only accounts are credentials still
+  has nobody who can sign in, and a people picker must not offer a robot.
+
+Nothing outside this service parses the address to make a decision. The operator
+is handed the `sub`; it reads the domain only to render a key's grant as a key
+rather than as a stranger with an odd address.
 
 ## Configuration
 
