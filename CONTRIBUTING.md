@@ -89,11 +89,32 @@ Nobody edits a version number by hand, and nobody writes the changelog.
    `ui/package.json` and `auth/package.json` with their lockfiles. The files
    are listed in `release-please-config.json`; a new one goes there, not into a
    release checklist.
-3. Review it as a release note. Merging it is the decision to release: it tags
-   `vX.Y.Z` and creates the GitHub release from the changelog entry.
+3. Review it as a release note. Merging it is the decision to release: it
+   creates the GitHub release from the changelog entry, **as a draft**.
 4. `.github/workflows/release.yml` then calls the publish workflow, which
    builds and pushes both images and packages and pushes the chart, all
    stamped `X.Y.Z`.
+5. Only once all three exist does its last job attach the chart to the draft,
+   append the resolved image and chart digests to the notes, and publish it.
+   Publishing the draft is what creates the `vX.Y.Z` tag — GitHub holds the
+   ref back for as long as a release is a draft.
+
+### Why the release is a draft until the artifacts exist
+
+A release object used to be created at step 3 and never revisited, which made
+it a promise the rest of the run could quietly fail to keep. It did, twice:
+`0.5.1` and `0.6.0` both died in the auth image build, published two images and
+no chart, and went on reading as finished releases that nobody could install.
+
+A draft cannot make that claim. If publish fails now, there is no tag and no
+visible release — only a draft to look at. Fix the cause and re-run **Publish**
+by hand with the same version: it finds the draft (by id when release.yml
+passes one, by tag name otherwise, which is why the lookup filters the release
+list rather than using the by-tag endpoint — that one does not serve drafts),
+attaches the artifacts and publishes it. That leaves
+`.release-please-manifest.json` naming a version with no tag behind it until
+the re-run finishes, which is the one window where the rule below about the
+manifest matching the newest tag is knowingly broken.
 
 This needs **Settings → Actions → General → Workflow permissions → "Allow
 GitHub Actions to create and approve pull requests"** to be on. Without it

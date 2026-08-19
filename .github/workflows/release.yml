@@ -6,6 +6,13 @@ name: Release
 # major, writes CHANGELOG.md and bumps the version everywhere it is written
 # down (release-please-config.json lists those files). Merging it tags the
 # commit and publishes the release; nothing here is decided by hand.
+#
+# The release object it creates is a *draft* ("draft": true in the config), and
+# publish.yml is what makes it public, after every artifact is pushed. Until
+# 0.6.0 the release was live the moment this job finished, so a publish that
+# died afterwards left a release announcing a version nobody could install:
+# 0.5.1 and 0.6.0 both shipped images with no chart behind them and read as
+# finished releases anyway. A draft cannot make that claim.
 
 on:
   push:
@@ -31,6 +38,9 @@ jobs:
       released: ${{ steps.release.outputs.release_created }}
       version: ${{ steps.release.outputs.version }}
       tag: ${{ steps.release.outputs.tag_name }}
+      # The draft publish.yml finalizes. Passed by id rather than looked up by
+      # tag, because a draft release has no tag ref to look it up by.
+      release_id: ${{ steps.release.outputs.id }}
     steps:
       - name: Run release-please
         id: release
@@ -50,8 +60,11 @@ jobs:
     uses: ./.github/workflows/publish.yml
     with:
       version: ${{ needs.release-please.outputs.version }}
+      release-id: ${{ needs.release-please.outputs.release_id }}
     permissions:
-      contents: read
+      # write, not read: the last job attaches the chart to the draft release
+      # and flips it live.
+      contents: write
       packages: write
       id-token: write
       attestations: write

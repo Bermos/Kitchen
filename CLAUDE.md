@@ -75,10 +75,19 @@ pre-1.0 reading of SemVer, not an oversight.
 
 Never edit a version number, and never write a changelog entry. Both are
 release-please's, driven by the commits on `main`: it keeps a release pull
-request open, and merging it tags `vX.Y.Z`, creates the GitHub release, and
+request open, and merging it creates the GitHub release as a **draft** and
 calls the publish workflow, which ships both images and the chart under that
-one number.
+one number and only then publishes the draft — which is also what creates the
+`vX.Y.Z` tag.
 
+- **The release is a draft until every artifact exists.** `"draft": true` in
+  `release-please-config.json` plus the `finalize` job in `publish.yml`, which
+  needs all three artifact jobs, attaches the chart, appends the resolved
+  digests to the notes and flips it live. The release object used to be written
+  before the artifacts, which is how `0.5.1` and `0.6.0` came to be live
+  releases with two images and no chart behind them. A publish that fails now
+  leaves a draft and no tag; re-running the Publish workflow by hand with the
+  same version finds the draft and finishes it.
 - **No release pull request is not a broken workflow.** release-please opens
   one only when the commits since the last tag contain something that bumps a
   version: `feat`, `fix`, `perf`, `revert`, or a breaking change. A batch of
@@ -111,7 +120,9 @@ one number.
   taken, and creating it fails. Tags published before release-please
   (`v0.1.0`–`v0.1.4`) were cut by hand and have no GitHub release object, so
   `bootstrap-sha` pins the commit range explicitly rather than trusting tag
-  discovery.
+  discovery. The one moment the manifest legitimately runs ahead of the tags is
+  between a merged release pull request and a finished publish, because the tag
+  arrives with the draft going live.
 - **The version reaches the running platform through the linker, not through a
   source file.** `internal/version.Version` defaults to `dev` and is set by
   `-ldflags` (`LDFLAGS` in the Makefile, `ARG VERSION` in the Dockerfile). It

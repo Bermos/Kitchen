@@ -14,11 +14,19 @@ on:
         description: "Version to publish, without the leading v (e.g. 0.2.0)"
         required: true
         type: string
+      release-id:
+        description: "Draft GitHub release to attach the artifacts to and publish"
+        required: false
+        type: string
   workflow_dispatch:
     inputs:
       version:
         description: "Version to publish, without the leading v (e.g. 0.2.0)"
         required: true
+        type: string
+      release-id:
+        description: "Draft GitHub release to publish (looked up by tag if empty)"
+        required: false
         type: string
 
 permissions:
@@ -67,6 +75,8 @@ jobs:
     name: Operator image
     runs-on: ubuntu-latest
     needs: version
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
     # A release is not allowed to hang. Every job here was unbounded until
     # 0.5.1, where the auth image sat in `Build and push` until the six-hour
     # job limit killed it: the chart job that needs it was skipped, and the
@@ -146,6 +156,8 @@ jobs:
     name: Auth image
     runs-on: ubuntu-latest
     needs: version
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
     timeout-minutes: 20
     permissions:
       contents: read
@@ -216,6 +228,8 @@ jobs:
     # to exist before the chart that points at them is published.
     needs: [version, image, auth-image]
     timeout-minutes: 15
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
     permissions:
       contents: read
       packages: write
@@ -259,10 +273,17 @@ jobs:
             | helm registry login ghcr.io --username '${{ github.actor }}' --password-stdin
 
       - name: Push the chart
+        id: push
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          CHART_REPO: ${{ needs.version.outputs.chart_repo }}
         run: |
           set -euo pipefail
-          version='${{ needs.version.outputs.version }}'
-          helm push "dist/kitchen-${version}.tgz" '${{ needs.version.outputs.chart_repo }}'
+          # helm reports the pushed digest on stderr and nowhere else, so it is
+          # read back out of the output rather than asked for afterwards.
+          helm push "dist/kitchen-${VERSION}.tgz" "${CHART_REPO}" 2>&1 | tee push.log
+          digest="$(grep -oE 'sha256:[0-9a-f]{64}' push.log | head -1)"
+          echo "digest=${digest}" >>"$GITHUB_OUTPUT"
 
       - name: Upload the chart as a build artifact
         uses: actions/upload-artifact@v4
@@ -270,22 +291,116 @@ jobs:
           name: kitchen-chart-${{ needs.version.outputs.version }}
           path: dist/*.tgz
 
-      - name: Summarize the release
+  finalize:
+    name: Publish the GitHub release
+    runs-on: ubuntu-latest
+    # Everything the release promises has to exist before the release itself
+    # does. This is the job that makes it public, and it is why the release is
+    # created as a draft: 0.5.1 and 0.6.0 were live releases whose chart never
+    # got pushed, because the release object was written before the artifacts
+    # rather than after them.
+    needs: [version, image, auth-image, chart]
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      VERSION: ${{ needs.version.outputs.version }}
+      RELEASE_ID: ${{ inputs.release-id }}
+      IMAGE: ${{ needs.version.outputs.image }}
+      AUTH_IMAGE: ${{ needs.version.outputs.auth_image }}
+      CHART_REPO: ${{ needs.version.outputs.chart_repo }}
+      IMAGE_DIGEST: ${{ needs.image.outputs.digest }}
+      AUTH_IMAGE_DIGEST: ${{ needs.auth-image.outputs.digest }}
+      CHART_DIGEST: ${{ needs.chart.outputs.digest }}
+    steps:
+      - name: Download the packaged chart
+        uses: actions/download-artifact@v4
+        with:
+          name: kitchen-chart-${{ needs.version.outputs.version }}
+          path: dist
+
+      - name: Resolve the release
+        id: release
         run: |
-          version='${{ needs.version.outputs.version }}'
+          set -euo pipefail
+          id="${RELEASE_ID:-}"
+          if [[ -z "${id}" ]]; then
+            # A tag pushed by hand, or a re-run through workflow_dispatch. The
+            # by-tag endpoint does not serve drafts, so the list is filtered
+            # instead — drafts included, which is the whole point.
+            id="$(gh api --paginate "repos/${GH_REPO}/releases" \
+              --jq "map(select(.tag_name == \"v${VERSION}\")) | .[0].id // empty" | head -1)"
+          fi
+          if [[ -z "${id}" ]]; then
+            echo "::notice::No GitHub release exists for v${VERSION}; publishing the artifacts only."
+          fi
+          echo "id=${id}" >>"$GITHUB_OUTPUT"
+
+      - name: Write the release notes
+        env:
+          RESOLVED_ID: ${{ steps.release.outputs.id }}
+        run: |
+          set -euo pipefail
+          # release-please wrote the changelog into the draft's body. That is
+          # what the release is *about*; this appends what the run resolved,
+          # which is the part no one can work out from the commits.
+          if [[ -n "${RESOLVED_ID}" ]]; then
+            gh api "repos/${GH_REPO}/releases/${RESOLVED_ID}" --jq .body >body.md
+          else
+            : >body.md
+          fi
           {
-            echo "## Kitchen ${version} published"
+            echo
+            echo "## Install"
             echo
             echo '```sh'
-            echo "helm install kitchen ${{ needs.version.outputs.chart_repo }}/kitchen --version ${version} \\"
+            echo "helm install kitchen ${CHART_REPO}/kitchen --version ${VERSION} \\"
             echo "  --namespace kitchen-system --create-namespace \\"
             echo "  --set kitchen.baseDomain=apps.example.com \\"
             echo "  --set kitchen.tls.acme.email=you@example.com \\"
             echo "  --set kitchen.tls.acme.dns01.cloudflare.apiTokenSecretName=cloudflare-api-token"
             echo '```'
             echo
-            echo "Images (linux/amd64, linux/arm64):"
+            echo "## Artifacts"
             echo
-            echo "- \`${{ needs.version.outputs.image }}:${version}\`"
-            echo "- \`${{ needs.version.outputs.auth_image }}:${version}\`"
-          } >>"$GITHUB_STEP_SUMMARY"
+            echo "| Artifact | Reference | Digest |"
+            echo "| --- | --- | --- |"
+            echo "| Operator image | \`${IMAGE}:${VERSION}\` | \`${IMAGE_DIGEST}\` |"
+            echo "| Auth image | \`${AUTH_IMAGE}:${VERSION}\` | \`${AUTH_IMAGE_DIGEST}\` |"
+            echo "| Chart | \`${CHART_REPO}/kitchen:${VERSION}\` | \`${CHART_DIGEST}\` |"
+            echo
+            echo "Both images are linux/amd64 and linux/arm64 and carry a signed"
+            echo "build provenance attestation. The chart is attached below as well."
+          } >>body.md
+          cat body.md >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Attach the chart to the release
+        if: steps.release.outputs.id != ''
+        env:
+          RESOLVED_ID: ${{ steps.release.outputs.id }}
+        run: |
+          set -euo pipefail
+          chart="dist/kitchen-${VERSION}.tgz"
+          # Uploaded against the release id rather than through `gh release
+          # upload`, which resolves a release by tag — and a draft release has
+          # no tag ref yet.
+          curl -sS --fail-with-body -X POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Content-Type: application/gzip" \
+            --data-binary @"${chart}" \
+            "https://uploads.github.com/repos/${GH_REPO}/releases/${RESOLVED_ID}/assets?name=$(basename "${chart}")" \
+            >/dev/null
+
+      - name: Publish the release
+        if: steps.release.outputs.id != ''
+        env:
+          RESOLVED_ID: ${{ steps.release.outputs.id }}
+        run: |
+          set -euo pipefail
+          # The tag ref is created here, not by release-please: GitHub holds it
+          # back for as long as the release is a draft.
+          jq -n --arg body "$(cat body.md)" '{draft: false, body: $body}' \
+            | gh api --method PATCH "repos/${GH_REPO}/releases/${RESOLVED_ID}" --input -
+          echo "::notice::Kitchen ${VERSION} published."
