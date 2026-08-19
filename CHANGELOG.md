@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.7.0](https://github.com/Bermos/Kitchen/compare/v0.6.0...v0.7.0) (2026-08-19)
+
+
+### Features
+
+* **operator:** record what the platform did, and sign what it built ([d8f874e](https://github.com/Bermos/Kitchen/commit/d8f874eebbfa424f2f2a7289ca07a3abab0ff561))
+* **ui:** make the dashboard usable on small screens ([4758135](https://github.com/Bermos/Kitchen/commit/47581351273cbf6054f97f57052dff04529e38c1))
+
+
+### Build and dependencies
+
+* **auth:** cross-build the arm64 image instead of emulating it ([b81c17a](https://github.com/Bermos/Kitchen/commit/b81c17a0c74fd345091bd371de516e0fa535eb69))
+
 ## [0.6.0](https://github.com/Bermos/Kitchen/compare/v0.5.1...v0.6.0) (2026-08-19)
 
 
