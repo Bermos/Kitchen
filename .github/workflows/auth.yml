@@ -69,6 +69,10 @@ jobs:
   image:
     name: Image build
     runs-on: ubuntu-latest
+    # Long enough for a cold cache, short enough that a build which has stopped
+    # making progress is a failure rather than a bill. The publish workflow
+    # carries the same bound.
+    timeout-minutes: 20
     steps:
       - name: Clone the code
         uses: actions/checkout@v4
@@ -76,10 +80,21 @@ jobs:
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
 
+      # Both platforms, and deliberately no QEMU. This job built linux/amd64
+      # alone until 0.5.1, so the arm64 leg was first exercised by the release
+      # tag that published it — which is where it hung, six hours at a time,
+      # with no chart published at the end of it. Building both here is what
+      # makes that a pull request's problem instead of a release's.
+      #
+      # Without the emulator a stage that needs the target's architecture fails
+      # immediately with `exec format error`, which is the failure worth having:
+      # the Dockerfile's cross-build is a property this asserts rather than a
+      # detail it tolerates.
       - name: Build the auth image
         uses: docker/build-push-action@v6
         with:
           context: auth
+          platforms: linux/amd64,linux/arm64
           push: false
           cache-from: type=gha
           cache-to: type=gha,mode=max
