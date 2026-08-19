@@ -411,6 +411,11 @@ resolve and a certificate the node already trusts.
 {{- end }}
 {{- end }}
 
+{{/*
+The registry's password. Evaluate this ONCE per render and pass the result
+around: with no explicit value and nothing to look up it ends in
+`randAlphaNum`, so a second call returns a different password than the first.
+*/}}
 {{- define "kitchen.registryPassword" -}}
 {{- if .Values.registry.auth.password }}
 {{- .Values.registry.auth.password }}
@@ -429,11 +434,18 @@ The htpasswd line zot authenticates against — bcrypt, which is the only hash
 it reads. Hashing is salted, so a fresh hash every render would roll the
 Secret and restart the registry on every upgrade; the stored line is reused
 whenever it still describes the same username and password.
+
+Takes the password in a dict (`ctx`, `password`) rather than deriving it. A
+second call to `kitchen.registryPassword` would hash a *different* password
+than the one the Secret publishes, leaving the registry to reject the only
+credential the platform has. That fails on a first install alone — on upgrade
+the lookup makes both calls agree, which is what hid it in 0.8.0.
 */}}
 {{- define "kitchen.registryHtpasswd" -}}
-{{- $username := .Values.registry.auth.username }}
-{{- $password := include "kitchen.registryPassword" . }}
-{{- $existing := lookup "v1" "Secret" .Release.Namespace (include "kitchen.registrySecretName" .) }}
+{{- $ctx := .ctx }}
+{{- $password := .password }}
+{{- $username := $ctx.Values.registry.auth.username }}
+{{- $existing := lookup "v1" "Secret" $ctx.Release.Namespace (include "kitchen.registrySecretName" $ctx) }}
 {{- $data := default dict (default dict $existing).data }}
 {{- $stored := "" }}
 {{- if index $data "htpasswd" }}{{- $stored = index $data "htpasswd" | b64dec }}{{- end }}
