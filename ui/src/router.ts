@@ -1,5 +1,26 @@
 import { createRouter, createWebHistory } from "vue-router";
 import { isAuthenticated } from "./lib/auth";
+import { callerFor, forgetMe, loadMe } from "./lib/me";
+import { may, type Route as PolicyRoute } from "./lib/policy";
+
+declare module "vue-router" {
+  interface RouteMeta {
+    /** No session needed: the login round trip, and nothing else. */
+    public?: boolean;
+    /**
+     * The API route this screen is *for*. The guard admits the navigation only
+     * if the policy admits the call, so a screen and the requests it is made
+     * of cannot disagree about who may open it — and adding a screen means
+     * naming its route rather than remembering a role.
+     *
+     * Only screens with an admission requirement carry one. The project
+     * screens do not: which project a request is about is resolved from the
+     * object it names, so their answer is the payload's `role`, and it is the
+     * controls on the page rather than the route that turn on it.
+     */
+    requires?: PolicyRoute;
+  }
+}
 
 export const router = createRouter({
   history: createWebHistory(),
@@ -24,32 +45,104 @@ export const router = createRouter({
     // The operator's own section. These paths are exactly the ones the API's
     // findings emit as evidence (`internal/signals/evidence.go`), so renaming
     // one here silently breaks every link on the problems list.
-    { path: "/platform", name: "platform", component: () => import("./views/PlatformView.vue") },
-    { path: "/platform/nodes", name: "platform-nodes", component: () => import("./views/PlatformNodesView.vue") },
+    //
+    // They are the operator's in the guard as well as in the sidebar. A
+    // pasted evidence link still lands where it says it does for the operator
+    // it was pasted to; for a member it is a redirect rather than a screen of
+    // refused requests, which is the same thing the API would have said, said
+    // once instead of six times.
+    {
+      path: "/platform",
+      name: "platform",
+      component: () => import("./views/PlatformView.vue"),
+      meta: { requires: "GET /api/v1/platform/signals" },
+    },
+    {
+      path: "/platform/nodes",
+      name: "platform-nodes",
+      component: () => import("./views/PlatformNodesView.vue"),
+      meta: { requires: "GET /api/v1/platform/nodes" },
+    },
     {
       path: "/platform/workloads",
       name: "platform-workloads",
       component: () => import("./views/PlatformWorkloadsView.vue"),
+      meta: { requires: "GET /api/v1/platform/workloads" },
     },
-    { path: "/platform/edge", name: "platform-edge", component: () => import("./views/PlatformEdgeView.vue") },
-    { path: "/platform/storage", name: "platform-storage", component: () => import("./views/PlatformStorageView.vue") },
-    { path: "/platform/events", name: "platform-events", component: () => import("./views/PlatformEventsView.vue") },
-    { path: "/platform/audit", name: "platform-audit", component: () => import("./views/PlatformAuditView.vue") },
+    {
+      path: "/platform/edge",
+      name: "platform-edge",
+      component: () => import("./views/PlatformEdgeView.vue"),
+      meta: { requires: "GET /api/v1/platform/edge" },
+    },
+    {
+      path: "/platform/storage",
+      name: "platform-storage",
+      component: () => import("./views/PlatformStorageView.vue"),
+      meta: { requires: "GET /api/v1/platform/storage" },
+    },
+    {
+      path: "/platform/events",
+      name: "platform-events",
+      component: () => import("./views/PlatformEventsView.vue"),
+      meta: { requires: "GET /api/v1/platform/events" },
+    },
+    {
+      // The audit log itself is filtered to what the caller can see, but this
+      // screen is built around the compliance posture and the chain
+      // verification beside it, and both of those are the operator's.
+      path: "/platform/audit",
+      name: "platform-audit",
+      component: () => import("./views/PlatformAuditView.vue"),
+      meta: { requires: "GET /api/v1/compliance" },
+    },
     { path: "/builds/:name", name: "build", component: () => import("./views/BuildView.vue") },
     {
       path: "/environments/:name",
       name: "environment",
       component: () => import("./views/EnvironmentView.vue"),
     },
-    { path: "/connections", name: "connections", component: () => import("./views/ConnectionsView.vue") },
-    { path: "/settings", name: "settings", component: () => import("./views/SettingsView.vue") },
+    {
+      // Choosing a connection is everybody's; managing one is the operator's,
+      // and this screen is the managing. The route it names is the read of a
+      // single connection — the thing every row on it opens.
+      path: "/connections",
+      name: "connections",
+      component: () => import("./views/ConnectionsView.vue"),
+      meta: { requires: "GET /api/v1/connections/{name}" },
+    },
+    {
+      path: "/settings",
+      name: "settings",
+      component: () => import("./views/SettingsView.vue"),
+      meta: { requires: "GET /api/v1/settings" },
+    },
     { path: "/:pathMatch(.*)*", name: "not-found", component: () => import("./views/NotFoundView.vue") },
   ],
 });
 
 // Everything except the login round trip needs a signed-in session: the API
 // answers 401 to anonymous callers, so there is nothing to render without one.
-router.beforeEach((to) => {
-  if (to.meta.public || isAuthenticated.value) return true;
-  return { name: "login", query: to.fullPath === "/" ? {} : { returnTo: to.fullPath } };
+//
+// And it needs to know *who* is signed in before it renders anything, because
+// the platform role decides which of these routes exist for this account.
+// `loadMe` is one request per session rather than per navigation; the await is
+// only ever real on the first one.
+router.beforeEach(async (to) => {
+  if (to.meta.public) return true;
+  if (!isAuthenticated.value) {
+    // Signing out is what ends an account, and this is where the dashboard
+    // finds out. Holding the old role would decide the first screen the next
+    // person to sign in sees.
+    forgetMe();
+    return { name: "login", query: to.fullPath === "/" ? {} : { returnTo: to.fullPath } };
+  }
+  await loadMe();
+  if (to.meta.requires && !may(to.meta.requires, callerFor())) {
+    // The overview is every account's screen. `denied` is what it needs to
+    // say why the address in the location bar is not the one that opened —
+    // otherwise a bookmarked platform link looks like a broken dashboard.
+    return { name: "overview", query: { denied: to.fullPath } };
+  }
+  return true;
 });

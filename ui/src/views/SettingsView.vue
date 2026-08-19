@@ -29,6 +29,37 @@ const version = computed(() => {
   return v === "dev" ? "dev" : `v${v}`;
 });
 
+// Who holds the operator role.
+//
+// It is the platform's own access list — `spec.access.operators` on the
+// Kitchen singleton — and the reason it is worth a panel is what happens on
+// an upgrade: an installation that had never named an operator has the list
+// **seeded from every account the identity provider holds**, because before
+// enforcement every one of those accounts really could call every route, and
+// enforcing against an empty list would lock a platform out of itself on a
+// minor version bump. Reviewing what that seeded is a thing somebody should
+// do once, and it should be one click rather than an archaeology exercise.
+//
+// `GET /settings` does not carry the list itself, so what is shown is the
+// singleton's own account of it: the OperatorsConfigured condition, which is
+// where the reconciler writes who the operators are and how they got there
+// (`internal/controller/kitchen_access.go`). It names up to five and counts
+// the rest, so a large installation reads a count here rather than a roll.
+const operators = computed(() => settings.value?.conditions?.find((c) => c.type === "OperatorsConfigured"));
+
+// What the reason means, in the words the decision was made in. The condition
+// message says what happened; this says what it is about the platform.
+const operatorsContext: Record<string, string> = {
+  OperatorsNamed: "Somebody wrote this list down. It is the platform's, and nothing seeds over it.",
+  OperatorsSeeded:
+    "Nobody had ever named an operator, so the list was seeded from the accounts that existed — every one of which could already call every route. Narrowing it is a deliberate edit.",
+  NobodyIsAnOperator:
+    "The list is empty on purpose, so no account holds the platform surface. It is left exactly as it is.",
+  AwaitingFirstAccount:
+    "No account exists yet. The first one the bootstrap link creates becomes the first operator.",
+};
+const operatorsNote = computed(() => operators.value && (operatorsContext[operators.value.reason ?? ""] ?? ""));
+
 const strategy = ref<string>("auto");
 const concurrency = ref<number>(2);
 const releaseRetention = ref<number>(10);
@@ -171,6 +202,26 @@ async function startUpdate() {
           <p class="text-xs text-muted mb-0.5">Version</p>
           <p class="font-mono text-toned">{{ version }}</p>
         </div>
+      </div>
+
+      <div class="rounded-md border border-default px-5 py-4 space-y-3">
+        <h2 class="text-sm font-medium text-highlighted">Who holds the operator role</h2>
+        <template v-if="operators">
+          <p class="flex items-start gap-2 text-sm">
+            <StatusDot :tone="operators.status === 'True' ? 'success' : 'warning'" class="mt-1.5" />
+            <span class="text-toned">{{ operators.message || operators.reason }}</span>
+          </p>
+          <p v-if="operatorsNote" class="text-xs text-muted">{{ operatorsNote }}</p>
+        </template>
+        <p v-else class="text-sm text-muted">
+          This installation has no identity provider the platform can read accounts from, so no operator list has been
+          seeded and none is being reported.
+        </p>
+        <p class="text-xs text-dimmed">
+          The list is <span class="font-mono">spec.access.operators</span> on the
+          <span class="font-mono">Kitchen</span> singleton, and it is read-only here: the API serves no write for it.
+          An operator holds admin on every project, present and future.
+        </p>
       </div>
 
       <div class="rounded-md border border-default px-5 py-4 space-y-4">

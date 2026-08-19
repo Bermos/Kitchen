@@ -349,12 +349,53 @@ export interface Me {
   platformRole: string;
 }
 
+/**
+ * A connection, in either of the two shapes `GET /connections` answers with.
+ *
+ * An operator gets the connection: what it is, when it was made and what its
+ * conditions say. Everybody else gets the picker's shape — a name, what it
+ * can back, and whether the platform has it working — because a project needs
+ * a git source and a registry to exist at all, and a member who cannot see
+ * that any connection exists cannot create a project.
+ *
+ * The two are one type here because one picker renders both. Everything the
+ * operator's shape adds is therefore optional, and `ui/src/lib/connections`
+ * is where the difference is read rather than in the screens.
+ */
 export interface Connection {
   name: string;
-  provider: string;
+  /** Operator's shape only. */
+  provider?: string;
   capabilities?: string[];
-  createdAt: string;
+  /** Picker's shape only: the platform reached the provider and the provider
+   * accepted the credential. The operator's shape carries the same verdict as
+   * the `CredentialsValid` condition instead. */
+  ready?: boolean;
+  /** Operator's shape only. */
+  createdAt?: string;
+  /** Operator's shape only — a condition's message is the provider's own
+   * words, and those are the operator's business. */
   conditions?: Condition[];
+}
+
+/** One account's role on a project, as `GET /projects/{name}/members` lists
+ * them. The subject is the issuer's `sub` and the one thing a write addresses
+ * a member by; the address is informational, exactly as it is on the object —
+ * it is what makes a list of opaque strings render as people. */
+export interface Member {
+  subject: string;
+  email?: string;
+  role: string;
+}
+
+/** What `POST /projects/{name}/members` takes. Exactly one of the two ways of
+ * naming somebody: an address the platform resolves at the identity provider,
+ * or a subject taken as given — a machine account, or an installation whose
+ * issuer serves no directory. */
+export interface NewMember {
+  email?: string;
+  subject?: string;
+  role: string;
 }
 
 /** A credential as the API accepts one — a token, or a username and password,
@@ -1596,6 +1637,19 @@ export const api = {
   updateProject: (name: string, changes: ProjectSettings) =>
     request<Project>("PATCH", `/projects/${name}`, changes),
   deleteProject: (name: string) => request<Project>("DELETE", `/projects/${name}`),
+  // A project's people. All four are the project admin's, and all three
+  // writes name the member in the body rather than in the path: an issuer's
+  // subject is opaque and may carry characters a path segment cannot.
+  members: (project: string) => list<Member>(`/projects/${project}/members`)(),
+  addMember: (project: string, member: NewMember) =>
+    request<Member>("POST", `/projects/${project}/members`, member),
+  changeMemberRole: (project: string, subject: string, role: string) =>
+    request<Member>("PATCH", `/projects/${project}/members`, { subject, role }),
+  // Answers 204. The API refuses to remove the last admin and says so in a
+  // 409, which is the sentence the screen shows rather than swallows.
+  removeMember: (project: string, subject: string) =>
+    request<void>("DELETE", `/projects/${project}/members`, { subject }),
+
   projectBuilds: (name: string) => list<Build>(`/projects/${name}/builds`)(),
   projectReleases: (name: string) => list<Release>(`/projects/${name}/releases`)(),
   projectEnvironments: (name: string) => list<Environment>(`/projects/${name}/environments`)(),

@@ -3,7 +3,9 @@ import { computed, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 import { api, type EvidenceSet, type LogLine, type LogQuery } from "../lib/api";
 import { duration, shortSHA, timeAgo } from "../lib/format";
+import { callerFor } from "../lib/me";
 import { operatorMode } from "../lib/mode";
+import { may } from "../lib/policy";
 import { useAsync, usePoll } from "../lib/useAsync";
 import ConditionsTable from "../components/ConditionsTable.vue";
 import LogViewer from "../components/LogViewer.vue";
@@ -15,6 +17,19 @@ const name = computed(() => route.params.name as string);
 
 const { data: build, error, loading, refresh } = useAsync(() => api.build(name.value));
 watch(name, () => void refresh());
+
+// Cancelling is the project developer's, and a Build carries no role of its
+// own — the project it belongs to does. It is fetched apart from the build so
+// that the log, which is what this page is usually open for, does not wait on
+// it; until it answers there is no cancel button, which is the right way round
+// for a control that would otherwise be refused.
+const project = useAsync(() => api.project(build.value!.project), { immediate: false });
+watch(build, (loaded, previous) => {
+  if (loaded && loaded.project !== previous?.project) void project.refresh();
+});
+const mayCancel = computed(() =>
+  may("POST /api/v1/builds/{name}/cancel", callerFor(project.data.value?.role, build.value?.project)),
+);
 
 // A queued or running build is still moving; keep the header fresh while the
 // log viewer below follows the output.
@@ -106,7 +121,7 @@ const logStreamer = (query: LogQuery, onLine: (line: LogLine) => void, signal: A
           <PhaseBadge :phase="build.phase" />
           <span class="flex-1" />
           <UButton
-            v-if="moving"
+            v-if="moving && mayCancel"
             color="neutral"
             variant="subtle"
             size="sm"

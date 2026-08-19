@@ -4,12 +4,15 @@ import { useRoute, useRouter } from "vue-router";
 import { api, type Claim, type Project, type Release } from "../lib/api";
 import { type EnvVarDraft, envVarDrafts, envVarWrites, newEnvVarDraft, renamed } from "../lib/envvars";
 import { duration, shortImage, shortSHA, timeAgo } from "../lib/format";
+import { callerFor } from "../lib/me";
 import { operatorMode } from "../lib/mode";
+import { may } from "../lib/policy";
 import { releaseHistoryEntry, releaseHistoryLabel } from "../lib/status";
 import { useAsync, usePoll } from "../lib/useAsync";
 import ClaimModal from "../components/ClaimModal.vue";
 import ConditionsTable from "../components/ConditionsTable.vue";
 import EnvironmentCard from "../components/EnvironmentCard.vue";
+import MembersPanel from "../components/MembersPanel.vue";
 import PhaseBadge from "../components/PhaseBadge.vue";
 import StatusDot from "../components/StatusDot.vue";
 
@@ -37,6 +40,30 @@ watch(name, () => void refresh());
 usePoll(() => void refresh(), 10000, () => true);
 
 const project = computed(() => data.value?.project);
+
+// What this account may do here, keyed to the role that arrived on this
+// project's own payload rather than to the mode the dashboard is in. A viewer
+// gets the same screens as a developer with the write controls gone — not
+// disabled with a tooltip. A disabled button is an invitation to go and find
+// somebody who can press it, which is right for a shared enterprise tool and
+// wrong here: the screens are the same, and the buttons are simply not part of
+// a viewer's dashboard.
+//
+// The route is named once, at the control, and `may` answers from the same
+// table the API enforces (`policy.generated.ts`), so nothing here is a second
+// opinion about who may redeploy.
+const caller = computed(() => callerFor(project.value?.role, name.value));
+const mayBuild = computed(() => may("POST /api/v1/projects/{name}/builds", caller.value));
+const mayDeploy = computed(() => may("PATCH /api/v1/environments/{name}", caller.value));
+const mayClaim = computed(() => may("POST /api/v1/claims", caller.value));
+const mayUnclaim = computed(() => may("DELETE /api/v1/claims/{name}", caller.value));
+const mayConfigure = computed(() => may("PATCH /api/v1/projects/{name}", caller.value));
+const mayDelete = computed(() => may("DELETE /api/v1/projects/{name}", caller.value));
+// Membership is an admin's read as well as an admin's write: the API refuses
+// the listing to anybody else, so the tab is theirs rather than everyone's
+// with the buttons taken out.
+const mayReadMembers = computed(() => may("GET /api/v1/projects/{name}/members", caller.value));
+
 const production = computed(() =>
   data.value?.environments.find((e) => e.name === data.value?.project.productionEnvironment),
 );
@@ -119,15 +146,26 @@ async function rollBack() {
 }
 
 const tab = ref("deployments");
-const tabs = computed(() => [
-  { label: `Deployments`, value: "deployments" },
-  { label: `Previews (${previews.value.length})`, value: "previews" },
-  { label: `Builds (${data.value?.builds.length ?? 0})`, value: "builds" },
-  { label: `Environments (${data.value?.environments.length ?? 0})`, value: "environments" },
-  { label: `Domains (${data.value?.domains.length ?? 0})`, value: "domains" },
-  { label: `Resources (${data.value?.claims.length ?? 0})`, value: "resources" },
-  { label: `Settings`, value: "settings" },
-]);
+// Settings and People are the project admin's whole tab, not a tab with the
+// controls removed: everything on either is a write, or a read the API
+// refuses. Everything else is every role's.
+const tabs = computed(() =>
+  [
+    { label: `Deployments`, value: "deployments", shown: true },
+    { label: `Previews (${previews.value.length})`, value: "previews", shown: true },
+    { label: `Builds (${data.value?.builds.length ?? 0})`, value: "builds", shown: true },
+    { label: `Environments (${data.value?.environments.length ?? 0})`, value: "environments", shown: true },
+    { label: `Domains (${data.value?.domains.length ?? 0})`, value: "domains", shown: true },
+    { label: `Resources (${data.value?.claims.length ?? 0})`, value: "resources", shown: true },
+    { label: `People`, value: "people", shown: mayReadMembers.value },
+    { label: `Settings`, value: "settings", shown: mayConfigure.value },
+  ].filter((item) => item.shown),
+);
+// A tab this account does not have — a bookmarked settings tab, or a role
+// that changed under an open page — falls back to the one every role has.
+watch(tabs, (items) => {
+  if (!items.some((item) => item.value === tab.value)) tab.value = "deployments";
+});
 
 // The settings tab edits a copy of the project, loaded once per project so
 // the 10s poll never types over the user. Env vars ride along by name — the
@@ -354,7 +392,15 @@ function host(url?: string): string {
           </div>
         </div>
         <div class="flex items-center gap-2">
-          <UButton color="neutral" variant="subtle" size="sm" icon="i-lucide-rotate-cw" :loading="redeploying" @click="redeploy">
+          <UButton
+            v-if="mayBuild"
+            color="neutral"
+            variant="subtle"
+            size="sm"
+            icon="i-lucide-rotate-cw"
+            :loading="redeploying"
+            @click="redeploy"
+          >
             Redeploy
           </UButton>
           <UButton
@@ -465,7 +511,7 @@ function host(url?: string): string {
               <td class="px-4 py-3 text-xs text-muted whitespace-nowrap">{{ timeAgo(release.createdAt) }}</td>
               <td class="px-4 py-3 text-right whitespace-nowrap">
                 <UButton
-                  v-if="production && release.name !== currentRelease"
+                  v-if="mayDeploy && production && release.name !== currentRelease"
                   color="neutral"
                   variant="subtle"
                   size="xs"
@@ -628,7 +674,7 @@ function host(url?: string): string {
 
       <!-- Resources: provisioned claims (databases, OIDC clients, …) bound to this project. -->
       <div v-else-if="tab === 'resources'" class="space-y-3">
-        <div class="flex justify-end">
+        <div v-if="mayClaim" class="flex justify-end">
           <ClaimModal :project="project.name" @saved="refresh">
             <UButton icon="i-lucide-plus" size="sm">New claim</UButton>
           </ClaimModal>
@@ -660,7 +706,14 @@ function host(url?: string): string {
                 </td>
                 <td class="px-4 py-3 text-right text-xs text-muted whitespace-nowrap">{{ timeAgo(claim.createdAt) }}</td>
                 <td class="px-4 py-3 text-right whitespace-nowrap">
-                  <UButton color="neutral" variant="subtle" size="xs" icon="i-lucide-trash-2" @click="claimToDelete = claim">
+                  <UButton
+                    v-if="mayUnclaim"
+                    color="neutral"
+                    variant="subtle"
+                    size="xs"
+                    icon="i-lucide-trash-2"
+                    @click="claimToDelete = claim"
+                  >
                     Delete
                   </UButton>
                 </td>
@@ -669,6 +722,9 @@ function host(url?: string): string {
           </table>
         </div>
       </div>
+
+      <!-- People: who holds which role on this project. -->
+      <MembersPanel v-else-if="tab === 'people'" :project="project.name" :role="project.role" />
 
       <!-- Settings: everything on the project a user may change after
            creating it, and the danger zone that removes it entirely. -->
@@ -842,7 +898,11 @@ function host(url?: string): string {
           </div>
         </form>
 
-        <div class="rounded-md border border-error/40 p-5 space-y-3">
+        <!-- Deleting is the admin's alone, and it is on the admin's own tab —
+             but it is named separately from the settings above it, because
+             `PATCH` and `DELETE` are two rows of the table and only one of
+             them takes the project away. -->
+        <div v-if="mayDelete" class="rounded-md border border-error/40 p-5 space-y-3">
           <h2 class="text-sm font-semibold text-error">Danger zone</h2>
           <p class="text-xs text-muted">
             Deleting the project tears down its environments — production included — and removes its builds, releases,

@@ -2,12 +2,21 @@
 import { computed, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { api } from "../lib/api";
+import { connectionChoices, noteFor, selectableChoices } from "../lib/connections";
+import { callerFor } from "../lib/me";
+import { may } from "../lib/policy";
 import { useAsync } from "../lib/useAsync";
 
 // The create flow the empty states used to point at kubectl for: a Project is
 // a name, a repository, and the two Connections it builds and stores images
 // with — everything else keeps its default. The default slot is the trigger,
 // so each spot that opens this chooses its own button.
+//
+// Creating a project is self-service: any account may, and becomes its admin.
+// So the two connection fields are picked from what `GET /connections` answers
+// a member with — names, capabilities and readiness — and nothing here offers
+// to create, test or change one. That is the operator's screen, and a member
+// is not sent to a page they cannot open.
 
 const emit = defineEmits<{ created: [] }>();
 
@@ -30,26 +39,33 @@ const registry = ref<string>();
 const productionBranch = ref("main");
 const previews = ref(true);
 
-// A Connection that has not reported capabilities yet (the operator has not
-// assessed it) stays selectable — the API accepts it and the project's own
-// conditions say whether it fits.
-function withCapability(capability: string) {
-  return (connections.data.value ?? [])
-    .filter((c) => !c.capabilities?.length || c.capabilities.includes(capability))
-    .map((c) => ({ label: `${c.name} · ${c.provider}`, value: c.name }));
-}
-const sourceOptions = computed(() => withCapability("gitSource"));
-const registryOptions = computed(() => withCapability("imageStore"));
+// Every connection is listed, and the ones that cannot back this field say
+// why: a connection providing the wrong capability is refused by the API
+// (`requireConnection`) so it is disabled, and one the platform has not got
+// working — or has not assessed at all — is offered with the caveat, because
+// the API takes it and the project's own conditions are what say whether it
+// worked. Omitting either would leave somebody hunting for a connection they
+// have been told exists.
+const sourceOptions = computed(() => connectionChoices(connections.data.value ?? [], "gitSource"));
+const registryOptions = computed(() => connectionChoices(connections.data.value ?? [], "imageStore"));
+const sourcesAvailable = computed(() => selectableChoices(sourceOptions.value));
+const registriesAvailable = computed(() => selectableChoices(registryOptions.value));
+const sourceNote = computed(() => noteFor(sourceOptions.value, connection.value));
+const registryNote = computed(() => noteFor(registryOptions.value, registry.value));
+
+// Only an operator can do anything about a missing connection, so only an
+// operator is pointed at the screen where it is done.
+const managesConnections = computed(() => may("POST /api/v1/connections", callerFor()));
 
 // A field with exactly one answer is not a question. The platform seeds a
 // registry connection pointing at the one it runs itself, so on a fresh
 // installation this is the whole of choosing where images go — and the same
 // reasoning covers the single git connection most people have. Anything
 // already picked by hand is left alone.
-watch(registryOptions, (options) => {
+watch(registriesAvailable, (options) => {
   if (!registry.value && options.length === 1) registry.value = options[0]!.value;
 });
-watch(sourceOptions, (options) => {
+watch(sourcesAvailable, (options) => {
   if (!connection.value && options.length === 1) connection.value = options[0]!.value;
 });
 
@@ -131,7 +147,7 @@ async function create() {
           <UInput v-model="name" class="w-full font-mono" @input="nameEdited = true" />
         </UFormField>
         <div class="grid gap-4 sm:grid-cols-2">
-          <UFormField label="Git connection" required>
+          <UFormField label="Git connection" :help="sourceNote" required>
             <USelect
               v-model="connection"
               :items="sourceOptions"
@@ -140,7 +156,7 @@ async function create() {
               class="w-full"
             />
           </UFormField>
-          <UFormField label="Registry" required>
+          <UFormField label="Registry" :help="registryNote" required>
             <USelect
               v-model="registry"
               :items="registryOptions"
@@ -151,11 +167,14 @@ async function create() {
           </UFormField>
         </div>
         <p
-          v-if="connections.data.value && (!sourceOptions.length || !registryOptions.length)"
+          v-if="connections.data.value && (!sourcesAvailable.length || !registriesAvailable.length)"
           class="text-xs text-warning"
         >
-          {{ !sourceOptions.length ? "No gitSource connection yet" : "No imageStore connection yet" }} — create one
-          on the <RouterLink to="/connections" class="underline">Connections</RouterLink> page first.
+          {{ !sourcesAvailable.length ? "No gitSource connection yet" : "No imageStore connection yet" }} —
+          <template v-if="managesConnections">
+            create one on the <RouterLink to="/connections" class="underline">Connections</RouterLink> page first.
+          </template>
+          <template v-else>ask an operator to add one before creating this project.</template>
         </p>
         <UFormField label="Production branch" help="Builds of this branch promote to production.">
           <UInput v-model="productionBranch" class="w-44 font-mono" />
