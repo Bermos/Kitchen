@@ -134,7 +134,7 @@ function environmentOf(event: K8sEvent) {
           The cluster's warnings, kept past the hour Kubernetes keeps them — so “what happened at 03:00” has an answer.
         </p>
       </div>
-      <div class="flex items-center gap-2">
+      <div class="flex items-center gap-2 flex-wrap">
         <USelect
           :model-value="rangeMinutes"
           :items="ranges"
@@ -185,10 +185,12 @@ function environmentOf(event: K8sEvent) {
 
     <UAlert v-if="error" color="error" variant="soft" icon="i-lucide-triangle-alert" :title="error" />
 
-    <div v-else class="flex gap-4 items-start">
+    <!-- The facets are a column beside the results only where there is room
+         for one; narrower than that they follow the results down the page. -->
+    <div v-else class="flex flex-col lg:flex-row gap-4 items-stretch lg:items-start">
       <div class="flex-1 min-w-0 space-y-2">
         <div class="rounded-md border border-default overflow-x-auto">
-          <table class="w-full text-sm">
+          <table class="w-full min-w-[52rem] text-sm">
             <thead>
               <tr class="text-left text-xs text-muted border-b border-default bg-muted">
                 <th class="px-3 py-2 font-medium">When</th>
@@ -222,9 +224,12 @@ function environmentOf(event: K8sEvent) {
                     {{ event.reason }}
                   </button>
                 </td>
-                <td class="px-3 py-2 text-xs">
+                <!-- The object's name is the row's identity: it stays on one
+                     line and the table scrolls, rather than the message column
+                     shattering it down the page a character at a time. -->
+                <td class="px-3 py-2 text-xs whitespace-nowrap">
                   <button
-                    class="font-mono text-highlighted hover:underline break-all text-left"
+                    class="font-mono text-highlighted hover:underline text-left"
                     title="Narrow to this object"
                     @click="apply({ kind: event.kind, name: event.name, namespace: event.namespace })"
                   >
@@ -262,7 +267,7 @@ function environmentOf(event: K8sEvent) {
         </p>
       </div>
 
-      <aside class="w-56 shrink-0 space-y-4 text-xs">
+      <aside class="w-full lg:w-56 lg:shrink-0 space-y-4 text-xs">
         <div v-for="facet in facets" :key="facet.field">
           <p class="text-muted mb-1.5">
             {{ facetLabel(facet.field) }}

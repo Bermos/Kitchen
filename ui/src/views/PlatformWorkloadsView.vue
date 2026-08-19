@@ -92,8 +92,14 @@ function clearFilters() {
           Everything the cluster is running, and first of all the things it is not running that it was asked to.
         </p>
       </div>
-      <div class="flex items-center gap-2">
-        <UInput v-model="search" size="sm" icon="i-lucide-search" placeholder="Filter by name or namespace" class="w-64" />
+      <div class="flex items-center gap-2 w-full sm:w-auto">
+        <UInput
+          v-model="search"
+          size="sm"
+          icon="i-lucide-search"
+          placeholder="Filter by name or namespace"
+          class="flex-1 sm:flex-none sm:w-64"
+        />
         <UButton
           icon="i-lucide-refresh-cw"
           color="neutral"
@@ -196,7 +202,7 @@ function clearFilters() {
         </div>
       </div>
 
-      <div class="grid grid-cols-3 sm:grid-cols-6 gap-3">
+      <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
         <div class="rounded-md border border-default px-3 py-2.5">
           <p class="text-[11px] text-muted">Pods</p>
           <p class="text-base font-semibold text-highlighted tabular-nums">{{ data?.totals.pods ?? "—" }}</p>
@@ -239,7 +245,7 @@ function clearFilters() {
           >
         </h2>
         <div class="rounded-md border border-default overflow-x-auto">
-          <table class="w-full text-sm">
+          <table class="w-full min-w-[48rem] text-sm">
             <thead>
               <tr class="text-left text-xs text-muted border-b border-default bg-muted">
                 <th class="px-4 py-2.5 font-medium">Workload</th>
@@ -312,7 +318,7 @@ function clearFilters() {
           Pods <span class="text-dimmed font-normal text-xs">— worst first, so a limit only ever drops healthy ones</span>
         </h2>
         <div class="rounded-md border border-default overflow-x-auto">
-          <table class="w-full text-sm">
+          <table class="w-full min-w-[48rem] text-sm">
             <thead>
               <tr class="text-left text-xs text-muted border-b border-default bg-muted">
                 <th class="px-4 py-2.5 font-medium">Pod</th>

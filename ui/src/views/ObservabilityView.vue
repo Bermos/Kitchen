@@ -433,12 +433,12 @@ const placeholder = computed(() =>
           >
         </p>
       </div>
-      <div class="flex items-center gap-2">
+      <div class="flex items-center gap-2 flex-wrap">
         <USelect
           :model-value="pinned ? -1 : rangeMinutes"
           :items="pinned ? [{ label: 'Selected range', value: -1 }, ...ranges] : ranges"
           size="sm"
-          class="w-44"
+          class="w-36 sm:w-44"
           @update:model-value="chooseRange"
         />
         <UButton
@@ -482,9 +482,9 @@ const placeholder = computed(() =>
       </div>
     </div>
 
-    <div class="flex items-stretch gap-2">
+    <div class="flex items-stretch gap-2 flex-wrap sm:flex-nowrap">
       <div
-        class="flex-1 flex items-center gap-2 rounded-md border border-default bg-muted px-3 focus-within:border-accented"
+        class="w-full sm:w-auto sm:flex-1 flex items-center gap-2 rounded-md border border-default bg-muted px-3 focus-within:border-accented"
       >
         <button
           class="font-mono text-xs shrink-0 select-none"
@@ -515,16 +515,17 @@ const placeholder = computed(() =>
           @keydown.enter="run"
         />
       </div>
-      <USelect v-model="limit" :items="limits" size="sm" class="w-24" @update:model-value="run" />
+      <USelect v-model="limit" :items="limits" size="sm" class="w-24 shrink-0" @update:model-value="run" />
       <UButton
         color="neutral"
         variant="subtle"
         icon="i-lucide-bookmark"
+        class="shrink-0"
         title="Keep this question under a name everyone can find"
         aria-label="Save this query"
         @click="naming = true"
       />
-      <UButton icon="i-lucide-play" :loading="loading" @click="run">Run</UButton>
+      <UButton icon="i-lucide-play" class="shrink-0" :loading="loading" @click="run">Run</UButton>
     </div>
 
     <!-- The questions someone thought worth keeping. -->
@@ -589,7 +590,9 @@ const placeholder = computed(() =>
 
     <LogHistogram :histogram="histogram" :loading="loading" @select="onHistogramSelect" />
 
-    <div class="flex gap-4 items-start">
+    <!-- The facets are a column beside the results only where there is room
+         for one; narrower than that they follow the results down the page. -->
+    <div class="flex flex-col lg:flex-row gap-4 items-stretch lg:items-start">
       <div class="flex-1 min-w-0 space-y-2">
         <div class="flex items-center gap-1 text-xs">
           <button
@@ -715,7 +718,7 @@ const placeholder = computed(() =>
         </div>
       </div>
 
-      <aside class="w-56 shrink-0 space-y-4 text-xs">
+      <aside class="w-full lg:w-56 lg:shrink-0 space-y-4 text-xs">
         <div v-for="facet in facets" :key="facet.field">
           <p class="text-muted mb-1.5">{{ facetLabel(facet.field) }}</p>
           <p v-if="!facet.values.length" class="text-dimmed px-2">—</p>

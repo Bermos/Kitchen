@@ -145,13 +145,13 @@ function edgeLabel(edge: TrafficEdge): string {
           The service map, aggregated from Cilium's Hubble flows — one edge per talking pair in the window.
         </p>
       </div>
-      <div class="flex items-center gap-2">
-        <USelect v-model="project" :items="projectItems" value-key="value" size="sm" class="w-40" @change="rerun" />
-        <USelect v-model="rangeMinutes" :items="ranges" size="sm" class="w-44" @change="rerun" />
+      <div class="flex items-center gap-2 flex-wrap">
+        <USelect v-model="project" :items="projectItems" value-key="value" size="sm" class="w-36 sm:w-40" @change="rerun" />
+        <USelect v-model="rangeMinutes" :items="ranges" size="sm" class="w-36 sm:w-44" @change="rerun" />
       </div>
     </div>
 
-    <div class="flex items-center gap-2">
+    <div class="flex items-center gap-2 flex-wrap">
       <UButton
         v-for="chip in [
           { value: 'all' as const, label: 'All' },
@@ -239,7 +239,7 @@ function edgeLabel(edge: TrafficEdge): string {
 
       <!-- Every edge, as numbers. -->
       <div class="rounded-md border border-default overflow-x-auto">
-        <table class="w-full text-sm">
+        <table class="w-full min-w-[48rem] text-sm">
           <thead>
             <tr class="text-left text-xs text-muted border-b border-default bg-muted">
               <th class="px-4 py-2.5 font-medium">Edge</th>

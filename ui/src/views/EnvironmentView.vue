@@ -247,13 +247,13 @@ function historyBy(entry: { reason: string; by?: string }): string {
             >
           </p>
         </div>
-        <div>
+        <div class="min-w-0">
           <p class="text-xs text-muted mb-1">Image</p>
           <p class="font-mono text-sm text-toned truncate" :title="currentRelease?.image">
             {{ shortImage(currentRelease?.image) }}
           </p>
         </div>
-        <div>
+        <div class="min-w-0">
           <p class="text-xs text-muted mb-1">URL</p>
           <a
             v-if="environment.url"
@@ -323,35 +323,37 @@ function historyBy(entry: { reason: string; by?: string }): string {
             </div>
           </div>
 
-          <table v-if="workload.data.value.pods?.length" class="w-full text-sm border-t border-default">
-            <thead>
-              <tr class="text-left text-xs text-muted border-b border-default">
-                <th class="px-4 py-2 font-medium">Pod</th>
-                <th class="px-4 py-2 font-medium">Restarts</th>
-                <th class="px-4 py-2 font-medium">Node</th>
-                <th class="px-4 py-2 font-medium">Up</th>
-                <th class="px-4 py-2 font-medium">Detail</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="pod in workload.data.value.pods" :key="pod.name" class="border-b border-muted last:border-0">
-                <td class="px-4 py-2 font-mono text-highlighted">
-                  <span class="inline-flex items-center gap-2">
-                    <StatusDot :tone="podTone(pod)" />
-                    <span class="truncate">{{ pod.name }}</span>
-                  </span>
-                </td>
-                <td class="px-4 py-2 font-mono" :class="pod.restarts ? 'text-warning' : 'text-toned'">
-                  {{ pod.restarts }}
-                </td>
-                <td class="px-4 py-2 font-mono text-xs text-toned">{{ pod.node || "—" }}</td>
-                <td class="px-4 py-2 text-xs text-muted whitespace-nowrap">{{ uptime(pod.startedAt) }}</td>
-                <td class="px-4 py-2 text-xs text-toned max-w-xs truncate" :title="pod.message || pod.phase">
-                  {{ pod.message || pod.phase }}
-                </td>
-              </tr>
-            </tbody>
-          </table>
+          <div v-if="workload.data.value.pods?.length" class="overflow-x-auto border-t border-default">
+            <table class="w-full min-w-[42rem] text-sm">
+              <thead>
+                <tr class="text-left text-xs text-muted border-b border-default">
+                  <th class="px-4 py-2 font-medium">Pod</th>
+                  <th class="px-4 py-2 font-medium">Restarts</th>
+                  <th class="px-4 py-2 font-medium">Node</th>
+                  <th class="px-4 py-2 font-medium">Up</th>
+                  <th class="px-4 py-2 font-medium">Detail</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="pod in workload.data.value.pods" :key="pod.name" class="border-b border-muted last:border-0">
+                  <td class="px-4 py-2 font-mono text-highlighted">
+                    <span class="inline-flex items-center gap-2">
+                      <StatusDot :tone="podTone(pod)" />
+                      <span class="truncate">{{ pod.name }}</span>
+                    </span>
+                  </td>
+                  <td class="px-4 py-2 font-mono" :class="pod.restarts ? 'text-warning' : 'text-toned'">
+                    {{ pod.restarts }}
+                  </td>
+                  <td class="px-4 py-2 font-mono text-xs text-toned">{{ pod.node || "—" }}</td>
+                  <td class="px-4 py-2 text-xs text-muted whitespace-nowrap">{{ uptime(pod.startedAt) }}</td>
+                  <td class="px-4 py-2 text-xs text-toned max-w-xs truncate" :title="pod.message || pod.phase">
+                    {{ pod.message || pod.phase }}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
 
@@ -412,7 +414,7 @@ function historyBy(entry: { reason: string; by?: string }): string {
           operator puts back exactly what it snapshotted.
         </p>
         <div class="rounded-md border border-default overflow-x-auto">
-          <table class="w-full text-sm">
+          <table class="w-full min-w-[36rem] text-sm">
             <tbody>
               <tr v-for="release in otherReleases" :key="release.name" class="border-b border-muted last:border-0">
                 <td class="px-4 py-2.5 font-mono text-highlighted w-44">{{ release.name }}</td>
@@ -435,7 +437,7 @@ function historyBy(entry: { reason: string; by?: string }): string {
           How each release stopped being current — auto-promotions and moves through the dashboard alike, newest first.
         </p>
         <div class="rounded-md border border-default overflow-x-auto">
-          <table class="w-full text-sm">
+          <table class="w-full min-w-[36rem] text-sm">
             <tbody>
               <tr v-for="entry in environment.history" :key="entry.release + entry.to" class="border-b border-muted last:border-0">
                 <td class="px-4 py-2.5 font-mono text-highlighted w-44">{{ entry.release }}</td>

@@ -161,7 +161,7 @@ function host(url?: string): string {
 
 <template>
   <div class="space-y-6">
-    <div class="flex items-center justify-between">
+    <div class="flex items-center justify-between gap-3 flex-wrap">
       <h1 class="text-xl font-semibold text-highlighted">Overview</h1>
       <div class="flex items-center gap-2">
         <UButton
@@ -182,13 +182,15 @@ function host(url?: string): string {
     <!-- The KPI strip only renders once the metrics endpoint answered; an
          installation without a telemetry store simply has no numbers row. -->
     <div v-if="kpis" class="grid grid-cols-2 lg:grid-cols-4 gap-3">
-      <div v-for="kpi in kpis" :key="kpi.label" class="rounded-md border border-default px-4 py-3">
-        <p class="text-xs text-muted">{{ kpi.label }}</p>
+      <div v-for="kpi in kpis" :key="kpi.label" class="rounded-md border border-default px-3 sm:px-4 py-3">
+        <p class="text-xs text-muted truncate" :title="kpi.label">{{ kpi.label }}</p>
         <div class="flex items-end justify-between gap-3 mt-1">
-          <span class="text-xl font-semibold text-highlighted tabular-nums">{{ kpi.value }}</span>
-          <Sparkline :points="kpi.points" />
+          <span class="text-lg sm:text-xl font-semibold text-highlighted tabular-nums truncate">{{ kpi.value }}</span>
+          <!-- The sparkline is the first thing to go when two tiles share a
+               phone's width: it is the number that is being read. -->
+          <Sparkline :points="kpi.points" class="hidden sm:block" />
         </div>
-        <p class="text-[11px] text-dimmed mt-1">{{ kpi.detail }}</p>
+        <p class="text-[11px] text-dimmed mt-1 truncate" :title="kpi.detail">{{ kpi.detail }}</p>
       </div>
     </div>
 
@@ -206,7 +208,7 @@ function host(url?: string): string {
     </div>
 
     <div class="rounded-md border border-default overflow-x-auto">
-      <table class="w-full text-sm">
+      <table class="w-full min-w-[48rem] text-sm">
         <thead>
           <tr class="text-left text-xs text-muted border-b border-default bg-muted">
             <th class="px-4 py-2.5 font-medium">Project</th>

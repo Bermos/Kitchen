@@ -93,7 +93,10 @@ const logStreamer = (query: LogQuery, onLine: (line: LogLine) => void, signal: A
           <p class="text-xs text-muted mb-1">Duration</p>
           <p class="text-sm text-toned font-mono">{{ duration(build.startedAt, build.completedAt) }}</p>
         </div>
-        <div class="sm:col-span-2">
+        <!-- `truncate` needs the cell to be allowed to shrink: a grid item's
+             min-width is its content until min-w-0 says otherwise, and an
+             image digest is wider than a phone. -->
+        <div class="sm:col-span-2 min-w-0">
           <p class="text-xs text-muted mb-1">Image</p>
           <p class="text-sm text-toned font-mono truncate" :title="build.image">{{ build.image || "not pushed yet" }}</p>
         </div>

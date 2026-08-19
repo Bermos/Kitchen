@@ -304,7 +304,7 @@ function clock(iso: string | undefined): string {
         >
           {{ resolution }}<template v-if="summary.data.value.rollup"> · {{ summary.data.value.rollup }} rollup</template>
         </span>
-        <USelect v-model="rangeMinutes" :items="ranges" size="xs" class="w-40" />
+        <USelect v-model="rangeMinutes" :items="ranges" size="xs" class="w-36 sm:w-40" />
         <UButton
           icon="i-lucide-refresh-cw"
           size="xs"

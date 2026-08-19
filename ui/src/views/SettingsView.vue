@@ -147,9 +147,11 @@ async function startUpdate() {
           <p class="text-xs text-muted mb-0.5">Base domain</p>
           <p class="font-mono text-toned">{{ settings.baseDomain || "—" }}</p>
         </div>
-        <div>
+        <div class="min-w-0">
           <p class="text-xs text-muted mb-0.5">API</p>
-          <p class="font-mono text-toned truncate">{{ settings.apiExternalURL || "—" }}</p>
+          <p class="font-mono text-toned truncate" :title="settings.apiExternalURL">
+            {{ settings.apiExternalURL || "—" }}
+          </p>
         </div>
         <div>
           <p class="text-xs text-muted mb-0.5">Identity provider</p>
@@ -174,7 +176,7 @@ async function startUpdate() {
       <div class="rounded-md border border-default px-5 py-4 space-y-4">
         <h2 class="text-sm font-medium text-highlighted">Builds and telemetry</h2>
         <UFormField label="Default build strategy" help="Projects can override this per repository.">
-          <USelect v-model="strategy" :items="strategies" class="w-72" />
+          <USelect v-model="strategy" :items="strategies" class="w-full max-w-72" />
         </UFormField>
         <UFormField label="Build concurrency" help="How many builds run at once, platform-wide.">
           <UInputNumber v-model="concurrency" :min="1" :max="32" class="w-40" />
@@ -264,7 +266,7 @@ async function startUpdate() {
           </template>
 
           <div v-if="updates.data.value.items.length" class="rounded-md border border-default bg-muted overflow-x-auto">
-            <table class="w-full text-sm">
+            <table class="w-full min-w-[36rem] text-sm">
               <thead>
                 <tr class="text-left text-xs text-muted border-b border-default">
                   <th class="px-3 py-2 font-medium">Version</th>
@@ -306,7 +308,7 @@ async function startUpdate() {
           pods at all was refused before it started — the message carries the reason.
         </p>
         <div class="rounded-md border border-default bg-muted overflow-x-auto">
-          <table class="w-full text-sm">
+          <table class="w-full min-w-[36rem] text-sm">
             <thead>
               <tr class="text-left text-xs text-muted border-b border-default">
                 <th class="px-3 py-2 font-medium">Component</th>

@@ -111,13 +111,16 @@ const groups = () => {
 </script>
 
 <template>
+  <!-- Narrow enough and the trigger is the magnifier alone: the prompt and the
+       shortcut are both for a screen with a keyboard in front of it. -->
   <button
-    class="flex items-center gap-2 w-80 max-w-full px-3 py-1.5 rounded-md border border-default bg-muted text-sm text-dimmed hover:border-accented hover:text-muted"
+    class="flex items-center gap-2 max-w-full px-2 md:px-3 py-1.5 rounded-md border border-default bg-muted text-sm text-dimmed hover:border-accented hover:text-muted md:w-80"
+    aria-label="Search"
     @click="show"
   >
-    <UIcon name="i-lucide-search" class="size-3.5" />
-    <span class="flex-1 text-left">Jump to project, environment, build…</span>
-    <UKbd size="sm">⌘K</UKbd>
+    <UIcon name="i-lucide-search" class="size-3.5 shrink-0" />
+    <span class="hidden md:block flex-1 text-left truncate">Jump to project, environment, build…</span>
+    <UKbd size="sm" class="hidden md:inline-flex">⌘K</UKbd>
   </button>
 
   <UModal v-model:open="open">

@@ -25,7 +25,7 @@ const visible = computed(() => (project.value ? (data.value ?? []).filter((b) =>
 
 <template>
   <div class="space-y-6">
-    <div class="flex items-center justify-between">
+    <div class="flex items-center justify-between gap-3 flex-wrap">
       <h1 class="text-xl font-semibold text-highlighted">Builds</h1>
       <UButton
         icon="i-lucide-refresh-cw"
@@ -42,7 +42,7 @@ const visible = computed(() => (project.value ? (data.value ?? []).filter((b) =>
 
     <!-- Running against the limit, and what is behind it. The count says the
          platform is busy; the wait is what says whether the queue is moving. -->
-    <div v-if="queue" class="flex items-center gap-4 text-sm">
+    <div v-if="queue" class="flex items-center gap-x-4 gap-y-1 flex-wrap text-sm">
       <span class="text-muted">
         <span class="text-highlighted font-medium">{{ queue.running }}</span>
         of {{ queue.capacity }} building
@@ -88,7 +88,7 @@ const visible = computed(() => (project.value ? (data.value ?? []).filter((b) =>
     </div>
 
     <div class="rounded-md border border-default overflow-x-auto">
-      <table class="w-full text-sm">
+      <table class="w-full min-w-[42rem] text-sm">
         <thead>
           <tr class="text-left text-xs text-muted border-b border-default bg-muted">
             <th class="px-4 py-2.5 font-medium">Commit</th>

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 import { api } from "../lib/api";
 import { user, signOut } from "../lib/auth";
@@ -12,6 +12,39 @@ import NewProjectModal from "./NewProjectModal.vue";
 import StatusDot from "./StatusDot.vue";
 
 const route = useRoute();
+
+// Below `lg` the sidebar is an off-canvas drawer rather than a column: on a
+// phone it would otherwise eat two thirds of the viewport. It stays one
+// element in the DOM either way — the media query alone decides whether it is
+// in the flow or slid over the page — so the project list keeps its scroll
+// position across the change.
+const sidebarOpen = ref(false);
+const wide = ref(true);
+let media: MediaQueryList | null = null;
+function onMedia(event: MediaQueryListEvent | MediaQueryList) {
+  wide.value = event.matches;
+  if (event.matches) sidebarOpen.value = false;
+}
+function onKeydown(event: KeyboardEvent) {
+  if (event.key === "Escape") sidebarOpen.value = false;
+}
+onMounted(() => {
+  media = window.matchMedia("(min-width: 1024px)");
+  onMedia(media);
+  media.addEventListener("change", onMedia);
+  window.addEventListener("keydown", onKeydown);
+});
+onUnmounted(() => {
+  media?.removeEventListener("change", onMedia);
+  window.removeEventListener("keydown", onKeydown);
+});
+// Navigating is the drawer's other close button: every link in it leads
+// somewhere, and none of them should leave it covering the page it opened.
+watch(() => route.fullPath, () => (sidebarOpen.value = false));
+// A drawer that is off the screen is out of the page as far as the keyboard
+// and a screen reader are concerned. `undefined` rather than `false` because
+// `inert` is not one of the attributes Vue removes when bound to false.
+const sidebarHidden = computed(() => (!wide.value && !sidebarOpen.value) || undefined);
 
 // One inventory fetch feeds the sidebar: the project list, the counts next to
 // the nav items, and the preview count on each project row.
@@ -149,11 +182,35 @@ const userMenu = computed(() => [
 
 <template>
   <div class="min-h-screen flex">
-    <aside class="w-56 shrink-0 border-r border-default bg-muted flex flex-col">
-      <RouterLink to="/" class="flex items-center gap-2 px-4 h-14 border-b border-default">
-        <img src="/favicon.svg" alt="" class="size-5" />
-        <span class="font-semibold text-highlighted">Kitchen</span>
-      </RouterLink>
+    <!-- The drawer's backdrop, and the largest possible target for closing it. -->
+    <div
+      v-if="sidebarOpen"
+      class="fixed inset-0 z-40 bg-black/60 lg:hidden"
+      aria-hidden="true"
+      @click="sidebarOpen = false"
+    />
+
+    <aside
+      id="sidebar"
+      :inert="sidebarHidden"
+      class="w-56 shrink-0 border-r border-default bg-muted flex flex-col fixed inset-y-0 left-0 z-50 transition-transform lg:static lg:translate-x-0"
+      :class="sidebarOpen ? 'translate-x-0' : '-translate-x-full'"
+    >
+      <div class="flex items-center h-14 border-b border-default">
+        <RouterLink to="/" class="flex items-center gap-2 px-4 flex-1 min-w-0">
+          <img src="/favicon.svg" alt="" class="size-5" />
+          <span class="font-semibold text-highlighted">Kitchen</span>
+        </RouterLink>
+        <UButton
+          icon="i-lucide-x"
+          color="neutral"
+          variant="ghost"
+          size="sm"
+          class="mr-2 lg:hidden"
+          aria-label="Close navigation"
+          @click="sidebarOpen = false"
+        />
+      </div>
 
       <nav class="p-2 space-y-0.5">
         <RouterLink
@@ -202,7 +259,7 @@ const userMenu = computed(() => [
           />
         </NewProjectModal>
       </div>
-      <nav class="px-2 space-y-0.5 overflow-y-auto flex-1">
+      <nav class="px-2 space-y-0.5 overflow-y-auto flex-1 min-h-0">
         <RouterLink
           v-for="project in projects"
           :key="project.name"
@@ -261,33 +318,60 @@ const userMenu = computed(() => [
     </aside>
 
     <div class="flex-1 min-w-0 flex flex-col">
-      <header class="h-14 shrink-0 border-b border-default flex items-center gap-3 px-6">
+      <header class="h-14 shrink-0 border-b border-default flex items-center gap-2 sm:gap-3 px-3 sm:px-6">
+        <UButton
+          icon="i-lucide-menu"
+          color="neutral"
+          variant="ghost"
+          size="sm"
+          class="lg:hidden"
+          aria-label="Open navigation"
+          aria-controls="sidebar"
+          :aria-expanded="sidebarOpen"
+          @click="sidebarOpen = true"
+        />
         <span class="flex-1" />
         <CommandPalette />
         <span class="flex-1" />
+        <!-- Both labels collapse to their icons on a phone: the pair is the
+             widest thing in the header and the least in need of words. -->
         <UFieldGroup size="sm">
           <UButton
             :color="operatorMode ? 'neutral' : 'primary'"
             :variant="operatorMode ? 'subtle' : 'soft'"
-            label="Developer"
+            icon="i-lucide-code"
+            title="Developer"
+            aria-label="Developer view"
             @click="operatorMode = false"
-          />
+          >
+            <span class="hidden sm:inline">Developer</span>
+          </UButton>
           <UButton
             :color="operatorMode ? 'primary' : 'neutral'"
             :variant="operatorMode ? 'soft' : 'subtle'"
-            label="Operator"
+            icon="i-lucide-server-cog"
+            title="Operator"
+            aria-label="Operator view"
             @click="operatorMode = true"
-          />
+          >
+            <span class="hidden sm:inline">Operator</span>
+          </UButton>
         </UFieldGroup>
         <UDropdownMenu :items="userMenu">
-          <UButton color="neutral" variant="ghost" size="sm" icon="i-lucide-circle-user-round">
-            {{ user?.name || "Account" }}
+          <UButton
+            color="neutral"
+            variant="ghost"
+            size="sm"
+            icon="i-lucide-circle-user-round"
+            :aria-label="user?.name || 'Account'"
+          >
+            <span class="hidden sm:inline">{{ user?.name || "Account" }}</span>
           </UButton>
         </UDropdownMenu>
       </header>
 
       <main class="flex-1 overflow-y-auto">
-        <div class="max-w-6xl mx-auto px-6 py-6">
+        <div class="max-w-6xl mx-auto px-4 sm:px-6 py-5 sm:py-6">
           <slot />
         </div>
       </main>

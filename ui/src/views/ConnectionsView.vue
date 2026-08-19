@@ -41,7 +41,7 @@ async function deleteConnection() {
 
 <template>
   <div class="space-y-6">
-    <div class="flex items-center justify-between">
+    <div class="flex items-start justify-between gap-3 flex-wrap">
       <div>
         <h1 class="text-xl font-semibold text-highlighted">Connections</h1>
         <p class="text-xs text-muted mt-1">

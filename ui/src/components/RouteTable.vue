@@ -58,7 +58,7 @@ function toggle(route: string) {
 <template>
   <div class="space-y-1.5">
     <div class="rounded-md border border-default overflow-x-auto">
-      <table class="w-full text-sm">
+      <table class="w-full min-w-[42rem] text-sm">
         <thead>
           <tr class="text-left text-xs text-muted border-b border-default bg-muted">
             <th v-for="column in columns" :key="column.key" class="px-4 py-2 font-medium" :class="column.align">

@@ -174,7 +174,7 @@ function fullest(item: PlatformNode) {
         description="Nothing is collecting logs or metrics there. A pod refused at admission never exists, so this is the only place it shows."
       />
 
-      <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+      <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
         <div class="rounded-md border border-default px-4 py-3">
           <p class="text-xs text-muted">Nodes</p>
           <p class="text-lg font-semibold text-highlighted tabular-nums mt-1">{{ data?.nodes ?? "—" }}</p>
@@ -209,7 +209,7 @@ function fullest(item: PlatformNode) {
       </div>
 
       <div class="rounded-md border border-default overflow-x-auto">
-        <table class="w-full text-sm">
+        <table class="w-full min-w-[48rem] text-sm">
           <thead>
             <tr class="text-left text-xs text-muted border-b border-default bg-muted">
               <th class="px-4 py-2.5 font-medium">Node</th>
@@ -238,7 +238,7 @@ function fullest(item: PlatformNode) {
                 :title="expanded === item.name ? 'Hide this node' : 'Show conditions and filesystems'"
                 @click="toggle(item.name)"
               >
-                <td class="px-4 py-3">
+                <td class="px-4 py-3 whitespace-nowrap">
                   <span class="inline-flex items-center gap-2">
                     <StatusDot :tone="item.ready ? 'success' : 'error'" />
                     <span class="font-mono text-highlighted">{{ item.name }}</span>

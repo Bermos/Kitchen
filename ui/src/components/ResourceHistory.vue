@@ -85,7 +85,7 @@ const resolution = computed(() => bucketLabel(series.value?.bucketSeconds));
         <span v-if="series" class="text-[11px] text-dimmed font-mono">
           {{ resolution }}<template v-if="series.rollup"> · rollup</template>
         </span>
-        <USelect v-model="rangeMinutes" :items="ranges" size="xs" class="w-36" />
+        <USelect v-model="rangeMinutes" :items="ranges" size="xs" class="w-32 sm:w-36" />
       </div>
     </div>
 
