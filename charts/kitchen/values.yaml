@@ -200,6 +200,24 @@ kitchen:
     # one behind; older ones are pruned, except any an environment still
     # references. `0` keeps every release forever.
     releaseRetention: 10
+    cache:
+      # -- Reuse layers between builds. The cache is a manifest in the
+      # registry the project already pushes to, under the same credential, so
+      # this needs no infrastructure the platform does not already have. Off
+      # means every build starts from nothing.
+      enabled: true
+      # -- How much of a BuildKit build is cached: `max` keeps the
+      # intermediate layers, so a source change still reuses the dependency
+      # install above it, and costs registry storage; `min` keeps only the
+      # layers of the image that came out. Buildpacks builds ignore this —
+      # the lifecycle has one cache image and no such choice.
+      mode: max
+      # -- What two builds have to share to reuse each other's layers:
+      # `project` gives a project one cache tag that every branch reads and
+      # every build overwrites, which is bounded without anything pruning it;
+      # `branch` gives each branch its own, a better hit rate on a long-lived
+      # branch at one tag per branch that ever built, which nothing removes.
+      scope: project
   compliance:
     audit:
       # -- Record every state transition the platform makes into an

@@ -117,6 +117,17 @@ type artifact struct {
 	Message    string     `json:"message,omitempty"`
 }
 
+// buildCache is what the layer cache did for a build: a cold build had nothing
+// to reuse, which is the difference between one that was slow and one that
+// regressed.
+type buildCache struct {
+	Enabled bool   `json:"enabled"`
+	Warm    bool   `json:"warm"`
+	Ref     string `json:"ref,omitempty"`
+	Mode    string `json:"mode,omitempty"`
+	Message string `json:"message,omitempty"`
+}
+
 // build is `GET /builds/{name}`. Phase is one of Queued, Running, Succeeded,
 // Failed or Cancelled.
 type build struct {
@@ -131,6 +142,7 @@ type build struct {
 	CreatedAt         time.Time   `json:"createdAt"`
 	Conditions        []condition `json:"conditions,omitempty"`
 	Artifact          *artifact   `json:"artifact,omitempty"`
+	Cache             *buildCache `json:"cache,omitempty"`
 }
 
 // terminal reports whether a build has stopped moving, whichever way it went.

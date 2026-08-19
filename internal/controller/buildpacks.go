@@ -63,7 +63,8 @@ const (
 
 	// Where the clone lands and where the lifecycle assembles the image.
 	// Both are emptyDir volumes: a build gets its own, and nothing survives
-	// it — layer caching across builds is issue #70.
+	// it. What survives a build is the cache image the lifecycle exports —
+	// see cnbCacheArgs — which the next build restores these layers from.
 	buildpacksWorkspaceDir = "/workspace"
 	buildpacksSourceDir    = buildpacksWorkspaceDir + "/source"
 	buildpacksLayersDir    = "/layers"
@@ -102,6 +103,7 @@ func buildpacksPod(
 	project *kitchenv1alpha1.Project,
 	build *kitchenv1alpha1.Build,
 	detected framework.Framework,
+	cache *kitchenv1alpha1.BuildCacheStatus,
 	credsSecret, tagRef string,
 ) corev1.PodTemplateSpec {
 	appDir := buildpacksSourceDir
@@ -137,7 +139,7 @@ func buildpacksPod(
 				Name:    "creator",
 				Image:   BuildpacksBuilderImage,
 				Command: []string{"/cnb/lifecycle/creator"},
-				Args: []string{
+				Args: append(cnbCacheArgs(cache), []string{
 					"-app=" + appDir,
 					"-layers=" + buildpacksLayersDir,
 					// The lifecycle's report carries the digest of what it
@@ -150,7 +152,7 @@ func buildpacksPod(
 					// colour escape is a character like any other.
 					"-no-color",
 					tagRef,
-				},
+				}...),
 				Env: append([]corev1.EnvVar{
 					{Name: "DOCKER_CONFIG", Value: dockerConfigDir},
 					{Name: "CNB_PLATFORM_API", Value: BuildpacksPlatformAPI},
@@ -164,6 +166,21 @@ func buildpacksPod(
 			},
 		},
 	}
+}
+
+// cnbCacheArgs point the lifecycle at the cache image it restores from and
+// exports to. One flag does both directions, and it is the whole of buildpacks
+// caching: the lifecycle decides for itself which of a buildpack's layers it
+// can reuse, and there is no mode to choose between.
+//
+// A cache image the lifecycle cannot read or cannot write is a warning it
+// prints and builds through, which is the degradation this needs and the
+// reason it can be passed without knowing what the registry supports.
+func cnbCacheArgs(cache *kitchenv1alpha1.BuildCacheStatus) []string {
+	if cache == nil || !cache.Enabled {
+		return nil
+	}
+	return []string{"-cache-image=" + cache.Ref}
 }
 
 // frameworkEnv is what detection tells the lifecycle, in the order the

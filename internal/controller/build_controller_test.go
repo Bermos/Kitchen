@@ -38,7 +38,22 @@ import (
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/framework"
 	"github.com/Bermos/Kitchen/internal/gitprovider"
+	"github.com/Bermos/Kitchen/internal/provider"
 )
+
+// fakeCacheProbe is a registry that holds exactly what a test put in it. The
+// real one is a round trip, and every build makes one.
+type fakeCacheProbe struct {
+	holds map[string]bool
+	err   error
+}
+
+func (f *fakeCacheProbe) Exists(_ context.Context, ref string) (bool, error) {
+	if f.err != nil {
+		return false, f.err
+	}
+	return f.holds[ref], nil
+}
 
 var _ = Describe("Build Controller", func() {
 	Context("When reconciling a build", func() {
@@ -56,12 +71,18 @@ var _ = Describe("Build Controller", func() {
 		appNS := "kitchen-" + projectName
 		jobKey := types.NamespacedName{Name: buildName, Namespace: appNS}
 		wantTag := registryURL + "/" + projectName + ":" + sha[:12]
+		wantCache := registryURL + "/" + projectName + ":buildcache"
 
 		var (
 			reconciler *BuildReconciler
 			// source is the repository the project's provider serves. Tests
 			// that care what is in it rewrite it before reconciling.
 			source *fakeSource
+			// registryHolds is what the registry has a cache manifest under.
+			// Tests that care about a warm cache put its ref in here; the
+			// rest run against a registry holding nothing, which is what an
+			// unconfigured project's first build meets.
+			registryHolds *fakeCacheProbe
 		)
 
 		reconcileOnce := func() {
@@ -112,10 +133,14 @@ var _ = Describe("Build Controller", func() {
 
 		BeforeEach(func() {
 			source = repoWithDockerfile()
+			registryHolds = &fakeCacheProbe{}
 			reconciler = &BuildReconciler{
 				Client: k8sClient, Scheme: k8sClient.Scheme(),
 				GitProviders: func(*kitchenv1alpha1.Connection, string) (gitprovider.Provider, error) {
 					return source, nil
+				},
+				CacheProbes: func([]byte, provider.RegistryTarget) (CacheProbe, error) {
+					return registryHolds, nil
 				},
 			}
 
@@ -249,6 +274,121 @@ var _ = Describe("Build Controller", func() {
 			Expect(k8sClient.Get(ctx, buildKey, build)).To(Succeed())
 			Expect(build.Status.Phase).To(Equal(kitchenv1alpha1.BuildRunning))
 			Expect(build.Status.StartedAt).NotTo(BeNil())
+		})
+
+		It("exports the layer cache beside the image, and says the build had none to read", func() {
+			reconcileOnce()
+
+			job := &batchv1.Job{}
+			Expect(k8sClient.Get(ctx, jobKey, job)).To(Succeed())
+			joined := strings.Join(job.Spec.Template.Spec.Containers[0].Args, " ")
+			Expect(joined).To(ContainSubstring("--export-cache type=registry,ref=" + wantCache))
+			// image-manifest and oci-mediatypes are what a registry that
+			// rejects BuildKit's own cache manifest will accept, and
+			// ignore-error is what keeps one that rejects it anyway from
+			// failing a build whose image is already pushed.
+			Expect(joined).To(ContainSubstring("image-manifest=true,oci-mediatypes=true,ignore-error=true"))
+			Expect(joined).To(ContainSubstring("mode=max"))
+			// Nothing is there yet, and BuildKit says so at length when told
+			// to import a cache that does not exist.
+			Expect(joined).NotTo(ContainSubstring("--import-cache"))
+
+			build := &kitchenv1alpha1.Build{}
+			Expect(k8sClient.Get(ctx, buildKey, build)).To(Succeed())
+			Expect(build.Status.Cache).NotTo(BeNil())
+			Expect(build.Status.Cache.Enabled).To(BeTrue())
+			Expect(build.Status.Cache.Warm).To(BeFalse())
+			Expect(build.Status.Cache.Ref).To(Equal(wantCache))
+			Expect(build.Status.Cache.Mode).To(Equal(kitchenv1alpha1.BuildCacheModeMax))
+			Expect(build.Status.Cache.Message).To(ContainSubstring("nothing had been cached"))
+		})
+
+		It("imports the cache once the registry is holding one", func() {
+			registryHolds.holds = map[string]bool{wantCache: true}
+
+			reconcileOnce()
+
+			job := &batchv1.Job{}
+			Expect(k8sClient.Get(ctx, jobKey, job)).To(Succeed())
+			joined := strings.Join(job.Spec.Template.Spec.Containers[0].Args, " ")
+			Expect(joined).To(ContainSubstring("--import-cache type=registry,ref=" + wantCache))
+
+			build := &kitchenv1alpha1.Build{}
+			Expect(k8sClient.Get(ctx, buildKey, build)).To(Succeed())
+			Expect(build.Status.Cache.Warm).To(BeTrue())
+			Expect(build.Status.Cache.Message).To(BeEmpty())
+		})
+
+		It("stops exporting a cache the registry did not keep", func() {
+			// The last build exported to this ref and the registry is not
+			// holding it, which is what a registry that refuses the cache
+			// manifest looks like from the outside — the export is told to
+			// warn rather than fail, so nothing else says so.
+			refused := &kitchenv1alpha1.Build{
+				ObjectMeta: metav1.ObjectMeta{Name: "other-build", Namespace: namespace},
+				Spec: kitchenv1alpha1.BuildSpec{
+					ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: projectName},
+					Git:        kitchenv1alpha1.GitRevision{SHA: "0123456789abcdef0123", Branch: "main"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, refused)).To(Succeed())
+			refused.Status.Phase = kitchenv1alpha1.BuildSucceeded
+			refused.Status.Cache = &kitchenv1alpha1.BuildCacheStatus{Enabled: true, Ref: wantCache}
+			Expect(k8sClient.Status().Update(ctx, refused)).To(Succeed())
+
+			reconcileOnce()
+
+			job := &batchv1.Job{}
+			Expect(k8sClient.Get(ctx, jobKey, job)).To(Succeed())
+			joined := strings.Join(job.Spec.Template.Spec.Containers[0].Args, " ")
+			Expect(joined).NotTo(ContainSubstring("cache"))
+
+			build := &kitchenv1alpha1.Build{}
+			Expect(k8sClient.Get(ctx, buildKey, build)).To(Succeed())
+			Expect(build.Status.Cache.Enabled).To(BeFalse())
+			Expect(build.Status.Cache.Message).To(ContainSubstring("did not keep the cache"))
+		})
+
+		It("builds from nothing when the platform turns caching off", func() {
+			kitchen := &kitchenv1alpha1.Kitchen{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: KitchenSingletonName}, kitchen)).To(Succeed())
+			kitchen.Spec.Builds.Cache.Enabled = ptr.To(false)
+			Expect(k8sClient.Update(ctx, kitchen)).To(Succeed())
+
+			reconcileOnce()
+
+			job := &batchv1.Job{}
+			Expect(k8sClient.Get(ctx, jobKey, job)).To(Succeed())
+			Expect(strings.Join(job.Spec.Template.Spec.Containers[0].Args, " ")).NotTo(ContainSubstring("cache"))
+
+			build := &kitchenv1alpha1.Build{}
+			Expect(k8sClient.Get(ctx, buildKey, build)).To(Succeed())
+			Expect(build.Status.Cache.Enabled).To(BeFalse())
+			// Off by choice is not a fault, and every commit does not need
+			// telling about it.
+			Expect(build.Status.Cache.Message).To(BeEmpty())
+		})
+
+		It("points the lifecycle at a cache image of its own", func() {
+			project := &kitchenv1alpha1.Project{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: projectName, Namespace: namespace}, project)).To(Succeed())
+			project.Spec.Build.Strategy = kitchenv1alpha1.BuildStrategyBuildpacks
+			Expect(k8sClient.Update(ctx, project)).To(Succeed())
+
+			reconcileOnce()
+
+			job := &batchv1.Job{}
+			Expect(k8sClient.Get(ctx, jobKey, job)).To(Succeed())
+			// The lifecycle cannot read BuildKit's cache manifest, so the two
+			// formats never share a tag.
+			Expect(job.Spec.Template.Spec.Containers[0].Args).To(
+				ContainElement("-cache-image=" + registryURL + "/" + projectName + ":buildcache-cnb"))
+
+			build := &kitchenv1alpha1.Build{}
+			Expect(k8sClient.Get(ctx, buildKey, build)).To(Succeed())
+			Expect(build.Status.Cache.Enabled).To(BeTrue())
+			// The lifecycle has one cache image and no mode to choose.
+			Expect(build.Status.Cache.Mode).To(BeEmpty())
 		})
 
 		It("runs the lifecycle for a project that asks for buildpacks", func() {

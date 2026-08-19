@@ -130,6 +130,46 @@ spec:
                       or digest.
                     type: string
                 type: object
+              cache:
+                description: |-
+                  Cache is what the layer cache did for this build. Absent on a build
+                  that never got as far as being run.
+                properties:
+                  enabled:
+                    description: |-
+                      Enabled is whether this build imported from and exported to the cache.
+                      False with a Message is a cache the platform turned off for a reason;
+                      false without one is an installation that asked for no caching.
+                    type: boolean
+                  message:
+                    description: |-
+                      Message explains a cache that is not there: the first build of a
+                      project, or a registry that would not keep the cache manifest.
+                    type: string
+                  mode:
+                    description: |-
+                      Mode is how much of the build was exported: max or min. Empty for a
+                      buildpacks build, whose lifecycle has one cache image and no such
+                      choice.
+                    enum:
+                    - max
+                    - min
+                    type: string
+                  ref:
+                    description: |-
+                      Ref is the registry reference the cache is kept under, empty when
+                      there is no cache.
+                    type: string
+                  warm:
+                    description: |-
+                      Warm is whether the cache existed when the build started. A cold build
+                      is the first of its scope, or the first after the cache was removed —
+                      either way it had nothing to reuse and the next one will.
+                    type: boolean
+                required:
+                - enabled
+                - warm
+                type: object
               completedAt:
                 format: date-time
                 type: string

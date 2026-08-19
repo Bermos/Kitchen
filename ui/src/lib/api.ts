@@ -117,10 +117,25 @@ export interface Build {
   detectedFramework?: string;
   image?: string;
   artifact?: Artifact;
+  cache?: BuildCache;
   startedAt?: string;
   completedAt?: string;
   createdAt: string;
   conditions?: Condition[];
+}
+
+/** What the layer cache did for a build. A cold build had nothing to reuse,
+ *  which is the difference between "this was slow" and "this is a regression". */
+export interface BuildCache {
+  enabled: boolean;
+  warm: boolean;
+  /** Where the cache is kept in the registry. */
+  ref?: string;
+  /** How much of the build was cached: max or min. Empty for buildpacks,
+   *  whose lifecycle has one cache image and no such choice. */
+  mode?: string;
+  /** Why there was no cache, when there was none. */
+  message?: string;
 }
 
 /** What a build produced, by content, and whether the platform attested it.

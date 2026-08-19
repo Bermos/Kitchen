@@ -220,6 +220,78 @@ type BuildsSpec struct {
 	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:default=10
 	ReleaseRetention int32 `json:"releaseRetention,omitempty"`
+
+	// Cache is the layer cache builds reuse between runs.
+	//
+	// The empty-object default is what gives an installation that predates
+	// the field a cache at all: structural defaulting only descends into
+	// objects that are present.
+	// +kubebuilder:default={}
+	// +optional
+	Cache BuildCacheSpec `json:"cache,omitempty"`
+}
+
+// BuildCacheMode is how much of a build BuildKit writes to the cache.
+// +kubebuilder:validation:Enum=max;min
+type BuildCacheMode string
+
+const (
+	// BuildCacheModeMax caches every intermediate layer, so a change part
+	// way down a Dockerfile still reuses everything above it. It is what
+	// makes a dependency install survive a source change, and it costs
+	// registry storage.
+	BuildCacheModeMax BuildCacheMode = "max"
+
+	// BuildCacheModeMin caches only the layers of the image that came out.
+	// Cheaper to store and much weaker: a multi-stage build's build stage is
+	// not in the final image, so nothing about it is reused.
+	BuildCacheModeMin BuildCacheMode = "min"
+)
+
+// BuildCacheScope is what a cache is shared across — what two builds have to
+// agree on to reuse each other's layers.
+// +kubebuilder:validation:Enum=project;branch
+type BuildCacheScope string
+
+const (
+	// BuildCacheScopeProject gives a project one cache, which every branch
+	// reads and every build overwrites. One tag per project, so it is
+	// bounded without anything having to prune it, and a branch cut from
+	// production starts warm.
+	BuildCacheScopeProject BuildCacheScope = "project"
+
+	// BuildCacheScopeBranch gives each branch its own, which is a better hit
+	// rate on a long-lived branch whose dependencies have moved away from
+	// production's — at one cache tag per branch that ever built, which
+	// nothing removes.
+	BuildCacheScopeBranch BuildCacheScope = "branch"
+)
+
+// BuildCacheSpec configures the layer cache, which is the difference between a
+// rebuild that reinstalls every dependency and one that does not.
+//
+// The cache lives in the registry the project already pushes to: BuildKit
+// exports a cache manifest beside the image, and the buildpacks lifecycle
+// exports a cache image. Neither needs infrastructure the platform does not
+// already have, which is why this is on by default.
+type BuildCacheSpec struct {
+	// Enabled builds against the layer cache. Off means every build starts
+	// from nothing, which is slower and the only way to be certain a build
+	// reused nothing at all.
+	// +kubebuilder:default=true
+	// +optional
+	Enabled *bool `json:"enabled,omitempty"`
+
+	// Mode is how much of a BuildKit build is cached. It does not reach the
+	// buildpacks lifecycle, which has one cache image and no such choice.
+	// +kubebuilder:default=max
+	// +optional
+	Mode BuildCacheMode `json:"mode,omitempty"`
+
+	// Scope is what two builds have to share to reuse each other's layers.
+	// +kubebuilder:default=project
+	// +optional
+	Scope BuildCacheScope `json:"scope,omitempty"`
 }
 
 // ClickHouseSpec configures the telemetry store.
