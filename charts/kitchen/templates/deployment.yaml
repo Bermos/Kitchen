@@ -94,6 +94,22 @@ spec:
             - --self-update-timeout={{ .Values.selfUpdate.timeout }}
             - --self-update-allow-minor={{ .Values.selfUpdate.allowMinor }}
             {{- end }}
+            {{- if .Values.scaleToZero.install.enabled }}
+            # Whether the operator *may* install KEDA is the chart's to say,
+            # because the account is the chart's to create — and it is a flag
+            # for the same reason self-update's are. Whether it *does* is
+            # spec.scaleToZero.install on the singleton.
+            - --keda-install-service-account={{ include "kitchen.kedaInstallServiceAccountName" . }}
+            - --keda-install-image={{ .Values.scaleToZero.install.image.repository }}:{{ .Values.scaleToZero.install.image.tag }}
+            - --keda-chart-repository={{ .Values.scaleToZero.install.chartRepository }}
+            {{- with .Values.scaleToZero.install.version }}
+            - --keda-chart-version={{ . }}
+            {{- end }}
+            {{- with .Values.scaleToZero.install.addOnVersion }}
+            - --keda-http-chart-version={{ . }}
+            {{- end }}
+            - --keda-install-timeout={{ .Values.scaleToZero.install.timeout }}
+            {{- end }}
             {{- with .Values.extraArgs }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

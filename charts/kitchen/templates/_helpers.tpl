@@ -64,6 +64,15 @@ than an extra rule on the account everything else already runs as.
 {{- end }}
 
 {{/*
+The KEDA install job's ServiceAccount. Separate from the manager's for the same
+reason the self-update account is: it is bound to cluster-admin, and that grant
+should be one obvious object that goes away with the feature.
+*/}}
+{{- define "kitchen.kedaInstallServiceAccountName" -}}
+{{- default (printf "%s-keda-install" (include "kitchen.fullname" .)) .Values.scaleToZero.install.serviceAccountName }}
+{{- end }}
+
+{{/*
 The preview gate's ServiceAccount. Separate from the manager's for the same
 reason the self-update account is: it is the identity of a different workload,
 and the whole point of it is that the grant is small and visible — get, list
@@ -720,6 +729,17 @@ does not run in.
 {{- end }}
 {{- if has (dir .Values.restore.path) (list "/manager" "/gate" "/backup" "/restore") }}
 {{- fail (printf "restore.path is %q, and its directory %q is one of the operator image's own binaries. A volume mounted over a regular file does not start the container at all — it fails before anything runs, with no logs to read. Put the archive somewhere else, such as /archive/backup.tar.gz." .Values.restore.path (dir .Values.restore.path)) }}
+{{- end }}
+{{- end }}
+{{- if .Values.scaleToZero.install.enabled }}
+{{- if not .Values.rbac.create }}
+{{- fail "scaleToZero.install.enabled requires rbac.create: the install job runs as its own ServiceAccount bound to cluster-admin, which this chart is not creating. Set rbac.create=true, or leave scaleToZero.install.enabled=false and install KEDA and its HTTP add-on yourself." }}
+{{- end }}
+{{- if not .Values.scaleToZero.enabled }}
+{{- fail "scaleToZero.install.enabled is set but scaleToZero.enabled is false: the operator installs KEDA for a platform that idles environments, so this would grant an account cluster-admin and then install nothing. Set scaleToZero.enabled=true, or leave both off." }}
+{{- end }}
+{{- if not .Values.scaleToZero.install.chartRepository }}
+{{- fail "scaleToZero.install.chartRepository is required when scaleToZero.install.enabled is true: the install job has nowhere to pull the two charts from. Set it to https://kedacore.github.io/charts or to your own mirror." }}
 {{- end }}
 {{- end }}
 {{- if and (gt (int .Values.replicaCount) 1) (not .Values.leaderElection) }}

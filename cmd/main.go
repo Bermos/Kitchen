@@ -89,6 +89,7 @@ func main() {
 	var apiAudiences string
 	var uiClientID string
 	var selfUpdate controller.SelfUpdateConfig
+	var kedaInstall controller.KedaInstallConfig
 	var secureMetrics bool
 	var enableHTTP2 bool
 	var tlsOpts []func(*tls.Config)
@@ -139,6 +140,26 @@ func main() {
 	flag.BoolVar(&selfUpdate.AllowMinor, "self-update-allow-minor", false,
 		"Allow a self-update that crosses a minor version. While Kitchen is pre-1.0 the minor is where breaking "+
 			"changes land, so those upgrades are opted into separately.")
+	// Installing the platform's own scale-to-zero dependencies. Flags for the
+	// same reason self-update's are: the account is the chart's to create, so
+	// the chart is what says whether the operator may use one. Whether it
+	// does is spec.scaleToZero.install on the singleton.
+	flag.StringVar(&kedaInstall.ServiceAccount, "keda-install-service-account", "",
+		"ServiceAccount the KEDA install job runs as. It is separate from the manager's, and bound to "+
+			"cluster-admin, because installing KEDA applies CRDs, ClusterRoles and a namespace. Empty means "+
+			"this installation cannot install KEDA for itself, which is the default.")
+	flag.StringVar(&kedaInstall.HelmImage, "keda-install-image", controller.DefaultHelmImage,
+		"Image the KEDA install job runs helm from.")
+	flag.StringVar(&kedaInstall.Repository, "keda-chart-repository", controller.DefaultKedaChartRepository,
+		"Helm repository the KEDA charts are pulled from. Point it at a mirror for a cluster that cannot "+
+			"reach kedacore.github.io.")
+	flag.StringVar(&kedaInstall.ChartVersion, "keda-chart-version", controller.DefaultKedaChartVersion,
+		"Version of the KEDA chart the platform installs. Pinned with the add-on's, not floated.")
+	flag.StringVar(&kedaInstall.AddOnChartVersion, "keda-http-chart-version", controller.DefaultKedaHTTPChartVersion,
+		"Version of the KEDA HTTP add-on chart the platform installs. It decides the interceptor's Service "+
+			"name and port, which spec.scaleToZero.interceptor defaults to.")
+	flag.DurationVar(&kedaInstall.Timeout, "keda-install-timeout", controller.DefaultKedaInstallTimeout,
+		"How long helm is given for each of the two installs. Both wait for their workloads to be ready.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
@@ -325,6 +346,7 @@ func main() {
 		Scheme:                    mgr.GetScheme(),
 		PreviewGateImage:          previewGateImage,
 		PreviewGateServiceAccount: previewGateServiceAccount,
+		KedaInstall:               kedaInstall,
 		Audit:                     auditor,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Kitchen")
@@ -404,6 +426,8 @@ func main() {
 	}
 	setupLog.Info("self-update", "enabled", selfUpdate.Enabled(),
 		"chart", selfUpdate.Chart, "allowMinor", selfUpdate.AllowMinor)
+	setupLog.Info("keda-install", "permitted", kedaInstall.Enabled(),
+		"keda", kedaInstall.ChartVersion, "httpAddOn", kedaInstall.AddOnChartVersion)
 	// +kubebuilder:scaffold:builder
 
 	if err := mgr.Add(&receiver.GitWebhookReceiver{

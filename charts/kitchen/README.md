@@ -55,10 +55,13 @@ cert-manager is **not** in that list either: the chart ships it as a sub-chart
 installed into. Set `cert-manager.enabled=false` for a cluster that already
 runs one.
 
-One optional feature does add a prerequisite: **KEDA and its HTTP add-on**, if
-you want `scaleToZero.enabled`. They cannot be sub-charts of anything — see
-[Scale to zero](#scale-to-zero) — so they are two `helm install` commands of
-their own. Without them the feature simply stays off.
+One optional feature adds a dependency: **KEDA and its HTTP add-on**, if you
+want `scaleToZero.enabled`. They cannot be sub-charts of anything — see
+[Scale to zero](#scale-to-zero) — so they go in as two Helm releases of their
+own. That does not have to mean two commands of yours:
+`scaleToZero.install.enabled` lets the **operator** run those two installs
+itself, in order, which is a thing a chart cannot do and a controller can.
+Without either, the feature simply stays off.
 
 In `acme` mode the **operator**, not the chart, creates the `ClusterIssuer` and
 the wildcard `Certificate` from `kitchen.tls.acme`. That split is deliberate:
@@ -806,12 +809,50 @@ to its URL starts it again. That is what makes a dozen open pull requests
 nearly free: a preview costs a URL and a Deployment record until someone opens
 it.
 
-It is off by default, and it is the one platform feature with a prerequisite
-this chart does not install: [KEDA](https://keda.sh) and its
-[HTTP add-on](https://github.com/kedacore/http-add-on) go in as their own Helm
-releases, which is how upstream ships them and — see
+It is off by default, and it needs [KEDA](https://keda.sh) and its
+[HTTP add-on](https://github.com/kedacore/http-add-on) in the cluster. They go
+in as their own two Helm releases, which is how upstream ships them and — see
 [why they are not sub-charts](#why-keda-is-not-a-sub-chart) — the only way Helm
 can install them at all.
+
+**Either the platform installs them, or you do.**
+
+### Letting the platform install them
+
+```sh
+--set scaleToZero.enabled=true
+--set scaleToZero.install.enabled=true
+```
+
+The operator then runs those same two installs itself, as a Job in
+`kitchen-system`: KEDA first, waited for, then the add-on — the ordering Helm
+cannot express inside one release but a controller can simply do. The versions
+are pinned by the operator, not floated, so the pair that goes in is the pair
+that release was tested with; `scaleToZero.install.version` and
+`.addOnVersion` override them, and `.chartRepository` points at a mirror for a
+cluster that cannot reach `kedacore.github.io`.
+
+It is off by default because the job is bound to **cluster-admin** — installing
+KEDA applies CRDs, ClusterRoles and a namespace — so `install.enabled` creates
+a ServiceAccount of its own with that binding, the way `selfUpdate.enabled`
+does. The grant is one object, revocable by turning the value off, and gone
+when the release is. Nothing from an API request ever reaches that job's
+command line: the operator builds it from its own configuration.
+
+Progress and outcome are on the singleton:
+
+```sh
+kubectl get kitchen default \
+  -o jsonpath='{.status.conditions[?(@.type=="ScaleToZeroReady")].message}'
+kubectl get kitchen default -o jsonpath='{.status.scaleToZero}'
+```
+
+`status.scaleToZero.managed` is the important half: `true` where the platform
+installed KEDA and may upgrade it, absent or `false` where it found KEDA
+already there and will never write to it. See [On a cluster that already runs
+KEDA](#on-a-cluster-that-already-runs-keda).
+
+### Installing them yourself
 
 ```sh
 helm repo add kedacore https://kedacore.github.io/charts
@@ -894,6 +935,14 @@ Two releases, as upstream documents them, has none of these problems: KEDA
 upgrades its own CRDs through its own chart, and Kitchen's chart carries only
 the address.
 
+**None of this binds the operator**, and that is the whole of
+`scaleToZero.install`. Every constraint above is Helm's: one release, one
+manifest, validated in full before anything is applied. A controller installs
+one release, waits for its CRDs to be established, and installs the next — the
+same reason the cert-manager `ClusterIssuer` and the wildcard `Certificate` are
+created by the operator rather than by a template. So the chart still bundles
+nothing of KEDA's, and the platform can still end up having installed it.
+
 ### What the first request pays
 
 An idling environment's URL does not point at the application any more: it
@@ -934,6 +983,17 @@ than parking behind an interceptor with nothing to wake it.
 Nothing to install — point `scaleToZero.interceptor.*` at the add-on you have.
 Kitchen never touches KEDA's own objects, so the two installations stay
 independent.
+
+**This holds with `install.enabled` on, too.** Where the add-on's API is
+already served, the operator installs nothing at all: it records the fact with
+`managed: false` and leaves both releases alone for the rest of the
+installation's life. An installation that would rather run its own KEDA — a
+shared one, a pinned one, one its GitOps owns — has to be able to, and a
+platform that upgraded it out from under you would be a worse neighbour than
+one that never offered. The half-installed case is refused rather than guessed
+at: KEDA present without its add-on gives a `ScaleToZeroReady` condition saying
+so, because installing KEDA over a release the platform does not own is exactly
+what it will not do.
 
 Turning `scaleToZero.enabled` back off returns every environment to plain
 Deployment routing on the next reconcile and deletes the scaled objects it
@@ -1387,7 +1447,15 @@ kubectl delete namespace kitchen-system
 | `registry.retention.gcInterval` / `.gcDelay` | `24h` / `2h` | How often the collector runs, and how long a fresh blob is left alone. |
 | `registry.resources` | 50m/128Mi → 1Gi | |
 | `registry.logLevel` | `info` | |
-| `scaleToZero.enabled` | `false` | Idle environments down to no pods. Needs KEDA and the HTTP add-on in the cluster, installed separately — see [Scale to zero](#scale-to-zero). |
+| `scaleToZero.enabled` | `false` | Idle environments down to no pods. Needs KEDA and the HTTP add-on in the cluster — installed by the operator, or by you; see [Scale to zero](#scale-to-zero). |
+| `scaleToZero.install.enabled` | `false` | Let the operator install KEDA and its HTTP add-on itself. Creates a ServiceAccount bound to cluster-admin; does nothing on a cluster that already runs KEDA. |
+| `scaleToZero.install.chartRepository` | `https://kedacore.github.io/charts` | Helm repository the two charts are pulled from. |
+| `scaleToZero.install.version` | `""` | KEDA chart version to install. Empty takes the operator's own pin. |
+| `scaleToZero.install.addOnVersion` | `""` | HTTP add-on chart version to install. Empty takes the operator's own pin. |
+| `scaleToZero.install.timeout` | `10m` | How long helm is given for each of the two installs. Both wait for their workloads. |
+| `scaleToZero.install.serviceAccountName` | `""` | Name of the install job's ServiceAccount. Generated when empty. |
+| `scaleToZero.install.image.repository` | `alpine/helm` | Image the install job runs helm from. |
+| `scaleToZero.install.image.tag` | `3.19.0` | Tag of that image. |
 | `scaleToZero.interceptor.service` | `keda-add-ons-http-interceptor-proxy` | Interceptor Service idling environments are routed through. The add-on names it after its own chart, so this is a constant. |
 | `scaleToZero.interceptor.namespace` | `keda` | Namespace the HTTP add-on was installed into. |
 | `scaleToZero.interceptor.port` | `8080` | Port the interceptor accepts traffic on. |

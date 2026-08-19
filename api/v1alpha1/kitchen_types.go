@@ -126,8 +126,9 @@ type InterceptorSpec struct {
 
 // ScaleToZeroSpec is the platform switch for idling environments down to no
 // pods at all. It is off by default: it needs KEDA and its HTTP add-on running
-// in the cluster, and those are the one platform dependency Kitchen's chart
-// cannot install for you.
+// in the cluster, and those are the one platform dependency Kitchen's *chart*
+// cannot install — which is not the same as the platform not installing them.
+// See Install.
 //
 // With it on, each Project decides for itself which of its environments idle,
 // through its own `spec.scaleToZero`.
@@ -135,6 +136,27 @@ type ScaleToZeroSpec struct {
 	// +kubebuilder:default=false
 	// +optional
 	Enabled bool `json:"enabled,omitempty"`
+
+	// Install lets the operator put KEDA and its HTTP add-on in the cluster
+	// itself, as two Helm releases of their own, instead of expecting somebody
+	// to have run those two installs first.
+	//
+	// The chart cannot do this and the operator can, for one reason: Helm
+	// builds and validates a release's whole manifest before it applies any of
+	// it, so the add-on's `ScaledObject` — a custom resource of KEDA's CRD —
+	// never resolves in a release that also contains that CRD. The operator is
+	// under no such constraint. It installs KEDA, waits for it, and only then
+	// installs the add-on, which is the same ordering the two documented
+	// `helm install` commands have always had.
+	//
+	// It is off by default and it needs a grant the chart only creates when
+	// asked (`scaleToZero.install.enabled`), because the job that runs helm is
+	// bound to cluster-admin. Where the add-on is already serving, this does
+	// nothing at all: the operator adopts what it finds and never takes over a
+	// release it does not own.
+	// +kubebuilder:default=false
+	// +optional
+	Install bool `json:"install,omitempty"`
 
 	// +kubebuilder:default={}
 	// +optional
@@ -625,6 +647,36 @@ type ImageRegistryStatus struct {
 	Connection string `json:"connection,omitempty"`
 }
 
+// ScaleToZeroStatus records where KEDA came from, so that "the platform
+// installed this" and "the platform found this" stay distinguishable for as
+// long as the installation lives.
+//
+// The distinction is the whole of the adoption rule: Managed is written once,
+// when the operator's own install job succeeds, and read forever after as
+// permission to upgrade those two releases. A cluster that already ran KEDA
+// when scale-to-zero was switched on is recorded with Managed false, and
+// nothing the operator does afterwards writes to a release it did not create.
+type ScaleToZeroStatus struct {
+	// Managed is true when the operator installed KEDA and the HTTP add-on,
+	// and false when it found them already serving.
+	// +optional
+	Managed bool `json:"managed,omitempty"`
+
+	// Namespace the two releases live in, which is the interceptor's.
+	// +optional
+	Namespace string `json:"namespace,omitempty"`
+
+	// Version of the KEDA chart the operator installed. Empty when it
+	// installed nothing.
+	// +optional
+	Version string `json:"version,omitempty"`
+
+	// AddOnVersion of the HTTP add-on chart the operator installed. Empty
+	// when it installed nothing.
+	// +optional
+	AddOnVersion string `json:"addOnVersion,omitempty"`
+}
+
 // KitchenStatus defines the observed state of the platform.
 type KitchenStatus struct {
 	// +optional
@@ -653,6 +705,11 @@ type KitchenStatus struct {
 	// it is not.
 	// +optional
 	Compliance *ComplianceStatus `json:"compliance,omitempty"`
+
+	// ScaleToZero reports what the platform did about KEDA: installed it,
+	// or found it. Absent while nothing idles.
+	// +optional
+	ScaleToZero *ScaleToZeroStatus `json:"scaleToZero,omitempty"`
 }
 
 // +kubebuilder:object:root=true

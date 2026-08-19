@@ -20,7 +20,10 @@ kubeVersion: ">=1.30.0-0"
 # admitted.
 #
 # KEDA and its HTTP add-on — what scaleToZero.enabled needs — are deliberately
-# *not* here, even though Kitchen owns its cluster and bundles what it can.
+# *not* here, even though Kitchen owns its cluster and bundles what it can. The
+# platform can still end up having installed them: scaleToZero.install lets the
+# *operator* run those two installs, one after the other, which is a thing no
+# chart can do and every controller can. What follows is why the chart cannot.
 # They cannot be sub-charts of anything: the add-on ships a keda.sh ScaledObject
 # of its own (it autoscales its interceptor fleet), and Helm builds and
 # validates a release's whole manifest against the API server before applying

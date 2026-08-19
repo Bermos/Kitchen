@@ -91,6 +91,7 @@ spec:
     secretRef: { name: kitchen-registry }   # written by the chart; the registry's own username and password
   scaleToZero:
     enabled: true                       # off by default; needs KEDA + the HTTP add-on
+    install: true                       # the operator installs those two itself, as their own releases
     interceptor:                        # what an idling environment's URL points at
       service: keda-add-ons-http-interceptor-proxy
       namespace: kitchen-system
@@ -132,11 +133,16 @@ spec:
 status:
   conditions: [...]                     # Ready, GatewayProgrammed, TunnelConnected,
                                         # TelemetrySchemaReady, PreviewGateReady, RegistryReady,
-                                        # ComplianceReady
+                                        # ScaleToZeroReady, ComplianceReady
   gatewayAddress: 203.0.113.7
   registry:
     host: registry.apps.example.com
     connection: kitchen-registry        # the Connection the operator seeded, once
+  scaleToZero:
+    managed: true                       # false or absent: KEDA was already there and is nobody's to touch
+    namespace: keda
+    version: 2.20.2                     # what the operator installed, and may upgrade
+    addOnVersion: 0.15.0
   compliance:
     audit:
       recording: true                   # false with a message when there is nowhere to append to
@@ -146,6 +152,17 @@ status:
       keyID: 9f2c...                    # SHA-256 of the public key's DER encoding
       secretName: kitchen-attestation-key
 ```
+
+`scaleToZero.install` is the second thing the operator installs that the chart
+cannot, and for a reason that is Helm's rather than Kubernetes': the HTTP
+add-on ships a `ScaledObject` of KEDA's own CRD, and Helm validates a release's
+whole manifest before applying any of it. The operator installs one release,
+waits, and installs the next. `status.scaleToZero.managed` is what keeps that
+honest — it is written only when the operator's own install job succeeded, and
+a cluster that already served the add-on's API is recorded with it false and
+never written to again. The install runs as a job under an account the chart
+creates only when asked (`scaleToZero.install.enabled`), because it is bound to
+cluster-admin.
 
 `registry` is why a fresh installation can build something without anyone
 having a registry account first. The chart runs zot and its volume; the

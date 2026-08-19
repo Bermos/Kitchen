@@ -1,0 +1,41 @@
+{{- include "kitchen.validate" . -}}
+{{- if .Values.scaleToZero.install.enabled }}
+# The identity the platform installs its own scale-to-zero dependencies as.
+#
+# It is bound to cluster-admin, for the same reason the self-update account is:
+# the job it runs installs KEDA and its HTTP add-on, which between them apply
+# CRDs, ClusterRoles, a namespace and the aggregated roles KEDA adds to the
+# cluster's own. An enumerated role would have to track two upstream charts'
+# manifests across every version they release, and would break the first time
+# one of them added a kind.
+#
+# What makes it acceptable rather than alarming is the same as there: it is a
+# separate account from the manager's, so the grant is visible in one place,
+# revocable by setting `scaleToZero.install.enabled=false`, and removed with the
+# release. The operator can only ever use it to run the two installs the argv in
+# internal/controller/keda.go builds — nothing from a request reaches it.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "kitchen.kedaInstallServiceAccountName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kitchen.labels" . | nindent 4 }}
+    app.kubernetes.io/component: keda-install
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "kitchen.fullname" . }}-keda-install
+  labels:
+    {{- include "kitchen.labels" . | nindent 4 }}
+    app.kubernetes.io/component: keda-install
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "kitchen.kedaInstallServiceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
