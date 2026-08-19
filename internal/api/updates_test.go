@@ -22,10 +22,12 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/blang/semver/v4"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/chartrepo"
 	"github.com/Bermos/Kitchen/internal/controller"
 )
 
@@ -34,21 +36,40 @@ import (
 const runningVersion = "0.2.0"
 
 // stubCharts stands in for the registry, so the endpoint's arithmetic can be
-// tested without one.
+// tested without one. It counts the two ways it can be read separately: which
+// one a request took is the whole of what `?refresh=` decides.
 type stubCharts struct {
 	versions []string
 	err      error
+
+	cached    int
+	refreshed int
+	checkedAt time.Time
 }
 
-func (s stubCharts) Versions(context.Context) ([]semver.Version, error) {
+func (s *stubCharts) Versions(context.Context) (chartrepo.Listing, error) {
+	s.cached++
+	return s.listing()
+}
+
+func (s *stubCharts) Refresh(context.Context) (chartrepo.Listing, error) {
+	s.refreshed++
+	return s.listing()
+}
+
+func (s *stubCharts) listing() (chartrepo.Listing, error) {
+	checked := s.checkedAt
+	if checked.IsZero() {
+		checked = time.Now()
+	}
 	if s.err != nil {
-		return nil, s.err
+		return chartrepo.Listing{CheckedAt: checked}, s.err
 	}
 	out := make([]semver.Version, 0, len(s.versions))
 	for _, version := range s.versions {
 		out = append(out, semver.MustParse(version))
 	}
-	return out, nil
+	return chartrepo.Listing{Versions: out, CheckedAt: checked}, nil
 }
 
 // enabledHarness is an installation that was upgraded with selfUpdate.enabled.
@@ -62,7 +83,7 @@ func enabledHarness(t *testing.T, published ...string) *harness {
 		ServiceAccount: "kitchen-self-update",
 	}
 	if len(published) > 0 {
-		h.server.charts = stubCharts{versions: published}
+		h.server.charts = &stubCharts{versions: published}
 	}
 	return h
 }
@@ -119,7 +140,7 @@ func TestUpdatesOfferMinorsWhenTheChartAllowsThem(t *testing.T) {
 
 func TestUpdatesStillAnswerWhenTheRegistryCannotBeReached(t *testing.T) {
 	h := enabledHarness(t)
-	h.server.charts = stubCharts{err: errors.New("cannot reach ghcr.io: no route to host")}
+	h.server.charts = &stubCharts{err: errors.New("cannot reach ghcr.io: no route to host")}
 
 	recorder := h.do(t, http.MethodGet, "/api/v1/updates", "")
 	if recorder.Code != http.StatusOK {
@@ -131,6 +152,40 @@ func TestUpdatesStillAnswerWhenTheRegistryCannotBeReached(t *testing.T) {
 	}
 	if !strings.Contains(body.DiscoveryError, "no route to host") {
 		t.Fatalf("want the reason the versions are missing, got %q", body.DiscoveryError)
+	}
+}
+
+func TestRecheckingAsksTheRegistryRatherThanTheCache(t *testing.T) {
+	h := enabledHarness(t, runningVersion, "0.2.1")
+	charts := h.server.charts.(*stubCharts)
+
+	h.do(t, http.MethodGet, "/api/v1/updates", "")
+	if charts.cached != 1 || charts.refreshed != 0 {
+		t.Fatalf("want an ordinary read served from the cache, got %d cached and %d forced",
+			charts.cached, charts.refreshed)
+	}
+
+	body := decode[updatesView](t, h.do(t, http.MethodGet, "/api/v1/updates?refresh=true", ""))
+	if charts.refreshed != 1 {
+		t.Fatalf("want ?refresh=true to reach the registry, it read the cache %d more times", charts.cached-1)
+	}
+	// Without it the control is indistinguishable from one that did nothing:
+	// a release published a minute ago and one published an hour ago produce
+	// the same list.
+	if body.CheckedAt == nil {
+		t.Fatal("want the answer to say when it was taken")
+	}
+}
+
+func TestAnUnreadableRefreshFlagIsRefused(t *testing.T) {
+	h := enabledHarness(t, runningVersion, "0.2.1")
+
+	recorder := h.do(t, http.MethodGet, "/api/v1/updates?refresh=please", "")
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("want a caller who meant something told so, got %d", recorder.Code)
+	}
+	if charts := h.server.charts.(*stubCharts); charts.cached+charts.refreshed != 0 {
+		t.Fatal("a refused request must not reach the registry at all")
 	}
 }
 

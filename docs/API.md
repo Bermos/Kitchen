@@ -127,7 +127,7 @@ sent the request.
 | GET | `/platform/ingest` | Collector presence and freshness, and what the flow follower lost |
 | GET | `/settings` | The platform's settings — the `Kitchen` singleton |
 | PATCH | `/settings` | Change the build and telemetry defaults |
-| GET | `/updates` | The platform's own version, what it can upgrade to, and every upgrade it has attempted |
+| GET | `/updates` | The platform's own version, what it can upgrade to, and every upgrade it has attempted. `?refresh=true` asks the registry again |
 | POST | `/updates` | Upgrade the platform |
 | GET | `/updates/{name}` | One upgrade |
 | GET | `/connections` | Every connection (never their credentials) |
@@ -1154,6 +1154,7 @@ published since, and what it has already attempted:
   "available": true,
   "upgradableTo": ["0.2.2", "0.2.1"],
   "allowMinor": false,
+  "checkedAt": "2026-02-03T10:15:00Z",
   "items": [{"name": "update-0-2-1-h4k9c", "version": "0.2.1", "phase": "Succeeded", "fromVersion": "0.2.0"}]
 }
 ```
@@ -1166,6 +1167,16 @@ not installed with `selfUpdate.enabled=true`, and `reason` then says so — the
 running version is still reported, because that is the first thing anyone
 asks. An installation that cannot reach the chart registry gets
 `discoveryError` and no candidates, and can still be given a version by hand.
+
+The published versions are read from the chart's OCI repository and cached for
+an hour, so `checkedAt` says when the list was taken rather than implying it is
+current. `?refresh=true` asks the registry again instead — what the settings
+page's re-check does, and the answer to a release published minutes ago that
+the platform would otherwise not see for an hour. Forced listings are floored
+at one every ten seconds: a registry that rate-limits this installation
+answers with an error the client caches for five minutes, which is worse than
+the staleness being skipped. A value the flag cannot be read as is a `400`
+rather than a silent `false`.
 
 `POST /updates` starts one:
 
