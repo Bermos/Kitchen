@@ -217,6 +217,32 @@ type ComplianceSpec struct {
 	// +listType=map
 	// +listMapKey=name
 	Gates []QualityGateSpec `json:"gates,omitempty"`
+
+	// MachineIdentities are accounts whose commits are exempt from a
+	// project's pull request requirement.
+	//
+	// The list exists because the requirement is otherwise unsatisfiable by
+	// the automation every repository has. Renovate opens and merges its own
+	// dependency bumps; release-please merges its own release commits; this
+	// repository's release automation would fail the check on day one. None
+	// of them will ever have an independent reviewer, and the realistic
+	// alternative to naming them here is somebody turning the requirement off
+	// altogether.
+	//
+	// Naming them is what makes the exemption **auditable**: every use of it
+	// is an audit record saying which identity was exempted for which commit,
+	// so "who is allowed to bypass review" is a question with a written
+	// answer and a history, rather than a property of whoever last edited a
+	// pipeline. They are the operator's list, not a project's, for the same
+	// reason: a team that could add its own service account to its own
+	// exemption list has no requirement at all.
+	//
+	// Entries are provider usernames, matched case-insensitively and exactly
+	// — no patterns. A glob here would eventually exempt more than whoever
+	// wrote it meant, and an exemption that surprises its author is the one
+	// kind this must not have.
+	// +optional
+	MachineIdentities []string `json:"machineIdentities,omitempty"`
 }
 
 // AuditStatus reports whether the audit log is actually recording, which is

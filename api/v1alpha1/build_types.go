@@ -180,6 +180,83 @@ type ArtifactEvidence struct {
 	Source string `json:"source,omitempty"`
 }
 
+// SourceProvenanceStatus is what the git provider said about how the commit
+// arrived, recorded at the moment it was asked.
+//
+// The timing is the point. An approval can be dismissed by a later push and a
+// pull request can be edited; what a supervisor needs months later is what was
+// true when the change was built, not what the provider's UI says today. So it
+// is resolved before the build is scheduled and written down here, and the
+// attestation minted afterwards repeats these fields rather than asking again.
+//
+// Every field is a **third party's claim**. The platform did not witness the
+// review; it asked GitHub, and GitHub answered. That is why Provider is
+// recorded beside the rest: evidence that hides whose claim it is repeating is
+// evidence about nothing.
+type SourceProvenanceStatus struct {
+	// Provider names who asserted this — `github`, `gitlab`.
+	// +optional
+	Provider string `json:"provider,omitempty"`
+
+	// PullRequest is the request the commit arrived through. Zero means the
+	// provider knows of none, which is what a direct push looks like.
+	// +optional
+	PullRequest int32 `json:"pullRequest,omitempty"`
+
+	// Title of that request, so a person reading this later recognises it.
+	// +optional
+	Title string `json:"title,omitempty"`
+
+	// Author opened the request.
+	// +optional
+	Author string `json:"author,omitempty"`
+
+	// MergedBy merged it, which is not always who approved it and is
+	// occasionally the only human involved.
+	// +optional
+	MergedBy string `json:"mergedBy,omitempty"`
+
+	// Approvers are the reviewers whose approval still stood when this was
+	// resolved. Reviews a later push dismissed are already excluded.
+	// +optional
+	Approvers []string `json:"approvers,omitempty"`
+
+	// SelfApproved is true when the only approvals were the author's own.
+	//
+	// It is recorded rather than treated as no approval at all: a change its
+	// author approved has been approved, and whether that is acceptable is a
+	// policy question an installation answers for itself.
+	// +optional
+	SelfApproved bool `json:"selfApproved,omitempty"`
+
+	// Independent is true when somebody other than the author approved. It is
+	// the question four-eyes actually asks.
+	// +optional
+	Independent bool `json:"independent,omitempty"`
+
+	// MachineIdentity is the allowlisted account this commit was exempted
+	// under, when it was. Empty means no exemption was used — which is not
+	// the same as no exemption existing.
+	// +optional
+	MachineIdentity string `json:"machineIdentity,omitempty"`
+
+	// Required says whether the project demanded pull request provenance for
+	// this commit, so that a build carrying none is readable as "not asked
+	// for" rather than as "asked for and missing".
+	// +optional
+	Required bool `json:"required,omitempty"`
+
+	// CheckedAt is when the provider was asked.
+	// +optional
+	CheckedAt *metav1.Time `json:"checkedAt,omitempty"`
+
+	// Message explains a check that could not be made — a provider that
+	// cannot answer, a connection with no such capability. It is not a
+	// finding about the commit.
+	// +optional
+	Message string `json:"message,omitempty"`
+}
+
 // GatePhase is what a quality gate is doing, or what became of it.
 //
 // The distinction the whole type exists to draw is between `Failed` and
@@ -281,6 +358,10 @@ type BuildStatus struct {
 	// +listType=map
 	// +listMapKey=name
 	Gates []QualityGateStatus `json:"gates,omitempty"`
+
+	// Source is how the commit reached the branch: through review, or not.
+	// +optional
+	Source *SourceProvenanceStatus `json:"source,omitempty"`
 
 	// +optional
 	StartedAt *metav1.Time `json:"startedAt,omitempty"`

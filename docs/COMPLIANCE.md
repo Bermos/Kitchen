@@ -561,7 +561,123 @@ shows is the one the platform can vouch for having observed.
 
 ---
 
-## 8. Configuration
+## 8. How the change was reviewed (issue #129)
+
+### 8.1 Asked while the answer is still true
+
+Four eyes on a production change is the control a supervisor asks about first,
+and the usual way of answering it — opening the git provider's UI months later
+— is not evidence. It is a screen reflecting the repository as it is *now*, on a
+request whose approvals may since have been dismissed, whose reviewers may have
+left, and whose branch protection may have been reconfigured twice.
+
+So the platform asks before the build, records what it was told on
+`status.source`, and mints
+`https://kitchen.bermos.dev/attestation/pull-request-approval/v1` afterwards out
+of what was recorded. It does not ask twice: an approval can be dismissed
+between a build starting and finishing, and the evidence has to describe the
+moment the decision to build was made in.
+
+### 8.2 The provider is asked, not the commit
+
+Because the commit does not know. A **squash merge** produces a new commit on
+the default branch whose author is whoever pressed the button and in which the
+approver appears nowhere; a **rebase merge** loses the merge commit entirely.
+Reading commit metadata — or parsing `(#123)` out of the message — answers
+confidently and wrongly on the two merge strategies most organisations actually
+use.
+
+`GET /repos/{owner}/{repo}/commits/{sha}/pulls` is the association GitHub
+maintains across both, and it is what is used.
+
+### 8.3 Only approvals that still stand
+
+A provider records every review ever left. An approval a later push dismissed is
+still in the list with its state changed; a reviewer who approved and then asked
+for changes appears twice. So the reduction is: newest review per reviewer, and
+only where that newest one is an approval — with `COMMENTED` skipped, because on
+GitHub a comment leaves the previous verdict standing.
+
+Getting this wrong produces evidence that a change was approved when the
+approval had been withdrawn before it merged, which is worse than no evidence,
+because somebody would rely on it.
+
+### 8.4 Self-approval is recorded, not filtered
+
+A change its own author approved *has* been approved. Whether that is
+acceptable is a policy question — an installation whose rules permit it on a
+two-person team and one that forbids it outright both need to see that it
+happened.
+
+So `selfApproved` and `independent` are separate fields, and both are recorded.
+The project-level requirement demands `independent`; a policy at promotion can
+demand something different.
+
+### 8.5 The exemption is a list, and the list is the point
+
+Renovate merges its own dependency bumps. release-please merges its own release
+commits. **This repository's release automation would fail this check on its
+first run.** None of them will ever have an independent reviewer, and the
+realistic alternative to naming them is somebody switching the requirement off
+altogether.
+
+`spec.compliance.machineIdentities` names them, on the platform object rather
+than on a Project — a team that could add its own service account to its own
+exemption list has no requirement at all. Matching is exact and
+case-insensitive, with no patterns: a glob would eventually exempt more than
+whoever wrote it meant.
+
+**Every use of the exemption is an audit record**, naming the identity, the
+commit and the branch. A configured exemption says who *may* bypass review; the
+record says who did, and the second is the one an auditor asks for.
+
+### 8.6 An outage is not a violation
+
+A provider that cannot be reached, a Connection with no such capability, a
+credential that expired: none of those are findings about the commit. They are
+recorded as a check that could not be made, on `status.source.message`, and they
+do **not** refuse the build.
+
+Failing closed there would mean a GitHub outage stopping every deployment on the
+platform, including the one fixing it — and the people affected would deploy by
+hand, which is the outcome this whole suite exists to prevent. The one case that
+does refuse without reaching the provider is a project that requires review over
+a connection which cannot report it at all, because that is a configuration
+error rather than a transient one.
+
+### 8.7 Refused, and still recorded
+
+The check runs before the Job is created: fast feedback, no wasted compute, and
+what "refuse before the build is scheduled" means. The **Build object still
+exists** and carries `SourceUnreviewed` and the reason — refusing without a
+record would be the platform quietly dropping changes, which is a worse failure
+than the one being prevented.
+
+Pull request builds are exempt necessarily: a request's own builds are what
+produce the preview the review happens on, so requiring the review first would
+deadlock with itself. The requirement applies to the production branch alone.
+
+### 8.8 What is not built
+
+**GitLab.** The acceptance criteria ask for GitHub and GitLab, and Kitchen has
+no GitLab provider at all — `gitlab` and `gitea` are names the Connection CRD
+admits with nothing behind them. `gitprovider.ChangeReader` is a capability
+interface for exactly this reason, in the same shape as `SourceReader` and
+`StatusReporter`: a provider lands as a source first and gains the rest, and a
+Connection that cannot answer is told apart from one that answers "no pull
+request". GitLab's `CommitProvenance` is a method on a type that does not exist
+yet.
+
+**Break-glass.** A direct push during an incident is refused today where the
+project requires review. Issue #136 is the object that makes it *allowed and
+loudly recorded* instead, which is the behaviour the suite's design rules
+demand; until it lands, the honest description is that the requirement is a
+block and an installation that needs to deploy by hand during an incident should
+know that turning it off is the escape hatch.
+
+---
+
+## 9. Configuration
 
 ```yaml
 kitchen:
@@ -576,6 +692,9 @@ kitchen:
         provenance: true       # ask the builder how it built it
         sbom: true             # ask the builder what is in it
         sbomGenerator: ""      # empty: the pinned syft scanner, emitting SPDX
+    machineIdentities:         # exempt from a project's pull request requirement
+      - renovate[bot]
+      - release-please[bot]
     gates:                     # what runs over every artifact; findings, never verdicts
       - name: trivy
         image: aquasec/trivy:0.58.0
@@ -591,12 +710,12 @@ attesting to nothing.
 
 ---
 
-## 9. Phases
+## 10. Phases
 
 | | |
 |---|---|
 | **1 — Foundations** | audit log (#126), artifact identity (#127) — **built** |
-| **2 — Evidence production** | provenance + SBOM (#128), PR verification (#129), quality gates (#130) |
+| **2 — Evidence production** | provenance + SBOM (#128), PR verification (#129), quality gates (#130) — **built** |
 | **3 — Policy** | environment ownership (#131), OPA engine (#132), staged promotion (#133) |
 | **4 — Continuous compliance** | rescan (#134), OpenVEX (#135), exceptions (#136) |
 | **5 — Institutional surface** | data class (#137), resource contract (#138), access (#139), retention (#140), criticality (#141), export (#142) |
@@ -611,7 +730,7 @@ audit record.
 
 ---
 
-## 10. Things that are true and easy to get wrong
+## 11. Things that are true and easy to get wrong
 
 - **A gap in the sequence is not always a deletion.** It is also an append that
   claimed its number and then died before the row landed. The head object and
@@ -629,6 +748,12 @@ audit record.
   digests to fetch them by — and deliberately not a copy of the evidence. A
   copy would be a second source of truth, and it is exactly the copy an
   installation leaving Kitchen would lose.
+- **A squash merge tells you nothing about who approved it.** The commit on the
+  default branch is a new object; the approver is only in the provider's record
+  of the pull request, which is why that record is what gets asked.
+- **A dismissed approval is still in the provider's list.** Filtering on
+  `state == "APPROVED"` without taking the newest review per reviewer counts
+  approvals that were withdrawn before the change merged.
 - **A gate's exit code says whether it ran, and nothing else.** Passing a
   scanner its `--exit-code` flag turns "found a vulnerability" into "the gate
   failed", which is the one confusion the whole design is arranged to prevent.

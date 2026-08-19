@@ -34,6 +34,26 @@ type GitSourceSpec struct {
 	// Branch whose builds auto-promote to the production Environment.
 	// +kubebuilder:default=main
 	ProductionBranch string `json:"productionBranch,omitempty"`
+
+	// RequirePullRequest refuses to build a commit on the production branch
+	// that the git provider cannot say arrived through a reviewed pull
+	// request.
+	//
+	// It is a project setting because the bar differs by what the project is:
+	// the same platform carries an internal tool and a payments service, and
+	// forcing one policy on both gets the strict one loosened. An environment
+	// may demand more than this — a project's own baseline is a floor, not a
+	// ceiling, and promotion checks again.
+	//
+	// It applies to the production branch only. A pull request's own builds
+	// are what produces the request being reviewed, so requiring the review
+	// before them would be a deadlock.
+	//
+	// **A machine identity on the platform's allowlist is exempt** — a
+	// release automation commit is never going to have a reviewer, and the
+	// alternative to an auditable allowlist is somebody turning this off.
+	// +optional
+	RequirePullRequest bool `json:"requirePullRequest,omitempty"`
 }
 
 // ProjectBuildSpec overrides platform build defaults for one project.

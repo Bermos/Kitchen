@@ -171,6 +171,12 @@ func (r *BuildReconciler) attestBuild(
 	}
 	status.AttestedAt = ptr.To(metav1.Now())
 
+	// Then how the change was reviewed, out of what was recorded before the
+	// build rather than by asking the provider again: an approval can be
+	// dismissed between a build starting and finishing, and the evidence has
+	// to say what was true when the change was built.
+	r.attestSource(ctx, build, project, attester, signer, repository, digest, status)
+
 	// Then the builder's, countersigned. Each is restated about the digest
 	// the platform calls the artifact and signed under the platform's key —
 	// the statements arrive unsigned, and an unsigned statement in a registry

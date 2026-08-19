@@ -334,12 +334,17 @@ func creatorGrant(caller Caller) []kitchenv1alpha1.AccessGrant {
 // repository and the two connections are deliberately not here: rebinding a
 // project to another repository or registry is a different project.
 type patchProjectRequest struct {
-	ProductionBranch  *string `json:"productionBranch,omitempty"`
-	Previews          *bool   `json:"previews,omitempty"`
-	PreviewsProtected *bool   `json:"previewsProtected,omitempty"`
-	BuildStrategy     *string `json:"buildStrategy,omitempty"`
-	DockerfilePath    *string `json:"dockerfilePath,omitempty"`
-	RootDirectory     *string `json:"rootDirectory,omitempty"`
+	ProductionBranch *string `json:"productionBranch,omitempty"`
+	// RequirePullRequest refuses to build a production-branch commit the git
+	// provider cannot say arrived through a reviewed pull request. It is an
+	// admin's setting because it is a decision about how the project is run,
+	// not about a deploy.
+	RequirePullRequest *bool   `json:"requirePullRequest,omitempty"`
+	Previews           *bool   `json:"previews,omitempty"`
+	PreviewsProtected  *bool   `json:"previewsProtected,omitempty"`
+	BuildStrategy      *string `json:"buildStrategy,omitempty"`
+	DockerfilePath     *string `json:"dockerfilePath,omitempty"`
+	RootDirectory      *string `json:"rootDirectory,omitempty"`
 	// Env is on this request only so that it can be refused by name. This
 	// route is the project's own settings and is the admin's; environment
 	// variables are the day job and are the developer's, on
@@ -505,6 +510,9 @@ func (s *Server) patchProject(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 		project.Spec.Source.ProductionBranch = branch
+	}
+	if body.RequirePullRequest != nil {
+		project.Spec.Source.RequirePullRequest = *body.RequirePullRequest
 	}
 	if body.Previews != nil {
 		project.Spec.Previews.Enabled = *body.Previews

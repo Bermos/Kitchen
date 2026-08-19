@@ -304,6 +304,55 @@ const logStreamer = (query: LogQuery, onLine: (line: LogLine) => void, signal: A
         </template>
       </div>
 
+      <!-- How the change was reviewed. This is a third party's claim and the
+           panel says whose: the platform did not watch the review, it asked
+           the provider and was answered. -->
+      <div v-if="build.source" class="rounded-md border border-default px-5 py-4 space-y-2">
+        <p class="text-sm font-medium text-highlighted flex items-center gap-2">
+          Review
+          <UBadge v-if="build.source.independent" color="success" variant="subtle" size="sm">
+            independently approved
+          </UBadge>
+          <UBadge v-else-if="build.source.selfApproved" color="warning" variant="subtle" size="sm">
+            self-approved
+          </UBadge>
+          <UBadge v-else-if="build.source.machineIdentity" color="neutral" variant="subtle" size="sm">
+            machine identity
+          </UBadge>
+          <UBadge v-else-if="build.source.pullRequest" color="neutral" variant="subtle" size="sm">
+            not approved
+          </UBadge>
+          <UBadge v-else color="neutral" variant="subtle" size="sm">direct push</UBadge>
+        </p>
+
+        <p v-if="build.source.pullRequest" class="text-xs text-muted">
+          #{{ build.source.pullRequest }}
+          <span v-if="build.source.title">— {{ build.source.title }}</span>
+          <span v-if="build.source.author"> · opened by {{ build.source.author }}</span>
+        </p>
+        <p v-else-if="!build.source.message" class="text-xs text-muted">
+          The provider associates this commit with no pull request.
+        </p>
+
+        <p v-if="build.source.approvers?.length" class="text-xs text-toned">
+          approved by {{ build.source.approvers.join(", ") }}
+          <span v-if="build.source.selfApproved" class="text-warning">— the author's own approval</span>
+        </p>
+        <p v-if="build.source.machineIdentity" class="text-xs text-toned">
+          Built without review under the allowlisted identity
+          <span class="font-mono">{{ build.source.machineIdentity }}</span>. The exemption is in the audit log.
+        </p>
+        <p v-if="build.source.message" class="text-xs text-warning">{{ build.source.message }}</p>
+        <p v-if="!build.source.required" class="text-[11px] text-dimmed">
+          This project does not require a reviewed pull request, so nothing here refused anything — it is recorded
+          because a policy at promotion may still want it.
+        </p>
+        <p v-if="build.source.provider" class="text-[11px] text-dimmed">
+          As reported by {{ build.source.provider }}<span v-if="build.source.checkedAt">, {{ timeAgo(build.source.checkedAt) }}</span>. The platform did not
+          witness the review; it recorded what it was told, while it was still true.
+        </p>
+      </div>
+
       <!-- What the gates did. Deliberately not what they found, and
            deliberately not whether it was acceptable: a gate records facts and
            the verdict belongs to the environment being deployed to. -->

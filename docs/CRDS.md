@@ -105,6 +105,9 @@ spec:
         provenance: true                # ask the builder how it built it — SLSA, from BuildKit
         sbom: true                      # ask the builder what is in it; pulls a scanner every build
         sbomGenerator: ""               # unset: a pinned syft scanner, emitting SPDX 2.3
+    machineIdentities:                  # exempt from a project's pull request requirement;
+      - renovate[bot]                   # every use of the exemption is an audit record
+      - release-please[bot]
     gates:                              # run over every artifact; they record findings, never verdicts
       - name: trivy
         image: aquasec/trivy:0.58.0
@@ -292,6 +295,9 @@ spec:
     connectionRef: { name: github-main }
     repo: bermos/my-shop
     productionBranch: main
+    requirePullRequest: false           # refuse a production commit the provider cannot say was
+                                        # reviewed. Preview builds are unaffected; machine
+                                        # identities on the platform's allowlist are exempt
   build:
     strategy: auto                      # auto takes the Kitchen default; dockerfile | buildpacks decide here
     dockerfilePath: ./Dockerfile        # when strategy: dockerfile
@@ -399,6 +405,17 @@ status:
         source: builder
         manifest: sha256:7c30...
     message: ""                         # why it is unattested, when it is
+  source:                               # how the commit reached the branch, as the provider tells it
+    provider: github                    # whose claim this is; the platform did not watch the review
+    pullRequest: 42
+    title: Add checkout flow
+    author: alice                       # opened it
+    mergedBy: bob
+    approvers: [bob]                    # approvals that still stood when this was asked
+    selfApproved: false                 # recorded separately: a self-approval is an approval
+    independent: true                   # somebody other than the author approved
+    required: true                      # the project asked for this, so "none" would mean something
+    checkedAt: ...
   cache:
     enabled: true
     warm: true                          # the cache existed when this build started
@@ -460,6 +477,17 @@ the reconciler's own knowledge would be the conflation the split exists to preve
 `status.artifact.evidence` is an index — predicate types and the manifests to fetch them
 by — and not a copy: the attestations live in the registry against the digest, which is
 the only copy an installation leaving Kitchen would keep.
+
+`status.source` is how the commit reached the branch, as the git provider tells it —
+which pull request it arrived through, who opened it, and whose approvals still stood
+when the platform asked. It is resolved **before the Job is created**, so a project with
+`source.requirePullRequest` set refuses an unreviewed production commit before spending
+any compute; the Build stays, with reason `SourceUnreviewed`, because refusing without a
+record would be the platform quietly dropping changes. The provider is asked rather than
+the commit read, because a squash merge produces a commit that names neither the request
+nor the approver. Preview builds are never asked to prove they were reviewed: they are
+what produces the thing being reviewed. A provider that cannot be reached is recorded as
+a check that could not be made and does not refuse anything.
 
 `status.gates` is what the platform's **quality gates** did. Each is a pod: an image
 somebody else wrote, pointed at the artifact, writing findings to a file that a second
