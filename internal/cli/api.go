@@ -109,12 +109,41 @@ type revision struct {
 
 // artifact is what a build produced, by content.
 type artifact struct {
-	Repository string     `json:"repository,omitempty"`
-	Digest     string     `json:"digest,omitempty"`
-	Attested   bool       `json:"attested"`
-	AttestedAt *time.Time `json:"attestedAt,omitempty"`
-	KeyID      string     `json:"keyID,omitempty"`
-	Message    string     `json:"message,omitempty"`
+	Repository string             `json:"repository,omitempty"`
+	Digest     string             `json:"digest,omitempty"`
+	Attested   bool               `json:"attested"`
+	AttestedAt *time.Time         `json:"attestedAt,omitempty"`
+	KeyID      string             `json:"keyID,omitempty"`
+	Evidence   []artifactEvidence `json:"evidence,omitempty"`
+	Message    string             `json:"message,omitempty"`
+}
+
+// artifactEvidence is one attestation attached to an artifact, as the build
+// reports it: enough to say what is there without asking the registry.
+type artifactEvidence struct {
+	PredicateType string `json:"predicateType"`
+	Kind          string `json:"kind"`
+	Source        string `json:"source,omitempty"`
+	Manifest      string `json:"manifest,omitempty"`
+}
+
+// evidenceSet is `GET /builds/{name}/attestations`: the materialized evidence
+// attached to a build's artifact, read out of the registry.
+//
+// Verified says whether signatures were checked at all. A set gathered with no
+// keys is a listing, not a verification, and printing the two the same way
+// would eventually have somebody treat one as the other.
+type evidenceSet struct {
+	Subject      string     `json:"subject"`
+	Verified     bool       `json:"verified"`
+	Attestations []evidence `json:"attestations"`
+}
+
+type evidence struct {
+	PredicateType string   `json:"predicateType"`
+	Verified      bool     `json:"verified"`
+	KeyIDs        []string `json:"keyIDs,omitempty"`
+	Digest        string   `json:"digest"`
 }
 
 // buildCache is what the layer cache did for a build: a cold build had nothing
@@ -288,6 +317,13 @@ func (c *client) projectBuilds(ctx context.Context, name string) ([]build, error
 	answer := &list[build]{}
 	err := c.do(ctx, "listing "+name+"'s builds", http.MethodGet, "/projects/"+name+"/builds", nil, nil, answer)
 	return answer.Items, err
+}
+
+func (c *client) buildAttestations(ctx context.Context, name string) (*evidenceSet, error) {
+	answer := &evidenceSet{}
+	err := c.do(ctx, "reading "+name+"'s evidence",
+		http.MethodGet, "/builds/"+name+"/attestations", nil, nil, answer)
+	return answer, err
 }
 
 func (c *client) projectReleases(ctx context.Context, name string) ([]release, error) {

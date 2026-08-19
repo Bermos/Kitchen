@@ -101,6 +101,10 @@ spec:
     attestation:
       enabled: true                     # sign a build record for every artifact, attached to its digest
       signingKeyRef: { name: kitchen-attestation-key }   # unset: the operator generates one, once
+      build:
+        provenance: true                # ask the builder how it built it — SLSA, from BuildKit
+        sbom: true                      # ask the builder what is in it; pulls a scanner every build
+        sbomGenerator: ""               # unset: a pinned syft scanner, emitting SPDX 2.3
   observability:
     clickhouse:
       retentionDays: 30                 # TTL the operator keeps on every telemetry table,
@@ -378,6 +382,16 @@ status:
     digest: sha256:ab12...              # the identity everything downstream keys on
     attestedAt: ...                     # when the platform attached its build record
     keyID: 9f2c...                      # what it was signed under
+    evidence:                           # an index of what is attached, not a copy of it
+      - predicateType: https://kitchen.bermos.dev/attestation/build-record/v1
+        source: platform                # the reconciler's account of the build
+        manifest: sha256:7c30...
+      - predicateType: https://slsa.dev/provenance/v1
+        source: builder                 # BuildKit's own, countersigned by the platform
+        manifest: sha256:7c30...
+      - predicateType: https://spdx.dev/Document
+        source: builder
+        manifest: sha256:7c30...
     message: ""                         # why it is unattested, when it is
   cache:
     enabled: true
@@ -414,9 +428,26 @@ reconciler's account of a build it orchestrated is a weaker claim than provenanc
 from the builder itself. Failing to attest does not fail the build: the image is real
 and the deployment that follows is honest about what it is running. What an unattested
 artifact cannot do is satisfy a policy that requires evidence, which is where the
-consequence belongs. Nothing mirrors the attestations onto this object — they live in
-the registry against the digest, which is the only copy an installation leaving Kitchen
-would keep. See [COMPLIANCE.md](COMPLIANCE.md).
+consequence belongs.
+
+The builder is asked for two more, which the reconciler cannot make on its own:
+**SLSA provenance** — the source commit BuildKit actually resolved, the base images it
+actually pulled and their digests, and what it was invoked with — and an **SBOM** of the
+finished image. BuildKit leaves both unsigned in an index beside the image; the
+reconciler harvests them, restates each about the artifact's digest, and signs them
+under the platform's key. `status.artifact.evidence[].source` says which claims are the
+builder's and which the platform's, because the signature on both is the same one.
+
+Asked for attestations, BuildKit pushes an index rather than a bare manifest and reports
+*its* digest — but the statements inside are about the image manifest, so that is what
+`status.artifact.digest` and the Release name. Only the Dockerfile strategy produces
+provenance: the buildpacks lifecycle is not BuildKit and emits none, and minting one from
+the reconciler's own knowledge would be the conflation the split exists to prevent.
+
+`status.artifact.evidence` is an index — predicate types and the manifests to fetch them
+by — and not a copy: the attestations live in the registry against the digest, which is
+the only copy an installation leaving Kitchen would keep. See
+[COMPLIANCE.md](COMPLIANCE.md).
 
 `status.cache` is what the layer cache did, and it is on every build including the
 ones that had none. The cache lives in the registry the project already pushes to,

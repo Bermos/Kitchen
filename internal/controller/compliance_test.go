@@ -130,20 +130,44 @@ func TestSigningKeySecretHonoursAnExplicitReference(t *testing.T) {
 
 // stubAttester stands in for the registry.
 type stubAttester struct {
-	attached  []attestation.Envelope
-	predicate string
-	err       error
+	attached   []attestation.Envelope
+	predicate  string
+	predicates []string
+	refs       []string
+	err        error
+
+	// harvested is what the builder is pretending to have left behind, and
+	// harvestDigest the image manifest inside the index it pushed. Zero
+	// values are a build whose builder attested nothing, which is what an
+	// installation with the feature off looks like.
+	harvested     []attestation.Statement
+	harvestDigest string
+	harvestErr    error
 }
 
 func (s *stubAttester) Attach(
-	_ context.Context, _ string, envelope attestation.Envelope, predicateType string,
+	_ context.Context, ref string, envelope attestation.Envelope, predicateType string,
 ) (string, error) {
 	if s.err != nil {
 		return "", s.err
 	}
 	s.attached = append(s.attached, envelope)
 	s.predicate = predicateType
+	s.predicates = append(s.predicates, predicateType)
+	s.refs = append(s.refs, ref)
 	return "sha256:" + strings.Repeat("f", 64), nil
+}
+
+func (s *stubAttester) Harvest(_ context.Context, ref string) (attestation.BuilderEvidence, error) {
+	if s.harvestErr != nil {
+		return attestation.BuilderEvidence{}, s.harvestErr
+	}
+	digest := s.harvestDigest
+	if digest == "" {
+		_, pushed, _ := strings.Cut(ref, "@")
+		digest = pushed
+	}
+	return attestation.BuilderEvidence{ImageDigest: digest, Statements: s.harvested}, nil
 }
 
 func attestFixtures(t *testing.T) (*BuildReconciler, *stubAttester, *kitchenv1alpha1.Build, *kitchenv1alpha1.Project, buildTarget) {
@@ -306,6 +330,130 @@ func TestAttestBuildDoesNothingWhenAttestationIsOff(t *testing.T) {
 	if status.Message != "" {
 		t.Errorf("a deliberately unattested build carries the message %q", status.Message)
 	}
+}
+
+// The builder's evidence: harvested, restated about the artifact, and
+// countersigned. These are issue #128's acceptance criteria, expressed as the
+// three things that can go wrong — the wrong digest, an uncountersigned
+// statement, and a status that claims evidence nobody attached.
+
+func TestAttestBuildCountersignsWhatTheBuilderProduced(t *testing.T) {
+	reconciler, attester, build, project, target := attestFixtures(t)
+	imageDigest := "sha256:" + strings.Repeat("a", 64)
+	attester.harvestDigest = imageDigest
+	attester.harvested = []attestation.Statement{
+		builderStatement(t, imageDigest, attestation.PredicateSLSAProvenanceV1),
+		builderStatement(t, imageDigest, attestation.PredicateSPDX),
+	}
+	// What BuildKit reports when it attests: the index, not the image.
+	index := "registry.example.com/shop@sha256:" + strings.Repeat("9", 64)
+
+	status := reconciler.attestBuild(context.Background(), build, project, target, index)
+	if status.Message != "" {
+		t.Fatalf("attesting reported %q", status.Message)
+	}
+
+	// The artifact is the image the statements are about. A Release created
+	// from the index would deploy something no evidence describes.
+	if status.Digest != imageDigest {
+		t.Errorf("the artifact was identified as %s, want the image manifest %s", status.Digest, imageDigest)
+	}
+	if len(attester.attached) != 3 {
+		t.Fatalf("attached %d envelopes, want the build record and the builder's two", len(attester.attached))
+	}
+	for _, ref := range attester.refs {
+		if ref != "registry.example.com/shop@"+imageDigest {
+			t.Errorf("evidence was attached to %s rather than to the artifact", ref)
+		}
+	}
+	want := map[string]string{
+		attestation.PredicateBuildRecord:      "platform",
+		attestation.PredicateSLSAProvenanceV1: "builder",
+		attestation.PredicateSPDX:             "builder",
+	}
+	if len(status.Evidence) != len(want) {
+		t.Fatalf("the status lists %d attestations, want %d", len(status.Evidence), len(want))
+	}
+	for _, evidence := range status.Evidence {
+		source, known := want[evidence.PredicateType]
+		if !known {
+			t.Errorf("the status lists an unexpected %s", evidence.PredicateType)
+			continue
+		}
+		if evidence.Source != source {
+			t.Errorf("%s is credited to %q, want %q", evidence.PredicateType, evidence.Source, source)
+		}
+		if evidence.Manifest == "" {
+			t.Errorf("%s is listed with no manifest to fetch it by", evidence.PredicateType)
+		}
+	}
+
+	// Every envelope is the platform's signature over a statement about the
+	// artifact — including the builder's, which arrived unsigned.
+	for _, envelope := range attester.attached {
+		statement, err := envelope.Statement()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !statement.Describes(imageDigest) {
+			t.Errorf("a %s envelope is not about the artifact", statement.PredicateType)
+		}
+		if len(envelope.Signatures) == 0 {
+			t.Errorf("a %s envelope carries no signature", statement.PredicateType)
+		}
+	}
+}
+
+func TestAttestBuildKeepsTheBuildRecordWhenTheBuilderSaidNothing(t *testing.T) {
+	// An installation with the builder's attestations turned off still gets
+	// the platform's own account of the build. Nothing here should read the
+	// absence of provenance as a failure.
+	reconciler, _, build, project, target := attestFixtures(t)
+	image := "registry.example.com/shop@sha256:" + strings.Repeat("a", 64)
+
+	status := reconciler.attestBuild(context.Background(), build, project, target, image)
+	if status.Message != "" {
+		t.Fatalf("attesting reported %q", status.Message)
+	}
+	if len(status.Evidence) != 1 || status.Evidence[0].PredicateType != attestation.PredicateBuildRecord {
+		t.Fatalf("the status lists %+v, want the build record alone", status.Evidence)
+	}
+	if status.AttestedAt == nil {
+		t.Error("the artifact was not recorded as attested")
+	}
+}
+
+func TestAttestBuildSurvivesAnUnreadableBuilderAttestation(t *testing.T) {
+	// The push happened and the artifact exists. Losing the builder's
+	// evidence is worth saying out loud and is not worth losing the build
+	// record over.
+	reconciler, attester, build, project, target := attestFixtures(t)
+	attester.harvestErr = errors.New("the registry closed the connection")
+	image := "registry.example.com/shop@sha256:" + strings.Repeat("a", 64)
+
+	status := reconciler.attestBuild(context.Background(), build, project, target, image)
+	if status.Digest != "sha256:"+strings.Repeat("a", 64) {
+		t.Errorf("the artifact lost its identity: %+v", status)
+	}
+	if status.Message == "" {
+		t.Error("evidence went missing without the status saying so")
+	}
+	if status.AttestedAt == nil || len(attester.attached) != 1 {
+		t.Error("the build record was lost along with the builder's evidence")
+	}
+}
+
+// builderStatement is one unsigned statement of the shape BuildKit leaves in
+// the index it pushes.
+func builderStatement(t *testing.T, digest, predicateType string) attestation.Statement {
+	t.Helper()
+	statement, err := attestation.NewStatement(
+		"pkg:docker/registry.example.com/shop@latest", digest, predicateType,
+		map[string]any{"builder": map[string]any{"id": BuilderID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return statement
 }
 
 func mapKeys(data map[string][]byte) []string {

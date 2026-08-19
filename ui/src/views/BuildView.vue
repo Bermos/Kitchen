@@ -111,6 +111,22 @@ function predicateLabel(uri: string): string {
   return uri.replace(/^https?:\/\//, "");
 }
 
+/** What to call each kind of evidence on screen. The API sends the label
+ *  alongside the URI, so this maps labels rather than parsing URIs — a
+ *  predicate type this build of the dashboard has never heard of still lands
+ *  somewhere honest instead of being dropped. */
+const evidenceLabels: Record<string, string> = {
+  provenance: "provenance",
+  sbom: "SBOM",
+  buildRecord: "build record",
+  deployment: "deployment",
+  other: "attestation",
+};
+
+function evidenceLabel(kind: string): string {
+  return evidenceLabels[kind] ?? evidenceLabels.other;
+}
+
 const logFetcher = (query: LogQuery) => api.buildLogs(name.value, query);
 const logStreamer = (query: LogQuery, onLine: (line: LogLine) => void, signal: AbortSignal) =>
   api.streamBuildLogs(name.value, query, onLine, signal);
@@ -193,6 +209,26 @@ const logStreamer = (query: LogQuery, onLine: (line: LogLine) => void, signal: A
               signed under {{ shortDigest("sha256:" + build.artifact.keyID) }}, {{ timeAgo(build.artifact.attestedAt!) }}
             </p>
             <p v-else-if="build.artifact.message" class="text-[11px] text-warning mt-0.5">
+              {{ build.artifact.message }}
+            </p>
+
+            <!-- What is attached, without going to the registry for it. The
+                 build says so itself, which is what makes this readable on a
+                 build whose registry is briefly unreachable. -->
+            <div v-if="build.artifact.evidence?.length" class="flex items-center gap-1.5 flex-wrap mt-2">
+              <UBadge
+                v-for="attached in build.artifact.evidence"
+                :key="attached.predicateType"
+                color="neutral"
+                variant="subtle"
+                size="sm"
+                :title="attached.predicateType"
+              >
+                {{ evidenceLabel(attached.kind) }}
+                <span v-if="attached.source === 'builder'" class="text-dimmed ml-1">from the builder</span>
+              </UBadge>
+            </div>
+            <p v-if="build.artifact.message && build.artifact.attested" class="text-[11px] text-warning mt-1">
               {{ build.artifact.message }}
             </p>
           </div>

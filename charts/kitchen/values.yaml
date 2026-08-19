@@ -245,6 +245,29 @@ kitchen:
       # what an installation whose custody rules forbid a platform-generated
       # key does.
       signingKeySecretName: ""
+      build:
+        # -- Ask the builder for SLSA provenance: which source commit it
+        # actually resolved, which base images it actually pulled and to what
+        # digests, and what it was invoked with. This is a stronger claim
+        # than the build record above, because it is made by the process that
+        # did the work rather than by the one that asked for it. It costs the
+        # build almost nothing — BuildKit already has everything it records.
+        provenance: true
+        # -- Ask the builder for a bill of materials for the finished image.
+        # This one is not free: it runs a scanner image over the filesystem,
+        # and because the build pod is ephemeral that image is pulled on
+        # every build. An installation that cannot reach the generator, or
+        # will not spend the seconds, turns it off here.
+        sbom: true
+        # -- Scanner image the builder runs to produce the SBOM. The format
+        # follows the generator and the platform records what came out rather
+        # than converting it: the default emits SPDX 2.3, which Grype, Trivy
+        # and OSV-Scanner all read unmodified, and a generator emitting
+        # CycloneDX produces a CycloneDX attestation. Empty uses a pinned
+        # default — pinned because the tag the ecosystem points at floats,
+        # and evidence about an artifact should not change because somebody
+        # else's tag moved overnight.
+        sbomGenerator: ""
   observability:
     clickhouse:
       # -- Days to retain logs, metrics, traces and flow data.

@@ -62,8 +62,9 @@ const (
 	// PredicateBuildRecord is what Kitchen knows about how the artifact was
 	// produced from its own side of the build: the project, the commit, the
 	// strategy and the builder image. It is not SLSA provenance and does not
-	// pretend to be — provenance is issue #128's, is produced by the builder
-	// rather than by the reconciler, and carries the SLSA predicate type.
+	// pretend to be — provenance is produced by the builder rather than by
+	// the reconciler, carries SLSA's own predicate type, and is harvested and
+	// countersigned rather than written here. See harvest.go.
 	PredicateBuildRecord = "https://kitchen.bermos.dev/attestation/build-record/v1"
 
 	// PredicatePromotionDecision records a policy decision about whether an

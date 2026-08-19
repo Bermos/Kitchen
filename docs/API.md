@@ -2046,6 +2046,35 @@ The endpoint is a convenience. Everything it returns lives in the registry
 against the artifact's digest, as DSSE envelopes attached through OCI 1.1
 referrers, and is readable by anything that speaks them.
 
+What is attached to a successful build is Kitchen's own build record and, from
+the builder, SLSA provenance and a bill of materials — the last two harvested
+from what BuildKit pushed and countersigned by the platform, because BuildKit
+leaves them unsigned. The build itself carries an index of them without a
+registry round trip, on `artifact.evidence`:
+
+```json
+"artifact": {
+  "repository": "registry.apps.example.com/shop",
+  "digest": "sha256:9d3f…",
+  "attested": true,
+  "keyID": "9f2c…",
+  "evidence": [
+    {"predicateType": "https://kitchen.bermos.dev/attestation/build-record/v1",
+     "kind": "buildRecord", "source": "platform", "manifest": "sha256:41a0…"},
+    {"predicateType": "https://slsa.dev/provenance/v1",
+     "kind": "provenance", "source": "builder", "manifest": "sha256:41a0…"},
+    {"predicateType": "https://spdx.dev/Document",
+     "kind": "sbom", "source": "builder", "manifest": "sha256:41a0…"}
+  ]
+}
+```
+
+`kind` is a label derived from the predicate type so that a client does not
+have to carry the vocabulary; the URI travels with it because the URI is the
+authority. `source` says who made the claim — the platform signs both, so the
+signature cannot tell them apart, and a claim about what a build did is worth
+more when the thing that did the building made it.
+
 ### Metrics
 
 `GET /metrics/overview` answers the dashboard's numbers pre-aggregated, in

@@ -166,6 +166,7 @@ give.
 | `kitchen rollback` | Put an environment back on an earlier release | `PATCH /environments/{name}` |
 | `kitchen projects` | The projects this account can see, with its role on each | `GET /projects` |
 | `kitchen builds` | The project's builds, newest first | `GET /projects/{name}/builds` |
+| `kitchen attestations` | The signed evidence attached to a build's artifact | `GET /builds/{name}/attestations` |
 | `kitchen releases` | The project's releases — what there is to roll back to | `GET /projects/{name}/releases` |
 | `kitchen environments` | The project's environments and where they answer | `GET /projects/{name}/environments` |
 | `kitchen api` | Any endpoint of the API, authenticated | anything |
@@ -261,6 +262,29 @@ kitchen releases              # what there is to move to
 kitchen rollback              # back one, from the environment's own history
 kitchen rollback shop-rel-41  # or to a named release — a promotion is the same call
 ```
+
+### Evidence
+
+```sh
+kitchen attestations shop-bld-7
+kitchen attestations shop-bld-7 --json | jq '.attestations[].predicateType'
+```
+
+Everything it prints is read out of the registry, keyed to the artifact's
+content digest through OCI referrers rather than out of a Kitchen table — so
+`cosign download attestation` and `cosign verify-attestation` answer the same
+thing with the platform out of the loop, which is what makes the evidence
+survive an installation that stops using Kitchen.
+
+Each attestation says who made the claim. Kitchen's build record is the
+reconciler's account of a build it orchestrated; SLSA provenance and the bill of
+materials come from the builder and are countersigned by the platform. The
+signature on all of them is the platform's, so the signature cannot tell them
+apart — `source` on the build's own `artifact.evidence` can.
+
+`verified` means a signature was accepted by a key the platform holds. A set
+read where it holds none reports itself as a listing rather than a verification,
+and the two print differently on purpose.
 
 ### Anything else
 
