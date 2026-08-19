@@ -3,6 +3,7 @@ import { computed, ref, watch } from "vue";
 import { api } from "../lib/api";
 import { loadConfig } from "../lib/config";
 import { operatorMode } from "../lib/mode";
+import { timeAgo } from "../lib/format";
 import { useAsync, usePoll } from "../lib/useAsync";
 import ConditionsTable from "../components/ConditionsTable.vue";
 import OperatorsPanel from "../components/OperatorsPanel.vue";
@@ -82,7 +83,23 @@ const strategies = [
 // The platform's own upgrades. Off unless the chart was installed with
 // selfUpdate.enabled, which grants the update job cluster-admin — so when it
 // is off the panel says how to turn it on rather than hiding.
-const updates = useAsync(() => api.updates());
+// `recheck` decides which of the two reads the loader takes. The published
+// versions are cached for an hour behind the API, so an installation that has
+// just released something would otherwise have to wait it out or restart the
+// operator the cache lives in.
+const recheck = ref(false);
+const updates = useAsync(() => api.updates(recheck.value));
+const rechecking = ref(false);
+async function recheckVersions() {
+  rechecking.value = true;
+  recheck.value = true;
+  try {
+    await updates.refresh();
+  } finally {
+    recheck.value = false;
+    rechecking.value = false;
+  }
+}
 const offered = computed(() => updates.data.value?.upgradableTo ?? []);
 const target = ref<string>("");
 watch(offered, (versions) => {
@@ -199,9 +216,27 @@ async function startUpdate() {
       </div>
 
       <div class="rounded-md border border-default px-5 py-4 space-y-4">
-        <div class="flex items-baseline justify-between gap-4">
+        <div class="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-2">
           <h2 class="text-sm font-medium text-highlighted">Platform updates</h2>
-          <p class="text-xs text-muted font-mono">running {{ version }}</p>
+          <div class="flex items-center gap-3">
+            <p v-if="updates.data.value?.checkedAt" class="text-xs text-muted">
+              checked {{ timeAgo(updates.data.value.checkedAt) }}
+            </p>
+            <UButton
+              v-if="updates.data.value?.enabled"
+              size="xs"
+              color="neutral"
+              variant="ghost"
+              icon="i-lucide-refresh-cw"
+              :loading="rechecking"
+              :disabled="!!inFlight"
+              title="Ask the registry again instead of the hour-long cache"
+              @click="recheckVersions"
+            >
+              Check for updates
+            </UButton>
+            <p class="text-xs text-muted font-mono">running {{ version }}</p>
+          </div>
         </div>
 
         <UAlert

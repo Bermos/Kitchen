@@ -17,6 +17,7 @@ limitations under the License.
 package api
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"sort"
@@ -84,6 +85,12 @@ type updatesView struct {
 	// the distinction would be hiding the only one that matters.
 	AllowMinor bool `json:"allowMinor"`
 
+	// CheckedAt is when the published versions were last read from the
+	// registry. The listing is cached for an hour, so an answer with nothing
+	// new in it means little without saying how old it is — and a refresh
+	// that changes nothing else at least moves this.
+	CheckedAt *metav1.Time `json:"checkedAt,omitempty"`
+
 	// DiscoveryError explains an empty version list: no route to the
 	// registry, most often. The endpoint still answers, because an
 	// installation that cannot reach the registry can still be told which
@@ -109,6 +116,16 @@ func newUpdateView(update *kitchenv1alpha1.PlatformUpdate) updateView {
 
 func (s *Server) listUpdates(w http.ResponseWriter, req *http.Request) {
 	ctx := req.Context()
+
+	// `?refresh=true` is the dashboard's re-check control. It reaches the
+	// registry rather than the cached listing, which is why it is a parameter
+	// on the read and not a second endpoint: the answer is the same answer,
+	// taken again.
+	refresh, err := boolParam(req, "refresh")
+	if err != nil {
+		badRequest(w, "%s", err.Error())
+		return
+	}
 
 	updates := &kitchenv1alpha1.PlatformUpdateList{}
 	if err := s.Client.List(ctx, updates); err != nil {
@@ -136,21 +153,32 @@ func (s *Server) listUpdates(w http.ResponseWriter, req *http.Request) {
 		view.Items = append(view.Items, newUpdateView(&updates.Items[i]))
 	}
 
-	s.describeAvailable(req, &view)
+	s.describeAvailable(ctx, refresh, &view)
 	writeJSON(w, http.StatusOK, view)
 }
 
 // describeAvailable fills in what the registry has published, leaving the rest
-// of the answer intact when it cannot be reached.
-func (s *Server) describeAvailable(req *http.Request, view *updatesView) {
+// of the answer intact when it cannot be reached. A refresh asks the registry
+// again instead of reading the cached listing; both report when the answer
+// they returned was taken.
+func (s *Server) describeAvailable(ctx context.Context, refresh bool, view *updatesView) {
 	if s.charts == nil {
 		return
 	}
-	published, err := s.charts.Versions(req.Context())
+	read := s.charts.Versions
+	if refresh {
+		read = s.charts.Refresh
+	}
+	listing, err := read(ctx)
+	if !listing.CheckedAt.IsZero() {
+		checked := metav1.NewTime(listing.CheckedAt)
+		view.CheckedAt = &checked
+	}
 	if err != nil {
 		view.DiscoveryError = err.Error()
 		return
 	}
+	published := listing.Versions
 	latest, hasLatest := chartrepo.Latest(published)
 	if hasLatest {
 		view.LatestVersion = latest.String()

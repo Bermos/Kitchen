@@ -48,6 +48,12 @@ const (
 	// every visitor rather than about freshness.
 	DefaultTTL = time.Hour
 
+	// MinRefreshInterval is the floor a forced refresh still respects, and is
+	// exported because the dashboard tells the reader what it is rather than
+	// leaving a control that sometimes does nothing. It is short enough to be
+	// invisible to someone who published a release and came to look for it.
+	MinRefreshInterval = 10 * time.Second
+
 	// failureTTL is how long a failed listing is remembered. Short enough
 	// that fixing the network shows up quickly, long enough that a cluster
 	// with no egress at all is not retrying on every request.
@@ -104,10 +110,19 @@ func New(ref string) (*Client, error) {
 	}, nil
 }
 
+// Listing is an answer and when it was taken. The two travel together because
+// the client is shared: reading the versions and the time through separate
+// calls could report one refresh's answer under another's timestamp, and the
+// timestamp is the whole of how a dashboard says an hour-old answer is old.
+type Listing struct {
+	Versions  []semver.Version
+	CheckedAt time.Time
+}
+
 // Versions returns every published version that parses as SemVer, oldest
 // first. Tags that are not versions — "latest", a moving channel name — are
 // skipped rather than reported: they are not something to upgrade to.
-func (c *Client) Versions(ctx context.Context) ([]semver.Version, error) {
+func (c *Client) Versions(ctx context.Context) (Listing, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -115,13 +130,36 @@ func (c *Client) Versions(ctx context.Context) ([]semver.Version, error) {
 	if c.err != nil {
 		ttl = failureTTL
 	}
+	return c.listing(ctx, ttl)
+}
+
+// Refresh asks the registry again without waiting for the cached answer to
+// expire. Someone who has just published a release is the case it exists for:
+// DefaultTTL is an hour, and until this the only ways to see a version sooner
+// were to wait it out or restart the operator the cache lives in.
+//
+// The floor is not the TTL in miniature. The failure a forced listing can
+// cause is being rate-limited by the registry, and a rate-limited listing is
+// an error cached for failureTTL — five minutes of "the published versions
+// could not be listed" bought by a control someone held down.
+func (c *Client) Refresh(ctx context.Context) (Listing, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return c.listing(ctx, MinRefreshInterval)
+}
+
+// listing answers from the cache while it is younger than ttl, and from the
+// registry otherwise. The caller holds the lock, which is also what stops two
+// arrivals at once from both reaching the registry.
+func (c *Client) listing(ctx context.Context, ttl time.Duration) (Listing, error) {
 	if !c.refreshed.IsZero() && time.Since(c.refreshed) < ttl {
-		return c.versions, c.err
+		return Listing{Versions: c.versions, CheckedAt: c.refreshed}, c.err
 	}
 
 	versions, err := c.fetch(ctx)
 	c.versions, c.err, c.refreshed = versions, err, time.Now()
-	return versions, err
+	return Listing{Versions: versions, CheckedAt: c.refreshed}, err
 }
 
 // Latest is the newest stable version, and whether there is one. Pre-releases

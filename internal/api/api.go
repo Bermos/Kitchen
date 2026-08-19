@@ -38,7 +38,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/blang/semver/v4"
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -149,7 +148,8 @@ type Server struct {
 // chartVersions lists the versions the platform's Helm chart has been
 // published at, newest last.
 type chartVersions interface {
-	Versions(ctx context.Context) ([]semver.Version, error)
+	Versions(ctx context.Context) (chartrepo.Listing, error)
+	Refresh(ctx context.Context) (chartrepo.Listing, error)
 }
 
 // logReader is the slice of the telemetry store the API depends on: logs, the
@@ -409,6 +409,21 @@ func decodeBody(req *http.Request, into any) error {
 		return fmt.Errorf("unreadable JSON body: %w", err)
 	}
 	return nil
+}
+
+// boolParam reads a flag query parameter. Absent is false; a value strconv
+// cannot read as one is an error rather than a silent false, because a caller
+// who wrote `?refresh=yes` meant it and would otherwise be told nothing.
+func boolParam(req *http.Request, name string) (bool, error) {
+	raw := strings.TrimSpace(req.URL.Query().Get(name))
+	if raw == "" {
+		return false, nil
+	}
+	value, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, fmt.Errorf("%s must be true or false (got %q)", name, raw)
+	}
+	return value, nil
 }
 
 // intParam reads a bounded integer query parameter.
