@@ -54,12 +54,17 @@ func (s *Server) listEvents(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	project := strings.TrimSpace(req.URL.Query().Get("project"))
+	if !s.visibleProject(w, req, project) {
+		return
+	}
+
 	store := s.openLogStore(w, req)
 	if store == nil {
 		return
 	}
 	events, err := store.QueryEvents(req.Context(), clickhouse.EventQuery{
-		Project: strings.TrimSpace(req.URL.Query().Get("project")),
+		Project: project,
 		Since:   since,
 		Limit:   limit,
 	})
@@ -67,7 +72,12 @@ func (s *Server) listEvents(w http.ResponseWriter, req *http.Request) {
 		s.writeStoreError(w, err, "the activity query")
 		return
 	}
-	writeList(w, events)
+	// The feed is one table and the entries carry their project, so the
+	// narrowing happens here rather than in the query. An entry belonging to
+	// no project is the platform's own — a chart upgrade, a connection — and
+	// only an operator sees it.
+	writeList(w, visibleTo(scopeFrom(req.Context()), events,
+		func(event *clickhouse.Event) string { return event.Project }))
 }
 
 // metricsOverviewBody is the metrics answer: the store's aggregates plus a
@@ -104,6 +114,9 @@ func (s *Server) metricsOverview(w http.ResponseWriter, req *http.Request) {
 
 	query := clickhouse.MetricsQuery{}
 	if project := strings.TrimSpace(req.URL.Query().Get("project")); project != "" {
+		if !s.visibleProject(w, req, project) {
+			return
+		}
 		// The project has to exist before its numbers are worth computing: a
 		// typo should say "no such project", not answer zeroes.
 		obj := &kitchenv1alpha1.Project{}
@@ -312,8 +325,12 @@ func (s *Server) joinProjectTraffic(ctx context.Context, traffic []clickhouse.Pr
 		byProject[entry.Project] = entry
 	}
 
+	scope := scopeFrom(ctx)
 	projects := make([]projectTraffic, 0, len(list.Items))
 	for _, project := range list.Items {
+		if !scope.allows(project.Name) {
+			continue
+		}
 		entry := byProject[project.Name]
 		row := projectTraffic{
 			Project:         project.Name,
@@ -329,6 +346,32 @@ func (s *Server) joinProjectTraffic(ctx context.Context, traffic []clickhouse.Pr
 	}
 	sort.Slice(projects, func(i, j int) bool { return projects[i].Project < projects[j].Project })
 	return projects, nil
+}
+
+// visibleEdges keeps the edges that touch one of the caller's own projects.
+//
+// The service map speaks namespaces, which is how a project appears in the
+// flow data, so the scope is turned into the app namespaces it means. An edge
+// between two workloads the caller has no project on — two other projects, or
+// the platform's own components — is not theirs to see, and an edge with one
+// end in their project is: that end is the answer they came for.
+func visibleEdges(scope projectScope, edges []clickhouse.TrafficEdge) []clickhouse.TrafficEdge {
+	if scope.all {
+		return edges
+	}
+	mine := make(map[string]struct{}, len(scope.names()))
+	for _, project := range scope.names() {
+		mine[controller.AppNamespace(project)] = struct{}{}
+	}
+	out := make([]clickhouse.TrafficEdge, 0, len(edges))
+	for _, edge := range edges {
+		_, source := mine[edge.SourceNamespace]
+		_, destination := mine[edge.DestinationNamespace]
+		if source || destination {
+			out = append(out, edge)
+		}
+	}
+	return out
 }
 
 // traffic serves the aggregated service map for a window: one edge per
@@ -349,6 +392,9 @@ func (s *Server) traffic(w http.ResponseWriter, req *http.Request) {
 
 	query := clickhouse.TrafficQuery{Since: since, Until: until}
 	if project := strings.TrimSpace(req.URL.Query().Get("project")); project != "" {
+		if !s.visibleProject(w, req, project) {
+			return
+		}
 		obj := &kitchenv1alpha1.Project{}
 		if err := s.get(ctx, project, obj); err != nil {
 			s.writeError(w, err)
@@ -366,5 +412,5 @@ func (s *Server) traffic(w http.ResponseWriter, req *http.Request) {
 		s.writeStoreError(w, err, "the traffic query")
 		return
 	}
-	writeList(w, edges)
+	writeList(w, visibleEdges(scopeFrom(ctx), edges))
 }

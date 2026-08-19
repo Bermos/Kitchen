@@ -54,8 +54,9 @@ const (
 	// is rolled back, read for logs, and introspected.
 	testEnvironment = "shop-production"
 	// testCaller is who the harness's token is signed for: the identity every
-	// write is recorded against.
-	testCaller = "grace@example.com"
+	// write is recorded against, and testSubject is that account's `sub`.
+	testCaller  = "grace@example.com"
+	testSubject = "user_1"
 	// otherProject is the second project the fixtures know about: the one a
 	// read must not return, which is what most of the scoping assertions are.
 	otherProject = "blog"
@@ -131,16 +132,29 @@ func (i *issuer) sign(t *testing.T, claims map[string]any, key ed25519.PrivateKe
 	return signingInput + "." + base64.RawURLEncoding.EncodeToString(signature)
 }
 
-// token is the everyday case: a valid platform token for the API.
+// token is the everyday case: a valid platform token for the API, minted for
+// the harness's own caller — who is an operator unless the test said otherwise
+// (see newHarness).
 func (i *issuer) token(t *testing.T) string {
 	t.Helper()
+	return i.tokenFor(t, testSubject, testCaller)
+}
+
+// tokenFor mints a token for somebody else: the way a test says which account
+// is calling, now that what a caller may do depends on who they are. The
+// address is verified, because an entry naming one is only honoured for a
+// verified address and a test that meant to grant a role should not be
+// silently granting nothing.
+func (i *issuer) tokenFor(t *testing.T, subject, email string) string {
+	t.Helper()
 	return i.sign(t, map[string]any{
-		"sub":   "user_1",
-		"email": testCaller,
-		"iss":   i.url(),
-		"aud":   i.url(),
-		"iat":   time.Now().Add(-time.Minute).Unix(),
-		"exp":   time.Now().Add(time.Hour).Unix(),
+		"sub":            subject,
+		"email":          email,
+		"email_verified": true,
+		"iss":            i.url(),
+		"aud":            i.url(),
+		"iat":            time.Now().Add(-time.Minute).Unix(),
+		"exp":            time.Now().Add(time.Hour).Unix(),
 	}, nil)
 }
 
@@ -705,6 +719,17 @@ func newHarness(t *testing.T, kitchen *kitchenv1alpha1.Kitchen, objs ...runtime.
 		}
 	}
 
+	// Every test that predates enforcement calls routes that now want a role,
+	// and each of them means "the platform's own person is asking". So the
+	// harness makes its caller an operator unless the test wrote an operator
+	// list of its own — which is how an access test says "this caller is a
+	// member": by naming somebody else.
+	if len(kitchen.Spec.Access.Operators) == 0 {
+		kitchen.Spec.Access.Operators = []kitchenv1alpha1.AccessSubject{
+			{Subject: testSubject, Email: testCaller},
+		}
+	}
+
 	objects := append([]runtime.Object{kitchen}, objs...)
 	c := fake.NewClientBuilder().WithScheme(scheme).
 		WithRuntimeObjects(objects...).
@@ -718,85 +743,31 @@ func newHarness(t *testing.T, kitchen *kitchenv1alpha1.Kitchen, objs ...runtime.
 	return &harness{server: server, handler: server.Handler(), issuer: iss, logs: logs}
 }
 
-// routes is every endpoint the API serves, used to prove that none of them
-// answers an anonymous caller.
-var routes = []struct {
-	method string
-	path   string
-}{
-	{http.MethodGet, "/api/v1/projects"},
-	{http.MethodPost, "/api/v1/projects"},
-	{http.MethodGet, "/api/v1/projects/shop"},
-	{http.MethodPatch, "/api/v1/projects/shop"},
-	{http.MethodDelete, "/api/v1/projects/shop"},
-	{http.MethodGet, "/api/v1/projects/shop/builds"},
-	{http.MethodPost, "/api/v1/projects/shop/builds"},
-	{http.MethodGet, "/api/v1/projects/shop/releases"},
-	{http.MethodGet, "/api/v1/projects/shop/environments"},
-	{http.MethodGet, "/api/v1/builds"},
-	{http.MethodGet, "/api/v1/builds/shop-bld-abc123def456"},
-	{http.MethodPost, "/api/v1/builds/shop-bld-abc123def456/cancel"},
-	{http.MethodGet, "/api/v1/builds/shop-bld-abc123def456/logs"},
-	{http.MethodGet, "/api/v1/releases"},
-	{http.MethodGet, "/api/v1/releases/" + testRelease},
-	{http.MethodGet, "/api/v1/environments"},
-	{http.MethodGet, "/api/v1/environments/shop-production"},
-	{http.MethodPatch, "/api/v1/environments/shop-production"},
-	{http.MethodDelete, "/api/v1/environments/shop-production"},
-	{http.MethodGet, "/api/v1/environments/shop-production/logs"},
-	{http.MethodGet, "/api/v1/environments/shop-production/workload"},
-	{http.MethodGet, "/api/v1/environments/shop-production/metrics"},
-	{http.MethodGet, "/api/v1/environments/shop-production/objects"},
-	{http.MethodGet, "/api/v1/environments/shop-production/requests"},
-	{http.MethodGet, "/api/v1/environments/shop-production/requests/summary"},
-	{http.MethodGet, "/api/v1/environments/shop-production/requests/series"},
-	{http.MethodGet, "/api/v1/environments/shop-production/requests/routes"},
-	{http.MethodGet, "/api/v1/environments/shop-production/diagnostics"},
-	{http.MethodGet, "/api/v1/environments/shop-production/signals"},
-	{http.MethodGet, "/api/v1/status"},
-	{http.MethodGet, "/api/v1/platform/signals"},
-	{http.MethodGet, "/api/v1/platform/nodes"},
-	{http.MethodGet, "/api/v1/platform/workloads"},
-	{http.MethodGet, "/api/v1/platform/edge"},
-	{http.MethodGet, "/api/v1/platform/storage"},
-	{http.MethodGet, "/api/v1/platform/events"},
-	{http.MethodGet, "/api/v1/platform/ingest"},
-	{http.MethodGet, "/api/v1/logs"},
-	{http.MethodGet, "/api/v1/logs/histogram"},
-	{http.MethodGet, "/api/v1/logs/facets"},
-	{http.MethodGet, "/api/v1/logs/patterns"},
-	{http.MethodGet, "/api/v1/logs/saved"},
-	{http.MethodPost, "/api/v1/logs/saved"},
-	{http.MethodDelete, "/api/v1/logs/saved/checkout-500s"},
-	{http.MethodGet, "/api/v1/events"},
-	{http.MethodGet, "/api/v1/metrics/overview"},
-	{http.MethodGet, "/api/v1/traffic"},
-	{http.MethodGet, "/api/v1/traces"},
-	{http.MethodGet, "/api/v1/traces/9d8d0f"},
-	{http.MethodGet, "/api/v1/settings"},
-	{http.MethodGet, "/api/v1/updates"},
-	{http.MethodPost, "/api/v1/updates"},
-	{http.MethodGet, "/api/v1/updates/update-0-2-1-abcde"},
-	{http.MethodPatch, "/api/v1/settings"},
-	{http.MethodGet, "/api/v1/connections"},
-	{http.MethodPost, "/api/v1/connections"},
-	{http.MethodPost, "/api/v1/connections/test"},
-	{http.MethodGet, "/api/v1/connections/gh"},
-	{http.MethodPatch, "/api/v1/connections/gh"},
-	{http.MethodDelete, "/api/v1/connections/gh"},
-	{http.MethodGet, "/api/v1/domains"},
-	{http.MethodGet, "/api/v1/domains/shop-com"},
-	{http.MethodGet, "/api/v1/claims"},
-	{http.MethodPost, "/api/v1/claims"},
-	{http.MethodGet, "/api/v1/claims/shop-db"},
-	{http.MethodDelete, "/api/v1/claims/shop-db"},
-	{http.MethodGet, "/api/v1/nonsense"},
+// routes is every endpoint the API serves, derived from the enforcement table
+// itself rather than listed again here: a route added to policy.go is a route
+// this proves refuses an anonymous caller, without anybody having to remember
+// to add it twice. The path parameters are filled with a name that matches
+// nothing, because what is being tested happens before routing gets that far.
+func routes() []struct{ method, path string } {
+	server := &Server{Namespace: testNamespace}
+	out := make([]struct{ method, path string }, 0, len(server.routes()))
+	for _, route := range server.routes() {
+		method, pattern, ok := strings.Cut(route.Pattern, " ")
+		if !ok {
+			// The catch-all, which has no method of its own.
+			method, pattern = http.MethodGet, route.Pattern+"api/v1/nonsense"
+		}
+		pattern = strings.ReplaceAll(pattern, "{name}", "x")
+		pattern = strings.ReplaceAll(pattern, "{traceId}", "x")
+		out = append(out, struct{ method, path string }{method, pattern})
+	}
+	return out
 }
 
 func TestEveryEndpointRefusesAnAnonymousCaller(t *testing.T) {
 	h := newHarness(t, nil, fixtures()...)
 
-	for _, route := range routes {
+	for _, route := range routes() {
 		t.Run(route.method+" "+route.path, func(t *testing.T) {
 			recorder := h.do(t, route.method, route.path, "", "")
 			if recorder.Code != http.StatusUnauthorized {

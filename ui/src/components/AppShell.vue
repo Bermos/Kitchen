@@ -121,9 +121,11 @@ const activeProject = computed(() => {
   return null;
 });
 
+// The gateway is the operator's half of /status: absent, not zeroed, for an
+// account that may not read it — so there is simply no tile.
 const gateway = computed(() => {
   const s = status.data.value;
-  if (!s) return null;
+  if (!s?.gateway) return null;
   return { address: s.gateway.address || "—", healthy: s.gateway.programmed };
 });
 
@@ -293,11 +295,11 @@ const userMenu = computed(() => [
             <span class="text-dimmed pl-3.5 font-mono truncate" :title="gateway.address">{{ gateway.address }}</span>
           </div>
         </template>
-        <div v-if="status.data.value?.tunnel.enabled" class="flex items-center gap-2">
-          <StatusDot :tone="status.data.value.tunnel.connected ? 'success' : 'warning'" />
+        <div v-if="status.data.value?.tunnel?.enabled" class="flex items-center gap-2">
+          <StatusDot :tone="status.data.value?.tunnel?.connected ? 'success' : 'warning'" />
           <span class="text-muted">Tunnel</span>
-          <span class="ml-auto font-mono text-toned" :title="status.data.value.tunnel.message">
-            {{ status.data.value.tunnel.connected ? "connected" : "pending" }}
+          <span class="ml-auto font-mono text-toned" :title="status.data.value?.tunnel?.message">
+            {{ status.data.value?.tunnel?.connected ? "connected" : "pending" }}
           </span>
         </div>
         <div v-if="builds" class="flex items-center gap-2">

@@ -131,6 +131,11 @@ func (s *Server) listAuditRecords(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	project := strings.TrimSpace(req.URL.Query().Get("project"))
+	if !s.visibleProject(w, req, project) {
+		return
+	}
+
 	store := s.openLogStore(w, req)
 	if store == nil {
 		return
@@ -140,7 +145,7 @@ func (s *Server) listAuditRecords(w http.ResponseWriter, req *http.Request) {
 		Kind:      strings.TrimSpace(req.URL.Query().Get("kind")),
 		Namespace: strings.TrimSpace(req.URL.Query().Get("namespace")),
 		Name:      strings.TrimSpace(req.URL.Query().Get("name")),
-		Project:   strings.TrimSpace(req.URL.Query().Get("project")),
+		Project:   project,
 		Actor:     strings.TrimSpace(req.URL.Query().Get("actor")),
 		Since:     since,
 		Until:     until,
@@ -151,8 +156,16 @@ func (s *Server) listAuditRecords(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// Each record names the project it was about, so the log reads as "what
+	// happened to my projects" for a member and as the whole log for an
+	// operator. A record with no project is about the platform itself — the
+	// settings, a connection, an upgrade — and is the operator's alone.
+	scope := scopeFrom(ctx)
 	body := make([]auditRecordBody, 0, len(records))
 	for _, record := range records {
+		if !scope.allows(record.Project) {
+			continue
+		}
 		body = append(body, auditBody(record))
 	}
 	writeList(w, body)

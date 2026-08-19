@@ -28,6 +28,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/access"
 	"github.com/Bermos/Kitchen/internal/controller"
 )
 
@@ -57,20 +58,27 @@ func (s *Server) getStatus(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	view := statusView{
-		Cluster: s.clusterStatus(ctx, kitchen),
-		Tunnel:  tunnelStatus(kitchen),
-		Gateway: gatewayStatus(kitchen),
-	}
-	for _, component := range kitchen.Status.Components {
-		view.Components = append(view.Components, componentStatusView{
-			Name:      component.Name,
-			Kind:      component.Kind,
-			Healthy:   component.Healthy,
-			Available: component.Available,
-			Desired:   component.Desired,
-			Message:   component.Message,
-		})
+	// Everyone gets the platform's name and the build queue. The tunnel, the
+	// gateway, the component survey and the node counts are the operator's,
+	// and a member's answer leaves them out rather than emptying them — see
+	// statusView.
+	view := statusView{Cluster: clusterStatusView{Name: clusterName(kitchen)}}
+	if platformRoleFrom(ctx).AtLeast(access.PlatformOperator) {
+		view.Cluster = s.clusterStatus(ctx, kitchen)
+		tunnel := tunnelStatus(kitchen)
+		view.Tunnel = &tunnel
+		gateway := gatewayStatus(kitchen)
+		view.Gateway = &gateway
+		for _, component := range kitchen.Status.Components {
+			view.Components = append(view.Components, componentStatusView{
+				Name:      component.Name,
+				Kind:      component.Kind,
+				Healthy:   component.Healthy,
+				Available: component.Available,
+				Desired:   component.Desired,
+				Message:   component.Message,
+			})
+		}
 	}
 
 	builds, err := s.buildQueue(ctx, kitchen)
@@ -97,12 +105,13 @@ func (s *Server) clusterStatus(ctx context.Context, kitchen *kitchenv1alpha1.Kit
 		view.Message = err.Error()
 		return view
 	}
-	view.Nodes = len(nodes.Items)
+	total, ready := len(nodes.Items), 0
 	for i := range nodes.Items {
 		if nodeReady(&nodes.Items[i]) {
-			view.ReadyNodes++
+			ready++
 		}
 	}
+	view.Nodes, view.ReadyNodes = &total, &ready
 	return view
 }
 

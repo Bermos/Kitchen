@@ -36,13 +36,22 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/access"
 	"github.com/Bermos/Kitchen/internal/audit"
 	"github.com/Bermos/Kitchen/internal/clickhouse"
 	"github.com/Bermos/Kitchen/internal/controller"
 )
 
 // get reads one object out of the platform namespace.
+//
+// It first takes whatever the request's guard already read to work out which
+// project the request is about (see resolvedObject): every route that names an
+// object resolves its project from that object, so without this a guarded
+// handler would read the same thing twice on every request.
 func (s *Server) get(ctx context.Context, name string, into client.Object) error {
+	if resolvedObject(ctx, name, into) {
+		return nil
+	}
 	return s.Client.Get(ctx, types.NamespacedName{Namespace: s.Namespace, Name: name}, into)
 }
 
@@ -51,17 +60,30 @@ func projectFilter(req *http.Request) string {
 	return strings.TrimSpace(req.URL.Query().Get("project"))
 }
 
+// roleOn is the calling account's role on one project, and the one way this
+// package works out what it is: the rule — including an operator's admin on
+// every project — lives in internal/access, which the preview gate asks too.
+func (s *Server) roleOn(ctx context.Context, project *kitchenv1alpha1.Project) access.ProjectRole {
+	caller, _ := CallerFrom(ctx)
+	return access.ProjectRoleFor(caller.access(), kitchenFrom(ctx), project)
+}
+
 func (s *Server) listProjects(w http.ResponseWriter, req *http.Request) {
+	ctx := req.Context()
 	list := &kitchenv1alpha1.ProjectList{}
-	if err := s.Client.List(req.Context(), list, client.InNamespace(s.Namespace)); err != nil {
+	if err := s.Client.List(ctx, list, client.InNamespace(s.Namespace)); err != nil {
 		s.writeError(w, err)
 		return
 	}
 	sort.Slice(list.Items, func(i, j int) bool { return list.Items[i].Name < list.Items[j].Name })
 
+	scope := scopeFrom(ctx)
 	views := make([]projectView, 0, len(list.Items))
 	for i := range list.Items {
-		views = append(views, newProjectView(&list.Items[i]))
+		if !scope.allows(list.Items[i].Name) {
+			continue
+		}
+		views = append(views, newProjectView(&list.Items[i], s.roleOn(ctx, &list.Items[i])))
 	}
 	writeList(w, views)
 }
@@ -72,7 +94,7 @@ func (s *Server) getProject(w http.ResponseWriter, req *http.Request) {
 		s.writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, newProjectView(project))
+	writeJSON(w, http.StatusOK, newProjectView(project, s.roleOn(req.Context(), project)))
 }
 
 // createProjectRequest is everything the create flow asks for: a name, a
@@ -207,6 +229,13 @@ func (s *Server) createProject(w http.ResponseWriter, req *http.Request) {
 				ConnectionRef: kitchenv1alpha1.LocalObjectReference{Name: body.Registry},
 			},
 			Previews: kitchenv1alpha1.PreviewsSpec{Enabled: previews},
+			// Creating a project is self-service, and the account that creates
+			// one is its admin (docs/AUTH.md, "Who may do what"). The grant is
+			// written here rather than implied, because implying it would mean
+			// a second rule about who is an admin living outside spec.access —
+			// and because a project whose creator is not written down is one
+			// nobody can hand over.
+			Access: creatorGrant(caller),
 		},
 	}
 	if !s.recorded(w, req, audit.Transition{
@@ -237,7 +266,25 @@ func (s *Server) createProject(w http.ResponseWriter, req *http.Request) {
 		Message: fmt.Sprintf("project %s created from %s", project.Name, body.Repo),
 		Actor:   callerName(caller),
 	})
-	writeJSON(w, http.StatusCreated, newProjectView(project))
+	writeJSON(w, http.StatusCreated, newProjectView(project, s.roleOn(ctx, project)))
+}
+
+// creatorGrant is the access list a new project starts with: its creator, as
+// admin, named by the issuer's `sub`.
+//
+// The address is carried beside it so the list reads in `kubectl get -o yaml`
+// and in a git diff; nothing resolves against it (see AccessSubject). A caller
+// with no subject cannot happen — a token that names none is refused — so the
+// empty case is a belt-and-braces guard against writing an entry that would
+// match nobody.
+func creatorGrant(caller Caller) []kitchenv1alpha1.AccessGrant {
+	if caller.Subject == "" {
+		return nil
+	}
+	return []kitchenv1alpha1.AccessGrant{{
+		AccessSubject: kitchenv1alpha1.AccessSubject{Subject: caller.Subject, Email: caller.Email},
+		Role:          kitchenv1alpha1.AccessRoleAdmin,
+	}}
 }
 
 // patchProjectRequest carries the parts of a project a user can change after
@@ -470,7 +517,7 @@ func (s *Server) patchProject(w http.ResponseWriter, req *http.Request) {
 	caller, _ := CallerFrom(ctx)
 	s.log().Info("project settings changed through the api",
 		"project", project.Name, "caller", callerName(caller))
-	writeJSON(w, http.StatusOK, newProjectView(project))
+	writeJSON(w, http.StatusOK, newProjectView(project, s.roleOn(ctx, project)))
 }
 
 func (s *Server) deleteProject(w http.ResponseWriter, req *http.Request) {
@@ -509,7 +556,7 @@ func (s *Server) deleteProject(w http.ResponseWriter, req *http.Request) {
 	})
 	// 202, not 200: the operator's finalizer still has environments to tear
 	// down and a namespace to remove when this response goes out.
-	writeJSON(w, http.StatusAccepted, newProjectView(project))
+	writeJSON(w, http.StatusAccepted, newProjectView(project, s.roleOn(ctx, project)))
 }
 
 // builds returns a project's builds, or every build when project is empty,
@@ -542,13 +589,40 @@ func (s *Server) writeBuilds(w http.ResponseWriter, builds []kitchenv1alpha1.Bui
 	writeList(w, views)
 }
 
+// visibleTo keeps the items belonging to a project this caller can see. It is
+// what the table's "filtered to the caller's projects" rows do to their
+// answers, and it is deliberately one function: a collection that filtered by
+// hand would be the one that forgot to.
+//
+// A `?project=` naming a project the caller cannot see needs nothing extra —
+// it filters everything out, which is the same answer as a project that does
+// not exist.
+func visibleTo[T any](scope projectScope, items []T, project func(*T) string) []T {
+	if scope.all {
+		return items
+	}
+	out := make([]T, 0, len(items))
+	for i := range items {
+		if scope.allows(project(&items[i])) {
+			out = append(out, items[i])
+		}
+	}
+	return out
+}
+
+func buildProject(build *kitchenv1alpha1.Build) string { return build.Spec.ProjectRef.Name }
+
+func releaseProject(release *kitchenv1alpha1.Release) string { return release.Spec.ProjectRef.Name }
+
+func environmentProject(env *kitchenv1alpha1.Environment) string { return env.Spec.ProjectRef.Name }
+
 func (s *Server) listBuilds(w http.ResponseWriter, req *http.Request) {
 	builds, err := s.builds(req.Context(), projectFilter(req))
 	if err != nil {
 		s.writeError(w, err)
 		return
 	}
-	s.writeBuilds(w, builds)
+	s.writeBuilds(w, visibleTo(scopeFrom(req.Context()), builds, buildProject))
 }
 
 func (s *Server) listProjectBuilds(w http.ResponseWriter, req *http.Request) {
@@ -767,7 +841,7 @@ func (s *Server) listReleases(w http.ResponseWriter, req *http.Request) {
 		s.writeError(w, err)
 		return
 	}
-	s.writeReleases(w, releases)
+	s.writeReleases(w, visibleTo(scopeFrom(req.Context()), releases, releaseProject))
 }
 
 func (s *Server) listProjectReleases(w http.ResponseWriter, req *http.Request) {
@@ -822,7 +896,7 @@ func (s *Server) listEnvironments(w http.ResponseWriter, req *http.Request) {
 		s.writeError(w, err)
 		return
 	}
-	s.writeEnvironments(w, environments)
+	s.writeEnvironments(w, visibleTo(scopeFrom(req.Context()), environments, environmentProject))
 }
 
 func (s *Server) listProjectEnvironments(w http.ResponseWriter, req *http.Request) {
@@ -1090,16 +1164,34 @@ func (s *Server) getConnection(w http.ResponseWriter, req *http.Request) {
 }
 
 func (s *Server) listDomains(w http.ResponseWriter, req *http.Request) {
+	ctx := req.Context()
 	list := &kitchenv1alpha1.DomainList{}
-	if err := s.Client.List(req.Context(), list, client.InNamespace(s.Namespace)); err != nil {
+	if err := s.Client.List(ctx, list, client.InNamespace(s.Namespace)); err != nil {
 		s.writeError(w, err)
 		return
+	}
+	// A Domain names an environment, not a project, so answering "whose is
+	// this" takes the environments as well — once, rather than per domain.
+	scope := scopeFrom(ctx)
+	projectOfEnvironment := map[string]string{}
+	if !scope.all {
+		environments, err := s.environments(ctx, "")
+		if err != nil {
+			s.writeError(w, err)
+			return
+		}
+		for i := range environments {
+			projectOfEnvironment[environments[i].Name] = environments[i].Spec.ProjectRef.Name
+		}
 	}
 
 	environment := strings.TrimSpace(req.URL.Query().Get("environment"))
 	views := make([]domainView, 0, len(list.Items))
 	for i := range list.Items {
 		if environment != "" && list.Items[i].Spec.EnvironmentRef.Name != environment {
+			continue
+		}
+		if !scope.allows(projectOfEnvironment[list.Items[i].Spec.EnvironmentRef.Name]) {
 			continue
 		}
 		views = append(views, newDomainView(&list.Items[i]))
@@ -1125,9 +1217,13 @@ func (s *Server) listClaims(w http.ResponseWriter, req *http.Request) {
 	}
 
 	project := projectFilter(req)
+	scope := scopeFrom(req.Context())
 	views := make([]claimView, 0, len(list.Items))
 	for i := range list.Items {
 		if project != "" && list.Items[i].Spec.ProjectRef.Name != project {
+			continue
+		}
+		if !scope.allows(list.Items[i].Spec.ProjectRef.Name) {
 			continue
 		}
 		views = append(views, newClaimView(&list.Items[i]))

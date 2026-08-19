@@ -29,6 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/access"
 	"github.com/Bermos/Kitchen/internal/controller"
 )
 
@@ -53,6 +54,12 @@ type Caller struct {
 	// Email and Name are informational, present when the token carries them.
 	Email string
 	Name  string
+	// EmailVerified is the token's `email_verified` claim. It is not
+	// decoration: an access entry may name an address instead of a `sub`, and
+	// such an entry is honoured only for a verified address — an unverified
+	// one is something the token holder said about themselves. internal/access
+	// applies that rule; this carries the fact it needs.
+	EmailVerified bool
 	// ClientID is the OAuth client the token was issued to, when the token
 	// says so (`azp`). Empty for tokens minted straight from a session.
 	ClientID string
@@ -64,12 +71,55 @@ type Caller struct {
 	Scopes []string
 }
 
-type callerContextKey struct{}
+type (
+	callerContextKey  struct{}
+	kitchenContextKey struct{}
+)
 
 // CallerFrom returns the identity the request was authenticated as.
 func CallerFrom(ctx context.Context) (Caller, bool) {
 	caller, ok := ctx.Value(callerContextKey{}).(Caller)
 	return caller, ok
+}
+
+// access is this caller as the package that decides what they may do sees
+// them: the three claims a membership entry can name, and nothing else.
+func (c Caller) access() access.Caller {
+	return access.Caller{Subject: c.Subject, Email: c.Email, EmailVerified: c.EmailVerified}
+}
+
+// kitchenFrom is the Kitchen singleton the request was authenticated against —
+// where the platform's operator list lives. It is nil only for a request that
+// never went through the token check, which resolves to no operator at all
+// rather than to everyone (see access.PlatformRoleFor).
+func kitchenFrom(ctx context.Context) *kitchenv1alpha1.Kitchen {
+	kitchen, _ := ctx.Value(kitchenContextKey{}).(*kitchenv1alpha1.Kitchen)
+	return kitchen
+}
+
+// meView is the caller as described to themselves: who the token says they
+// are, and the hat they wear on this platform. It says nothing about anybody
+// else, which is why any valid token may ask for it.
+//
+// The project roles are deliberately not here. They belong on the projects
+// themselves — the overview renders a list, and a caller's role arrives with
+// each project rather than as a second list to join against.
+type meView struct {
+	Subject string `json:"subject"`
+	Email   string `json:"email,omitempty"`
+	Name    string `json:"name,omitempty"`
+	// PlatformRole is "operator" or "member".
+	PlatformRole string `json:"platformRole"`
+}
+
+func (s *Server) getMe(w http.ResponseWriter, req *http.Request) {
+	caller, _ := CallerFrom(req.Context())
+	writeJSON(w, http.StatusOK, meView{
+		Subject:      caller.Subject,
+		Email:        caller.Email,
+		Name:         caller.Name,
+		PlatformRole: platformRoleFrom(req.Context()).String(),
+	})
 }
 
 // issuerConfig is the platform's identity provider as the API needs to see it:
@@ -180,11 +230,12 @@ func (a *authenticator) verifierFor(ctx context.Context, issuer string) (*oidc.I
 
 // tokenClaims are the parts of a validated token the API reads.
 type tokenClaims struct {
-	Subject  string `json:"sub"`
-	Email    string `json:"email"`
-	Name     string `json:"name"`
-	ClientID string `json:"azp"`
-	Scope    string `json:"scope"`
+	Subject       string `json:"sub"`
+	Email         string `json:"email"`
+	EmailVerified bool   `json:"email_verified"`
+	Name          string `json:"name"`
+	ClientID      string `json:"azp"`
+	Scope         string `json:"scope"`
 }
 
 // authenticate validates the request's bearer token and returns who it belongs
@@ -220,11 +271,12 @@ func (a *authenticator) authenticate(ctx context.Context, req *http.Request, cfg
 		return Caller{}, errors.New("the token names no subject")
 	}
 	return Caller{
-		Subject:  claims.Subject,
-		Email:    claims.Email,
-		Name:     claims.Name,
-		ClientID: claims.ClientID,
-		Scopes:   strings.Fields(claims.Scope),
+		Subject:       claims.Subject,
+		Email:         claims.Email,
+		EmailVerified: claims.EmailVerified,
+		Name:          claims.Name,
+		ClientID:      claims.ClientID,
+		Scopes:        strings.Fields(claims.Scope),
 	}, nil
 }
 
@@ -277,7 +329,13 @@ func (s *Server) authenticated(next http.Handler) http.Handler {
 			return
 		}
 
-		next.ServeHTTP(w, req.WithContext(context.WithValue(ctx, callerContextKey{}, caller)))
+		// The Kitchen object travels with the request: it is where platform
+		// membership is written down, and reading it a second time inside the
+		// guard would be a second read of the same cached object on every
+		// request the API serves.
+		ctx = context.WithValue(ctx, callerContextKey{}, caller)
+		ctx = context.WithValue(ctx, kitchenContextKey{}, kitchen)
+		next.ServeHTTP(w, req.WithContext(ctx))
 	})
 }
 

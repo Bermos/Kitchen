@@ -368,10 +368,11 @@ func TestStatusReportsTheClusterTheTunnelAndTheQueue(t *testing.T) {
 	}
 	status := decode[statusView](t, recorder)
 
-	if status.Cluster.Name != "chef" || status.Cluster.Nodes != 3 || status.Cluster.ReadyNodes != 2 {
+	if status.Cluster.Name != "chef" || ptr.Deref(status.Cluster.Nodes, 0) != 3 ||
+		ptr.Deref(status.Cluster.ReadyNodes, 0) != 2 {
 		t.Fatalf("want chef with 2 of 3 nodes ready, got %+v", status.Cluster)
 	}
-	if !status.Tunnel.Enabled || !status.Tunnel.Connected {
+	if status.Tunnel == nil || !status.Tunnel.Enabled || !status.Tunnel.Connected {
 		t.Fatalf("want the tunnel connected, got %+v", status.Tunnel)
 	}
 	if status.Builds.Running != 1 || status.Builds.Capacity != 2 || status.Builds.Queued != 1 {
@@ -385,7 +386,7 @@ func TestStatusReportsTheClusterTheTunnelAndTheQueue(t *testing.T) {
 	if status.Builds.OldestWaitSeconds < 1 || status.Builds.OldestWaitSeconds != status.Builds.Waiting[0].WaitSeconds {
 		t.Fatalf("want the longest wait reported and matching its build, got %+v", status.Builds)
 	}
-	if !status.Gateway.Programmed || status.Gateway.Address != "203.0.113.7" {
+	if status.Gateway == nil || !status.Gateway.Programmed || status.Gateway.Address != "203.0.113.7" {
 		t.Fatalf("want the gateway programmed at its address, got %+v", status.Gateway)
 	}
 	if len(status.Components) != 1 || status.Components[0].Healthy {
@@ -405,7 +406,7 @@ func TestStatusFallsBackToTheBaseDomainAndTheDefaultConcurrency(t *testing.T) {
 	if status.Builds.Capacity != controller.DefaultBuildConcurrency {
 		t.Fatalf("want the build controller's own default, got %d", status.Builds.Capacity)
 	}
-	if status.Tunnel.Enabled || status.Tunnel.Connected {
+	if status.Tunnel == nil || status.Tunnel.Enabled || status.Tunnel.Connected {
 		t.Fatalf("want no tunnel on an installation that runs none, got %+v", status.Tunnel)
 	}
 }

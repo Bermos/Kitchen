@@ -217,6 +217,12 @@ export function nodesTile(status: PlatformStatus | null): HealthTile {
   if (!status) return unknownTile("nodes", "Nodes", "the platform's status could not be read");
   const cluster = status.cluster;
   if (cluster.message) return unknownTile("nodes", "Nodes", cluster.message);
+  // The counts are the operator's half of /status and are absent, not zero,
+  // for anyone else — which is a tile that says nothing rather than one that
+  // says the cluster is empty.
+  if (cluster.nodes === undefined || cluster.readyNodes === undefined) {
+    return unknownTile("nodes", "Nodes", "the node counts are the operator's to read");
+  }
   // Zero nodes is not a cluster where every node is Ready. It is a read that
   // told us nothing, and a green tile over it would be the one lie this strip
   // must not tell.

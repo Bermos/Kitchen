@@ -64,86 +64,143 @@ That token's audience is the issuer, which the API accepts. The key itself
 never reaches the operator, so a leaked API key is revoked in one place and
 the operator has nothing to invalidate.
 
+## Authorization
+
+A token says **who** the caller is. What they may do is Kitchen's own answer,
+resolved from the access recorded on its objects. The model — two platform
+roles, three project roles, `operator` containing `developer` — is
+[AUTH.md, "Who may do what"](AUTH.md#who-may-do-what); it is not restated
+here, only applied.
+
+Two axes, because one list cannot answer both "may Anna change the base
+domain?" and "may Anna deploy `billing`?":
+
+- the **platform role**, exactly one per account, from `spec.access.operators`
+  on the `Kitchen` singleton;
+- the **project role**, per account per project, from `spec.access` on each
+  `Project`. An operator holds `admin` on every project, present and future.
+
+The `Requires` column on every endpoint below says which of the two it wants.
+An unqualified `viewer`, `developer` or `admin` is a **project** role, on the
+project the request is about — the path's for `/projects/{name}/…`, and
+otherwise the object's own (`spec.projectRef` on a build, a release, an
+environment or a claim; the environment's project for a domain). Three values
+are not roles:
+
+| Value | Means |
+|---|---|
+| `any account` | a valid token, and nothing more |
+| `any account — filtered` | a valid token; the answer is narrowed to the projects the caller can see |
+| `any account — body varies` | a valid token; part of the body is withheld by role. `GET /status` alone |
+
+The whole table lives in one place in the operator — `internal/api/policy.go`,
+which every route is registered from — so a route cannot exist without a
+requirement, and the dashboard's copy of it is generated rather than written
+twice.
+
+### Being refused
+
+**`403` names the role it wanted**, and what would have satisfied it:
+
+```json
+{"error": "you have viewer on shop; redeploying needs developer"}
+```
+
+```json
+{"error": "changing the platform's settings needs the operator role; you are a member"}
+```
+
+**`404` is what an object you hold no role on looks like.** Not `403`: on a
+platform where developers are not meant to see each other's projects, "you may
+not know whether `billing` exists" is the right answer, and a refusal that
+differed from a missing object would be the answer to the question it was
+withholding. So a build of somebody else's project, a `?project=` naming one,
+and a saved query that mentions one are all answered exactly as if they were
+not there. A `403` therefore always means *you can see this, and you may not do
+that* — which is what makes it worth naming a role in.
+
 ## Endpoints
 
 All paths are relative to `/api/v1`. Collections answer `{"items": [...]}`;
 errors answer `{"error": "..."}` with a message meant to be read by whoever
-sent the request.
+sent the request. The `Requires` column is explained under
+[Authorization](#authorization) above.
 
-| Method | Path | Does |
-|---|---|---|
-| GET | `/projects` | List projects |
-| POST | `/projects` | Create a project |
-| GET | `/projects/{name}` | One project — its env vars by name, never their values |
-| PATCH | `/projects/{name}` | Change its settings — branch, previews, build, env vars, runtime |
-| DELETE | `/projects/{name}` | Delete it, and everything derived from it |
-| GET | `/projects/{name}/builds` | That project's builds, newest first |
-| POST | `/projects/{name}/builds` | Build a commit — a rebuild |
-| GET | `/projects/{name}/releases` | That project's releases, newest first |
-| GET | `/projects/{name}/environments` | That project's environments |
-| GET | `/builds` | Every build. `?project=` filters |
-| GET | `/builds/{name}` | One build |
-| POST | `/builds/{name}/cancel` | Stop it — the Build stays, phase `Cancelled` |
-| GET | `/builds/{name}/logs` | That build's output |
-| GET | `/builds/{name}/attestations` | The signed evidence attached to that build's artifact |
-| GET | `/releases` | Every release. `?project=` filters |
-| GET | `/releases/{name}` | One release |
-| GET | `/environments` | Every environment. `?project=` filters |
-| GET | `/environments/{name}` | One environment |
-| PATCH | `/environments/{name}` | Move it to another release — promotion and rollback |
-| DELETE | `/environments/{name}` | Tear down a stuck preview. Previews only |
-| GET | `/environments/{name}/logs` | That environment's runtime logs |
-| GET | `/environments/{name}/workload` | What it is running: replicas, restarts, uptime, resources, pods |
-| GET | `/environments/{name}/metrics` | What it *has been* running: CPU, memory, replicas and restarts over a window |
-| GET | `/environments/{name}/requests/summary` | The golden-signal header: traffic, error rate and latency over a window |
-| GET | `/environments/{name}/requests/series` | The same signals over time — the charts |
-| GET | `/environments/{name}/requests/routes` | One row per route template, sortable — the per-path breakdown |
-| GET | `/environments/{name}/requests` | The requests themselves, newest first. Filterable, and live-tails like logs |
-| GET | `/environments/{name}/diagnostics` | The crash report: everything about the last abnormal termination, assembled |
-| GET | `/environments/{name}/signals` | What is wrong with it right now — the diagnostics strip |
-| GET | `/environments/{name}/objects` | The Kubernetes objects the operator materialized for it |
-| GET | `/logs` | The whole logs table, filtered by a query. `?q=`, `?where=` |
-| GET | `/logs/histogram` | The same selection counted over time — the shape of the window |
-| GET | `/logs/facets` | The same selection's distinct values per field, with counts |
-| GET | `/logs/patterns` | The same selection's messages collapsed into templates |
-| GET | `/logs/saved` | Saved queries — selections someone kept under a name |
-| POST | `/logs/saved` | Keep the current selection under a name |
-| DELETE | `/logs/saved/{name}` | Forget one |
-| GET | `/events` | The platform's recent activity, newest first. `?project=` and `?limit=` filter |
-| GET | `/audit` | The tamper-evident log of state transitions. `?kind=`, `?name=`, `?project=`, `?actor=`, `?since=`, `?until=`, `?limit=` |
-| GET | `/audit/verify` | Re-derive the chain's hashes over a run and report every break. `?from=`, `?limit=` |
-| GET | `/compliance` | What the platform is producing: whether the audit log is recording, and the key artifacts are signed under |
-| GET | `/metrics/overview` | The dashboard's numbers, pre-aggregated. `?project=` narrows |
-| GET | `/traffic` | The service map: aggregated flow edges. `?project=`, `?since=`, `?until=` |
-| GET | `/traces` | Traces in a window. `?project=`, `?environment=`, `?service=`, `?errors=1`, `?minDuration=` |
-| GET | `/traces/{traceId}` | One trace's spans, oldest first — the waterfall |
-| GET | `/status` | The platform as it is running: cluster, tunnel, build queue, components |
-| GET | `/platform/signals` | Every finding firing anywhere on the platform, worst first — the problems list |
-| GET | `/platform/nodes` | Per node: conditions, pods, and when its collector last shipped anything |
-| GET | `/platform/workloads` | Every workload and pod on the platform — and the workloads with no pods at all |
-| GET | `/platform/edge` | Cross-project traffic, the Gateway, the tunnel and the certificates |
-| GET | `/platform/storage` | Volumes and what mounts them, plus the telemetry store's own health |
-| GET | `/platform/events` | The cluster's Warning history, faceted. `?reason=`, `?kind=`, `?node=`, `?search=` |
-| GET | `/platform/ingest` | Collector presence and freshness, and what the flow follower lost |
-| GET | `/settings` | The platform's settings — the `Kitchen` singleton |
-| PATCH | `/settings` | Change the build and telemetry defaults |
-| GET | `/updates` | The platform's own version, what it can upgrade to, and every upgrade it has attempted |
-| POST | `/updates` | Upgrade the platform |
-| GET | `/updates/{name}` | One upgrade |
-| GET | `/connections` | Every connection (never their credentials) |
-| POST | `/connections` | Create one — the credential goes in, and never comes back out |
-| POST | `/connections/test` | Try a credential against its provider, storing nothing |
-| GET | `/connections/{name}` | One connection |
-| PATCH | `/connections/{name}` | Rotate the credential, change the config, or both |
-| DELETE | `/connections/{name}` | Delete it, unless something still uses it |
-| GET | `/domains` | Every custom domain. `?environment=` filters |
-| POST | `/domains` | Attach one — the response carries the DNS record to create |
-| GET | `/domains/{name}` | One domain, verification instructions included |
-| DELETE | `/domains/{name}` | Detach it; the operator removes its certificate |
-| GET | `/claims` | Every resource claim. `?project=` filters |
-| POST | `/claims` | Ask a database-capable connection to provision one |
-| GET | `/claims/{name}` | One claim |
-| DELETE | `/claims/{name}` | Delete it — what happens to the data is its `deletionPolicy`'s call |
+| Method | Path | Does | Requires |
+|---|---|---|---|
+| GET | `/projects` | List projects | any account — filtered |
+| POST | `/projects` | Create a project | any account |
+| GET | `/projects/{name}` | One project — its env vars by name, never their values | `viewer` |
+| PATCH | `/projects/{name}` | Change its settings — branch, previews, build, env vars, runtime | `admin` |
+| DELETE | `/projects/{name}` | Delete it, and everything derived from it | `admin` |
+| GET | `/projects/{name}/builds` | That project's builds, newest first | `viewer` |
+| POST | `/projects/{name}/builds` | Build a commit — a rebuild | `developer` |
+| GET | `/projects/{name}/releases` | That project's releases, newest first | `viewer` |
+| GET | `/projects/{name}/environments` | That project's environments | `viewer` |
+| GET | `/builds` | Every build. `?project=` filters | any account — filtered |
+| GET | `/builds/{name}` | One build | `viewer` |
+| POST | `/builds/{name}/cancel` | Stop it — the Build stays, phase `Cancelled` | `developer` |
+| GET | `/builds/{name}/logs` | That build's output | `viewer` |
+| GET | `/builds/{name}/attestations` | The signed evidence attached to that build's artifact | `viewer` |
+| GET | `/releases` | Every release. `?project=` filters | any account — filtered |
+| GET | `/releases/{name}` | One release | `viewer` |
+| GET | `/environments` | Every environment. `?project=` filters | any account — filtered |
+| GET | `/environments/{name}` | One environment | `viewer` |
+| PATCH | `/environments/{name}` | Move it to another release — promotion and rollback | `developer` |
+| DELETE | `/environments/{name}` | Tear down a stuck preview. Previews only | `developer` |
+| GET | `/environments/{name}/logs` | That environment's runtime logs | `viewer` |
+| GET | `/environments/{name}/workload` | What it is running: replicas, restarts, uptime, resources, pods | `viewer` |
+| GET | `/environments/{name}/metrics` | What it *has been* running: CPU, memory, replicas and restarts over a window | `viewer` |
+| GET | `/environments/{name}/requests/summary` | The golden-signal header: traffic, error rate and latency over a window | `viewer` |
+| GET | `/environments/{name}/requests/series` | The same signals over time — the charts | `viewer` |
+| GET | `/environments/{name}/requests/routes` | One row per route template, sortable — the per-path breakdown | `viewer` |
+| GET | `/environments/{name}/requests` | The requests themselves, newest first. Filterable, and live-tails like logs | `viewer` |
+| GET | `/environments/{name}/diagnostics` | The crash report: everything about the last abnormal termination, assembled | `viewer` |
+| GET | `/environments/{name}/signals` | What is wrong with it right now — the diagnostics strip | `viewer` |
+| GET | `/environments/{name}/objects` | The Kubernetes objects the operator materialized for it | `operator` |
+| GET | `/logs` | The whole logs table, filtered by a query. `?q=`, `?where=` | any account — filtered |
+| GET | `/logs/histogram` | The same selection counted over time — the shape of the window | any account — filtered |
+| GET | `/logs/facets` | The same selection's distinct values per field, with counts | any account — filtered |
+| GET | `/logs/patterns` | The same selection's messages collapsed into templates | any account — filtered |
+| GET | `/logs/saved` | Saved queries — selections someone kept under a name | any account — filtered |
+| POST | `/logs/saved` | Keep the current selection under a name | any account |
+| DELETE | `/logs/saved/{name}` | Forget one | any account — filtered |
+| GET | `/events` | The platform's recent activity, newest first. `?project=` and `?limit=` filter | any account — filtered |
+| GET | `/audit` | The tamper-evident log of state transitions. `?kind=`, `?name=`, `?project=`, `?actor=`, `?since=`, `?until=`, `?limit=` | any account — filtered |
+| GET | `/audit/verify` | Re-derive the chain's hashes over a run and report every break. `?from=`, `?limit=` | `operator` |
+| GET | `/compliance` | What the platform is producing: whether the audit log is recording, and the key artifacts are signed under | `operator` |
+| GET | `/metrics/overview` | The dashboard's numbers, pre-aggregated. `?project=` narrows | any account — filtered |
+| GET | `/traffic` | The service map: aggregated flow edges. `?project=`, `?since=`, `?until=` | any account — filtered |
+| GET | `/traces` | Traces in a window. `?project=`, `?environment=`, `?service=`, `?errors=1`, `?minDuration=` | any account — filtered |
+| GET | `/traces/{traceId}` | One trace's spans, oldest first — the waterfall | any account — filtered |
+| GET | `/me` | Who the caller is: subject, address, name and platform role | any account |
+| GET | `/status` | The platform as it is running: cluster, tunnel, build queue, components | any account — body varies |
+| GET | `/platform/signals` | Every finding firing anywhere on the platform, worst first — the problems list | `operator` |
+| GET | `/platform/nodes` | Per node: conditions, pods, and when its collector last shipped anything | `operator` |
+| GET | `/platform/workloads` | Every workload and pod on the platform — and the workloads with no pods at all | `operator` |
+| GET | `/platform/edge` | Cross-project traffic, the Gateway, the tunnel and the certificates | `operator` |
+| GET | `/platform/storage` | Volumes and what mounts them, plus the telemetry store's own health | `operator` |
+| GET | `/platform/events` | The cluster's Warning history, faceted. `?reason=`, `?kind=`, `?node=`, `?search=` | `operator` |
+| GET | `/platform/ingest` | Collector presence and freshness, and what the flow follower lost | `operator` |
+| GET | `/settings` | The platform's settings — the `Kitchen` singleton | `operator` |
+| PATCH | `/settings` | Change the build and telemetry defaults | `operator` |
+| GET | `/updates` | The platform's own version, what it can upgrade to, and every upgrade it has attempted | `operator` |
+| POST | `/updates` | Upgrade the platform | `operator` |
+| GET | `/updates/{name}` | One upgrade | `operator` |
+| GET | `/connections` | Every connection (never their credentials) | `operator` |
+| POST | `/connections` | Create one — the credential goes in, and never comes back out | `operator` |
+| POST | `/connections/test` | Try a credential against its provider, storing nothing | `operator` |
+| GET | `/connections/{name}` | One connection | `operator` |
+| PATCH | `/connections/{name}` | Rotate the credential, change the config, or both | `operator` |
+| DELETE | `/connections/{name}` | Delete it, unless something still uses it | `operator` |
+| GET | `/domains` | Every custom domain. `?environment=` filters | any account — filtered |
+| POST | `/domains` | Attach one — the response carries the DNS record to create | `developer` |
+| GET | `/domains/{name}` | One domain, verification instructions included | `viewer` |
+| DELETE | `/domains/{name}` | Detach it; the operator removes its certificate | `developer` |
+| GET | `/claims` | Every resource claim. `?project=` filters | any account — filtered |
+| POST | `/claims` | Ask a database-capable connection to provision one | `developer` |
+| GET | `/claims/{name}` | One claim | `viewer` |
+| DELETE | `/claims/{name}` | Delete it — what happens to the data is its `deletionPolicy`'s call | `developer` |
 
 ### Creating a claim
 
@@ -191,6 +248,36 @@ already in use is a `409`.
 Answers `201` with the new project. The operator takes it from there:
 namespace, webhook, and — once the first build of the production branch
 lands — the production environment.
+
+**Creating a project is self-service, and the account that creates one becomes
+its `admin`** — written into `spec.access` on the new Project, not implied, so
+that `kubectl get project -o yaml` and a git diff both tell the whole truth
+about who may do what with it.
+
+### Who the caller is, and what they may do
+
+`GET /me` is the caller described to themselves, and nothing about anybody
+else — which is why any valid token may ask for it:
+
+```json
+{"subject": "user_01H8X…", "email": "anna@example.com", "name": "Anna",
+ "platformRole": "operator"}
+```
+
+The project half of the answer is not here, because a dashboard rendering a
+list of projects would have to join it back on: **every project payload carries
+the calling account's role on that project**, as `role`, in `GET /projects` and
+`GET /projects/{name}` alike.
+
+```json
+{"name": "shop", "role": "developer", "repo": "acme/shop", "…": "…"}
+```
+
+It is the role itself rather than a set of capability booleans (`canDeploy`,
+`canDelete`). The role is what the API enforces, and what a client may offer is
+derived from the same table it is enforced from — a second vocabulary would be
+a second opinion, and the two would drift. An operator reads `admin` on every
+project, including ones they are not listed on.
 
 ### Changing a project's settings
 
@@ -780,6 +867,12 @@ reconciler did, so the objects are deliberately *not* translated into the API's
 own vocabulary: whoever opens this wants the manifest, and a summary would send
 them to a terminal anyway.
 
+**It is `operator`-only, and a developer needing it is a bug.** The premise of
+the platform is that a developer never needs a Deployment; and the manifest is
+the materialized one, so a project's literal environment variables are in it.
+If somebody has to open this to answer a question, the missing thing is a
+product surface — file it, rather than widening the role.
+
 ```json
 {"environment": "shop-production", "namespace": "kitchen-shop", "objects": [
   {"kind": "Deployment", "apiVersion": "apps/v1", "name": "shop-production",
@@ -812,6 +905,23 @@ question — the dashboard's status bar:
    "available": 0, "desired": 3, "message": "0 of 3 pods available: …"}]}
 ```
 
+**It is the one payload that varies by role**, and that is deliberate: it is
+the home page for both of the platform's people, so a second endpoint would
+have doubled the surface for one body. `cluster.name` and `builds` are
+everybody's — "why is my build waiting" is a developer's question. `tunnel`,
+`gateway`, `components` and the node counts are the operator's, and a member
+gets this instead:
+
+```json
+{"cluster": {"name": "chef"},
+ "builds": {"running": 1, "capacity": 2, "queued": 0}}
+```
+
+**Withheld means absent, never zeroed.** `tunnel === undefined` is "you are not
+allowed to know" and `{"enabled": false}` is "no tunnel is configured"; an
+empty `components` would read as a healthy platform running nothing, so it is
+not sent at all.
+
 `cluster.name` is `spec.clusterName` on the `Kitchen` singleton, falling back
 to the first label of the base domain — Kitchen owns the cluster it is
 installed into, so naming it names the installation. `builds` is what the build
@@ -837,12 +947,10 @@ the platform seen across every project, which is a different question and —
 one day — a differently authorized one.
 
 **Everything platform-scoped lives under this prefix, and nothing
-project-scoped does.** Today the API authenticates every request and authorizes
-none of them (an open item in [AUTH.md](AUTH.md)), so the prefix enforces
-nothing yet. It is drawn now because the enforcement it is designed for is a
-middleware over a path prefix rather than an audit of every handler — which is
-also why a platform-wide question never appears as a query parameter on a
-project-scoped endpoint, however convenient that would be.
+project-scoped does.** That is what makes the whole prefix one row of the
+enforcement table: every `/platform/*` route requires `operator`, and a
+platform-wide question never appears as a query parameter on a project-scoped
+endpoint, however convenient that would be.
 
 None of these adds a watch. They read the cluster through the same uncached
 reader the introspection endpoints use and the store through the same client
@@ -1364,8 +1472,12 @@ else, because they are what the table is ordered by.
 
 It reaches ClickHouse as query text, which is the point — and why it runs pinned
 read-only (`readonly=2`: no writes, no DDL) under an execution cap, as the
-operator's own database user. What that user can read is the telemetry database;
-per-caller scoping arrives with scopes and RBAC ([open item](#open)).
+operator's own database user. What that user can read is the whole telemetry
+database, so a cross-project read is narrowed by the API before it runs: a
+caller who is not an operator has `project IN (…their own…)` composed onto
+their selection with `AND`, which is why a `where` cannot reach another
+project's lines — and why the narrowing goes into the query rather than over
+the answer, so a page is a page of the caller's own lines.
 
 A query either side refuses — a bracket that never closes, an unknown column —
 answers `400` carrying the diagnostic that says how to fix it: Kitchen's parser
@@ -1646,6 +1758,14 @@ query is compiled before it is stored, because a saved query that cannot be
 run is found later, by someone who did not write it, at the moment they needed
 an answer.
 
+Saved queries are shared by everyone on the platform, but **a query that names
+a project the reader cannot see is not listed to them, and deleting it answers
+the same `404` as a name nobody ever saved** — a refusal that differed would
+confirm the existence of the project the query names. The check errs towards
+hiding: a query mentioning such a name anywhere in its selection, title or
+description is withheld, and its results would have been narrowed to nothing
+for that reader anyway.
+
 ## Status codes
 
 | Code | When |
@@ -1655,7 +1775,7 @@ an answer.
 | `204` | Deleted, nothing left to describe |
 | `400` | The request cannot be carried out as written |
 | `401` | No valid token — including when the platform has no identity provider |
-| `403` | The operator's own service account may not do this |
+| `403` | Your account may not do this — the message names the role it wanted. Also the operator's own service account being refused by the cluster |
 | `404` | No such object, or no such endpoint |
 | `409` | Someone else changed the object first, it already exists, it already finished, or something still uses it |
 | `503` | A capability this endpoint needs is not installed |
@@ -1673,7 +1793,9 @@ an answer.
 | Introspection shapes | Kubernetes' own vocabulary — replicas, restarts, manifests | The exception that proves the rule above: these endpoints exist to explain the platform's machinery, and a reader comparing them against `kubectl` should not have to translate |
 | Empty request surfaces | `edge.routed` beside the numbers, on every request answer | "Nothing reaches this environment through the edge" and "nothing was asked of it in this window" are both zeroes and different sentences; four empty charts would describe the platform rather than the application |
 | The crash report | One endpoint that joins five sources, all-or-nothing | Troubleshooting should be reading rather than hunting, and a section that failed silently would be read as evidence that nothing happened |
-| Operator screens | Their own `/platform/` prefix, never a parameter on a project-scoped endpoint | Authorization is not enforced yet; when it is, an operator-only surface separable by path is a middleware rather than a redesign |
+| Operator screens | Their own `/platform/` prefix, never a parameter on a project-scoped endpoint | An operator-only surface separable by path is one row of the enforcement table rather than an audit of every handler |
+| Authorization | One table every route is registered from, in `internal/api/policy.go` | A route cannot be added without a requirement, and the dashboard's copy of the rules is generated from it rather than written twice |
+| Roles on the wire | The role itself on each project payload, not capability booleans | What a client may offer is derived from the same table the API enforces; a second vocabulary would be a second opinion, and they would drift |
 | Signals | Evaluated when a screen asks, and answered with what could *not* be read | Findings are ephemeral until a background loop records them, and an empty problems list is the strongest claim the platform makes — it may only be made about inputs that were actually read |
 | Pods and nodes | Read uncached, straight from the API server | Serving them from the manager's cache would mean an informer over every pod in the cluster, kept warm for a question only an open dashboard asks |
 | The dashboard | Served by the same process, outside `/api/` | The SPA is public, stateless files plus `/config.json` (issuer, client id, audience — the same values every login redirect shows); everything with state stays behind the token check |
@@ -1683,10 +1805,11 @@ an answer.
 
 ## Open
 
-- **Scopes and RBAC.** Tokens carry their scopes and the API records who asked
-  for what, but nothing is enforced beyond "the issuer vouches for you". Teams
-  and per-organisation roles land with the organizations plugin, and the token
-  shape follows them. `/platform/*` is drawn to be the first thing that
-  enforcement applies to, and is not authorized today.
+- **Teams.** Access is per account, on the object it is about: a role for every
+  member of a team is that many entries. Per-organisation roles would land with
+  the identity provider's organizations plugin — and would widen the contract
+  this API rests on, so they wait until somebody asks. Nothing about the token
+  changes either way: it says who the caller is, and Kitchen says what they may
+  do (see [Authorization](#authorization)).
 - **Paging.** Collections answer in full. `{"items": …}` is an object rather
   than a bare array so a cursor can be added without breaking clients.

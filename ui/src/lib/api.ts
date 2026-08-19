@@ -42,6 +42,13 @@ export interface EnvVarWrite {
 
 export interface Project {
   name: string;
+  /** The calling account's role on this project: "admin", "developer" or
+   * "viewer". It arrives with every project rather than as a list to join
+   * against, because the overview renders a list of them — and it is the role
+   * itself rather than a set of capability booleans, so what the dashboard
+   * offers is derived from the same table the API enforces. An operator reads
+   * "admin" on every project, including ones they are not listed on. */
+  role: string;
   repo: string;
   connection: string;
   registry: string;
@@ -308,10 +315,17 @@ export interface ComponentStatus {
   message?: string;
 }
 
-/** The platform as it is running (GET /status) — the status bar's request. */
+/** The platform as it is running (GET /status) — the status bar's request.
+ *
+ * It is the one payload that varies by role. The cluster's name and the build
+ * queue are everybody's ("why is my build waiting" is a developer's question);
+ * the tunnel, the gateway, the component survey and the node counts are the
+ * operator's, and they are **absent** for a member rather than zeroed — so
+ * `tunnel === undefined` means "you are not allowed to know" and
+ * `tunnel.enabled === false` means "no tunnel is configured". */
 export interface PlatformStatus {
-  cluster: { name?: string; nodes: number; readyNodes: number; message?: string };
-  tunnel: { enabled: boolean; connected: boolean; message?: string };
+  cluster: { name?: string; nodes?: number; readyNodes?: number; message?: string };
+  tunnel?: { enabled: boolean; connected: boolean; message?: string };
   builds: {
     running: number;
     capacity: number;
@@ -321,8 +335,18 @@ export interface PlatformStatus {
     /** The queued builds themselves, longest wait first. */
     waiting?: { name: string; project: string; queuedAt: string; waitSeconds: number }[];
   };
-  gateway: { address?: string; programmed: boolean; message?: string };
+  gateway?: { address?: string; programmed: boolean; message?: string };
   components?: ComponentStatus[];
+}
+
+/** Who the caller is, as the API describes them to themselves (GET /me). It
+ * says nothing about anyone else, so any valid token may ask for it. */
+export interface Me {
+  subject: string;
+  email?: string;
+  name?: string;
+  /** "operator" or "member". */
+  platformRole: string;
 }
 
 export interface Connection {
@@ -1562,6 +1586,10 @@ function logQuery(query: LogQuery): string {
 }
 
 export const api = {
+  /** The caller, to themselves: the account behind the token and its platform
+   * role. What they may do with a *project* travels on the project. */
+  me: () => request<Me>("GET", "/me"),
+
   projects: list<Project>("/projects"),
   createProject: (project: NewProject) => request<Project>("POST", "/projects", project),
   project: (name: string) => request<Project>("GET", `/projects/${name}`),
