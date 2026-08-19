@@ -2,16 +2,30 @@ name: E2E Tests
 
 # A branch push and the pull request that carries it are the same commit, so
 # leaving `push` unfiltered ran every job here twice for every push to a branch
-# with a pull request open. `push` is narrowed to `main` for that reason: a
-# branch is covered by its pull request, and `main` is covered once, after the
-# merge.
+# with a pull request open. `push` is narrowed to `main` for that reason.
 #
-# The run on `main` is deliberate and not a duplicate of the pull request's.
-# See CONTRIBUTING.md, "What CI runs, and when".
+# The kind job below is narrowed further still, to pull requests alone: what a
+# pull request run checks out is `refs/pull/N/merge`, the branch already merged
+# into its base, and squash-merging an up-to-date branch lands that same tree on
+# `main`. The run on `main` was re-testing a tree that had just passed. The
+# workflow still triggers there, because the cheap jobs it also carries are
+# what seed the caches every pull request restores from.
+#
+# The release pull request is the exception, and the reason this is safe to do.
+# It is opened as a draft and skips the kind job for as long as it is one, then
+# runs it in full when it is marked ready — and *its* tree is exactly what gets
+# tagged and published, which makes it a truer last gate before a release than
+# `main`, which is already several merges stale by the time one is cut.
+#
+# `ready_for_review` is listed below for that reason. It is not one of the
+# default `pull_request` types, and without it marking the release pull request
+# ready would start nothing and it would merge on checks that only ever
+# reported as skipped. See CONTRIBUTING.md, "What CI runs, and when".
 on:
   push:
     branches: [main]
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
 
 # One run per branch or pull request. A pull request's older runs are
 # superseded by the push that follows them and are cancelled; `main`'s are
@@ -24,6 +38,12 @@ concurrency:
 jobs:
   test-e2e:
     name: E2E on kind
+    # Pull requests only — see the note at the top of this file. The release
+    # pull request skips it while it is a draft and runs it once marked ready.
+    if: >-
+      github.event_name == 'pull_request'
+      && !(github.event.pull_request.draft
+      && startsWith(github.head_ref, 'release-please--'))
     runs-on: ubuntu-latest
     steps:
       - name: Clone the code

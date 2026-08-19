@@ -89,12 +89,16 @@ Nobody edits a version number by hand, and nobody writes the changelog.
    `ui/package.json` and `auth/package.json` with their lockfiles. The files
    are listed in `release-please-config.json`; a new one goes there, not into a
    release checklist.
-3. Review it as a release note. Merging it is the decision to release: it
-   creates the GitHub release from the changelog entry, **as a draft**.
-4. `.github/workflows/release.yml` then calls the publish workflow, which
+3. Review it as a release note, then **mark it ready for review**. It is
+   opened as a draft, and the three kind jobs only run once it is ready — see
+   "What CI runs, and when". This is the run that checks the tree that will be
+   tagged, so wait for it.
+4. Merging it is the decision to release: it creates the GitHub release from
+   the changelog entry, **as a draft**.
+5. `.github/workflows/release.yml` then calls the publish workflow, which
    builds and pushes both images and packages and pushes the chart, all
    stamped `X.Y.Z`.
-5. Only once all three exist does its last job attach the chart to the draft,
+6. Only once all three exist does its last job attach the chart to the draft,
    append the resolved image and chart digests to the notes, and publish it.
    Publishing the draft is what creates the `vX.Y.Z` tag — GitHub holds the
    ref back for as long as a release is a draft.
@@ -187,33 +191,68 @@ push, once for the pull request. Nothing was learned the second time. A branch
 is covered by its pull request; a tag is covered by the `main` run of the
 commit it points at.
 
-The run on `main` is not a third copy of that, and it is worth its minutes:
+### The three kind jobs run once per change
 
-- **It is the last gate before a release.** `publish.yml` builds and ships; it
-  runs no tests. Nothing between a merge and a published chart re-checks the
-  tree, so if the merge result is broken, the `main` run is where that shows.
-- **A squash merge is a commit that was never tested.** What CI checked was the
-  branch; what lands is one new commit on a `main` that may have moved. Only
-  the `main` run sees the thing that actually exists.
-- **It is the only run whose caches other branches can read.** A GitHub Actions
-  cache is visible to the branch that wrote it, that branch's base, and the
-  default branch — so a cache written by one pull request is invisible to every
-  other one. `setup-go` and `setup-node` restore from `main`'s. Drop the `main`
-  runs and every pull request starts cold.
+Chart install on kind, E2E on kind and Gateway L7 flows on kind cost twelve to
+fourteen minutes each. They are gated to `pull_request` events, and skipped on
+the push to `main` that merges one, because that run was checking a tree that
+had already passed:
+
+- **A pull request already tests the merged copy.** `actions/checkout` on a
+  `pull_request` event checks out `refs/pull/N/merge` — the branch merged into
+  its base — not the branch head. Squash-merging a branch that is up to date
+  with `main` lands exactly that tree.
+- **The gap is staleness, not merging.** GitHub recomputes that merge ref when
+  the base moves but does not re-run the workflow, so a pull request green
+  against `main@A` can be merged into `main@D`. **Require branches to be up to
+  date before merging** closes that hole completely, at the cost of serialising
+  merges — every merge then invalidates every other open pull request. It is a
+  branch protection setting, not a file in this tree, and worth turning on only
+  if two pull requests actually start breaking `main` together.
+
+The workflows still trigger on `main`; only those three jobs are skipped there.
+The cheap jobs alongside them — and Tests, Lint, Dashboard and Auth service in
+full — keep running, because an Actions cache is readable by the branch that
+wrote it, that branch's base, and the default branch. `main`'s runs are the
+only ones every pull request can restore from, so dropping them would start
+every pull request cold, kind jobs included.
+
+### The release pull request is the gate, and it is a draft
+
+release-please opens its release pull request as a draft
+(`draft-pull-request` in `release-please-config.json`), and the three kind jobs
+skip a draft release pull request the same way they skip `main`. Marking it
+ready runs them in full, against the tree that will be tagged.
+
+That is a better last gate than the run on `main` ever was. `publish.yml`
+builds and ships and runs no tests, so something has to check the release; the
+release pull request's tree is byte-for-byte what gets published, while `main`
+may be several merges past whatever was last checked there. It also stops the
+release pull request from re-running everything on every merge — release-please
+force-pushes that branch each time a commit lands on `main`, which is a
+`synchronize` event, which was a third full copy of the kind jobs per merge.
+
+Releasing is therefore two steps: mark the release pull request ready, wait for
+green, merge. `ready_for_review` is in those three workflows' `types` list for
+exactly that — it is not one of the default `pull_request` event types, and
+without it marking the pull request ready would start nothing at all.
+
+### Skipped is not missing
+
+The gating is a job-level `if`, not a `paths` filter on the workflow, and the
+difference decides whether a pull request can merge. A skipped job still
+reports its check, with conclusion `skipped`, which branch protection accepts
+as passing. A workflow filtered out by `paths` never runs, so a check required
+on `main` never reports at all and the pull request waits on it forever.
+
+Anything added to the required checks under Settings → Branches has to survive
+being skipped for that reason. Path filters remain deliberately unused.
 
 Each workflow also declares a `concurrency` group keyed on the pull request
 number, or on the ref outside one. Superseded runs on a pull request are
 cancelled, since the push that replaced them is about to be checked anyway.
-Runs on `main` are never cancelled — for the three reasons above, each one has
-to finish.
-
-### Narrowing further
-
-Path filters are the next lever and are deliberately not pulled: a required
-status check that is filtered out never reports, and a pull request waiting on
-a check that will never run cannot merge. Adding `paths` to a workflow means
-first agreeing what stays required on `main` (Settings → Branches), which is a
-repository setting and not a file in this tree.
+Runs on `main` are never cancelled — they seed the caches, and each one has to
+finish to do it.
 
 ## Before you push
 
