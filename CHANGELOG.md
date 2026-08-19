@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.8.0](https://github.com/Bermos/Kitchen/compare/v0.7.0...v0.8.0) (2026-08-19)
+
+
+### Features
+
+* **api:** re-check the published versions on demand ([b3e810f](https://github.com/Bermos/Kitchen/commit/b3e810fc25b9956998b00757e8a837991d27916c))
+* **ui:** check for platform updates without waiting out the cache ([af03337](https://github.com/Bermos/Kitchen/commit/af03337962db8205d818485fcdc872736d40fffc))
+
 ## [0.7.0](https://github.com/Bermos/Kitchen/compare/v0.6.0...v0.7.0) (2026-08-19)
 
 
