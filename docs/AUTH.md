@@ -71,11 +71,14 @@ Connections.
 ## Preview protection (forward-auth)
 
 Preview URLs used to be public: anyone who guessed `shop-pr-42.apps.example.com`
-saw unreleased work. Now a preview is only useful to someone signed in to the
-platform, and the deployed application is not involved in that at all — it is
+saw unreleased work. Now a preview is only useful to someone on the project it
+belongs to, and the deployed application is not involved in that at all — it is
 not told to authenticate anything, and it never sees the platform's session.
-(Signed in is as far as the gate looks today; [Preview
-admission](#preview-admission) narrows it to the project's own people.)
+Who counts as "on the project" is [Preview admission](#preview-admission): any
+role, `viewer` included, plus the platform's operators. A signed-in visitor who
+holds none of them gets a page saying so rather than another trip through the
+identity provider, which would only sign them in again and land them back on
+the same wall.
 
 ### Why an in-path proxy and not a Gateway filter
 
@@ -152,11 +155,20 @@ Three details carry most of the design:
   be sent to every application the platform hosts, handing each of them a
   platform session — so the gate does not use one, and strips its own cookie
   before proxying anyway.
-- **The routing header is not trusted.** The Gateway sets `X-Kitchen-Upstream`
-  with a `RequestHeaderModifier` filter, which overwrites whatever the client
-  sent. The gate still checks it is an in-cluster Service address before
-  forwarding, because a proxy that forwards wherever it is told is a way out of
-  the cluster.
+- **The routing headers are not trusted.** The Gateway sets
+  `X-Kitchen-Upstream` and `X-Kitchen-Project` with one `RequestHeaderModifier`
+  filter, which overwrites whatever the client sent. The gate checks both
+  anyway. The upstream has to be an in-cluster Service address, because a proxy
+  that forwards wherever it is told is a way out of the cluster. The project
+  has to be one the route demonstrably belongs to: either the upstream sits in
+  that project's application namespace — `kitchen-<project>`, derived from the
+  name — or the hostname is one the platform generates for it,
+  `<project>-pr-<n>.<baseDomain>`. The second is what covers an environment
+  that idles to zero, where the upstream is the shared KEDA interceptor and
+  names no project at all. Neither derivation reaches an idling environment
+  behind a *custom* domain, and the gate refuses that rather than believing the
+  header; closing that gap would mean letting the gate read Domains, which is
+  more than the read-only identity it has.
 
 The application receives the request with `X-Kitchen-User` and
 `X-Kitchen-User-Email` and nothing else new. `/_kitchen/gate/*` is reserved on
@@ -202,7 +214,9 @@ Kitchen has two users, and one of them is currently pretending to be the other.
 The dashboard's operator mode changes what is *rendered*, not what is
 *permitted*: every valid token can call every route.
 
-**Nothing in this section is enforced yet.** It is the decided model, and
+**Almost nothing in this section is enforced yet** — [Preview
+admission](#preview-admission) is the exception, and the only one. It is the
+decided model, and
 [issue #100](https://github.com/Bermos/Kitchen/issues/100) tracks building it.
 It is written down before any of it is built on purpose — enforcement without a
 written model is how a permission system ends up meaning whatever the first
@@ -379,6 +393,21 @@ A protected preview admits anyone holding any role on that project, `viewer`
 included, plus operators. The gate resolves that itself, against its own cached
 client rather than by asking the REST API, so previews do not close when the API
 restarts and the membership rule has exactly one implementation.
+
+**This is the one part of this section that is built.** The gate runs as its own
+ServiceAccount, bound to a role with `get`, `list` and `watch` on `projects` and
+`kitchens` and nothing else, and reads both through an informer — an admission
+decision is a map lookup, since the gate is in the request path of every
+protected preview. Nothing in that path can reach the REST API at all: the one
+thing it holds is a `previewgate.Directory` over the cache, so "the gate never
+asks the API" is a property of what it was handed rather than a rule somebody
+has to keep remembering.
+
+It fails closed. A gate that cannot read the platform — no cache, an informer
+that has not synced, a ServiceAccount somebody narrowed — refuses every
+protected preview and says the platform cannot check membership right now.
+Guessing the other way would publish every unreleased preview on the platform
+at the moment nobody is watching.
 
 ### Bootstrap, and what happens on upgrade
 

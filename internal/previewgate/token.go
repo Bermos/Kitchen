@@ -57,6 +57,11 @@ type claims struct {
 	// Subject and Email identify the signed-in platform user.
 	Subject string `json:"s,omitempty"`
 	Email   string `json:"e,omitempty"`
+	// EmailVerified is the issuer's `email_verified`, carried alongside the
+	// address because a membership grant that names an address is honoured
+	// only for a verified one — see internal/access. Carrying the address
+	// without it would let the gate honour a grant internal/access would not.
+	EmailVerified bool `json:"ev,omitempty"`
 	// ReturnURL is where a login should resume.
 	ReturnURL string `json:"r,omitempty"`
 	// Nonce ties an authorization response to the flow that started it.

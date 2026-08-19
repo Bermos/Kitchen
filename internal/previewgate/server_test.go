@@ -17,6 +17,7 @@ limitations under the License.
 package previewgate
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -28,6 +29,10 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+
+	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 )
 
 const (
@@ -47,15 +52,18 @@ type fakeIssuer struct {
 	lastAuthorize url.Values
 	// lastExchange is the form the gate posted to the token endpoint.
 	lastExchange url.Values
-	// subject and email are what the ID token says.
+	// subject and email are what the ID token says, and emailVerified is
+	// whether the issuer says it has checked the address — which is what
+	// decides whether a grant naming that address counts.
 	subject, email string
+	emailVerified  bool
 	// audience overrides the ID token's audience.
 	audience string
 }
 
 func newFakeIssuer(t *testing.T) *fakeIssuer {
 	t.Helper()
-	issuer := &fakeIssuer{subject: "user-1", email: "dev@example.com"}
+	issuer := &fakeIssuer{subject: "user-1", email: "dev@example.com", emailVerified: true}
 	mux := http.NewServeMux()
 	issuer.Server = httptest.NewServer(mux)
 
@@ -89,11 +97,12 @@ func newFakeIssuer(t *testing.T) *fakeIssuer {
 			"access_token": "at",
 			"token_type":   "Bearer",
 			"id_token": idToken(map[string]any{
-				"iss":   issuer.URL,
-				"aud":   audience,
-				"sub":   issuer.subject,
-				"email": issuer.email,
-				"exp":   time.Now().Add(time.Hour).Unix(),
+				"iss":            issuer.URL,
+				"aud":            audience,
+				"sub":            issuer.subject,
+				"email":          issuer.email,
+				"email_verified": issuer.emailVerified,
+				"exp":            time.Now().Add(time.Hour).Unix(),
 			}),
 		})
 	})
@@ -131,7 +140,11 @@ func newTestGate(t *testing.T, issuer *fakeIssuer, app *upstream) *Server {
 		CookieSecret: testSecret,
 		CookieSecure: false,
 		SessionTTL:   time.Hour,
-	}, issuer.Client(), logr.Discard())
+		// The fake issuer's subject holds a role on the test project, so
+		// every test that is not about admission gets past it.
+	}, issuer.Client(), newDirectory([]kitchenv1alpha1.AccessGrant{
+		grant(issuer.subject, kitchenv1alpha1.AccessRoleDeveloper),
+	}), logr.Discard())
 	if app != nil {
 		gate.proxy.Transport = clusterDNS{host: strings.TrimPrefix(app.URL, "http://")}
 	}
@@ -167,12 +180,14 @@ func newUpstream(t *testing.T) *upstream {
 }
 
 // request builds a request as the Gateway would deliver it: the visitor's
-// hostname, and the application's address in the upstream header.
+// hostname, the application's address in the upstream header, and the project
+// it belongs to in the other.
 func request(method, host, target string, app *upstream) *http.Request {
 	r := httptest.NewRequest(method, target, nil)
 	r.Host = host
 	if app != nil {
 		r.Header.Set(UpstreamHeader, testUpstream)
+		r.Header.Set(ProjectHeader, testProject)
 	}
 	return r
 }
@@ -606,4 +621,306 @@ func cookieNamed(t *testing.T, res *httptest.ResponseRecorder, name string) *htt
 	}
 	t.Fatalf("no %s cookie was set", name)
 	return nil
+}
+
+// --- Admission ---------------------------------------------------------
+//
+// Being signed in is not the same as being allowed in. Everything below is
+// about the second half: a protected preview belongs to a project, and only
+// that project's people — plus the platform's operators — may open it.
+
+const (
+	testProject  = "shop"
+	testBaseHost = "apps.example.com"
+)
+
+// testDirectory is the gate's view of the platform, without a cluster behind
+// it. Nothing here can reach the REST API, which is the point: the gate's
+// admission path is not allowed to depend on it.
+type testDirectory struct {
+	kitchen  *kitchenv1alpha1.Kitchen
+	projects map[string]*kitchenv1alpha1.Project
+	// err is what a directory that cannot read the platform answers with,
+	// which is the fail-closed path.
+	err error
+}
+
+func (d *testDirectory) Kitchen(context.Context) (*kitchenv1alpha1.Kitchen, error) {
+	if d.err != nil {
+		return nil, d.err
+	}
+	return d.kitchen, nil
+}
+
+func (d *testDirectory) Project(_ context.Context, name string) (*kitchenv1alpha1.Project, error) {
+	if d.err != nil {
+		return nil, d.err
+	}
+	project, ok := d.projects[name]
+	if !ok {
+		return nil, apierrors.NewNotFound(
+			schema.GroupResource{Group: "kitchen.bermos.dev", Resource: "projects"}, name)
+	}
+	return project, nil
+}
+
+// newDirectory is a platform where testProject exists and grants the given
+// roles, and where operators is the Kitchen's operator list.
+func newDirectory(grants []kitchenv1alpha1.AccessGrant, operators ...string) *testDirectory {
+	kitchen := &kitchenv1alpha1.Kitchen{}
+	kitchen.Spec.BaseDomain = testBaseHost
+	for _, subject := range operators {
+		kitchen.Spec.Access.Operators = append(kitchen.Spec.Access.Operators,
+			kitchenv1alpha1.AccessSubject{Subject: subject})
+	}
+	project := &kitchenv1alpha1.Project{}
+	project.Name = testProject
+	project.Spec.Access = grants
+	return &testDirectory{
+		kitchen:  kitchen,
+		projects: map[string]*kitchenv1alpha1.Project{testProject: project},
+	}
+}
+
+// grant is one entry in a Project's spec.access.
+func grant(subject string, role kitchenv1alpha1.AccessRole) kitchenv1alpha1.AccessGrant {
+	return kitchenv1alpha1.AccessGrant{
+		AccessSubject: kitchenv1alpha1.AccessSubject{Subject: subject},
+		Role:          role,
+	}
+}
+
+// openPreview signs a visitor in and returns what the application saw, or the
+// recorder if it never got there.
+func openPreview(t *testing.T, directory Directory) (*httptest.ResponseRecorder, *upstream) {
+	t.Helper()
+	issuer := newFakeIssuer(t)
+	app := newUpstream(t)
+	gate := newTestGate(t, issuer, app)
+	gate.directory = directory
+
+	session := signIn(t, gate, issuer, app, "/")
+	app.lastRequest = nil
+
+	res := httptest.NewRecorder()
+	r := request(http.MethodGet, testPreviewHost, "/orders", app)
+	r.AddCookie(session)
+	gate.ServeHTTP(res, r)
+	return res, app
+}
+
+// TestMembersOfTheProjectAreAdmitted is the rule itself: any role is enough,
+// viewer included — that is the person a preview link gets pasted to.
+func TestMembersOfTheProjectAreAdmitted(t *testing.T) {
+	for _, role := range []kitchenv1alpha1.AccessRole{
+		kitchenv1alpha1.AccessRoleViewer,
+		kitchenv1alpha1.AccessRoleDeveloper,
+		kitchenv1alpha1.AccessRoleAdmin,
+	} {
+		t.Run(string(role), func(t *testing.T) {
+			res, app := openPreview(t, newDirectory([]kitchenv1alpha1.AccessGrant{
+				grant("user-1", role),
+			}))
+			if res.Code != http.StatusOK {
+				t.Fatalf("a %s was refused with %d: %s", role, res.Code, res.Body.String())
+			}
+			if app.lastRequest == nil {
+				t.Fatalf("a %s never reached the application", role)
+			}
+		})
+	}
+}
+
+// TestOperatorsAreAdmittedWithoutAGrant: an operator holds admin on every
+// project, present and future, so a preview of a project they have never been
+// added to still opens.
+func TestOperatorsAreAdmittedWithoutAGrant(t *testing.T) {
+	res, app := openPreview(t, newDirectory(nil, "user-1"))
+	if res.Code != http.StatusOK {
+		t.Fatalf("an operator was refused with %d: %s", res.Code, res.Body.String())
+	}
+	if app.lastRequest == nil {
+		t.Fatal("an operator never reached the application")
+	}
+}
+
+// TestVerifiedAddressCarriesAGrant: a grant may name an address instead of a
+// `sub`, and it is honoured only for an address the issuer says it checked.
+func TestVerifiedAddressCarriesAGrant(t *testing.T) {
+	for name, verified := range map[string]bool{"verified": true, "unverified": false} {
+		t.Run(name, func(t *testing.T) {
+			issuer := newFakeIssuer(t)
+			issuer.emailVerified = verified
+			app := newUpstream(t)
+			gate := newTestGate(t, issuer, app)
+			gate.directory = newDirectory([]kitchenv1alpha1.AccessGrant{
+				grant("dev@example.com", kitchenv1alpha1.AccessRoleViewer),
+			})
+
+			session := signIn(t, gate, issuer, app, "/")
+			app.lastRequest = nil
+			res := httptest.NewRecorder()
+			r := request(http.MethodGet, testPreviewHost, "/", app)
+			r.AddCookie(session)
+			gate.ServeHTTP(res, r)
+
+			if verified && res.Code != http.StatusOK {
+				t.Fatalf("a verified address was refused with %d", res.Code)
+			}
+			if !verified && res.Code != http.StatusForbidden {
+				t.Fatalf("an unverified address was admitted with %d", res.Code)
+			}
+		})
+	}
+}
+
+// TestSignedInNonMemberIsToldWhy is the other half of the acceptance
+// criterion: no redirect, because a redirect signs them in again and lands
+// them back on this wall.
+func TestSignedInNonMemberIsToldWhy(t *testing.T) {
+	res, app := openPreview(t, newDirectory([]kitchenv1alpha1.AccessGrant{
+		grant("somebody-else", kitchenv1alpha1.AccessRoleAdmin),
+	}))
+
+	if res.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", res.Code, res.Body.String())
+	}
+	if app.lastRequest != nil {
+		t.Fatal("a non-member reached the application")
+	}
+	if location := res.Header().Get("location"); location != "" {
+		t.Fatalf("the refusal redirects to %s, which loops back to this page", location)
+	}
+	body := res.Body.String()
+	for _, want := range []string{"signed in", "dev@example.com", testProject, "Ask an admin", SignOutPath} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("the refusal does not mention %q: %s", want, body)
+		}
+	}
+}
+
+// TestForgedProjectHeaderIsRefused: the header is set by the Gateway and
+// cannot be forged from outside, and is checked anyway.
+func TestForgedProjectHeaderIsRefused(t *testing.T) {
+	issuer := newFakeIssuer(t)
+	app := newUpstream(t)
+	gate := newTestGate(t, issuer, app)
+
+	// The visitor is an admin of their own project, and points its name at
+	// somebody else's application.
+	directory := newDirectory([]kitchenv1alpha1.AccessGrant{
+		grant("user-1", kitchenv1alpha1.AccessRoleAdmin),
+	})
+	mine := &kitchenv1alpha1.Project{}
+	mine.Name = "mine"
+	mine.Spec.Access = []kitchenv1alpha1.AccessGrant{grant("user-1", kitchenv1alpha1.AccessRoleAdmin)}
+	directory.projects["mine"] = mine
+	gate.directory = directory
+
+	session := signIn(t, gate, issuer, app, "/")
+
+	for name, header := range map[string]string{
+		"another project": "mine",
+		"no such project": "invented",
+		"nothing at all":  "",
+		"not even a name": "../../etc/passwd",
+	} {
+		t.Run(name, func(t *testing.T) {
+			app.lastRequest = nil
+			res := httptest.NewRecorder()
+			r := httptest.NewRequest(http.MethodGet, "/", nil)
+			r.Host = testPreviewHost
+			r.Header.Set(UpstreamHeader, testUpstream)
+			if header != "" {
+				r.Header.Set(ProjectHeader, header)
+			}
+			r.AddCookie(session)
+			gate.ServeHTTP(res, r)
+
+			if res.Code != http.StatusBadGateway {
+				t.Fatalf("expected the route to be refused, got %d: %s", res.Code, res.Body.String())
+			}
+			if app.lastRequest != nil {
+				t.Fatal("the request was proxied to somebody else's application")
+			}
+		})
+	}
+}
+
+// TestIdlingPreviewIsStillCheckable: an idling environment is forwarded to the
+// KEDA interceptor, which is in nobody's application namespace, so the
+// hostname is what ties the request to its project.
+func TestIdlingPreviewIsStillCheckable(t *testing.T) {
+	issuer := newFakeIssuer(t)
+	app := newUpstream(t)
+	gate := newTestGate(t, issuer, app)
+	gate.directory = newDirectory([]kitchenv1alpha1.AccessGrant{
+		grant("user-1", kitchenv1alpha1.AccessRoleViewer),
+	})
+
+	session := signIn(t, gate, issuer, app, "/")
+	app.lastRequest = nil
+
+	res := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Host = testPreviewHost
+	r.Header.Set(UpstreamHeader, "keda-add-ons-http-interceptor-proxy.keda.svc.cluster.local:8080")
+	r.Header.Set(ProjectHeader, testProject)
+	r.AddCookie(session)
+	gate.ServeHTTP(res, r)
+
+	if res.Code != http.StatusOK {
+		t.Fatalf("a member of an idling preview was refused with %d: %s", res.Code, res.Body.String())
+	}
+	if app.lastRequest == nil {
+		t.Fatal("the request never reached the interceptor")
+	}
+}
+
+// TestUnreadablePlatformFailsClosed: a gate that cannot check membership
+// refuses, and says so. Admitting everyone would publish every unreleased
+// preview at exactly the moment nobody is watching.
+func TestUnreadablePlatformFailsClosed(t *testing.T) {
+	unreadable := newDirectory([]kitchenv1alpha1.AccessGrant{
+		grant("user-1", kitchenv1alpha1.AccessRoleAdmin),
+	})
+	unreadable.err = fmt.Errorf("the cache has not synced")
+
+	res, app := openPreview(t, unreadable)
+	if res.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d: %s", res.Code, res.Body.String())
+	}
+	if app.lastRequest != nil {
+		t.Fatal("an unreadable platform admitted somebody")
+	}
+	if !strings.Contains(res.Body.String(), "cannot check") {
+		t.Fatalf("the refusal does not say what is wrong: %s", res.Body.String())
+	}
+}
+
+// TestGateWithoutADirectoryAdmitsNobody is the same guarantee one level up:
+// a gate built without a way to read the platform cannot be talked into
+// forwarding, whatever the headers say.
+func TestGateWithoutADirectoryAdmitsNobody(t *testing.T) {
+	res, app := openPreview(t, nil)
+	if res.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d: %s", res.Code, res.Body.String())
+	}
+	if app.lastRequest != nil {
+		t.Fatal("a gate with no directory proxied a request")
+	}
+}
+
+// TestApplicationNeverSeesTheProjectHeader: the routing headers are the
+// platform's, and the application is outside its trust boundary.
+func TestApplicationNeverSeesTheProjectHeader(t *testing.T) {
+	_, app := openPreview(t, newDirectory([]kitchenv1alpha1.AccessGrant{
+		grant("user-1", kitchenv1alpha1.AccessRoleViewer),
+	}))
+	if app.lastRequest == nil {
+		t.Fatal("the application was never reached")
+	}
+	if got := app.lastRequest.Header.Get(ProjectHeader); got != "" {
+		t.Fatalf("the project header reached the application: %q", got)
+	}
 }

@@ -1,0 +1,67 @@
+{{- include "kitchen.validate" . -}}
+{{- if (include "kitchen.previewGateEnabled" .) }}
+# The identity the forward-auth gate reads the platform as.
+#
+# A protected preview admits the project's own people — any role, viewer
+# included — and the platform's operators. The gate resolves that itself,
+# against a cache of Projects and the Kitchen singleton, rather than by asking
+# the REST API: previews should not close while the API is restarting, and the
+# membership rule then has exactly one implementation (internal/access) instead
+# of two that agree until they do not.
+#
+# So the gate needs to read two kinds, and it is given exactly those two, with
+# exactly the three verbs an informer uses. It writes nothing anywhere, and it
+# cannot read a Secret — including its own, which reaches it as environment
+# variables the operator wrote.
+#
+# The gate's Deployment is the operator's (it cannot start before an OAuth
+# client is registered), so the account is created here and its name handed to
+# the operator on the manager's command line.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "kitchen.previewGateServiceAccountName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kitchen.labels" . | nindent 4 }}
+    app.kubernetes.io/component: preview-gate
+{{- if .Values.rbac.create }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "kitchen.fullname" . }}-preview-gate
+  labels:
+    {{- include "kitchen.labels" . | nindent 4 }}
+    app.kubernetes.io/component: preview-gate
+rules:
+  # Kitchen is cluster-scoped, so this cannot be a namespaced Role. The gate's
+  # own cache is scoped to the release namespace for Projects regardless, which
+  # is where every Kitchen custom resource lives.
+  - apiGroups:
+      - kitchen.bermos.dev
+    resources:
+      - kitchens
+      - projects
+    verbs:
+      - get
+      - list
+      - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "kitchen.fullname" . }}-preview-gate
+  labels:
+    {{- include "kitchen.labels" . | nindent 4 }}
+    app.kubernetes.io/component: preview-gate
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "kitchen.fullname" . }}-preview-gate
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "kitchen.previewGateServiceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
+{{- end }}

@@ -344,10 +344,19 @@ var _ = Describe("Scale to zero", func() {
 
 		By("but telling it to forward to the interceptor, which would otherwise " +
 			"reach a Service with no endpoints")
-		Expect(rule.Filters[0].RequestHeaderModifier.Set).To(ConsistOf(gatewayv1.HTTPHeader{
-			Name:  previewgate.UpstreamHeader,
-			Value: interceptorService + "." + PlatformNamespace + ".svc.cluster.local:8080",
-		}))
+		Expect(rule.Filters[0].RequestHeaderModifier.Set).To(ConsistOf(
+			gatewayv1.HTTPHeader{
+				Name:  previewgate.UpstreamHeader,
+				Value: interceptorService + "." + PlatformNamespace + ".svc.cluster.local:8080",
+			},
+			// The interceptor is in nobody's application namespace, so the
+			// project header is the only thing left tying the request to a
+			// project — and the gate falls back to the hostname to check it.
+			gatewayv1.HTTPHeader{
+				Name:  previewgate.ProjectHeader,
+				Value: projectName,
+			},
+		))
 		Expect(scaledObject()).NotTo(BeNil())
 	})
 

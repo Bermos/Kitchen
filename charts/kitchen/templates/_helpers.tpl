@@ -64,6 +64,16 @@ than an extra rule on the account everything else already runs as.
 {{- end }}
 
 {{/*
+The preview gate's ServiceAccount. Separate from the manager's for the same
+reason the self-update account is: it is the identity of a different workload,
+and the whole point of it is that the grant is small and visible — get, list
+and watch on projects and kitchens, and nothing else at all.
+*/}}
+{{- define "kitchen.previewGateServiceAccountName" -}}
+{{- printf "%s-preview-gate" (include "kitchen.fullname" .) }}
+{{- end }}
+
+{{/*
 Container image reference, digest taking precedence over tag.
 */}}
 {{- define "kitchen.image" -}}

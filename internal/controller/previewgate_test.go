@@ -85,6 +85,11 @@ func newFakeIssuer() *fakeIssuer {
 	return issuer
 }
 
+// gateServiceAccount is what the chart calls the gate's ServiceAccount. The
+// name is release-name prefixed in a real install, which is exactly why the
+// operator is told it rather than deriving it.
+const gateServiceAccount = "kitchen-preview-gate-sa"
+
 var _ = Describe("Preview gate", func() {
 	Context("When the platform runs one", func() {
 		ctx := context.Background()
@@ -104,9 +109,10 @@ var _ = Describe("Preview gate", func() {
 		BeforeEach(func() {
 			issuer = newFakeIssuer()
 			reconciler = &KitchenReconciler{
-				Client:           k8sClient,
-				Scheme:           k8sClient.Scheme(),
-				PreviewGateImage: "ghcr.io/bermos/kitchen:test",
+				Client:                    k8sClient,
+				Scheme:                    k8sClient.Scheme(),
+				PreviewGateImage:          "ghcr.io/bermos/kitchen:test",
+				PreviewGateServiceAccount: gateServiceAccount,
 			}
 
 			// The reconciler creates the platform namespace, but the identity
@@ -190,6 +196,18 @@ var _ = Describe("Preview gate", func() {
 				Name: "KITCHEN_GATE_COOKIE_SECURE", Value: "true"}))
 			Expect(container.Env).To(ContainElement(corev1.EnvVar{
 				Name: "KITCHEN_GATE_SESSION_TTL", Value: "8h0m0s"}))
+
+			By("giving it the identity it reads Projects and the Kitchen as")
+			Expect(deploy.Spec.Template.Spec.ServiceAccountName).To(Equal(gateServiceAccount),
+				"without it the gate runs as default, reads nothing, and refuses every preview")
+			Expect(container.Env).To(ContainElement(corev1.EnvVar{
+				Name: "POD_NAMESPACE",
+				ValueFrom: &corev1.EnvVarSource{
+					FieldRef: &corev1.ObjectFieldSelector{
+						APIVersion: "v1", FieldPath: "metadata.namespace",
+					},
+				},
+			}), "which is the namespace it watches Projects in")
 
 			By("publishing the gate's own hostname")
 			route := &gatewayv1.HTTPRoute{}

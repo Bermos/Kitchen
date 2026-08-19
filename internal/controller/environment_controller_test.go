@@ -275,10 +275,16 @@ var _ = Describe("Environment Controller", func() {
 			filters := route.Spec.Rules[0].Filters
 			Expect(filters).To(HaveLen(1))
 			Expect(filters[0].Type).To(Equal(gatewayv1.HTTPRouteFilterRequestHeaderModifier))
-			Expect(filters[0].RequestHeaderModifier.Set).To(ConsistOf(gatewayv1.HTTPHeader{
-				Name:  previewgate.UpstreamHeader,
-				Value: envName + "." + appNS + ".svc.cluster.local:80",
-			}), "and with Set, so a client cannot choose it")
+			Expect(filters[0].RequestHeaderModifier.Set).To(ConsistOf(
+				gatewayv1.HTTPHeader{
+					Name:  previewgate.UpstreamHeader,
+					Value: envName + "." + appNS + ".svc.cluster.local:80",
+				},
+				gatewayv1.HTTPHeader{
+					Name:  previewgate.ProjectHeader,
+					Value: projectName,
+				},
+			), "and with Set, so a client cannot choose either of them")
 
 			By("granting the project's namespace permission to route there")
 			grant := &gatewayv1beta1.ReferenceGrant{}

@@ -313,6 +313,13 @@ func (r *KitchenReconciler) applyPreviewGateWorkload(
 		deploy.Spec.Template.Annotations = map[string]string{
 			"kitchen.bermos.dev/oauth-client": oauth.ID,
 		}
+		// The gate resolves membership itself, against a cache of Projects
+		// and the Kitchen singleton, so it needs an identity that may read
+		// them. The chart creates it and names it on the manager's command
+		// line; without one the gate runs as the namespace's default account,
+		// reads nothing, and refuses every protected preview rather than
+		// opening them.
+		deploy.Spec.Template.Spec.ServiceAccountName = r.PreviewGateServiceAccount
 		deploy.Spec.Template.Spec.Containers = []corev1.Container{{
 			Name:    "gate",
 			Image:   r.PreviewGateImage,
@@ -331,6 +338,11 @@ func (r *KitchenReconciler) applyPreviewGateWorkload(
 				{Name: "KITCHEN_GATE_COOKIE_SECURE",
 					Value: fmt.Sprintf("%t", platformScheme(kitchen) == "https")},
 				{Name: "KITCHEN_GATE_SESSION_TTL", Value: previewGateSessionTTL(kitchen).String()},
+				// Where the platform's own objects are. The gate watches
+				// Projects in this namespace alone.
+				{Name: "POD_NAMESPACE", ValueFrom: &corev1.EnvVarSource{
+					FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.namespace"},
+				}},
 			},
 			Ports: []corev1.ContainerPort{
 				{Name: "http", ContainerPort: previewGateContainerPort},
