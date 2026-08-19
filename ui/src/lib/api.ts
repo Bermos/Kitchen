@@ -18,9 +18,21 @@ export interface KeyRef {
   key: string;
 }
 
-/** One of a project's environment variables. Secret- and claim-backed
- * variables carry references; the API never resolves them to values. */
+/** One of a project's environment variables, as read. Values never come back
+ * out of the API — `set` and `previewSet` say only that there is one — and
+ * secret- and claim-backed variables carry the reference they were written
+ * as. */
 export interface EnvVar {
+  name: string;
+  set: boolean;
+  previewSet: boolean;
+  fromSecret?: KeyRef;
+  fromClaim?: KeyRef;
+}
+
+/** One environment variable as written. Nothing reads a value back, so an
+ * absent `value` keeps the stored one and an empty one clears it. */
+export interface EnvVarWrite {
   name: string;
   value?: string;
   previewValue?: string;
@@ -58,7 +70,7 @@ export interface ProjectSettings {
   buildStrategy?: string;
   dockerfilePath?: string;
   rootDirectory?: string;
-  env?: EnvVar[];
+  env?: EnvVarWrite[];
   port?: number;
   replicas?: number;
   cpu?: string;

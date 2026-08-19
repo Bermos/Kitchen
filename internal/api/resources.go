@@ -258,19 +258,33 @@ type patchProjectRequest struct {
 	Memory            *string          `json:"memory,omitempty"`
 }
 
-// envVarRequest mirrors envVarView, so what a client reads is what it writes
-// back. At most one source may be set; a bare name with no source is refused.
+// envVarRequest is one variable on its way in. It no longer mirrors
+// envVarView, because a value only travels one way: a client cannot write back
+// a value it was never shown. An absent value therefore keeps the stored one
+// and an empty one clears it — the same bargain a connection's credential
+// fields make. At most one source may be set.
 type envVarRequest struct {
 	Name         string      `json:"name"`
-	Value        string      `json:"value,omitempty"`
-	PreviewValue string      `json:"previewValue,omitempty"`
+	Value        *string     `json:"value,omitempty"`
+	PreviewValue *string     `json:"previewValue,omitempty"`
 	FromSecret   *keyRefView `json:"fromSecret,omitempty"`
 	FromClaim    *keyRefView `json:"fromClaim,omitempty"`
 }
 
 // envVarsFromRequest turns the request's variables into the spec's, refusing
 // ambiguity: a variable naming two sources would silently prefer one of them.
-func envVarsFromRequest(vars []envVarRequest) ([]kitchenv1alpha1.EnvVar, error) {
+//
+// The list replaces the project's, but a variable whose value the request left
+// out keeps the value the variable of that name already had. That is what
+// makes "read the project, edit, write back" survive the API not reading
+// values back: the client has nothing to send for the variables it is not
+// changing. A variable being repointed at a secret or a claim keeps nothing —
+// the reference is what replaces the value.
+func envVarsFromRequest(vars []envVarRequest, existing []kitchenv1alpha1.EnvVar) ([]kitchenv1alpha1.EnvVar, error) {
+	stored := make(map[string]kitchenv1alpha1.EnvVar, len(existing))
+	for _, v := range existing {
+		stored[v.Name] = v
+	}
 	out := make([]kitchenv1alpha1.EnvVar, 0, len(vars))
 	seen := map[string]bool{}
 	for _, v := range vars {
@@ -282,8 +296,19 @@ func envVarsFromRequest(vars []envVarRequest) ([]kitchenv1alpha1.EnvVar, error) 
 			return nil, fmt.Errorf("env var %q appears twice", name)
 		}
 		seen[name] = true
+		value, previewValue := v.Value, v.PreviewValue
+		if v.FromSecret == nil && v.FromClaim == nil {
+			if prior, ok := stored[name]; ok {
+				if value == nil {
+					value = &prior.Value
+				}
+				if previewValue == nil {
+					previewValue = &prior.PreviewValue
+				}
+			}
+		}
 		sources := 0
-		if v.Value != "" {
+		if value != nil && *value != "" {
 			sources++
 		}
 		if v.FromSecret != nil {
@@ -295,7 +320,13 @@ func envVarsFromRequest(vars []envVarRequest) ([]kitchenv1alpha1.EnvVar, error) 
 		if sources > 1 {
 			return nil, fmt.Errorf("env var %q names more than one source: use value, fromSecret or fromClaim, not several", name)
 		}
-		spec := kitchenv1alpha1.EnvVar{Name: name, Value: v.Value, PreviewValue: v.PreviewValue}
+		spec := kitchenv1alpha1.EnvVar{Name: name}
+		if value != nil {
+			spec.Value = *value
+		}
+		if previewValue != nil {
+			spec.PreviewValue = *previewValue
+		}
 		if v.FromSecret != nil {
 			if v.FromSecret.Name == "" || v.FromSecret.Key == "" {
 				return nil, fmt.Errorf("env var %q: fromSecret needs both a name and a key", name)
@@ -384,7 +415,7 @@ func (s *Server) patchProject(w http.ResponseWriter, req *http.Request) {
 		project.Spec.Build.RootDirectory = strings.TrimSpace(*body.RootDirectory)
 	}
 	if body.Env != nil {
-		env, err := envVarsFromRequest(*body.Env)
+		env, err := envVarsFromRequest(*body.Env, project.Spec.Env)
 		if err != nil {
 			badRequest(w, "%s", err.Error())
 			return

@@ -80,6 +80,13 @@ func TestPatchingAProjectsSettings(t *testing.T) {
 	if len(view.Env) != 3 || view.Env[1].FromClaim == nil || view.Env[2].FromSecret == nil {
 		t.Fatalf("the env vars did not echo: %+v", view.Env)
 	}
+	// The literal variable comes back as presence, not as a value.
+	if !view.Env[0].Set || !view.Env[0].PreviewSet {
+		t.Fatalf("want the literal variable reported as set: %+v", view.Env[0])
+	}
+	if view.Env[1].Set || view.Env[2].Set {
+		t.Fatalf("want reference-backed variables reported as unset: %+v", view.Env)
+	}
 
 	stored := &kitchenv1alpha1.Project{}
 	if err := h.server.get(context.Background(), "shop", stored); err != nil {
@@ -105,6 +112,123 @@ func TestPatchingAProjectsSettings(t *testing.T) {
 	cpu := stored.Spec.Runtime.Resources.Requests[corev1.ResourceCPU]
 	if cpu.String() != "250m" {
 		t.Fatalf("want the cpu request set with the limit, got %q", cpu.String())
+	}
+}
+
+// The value of a plain env var is where somebody pastes an API key, so it is
+// held to the same rule as a connection's credential: it goes in and it never
+// comes back out — of the patch's own answer or of any later read.
+func TestProjectEnvVarValuesAreNeverReadBack(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+
+	const secret = "sk-live-3f9a1c-never-echo-me"
+	const previewSecret = "sk-test-77b2-never-echo-me-either"
+
+	patch := h.do(t, http.MethodPatch, "/api/v1/projects/shop",
+		`{"env": [{"name": "API_KEY", "value": "`+secret+`", "previewValue": "`+previewSecret+`"}]}`)
+	if patch.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", patch.Code, patch.Body.String())
+	}
+	if body := patch.Body.String(); strings.Contains(body, secret) || strings.Contains(body, previewSecret) {
+		t.Fatalf("the patch echoed the value it was given: %s", body)
+	}
+
+	for _, path := range []string{"/api/v1/projects/shop", "/api/v1/projects"} {
+		recorder := h.do(t, http.MethodGet, path, "")
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("want 200 from %s, got %d: %s", path, recorder.Code, recorder.Body.String())
+		}
+		if body := recorder.Body.String(); strings.Contains(body, secret) || strings.Contains(body, previewSecret) {
+			t.Fatalf("%s handed the value back: %s", path, body)
+		}
+	}
+
+	view := decode[projectView](t, h.do(t, http.MethodGet, "/api/v1/projects/shop", ""))
+	if len(view.Env) != 1 || !view.Env[0].Set || !view.Env[0].PreviewSet {
+		t.Fatalf("want the variable reported as set: %+v", view.Env)
+	}
+
+	// The value is still there for the reconciler to read; only the API stops
+	// short of it.
+	stored := &kitchenv1alpha1.Project{}
+	if err := h.server.get(context.Background(), "shop", stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored.Spec.Env[0].Value != secret || stored.Spec.Env[0].PreviewValue != previewSecret {
+		t.Fatalf("the value did not stick: %+v", stored.Spec.Env)
+	}
+}
+
+// A client can no longer read a value to write it back, so a variable whose
+// value the request leaves out keeps the one it has. Sending an empty value is
+// how it is cleared, because that is a thing someone had to type.
+func TestPatchingEnvVarsKeepsTheValuesTheRequestOmits(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+
+	const value = "https://shop.example.com"
+	seed := h.do(t, http.MethodPatch, "/api/v1/projects/shop",
+		`{"env": [{"name": "PUBLIC_URL", "value": "`+value+`", "previewValue": "https://preview.invalid"}]}`)
+	if seed.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", seed.Code, seed.Body.String())
+	}
+
+	// Renaming nothing and adding a variable: the untouched one keeps both of
+	// its values, exactly as a UI that never saw them would send it.
+	recorder := h.do(t, http.MethodPatch, "/api/v1/projects/shop",
+		`{"env": [{"name": "PUBLIC_URL"}, {"name": "LOG_LEVEL", "value": "debug"}]}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	stored := &kitchenv1alpha1.Project{}
+	if err := h.server.get(context.Background(), "shop", stored); err != nil {
+		t.Fatal(err)
+	}
+	if len(stored.Spec.Env) != 2 {
+		t.Fatalf("want both variables, got %+v", stored.Spec.Env)
+	}
+	if stored.Spec.Env[0].Value != value || stored.Spec.Env[0].PreviewValue != "https://preview.invalid" {
+		t.Fatalf("an omitted value was blanked: %+v", stored.Spec.Env[0])
+	}
+	if stored.Spec.Env[1].Value != "debug" {
+		t.Fatalf("the new variable did not stick: %+v", stored.Spec.Env[1])
+	}
+
+	// An empty value is a value: it clears what was there.
+	recorder = h.do(t, http.MethodPatch, "/api/v1/projects/shop",
+		`{"env": [{"name": "PUBLIC_URL", "value": "", "previewValue": ""}]}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if err := h.server.get(context.Background(), "shop", stored); err != nil {
+		t.Fatal(err)
+	}
+	if len(stored.Spec.Env) != 1 || stored.Spec.Env[0].Value != "" || stored.Spec.Env[0].PreviewValue != "" {
+		t.Fatalf("an empty value did not clear the stored one: %+v", stored.Spec.Env)
+	}
+}
+
+// Repointing a variable at a secret drops the value it used to carry: the
+// reference is what replaces it, and carrying the old value forward would make
+// the request name two sources.
+func TestPatchingAnEnvVarToASecretDropsItsValue(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+
+	seed := h.do(t, http.MethodPatch, "/api/v1/projects/shop", `{"env": [{"name": "API_KEY", "value": "pasted"}]}`)
+	if seed.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", seed.Code, seed.Body.String())
+	}
+
+	recorder := h.do(t, http.MethodPatch, "/api/v1/projects/shop",
+		`{"env": [{"name": "API_KEY", "fromSecret": {"name": "shop-api-key", "key": "key"}}]}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	stored := &kitchenv1alpha1.Project{}
+	if err := h.server.get(context.Background(), "shop", stored); err != nil {
+		t.Fatal(err)
+	}
+	if len(stored.Spec.Env) != 1 || stored.Spec.Env[0].SecretRef == nil || stored.Spec.Env[0].Value != "" {
+		t.Fatalf("want a reference and no value left: %+v", stored.Spec.Env)
 	}
 }
 

@@ -74,7 +74,7 @@ sent the request.
 |---|---|---|
 | GET | `/projects` | List projects |
 | POST | `/projects` | Create a project |
-| GET | `/projects/{name}` | One project |
+| GET | `/projects/{name}` | One project — its env vars by name, never their values |
 | PATCH | `/projects/{name}` | Change its settings — branch, previews, build, env vars, runtime |
 | DELETE | `/projects/{name}` | Delete it, and everything derived from it |
 | GET | `/projects/{name}/builds` | That project's builds, newest first |
@@ -207,13 +207,30 @@ optional and absent ones keep their value:
    {"name": "DATABASE_URL", "fromClaim": {"name": "shop-db", "key": "url"}}]}
 ```
 
-`env`, when present, replaces the whole list — read the project, edit, write
-back. A variable is a literal `value` (with an optional `previewValue` used in
-previews), a `fromSecret` reference, or a `fromClaim` reference; naming more
-than one source is a `400`. `cpu` and `memory` are Kubernetes quantities and
-set request and limit alike; an empty string clears one. The repository and the
-two connections are deliberately not editable: rebinding a project to another
-repository is a different project.
+`env`, when present, replaces the whole list. A variable is a literal `value`
+(with an optional `previewValue` used in previews), a `fromSecret` reference,
+or a `fromClaim` reference; naming more than one source is a `400`. `cpu` and
+`memory` are Kubernetes quantities and set request and limit alike; an empty
+string clears one. The repository and the two connections are deliberately not
+editable: rebinding a project to another repository is a different project.
+
+A value goes in and never comes back out. Reading a project reports whether a
+variable has one, not what it is:
+
+```json
+{"env": [
+   {"name": "PUBLIC_URL", "set": true, "previewSet": true},
+   {"name": "API_KEY", "set": false, "previewSet": false,
+    "fromSecret": {"name": "shop-api-key", "key": "key"}}]}
+```
+
+A plain variable is exactly where somebody in a hurry pastes an API key, so it
+is held to the same rule as a connection's credential. Replacing the whole list
+therefore does not mean sending the values back: a variable whose `value` the
+request leaves out keeps the one it already has, and an empty `value` clears it
+— the bargain the credential fields make too. Repointing a variable at a
+`fromSecret` or a `fromClaim` drops the value it used to carry, since the
+reference is what replaces it.
 
 Settings land in the next release's snapshot — what is already running keeps
 the configuration it was released with until the next deploy.

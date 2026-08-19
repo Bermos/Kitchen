@@ -56,15 +56,21 @@ func conditionViews(conditions []metav1.Condition) []conditionView {
 	return out
 }
 
-// envVarView is one of a project's environment variables. The value of a
-// secret- or claim-backed variable is a reference here, never the resolved
-// value: the API hands out configuration, not credentials.
+// envVarView is one of a project's environment variables, minus its value.
+// A literal value is reported as present and never echoed: a plain variable is
+// exactly where somebody pastes an API key, and the API never reads a
+// credential back. A secret- or claim-backed variable carries the reference it
+// was written as, which was never a credential to begin with.
 type envVarView struct {
-	Name         string      `json:"name"`
-	Value        string      `json:"value,omitempty"`
-	PreviewValue string      `json:"previewValue,omitempty"`
-	FromSecret   *keyRefView `json:"fromSecret,omitempty"`
-	FromClaim    *keyRefView `json:"fromClaim,omitempty"`
+	Name string `json:"name"`
+	// Set and PreviewSet are the whole of what a screen needs from a value:
+	// whether there is one, so a configured variable reads differently from
+	// an empty one. Both are false for a reference-backed variable, which
+	// holds no literal value of its own.
+	Set        bool        `json:"set"`
+	PreviewSet bool        `json:"previewSet"`
+	FromSecret *keyRefView `json:"fromSecret,omitempty"`
+	FromClaim  *keyRefView `json:"fromClaim,omitempty"`
 }
 
 // keyRefView names one key of a Secret or a ResourceClaim binding.
@@ -79,7 +85,7 @@ func envVarViews(env []kitchenv1alpha1.EnvVar) []envVarView {
 	}
 	out := make([]envVarView, 0, len(env))
 	for _, v := range env {
-		view := envVarView{Name: v.Name, Value: v.Value, PreviewValue: v.PreviewValue}
+		view := envVarView{Name: v.Name, Set: v.Value != "", PreviewSet: v.PreviewValue != ""}
 		if v.SecretRef != nil {
 			view.FromSecret = &keyRefView{Name: v.SecretRef.Name, Key: v.SecretRef.Key}
 		}
