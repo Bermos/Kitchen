@@ -23,6 +23,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // newRegistry serves the read half of a registry over TLS, the way a real one
@@ -66,13 +67,13 @@ func newRegistry(t *testing.T, tags []string) (*Client, *int) {
 func TestListingPublishedVersions(t *testing.T) {
 	client, _ := newRegistry(t, []string{"0.1.4", "0.2.0", "latest", "0.10.0", "0.3.0-rc.1"})
 
-	versions, err := client.Versions(context.Background())
+	listing, err := client.Versions(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	got := make([]string, 0, len(versions))
-	for _, version := range versions {
+	got := make([]string, 0, len(listing.Versions))
+	for _, version := range listing.Versions {
 		got = append(got, version.String())
 	}
 	want := "0.1.4 0.2.0 0.3.0-rc.1 0.10.0"
@@ -84,11 +85,11 @@ func TestListingPublishedVersions(t *testing.T) {
 func TestTheNewestStableVersionWins(t *testing.T) {
 	client, _ := newRegistry(t, []string{"0.2.0", "0.3.0-rc.1"})
 
-	versions, err := client.Versions(context.Background())
+	listing, err := client.Versions(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	latest, ok := Latest(versions)
+	latest, ok := Latest(listing.Versions)
 	if !ok || latest.String() != "0.2.0" {
 		t.Fatalf("a release candidate is not what a latest-version button should offer, got %v (%t)", latest, ok)
 	}
@@ -107,6 +108,44 @@ func TestTheListingIsCached(t *testing.T) {
 	}
 }
 
+func TestARefreshAsksAgainWithoutWaitingForTheCache(t *testing.T) {
+	client, listings := newRegistry(t, []string{"0.2.0"})
+
+	if _, err := client.Versions(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// Backdated past the floor but nowhere near the hour the cache would
+	// otherwise hold the answer for: that gap is what this exists to close.
+	client.refreshed = time.Now().Add(-time.Minute)
+
+	listing, err := client.Refresh(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if *listings != 2 {
+		t.Fatalf("want the registry asked again, it was asked %d times in total", *listings)
+	}
+	if time.Since(listing.CheckedAt) > time.Second {
+		t.Fatalf("want the answer stamped with the read that took it, got %s", listing.CheckedAt)
+	}
+}
+
+func TestRefreshesAreFloored(t *testing.T) {
+	client, listings := newRegistry(t, []string{"0.2.0"})
+
+	for range 5 {
+		if _, err := client.Refresh(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Held down, the control must not turn into a way to have the registry
+	// rate-limit this installation: a refused listing is cached as an error
+	// for five minutes, which is worse than the staleness it was skipping.
+	if *listings != 1 {
+		t.Fatalf("want the registry asked once inside the floor, it was asked %d times", *listings)
+	}
+}
+
 func TestAFailedListingIsAnErrorRatherThanAnEmptyAnswer(t *testing.T) {
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "no such repository", http.StatusNotFound)
@@ -119,9 +158,9 @@ func TestAFailedListingIsAnErrorRatherThanAnEmptyAnswer(t *testing.T) {
 	}
 	client.http = server.Client()
 
-	versions, err := client.Versions(context.Background())
+	listing, err := client.Versions(context.Background())
 	if err == nil {
-		t.Fatalf("want the failure reported, got %v", versions)
+		t.Fatalf("want the failure reported, got %v", listing.Versions)
 	}
 	if !strings.Contains(err.Error(), "404") {
 		t.Fatalf("want the registry's answer in the message, got %q", err)
