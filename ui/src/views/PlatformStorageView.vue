@@ -82,7 +82,7 @@ function highlighted(volume: { namespace: string; name: string }): boolean {
     <UAlert v-if="error" color="error" variant="soft" icon="i-lucide-triangle-alert" :title="error" />
 
     <template v-else>
-      <div class="grid grid-cols-3 gap-3">
+      <div class="grid grid-cols-2 sm:grid-cols-3 gap-3">
         <div class="rounded-md border border-default px-4 py-3">
           <p class="text-xs text-muted">Volumes</p>
           <p class="text-lg font-semibold text-highlighted tabular-nums mt-1">{{ data?.volumes ?? "—" }}</p>
@@ -125,7 +125,7 @@ function highlighted(volume: { namespace: string; name: string }): boolean {
       <div>
         <h2 class="text-sm font-medium text-highlighted mb-2">Volumes</h2>
         <div class="rounded-md border border-default overflow-x-auto">
-          <table class="w-full text-sm">
+          <table class="w-full min-w-[48rem] text-sm">
             <thead>
               <tr class="text-left text-xs text-muted border-b border-default bg-muted">
                 <th class="px-4 py-2.5 font-medium">Volume</th>
@@ -247,7 +247,7 @@ function highlighted(volume: { namespace: string; name: string }): boolean {
                 <StatusDot :tone="underReporting ? 'warning' : 'success'" />
                 <span>{{ ledger }}</span>
               </p>
-              <div class="grid grid-cols-3 gap-3 text-xs mt-2">
+              <div class="grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs mt-2">
                 <div>
                   <p class="text-[11px] text-muted">Events lost</p>
                   <!-- Amber at the rule's own number, not at the first event:

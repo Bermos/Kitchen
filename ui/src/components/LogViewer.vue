@@ -124,15 +124,15 @@ function time(line: LogLine): string {
 
 <template>
   <div class="flex flex-col gap-2">
-    <div class="flex items-center gap-2">
+    <div class="flex items-center gap-2 flex-wrap">
       <UInput
         v-model="search"
         icon="i-lucide-search"
         placeholder="Filter messages…"
         size="sm"
-        class="w-64 font-mono"
+        class="flex-1 min-w-40 sm:flex-none sm:w-64 font-mono"
       />
-      <USelect v-model="limit" :items="limits" size="sm" class="w-24" />
+      <USelect v-model="limit" :items="limits" size="sm" class="w-24 shrink-0" />
       <UBadge v-if="live" color="success" variant="soft" size="sm" class="font-mono">
         <StatusDot tone="success" pulse class="mr-1" /> {{ streaming ? "streaming" : "live" }}
       </UBadge>

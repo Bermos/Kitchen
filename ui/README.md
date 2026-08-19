@@ -36,6 +36,18 @@ after the Kitchen design mockups (IBM Plex, dark, conditions-first).
 - **Navigation.** ⌘K opens a palette over everything the API lists — projects,
   environments, builds, domains, pages. The sidebar carries live counts from
   the same collections.
+- **Small screens.** The shell is responsive at one breakpoint: below `lg`
+  (1024px) the sidebar leaves the flow and becomes a drawer over the page —
+  same element, moved by a media query, so it keeps its scroll position — and
+  the header grows a hamburger while the palette, the mode toggle and the
+  account button collapse to their icons. It is `inert` while it is off the
+  screen, so nothing in it is reachable by keyboard or screen reader, and it
+  closes on Escape, on the backdrop, and on every navigation. Views follow two
+  rules rather than a breakpoint each: a wide table sits in an
+  `overflow-x-auto` box **and** carries a `min-w-[…]` floor, because `w-full`
+  alone makes the browser crush the name column to one character per line
+  instead of scrolling; and anything holding such a box inside a grid or a flex
+  row needs `min-w-0`, since those items refuse to shrink below their content.
 - **Requests.** The environment page's Signals section reads the four request
   endpoints: golden-signal tiles, traffic/error/latency charts marked with the
   activity feed's deploys, a route table whose selected row filters the header,

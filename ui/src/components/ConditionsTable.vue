@@ -11,7 +11,7 @@ function tone(condition: Condition): string {
 
 <template>
   <div class="rounded-md border border-default bg-muted overflow-x-auto">
-    <table class="w-full text-sm">
+    <table class="w-full min-w-[36rem] text-sm">
       <thead>
         <tr class="text-left text-xs text-muted border-b border-default">
           <th class="px-3 py-2 font-medium">Condition</th>

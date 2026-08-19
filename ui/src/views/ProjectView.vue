@@ -363,7 +363,7 @@ function host(url?: string): string {
           >
           <p class="text-xs text-dimmed mt-0.5">observed {{ production.observedRelease || "—" }}</p>
         </div>
-        <div>
+        <div class="min-w-0">
           <p class="text-xs text-muted mb-1">Image</p>
           <p class="font-mono text-sm text-toned truncate" :title="latestBuild?.image">
             {{ shortImage(data?.releases.find((r) => r.name === production!.release)?.image) }}
@@ -387,11 +387,21 @@ function host(url?: string): string {
 
       <ConditionsTable v-if="operatorMode" :conditions="project.conditions" />
 
-      <UTabs v-model="tab" :items="tabs" color="neutral" variant="link" size="sm" :content="false" />
+      <!-- Seven tabs do not fit across a phone, and a tab abbreviated to
+           "Dep…" names nothing: the strip scrolls instead. -->
+      <UTabs
+        v-model="tab"
+        :items="tabs"
+        color="neutral"
+        variant="link"
+        size="sm"
+        :content="false"
+        :ui="{ list: 'overflow-x-auto', trigger: 'shrink-0' }"
+      />
 
       <!-- Deployments: the release history, newest first, with one-click rollback. -->
       <div v-if="tab === 'deployments'" class="rounded-md border border-default overflow-x-auto">
-        <table class="w-full text-sm">
+        <table class="w-full min-w-[42rem] text-sm">
           <tbody>
             <tr v-if="!data?.releases.length">
               <td class="px-4 py-8 text-center text-muted">No releases yet — a successful build creates one.</td>
@@ -493,40 +503,42 @@ function host(url?: string): string {
               >{{ host(preview.url) }}</a
             >
           </div>
-          <table
+          <div
             v-if="previewLayout === 'pr' && previewBuilds(preview.preview?.pullRequest).length"
-            class="w-full text-sm border-t border-muted"
+            class="overflow-x-auto border-t border-muted"
           >
-            <tbody>
-              <tr
-                v-for="build in previewBuilds(preview.preview?.pullRequest)"
-                :key="build.name"
-                class="border-b border-muted last:border-0 hover:bg-elevated/40"
-              >
-                <td class="pl-10 pr-4 py-2 w-32 font-mono text-xs text-toned">{{ shortSHA(build.git.sha) }}</td>
-                <td class="px-4 py-2">
-                  <RouterLink
-                    :to="{ name: 'build', params: { name: build.name } }"
-                    class="text-toned hover:text-highlighted hover:underline"
-                    >{{ build.git.message || build.name }}</RouterLink
-                  >
-                </td>
-                <td class="px-4 py-2"><PhaseBadge :phase="build.phase" /></td>
-                <td class="px-4 py-2 font-mono text-xs text-muted whitespace-nowrap">
-                  {{ duration(build.startedAt, build.completedAt) }}
-                </td>
-                <td class="px-4 py-2 text-right text-xs text-muted whitespace-nowrap">
-                  {{ timeAgo(build.createdAt) }}
-                </td>
-              </tr>
-            </tbody>
-          </table>
+            <table class="w-full min-w-[42rem] text-sm">
+              <tbody>
+                <tr
+                  v-for="build in previewBuilds(preview.preview?.pullRequest)"
+                  :key="build.name"
+                  class="border-b border-muted last:border-0 hover:bg-elevated/40"
+                >
+                  <td class="pl-10 pr-4 py-2 w-32 font-mono text-xs text-toned">{{ shortSHA(build.git.sha) }}</td>
+                  <td class="px-4 py-2">
+                    <RouterLink
+                      :to="{ name: 'build', params: { name: build.name } }"
+                      class="text-toned hover:text-highlighted hover:underline"
+                      >{{ build.git.message || build.name }}</RouterLink
+                    >
+                  </td>
+                  <td class="px-4 py-2"><PhaseBadge :phase="build.phase" /></td>
+                  <td class="px-4 py-2 font-mono text-xs text-muted whitespace-nowrap">
+                    {{ duration(build.startedAt, build.completedAt) }}
+                  </td>
+                  <td class="px-4 py-2 text-right text-xs text-muted whitespace-nowrap">
+                    {{ timeAgo(build.createdAt) }}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
 
       <!-- Builds: the project's build history. -->
       <div v-else-if="tab === 'builds'" class="rounded-md border border-default overflow-x-auto">
-        <table class="w-full text-sm">
+        <table class="w-full min-w-[42rem] text-sm">
           <tbody>
             <tr v-if="!data?.builds.length">
               <td class="px-4 py-8 text-center text-muted">No builds yet — push to the repository, or hit Redeploy.</td>
@@ -557,7 +569,7 @@ function host(url?: string): string {
 
       <!-- Domains: custom hostnames attached to this project's environments. -->
       <div v-else-if="tab === 'domains'" class="rounded-md border border-default overflow-x-auto">
-        <table class="w-full text-sm">
+        <table class="w-full min-w-[42rem] text-sm">
           <tbody>
             <tr v-if="!data?.domains.length">
               <td class="px-4 py-8 text-center text-muted">
@@ -605,7 +617,7 @@ function host(url?: string): string {
           </ClaimModal>
         </div>
         <div class="rounded-md border border-default overflow-x-auto">
-          <table class="w-full text-sm">
+          <table class="w-full min-w-[42rem] text-sm">
             <tbody>
               <tr v-if="!data?.claims.length">
                 <td class="px-4 py-8 text-center text-muted">
@@ -648,7 +660,7 @@ function host(url?: string): string {
           <div class="rounded-md border border-default bg-muted p-5 space-y-4">
             <h2 class="text-sm font-semibold text-highlighted">Git</h2>
             <UFormField label="Production branch" help="Builds of this branch promote to production.">
-              <UInput v-model="settings.productionBranch" class="w-44 font-mono" />
+              <UInput v-model="settings.productionBranch" class="w-full max-w-44 font-mono" />
             </UFormField>
             <USwitch v-model="settings.previews" label="Preview environments" description="Every pull request gets its own environment." />
             <USwitch
@@ -703,11 +715,15 @@ function host(url?: string): string {
               None yet. Values land in new releases — what is running keeps its release's snapshot until the next
               deploy.
             </p>
-            <div v-for="(envVar, index) in settings.env" :key="index" class="flex items-start gap-2">
-              <UInput v-model="envVar.name" placeholder="NAME" class="w-44 font-mono" />
+            <div v-for="(envVar, index) in settings.env" :key="index" class="flex items-start gap-2 flex-wrap sm:flex-nowrap">
+              <UInput v-model="envVar.name" placeholder="NAME" class="w-full sm:w-44 font-mono" />
               <template v-if="!envVar.fromSecret && !envVar.fromClaim">
-                <UInput v-model="envVar.value" placeholder="value" class="flex-1 font-mono" />
-                <UInput v-model="envVar.previewValue" placeholder="preview value (optional)" class="flex-1 font-mono" />
+                <UInput v-model="envVar.value" placeholder="value" class="flex-1 min-w-40 font-mono" />
+                <UInput
+                  v-model="envVar.previewValue"
+                  placeholder="preview value (optional)"
+                  class="flex-1 min-w-40 font-mono"
+                />
               </template>
               <UBadge v-else color="neutral" variant="subtle" size="sm" class="font-mono mt-1.5 flex-1">
                 {{ envVar.fromSecret ? `secret ${envVar.fromSecret.name}/${envVar.fromSecret.key}` : `claim ${envVar.fromClaim!.name}/${envVar.fromClaim!.key}` }}
@@ -756,7 +772,7 @@ function host(url?: string): string {
 
       <!-- Environments: production and previews alike, with their URLs. -->
       <div v-else class="rounded-md border border-default overflow-x-auto">
-        <table class="w-full text-sm">
+        <table class="w-full min-w-[42rem] text-sm">
           <tbody>
             <tr v-if="!data?.environments.length">
               <td class="px-4 py-8 text-center text-muted">

@@ -168,8 +168,8 @@ const retentionNote = computed(() => {
 <template>
   <div class="flex flex-col gap-2">
     <div class="flex items-center gap-2 flex-wrap">
-      <USelect v-model="status" :items="statuses" size="sm" class="w-36" />
-      <USelect v-model="method" :items="methods" size="sm" class="w-32" />
+      <USelect v-model="status" :items="statuses" size="sm" class="w-32 sm:w-36" />
+      <USelect v-model="method" :items="methods" size="sm" class="w-28 sm:w-32" />
       <USelect v-model="limit" :items="limits" size="sm" class="w-24" />
       <UBadge v-if="route" color="primary" variant="soft" size="sm" class="font-mono">{{ route }}</UBadge>
       <span class="flex-1" />

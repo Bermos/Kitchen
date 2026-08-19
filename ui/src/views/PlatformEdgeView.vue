@@ -114,7 +114,7 @@ function expiry(certificate: Certificate): string {
         </p>
       </div>
       <div class="flex items-center gap-2">
-        <USelect v-model="rangeMinutes" :items="ranges" size="xs" class="w-40" />
+        <USelect v-model="rangeMinutes" :items="ranges" size="xs" class="w-36 sm:w-40" />
         <UButton
           icon="i-lucide-refresh-cw"
           color="neutral"
@@ -197,7 +197,7 @@ function expiry(certificate: Certificate): string {
           >
         </h2>
         <div class="rounded-md border border-default overflow-x-auto">
-          <table class="w-full text-sm">
+          <table class="w-full min-w-[36rem] text-sm">
             <thead>
               <tr class="text-left text-xs text-muted border-b border-default bg-muted">
                 <th class="px-4 py-2 font-medium">Host</th>
@@ -257,21 +257,23 @@ function expiry(certificate: Certificate): string {
             <p v-if="gateway.message" class="text-xs mt-1" :class="gateway.programmed ? 'text-muted' : 'text-error'">
               {{ gateway.message }}
             </p>
-            <table v-if="gateway.listeners?.length" class="w-full text-xs mt-2">
-              <tbody>
-                <tr v-for="listener in gateway.listeners" :key="listener.name" class="align-top">
-                  <td class="py-1 pr-3 font-mono text-toned whitespace-nowrap">
-                    <span class="inline-flex items-center gap-1.5">
-                      <StatusDot :tone="listener.programmed ? 'success' : 'error'" />
-                      {{ listener.name }}
-                    </span>
-                  </td>
-                  <td class="py-1 pr-3 font-mono text-dimmed whitespace-nowrap">{{ listener.protocol }}:{{ listener.port }}</td>
-                  <td class="py-1 pr-3 font-mono text-dimmed whitespace-nowrap">{{ listener.attachedRoutes }} routes</td>
-                  <td class="py-1 text-toned w-full break-words">{{ listener.message || "" }}</td>
-                </tr>
-              </tbody>
-            </table>
+            <div v-if="gateway.listeners?.length" class="overflow-x-auto mt-2">
+              <table class="w-full text-xs">
+                <tbody>
+                  <tr v-for="listener in gateway.listeners" :key="listener.name" class="align-top">
+                    <td class="py-1 pr-3 font-mono text-toned whitespace-nowrap">
+                      <span class="inline-flex items-center gap-1.5">
+                        <StatusDot :tone="listener.programmed ? 'success' : 'error'" />
+                        {{ listener.name }}
+                      </span>
+                    </td>
+                    <td class="py-1 pr-3 font-mono text-dimmed whitespace-nowrap">{{ listener.protocol }}:{{ listener.port }}</td>
+                    <td class="py-1 pr-3 font-mono text-dimmed whitespace-nowrap">{{ listener.attachedRoutes }} routes</td>
+                    <td class="py-1 text-toned w-full break-words">{{ listener.message || "" }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
         <p class="text-[11px] text-dimmed mt-1.5">

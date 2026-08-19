@@ -16,11 +16,13 @@ defineProps<{ tiles: SignalTile[] }>();
 
 <template>
   <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
-    <div v-for="tile in tiles" :key="tile.label" class="rounded-md border border-default px-4 py-3">
-      <p class="text-xs text-muted">{{ tile.label }}</p>
+    <div v-for="tile in tiles" :key="tile.label" class="rounded-md border border-default px-3 sm:px-4 py-3">
+      <p class="text-xs text-muted truncate" :title="tile.label">{{ tile.label }}</p>
       <div class="flex items-end justify-between gap-3 mt-1">
-        <span class="text-xl font-semibold text-highlighted tabular-nums truncate">{{ tile.value }}</span>
-        <Sparkline v-if="tile.points?.length" :points="tile.points" :tone="tile.tone" />
+        <span class="text-lg sm:text-xl font-semibold text-highlighted tabular-nums truncate">{{ tile.value }}</span>
+        <!-- Two tiles to a phone's width leave the number and the shape of the
+             window fighting over the same 150 pixels; the number wins. -->
+        <Sparkline v-if="tile.points?.length" :points="tile.points" :tone="tile.tone" class="hidden sm:block" />
       </div>
       <p v-if="tile.detail" class="text-[11px] text-dimmed mt-1 truncate" :title="tile.detail">{{ tile.detail }}</p>
     </div>

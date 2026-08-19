@@ -191,9 +191,9 @@ function barTone(span: Span): string {
         </p>
       </div>
       <div class="flex items-center gap-2 flex-wrap">
-        <USelect v-model="project" :items="projectItems" size="sm" class="w-40" />
-        <USelect v-model="minDuration" :items="slowOptions" size="sm" class="w-44" />
-        <USelect v-model="rangeMinutes" :items="ranges" size="sm" class="w-40" />
+        <USelect v-model="project" :items="projectItems" size="sm" class="w-36 sm:w-40" />
+        <USelect v-model="minDuration" :items="slowOptions" size="sm" class="w-36 sm:w-44" />
+        <USelect v-model="rangeMinutes" :items="ranges" size="sm" class="w-36 sm:w-40" />
         <UButton
           size="sm"
           :color="errorsOnly ? 'error' : 'neutral'"
@@ -216,11 +216,13 @@ function barTone(span: Span): string {
       :description="traces.error.value"
     />
 
-    <div class="flex gap-4 items-start">
+    <div class="flex flex-col lg:flex-row gap-4 items-stretch lg:items-start">
       <!-- The list. Narrow once a trace is open, because the waterfall is the
-           thing being read at that point. -->
-      <div class="min-w-0" :class="selected ? 'w-80 shrink-0' : 'flex-1'">
-        <div class="rounded-md border border-default bg-muted overflow-hidden">
+           thing being read at that point — and where there is no room for two
+           columns it gives way entirely, since a phone showing both shows the
+           waterfall a scroll below the fold. The waterfall's × brings it back. -->
+      <div class="min-w-0" :class="selected ? 'hidden lg:block lg:w-80 lg:shrink-0' : 'flex-1'">
+        <div class="rounded-md border border-default bg-muted overflow-x-auto">
           <p v-if="!traces.data.value?.length" class="px-4 py-10 text-center text-sm text-muted">
             <template v-if="traces.loading.value">Loading…</template>
             <template v-else>
@@ -231,7 +233,9 @@ function barTone(span: Span): string {
               </span>
             </template>
           </p>
-          <table v-else class="w-full text-sm">
+          <!-- Three columns need more than a phone is wide; the fourth is
+               already dropped while a trace is open, and so is the floor. -->
+          <table v-else class="w-full text-sm" :class="selected ? '' : 'min-w-[26rem]'">
             <tbody>
               <tr
                 v-for="trace in traces.data.value"
@@ -300,9 +304,9 @@ function barTone(span: Span): string {
           :description="detailError"
         />
 
-        <div v-else class="rounded-md border border-default bg-muted overflow-hidden">
+        <div v-else class="rounded-md border border-default bg-muted overflow-x-auto">
           <p v-if="detailLoading" class="px-4 py-10 text-center text-sm text-muted">Loading…</p>
-          <table v-else class="w-full text-xs">
+          <table v-else class="w-full min-w-[36rem] text-xs">
             <tbody>
               <template v-for="row in rows" :key="row.span.spanId">
                 <tr

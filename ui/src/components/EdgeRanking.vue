@@ -23,12 +23,14 @@ defineProps<{
 </script>
 
 <template>
-  <div>
+  <!-- min-w-0 because this sits in a grid, whose items refuse to shrink below
+       their content: without it the table's own minimum widens the page. -->
+  <div class="min-w-0">
     <h3 class="text-xs font-medium text-highlighted mb-1.5">
       {{ title }} <span class="text-dimmed font-normal">— {{ hint }}</span>
     </h3>
     <div class="rounded-md border border-default overflow-x-auto">
-      <table class="w-full text-sm">
+      <table class="w-full min-w-[42rem] text-sm">
         <thead>
           <tr class="text-left text-[11px] text-muted border-b border-default bg-muted">
             <th class="px-3 py-1.5 font-medium">Key</th>
