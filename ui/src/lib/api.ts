@@ -69,7 +69,16 @@ export interface Project {
   conditions?: Condition[];
 }
 
-/** What PATCH /projects/{name} accepts: absent fields keep their value. */
+/**
+ * What PATCH /projects/{name} accepts: absent fields keep their value.
+ *
+ * **Environment variables are deliberately not here.** They moved to
+ * `PATCH /projects/{name}/env`, which wants `developer` where this route
+ * wants `admin` — a whole route is the unit of authorization, so the two are
+ * two routes. A body carrying `env` is now refused with a `400` naming the
+ * other one, and leaving the field off this type is what stops the dashboard
+ * sending it by accident.
+ */
 export interface ProjectSettings {
   productionBranch?: string;
   previews?: boolean;
@@ -77,7 +86,6 @@ export interface ProjectSettings {
   buildStrategy?: string;
   dockerfilePath?: string;
   rootDirectory?: string;
-  env?: EnvVarWrite[];
   port?: number;
   replicas?: number;
   cpu?: string;
@@ -386,6 +394,19 @@ export interface Member {
   subject: string;
   email?: string;
   role: string;
+  /**
+   * "account" or "key" — what kind of member this grant is about.
+   *
+   * A CI key is a member of exactly one project (docs/AUTH.md, "Machine
+   * accounts"), so its grant is listed here with everybody else's. The API
+   * derives this from the machine account's address and calls it a display
+   * rule: no access decision anywhere reads it, and a role is resolved from
+   * the subject alone. The dashboard uses it for exactly that — rendering a
+   * key as a key rather than as a stranger with an odd address.
+   */
+  kind?: string;
+  /** The key's own name, for a member whose `kind` is "key". */
+  name?: string;
 }
 
 /** What `POST /projects/{name}/members` takes. Exactly one of the two ways of
@@ -396,6 +417,48 @@ export interface NewMember {
   email?: string;
   subject?: string;
   role: string;
+}
+
+/**
+ * One CI key on a project, as `GET /projects/{name}/keys` lists it.
+ *
+ * There is no key value here and there never is one again: a key is stored
+ * hashed at the identity provider, so a listing carries only the `prefix` —
+ * enough to tell two keys apart and useless as a credential. `subject` is the
+ * machine account created to own the key, which is what the project's grant
+ * actually names.
+ *
+ * `role` is read from the project's grant rather than from anything stored on
+ * the key, so an **absent** role is a key whose grant has been removed: it can
+ * still authenticate and can do nothing, and the listing says so rather than
+ * hiding it.
+ */
+export interface ProjectKey {
+  name: string;
+  project: string;
+  subject: string;
+  email?: string;
+  prefix: string;
+  created: string;
+  lastUsed?: string;
+  role?: string;
+}
+
+/**
+ * What `POST /projects/{name}/keys` answers — the listing's shape plus the key
+ * itself, which appears in this response and in no other.
+ */
+export interface IssuedKey extends ProjectKey {
+  key: string;
+}
+
+/** What `POST /projects/{name}/keys` takes. `role` defaults to `developer`
+ * and may also be `viewer`; `admin` is refused, because a credential in a
+ * build pipeline that can mint its own successors is one nobody can account
+ * for. */
+export interface NewKey {
+  name: string;
+  role?: string;
 }
 
 /** A credential as the API accepts one — a token, or a username and password,
@@ -513,7 +576,36 @@ export interface Settings {
   releaseRetention: number;
   logRetentionDays?: number;
   gatewayAddress?: string;
+  /**
+   * `spec.access.operators`: the list every `operator` requirement in the
+   * policy table is resolved against.
+   *
+   * **Three states, and they are three.** `null` is nobody having ever said
+   * who the operators are, which the reconciler will seed from the accounts
+   * that exist; `[]` is somebody having narrowed it to nobody; a list is what
+   * it says. The API carries the field with no `omitempty` for exactly that
+   * reason, so `null` and `[]` arrive as themselves — and `undefined` is only
+   * an API too old to serve the list at all, which is a fourth thing and not
+   * one of the three. `operatorsState` in `./operators` is where that is read.
+   */
+  operators?: Operator[] | null;
   conditions?: Condition[];
+}
+
+/** One of the platform's operators, as `GET /settings` lists them: the
+ * issuer's `sub`, and the address that makes a list of opaque strings read. */
+export interface Operator {
+  subject: string;
+  email?: string;
+}
+
+/** How `PATCH /settings` names an operator — exactly one of the two ways, the
+ * same two a membership write takes: an `email` the platform resolves at the
+ * identity provider before anything is written, or a `subject` taken as
+ * given. */
+export interface OperatorWrite {
+  email?: string;
+  subject?: string;
 }
 
 /** One attempt to upgrade the platform itself. */
@@ -1636,10 +1728,20 @@ export const api = {
   project: (name: string) => request<Project>("GET", `/projects/${name}`),
   updateProject: (name: string, changes: ProjectSettings) =>
     request<Project>("PATCH", `/projects/${name}`, changes),
+  // Environment variables are their own route and their own role: the day job
+  // is a developer's where the project's settings are an admin's. The list
+  // replaces the stored one wholesale — which is why every variable has to be
+  // in it — and a body with no `env` at all is refused rather than read as an
+  // empty list. The answer is the project, so the new list renders without a
+  // second read.
+  updateProjectEnv: (name: string, env: EnvVarWrite[]) =>
+    request<Project>("PATCH", `/projects/${name}/env`, { env }),
   deleteProject: (name: string) => request<Project>("DELETE", `/projects/${name}`),
-  // A project's people. All four are the project admin's, and all three
-  // writes name the member in the body rather than in the path: an issuer's
-  // subject is opaque and may carry characters a path segment cannot.
+  // A project's people. Reading the list is a viewer's — knowing who else is
+  // on a project is part of knowing what the project is — and the three
+  // writes are an admin's. They name the member in the body rather than in
+  // the path: an issuer's subject is opaque and may carry characters a path
+  // segment cannot.
   members: (project: string) => list<Member>(`/projects/${project}/members`)(),
   addMember: (project: string, member: NewMember) =>
     request<Member>("POST", `/projects/${project}/members`, member),
@@ -1649,6 +1751,18 @@ export const api = {
   // 409, which is the sentence the screen shows rather than swallows.
   removeMember: (project: string, subject: string) =>
     request<void>("DELETE", `/projects/${project}/members`, { subject }),
+
+  // A project's CI keys — the same membership list with its non-human half
+  // shown. Listing carries the prefix and never a key value; issuing answers
+  // the key **once**, which is the one response in this whole client whose
+  // body must not be kept.
+  projectKeys: (project: string) => list<ProjectKey>(`/projects/${project}/keys`)(),
+  createKey: (project: string, key: NewKey) => request<IssuedKey>("POST", `/projects/${project}/keys`, key),
+  // Answers 204. Revokes the credential first and takes the grant off after:
+  // a grant naming an account that no longer exists is a line to tidy up, and
+  // a key that still works is not.
+  deleteKey: (project: string, name: string) =>
+    request<void>("DELETE", `/projects/${project}/keys/${encodeURIComponent(name)}`),
 
   projectBuilds: (name: string) => list<Build>(`/projects/${name}/builds`)(),
   projectReleases: (name: string) => list<Release>(`/projects/${name}/releases`)(),
@@ -1901,8 +2015,14 @@ export const api = {
   attestations: (build: string) => request<EvidenceSet>("GET", `/builds/${encodeURIComponent(build)}/attestations`),
 
   settings: () => request<Settings>("GET", "/settings"),
+  // Fields left out stay as they are, `operators` included — a settings patch
+  // that does not mention the list cannot disturb it. When it does, the list
+  // replaces the old one wholesale, so every operator who is to stay has to
+  // be in it.
   updateSettings: (
-    changes: Partial<Pick<Settings, "buildStrategy" | "buildConcurrency" | "releaseRetention" | "logRetentionDays">>,
+    changes: Partial<
+      Pick<Settings, "buildStrategy" | "buildConcurrency" | "releaseRetention" | "logRetentionDays">
+    > & { operators?: OperatorWrite[] },
   ) =>
     request<Settings>("PATCH", "/settings", changes),
 };

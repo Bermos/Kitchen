@@ -2,7 +2,6 @@
 import { computed, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { api, type Claim, type Project, type Release } from "../lib/api";
-import { type EnvVarDraft, envVarDrafts, envVarWrites, newEnvVarDraft, renamed } from "../lib/envvars";
 import { duration, shortImage, shortSHA, timeAgo } from "../lib/format";
 import { callerFor } from "../lib/me";
 import { operatorMode } from "../lib/mode";
@@ -12,6 +11,8 @@ import { useAsync, usePoll } from "../lib/useAsync";
 import ClaimModal from "../components/ClaimModal.vue";
 import ConditionsTable from "../components/ConditionsTable.vue";
 import EnvironmentCard from "../components/EnvironmentCard.vue";
+import EnvVarsPanel from "../components/EnvVarsPanel.vue";
+import KeysPanel from "../components/KeysPanel.vue";
 import MembersPanel from "../components/MembersPanel.vue";
 import PhaseBadge from "../components/PhaseBadge.vue";
 import StatusDot from "../components/StatusDot.vue";
@@ -59,10 +60,15 @@ const mayClaim = computed(() => may("POST /api/v1/claims", caller.value));
 const mayUnclaim = computed(() => may("DELETE /api/v1/claims/{name}", caller.value));
 const mayConfigure = computed(() => may("PATCH /api/v1/projects/{name}", caller.value));
 const mayDelete = computed(() => may("DELETE /api/v1/projects/{name}", caller.value));
-// Membership is an admin's read as well as an admin's write: the API refuses
-// the listing to anybody else, so the tab is theirs rather than everyone's
-// with the buttons taken out.
+// Who is on a project is every member's to read and an admin's to change, so
+// the People tab is everybody's and the controls inside it are not. The CI
+// keys sit under it on the same terms — they are the same list with its
+// non-human half shown.
 const mayReadMembers = computed(() => may("GET /api/v1/projects/{name}/members", caller.value));
+// Environment variables are the developer's day job and have a route of their
+// own, so they are a tab of their own rather than a section of a form only an
+// admin has. An admin has both, since admin contains developer.
+const mayEditEnv = computed(() => may("PATCH /api/v1/projects/{name}/env", caller.value));
 
 const production = computed(() =>
   data.value?.environments.find((e) => e.name === data.value?.project.productionEnvironment),
@@ -146,9 +152,14 @@ async function rollBack() {
 }
 
 const tab = ref("deployments");
-// Settings and People are the project admin's whole tab, not a tab with the
-// controls removed: everything on either is a write, or a read the API
-// refuses. Everything else is every role's.
+// Which tabs exist is a matter of what the API would answer, never of the
+// mode the dashboard is in. Settings is the project admin's whole tab, not a
+// tab with the controls removed: everything on it is an admin's write.
+// Variables is the developer's, on its own route and its own role — which is
+// why it is a tab beside People rather than a section inside a form a
+// developer does not have. People is everybody's now that reading the list is
+// a viewer's, with the add, change and remove controls absent for anyone but
+// an admin.
 const tabs = computed(() =>
   [
     { label: `Deployments`, value: "deployments", shown: true },
@@ -157,6 +168,7 @@ const tabs = computed(() =>
     { label: `Environments (${data.value?.environments.length ?? 0})`, value: "environments", shown: true },
     { label: `Domains (${data.value?.domains.length ?? 0})`, value: "domains", shown: true },
     { label: `Resources (${data.value?.claims.length ?? 0})`, value: "resources", shown: true },
+    { label: `Variables (${data.value?.project.env?.length ?? 0})`, value: "variables", shown: mayEditEnv.value },
     { label: `People`, value: "people", shown: mayReadMembers.value },
     { label: `Settings`, value: "settings", shown: mayConfigure.value },
   ].filter((item) => item.shown),
@@ -168,10 +180,10 @@ watch(tabs, (items) => {
 });
 
 // The settings tab edits a copy of the project, loaded once per project so
-// the 10s poll never types over the user. Env vars ride along by name — the
-// PATCH replaces the whole list, so every variable has to be in the copy —
-// but never by value: the API reports only that a variable has one, and the
-// PATCH keeps the stored value of every variable it is not given one for.
+// the 10s poll never types over the user. Environment variables are not in
+// this copy and must not be: `PATCH /projects/{name}` now refuses a body that
+// carries `env`, naming the route that takes them instead — they are the
+// Variables tab's, and EnvVarsPanel holds its own drafts.
 const settings = reactive({
   loadedFor: "",
   productionBranch: "",
@@ -186,7 +198,6 @@ const settings = reactive({
   replicas: 1,
   cpu: "",
   memory: "",
-  env: [] as EnvVarDraft[],
 });
 // An empty port field is not an unconfigured one: it is the framework's,
 // decided per build, so the field shows nothing and says where the number
@@ -222,33 +233,10 @@ function loadSettings(from: Project) {
   settings.replicas = from.replicas ?? 1;
   settings.cpu = from.cpu ?? "";
   settings.memory = from.memory ?? "";
-  settings.env = envVarDrafts(from.env);
 }
 watch(project, (value) => {
   if (value && value.name !== settings.loadedFor) loadSettings(value);
 });
-
-function addEnvVar() {
-  settings.env.push(newEnvVarDraft());
-}
-function removeEnvVar(index: number) {
-  settings.env.splice(index, 1);
-}
-// Replacing a value is a deliberate act: the field opens empty, because there
-// is nothing to prefill it with. "Keep" closes it again and the stored value
-// stays — the same undo the connection modal's blank credential field is.
-function replaceValue(envVar: EnvVarDraft) {
-  envVar.value = "";
-}
-function keepValue(envVar: EnvVarDraft) {
-  envVar.value = undefined;
-}
-function replacePreviewValue(envVar: EnvVarDraft) {
-  envVar.previewValue = "";
-}
-function keepPreviewValue(envVar: EnvVarDraft) {
-  envVar.previewValue = undefined;
-}
 
 const savingSettings = ref(false);
 async function saveSettings() {
@@ -265,7 +253,6 @@ async function saveSettings() {
       replicas: settings.replicas,
       cpu: settings.cpu,
       memory: settings.memory,
-      env: envVarWrites(settings.env),
     });
     loadSettings(saved);
     toast.add({
@@ -723,8 +710,26 @@ function host(url?: string): string {
         </div>
       </div>
 
-      <!-- People: who holds which role on this project. -->
-      <MembersPanel v-else-if="tab === 'people'" :project="project.name" :role="project.role" />
+      <!-- Variables: the developer's day job, on its own route and its own
+           role. It is a tab rather than a section of the settings form
+           because the settings form is an admin's and this is not — a
+           developer who is not an admin has this and nothing else here. -->
+      <EnvVarsPanel
+        v-else-if="tab === 'variables'"
+        :project="project.name"
+        :role="project.role"
+        :env="project.env"
+        @saved="refresh"
+      />
+
+      <!-- People, and the CI keys underneath them: they are one list. A key
+           is a non-human member of exactly one project, so its grant is in
+           the members list above and its credential is issued and revoked
+           below. -->
+      <div v-else-if="tab === 'people'" class="space-y-10">
+        <MembersPanel :project="project.name" :role="project.role" />
+        <KeysPanel :project="project.name" :role="project.role" />
+      </div>
 
       <!-- Settings: everything on the project a user may change after
            creating it, and the danger zone that removes it entirely. -->
@@ -774,122 +779,6 @@ function host(url?: string): string {
               <UFormField label="Memory" help="Per replica, e.g. 512Mi.">
                 <UInput v-model="settings.memory" placeholder="unset" class="w-full font-mono" />
               </UFormField>
-            </div>
-          </div>
-
-          <div class="rounded-md border border-default bg-muted p-5 space-y-4">
-            <div class="flex items-center justify-between">
-              <h2 class="text-sm font-semibold text-highlighted">Environment variables</h2>
-              <UButton color="neutral" variant="subtle" size="xs" icon="i-lucide-plus" @click="addEnvVar">
-                Add variable
-              </UButton>
-            </div>
-            <p class="text-xs text-muted">
-              Values are never read back — a variable that has one shows <span class="font-mono">•••• set</span>, and
-              replacing it means typing the new one. They land in new releases: what is running keeps its release's
-              snapshot until the next deploy.
-            </p>
-            <p v-if="!settings.env.length" class="text-xs text-muted">None yet.</p>
-            <div v-for="(envVar, index) in settings.env" :key="index" class="flex items-start gap-2 flex-wrap sm:flex-nowrap">
-              <UInput v-model="envVar.name" placeholder="NAME" class="w-full sm:w-44 font-mono" />
-              <div v-if="!envVar.fromSecret && !envVar.fromClaim" class="flex-1 min-w-40 grid gap-2 sm:grid-cols-2">
-                <!-- The value: shown as presence, replaced by typing. -->
-                <div class="flex items-center gap-2 min-h-8">
-                  <UInput
-                    v-if="envVar.value !== undefined"
-                    v-model="envVar.value"
-                    :placeholder="envVar.set ? 'new value' : 'value'"
-                    autocomplete="off"
-                    class="flex-1 min-w-0 font-mono"
-                  />
-                  <UBadge
-                    v-else
-                    :color="envVar.set && renamed(envVar) ? 'warning' : 'neutral'"
-                    variant="subtle"
-                    size="sm"
-                    class="font-mono"
-                  >
-                    {{ envVar.set ? (renamed(envVar) ? "renamed — set again" : "•••• set") : "no value" }}
-                  </UBadge>
-                  <UButton
-                    v-if="envVar.value === undefined"
-                    color="neutral"
-                    variant="link"
-                    size="xs"
-                    class="px-0"
-                    @click="replaceValue(envVar)"
-                  >
-                    {{ envVar.set && !renamed(envVar) ? "Replace" : "Set" }}
-                  </UButton>
-                  <UButton
-                    v-else-if="envVar.set"
-                    color="neutral"
-                    variant="link"
-                    size="xs"
-                    class="px-0"
-                    @click="keepValue(envVar)"
-                  >
-                    Keep
-                  </UButton>
-                </div>
-                <!-- The preview value, on the same terms. -->
-                <div class="flex items-center gap-2 min-h-8">
-                  <UInput
-                    v-if="envVar.previewValue !== undefined"
-                    v-model="envVar.previewValue"
-                    :placeholder="envVar.previewSet ? 'new preview value' : 'preview value (optional)'"
-                    autocomplete="off"
-                    class="flex-1 min-w-0 font-mono"
-                  />
-                  <UBadge
-                    v-else
-                    :color="envVar.previewSet && renamed(envVar) ? 'warning' : 'neutral'"
-                    variant="subtle"
-                    size="sm"
-                    class="font-mono"
-                  >
-                    {{
-                      envVar.previewSet
-                        ? renamed(envVar)
-                          ? "renamed — set again"
-                          : "•••• preview set"
-                        : "no preview value"
-                    }}
-                  </UBadge>
-                  <UButton
-                    v-if="envVar.previewValue === undefined"
-                    color="neutral"
-                    variant="link"
-                    size="xs"
-                    class="px-0"
-                    @click="replacePreviewValue(envVar)"
-                  >
-                    {{ envVar.previewSet && !renamed(envVar) ? "Replace" : "Set" }}
-                  </UButton>
-                  <UButton
-                    v-else-if="envVar.previewSet"
-                    color="neutral"
-                    variant="link"
-                    size="xs"
-                    class="px-0"
-                    @click="keepPreviewValue(envVar)"
-                  >
-                    Keep
-                  </UButton>
-                </div>
-              </div>
-              <UBadge v-else color="neutral" variant="subtle" size="sm" class="font-mono mt-1.5 flex-1">
-                {{ envVar.fromSecret ? `secret ${envVar.fromSecret.name}/${envVar.fromSecret.key}` : `claim ${envVar.fromClaim!.name}/${envVar.fromClaim!.key}` }}
-              </UBadge>
-              <UButton
-                color="neutral"
-                variant="ghost"
-                size="xs"
-                icon="i-lucide-x"
-                aria-label="Remove variable"
-                class="mt-1"
-                @click="removeEnvVar(index)"
-              />
             </div>
           </div>
 

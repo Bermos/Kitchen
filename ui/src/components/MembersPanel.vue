@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { api, type Member } from "../lib/api";
+import { memberDetail, memberKind, memberLabel, roleOptionsFor, MEMBER_ROLE_OPTIONS, ROLE_SUMMARY } from "../lib/members";
 import { callerFor } from "../lib/me";
 import { may, refusal } from "../lib/policy";
 import { useAsync } from "../lib/useAsync";
@@ -10,6 +11,19 @@ import { useAsync } from "../lib/useAsync";
 // them off. It is the rest of the sentence self-service starts — a project's
 // creator is its admin the moment it exists, and this is how they hand it to
 // anybody else without going through the platform's owner.
+//
+// **Reading the list is every member's; changing it is an admin's.** Knowing
+// who else is on a project is part of knowing what the project is, so a viewer
+// who opened this panel and was refused on load would be reading a screen
+// about a project they can otherwise see in full. What a viewer gets is
+// therefore this list and no controls — the roles as badges rather than as
+// selects with nothing behind them, which is the "gone, not disabled" rule the
+// rest of the dashboard follows.
+//
+// Keys are in this list too, because a CI key is a member of exactly one
+// project: it is owned by a machine account created for it, and that account's
+// subject is what the grant names. It reads as a key rather than as a stranger
+// with an odd address; issuing and revoking are next door, in KeysPanel.
 //
 // Two refusals are the whole reason this screen has an error line rather than
 // a toast, and both of them explain themselves:
@@ -41,20 +55,8 @@ watch(
 );
 
 const members = computed(() => data.value ?? []);
-
-// Weakest first, the way the roles are ordered everywhere else, each with the
-// sentence docs/AUTH.md describes it in — the field is a decision about what
-// somebody may do, not a word to pick off a list.
-const roleOptions = [
-  { label: "viewer — reads status, builds, logs; may open a protected preview", value: "viewer" },
-  { label: "developer — builds, redeploys, rollbacks, env vars, domains", value: "developer" },
-  { label: "admin — everything a developer may, plus membership and settings", value: "admin" },
-];
-const roleSummary: Record<string, string> = {
-  viewer: "reads, no writes",
-  developer: "the day job",
-  admin: "membership and settings too",
-};
+const roleOptions = MEMBER_ROLE_OPTIONS;
+const roleSummary = ROLE_SUMMARY;
 
 // What went wrong with the last write, in the API's own words. It is one line
 // rather than one per control because only one write is ever in flight.
@@ -71,7 +73,7 @@ async function add() {
   try {
     const member = await api.addMember(props.project, { email: email.value.trim(), role: newRole.value });
     toast.add({
-      title: `${member.email || member.subject} is a ${member.role} on ${props.project}`,
+      title: `${memberLabel(member)} is a ${member.role} on ${props.project}`,
       color: "success",
       icon: "i-lucide-user-plus",
     });
@@ -95,7 +97,7 @@ async function changeRole(member: Member, role: string) {
   try {
     await api.changeMemberRole(props.project, member.subject, role);
     toast.add({
-      title: `${describe(member)} is now a ${role}`,
+      title: `${memberLabel(member)} is now a ${role}`,
       color: "success",
       icon: "i-lucide-user-cog",
     });
@@ -119,7 +121,7 @@ async function remove() {
   writeError.value = "";
   try {
     await api.removeMember(props.project, member.subject);
-    toast.add({ title: `${describe(member)} no longer has a role on ${props.project}`, color: "success", icon: "i-lucide-user-minus" });
+    toast.add({ title: `${memberLabel(member)} no longer has a role on ${props.project}`, color: "success", icon: "i-lucide-user-minus" });
     removing.value = null;
     await refresh();
   } catch (err) {
@@ -130,19 +132,17 @@ async function remove() {
   }
 }
 
-/** A member as a person rather than an identifier: the address where there is
- * one, and the subject where there is not — a machine account, or a grant
- * written by hand against an address. */
-function describe(member: Member): string {
-  return member.email || member.subject;
-}
-
-/** Whether the subject is worth showing next to the address. It is the thing
- * every write addresses a member by, so it is never hidden — only folded away
- * when it is the only name there is. */
-function subjectOf(member: Member): string {
-  return member.email ? member.subject : "";
-}
+// A key's grant is removed here like anybody else's, and that takes the role
+// off without revoking the credential — which is a key that authenticates and
+// can do nothing. The confirmation says so, and says where the other half is.
+const removalBlurb = computed(() => {
+  const member = removing.value;
+  if (!member) return "";
+  if (memberKind(member) === "key") {
+    return `This takes the ${member.role} role off the key and leaves the credential itself working — it will authenticate and be able to do nothing. Revoking it outright is the CI keys list below.`;
+  }
+  return `They lose their ${member.role} role on ${props.project} — its builds, its logs and its protected previews go with it. Nothing they built is removed, and they can be added back.`;
+});
 
 const readOnlyReason = computed(() => refusal("PATCH /api/v1/projects/{name}/members", caller.value));
 </script>
@@ -179,16 +179,29 @@ const readOnlyReason = computed(() => refusal("PATCH /api/v1/projects/{name}/mem
           </tr>
           <tr v-for="member in members" :key="member.subject" class="border-b border-muted last:border-0">
             <td class="px-4 py-3">
-              <p class="text-highlighted">{{ describe(member) }}</p>
-              <p v-if="subjectOf(member)" class="text-xs text-dimmed font-mono truncate max-w-xs" :title="member.subject">
-                {{ subjectOf(member) }}
+              <p class="text-highlighted flex items-center gap-2">
+                <UIcon
+                  v-if="memberKind(member) === 'key'"
+                  name="i-lucide-key-round"
+                  class="text-dimmed shrink-0"
+                  :title="`${member.name} is a CI key, not a person`"
+                />
+                <span :class="memberKind(member) === 'key' ? 'font-mono' : ''">{{ memberLabel(member) }}</span>
+                <UBadge v-if="memberKind(member) === 'key'" color="neutral" variant="subtle" size="sm">CI key</UBadge>
+              </p>
+              <p
+                v-if="memberDetail(member)"
+                class="text-xs text-dimmed font-mono truncate max-w-xs"
+                :title="member.subject"
+              >
+                {{ memberDetail(member) }}
               </p>
             </td>
             <td class="px-4 py-3 w-72">
               <USelect
                 v-if="mayChange"
                 :model-value="member.role"
-                :items="roleOptions"
+                :items="roleOptionsFor(member)"
                 :loading="changing === member.subject"
                 size="sm"
                 class="w-full"
@@ -206,7 +219,7 @@ const readOnlyReason = computed(() => refusal("PATCH /api/v1/projects/{name}/mem
                 variant="ghost"
                 size="xs"
                 icon="i-lucide-user-minus"
-                :aria-label="`Remove ${describe(member)}`"
+                :aria-label="`Remove ${memberLabel(member)}`"
                 @click="removing = member"
               />
             </td>
@@ -228,8 +241,8 @@ const readOnlyReason = computed(() => refusal("PATCH /api/v1/projects/{name}/mem
 
     <UModal
       :open="removing !== null"
-      :title="`Remove ${removing ? describe(removing) : ''}?`"
-      :description="`They lose their ${removing?.role} role on ${project} — its builds, its logs and its protected previews go with it. Nothing they built is removed, and they can be added back.`"
+      :title="`Remove ${removing ? memberLabel(removing) : ''}?`"
+      :description="removalBlurb"
       @update:open="(open: boolean) => { if (!open) removing = null; }"
     >
       <template #footer>
