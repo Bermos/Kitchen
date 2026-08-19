@@ -192,6 +192,9 @@ type buildView struct {
 	// Cache is what the layer cache did for this build. Absent on a build
 	// that was never run.
 	Cache *buildCacheView `json:"cache,omitempty"`
+	// Gates is what each quality gate did — not what it found, which is in
+	// its attestation.
+	Gates []gateView `json:"gates,omitempty"`
 }
 
 // buildCacheView is why a build took as long as it did, as far as the layer
@@ -216,6 +219,47 @@ func newBuildCacheView(cache *kitchenv1alpha1.BuildCacheStatus) *buildCacheView 
 		Mode:    string(cache.Mode),
 		Message: cache.Message,
 	}
+}
+
+// gateView is one quality gate's run over a build's artifact.
+//
+// It carries no verdict, because nothing at this level has one: what a gate
+// found is in the attestation, and whether that is disqualifying is a policy
+// question about the environment being deployed to. `Completed` means the gate
+// ran, whatever it found; `Failed` means it did not run at all.
+type gateView struct {
+	Name          string     `json:"name"`
+	Phase         string     `json:"phase,omitempty"`
+	Source        string     `json:"source,omitempty"`
+	ReportedBy    string     `json:"reportedBy,omitempty"`
+	PredicateType string     `json:"predicateType,omitempty"`
+	Attested      bool       `json:"attested"`
+	FinishedAt    *time.Time `json:"finishedAt,omitempty"`
+	Message       string     `json:"message,omitempty"`
+}
+
+func gateViews(gates []kitchenv1alpha1.QualityGateStatus) []gateView {
+	if len(gates) == 0 {
+		return nil
+	}
+	views := make([]gateView, 0, len(gates))
+	for _, gate := range gates {
+		view := gateView{
+			Name:          gate.Name,
+			Phase:         string(gate.Phase),
+			Source:        gate.Source,
+			ReportedBy:    gate.ReportedBy,
+			PredicateType: gate.PredicateType,
+			Attested:      gate.Attested != nil,
+			Message:       gate.Message,
+		}
+		if at := gate.FinishedAt; at != nil {
+			stamp := at.Time
+			view.FinishedAt = &stamp
+		}
+		views = append(views, view)
+	}
+	return views
 }
 
 // artifactView is the artifact half of a build. It carries whether evidence
@@ -307,6 +351,7 @@ func newBuildView(build *kitchenv1alpha1.Build) buildView {
 		Image:             build.Status.Image,
 		Artifact:          newArtifactView(build.Status.Artifact),
 		Cache:             newBuildCacheView(build.Status.Cache),
+		Gates:             gateViews(build.Status.Gates),
 		CreatedAt:         build.CreationTimestamp.Time,
 		Conditions:        conditionViews(build.Status.Conditions),
 	}

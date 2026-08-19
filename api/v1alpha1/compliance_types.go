@@ -132,6 +132,72 @@ type BuildAttestationSpec struct {
 	SBOMGenerator string `json:"sbomGenerator,omitempty"`
 }
 
+// QualityGateSpec is one gate the platform runs over every artifact it builds.
+//
+// A gate is a pod: an image somebody else wrote, pointed at the artifact, that
+// writes what it found to a file. Kitchen contributes the artifact reference,
+// the credential to pull it with, and a signature over the result — and
+// nothing else. That is what makes adding a gate a change to this list rather
+// than a change to every application repository.
+//
+// **A gate records findings and never a verdict.** Whether a finding is
+// disqualifying is a policy question about the environment being deployed to,
+// and putting the answer here would fix it platform-wide at the moment of
+// scanning — which is precisely what makes the same scan unable to be
+// acceptable in staging and blocking in production.
+type QualityGateSpec struct {
+	// Name identifies the gate in its attestation and on the Build. It has to
+	// be stable: a policy that requires "trivy" to have run is matching on
+	// this, and renaming a gate silently invalidates every artifact that
+	// carries the old name.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=40
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	Name string `json:"name"`
+
+	// Image is the runner. It is run as an unprivileged user with no access
+	// to the cluster, and the only thing it is given is the artifact and the
+	// credential to pull it.
+	// +kubebuilder:validation:MinLength=1
+	Image string `json:"image"`
+
+	// Args are passed to the image. Kubernetes' own `$(VAR)` expansion
+	// applies, so a gate names the artifact as `$(KITCHEN_ARTIFACT)` rather
+	// than through any templating of Kitchen's — along with
+	// `$(KITCHEN_FINDINGS)` for where to write, and `$(KITCHEN_PROJECT)`,
+	// `$(KITCHEN_BUILD)` and `$(KITCHEN_COMMIT)` for what is being scanned.
+	// +optional
+	Args []string `json:"args,omitempty"`
+
+	// Version is what the gate's own version is recorded as in the
+	// attestation. A finding is only reproducible against the version that
+	// produced it, and the image tag is not always the answer — a scanner
+	// whose vulnerability database updates hourly is a different gate every
+	// hour under the same tag.
+	// +optional
+	Version string `json:"version,omitempty"`
+
+	// Format names the shape of what the gate writes, recorded alongside the
+	// findings so a reader knows how to parse them. It is informational:
+	// nothing here validates it, because a gate that lied about its format
+	// would still have produced whatever it produced.
+	// +optional
+	Format string `json:"format,omitempty"`
+
+	// Disabled stops the gate running without removing it, so that turning
+	// one off is a visible line in the configuration rather than a deletion
+	// nobody can date.
+	// +optional
+	Disabled bool `json:"disabled,omitempty"`
+
+	// TimeoutSeconds bounds one run. A gate that hangs must not hold up the
+	// evidence the other gates produced.
+	// +kubebuilder:validation:Minimum=30
+	// +kubebuilder:default=900
+	// +optional
+	TimeoutSeconds int32 `json:"timeoutSeconds,omitempty"`
+}
+
 // ComplianceSpec configures what evidence the platform produces about its own
 // operation.
 type ComplianceSpec struct {
@@ -142,6 +208,15 @@ type ComplianceSpec struct {
 	// Attestation is the signed evidence attached to built artifacts.
 	// +optional
 	Attestation AttestationSpec `json:"attestation,omitempty"`
+
+	// Gates are the quality gates run over every artifact the platform
+	// builds. They live here, on the operator's own object, and not on a
+	// Project: a team that chose which scanners ran over its own code would
+	// be marking its own homework.
+	// +optional
+	// +listType=map
+	// +listMapKey=name
+	Gates []QualityGateSpec `json:"gates,omitempty"`
 }
 
 // AuditStatus reports whether the audit log is actually recording, which is

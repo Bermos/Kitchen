@@ -268,6 +268,36 @@ kitchen:
         # and evidence about an artifact should not change because somebody
         # else's tag moved overnight.
         sbomGenerator: ""
+    # -- Quality gates run over every artifact the platform builds. Each is a
+    # pod: an image somebody else wrote, pointed at the artifact, writing what
+    # it found to `$(KITCHEN_FINDINGS)`. Kitchen signs the result and attaches
+    # it to the artifact's digest.
+    #
+    # A gate records **findings and never a verdict** — whether a finding is
+    # disqualifying is a property of the environment being deployed to, and
+    # answering it here would fix it platform-wide at the moment of scanning.
+    # So do not pass a scanner the flag that makes it exit non-zero on
+    # findings: a non-zero exit means the gate did not run, which is a
+    # different and louder fact.
+    #
+    # They live here rather than in application repositories on purpose: a
+    # team that chose which scanners ran over its own code would be marking
+    # its own homework. Adding one is a change to this list and to nothing
+    # else.
+    #
+    # ```yaml
+    # gates:
+    #   - name: trivy
+    #     image: aquasec/trivy:0.58.0
+    #     version: "0.58.0"
+    #     format: trivy-json
+    #     args:
+    #       - image
+    #       - --format=json
+    #       - --output=$(KITCHEN_FINDINGS)
+    #       - $(KITCHEN_ARTIFACT)
+    # ```
+    gates: []
   observability:
     clickhouse:
       # -- Days to retain logs, metrics, traces and flow data.

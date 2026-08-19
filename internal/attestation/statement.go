@@ -67,6 +67,17 @@ const (
 	// countersigned rather than written here. See harvest.go.
 	PredicateBuildRecord = "https://kitchen.bermos.dev/attestation/build-record/v1"
 
+	// PredicateQualityGate records that a gate ran over an artifact and what
+	// it found: the gate's name and version, when it ran, and its raw output
+	// unmodified.
+	//
+	// It records **no verdict**, and that is the point rather than an
+	// omission. Gates produce facts; policies decide what is disqualifying.
+	// Keeping them apart is what lets the same scan be acceptable in staging
+	// and blocking in production without running the scanner twice, and it is
+	// what keeps developers out of threshold negotiation entirely.
+	PredicateQualityGate = "https://kitchen.bermos.dev/attestation/quality-gate/v1"
+
 	// PredicatePromotionDecision records a policy decision about whether an
 	// artifact was allowed to move, together with everything needed to
 	// replay it. Reserved by the policy engine (issue #132); named here so

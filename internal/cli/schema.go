@@ -365,6 +365,10 @@ var publishedShapes = map[string]struct {
 	"projectStatus": {"A project with its environments and recent builds", projectStatus{}},
 	"build":         {"One build. Phase is Queued, Running, Succeeded, Failed or Cancelled", build{}},
 	"buildList":     {"A list of builds, newest first", list[build]{}},
+	"gateList": {"The quality gates that ran over an artifact. Completed means the gate ran, " +
+		"whatever it found; Failed means it did not run", list[gate]{}},
+	"gateAccepted": {"Where a submitted gate result was attached, and whose word it is recorded as",
+		gateAccepted{}},
 	"evidenceSet": {"The signed evidence attached to an artifact, read out of the registry. " +
 		"`verified` false with attestations present means signatures were not checked, " +
 		"not that they failed", evidenceSet{}},

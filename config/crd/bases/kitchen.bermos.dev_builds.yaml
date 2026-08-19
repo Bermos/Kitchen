@@ -282,6 +282,79 @@ spec:
                 description: Framework detected by the auto strategy (e.g. nextjs,
                   vite, static).
                 type: string
+              gates:
+                description: |-
+                  Gates is what each quality gate did, which is not the same question as
+                  what it found. What it found is in its attestation.
+                items:
+                  description: |-
+                    QualityGateStatus is one gate's run over one artifact.
+
+                    It says whether the gate ran and whether its findings were signed. It does
+                    not say whether the findings were acceptable, because nothing at this level
+                    knows: that is a policy question about the environment an artifact is being
+                    promoted to, and it is answered at promotion.
+                  properties:
+                    attested:
+                      description: |-
+                        Attested is when the findings were signed and attached. Absent on a
+                        gate that ran but whose findings could not be attested — which is a
+                        gate that produced no evidence, and is worth telling apart from one
+                        that never ran.
+                      format: date-time
+                      type: string
+                    finishedAt:
+                      description: FinishedAt is when the run ended.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        Message explains a gate that did not run, or findings that were not
+                        attested. It never carries findings: those are in the attestation, in
+                        the registry, against the artifact's digest.
+                      type: string
+                    name:
+                      description: Name is the gate's, from the platform configuration.
+                      type: string
+                    phase:
+                      description: |-
+                        Phase is what became of the run. `Completed` means the gate ran and
+                        its findings were recorded, whatever they were.
+                      enum:
+                      - Pending
+                      - Running
+                      - Completed
+                      - Failed
+                      - Skipped
+                      type: string
+                    predicateType:
+                      description: |-
+                        PredicateType is what the gate's attestation was written under, so a
+                        reader can find it among everything else attached to the artifact.
+                      type: string
+                    reportedBy:
+                      description: |-
+                        ReportedBy names the identity that submitted an external result. It is
+                        empty for a gate the platform ran, where the platform is the answer.
+                      type: string
+                    source:
+                      description: |-
+                        Source says where the result came from: `platform` for a gate Kitchen
+                        ran, `external` for one ingested from somewhere that ran it already —
+                        an application's own CI, usually. An external result is evidence about
+                        who reported it as much as about what it says, which is why the two are
+                        never merged into one word.
+                      enum:
+                      - platform
+                      - external
+                      type: string
+                  required:
+                  - name
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
               image:
                 description: Image reference by digest, never by tag.
                 type: string

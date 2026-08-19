@@ -175,6 +175,7 @@ name against `internal/api/policy.go`, so a route that moves fails them too.
 | POST | `/builds/{name}/cancel` | Stop it — the Build stays, phase `Cancelled` | `developer` |
 | GET | `/builds/{name}/logs` | That build's output | `viewer` |
 | GET | `/builds/{name}/attestations` | The signed evidence attached to that build's artifact | `viewer` |
+| POST | `/builds/{name}/gates` | Submit a quality gate result produced elsewhere | `developer` |
 | GET | `/releases` | Every release. `?project=` filters | any account — filtered |
 | GET | `/releases/{name}` | One release | `viewer` |
 | GET | `/environments` | Every environment. `?project=` filters | any account — filtered |
@@ -2074,6 +2075,55 @@ have to carry the vocabulary; the URI travels with it because the URI is the
 authority. `source` says who made the claim — the platform signs both, so the
 signature cannot tell them apart, and a claim about what a build did is worth
 more when the thing that did the building made it.
+
+### Quality gates
+
+A build carries what each gate did on `gates`, beside its artifact:
+
+```json
+"gates": [
+  {"name": "trivy", "phase": "Completed", "source": "platform",
+   "predicateType": "https://kitchen.bermos.dev/attestation/quality-gate/v1",
+   "attested": true, "finishedAt": "2026-08-19T22:41:07Z"},
+  {"name": "sast", "phase": "Failed", "source": "platform", "attested": false,
+   "message": "the gate did not run: the scanner exited 137"}
+]
+```
+
+`Completed` means the gate **ran**, whatever it found — a scanner reporting a
+hundred critical vulnerabilities has completed, because it did its job.
+`Failed` means it did not run and nothing is known either way. Nothing here
+says whether the findings were acceptable: gates record facts, and whether a
+fact is disqualifying is a property of the environment being deployed to.
+
+`POST /builds/{name}/gates` ingests a result that was produced somewhere else —
+typically a scanner the application's own CI already ran:
+
+```json
+{
+  "gate": "trivy",
+  "version": "0.58.0",
+  "format": "trivy-json",
+  "findings": { "Results": [ ... ] }
+}
+```
+
+The findings are carried unmodified into a signed attestation attached to the
+artifact's digest, and the answer says where it went. It is the one endpoint
+whose body is not a handful of fields, so it takes up to 16 MiB rather than the
+API's usual megabyte: a container scan of an ordinary application runs to
+several.
+
+The result is recorded as **reported by** the authenticated caller, and the
+Build's `source` for it is `external`. The platform's signature means these
+bytes were submitted by that identity at that moment and have not changed
+since — not that the findings are true. A submission does not overwrite a gate
+of the same name that the platform ran itself.
+
+A build with no artifact digest answers `409`; a registry that cannot be
+written answers `502`; an installation holding no signing key answers `409`,
+because storing an unsigned result would leave something in the registry that
+looks like evidence and is not.
 
 ### Metrics
 

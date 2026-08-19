@@ -61,6 +61,10 @@ type ArtifactAttester interface {
 	// Harvest reads back what the builder left attached to the push, and
 	// says which digest inside it the artifact actually is.
 	Harvest(ctx context.Context, ref string) (attestation.BuilderEvidence, error)
+	// Blob reads back bytes a gate pod stored in the artifact's repository,
+	// which is how findings too large for a pod's termination message reach
+	// the operator that signs them.
+	Blob(ctx context.Context, repository, digest string) ([]byte, error)
 }
 
 // AttesterFactory builds the attester for one registry, out of the docker

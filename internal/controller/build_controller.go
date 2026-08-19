@@ -139,6 +139,12 @@ type BuildReconciler struct {
 	// build's outcome back onto its commit. Defaults to gitprovider.Default;
 	// tests inject fakes.
 	GitProviders gitprovider.Factory
+	// QualityGateImage is the image the gate publisher runs. It is the
+	// operator's own image — the publisher is another binary in it — and the
+	// chart passes it in, because a pod cannot read its own image back.
+	// Without it, gates are configured and never run.
+	QualityGateImage string
+
 	// Attesters resolves how signed evidence reaches the registry a build
 	// pushed to. Nil talks to the real registry with the build's own
 	// credential; tests point it at an in-process one.
@@ -199,8 +205,15 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	if err := r.Get(ctx, req.NamespacedName, build); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	if isTerminal(build.Status.Phase) || !build.DeletionTimestamp.IsZero() {
+	if !build.DeletionTimestamp.IsZero() {
 		return ctrl.Result{}, nil
+	}
+	if isTerminal(build.Status.Phase) {
+		// The build is over and nothing below can change it. What is left is
+		// the evidence that accretes onto the artifact afterwards: the
+		// quality gates, which run over something that already exists and
+		// hold nothing up by taking their time.
+		return r.reconcileGates(ctx, build)
 	}
 
 	project := &kitchenv1alpha1.Project{}

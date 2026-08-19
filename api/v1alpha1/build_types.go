@@ -180,6 +180,79 @@ type ArtifactEvidence struct {
 	Source string `json:"source,omitempty"`
 }
 
+// GatePhase is what a quality gate is doing, or what became of it.
+//
+// The distinction the whole type exists to draw is between `Failed` and
+// `Completed`: a gate that ran and found a hundred critical vulnerabilities
+// has **completed**, because it did its job. `Failed` means the gate did not
+// run — the image would not pull, the scanner crashed, the timeout expired —
+// and there is no evidence either way.
+//
+// Treating those two the same is the classic way to build a compliance system
+// that reports green while its scanners are broken.
+// +kubebuilder:validation:Enum=Pending;Running;Completed;Failed;Skipped
+type GatePhase string
+
+const (
+	GatePending   GatePhase = "Pending"
+	GateRunning   GatePhase = "Running"
+	GateCompleted GatePhase = "Completed"
+	GateFailed    GatePhase = "Failed"
+	GateSkipped   GatePhase = "Skipped"
+)
+
+// QualityGateStatus is one gate's run over one artifact.
+//
+// It says whether the gate ran and whether its findings were signed. It does
+// not say whether the findings were acceptable, because nothing at this level
+// knows: that is a policy question about the environment an artifact is being
+// promoted to, and it is answered at promotion.
+type QualityGateStatus struct {
+	// Name is the gate's, from the platform configuration.
+	Name string `json:"name"`
+
+	// Phase is what became of the run. `Completed` means the gate ran and
+	// its findings were recorded, whatever they were.
+	// +optional
+	Phase GatePhase `json:"phase,omitempty"`
+
+	// Source says where the result came from: `platform` for a gate Kitchen
+	// ran, `external` for one ingested from somewhere that ran it already —
+	// an application's own CI, usually. An external result is evidence about
+	// who reported it as much as about what it says, which is why the two are
+	// never merged into one word.
+	// +kubebuilder:validation:Enum=platform;external
+	// +optional
+	Source string `json:"source,omitempty"`
+
+	// ReportedBy names the identity that submitted an external result. It is
+	// empty for a gate the platform ran, where the platform is the answer.
+	// +optional
+	ReportedBy string `json:"reportedBy,omitempty"`
+
+	// PredicateType is what the gate's attestation was written under, so a
+	// reader can find it among everything else attached to the artifact.
+	// +optional
+	PredicateType string `json:"predicateType,omitempty"`
+
+	// Attested is when the findings were signed and attached. Absent on a
+	// gate that ran but whose findings could not be attested — which is a
+	// gate that produced no evidence, and is worth telling apart from one
+	// that never ran.
+	// +optional
+	Attested *metav1.Time `json:"attested,omitempty"`
+
+	// FinishedAt is when the run ended.
+	// +optional
+	FinishedAt *metav1.Time `json:"finishedAt,omitempty"`
+
+	// Message explains a gate that did not run, or findings that were not
+	// attested. It never carries findings: those are in the attestation, in
+	// the registry, against the artifact's digest.
+	// +optional
+	Message string `json:"message,omitempty"`
+}
+
 // BuildStatus defines the observed state of a Build.
 type BuildStatus struct {
 	// +optional
@@ -202,6 +275,12 @@ type BuildStatus struct {
 	// that never got as far as being run.
 	// +optional
 	Cache *BuildCacheStatus `json:"cache,omitempty"`
+	// Gates is what each quality gate did, which is not the same question as
+	// what it found. What it found is in its attestation.
+	// +optional
+	// +listType=map
+	// +listMapKey=name
+	Gates []QualityGateStatus `json:"gates,omitempty"`
 
 	// +optional
 	StartedAt *metav1.Time `json:"startedAt,omitempty"`

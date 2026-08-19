@@ -118,6 +118,7 @@ export interface Build {
   image?: string;
   artifact?: Artifact;
   cache?: BuildCache;
+  gates?: QualityGate[];
   startedAt?: string;
   completedAt?: string;
   createdAt: string;
@@ -152,6 +153,28 @@ export interface Artifact {
    *  evidence itself still comes from `attestations()`. */
   evidence?: ArtifactEvidence[];
   /** Why an artifact is unattested, when it is. */
+  message?: string;
+}
+
+/** One quality gate's run over a build's artifact.
+ *
+ *  `Completed` means the gate ran, whatever it found — a scanner reporting a
+ *  hundred critical vulnerabilities has completed, because it did its job.
+ *  `Failed` means it did not run at all and nothing is known either way.
+ *  Nothing here says whether the findings were acceptable: gates record facts,
+ *  and whether a fact is disqualifying is a property of the environment being
+ *  deployed to. */
+export interface QualityGate {
+  name: string;
+  phase?: "Pending" | "Running" | "Completed" | "Failed" | "Skipped";
+  /** `platform` for a gate Kitchen ran, `external` for a result submitted by
+   *  something that had already run it. */
+  source?: "platform" | "external";
+  /** Who submitted an external result. Empty for one the platform ran. */
+  reportedBy?: string;
+  predicateType?: string;
+  attested: boolean;
+  finishedAt?: string;
   message?: string;
 }
 
