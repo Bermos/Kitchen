@@ -231,6 +231,40 @@ spec:
               builds:
                 description: BuildsSpec configures platform-wide build defaults.
                 properties:
+                  cache:
+                    default: {}
+                    description: |-
+                      Cache is the layer cache builds reuse between runs.
+
+                      The empty-object default is what gives an installation that predates
+                      the field a cache at all: structural defaulting only descends into
+                      objects that are present.
+                    properties:
+                      enabled:
+                        default: true
+                        description: |-
+                          Enabled builds against the layer cache. Off means every build starts
+                          from nothing, which is slower and the only way to be certain a build
+                          reused nothing at all.
+                        type: boolean
+                      mode:
+                        default: max
+                        description: |-
+                          Mode is how much of a BuildKit build is cached. It does not reach the
+                          buildpacks lifecycle, which has one cache image and no such choice.
+                        enum:
+                        - max
+                        - min
+                        type: string
+                      scope:
+                        default: project
+                        description: Scope is what two builds have to share to reuse
+                          each other's layers.
+                        enum:
+                        - project
+                        - branch
+                        type: string
+                    type: object
                   concurrency:
                     default: 2
                     description: Maximum number of builds running at once.

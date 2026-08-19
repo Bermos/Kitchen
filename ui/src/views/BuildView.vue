@@ -85,6 +85,20 @@ watch(name, () => {
   evidenceError.value = "";
 });
 
+// What the layer cache did, in the words the duration needs next to it. A
+// cold build is not a fault — it is a build that had nothing to reuse, and
+// saying so is what keeps it from reading as a regression.
+const cacheNote = computed(() => {
+  const cache = build.value?.cache;
+  if (!cache) return null;
+  if (!cache.enabled) {
+    return { label: cache.message ? "no cache" : "cache off", tone: "text-dimmed", detail: cache.message ?? "" };
+  }
+  return cache.warm
+    ? { label: "cache warm", tone: "text-success", detail: cache.ref ?? "" }
+    : { label: "cache cold", tone: "text-warning", detail: cache.message || (cache.ref ?? "") };
+});
+
 /** Enough of a digest to recognise it by; the whole thing is in the title. */
 function shortDigest(digest?: string): string {
   const hex = digest?.split(":")[1];
@@ -149,6 +163,9 @@ const logStreamer = (query: LogQuery, onLine: (line: LogLine) => void, signal: A
         <div>
           <p class="text-xs text-muted mb-1">Duration</p>
           <p class="text-sm text-toned font-mono">{{ duration(build.startedAt, build.completedAt) }}</p>
+          <p v-if="cacheNote" class="text-[11px] mt-0.5" :class="cacheNote.tone" :title="cacheNote.detail">
+            {{ cacheNote.label }}
+          </p>
         </div>
         <!-- `truncate` needs the cell to be allowed to shrink: a grid item's
              min-width is its content until min-w-0 says otherwise, and an

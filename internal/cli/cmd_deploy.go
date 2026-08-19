@@ -595,7 +595,18 @@ func renderDeployResult(s tui.Styles, event deployEvent) string {
 	if event.OK == nil || !*event.OK {
 		return s.Bad.Render("✗ build " + strings.ToLower(event.Build.Phase))
 	}
-	lines := []string{s.OK.Render("✓ build succeeded")}
+	built := s.OK.Render("✓ build succeeded")
+	// Why it took as long as it did, where the platform knows: a build with
+	// nothing to reuse is slow for a reason, and one that reads as a
+	// regression is the thing this line exists to prevent.
+	if cache := event.Build.Cache; cache != nil && cache.Enabled {
+		if cache.Warm {
+			built += " " + s.Subtle.Render("cache warm")
+		} else {
+			built += " " + s.Subtle.Render("cache cold — the next build reuses these layers")
+		}
+	}
+	lines := []string{built}
 	if event.Environment != nil {
 		where := event.Environment.Name
 		if event.URL != "" {

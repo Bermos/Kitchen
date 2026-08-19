@@ -115,6 +115,10 @@ type BuildReconciler struct {
 	// pushed to. Nil talks to the real registry with the build's own
 	// credential; tests point it at an in-process one.
 	Attesters AttesterFactory
+	// CacheProbes resolves how the reconciler asks a registry whether a
+	// layer cache is there. Nil asks the real one; tests answer without a
+	// registry at all.
+	CacheProbes CacheProbeFactory
 }
 
 // buildTarget is where a build pushed and how: the registry, the credential
@@ -205,6 +209,13 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	}
 
 	tagRef := fmt.Sprintf("%s/%s:%s", registry.Prefix, project.Name, shortSHA(build.Spec.Git.SHA))
+	target := buildTarget{
+		Connection: registryConn,
+		Registry:   registry,
+		Strategy:   strategy,
+		Tag:        tagRef,
+		Namespace:  appNS,
+	}
 
 	job := &batchv1.Job{}
 	err = r.Get(ctx, types.NamespacedName{Namespace: appNS, Name: build.Name}, job)
@@ -219,13 +230,18 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		}
 		if detected.Strategy != "" {
 			strategy = detected.Strategy
+			target.Strategy = strategy
 		}
-		if err := r.createJob(ctx, build, project, strategy, detected, appNS, credsSecret, tagRef); err != nil {
+		// Planned before the Job exists, because the plan is part of the pod
+		// spec and a Job's template cannot be edited afterwards.
+		cache := r.planCache(ctx, build, project, builds.Cache, target)
+		if err := r.createJob(ctx, build, project, strategy, detected, cache, appNS, credsSecret, tagRef); err != nil {
 			return ctrl.Result{}, err
 		}
 		log.Info("build job created",
 			"namespace", appNS, "job", build.Name, "image", tagRef,
-			"strategy", strategy, "framework", detected.Name)
+			"strategy", strategy, "framework", detected.Name,
+			"cache", cache.Ref, "cacheWarm", cache.Warm)
 		if err := r.Audit.Record(ctx, audit.Transition{
 			Object:      build,
 			Kind:        audit.KindBuild,
@@ -241,12 +257,14 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 				"strategy":  string(strategy),
 				"framework": detected.Name,
 				"image":     tagRef,
+				"cacheWarm": cache.Warm,
 			},
 		}); err != nil {
 			return ctrl.Result{}, err
 		}
 		build.Status.Phase = kitchenv1alpha1.BuildRunning
 		build.Status.DetectedFramework = detected.Name
+		build.Status.Cache = cache
 		build.Status.StartedAt = ptr.To(metav1.Now())
 		meta.SetStatusCondition(&build.Status.Conditions, metav1.Condition{
 			Type: condReady, Status: metav1.ConditionFalse, Reason: "BuildRunning",
@@ -264,13 +282,7 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	complete, failed, message := jobOutcome(job)
 	switch {
 	case complete:
-		return r.succeed(ctx, build, project, job, buildTarget{
-			Connection: registryConn,
-			Registry:   registry,
-			Strategy:   strategy,
-			Tag:        tagRef,
-			Namespace:  appNS,
-		})
+		return r.succeed(ctx, build, project, job, target)
 	case failed:
 		return r.fail(ctx, build, project, reasonBuildFailed, message)
 	default:
@@ -404,11 +416,12 @@ func (r *BuildReconciler) createJob(
 	project *kitchenv1alpha1.Project,
 	strategy kitchenv1alpha1.BuildStrategy,
 	detected framework.Framework,
+	cache *kitchenv1alpha1.BuildCacheStatus,
 	appNS, credsSecret, tagRef string,
 ) error {
-	template := dockerfilePod(project, build, credsSecret, tagRef)
+	template := dockerfilePod(project, build, cache, credsSecret, tagRef)
 	if strategy == kitchenv1alpha1.BuildStrategyBuildpacks {
-		template = buildpacksPod(project, build, detected, credsSecret, tagRef)
+		template = buildpacksPod(project, build, detected, cache, credsSecret, tagRef)
 	}
 
 	labels := map[string]string{
@@ -443,6 +456,7 @@ func (r *BuildReconciler) createJob(
 func dockerfilePod(
 	project *kitchenv1alpha1.Project,
 	build *kitchenv1alpha1.Build,
+	cache *kitchenv1alpha1.BuildCacheStatus,
 	credsSecret, tagRef string,
 ) corev1.PodTemplateSpec {
 	buildContext := repoCloneURL(project) + "#" + build.Spec.Git.SHA
@@ -469,6 +483,7 @@ func dockerfilePod(
 		// arrive there as a wall of escape codes.
 		"--progress", "plain",
 	}
+	args = append(args, buildkitCacheArgs(cache)...)
 
 	return corev1.PodTemplateSpec{
 		ObjectMeta: metav1.ObjectMeta{
@@ -923,13 +938,30 @@ func (r *BuildReconciler) fail(
 
 // succeededDescription is the line a status check carries on a green build.
 // How long it took is the one thing a reader of a commit wants from it that
-// the commit does not already say.
+// the commit does not already say — and next to it, whether there was a cache,
+// because a build that was slow for having nothing to reuse should say so
+// rather than read as a regression.
 func succeededDescription(build *kitchenv1alpha1.Build) string {
 	seconds := buildDurationSeconds(build)
 	if seconds <= 0 {
-		return "the image was built and pushed"
+		return "the image was built and pushed" + cacheSuffix(build)
 	}
-	return fmt.Sprintf("image built and pushed in %s", (time.Duration(seconds) * time.Second).String())
+	return fmt.Sprintf("image built and pushed in %s%s",
+		(time.Duration(seconds) * time.Second).String(), cacheSuffix(build))
+}
+
+// cacheSuffix is how a status line says what the layer cache did, and nothing
+// when there was none to speak of: an installation that turned caching off
+// does not want every commit told about it.
+func cacheSuffix(build *kitchenv1alpha1.Build) string {
+	cache := build.Status.Cache
+	if cache == nil || !cache.Enabled {
+		return ""
+	}
+	if cache.Warm {
+		return ", cache warm"
+	}
+	return ", cache cold"
 }
 
 // buildDurationSeconds is how long a finished build ran, 0 when unknown.

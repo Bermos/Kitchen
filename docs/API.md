@@ -1694,6 +1694,32 @@ reported as `requestedBy`.
 See [Letting the platform update itself](../charts/kitchen/README.md#letting-the-platform-update-itself)
 for what enabling it grants.
 
+### What a build reused
+
+Every build carries `cache`, which is the platform's answer to "why did that
+take four minutes":
+
+```json
+{
+  "enabled": true,
+  "warm": false,
+  "ref": "harbor.example.com/kitchen/my-shop:buildcache",
+  "mode": "max",
+  "message": "nothing had been cached under harbor.example.com/kitchen/my-shop:buildcache yet, so this build had nothing to reuse"
+}
+```
+
+`warm` is whether the cache existed when the build started, which is the honest
+half: neither BuildKit nor the buildpacks lifecycle reports how many layers it
+went on to reuse, so nothing here claims a hit rate. A cold build is not a
+fault — it is the first of its scope, or the first after the cache was removed —
+and `message` says which. `enabled: false` with a message is the platform having
+turned the cache off for this build because the registry did not keep the last
+one; without a message it is an installation that asked for no caching.
+
+`mode` is empty on a buildpacks build: the lifecycle has one cache image and no
+`max`/`min` to choose between.
+
 ### Logs
 
 Build and runtime logs come from ClickHouse, where the node collector ships

@@ -78,6 +78,10 @@ spec:
   builds:
     defaultStrategy: auto               # dockerfile | buildpacks | auto (what a project on "auto" takes)
     concurrency: 2
+    cache:
+      enabled: true                     # reuse layers between builds, in the registry the project pushes to
+      mode: max                         # max | min — how much of a BuildKit build is kept
+      scope: project                    # project | branch — what two builds share to reuse each other's layers
   registry:
     enabled: true                       # the registry the platform runs for itself
     host: registry.apps.example.com     # where it is published; defaults to registry.<baseDomain>
@@ -375,6 +379,12 @@ status:
     attestedAt: ...                     # when the platform attached its build record
     keyID: 9f2c...                      # what it was signed under
     message: ""                         # why it is unattested, when it is
+  cache:
+    enabled: true
+    warm: true                          # the cache existed when this build started
+    ref: harbor.example.com/kitchen/my-shop:buildcache
+    mode: max                           # empty for a buildpacks build
+    message: ""                         # why there was no cache, when there was none
   startedAt: ...
   duration: 143s
   conditions: [...]
@@ -407,6 +417,35 @@ artifact cannot do is satisfy a policy that requires evidence, which is where th
 consequence belongs. Nothing mirrors the attestations onto this object — they live in
 the registry against the digest, which is the only copy an installation leaving Kitchen
 would keep. See [COMPLIANCE.md](COMPLIANCE.md).
+
+`status.cache` is what the layer cache did, and it is on every build including the
+ones that had none. The cache lives in the registry the project already pushes to,
+under the same credential: BuildKit exports a cache manifest to
+`<image repository>:buildcache` and imports it on the next build, and the buildpacks
+lifecycle exports a cache image to `:buildcache-cnb` — different tags, because the
+two formats cannot read each other. `Kitchen.spec.builds.cache` configures all of it:
+`mode: max` keeps the intermediate layers, so a source change still reuses the
+dependency install above it, and `scope: branch` gives each branch its own cache
+instead of one per project.
+
+What is recorded is what the platform can stand behind. `warm` says the cache existed
+when the build started; nothing says how many layers were reused, because neither
+builder reports it. A cold build says so on the commit status too — "image built and
+pushed in 4m12s, cache cold" — so that a slow first build does not read as a
+regression.
+
+Two things follow from the cache being a tag in the registry. Whether a registry
+accepts a cache manifest cannot be asked, only attempted: BuildKit is told
+`ignore-error=true`, so a registry that refuses one warns instead of failing a build
+whose image is already pushed, and the reconciler notices on the *next* build — the
+last build exported and the cache is not there — and builds that one without a cache,
+saying so on `status.cache.message`. That is deliberately not sticky: the build after
+tries again, so an installation that moves to a registry which does keep caches
+recovers on its own. And the default scope is bounded without anything pruning it —
+one tag per project, overwritten in place, so what grows is the unreferenced blobs
+underneath, which the bundled registry reclaims while running. `scope: branch` is not
+bounded: it leaves one tag per branch that ever built, which nothing removes, and is
+the setting to weigh against the registry's own retention.
 
 A project on `strategy: auto` takes `Kitchen.spec.builds.defaultStrategy`; when that
 is `auto` too, the platform reads the repository at the commit under build and decides

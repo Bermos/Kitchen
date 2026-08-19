@@ -188,6 +188,33 @@ type buildView struct {
 	// platform managed to attest it. Absent on a build that never got as far
 	// as pushing anything.
 	Artifact *artifactView `json:"artifact,omitempty"`
+	// Cache is what the layer cache did for this build. Absent on a build
+	// that was never run.
+	Cache *buildCacheView `json:"cache,omitempty"`
+}
+
+// buildCacheView is why a build took as long as it did, as far as the layer
+// cache is concerned: a cold build had nothing to reuse, and saying so is what
+// keeps it from reading as a regression.
+type buildCacheView struct {
+	Enabled bool   `json:"enabled"`
+	Warm    bool   `json:"warm"`
+	Ref     string `json:"ref,omitempty"`
+	Mode    string `json:"mode,omitempty"`
+	Message string `json:"message,omitempty"`
+}
+
+func newBuildCacheView(cache *kitchenv1alpha1.BuildCacheStatus) *buildCacheView {
+	if cache == nil {
+		return nil
+	}
+	return &buildCacheView{
+		Enabled: cache.Enabled,
+		Warm:    cache.Warm,
+		Ref:     cache.Ref,
+		Mode:    string(cache.Mode),
+		Message: cache.Message,
+	}
 }
 
 // artifactView is the artifact half of a build. It carries whether evidence
@@ -236,6 +263,7 @@ func newBuildView(build *kitchenv1alpha1.Build) buildView {
 		DetectedFramework: build.Status.DetectedFramework,
 		Image:             build.Status.Image,
 		Artifact:          newArtifactView(build.Status.Artifact),
+		Cache:             newBuildCacheView(build.Status.Cache),
 		CreatedAt:         build.CreationTimestamp.Time,
 		Conditions:        conditionViews(build.Status.Conditions),
 	}

@@ -1243,6 +1243,9 @@ kubectl delete namespace kitchen-system
 | `kitchen.builds.defaultStrategy` | `auto` | `auto`, `dockerfile` or `buildpacks`. |
 | `kitchen.builds.concurrency` | `2` | Builds running at once. |
 | `kitchen.builds.releaseRetention` | `10` | Releases each project keeps. Older ones are pruned, except any an environment still points at — a rollback target never disappears. `0` keeps every release forever. |
+| `kitchen.builds.cache.enabled` | `true` | Reuse layers between builds. The cache is a manifest in the registry the project already pushes to, under the same credential — nothing extra to install. Off means every build starts from nothing. |
+| `kitchen.builds.cache.mode` | `max` | How much of a BuildKit build is cached: `max` keeps intermediate layers, so a source change still reuses the dependency install above it, at the cost of registry storage; `min` keeps only the layers of the image that came out. Buildpacks builds ignore it. |
+| `kitchen.builds.cache.scope` | `project` | What two builds share to reuse each other's layers: `project` is one tag per project, overwritten in place and so bounded; `branch` is one per branch, a better hit rate on a long-lived branch and a tag nothing removes. |
 | `kitchen.compliance.audit.enabled` | `true` | Record every state transition into an append-only, hash-chained log in the telemetry store. Off leaves the platform with no evidence of what it did. |
 | `kitchen.compliance.audit.retentionDays` | `365` | Audit retention, deliberately separate from telemetry retention: evidence must outlive logs. Minimum 90. |
 | `kitchen.compliance.attestation.enabled` | `true` | Sign a build record for every artifact and attach it to the artifact's digest as a DSSE envelope over an in-toto statement, through OCI referrers. |

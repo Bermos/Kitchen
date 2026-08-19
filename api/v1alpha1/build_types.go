@@ -101,6 +101,43 @@ type ArtifactStatus struct {
 	Message string `json:"message,omitempty"`
 }
 
+// BuildCacheStatus is what the layer cache did for one build, which is the
+// difference between "this build was slow" and "this build was slow because it
+// had nothing to reuse".
+//
+// A cold build is not a fault and a warm one is not a promise: BuildKit and the
+// buildpacks lifecycle both decide layer by layer what they can reuse, and
+// neither reports how much it did. What is recorded here is what the platform
+// can stand behind — whether a cache was configured, where it is, and whether
+// it existed when the build started.
+type BuildCacheStatus struct {
+	// Enabled is whether this build imported from and exported to the cache.
+	// False with a Message is a cache the platform turned off for a reason;
+	// false without one is an installation that asked for no caching.
+	Enabled bool `json:"enabled"`
+
+	// Ref is the registry reference the cache is kept under, empty when
+	// there is no cache.
+	// +optional
+	Ref string `json:"ref,omitempty"`
+
+	// Mode is how much of the build was exported: max or min. Empty for a
+	// buildpacks build, whose lifecycle has one cache image and no such
+	// choice.
+	// +optional
+	Mode BuildCacheMode `json:"mode,omitempty"`
+
+	// Warm is whether the cache existed when the build started. A cold build
+	// is the first of its scope, or the first after the cache was removed —
+	// either way it had nothing to reuse and the next one will.
+	Warm bool `json:"warm"`
+
+	// Message explains a cache that is not there: the first build of a
+	// project, or a registry that would not keep the cache manifest.
+	// +optional
+	Message string `json:"message,omitempty"`
+}
+
 // BuildStatus defines the observed state of a Build.
 type BuildStatus struct {
 	// +optional
@@ -118,6 +155,11 @@ type BuildStatus struct {
 	// by name, and what the platform has asserted about it.
 	// +optional
 	Artifact *ArtifactStatus `json:"artifact,omitempty"`
+
+	// Cache is what the layer cache did for this build. Absent on a build
+	// that never got as far as being run.
+	// +optional
+	Cache *BuildCacheStatus `json:"cache,omitempty"`
 
 	// +optional
 	StartedAt *metav1.Time `json:"startedAt,omitempty"`
