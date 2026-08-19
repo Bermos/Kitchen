@@ -146,6 +146,18 @@ build: manifests generate ui-policy fmt vet ## Build the manager and preview-gat
 	go build -ldflags "$(LDFLAGS)" -o bin/manager cmd/main.go
 	go build -ldflags "$(LDFLAGS)" -o bin/gate cmd/gate/main.go
 
+# The CLI is not in `build`: it goes on a developer's machine rather than into
+# the operator's image, so building it is a thing somebody asks for. It takes
+# the same LDFLAGS, so `kitchen version` reports the release the platform is on
+# — one tag versions the chart, both images and this.
+.PHONY: cli
+cli: ## Build the kitchen CLI into bin/kitchen.
+	go build -ldflags "$(LDFLAGS)" -o bin/kitchen ./cmd/kitchen
+
+.PHONY: cli-install
+cli-install: ## Install the kitchen CLI into GOBIN.
+	go install -ldflags "$(LDFLAGS)" ./cmd/kitchen
+
 .PHONY: run
 run: manifests generate ui-policy fmt vet ## Run a controller from your host.
 	go run ./cmd/main.go

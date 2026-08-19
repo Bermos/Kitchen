@@ -604,7 +604,36 @@ outside:
   dashboard revokes the token on sign-out rather than leaving it valid, and a
   week is the longest it is worth anything.
 
+### How the CLI signs in (settled, for now)
+
+`kitchen` authenticates with an **API key, exchanged here for a token** — the
+same path CI takes, and for the same reasons: the key never reaches the
+operator, revocation stays in one place, and a key is a machine account holding
+a role on exactly one project, which is the narrowest credential this platform
+issues. That matters more for a CLI than anywhere else, since a laptop is where
+a too-broad token ends up.
+
+**A person cannot sign the CLI in through a browser, and that is a fact about
+this issuer.** Both flows a CLI would use are unavailable:
+
+- **No device authorization grant.** `@better-auth/oauth-provider` (1.6.27)
+  implements none — there is no device endpoint to advertise in the discovery
+  document and nothing for a CLI to poll. Adding one is a change here, not in
+  the CLI.
+- **A loopback redirect needs a client seeded for one fixed port.** The provider
+  refuses a client whose `redirect_uris` are on more than one host, and a port
+  is part of a host, so `http://127.0.0.1:<port>/callback` can only be
+  registered for a single port — which may be in use. A public `kitchen-cli`
+  client would be seeded the way `kitchen-ui` is (`seed.ts`, `config.ui`), with
+  that trade made deliberately.
+
+Until one of the two is decided, the key path is the whole of it. See
+[CLI.md](CLI.md#signing-in).
+
 ## Open items
 
 - **Sign-in pages**: the service ships its own minimal login and consent
   pages. The Vue UI takes them over when it lands.
+- **Browser sign-in for the CLI**: a device authorization grant in the OAuth
+  provider, or a seeded loopback client. Neither exists yet; the section above
+  says what each would take.

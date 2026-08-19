@@ -31,6 +31,7 @@ A third identity is not a persona but needs a place in any model that grants pow
 |---|---|---|
 | **Operator (Go)** | Control plane: reconciles all Kitchen resources, exposes the public API | CRD-driven; the API the UI/CLI talk to |
 | **Management UI (Vue)** | Dashboard: projects, deployments, logs, metrics, settings | Talks only to the operator API |
+| **`kitchen` CLI (Go)** | `link`, `deploy`, `logs`, `env`, `rollback` from a terminal | ✅ Shipped, in this repository so one tag versions it with the chart and both images. A client of the same REST API the dashboard uses, and built to be driven by a machine: `--json` everywhere, no prompt that has no flag, fixed exit codes, and `kitchen schema` publishing the whole surface. See [CLI.md](CLI.md) |
 | **ClickHouse** | Storage for **all** telemetry: metrics, logs, traces, build logs, mesh flow data | Observability store — *not* the system of record (that's CRDs/etcd) |
 | **Collectors** | Cluster + application monitoring | ✅ Settled and shipped, and there is one of them: an `otelcol-contrib` DaemonSet takes container logs, pod and node metrics and the OTLP applications export, and writes ClickHouse itself. What it cannot produce stays the operator's — Hubble flows, and the restarts, OOM kills, limits and replica counts that are facts about API objects. See the telemetry-pipeline row below |
 | **Cilium (assumed present)** | Traffic observability (Hubble) + ingress (Gateway API) | Kitchen does **not** install Cilium — it assumes the cluster runs it as its CNI (missing-Cilium handling ignored for now). No separate ingress controller: Cilium's built-in Gateway API implementation is the ingress |
@@ -86,7 +87,6 @@ These aren't nice-to-haves — the first three are the product.
 
 ### Nice-to-haves (later)
 
-- CLI (`kitchen deploy`, `kitchen logs`, `kitchen link`)
 - Deploy notifications/webhooks (Slack, generic)
 - Cron jobs / background workers per project
 - Edge config / feature flags
@@ -158,4 +158,4 @@ have to rediscover it:
 
 - **MVP**: operator + CRDs, Helm chart, git webhook → BuildKit build → registry → Deployment + Gateway route, generated URLs on a wildcard domain, build/runtime logs in ClickHouse, minimal Vue UI, local-admin auth.
 - **v1**: preview deployments, custom domains + cert-manager/cloudflared, Infisical integration, Neon + registry plugins as a proper plugin interface, metrics dashboards, rollbacks, OIDC + teams.
-- **Later**: CLI, more plugins, notifications, cron jobs.
+- **Later**: more plugins, notifications, cron jobs. The CLI landed here ([CLI.md](CLI.md)) — it needed no platform surface of its own, being a client of an API that already existed.

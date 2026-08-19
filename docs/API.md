@@ -143,6 +143,14 @@ errors answer `{"error": "..."}` with a message meant to be read by whoever
 sent the request. The `Requires` column is explained under
 [Authorization](#authorization) above.
 
+**Every route here is also reachable from a terminal.** The `kitchen` CLI
+([CLI.md](CLI.md)) wraps the common ones as commands and reaches the rest with
+`kitchen api METHOD PATH`, so a route added below is usable from the command
+line the day it lands. A route added, renamed, or given a different requirement
+is therefore a decision about the CLI as well — add a command or leave it to
+`kitchen api`, but decide. The CLI's own tests check every endpoint its commands
+name against `internal/api/policy.go`, so a route that moves fails them too.
+
 | Method | Path | Does | Requires |
 |---|---|---|---|
 | GET | `/projects` | List projects | any account — filtered |
@@ -2206,6 +2214,7 @@ every deletion is the platform's to see.
 | OTLP ingest | The node collector's own unauthenticated in-cluster port, never on the Gateway | Spans come from workloads already inside the cluster; an OTLP endpoint on the public Gateway would be an unauthenticated write surface on the telemetry store |
 | Saved queries | A `SavedQuery` object with no reconciler | The rule that a write waits for its reconciler is about objects that do nothing until something acts on them; a saved query has its whole effect by existing |
 | Webhook receiver | Stays signature-authenticated, not OIDC | A provider proving a payload is genuine is a different question from a caller proving who they are |
+| The CLI | A client of this API in the same repository, with no surface of its own | Everything `kitchen` does is a route the dashboard uses too; it ships here so one tag versions it with the chart and both images, and so its tests can check the endpoints it names against the enforcement table |
 
 ## Open
 
