@@ -52,6 +52,10 @@ help: ## Display this help.
 
 ##@ Development
 
+# The dashboard's generated copy of the enforcement table, named once so the
+# generate and verify targets cannot disagree about where it lives.
+UI_POLICY ?= ui/src/lib/policy.generated.ts
+
 .PHONY: manifests
 manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
 	$(CONTROLLER_GEN) rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases
@@ -59,6 +63,24 @@ manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and Cust
 .PHONY: generate
 generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
 	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./..."
+
+# The dashboard's copy of the API's enforcement table. The Go table in
+# internal/api/policy.go decides what the API permits; the dashboard needs the
+# same knowledge to decide which controls to render, and a second hand-written
+# copy of a permission model is how a UI ends up hiding something the API
+# allows. It is generated from the table itself for that reason, and this
+# target runs wherever `manifests` runs so a route whose role changes cannot be
+# committed without the dashboard's copy moving with it.
+.PHONY: ui-policy
+ui-policy: ## Regenerate the dashboard's copy of the API's enforcement table.
+	go run ./hack/gen-ui-policy -o $(UI_POLICY)
+
+.PHONY: ui-policy-verify
+ui-policy-verify: ui-policy ## Fail if the dashboard's generated policy is out of date.
+	@git diff --exit-code -- $(UI_POLICY) || { \
+		echo "$(UI_POLICY) is out of date. Run 'make ui-policy' and commit the result."; \
+		exit 1; \
+	}
 
 .PHONY: fmt
 fmt: ## Run go fmt against code.
@@ -69,7 +91,7 @@ vet: ## Run go vet against code.
 	go vet ./...
 
 .PHONY: test
-test: manifests generate fmt vet setup-envtest ## Run tests.
+test: manifests generate ui-policy fmt vet setup-envtest ## Run tests.
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test $$(go list ./... | grep -v /e2e) -coverprofile cover.out
 
 # TODO(user): To use a different vendor for e2e tests, modify the setup under 'tests/e2e'.
@@ -120,12 +142,12 @@ check-commits: ## Check the commit messages this branch adds to origin/main (BAS
 ##@ Build
 
 .PHONY: build
-build: manifests generate fmt vet ## Build the manager and preview-gate binaries.
+build: manifests generate ui-policy fmt vet ## Build the manager and preview-gate binaries.
 	go build -ldflags "$(LDFLAGS)" -o bin/manager cmd/main.go
 	go build -ldflags "$(LDFLAGS)" -o bin/gate cmd/gate/main.go
 
 .PHONY: run
-run: manifests generate fmt vet ## Run a controller from your host.
+run: manifests generate ui-policy fmt vet ## Run a controller from your host.
 	go run ./cmd/main.go
 
 .PHONY: ui-build

@@ -34,6 +34,19 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # The dashboard renders its controls from a generated copy of the API's
+      # enforcement table (hack/gen-ui-policy). It is checked in, so this is
+      # where a route whose role moved without the dashboard's copy moving with
+      # it is caught — before the tests, so the failure is about the stale file
+      # rather than about whatever else the run turns up.
+      - name: Check the dashboard's generated policy is in sync
+        run: |
+          go run ./hack/gen-ui-policy
+          git diff --exit-code -- ui/src/lib/policy.generated.ts || {
+            echo "::error::ui/src/lib/policy.generated.ts is stale. Run 'make ui-policy' and commit the result."
+            exit 1
+          }
+
       - name: Running Tests
         run: |
           go mod tidy
