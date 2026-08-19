@@ -277,10 +277,37 @@ add-on autoscales its own interceptor with a `keda.sh` ScaledObject, whose CRD
 comes from the KEDA chart. A `pre-install` hook does not help (the main
 manifest is built first), `crds/` fixes install but is never applied on
 upgrade, and a bundled copy also collides with a cluster that already runs
-KEDA, because Helm will not adopt CRDs another release owns. `scaleToZero`
-therefore carries the interceptor's address instead of installing it, and
+KEDA, because Helm will not adopt CRDs another release owns.
 `EnvironmentReconciler` writes the per-environment `HTTPScaledObject` — one per
 Environment, so that was never a template either.
+
+**But every one of those constraints is Helm's, and the operator is under none
+of them** — which is the whole of `spec.scaleToZero.install` and
+`internal/controller/keda.go`. The operator installs KEDA, waits for it, then
+installs the add-on: exactly the ordering the two documented `helm install`
+commands have. It does that in a Job, under an account the chart creates only
+when `scaleToZero.install.enabled` is set and binds to cluster-admin — the
+`selfUpdate` shape, off by default for the same reason. Read the bundling rule
+as *the chart creates what Helm can create safely, and the operator can install
+what Helm cannot*, not as "KEDA is uninstallable by us, full stop".
+
+- **It is a seed, not a takeover.** A cluster already serving
+  `http.keda.sh/HTTPScaledObject` is recorded with
+  `status.scaleToZero.managed: false` and never written to again; KEDA present
+  without its add-on is refused with a message rather than installed over.
+  Helm will not adopt another release's objects, and neither will Kitchen.
+- **The two chart versions are pinned as a pair**, next to each other in
+  `keda.go`, because the add-on's chart is what decides the interceptor's
+  Service name and port — which is what `InterceptorSpec`'s defaults are. A
+  bump checks all four together. The install job is named after the pair, so a
+  bump is a new job rather than a rerun of a finished one, and an operator
+  upgrade carries the dependency forward with it.
+- **Nothing from a request reaches that job's argv.** It is bound to
+  cluster-admin, so an install that forwarded caller-supplied helm arguments
+  would make the grant meaningless. The one value taken from the singleton is
+  the namespace, checked against a DNS label and passed as its own argument;
+  the ordering is two containers (init, then main) rather than an `sh -c`, so
+  there is no shell anywhere in it.
 
 cert-manager's kinds are addressed as `unstructured` objects rather than
 through its Go types, to avoid tying the build to its release cadence.

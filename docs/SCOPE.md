@@ -114,15 +114,31 @@ These aren't nice-to-haves — the first three are the product.
   `spec.scaleToZero`: previews by default, production only when asked. Turning it on
   costs the first visitor a cold start, which is why the interceptor's readiness
   timeout is a documented value rather than a hidden one.
-  - **KEDA is the one platform dependency Kitchen does not bundle**, against the usual
-    rule. The HTTP add-on ships a `ScaledObject` of KEDA's own CRD, and Helm builds and
-    validates a release's entire manifest before applying any of it, so a chart
-    containing both never installs — nor does a `pre-install` hook (built after the main
-    manifest) or a `crds/` directory (never applied on upgrade), and a bundled copy
+  - **KEDA is the one platform dependency Kitchen's *chart* does not bundle**, against
+    the usual rule. The HTTP add-on ships a `ScaledObject` of KEDA's own CRD, and Helm
+    builds and validates a release's entire manifest before applying any of it, so a
+    chart containing both never installs — nor does a `pre-install` hook (built after the
+    main manifest) or a `crds/` directory (never applied on upgrade), and a bundled copy
     collides with a cluster that already runs KEDA, since Helm will not adopt CRDs
-    another release owns. Two releases, as upstream ships them. `scaleToZero.enabled`
-    carries the interceptor's address rather than installing it, and an environment on a
-    platform that lacks it stays on plain Deployment routing and says so.
+    another release owns. Two releases, as upstream ships them.
+  - **The operator installs them anyway** (`scaleToZero.install`), ✅ shipped — because
+    every constraint above is Helm's and none of them is Kubernetes'. A controller
+    installs one release, waits for its CRDs, and installs the next, which is the same
+    reason the cert-manager `ClusterIssuer` and the wildcard `Certificate` are the
+    operator's rather than the chart's. It runs as a job under an account the chart
+    creates only when asked, bound to cluster-admin because installing KEDA applies CRDs
+    and ClusterRoles — the `selfUpdate` shape, for the same reason. The two chart
+    versions are pinned as a pair rather than floated, and an operator upgrade carries
+    the dependency forward with it.
+    - **It never writes to a release it did not create.** A cluster already serving the
+      add-on's API is recorded (`status.scaleToZero.managed: false`) and left alone for
+      good; KEDA present without its add-on is refused with a message rather than
+      installed over. An installation that would rather run its own KEDA has to be able
+      to, and the seed-not-a-fixture rule that governs the seeded registry Connection
+      governs this too.
+    - Without either, `scaleToZero.enabled` carries only the interceptor's address, and
+      an environment on a platform that lacks the add-on stays on plain Deployment
+      routing and says so.
 - **Preview protection is an in-path proxy, not a Gateway filter.** Gateway API has no external-authorization filter and Cilium's implementation exposes none of Envoy's `ext_authz`; injecting one through `CiliumEnvoyConfig` would tie routing to Cilium. Instead a protected preview's `HTTPRoute` simply points at the gate, with the application's address in a header the Gateway sets — something every Gateway API implementation can do. See [AUTH.md](AUTH.md).
 - **No separate ingress controller.** The operator programs **Gateway API** resources (`Gateway`/`HTTPRoute`), and Cilium's built-in Gateway API implementation (embedded Envoy) serves them. Gateway API is the abstraction, so another implementation (Envoy Gateway, Istio) could slot in later without touching the operator's routing logic. When cloudflared is enabled, the tunnel points at the Gateway service — cloudflared is the edge, but all traffic still flows through one routing layer with uniform telemetry.
   - Documented cluster prerequisites this implies: Cilium with `gatewayAPI.enabled=true` + kube-proxy replacement, Gateway API CRDs at the version Cilium pins, a default StorageClass (ClickHouse and the auth Postgres take the cluster default and stay `Pending` without one), and a LoadBalancer address for the Gateway.

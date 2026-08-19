@@ -1823,14 +1823,36 @@ spec:
                 description: |-
                   ScaleToZeroSpec is the platform switch for idling environments down to no
                   pods at all. It is off by default: it needs KEDA and its HTTP add-on running
-                  in the cluster, and those are the one platform dependency Kitchen's chart
-                  cannot install for you.
+                  in the cluster, and those are the one platform dependency Kitchen's *chart*
+                  cannot install — which is not the same as the platform not installing them.
+                  See Install.
 
                   With it on, each Project decides for itself which of its environments idle,
                   through its own `spec.scaleToZero`.
                 properties:
                   enabled:
                     default: false
+                    type: boolean
+                  install:
+                    default: false
+                    description: |-
+                      Install lets the operator put KEDA and its HTTP add-on in the cluster
+                      itself, as two Helm releases of their own, instead of expecting somebody
+                      to have run those two installs first.
+
+                      The chart cannot do this and the operator can, for one reason: Helm
+                      builds and validates a release's whole manifest before it applies any of
+                      it, so the add-on's `ScaledObject` — a custom resource of KEDA's CRD —
+                      never resolves in a release that also contains that CRD. The operator is
+                      under no such constraint. It installs KEDA, waits for it, and only then
+                      installs the add-on, which is the same ordering the two documented
+                      `helm install` commands have always had.
+
+                      It is off by default and it needs a grant the chart only creates when
+                      asked (`scaleToZero.install.enabled`), because the job that runs helm is
+                      bound to cluster-admin. Where the add-on is already serving, this does
+                      nothing at all: the operator adopts what it finds and never takes over a
+                      release it does not own.
                     type: boolean
                   interceptor:
                     default: {}
@@ -2132,6 +2154,31 @@ spec:
                     type: string
                   host:
                     description: Host the registry is published on.
+                    type: string
+                type: object
+              scaleToZero:
+                description: |-
+                  ScaleToZero reports what the platform did about KEDA: installed it,
+                  or found it. Absent while nothing idles.
+                properties:
+                  addOnVersion:
+                    description: |-
+                      AddOnVersion of the HTTP add-on chart the operator installed. Empty
+                      when it installed nothing.
+                    type: string
+                  managed:
+                    description: |-
+                      Managed is true when the operator installed KEDA and the HTTP add-on,
+                      and false when it found them already serving.
+                    type: boolean
+                  namespace:
+                    description: Namespace the two releases live in, which is the
+                      interceptor's.
+                    type: string
+                  version:
+                    description: |-
+                      Version of the KEDA chart the operator installed. Empty when it
+                      installed nothing.
                     type: string
                 type: object
             type: object

@@ -340,13 +340,38 @@ jobs:
           # ScaledObject of KEDA's own CRD, and Helm validates a release's whole
           # manifest before applying any of it, so a chart carrying both never
           # installs — and a bundled copy also collides with a cluster that
-          # already runs KEDA. See the chart README.
+          # already runs KEDA. What the *operator* may do is another matter, and
+          # scaleToZero.install is where it does it; the chart still carries
+          # nothing of KEDA's but an address and a ServiceAccount.
           rendered=$(helm template kitchen charts/kitchen --namespace kitchen-system \
-            ${CHART_BASE} ${CHART_ACME} --set scaleToZero.enabled=true)
-          if echo "${rendered}" | grep -qE '^kind: (ScaledObject|CustomResourceDefinition)$' \
-             && echo "${rendered}" | grep -q 'keda.sh'; then
+            ${CHART_BASE} ${CHART_ACME} --set scaleToZero.enabled=true \
+            --set scaleToZero.install.enabled=true)
+          # KEDA's own kinds, and KEDA's own CRDs by name. Not a bare grep for
+          # "keda.sh": the manager ClusterRole names http.keda.sh as an API
+          # group it may write HTTPScaledObjects in, which is the whole point of
+          # the feature and not a bundled copy of anything.
+          if echo "${rendered}" | grep -qE '^kind: (ScaledObject|HTTPScaledObject)$' \
+             || echo "${rendered}" | grep -qE '^ +name: [a-z]+\.(http\.)?keda\.sh$'; then
             echo "::error::the chart renders KEDA's own objects; it must point at an" \
                  "installation instead of carrying one"
+            exit 1
+          fi
+          # The grant the operator installs with, on the other hand, is the
+          # chart's: an account of its own bound to cluster-admin, so that
+          # turning the feature off takes the grant away with it.
+          echo "${rendered}" | grep -q 'name: kitchen-keda-install' || {
+            echo "::error::scaleToZero.install.enabled rendered no install ServiceAccount"
+            exit 1
+          }
+          echo "${rendered}" | grep -q -- '--keda-install-service-account=kitchen-keda-install' || {
+            echo "::error::the operator was not told which account it may install KEDA with"
+            exit 1
+          }
+          # And it is refused where it would grant cluster-admin to install
+          # nothing, rather than rendering quietly.
+          if helm template kitchen charts/kitchen --namespace kitchen-system \
+               ${CHART_BASE} ${CHART_ACME} --set scaleToZero.install.enabled=true >/dev/null 2>&1; then
+            echo "::error::scaleToZero.install.enabled rendered with scaleToZero.enabled false"
             exit 1
           fi
           # What it does carry is the address, and the operator looks that
@@ -964,7 +989,9 @@ jobs:
           # does not install — the add-on ships a ScaledObject of KEDA's own
           # CRD, and Helm cannot install a release whose custom resources need
           # CRDs from that same release. So this is exactly what the chart
-          # README tells a user to run, in the order it tells them to.
+          # README tells a user to run, in the order it tells them to — and it
+          # doubles as the case the operator must keep its hands off: a cluster
+          # that already runs KEDA is adopted, never installed over.
           helm repo add kedacore https://kedacore.github.io/charts
           helm repo update kedacore
           helm install keda kedacore/keda --version "${KEDA_VERSION}" \
@@ -993,6 +1020,26 @@ jobs:
           [ "${switch}" = true ] || {
             echo "::error::the chart value did not reach the operator's configuration" \
                  "(spec.scaleToZero.enabled is '${switch}')"
+            exit 1
+          }
+
+          # KEDA was installed above, by hand, so the platform must adopt it and
+          # record that it manages nothing — the alternative is an operator that
+          # writes to a release it does not own.
+          for _ in $(seq 1 30); do
+            reason=$(kubectl get kitchen default \
+              -o jsonpath='{.status.conditions[?(@.type=="ScaleToZeroReady")].reason}')
+            [ -n "${reason}" ] && break
+            sleep 2
+          done
+          [ "${reason}" = AddOnPresent ] || {
+            echo "::error::the platform reported '${reason}' about a KEDA it did not install"
+            kubectl get kitchen default -o jsonpath='{.status.conditions}' | tr ',' '\n'
+            exit 1
+          }
+          managed=$(kubectl get kitchen default -o jsonpath='{.status.scaleToZero.managed}')
+          [ -z "${managed}" ] || [ "${managed}" = false ] || {
+            echo "::error::the platform claims to manage a KEDA it found (managed=${managed})"
             exit 1
           }
 

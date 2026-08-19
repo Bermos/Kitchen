@@ -130,6 +130,14 @@ rules:
   - update
   - watch
 - apiGroups:
+  - keda.sh
+  resources:
+  - scaledobjects
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - kitchen.bermos.dev
   resources:
   - builds

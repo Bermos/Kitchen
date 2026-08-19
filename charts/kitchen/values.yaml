@@ -1029,19 +1029,54 @@ previewGate:
 # pull requests nearly free — a preview costs a URL and a Deployment record
 # until someone opens it.
 #
-# This is the one platform feature with a prerequisite the chart does not
-# install: KEDA and its HTTP add-on go in as their own Helm releases, which is
-# how upstream ships them and the only way Helm can install them at all (see
-# the chart README, and the reasoning in Chart.yaml). Turning this on without
-# them costs nothing — every environment stays on plain Deployment routing and
-# says so in its ScaleToZero condition.
+# KEDA and its HTTP add-on go in as their own two Helm releases, which is how
+# upstream ships them and the only way Helm can install them at all (see the
+# chart README, and the reasoning in Chart.yaml). What the chart cannot do the
+# operator can, and `install.enabled` below is how you let it: it runs those
+# same two installs itself, in order, as a job. Turning idling on without
+# either costs nothing — every environment stays on plain Deployment routing
+# and says so in its ScaleToZero condition.
 #
 # Which environments actually idle is each Project's own decision, through
 # `spec.scaleToZero` — previews by default, production only when asked.
 scaleToZero:
-  # -- Idle unused environments down to zero pods. Requires KEDA and the KEDA
-  # HTTP add-on in the cluster; see the chart README for the two commands.
+  # -- Idle unused environments down to zero pods. Needs KEDA and the KEDA HTTP
+  # add-on in the cluster: either already there, or installed by the operator
+  # with `install.enabled` below.
   enabled: false
+  # The platform installing its own dependency. Off by default because the job
+  # that runs helm is bound to cluster-admin — installing KEDA applies CRDs,
+  # ClusterRoles and a namespace — so it is a grant you make deliberately, the
+  # way `selfUpdate.enabled` is.
+  #
+  # Where KEDA is already in the cluster this does nothing at all: the operator
+  # adopts what it finds, records that it installed nothing, and never writes
+  # to a release it does not own.
+  install:
+    # -- Let the operator install KEDA and its HTTP add-on itself, as two Helm
+    # releases of their own. Creates a ServiceAccount bound to cluster-admin,
+    # and sets `spec.scaleToZero.install` on the Kitchen object.
+    enabled: false
+    # -- Helm repository the two charts are pulled from. Point it at a mirror
+    # for a cluster that cannot reach kedacore.github.io.
+    chartRepository: https://kedacore.github.io/charts
+    # -- Version of the KEDA chart to install. Pinned with the add-on's rather
+    # than floated: the pair is chosen together, and it decides the
+    # interceptor's Service name and port. Empty takes the operator's own pin.
+    version: ""
+    # -- Version of the KEDA HTTP add-on chart to install. Empty takes the
+    # operator's own pin.
+    addOnVersion: ""
+    # -- How long helm is given for each of the two installs. Both wait for
+    # their workloads to be ready, not merely for manifests to be accepted.
+    timeout: 10m
+    # -- Name of the install job's ServiceAccount. Generated when empty.
+    serviceAccountName: ""
+    image:
+      # -- Image the install job runs helm from.
+      repository: alpine/helm
+      # -- Tag of that image.
+      tag: 3.19.0
   # The add-on's interceptor: what an idling environment's URL points at, since
   # it has no pods of its own. The defaults describe the add-on installed the
   # way the README describes; change them to match wherever yours runs.

@@ -121,6 +121,12 @@ spec:
   scaleToZero:
     enabled: {{ .Values.scaleToZero.enabled }}
     {{- if .Values.scaleToZero.enabled }}
+    # Whether the operator puts KEDA and the add-on in the cluster itself. The
+    # chart cannot: Helm validates a release's whole manifest before applying
+    # any of it, so the add-on's ScaledObject never resolves against a CRD
+    # arriving in the same release. The operator installs one release, waits,
+    # then installs the other — and adopts an existing KEDA untouched.
+    install: {{ .Values.scaleToZero.install.enabled }}
     # An idling environment has no pods to route to, so its URL points at the
     # add-on's interceptor instead: it holds the first request, asks KEDA to
     # scale the workload back up, and forwards it once a pod answers. The
