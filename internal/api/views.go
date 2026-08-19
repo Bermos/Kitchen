@@ -25,6 +25,7 @@ import (
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/access"
+	"github.com/Bermos/Kitchen/internal/attestation"
 )
 
 // The API answers in its own shapes rather than in raw custom resources.
@@ -227,7 +228,41 @@ type artifactView struct {
 	Attested   bool       `json:"attested"`
 	AttestedAt *time.Time `json:"attestedAt,omitempty"`
 	KeyID      string     `json:"keyID,omitempty"`
-	Message    string     `json:"message,omitempty"`
+	// Evidence is what is attached, by predicate type — enough for a screen
+	// to say "provenance and an SBOM are attached" without asking the
+	// registry, and not enough to be mistaken for the evidence itself.
+	Evidence []evidenceView `json:"evidence,omitempty"`
+	Message  string         `json:"message,omitempty"`
+}
+
+// evidenceView names one attestation attached to an artifact.
+//
+// Kind is derived here rather than in the dashboard, and it is a label rather
+// than a verdict. The predicate type travels with it because the URI is the
+// authority: a reader that only recognises the label would silently treat a
+// predicate type nobody has taught it about as "other" and move on, where one
+// holding the URI can look it up.
+type evidenceView struct {
+	PredicateType string `json:"predicateType"`
+	Kind          string `json:"kind"`
+	Source        string `json:"source,omitempty"`
+	Manifest      string `json:"manifest,omitempty"`
+}
+
+// evidenceKind labels a predicate type for display.
+func evidenceKind(predicateType string) string {
+	switch {
+	case attestation.Provenance(predicateType):
+		return "provenance"
+	case attestation.SBOM(predicateType):
+		return "sbom"
+	case predicateType == attestation.PredicateBuildRecord:
+		return "buildRecord"
+	case predicateType == attestation.PredicateDeployment:
+		return "deployment"
+	default:
+		return "other"
+	}
 }
 
 func newArtifactView(artifact *kitchenv1alpha1.ArtifactStatus) *artifactView {
@@ -244,6 +279,14 @@ func newArtifactView(artifact *kitchenv1alpha1.ArtifactStatus) *artifactView {
 	if at := artifact.AttestedAt; at != nil {
 		stamp := at.Time
 		view.AttestedAt = &stamp
+	}
+	for _, evidence := range artifact.Evidence {
+		view.Evidence = append(view.Evidence, evidenceView{
+			PredicateType: evidence.PredicateType,
+			Kind:          evidenceKind(evidence.PredicateType),
+			Source:        evidence.Source,
+			Manifest:      evidence.Manifest,
+		})
 	}
 	return view
 }

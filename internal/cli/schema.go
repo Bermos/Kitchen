@@ -359,12 +359,15 @@ var publishedShapes = map[string]struct {
 	Description string
 	Sample      any
 }{
-	"account":         {"Who a credential belongs to: GET /me", account{}},
-	"project":         {"A project, with the calling account's role on it", project{}},
-	"projectList":     {"A list of projects", list[project]{}},
-	"projectStatus":   {"A project with its environments and recent builds", projectStatus{}},
-	"build":           {"One build. Phase is Queued, Running, Succeeded, Failed or Cancelled", build{}},
-	"buildList":       {"A list of builds, newest first", list[build]{}},
+	"account":       {"Who a credential belongs to: GET /me", account{}},
+	"project":       {"A project, with the calling account's role on it", project{}},
+	"projectList":   {"A list of projects", list[project]{}},
+	"projectStatus": {"A project with its environments and recent builds", projectStatus{}},
+	"build":         {"One build. Phase is Queued, Running, Succeeded, Failed or Cancelled", build{}},
+	"buildList":     {"A list of builds, newest first", list[build]{}},
+	"evidenceSet": {"The signed evidence attached to an artifact, read out of the registry. " +
+		"`verified` false with attestations present means signatures were not checked, " +
+		"not that they failed", evidenceSet{}},
 	"release":         {"An immutable snapshot of an image and its configuration", release{}},
 	"releaseList":     {"A list of releases, newest first", list[release]{}},
 	"environment":     {"One environment. Phase is Pending, Deploying, Live, Degraded or Terminating", environment{}},

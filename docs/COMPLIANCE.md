@@ -245,7 +245,7 @@ statement by the thing that did the building, about a build it can vouch for
 from the inside; this is the reconciler's statement about a build it
 orchestrated, which is a weaker and different claim. Conflating the two would
 be the kind of evidence that is worse than none — so this carries a Kitchen
-predicate type, and issue #128's provenance will carry SLSA's.
+predicate type, and the provenance in §6 carries SLSA's.
 
 A predicate type under `kitchen.bermos.dev/` is an admission that no standard
 covers the claim. The list is short on purpose. Two more are reserved for
@@ -303,7 +303,144 @@ referrers.
 
 ---
 
-## 6. Configuration
+## 6. What the builder attests (issue #128)
+
+### 6.1 Two claims, two attestations
+
+Kitchen's build record (§5.3) is the reconciler's account of a build it
+*orchestrated*. SLSA provenance is the account of the process that actually ran
+it. They are different claims and they stay different attestations.
+
+The distinction is not pedantry, it is the whole value of provenance. Only the
+builder knows which base image it really resolved and to what digest, which
+source tree it really fetched, and what it was really invoked with. The
+reconciler knows what it *asked for*, which is a claim about an intention.
+
+So provenance is not written by Kitchen. It is produced by BuildKit, harvested,
+and countersigned.
+
+### 6.2 What is asked of the builder
+
+```
+--opt attest:provenance=mode=max,version=v1,builder-id=https://kitchen.bermos.dev/builder/buildkit
+--opt attest:sbom=generator=docker/buildkit-syft-scanner:1.12.0
+--output type=image,…,oci-mediatypes=true
+```
+
+Every part of that line is load-bearing:
+
+- **`mode=max`** records the resolved base images and the build parameters.
+  `min` records that a build happened, which is not evidence of anything.
+- **`version=v1`** is SLSA 1.0. BuildKit can emit it and **does not default to
+  it** — left alone it writes `https://slsa.dev/provenance/v0.2`. Both
+  spellings are recognised on the way back in, because an installation that has
+  not rebuilt since an upgrade has artifacts carrying the older one.
+- **`builder-id`** is the one field BuildKit cannot fill in for itself. Left
+  unset it writes an empty string, and provenance that does not say who
+  produced it answers the first question a verifier asks with nothing. It
+  carries no version: the platform's version is in Kitchen's build record
+  against the same artifact, and an identifier that moved every release would
+  break every policy that pinned it.
+- **`oci-mediatypes=true`** because attestations are pushed as extra manifests
+  under an index, which the OCI media types describe and Docker's older ones do
+  not. It is set only when something is being attested, so a build with the
+  feature off pushes exactly what it pushed before.
+
+### 6.3 The artifact is the image, not the index
+
+Asked for attestations, BuildKit stops pushing a bare manifest. It pushes an
+index holding the image manifest and, beside it, an attestation manifest
+annotated `vnd.docker.reference.type=attestation-manifest`, whose layers are
+bare in-toto Statements. What it reports through `--metadata-file` — and
+therefore what the reconciler first sees — is the **index** digest.
+
+**The subject of every statement inside is the image manifest digest.** That
+was established by pushing one and reading it back, not by reading the docs.
+
+So the reconciler resolves the index to the image manifest and calls *that* the
+artifact: it is what the statements are about, it is what the Release deploys,
+and it is the same digest Kitchen used before any of this existed, so turning
+the feature on does not renumber the artifacts an installation already has.
+Attesting therefore happens *before* the Release is created, because it is what
+decides which digest the Release names.
+
+Getting this backwards would not have failed loudly. Evidence attached to the
+index while the statements inside describe the image would verify perfectly and
+describe something the platform never deployed.
+
+### 6.4 Countersigned, not merely carried
+
+The statements BuildKit leaves are **unsigned**. The index is the only thing
+tying them to the artifact, and an index is not a signature — anything with
+push access to the repository could write a different one.
+
+Each is therefore restated about the digest Kitchen calls the artifact and
+signed under the platform's key. Restating rewrites three things and preserves
+one absolutely:
+
+- the subject becomes the repository and digest, because BuildKit names its
+  subject with a package URL carrying the tag it pushed to, and a tag is a
+  moving target;
+- the statement version becomes in-toto v1, because BuildKit still writes v0.1;
+- a signature is added;
+- **the predicate is copied byte for byte** and never re-marshalled from a
+  decoded map. Re-encoding is not guaranteed to reproduce field ordering, and a
+  predicate that does not reproduce exactly is a different claim from the one
+  the builder made — which would make the platform's signature an assertion
+  about something nobody said.
+
+A statement whose subject is some other digest is dropped and counted, never
+restated. Signing one would put the platform's name on a claim about an image
+it did not build.
+
+`status.artifact.evidence[].source` records which of the two a piece of
+evidence is: `builder` or `platform`. The platform's signature is on both, so
+the signature cannot tell them apart, and the difference is exactly what a
+reader is trying to establish.
+
+### 6.5 The SBOM costs something, and the generator is pinned
+
+Provenance is nearly free — BuildKit already holds everything it records. An
+SBOM is not: BuildKit runs a scanner image over the finished filesystem, and
+because the build pod is ephemeral **that image is pulled on every build**.
+
+It is pinned to `docker/buildkit-syft-scanner:1.12.0` rather than left on
+BuildKit's default `stable-1`, which is a floating tag on an image this project
+does not own. Evidence about an artifact should not change because somebody
+else's tag moved overnight, and a scanner that changed under an installation
+would produce a differently-shaped bill of materials for the same image — which
+reads as the image having changed.
+
+**The format follows the generator**, and the platform records what came out
+rather than converting it. The default emits SPDX 2.3, which Grype, Trivy and
+OSV-Scanner all read unmodified; a generator that emits CycloneDX produces a
+CycloneDX attestation whose predicate type says so. Kitchen does not transcode
+between them — a bill of materials rewritten by something that did not scan the
+image is a claim by the transcoder.
+
+An installation that cannot reach the generator, or will not spend the seconds,
+turns the SBOM off in the chart. That is a decision it has made and can show,
+rather than one the platform made for it.
+
+### 6.6 The documented limitations
+
+- **A build-time SBOM describes the image, not the running process.** It cannot
+  see a dependency loaded at runtime, fetched by the application on start, or
+  side-loaded into the container. It is the right input to vulnerability
+  management and it is not an inventory of what is executing.
+- **Only the Dockerfile strategy produces provenance.** The Cloud Native
+  Buildpacks lifecycle is not BuildKit and emits no SLSA provenance, so a
+  buildpacks build carries Kitchen's build record and no provenance. Minting a
+  SLSA predicate for it from the reconciler's own knowledge is exactly the
+  conflation §6.1 exists to prevent, so it is not done.
+- **Losing the builder's evidence does not fail the build**, for the same
+  reason §5.4 gives. It is recorded on `status.artifact.message`, and an
+  artifact with provenance and no SBOM is worse than one with both and far
+  better than one with neither.
+
+---
+
+## 7. Configuration
 
 ```yaml
 kitchen:
@@ -314,6 +451,10 @@ kitchen:
     attestation:
       enabled: true
       signingKeySecretName: "" # empty: the operator generates one
+      build:
+        provenance: true       # ask the builder how it built it
+        sbom: true             # ask the builder what is in it
+        sbomGenerator: ""      # empty: the pinned syft scanner, emitting SPDX
 ```
 
 Both live on the platform singleton rather than on a Project, because both are
@@ -323,7 +464,7 @@ attesting to nothing.
 
 ---
 
-## 7. Phases
+## 8. Phases
 
 | | |
 |---|---|
@@ -334,15 +475,16 @@ attesting to nothing.
 | **5 — Institutional surface** | data class (#137), resource contract (#138), access (#139), retention (#140), criticality (#141), export (#142) |
 | **6 — The mapping doc** | #143, kept current |
 
-Phase 2 attaches to §5: a provenance or SBOM attestation is another envelope
-against the same digest, and the store already accumulates them. Phase 3
-attaches to §5.4: an environment that requires evidence reads the evidence set
-and refuses an artifact that does not carry it. Phase 4 attaches to §4: a
-re-evaluation is a decision, and a decision is an audit record.
+Phase 2 attaches to §5 exactly as expected: every attestation it produces is
+another envelope against the same digest, and the store accumulates them
+without changing. Phase 3 attaches to §5.4: an environment that requires
+evidence reads the evidence set and refuses an artifact that does not carry it.
+Phase 4 attaches to §4: a re-evaluation is a decision, and a decision is an
+audit record.
 
 ---
 
-## 8. Things that are true and easy to get wrong
+## 9. Things that are true and easy to get wrong
 
 - **A gap in the sequence is not always a deletion.** It is also an append that
   claimed its number and then died before the row landed. The head object and
@@ -355,10 +497,15 @@ re-evaluation is a decision, and a decision is an audit record.
 - **An attestation is attached to a digest, never to a tag.** A tag is a moving
   target, and evidence about a moving target is evidence about nothing. The
   store refuses a tag reference outright.
-- **The evidence set is read from the registry, not from Kitchen.** Nothing
-  mirrors the attestation list onto the Build object: a copy there would be a
-  second source of truth, and it is exactly the copy an installation leaving
-  Kitchen would lose.
+- **The evidence set is read from the registry, not from Kitchen.**
+  `status.artifact.evidence` is an *index* — predicate types and the manifest
+  digests to fetch them by — and deliberately not a copy of the evidence. A
+  copy would be a second source of truth, and it is exactly the copy an
+  installation leaving Kitchen would lose.
+- **BuildKit's provenance version is not the one you expect.** It emits
+  `slsa.dev/provenance/v0.2` unless told `version=v1`, and its `builder.id` is
+  the empty string unless told `builder-id=`. Both are silent: the attestation
+  is produced, verifies, and says nothing useful.
 - **`kitchen-audit-head` is load-bearing.** Deleting it does not lose the log —
   it is re-seeded from the table's own last record — but it does lose the
   anchor that would have shown a truncated tail.

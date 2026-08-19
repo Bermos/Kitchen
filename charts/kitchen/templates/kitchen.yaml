@@ -134,6 +134,15 @@ spec:
       signingKeyRef:
         name: {{ . | quote }}
       {{- end }}
+      # What the builder itself is asked to attest, as opposed to what the
+      # reconciler says about the build it asked for. Only the builder can
+      # say which base images it actually resolved.
+      build:
+        provenance: {{ .Values.kitchen.compliance.attestation.build.provenance }}
+        sbom: {{ .Values.kitchen.compliance.attestation.build.sbom }}
+        {{- with .Values.kitchen.compliance.attestation.build.sbomGenerator }}
+        sbomGenerator: {{ . | quote }}
+        {{- end }}
   observability:
     clickhouse:
       retentionDays: {{ int .Values.kitchen.observability.clickhouse.retentionDays }}

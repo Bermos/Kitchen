@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"testing"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -752,3 +753,95 @@ var _ = Describe("Build Controller", func() {
 		})
 	})
 })
+
+// What the builder is asked for, and what a build that asks for nothing still
+// looks like. The second half matters as much as the first: turning the
+// feature off has to leave the push byte-identical to what it was before any
+// of this existed, or every installation's artifacts get renumbered by an
+// upgrade.
+
+func buildFixtures() (*kitchenv1alpha1.Project, *kitchenv1alpha1.Build) {
+	project := &kitchenv1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: "shop", Namespace: PlatformNamespace},
+		Spec:       kitchenv1alpha1.ProjectSpec{Source: kitchenv1alpha1.GitSourceSpec{Repo: "acme/shop"}},
+	}
+	build := &kitchenv1alpha1.Build{
+		ObjectMeta: metav1.ObjectMeta{Name: "shop-bld-1", Namespace: PlatformNamespace},
+		Spec: kitchenv1alpha1.BuildSpec{
+			Git: kitchenv1alpha1.GitRevision{SHA: "abc123def456", Branch: "main"},
+		},
+	}
+	return project, build
+}
+
+func TestDockerfilePodAsksTheBuilderForProvenanceAndAnSBOM(t *testing.T) {
+	project, build := buildFixtures()
+	pod := dockerfilePod(project, build, nil, "creds", "registry.example.com/shop:abc123",
+		kitchenv1alpha1.BuildAttestationSpec{Provenance: true, SBOM: true})
+	args := strings.Join(pod.Spec.Containers[0].Args, " ")
+
+	// mode=max is what records the base images and the parameters; version=v1
+	// is SLSA 1.0, which BuildKit emits but does not default to; builder-id is
+	// the field it cannot fill in for itself.
+	if !strings.Contains(args, "attest:provenance=mode=max,version=v1,builder-id="+BuilderID) {
+		t.Errorf("provenance was not asked for as expected: %s", args)
+	}
+	if !strings.Contains(args, "attest:sbom=generator="+SBOMGeneratorImage) {
+		t.Errorf("the SBOM generator was not pinned: %s", args)
+	}
+	// Attestations are pushed as extra manifests under an index, which the
+	// OCI media types describe and Docker's older ones do not. Asserted on
+	// the --output value specifically: the layer cache's export carries media
+	// types of its own, and a looser check would pass without the image ever
+	// becoming an index.
+	if output := outputArg(t, pod); !strings.Contains(output, "oci-mediatypes=true") {
+		t.Errorf("the push was not asked for in OCI media types: %s", output)
+	}
+}
+
+func TestDockerfilePodAsksForNothingWhenNothingIsConfigured(t *testing.T) {
+	project, build := buildFixtures()
+	pod := dockerfilePod(project, build, nil, "creds", "registry.example.com/shop:abc123",
+		kitchenv1alpha1.BuildAttestationSpec{})
+	args := strings.Join(pod.Spec.Containers[0].Args, " ")
+
+	if strings.Contains(args, "attest:") {
+		t.Errorf("a build with attestation off still asked for some: %s", args)
+	}
+	// An index is what changes the digest the build reports. A build that
+	// attests nothing must push exactly what it pushed before — asserted on
+	// the --output value, for the reason given above.
+	if output := outputArg(t, pod); output != "type=image,name=registry.example.com/shop:abc123,push=true" {
+		t.Errorf("a build that attests nothing did not push a plain image: %s", output)
+	}
+}
+
+func TestDockerfilePodTakesTheGeneratorAnInstallationNames(t *testing.T) {
+	// The format follows the generator, which is how CycloneDX is asked for:
+	// the platform records what came out rather than converting it.
+	project, build := buildFixtures()
+	pod := dockerfilePod(project, build, nil, "creds", "registry.example.com/shop:abc123",
+		kitchenv1alpha1.BuildAttestationSpec{SBOM: true, SBOMGenerator: "example.com/cyclonedx-scanner:1"})
+	args := strings.Join(pod.Spec.Containers[0].Args, " ")
+
+	if !strings.Contains(args, "attest:sbom=generator=example.com/cyclonedx-scanner:1") {
+		t.Errorf("the installation's generator was not used: %s", args)
+	}
+	if strings.Contains(args, "attest:provenance") {
+		t.Errorf("provenance was asked for when only an SBOM was: %s", args)
+	}
+}
+
+// outputArg is the value BuildKit was given for --output, which is the one
+// place the shape of the pushed image is decided.
+func outputArg(t *testing.T, pod corev1.PodTemplateSpec) string {
+	t.Helper()
+	args := pod.Spec.Containers[0].Args
+	for i, arg := range args {
+		if arg == "--output" && i+1 < len(args) {
+			return args[i+1]
+		}
+	}
+	t.Fatal("the build was given no --output")
+	return ""
+}

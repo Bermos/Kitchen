@@ -147,8 +147,26 @@ export interface Artifact {
   attested: boolean;
   attestedAt?: string;
   keyID?: string;
+  /** What is attached to the digest, by predicate type. Enough to say that
+   *  provenance and an SBOM are there without asking the registry; the
+   *  evidence itself still comes from `attestations()`. */
+  evidence?: ArtifactEvidence[];
   /** Why an artifact is unattested, when it is. */
   message?: string;
+}
+
+/** One attestation attached to an artifact, as the Build reports it.
+ *
+ *  `kind` is a label the API derives from the predicate type, so that this
+ *  copy of the vocabulary does not have to be kept in step by hand. `source`
+ *  says who made the claim — the platform signs both, so the signature cannot
+ *  tell them apart, and a claim about what a build did is worth more when it
+ *  comes from the process that did the building. */
+export interface ArtifactEvidence {
+  predicateType: string;
+  kind: "provenance" | "sbom" | "buildRecord" | "deployment" | "other";
+  source?: "builder" | "platform";
+  manifest?: string;
 }
 
 /** One entry in the tamper-evident log. The chain fields come back with every

@@ -41,6 +41,7 @@ import (
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/activity"
+	"github.com/Bermos/Kitchen/internal/attestation"
 	"github.com/Bermos/Kitchen/internal/audit"
 	"github.com/Bermos/Kitchen/internal/clickhouse"
 	"github.com/Bermos/Kitchen/internal/framework"
@@ -54,6 +55,33 @@ const (
 
 	// BuildkitImage runs the in-cluster builds.
 	BuildkitImage = "moby/buildkit:v0.23.2-rootless"
+
+	// SBOMGeneratorImage is the scanner BuildKit runs over a finished image
+	// to produce its bill of materials.
+	//
+	// It is pinned to a version tag for the same reason the builder above
+	// is, and the reason bites harder here: the tag BuildKit reaches for by
+	// default is `stable-1`, a floating tag on an image nobody in this
+	// repository owns. Evidence about an artifact should not change because
+	// somebody else's tag moved overnight — and a scanner that changed under
+	// an installation would produce a differently-shaped bill of materials
+	// for the same image, which reads as the image having changed.
+	//
+	// It is also pulled on **every** build that asks for an SBOM: the build
+	// pod is ephemeral, so nothing caches it between builds. That is the
+	// cost the Kitchen object's `compliance.attestation.build.sbom` switch
+	// exists to let an installation decline.
+	SBOMGeneratorImage = "docker/buildkit-syft-scanner:1.12.0"
+
+	// BuilderID identifies the build platform in the provenance it produces.
+	//
+	// SLSA's point in asking for it is that a verifier decides how much a
+	// provenance statement is worth by who produced it, so the identifier has
+	// to name the platform rather than the run. It carries no version: the
+	// platform's version is in Kitchen's own build record, attached to the
+	// same artifact, and a builder id that moved every release would make
+	// every policy that pinned it fail on upgrade.
+	BuilderID = "https://kitchen.bermos.dev/builder/buildkit"
 
 	// buildJobTTLSeconds is how long a finished build Job (and its pod)
 	// sticks around. It is a collection window, not a retention policy:
@@ -305,6 +333,37 @@ func (r *BuildReconciler) platformBuilds(ctx context.Context) kitchenv1alpha1.Bu
 	return kitchen.Spec.Builds
 }
 
+// platformAttestation is what the builder is asked to attest, resolved against
+// the platform singleton.
+//
+// A singleton that cannot be read answers "nothing", rather than the defaults
+// the CRD would have applied. That is deliberate and it is the conservative
+// direction: asking for attestations the installation may have turned off
+// costs every build a scanner pull and changes the shape of what is pushed,
+// where not asking costs a build nothing it can not get back by reconciling
+// again once the object is readable.
+func (r *BuildReconciler) platformAttestation(ctx context.Context) kitchenv1alpha1.BuildAttestationSpec {
+	kitchen := &kitchenv1alpha1.Kitchen{}
+	if err := r.Get(ctx, types.NamespacedName{Name: KitchenSingletonName}, kitchen); err != nil {
+		return kitchenv1alpha1.BuildAttestationSpec{}
+	}
+	if !kitchen.Spec.Compliance.Attestation.Enabled {
+		// Nothing will be signed, so nothing is worth the build time: an
+		// unsigned statement sitting in the registry is not evidence, it is
+		// a claim anything with push access could have written.
+		return kitchenv1alpha1.BuildAttestationSpec{}
+	}
+	return kitchen.Spec.Compliance.Attestation.Build
+}
+
+// sbomGenerator is the scanner image to run, defaulting to the pinned one.
+func sbomGenerator(attest kitchenv1alpha1.BuildAttestationSpec) string {
+	if attest.SBOMGenerator != "" {
+		return attest.SBOMGenerator
+	}
+	return SBOMGeneratorImage
+}
+
 // resolveStrategy is how a build gets made, as far as configuration decides
 // it. A Project that names a strategy is obeyed; one left on "auto" takes the
 // platform's default, which is where an operator says what an unconfigured
@@ -419,7 +478,7 @@ func (r *BuildReconciler) createJob(
 	cache *kitchenv1alpha1.BuildCacheStatus,
 	appNS, credsSecret, tagRef string,
 ) error {
-	template := dockerfilePod(project, build, cache, credsSecret, tagRef)
+	template := dockerfilePod(project, build, cache, credsSecret, tagRef, r.platformAttestation(ctx))
 	if strategy == kitchenv1alpha1.BuildStrategyBuildpacks {
 		template = buildpacksPod(project, build, detected, cache, credsSecret, tagRef)
 	}
@@ -458,6 +517,7 @@ func dockerfilePod(
 	build *kitchenv1alpha1.Build,
 	cache *kitchenv1alpha1.BuildCacheStatus,
 	credsSecret, tagRef string,
+	attest kitchenv1alpha1.BuildAttestationSpec,
 ) corev1.PodTemplateSpec {
 	buildContext := repoCloneURL(project) + "#" + build.Spec.Git.SHA
 	if root := buildRootDir(project); root != "" {
@@ -468,12 +528,40 @@ func dockerfilePod(
 		dockerfile = "Dockerfile"
 	}
 
+	output := "type=image,name=" + tagRef + ",push=true"
+	attestations := []string{}
+	if attest.Provenance {
+		// mode=max records the base images it resolved and the parameters it
+		// ran with, not just that it ran; version=v1 is SLSA 1.0, which
+		// BuildKit can emit but does not default to. builder-id is the one
+		// field BuildKit cannot fill in for itself — left unset it writes an
+		// empty string, and provenance that does not say who produced it
+		// answers the first question a verifier asks with nothing.
+		attestations = append(attestations,
+			"attest:provenance=mode=max,version=v1,builder-id="+BuilderID)
+	}
+	if attest.SBOM {
+		attestations = append(attestations, "attest:sbom=generator="+sbomGenerator(attest))
+	}
+
 	args := []string{
 		"build",
 		"--frontend", "dockerfile.v0",
 		"--opt", "context=" + buildContext,
 		"--opt", "filename=" + dockerfile,
-		"--output", "type=image,name=" + tagRef + ",push=true",
+	}
+	for _, attestation := range attestations {
+		args = append(args, "--opt", attestation)
+	}
+	if len(attestations) > 0 {
+		// Attestations are pushed as extra manifests beside the image, under
+		// an index — which the OCI media types describe and Docker's older
+		// ones do not. It is set only when something is being attested, so a
+		// build with the feature off pushes exactly what it pushed before.
+		output += ",oci-mediatypes=true"
+	}
+	args = append(args,
+		"--output", output,
 		// BuildKit writes its result metadata (including the image digest)
 		// to the termination log so the reconciler can read it from the
 		// pod status without any extra plumbing.
@@ -482,7 +570,7 @@ func dockerfilePod(
 		// these lines into ClickHouse, and the interactive renderer would
 		// arrive there as a wall of escape codes.
 		"--progress", "plain",
-	}
+	)
 	args = append(args, buildkitCacheArgs(cache)...)
 
 	return corev1.PodTemplateSpec{
@@ -562,6 +650,26 @@ func (r *BuildReconciler) succeed(
 ) (ctrl.Result, error) {
 	image, digestFound := r.imageWithDigest(ctx, target.Namespace, build.Name, target.Tag)
 
+	// The Job's times are stamped before anything is attested or recorded, so
+	// that the evidence carries the build's own start and finish rather than
+	// "roughly now".
+	if job.Status.CompletionTime != nil {
+		build.Status.CompletedAt = job.Status.CompletionTime
+	} else {
+		build.Status.CompletedAt = ptr.To(metav1.Now())
+	}
+
+	// Attesting comes before the Release exists, because it is what decides
+	// which digest the artifact *is*. A builder asked for provenance or an
+	// SBOM pushes an index and reports that; the evidence inside it is about
+	// the image manifest, so the image manifest is the artifact, and a
+	// Release created from the reported digest would deploy something no
+	// evidence describes.
+	build.Status.Artifact = r.attestBuild(ctx, build, project, target, image)
+	if artifact := build.Status.Artifact; artifact != nil && artifact.Repository != "" && artifact.Digest != "" {
+		image = attestation.ArtifactRef(artifact.Repository, artifact.Digest)
+	}
+
 	if err := r.Audit.Record(ctx, audit.Transition{
 		Object:      build,
 		Kind:        audit.KindBuild,
@@ -640,15 +748,6 @@ func (r *BuildReconciler) succeed(
 
 	build.Status.Phase = kitchenv1alpha1.BuildSucceeded
 	build.Status.Image = image
-	if job.Status.CompletionTime != nil {
-		build.Status.CompletedAt = job.Status.CompletionTime
-	} else {
-		build.Status.CompletedAt = ptr.To(metav1.Now())
-	}
-	// Attested after the times are stamped and before the status is written,
-	// so the record carries the Job's own start and finish and the Build
-	// carries the outcome in the same update.
-	build.Status.Artifact = r.attestBuild(ctx, build, project, target, image)
 	reason, msg := "BuildSucceeded", fmt.Sprintf("image %s pushed", image)
 	if !digestFound {
 		reason, msg = "ImageDigestUnavailable", "build succeeded but the image digest could not be read; recorded the tag reference"

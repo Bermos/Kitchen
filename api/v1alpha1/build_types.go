@@ -93,6 +93,17 @@ type ArtifactStatus struct {
 	// +optional
 	KeyID string `json:"keyID,omitempty"`
 
+	// Evidence lists what is now attached to the digest, by predicate type.
+	//
+	// It is an index, not a copy: the attestations themselves stay in the
+	// registry, and this says which of them exist so that a screen can show
+	// "provenance and an SBOM are attached" without a registry round trip.
+	// A reader that needs the content asks the registry, or asks the API for
+	// the materialized evidence set, and either way gets the signed bytes
+	// rather than this summary.
+	// +optional
+	Evidence []ArtifactEvidence `json:"evidence,omitempty"`
+
 	// Message explains an artifact the platform could not attest. An
 	// unattested artifact is not a failed build — the image is real and the
 	// deployment is honest — but it is one that no policy requiring evidence
@@ -136,6 +147,37 @@ type BuildCacheStatus struct {
 	// project, or a registry that would not keep the cache manifest.
 	// +optional
 	Message string `json:"message,omitempty"`
+}
+
+// ArtifactEvidence names one attestation attached to an artifact.
+//
+// It carries the predicate type and nothing that interprets it. Which claims
+// count as provenance, and which formats of bill of materials are acceptable,
+// are policy questions, and phase three is where policy lives — a status field
+// that answered them here would be a verdict, and gates do not emit verdicts.
+type ArtifactEvidence struct {
+	// PredicateType is the URI of what the attestation asserts: SLSA's for
+	// provenance, SPDX's or CycloneDX's for a bill of materials, one of
+	// Kitchen's own for a claim no standard covers.
+	PredicateType string `json:"predicateType"`
+
+	// Manifest is the digest of the manifest that refers to the artifact and
+	// holds this evidence, which is where a reader goes to fetch it without
+	// listing anything.
+	// +optional
+	Manifest string `json:"manifest,omitempty"`
+
+	// Source says who made the claim this evidence carries: `builder` for
+	// one the build process itself produced and the platform countersigned,
+	// `platform` for one the reconciler made on its own account.
+	//
+	// The distinction matters to anyone reading the evidence. The platform's
+	// signature is on both, so the signature cannot tell them apart, and a
+	// claim about what a build did is worth more when the thing that did the
+	// building made it.
+	// +kubebuilder:validation:Enum=builder;platform
+	// +optional
+	Source string `json:"source,omitempty"`
 }
 
 // BuildStatus defines the observed state of a Build.

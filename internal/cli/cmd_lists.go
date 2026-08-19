@@ -140,6 +140,76 @@ build stays in the list saying so.`),
 	})
 }
 
+func newAttestationsCommand(r *Runtime) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "attestations <build>",
+		Aliases: []string{"evidence"},
+		Short:   "The signed evidence attached to a build's artifact",
+		Long: strings.TrimSpace(`
+Read the evidence attached to what a build produced.
+
+Everything it prints is read out of the registry, keyed to the artifact's
+content digest through OCI referrers — not out of a Kitchen table. The same
+envelopes answer "cosign download attestation" and "cosign verify-attestation"
+with this platform out of the loop, which is the point of storing them there,
+and the reason an installation that stops using Kitchen keeps its evidence.
+
+Each attestation says who made the claim it carries. The platform's build
+record is the reconciler's account of a build it orchestrated; provenance and
+the bill of materials come from the builder itself and are countersigned. The
+signature on all of them is the platform's, so the signature cannot tell them
+apart.
+
+"verified" means a signature was accepted by a key this platform holds. A set
+read where the platform holds no key reports itself as a listing rather than a
+verification: a reader that could not tell the two apart would eventually treat
+one as the other.`),
+		Args: cobra.ExactArgs(1),
+		RunE: run(func(cmd *cobra.Command, args []string) error {
+			client, err := r.client()
+			if err != nil {
+				return err
+			}
+			ctx, cancel := r.context(commandContext(cmd))
+			defer cancel()
+
+			set, err := client.buildAttestations(ctx, args[0])
+			if err != nil {
+				return err
+			}
+			return r.printer().document(set, func(s tui.Styles) string {
+				if len(set.Attestations) == 0 {
+					return "Nothing is attached to this artifact. It is real and what runs from it is " +
+						"honest about what it is — what it cannot do is satisfy a policy that requires evidence.\n"
+				}
+				rows := make([][]string, 0, len(set.Attestations))
+				for _, found := range set.Attestations {
+					checked := "not checked"
+					switch {
+					case found.Verified:
+						checked = "verified"
+					case set.Verified:
+						checked = "not signed by a key this platform holds"
+					}
+					rows = append(rows, []string{
+						found.PredicateType, checked, short(found.Digest),
+					})
+				}
+				return s.Table([]string{"PREDICATE", "SIGNATURE", "ENVELOPE"}, rows)
+			})
+		}),
+	}
+
+	return describe(cmd, meta{
+		Calls:  []string{"GET /api/v1/builds/{name}/attestations"},
+		Output: output{Mode: outputDocument, Kind: "evidenceSet"},
+		Needs:  needs{Auth: true},
+		Examples: []example{
+			{"What is attached to a build's artifact", "kitchen attestations shop-bld-7 --json"},
+		},
+	})
+}
+
 func newReleasesCommand(r *Runtime) *cobra.Command {
 	var limit int
 

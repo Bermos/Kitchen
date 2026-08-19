@@ -80,6 +80,56 @@ type AttestationSpec struct {
 	// platform generated brings its own.
 	// +optional
 	SigningKeyRef *LocalObjectReference `json:"signingKeyRef,omitempty"`
+
+	// Build asks the builder itself for provenance and a bill of materials,
+	// which are claims the reconciler cannot make on its own.
+	// +optional
+	Build BuildAttestationSpec `json:"build,omitempty"`
+}
+
+// BuildAttestationSpec configures the evidence the *builder* produces, as
+// distinct from the evidence the reconciler produces about the build.
+//
+// Both knobs cost build time, which is why they are knobs. Provenance is
+// nearly free — BuildKit already has everything it records. An SBOM is not: it
+// runs a scanner image over the finished filesystem, and that image is pulled
+// on every build, because the build pod is ephemeral and nothing survives it.
+// An installation that cannot reach the generator, or will not spend the
+// seconds, turns it off and says why in its own records rather than having the
+// platform decide for it.
+type BuildAttestationSpec struct {
+	// Provenance asks the builder how the artifact was produced: the source
+	// commit it resolved, the base images it pulled and their digests, and
+	// the parameters it was invoked with.
+	//
+	// This is SLSA provenance, and it is a different and stronger claim than
+	// Kitchen's own build record: it is made by the process that did the
+	// work rather than by the one that asked for it.
+	// +kubebuilder:default=true
+	// +optional
+	Provenance bool `json:"provenance"`
+
+	// SBOM asks the builder for a bill of materials for the finished image.
+	// +kubebuilder:default=true
+	// +optional
+	SBOM bool `json:"sbom"`
+
+	// SBOMGenerator is the scanner image the builder runs to produce it.
+	//
+	// The **format follows the generator**, and the platform records what
+	// came out rather than converting it: the default emits SPDX 2.3, which
+	// Grype, Trivy and OSV-Scanner all read unmodified, and a generator that
+	// emits CycloneDX produces a CycloneDX attestation whose predicate type
+	// says so. Kitchen does not transcode between them — a bill of materials
+	// rewritten by something that did not scan the image is a claim by the
+	// transcoder.
+	//
+	// Left unset the operator uses a pinned default. Pinning matters here
+	// more than it looks: the tag the ecosystem points at is a floating one,
+	// and a build's evidence should not change because an image someone else
+	// owns moved overnight.
+	// +optional
+	SBOMGenerator string `json:"sbomGenerator,omitempty"`
 }
 
 // ComplianceSpec configures what evidence the platform produces about its own

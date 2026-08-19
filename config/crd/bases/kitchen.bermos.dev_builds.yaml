@@ -113,6 +113,55 @@ spec:
                       pushed successfully but did not report a digest, which is the one case
                       where the platform has an image it cannot make claims about.
                     type: string
+                  evidence:
+                    description: |-
+                      Evidence lists what is now attached to the digest, by predicate type.
+
+                      It is an index, not a copy: the attestations themselves stay in the
+                      registry, and this says which of them exist so that a screen can show
+                      "provenance and an SBOM are attached" without a registry round trip.
+                      A reader that needs the content asks the registry, or asks the API for
+                      the materialized evidence set, and either way gets the signed bytes
+                      rather than this summary.
+                    items:
+                      description: |-
+                        ArtifactEvidence names one attestation attached to an artifact.
+
+                        It carries the predicate type and nothing that interprets it. Which claims
+                        count as provenance, and which formats of bill of materials are acceptable,
+                        are policy questions, and phase three is where policy lives — a status field
+                        that answered them here would be a verdict, and gates do not emit verdicts.
+                      properties:
+                        manifest:
+                          description: |-
+                            Manifest is the digest of the manifest that refers to the artifact and
+                            holds this evidence, which is where a reader goes to fetch it without
+                            listing anything.
+                          type: string
+                        predicateType:
+                          description: |-
+                            PredicateType is the URI of what the attestation asserts: SLSA's for
+                            provenance, SPDX's or CycloneDX's for a bill of materials, one of
+                            Kitchen's own for a claim no standard covers.
+                          type: string
+                        source:
+                          description: |-
+                            Source says who made the claim this evidence carries: `builder` for
+                            one the build process itself produced and the platform countersigned,
+                            `platform` for one the reconciler made on its own account.
+
+                            The distinction matters to anyone reading the evidence. The platform's
+                            signature is on both, so the signature cannot tell them apart, and a
+                            claim about what a build did is worth more when the thing that did the
+                            building made it.
+                          enum:
+                          - builder
+                          - platform
+                          type: string
+                      required:
+                      - predicateType
+                      type: object
+                    type: array
                   keyID:
                     description: |-
                       KeyID is the signing key the build record was signed under, which is
