@@ -718,6 +718,9 @@ does not run in.
 {{- if not (hasPrefix "/" .Values.restore.path) }}
 {{- fail (printf "restore.path must be an absolute path inside the container (got %q): its directory is the mount point and its filename is what the archive is projected as." .Values.restore.path) }}
 {{- end }}
+{{- if has (dir .Values.restore.path) (list "/manager" "/gate" "/backup" "/restore") }}
+{{- fail (printf "restore.path is %q, and its directory %q is one of the operator image's own binaries. A volume mounted over a regular file does not start the container at all — it fails before anything runs, with no logs to read. Put the archive somewhere else, such as /archive/backup.tar.gz." .Values.restore.path (dir .Values.restore.path)) }}
+{{- end }}
 {{- end }}
 {{- if and (gt (int .Values.replicaCount) 1) (not .Values.leaderElection) }}
 {{- fail "leaderElection must stay enabled when replicaCount > 1, otherwise every replica reconciles concurrently." }}

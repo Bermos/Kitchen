@@ -120,7 +120,10 @@ restore:
   existingClaim: ""
   # -- Where the archive is read from inside the container. Its directory is
   # the mount point, and its filename is the key the Secret is projected under.
-  path: /backup/backup.tar.gz
+  # It must not be a directory the image already has a file at: the image's own
+  # binaries live at the root, and a volume mounted over one of them stops the
+  # container from starting at all. kitchen.validate refuses those.
+  path: /archive/backup.tar.gz
   # -- Changing this runs the restore again. A Job's pod template is immutable,
   # so the id is part of its name and a second restore is a second Job whose
   # log stands beside the first.

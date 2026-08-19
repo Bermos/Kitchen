@@ -1254,7 +1254,7 @@ kubectl delete namespace kitchen-system
 | `restore.enabled` | `false` | Run the restore Job. A bootstrap step, not something an install does — see [docs/BACKUP.md](../../docs/BACKUP.md). Needs one of the two sources below. |
 | `restore.secretName` / `.secretKey` | `""` / `backup.tar.gz` | Secret holding the archive. Bounded by etcd's object limit (about 1 MiB). |
 | `restore.existingClaim` | `""` | A PersistentVolumeClaim holding the archive instead, for one past that. |
-| `restore.path` | `/backup/backup.tar.gz` | Where the archive is read from. Its directory is the mount point. |
+| `restore.path` | `/archive/backup.tar.gz` | Where the archive is read from. Its directory is the mount point, and must not be a path the image already has a binary at. |
 | `restore.id` | `"1"` | Changing it runs the restore again: a Job's pod template is immutable, so the id is in its name. |
 | `restore.force` | `false` | Restore an archive written by a different release. The accounts dump carries rows and not a schema. |
 | `restore.skipAccounts` | `false` | Restore the objects and secrets alone. |

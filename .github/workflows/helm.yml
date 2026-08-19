@@ -1202,7 +1202,9 @@ jobs:
 
           # Somewhere for the archive to live between the two Jobs. It outlives
           # the wipe because it is a volume and not platform state.
-          kubectl apply -f - <<'EOF'
+          # Unquoted, so PROBE_IMAGE reaches the init container below. Nothing
+          # else in here is a shell expansion.
+          kubectl apply -f - <<EOF
           apiVersion: v1
           kind: PersistentVolumeClaim
           metadata:
@@ -1227,15 +1229,35 @@ jobs:
                 # The operator's own account: taking a backup reads exactly
                 # what the operator already reads.
                 serviceAccountName: kitchen-controller-manager
+                initContainers:
+                  # A freshly provisioned volume belongs to root, and how it is
+                  # created is the provisioner's business rather than something
+                  # to rely on. Both images that touch this archive run as
+                  # 65532 — the operator image's user — so hand it to them
+                  # rather than hoping. The probe image is used because it is
+                  # already loaded into this cluster and has a shell; the
+                  # operator's own is distroless and has neither.
+                  - name: own-the-volume
+                    image: ${PROBE_IMAGE}
+                    imagePullPolicy: IfNotPresent
+                    command: [sh, -ec, "chown 65532:65532 /archive"]
+                    securityContext:
+                      runAsUser: 0
+                    volumeMounts:
+                      - name: archive
+                        mountPath: /archive
                 containers:
                   - name: backup
                     image: kitchen:ci
                     imagePullPolicy: IfNotPresent
                     command: [/backup]
-                    args: [--output=/backup/backup.tar.gz]
+                    # Not /backup: the image's binaries live at the root, and a
+                    # volume mounted over one of them is a container that never
+                    # starts — no logs, no exit code, nothing to read.
+                    args: [--output=/archive/backup.tar.gz]
                     volumeMounts:
                       - name: archive
-                        mountPath: /backup
+                        mountPath: /archive
                 volumes:
                   - name: archive
                     persistentVolumeClaim:
@@ -1243,6 +1265,10 @@ jobs:
           EOF
           kubectl -n kitchen-system wait --for=condition=complete --timeout=5m job/kitchen-backup-ci || {
             kubectl -n kitchen-system describe job kitchen-backup-ci
+            # The pod, not only the Job: a container that fails before it runs
+            # has no logs at all, and the reason is in its status rather than
+            # on its stdout.
+            kubectl -n kitchen-system describe pod -l job-name=kitchen-backup-ci || true
             kubectl -n kitchen-system logs job/kitchen-backup-ci --tail=100 || true
             echo "::error::the backup job did not finish"
             exit 1
