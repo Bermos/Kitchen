@@ -42,6 +42,54 @@ The corollaries that shape how such writes are built:
   token secret, the bootstrap link) and deploy-time chart values — and a
   setting that stays chart-only should be a deliberate decision, not a gap.
 
+## The CLI is the third client, and it exists
+
+`kitchen` — `cmd/kitchen`, `internal/cli` — is a command line client for the
+same REST API the dashboard talks to: link a directory to a project, deploy the
+current commit, follow it, read the logs, change the environment variables,
+roll back. It holds no kubeconfig and talks to no cluster. It ships from this
+repository so that one tag versions the chart, both images and it.
+[docs/CLI.md](docs/CLI.md) is the whole of it.
+
+**Every API change is a CLI change until somebody has decided it is not.** The
+rule above — a feature is done when it has a route and a screen — now has a
+third clause, and it is the cheap one: when a route is added, renamed, or has
+its requirement changed, decide whether a command should carry it. Either add
+one, or leave it to `kitchen api`, which reaches any endpoint authenticated and
+is why a new route is never *unreachable* from a terminal. What is not
+acceptable is not noticing.
+
+Two tests make that hard to skip rather than a matter of remembering, and both
+run in `make test`:
+
+- **Every command names the endpoints it calls**, and
+  `TestEveryCallNamesARealAPIRoute` checks each one against `api.PolicyTable()`
+  — the same table `internal/api/policy.go` registers every route from. A route
+  that moves or disappears fails the CLI's tests, not only the API's.
+- **`kitchen schema` is derived from the commands**, and
+  `TestEveryCommandPublishesItself` refuses a command that does not say what it
+  does, what it calls, what it answers with, and how to run it.
+
+Three properties are why the CLI is shaped the way it is, and a new command
+keeps all three:
+
+- **It is machine-first.** `--json` on every command puts the answer on stdout
+  and nothing else; anything followed is NDJSON with a `type`; a failure is one
+  `{"error": {...}}` shape; the exit codes in `internal/cli/errors.go` are a
+  contract and `kitchen schema` publishes them. The Bubble Tea views are drawn
+  only when stdout is a terminal *and* `--json` is off, so they cannot reach a
+  pipe.
+- **Nothing blocks on a prompt.** Every question has a flag that answers it, and
+  `--no-input` is implied whenever stdin is not a terminal — a question with
+  nobody to answer it is a failure naming the flag, never a wait.
+- **The API never reads credentials back, so neither does the CLI.**
+  `kitchen env list` prints the whole variable list and no values; `env set`
+  sends every variable back by name and a value only for the ones it is
+  changing, which is what makes a partial change possible against a route that
+  replaces the whole list. Signing in stores an API key and exchanges it at the
+  issuer — there is no browser flow, because the identity provider's OAuth
+  plugin implements no device grant (docs/CLI.md says what it would take).
+
 ## Commits
 
 **Every commit message is a

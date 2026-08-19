@@ -17,6 +17,9 @@ three, and the operator writes the flows and owns the schema under all of it.
 - [CRD schema](docs/CRDS.md) — the operator's data model and reconcile flows
 - [Auth architecture](docs/AUTH.md) — the platform's identity provider
 - [REST API](docs/API.md) — the endpoints, and how to get a token for them
+- [The `kitchen` CLI](docs/CLI.md) — deploy, logs, env and rollback from a
+  terminal, and the JSON surface that makes it drivable by something that is not
+  a person
 - [Compliance](docs/COMPLIANCE.md) — evidence as a byproduct of deployment: the audit
   log, and the attestations attached to every artifact
 
@@ -39,6 +42,10 @@ three, and the operator writes the flows and owns the schema under all of it.
   query the API answers out of it
 - `config/crd/bases/` — generated CRD manifests
 - `cmd/` — operator entrypoint
+- `cmd/kitchen/`, `internal/cli/` — the `kitchen` CLI: a client of the REST API
+  (`kitchen link`, `deploy`, `logs`, `env`, `rollback`), built to be driven by a
+  machine as readily as by a person — `kitchen schema` publishes the whole
+  surface as JSON
 - `auth/` — the identity provider (better-auth) served at `auth.<baseDomain>`
 - `ui/` — the dashboard: a Vue SPA (Nuxt UI on Reka components) the operator
   embeds and serves at `kitchen.<baseDomain>`, talking only to the REST API
