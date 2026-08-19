@@ -91,7 +91,7 @@ are not roles:
 |---|---|
 | `any account` | a valid token, and nothing more |
 | `any account — filtered` | a valid token; the answer is narrowed to the projects the caller can see |
-| `any account — body varies` | a valid token; part of the body is withheld by role. `GET /status` alone |
+| `any account — body varies` | a valid token; the shape of the body depends on the caller's platform role. Two routes: `GET /status` and `GET /connections` |
 
 The whole table lives in one place in the operator — `internal/api/policy.go`,
 which every route is registered from — so a route cannot exist without a
@@ -137,6 +137,10 @@ sent the request. The `Requires` column is explained under
 | POST | `/projects/{name}/builds` | Build a commit — a rebuild | `developer` |
 | GET | `/projects/{name}/releases` | That project's releases, newest first | `viewer` |
 | GET | `/projects/{name}/environments` | That project's environments | `viewer` |
+| GET | `/projects/{name}/members` | Who holds a role on it — the readable form of `spec.access` | `admin` |
+| POST | `/projects/{name}/members` | Give somebody a role. The address is resolved to a `sub` before it is written | `admin` |
+| PATCH | `/projects/{name}/members` | Move a member to another role | `admin` |
+| DELETE | `/projects/{name}/members` | Take a member off the project | `admin` |
 | GET | `/builds` | Every build. `?project=` filters | any account — filtered |
 | GET | `/builds/{name}` | One build | `viewer` |
 | POST | `/builds/{name}/cancel` | Stop it — the Build stays, phase `Cancelled` | `developer` |
@@ -187,7 +191,7 @@ sent the request. The `Requires` column is explained under
 | GET | `/updates` | The platform's own version, what it can upgrade to, and every upgrade it has attempted | `operator` |
 | POST | `/updates` | Upgrade the platform | `operator` |
 | GET | `/updates/{name}` | One upgrade | `operator` |
-| GET | `/connections` | Every connection (never their credentials) | `operator` |
+| GET | `/connections` | An operator: every connection (never their credentials). Anybody else: the picker — name, capabilities, readiness | any account — body varies |
 | POST | `/connections` | Create one — the credential goes in, and never comes back out | `operator` |
 | POST | `/connections/test` | Try a credential against its provider, storing nothing | `operator` |
 | GET | `/connections/{name}` | One connection | `operator` |
@@ -242,8 +246,17 @@ everything the platform derives from it — the application namespace, release
 names, generated hostnames — has to fit Kubernetes' 63-character limit.
 Naming a Connection that does not exist, or one without the needed
 capability, is a `400`; a Connection the operator has not assessed yet is
-accepted, and the project's own conditions report whether it fits. A name
-already in use is a `409`.
+accepted, and the project's own conditions report whether it fits.
+
+**Project names are one flat namespace under the platform's base domain**, and
+they are first-come-first-served. Every URL the platform generates is a
+subdomain of that domain, so there is no scope a second `shop` could be
+qualified with — and the second person to want the name is told so in words
+rather than being handed the API server's account of an object in a namespace:
+
+```json
+{"error": "the project name \"shop\" is taken: names are one flat namespace under the platform's base domain, since every URL the platform generates is a subdomain of it, so they are first-come-first-served — choose another name"}
+```
 
 Answers `201` with the new project. The operator takes it from there:
 namespace, webhook, and — once the first build of the production branch
@@ -252,7 +265,9 @@ lands — the production environment.
 **Creating a project is self-service, and the account that creates one becomes
 its `admin`** — written into `spec.access` on the new Project, not implied, so
 that `kubectl get project -o yaml` and a git diff both tell the whole truth
-about who may do what with it.
+about who may do what with it. The grant is part of the create itself, one
+request carrying both, so there is never an instant in which a project exists
+that nobody administers.
 
 ### Who the caller is, and what they may do
 
@@ -321,6 +336,101 @@ reference is what replaces it.
 
 Settings land in the next release's snapshot — what is already running keeps
 the configuration it was released with until the next deploy.
+
+### Who is on a project
+
+Membership is a project `admin`'s to change, which is the point of it: adding
+somebody to `shop` does not go through whoever installed the platform. An
+operator holds `admin` on every project, so they can do it too — they need no
+rule of their own here, and neither does anybody else.
+
+All four methods answer on one path, `/projects/{name}/members`, and it is the
+readable form of `spec.access` on the Project:
+
+```sh
+curl -sS -H "authorization: Bearer $TOKEN" \
+  https://kitchen.apps.example.com/api/v1/projects/shop/members
+{"items": [
+   {"subject": "user_01H8X…", "email": "grace@example.com", "role": "admin"},
+   {"subject": "user_01J2Q…", "email": "anna@example.com", "role": "developer"}]}
+```
+
+`subject` is the issuer's `sub` and is the canonical identifier; `email` is
+informational, so a list of opaque strings still reads. (The two swap round for
+an entry hand-written against an address — see
+[AUTH.md](AUTH.md#where-membership-lives) — where `subject` carries the address
+and `email` is usually empty.)
+
+**Adding somebody names them by address, and the platform resolves it.**
+
+```sh
+curl -sS -X POST -H "authorization: Bearer $TOKEN" \
+  -d '{"email": "anna@example.com", "role": "developer"}' \
+  https://kitchen.apps.example.com/api/v1/projects/shop/members
+{"subject": "user_01J2Q…", "email": "anna@example.com", "role": "developer"}
+```
+
+The address is turned into the account's `sub` at the identity provider before
+anything is written, because the address is what a person can type and the
+`sub` is what a token will actually carry. An address the identity provider
+does not know is a `404` — *they have to sign in to Kitchen once before they
+can be given a role on a project* — rather than a grant that would sit on the
+project matching nobody. Somebody who is already a member is a `409`; change
+their role rather than adding a second entry.
+
+`subject` is the other way in, and takes an identifier as given:
+
+```json
+{"subject": "svc_ci", "role": "developer"}
+```
+
+That is for an identity with no address to resolve — a machine account, whose
+API key is exchanged for an ordinary platform token — and for an installation
+federated to an issuer that serves no account directory, where resolving an
+address answers `503` saying exactly this. Exactly one of `email` and
+`subject` is required, and a `subject` that looks like an address is refused:
+pass it as `email`, so it is resolved rather than stored as the weaker
+verified-address grant.
+
+**A member is addressed by `subject` in the body, not in the path**, on both of
+the writes that change one:
+
+```sh
+curl -sS -X PATCH -H "authorization: Bearer $TOKEN" \
+  -d '{"subject": "user_01J2Q…", "role": "admin"}' \
+  https://kitchen.apps.example.com/api/v1/projects/shop/members
+
+curl -sS -X DELETE -H "authorization: Bearer $TOKEN" \
+  -d '{"subject": "user_01J2Q…"}' \
+  https://kitchen.apps.example.com/api/v1/projects/shop/members
+```
+
+A `sub` is opaque and may contain `/`, `%` or `#`; every path segment this API
+addresses an object by is a Kubernetes name, and adding a percent-encoding rule
+that only bites on the accounts with awkward identifiers is worse than a
+`DELETE` that carries a body. `PATCH` answers `200` with the grant, `DELETE`
+answers `204`, and a subject the project has no grant for is a `404`.
+
+**The last `admin` cannot be removed or demoted.** Both writes refuse with a
+`409` that says what would fix it:
+
+```json
+{"error": "anna@example.com is the only admin on shop, and a project with no admin has nobody left who can add one: make somebody else an admin first, then remove this one"}
+```
+
+An operator is not counted as a substitute. They could indeed repair such a
+project, but a project whose only listed admin is gone is exactly the abandoned
+project the rule exists to prevent: everyone working on it would have to go and
+find an operator to get anything changed, which is the bottleneck self-service
+membership was built to remove.
+
+Every membership write is recorded in the [audit log](#endpoints) as an update
+to the `Project`, with the member, the role and whether they were added,
+changed or removed. A grant is the most consequential thing an admin can do to
+a project short of deleting it, and — like a deletion — removing one leaves no
+trace anywhere else once the entry is gone. The writes also carry the caller's
+`resourceVersion`, so two admins editing the list at the same time get a `409`
+rather than one of them silently overwriting the other's decision.
 
 ### Deleting a project
 
@@ -413,6 +523,33 @@ provisioner — and its credential is the reason these endpoints are shaped the
 way they are: **the API never reads credentials back.** Writing one means the
 operator stores it in a Secret it manages, and every response is the same
 credential-free view `GET` answers.
+
+Every one of these is the operator's except the list, which answers **two
+shapes**. A project cannot exist without a `gitSource` and a `registry`
+connection to name, so a member who could not see that any connection exists
+could not create a project — self-service would stop at the first form field
+and hand them back to an operator. So `GET /connections` is filtered by role
+rather than refused. An operator gets the connections:
+
+```json
+{"items": [{"name": "harbor", "provider": "dockerRegistry", "capabilities": ["imageStore"],
+            "createdAt": "2026-03-01T09:00:00Z", "conditions": [{"…": "…"}]}]}
+```
+
+and everybody else gets the picker — the three things a dropdown needs, in a
+shape of its own rather than the one above with fields blanked out:
+
+```json
+{"items": [{"name": "harbor", "capabilities": ["imageStore"], "ready": true}]}
+```
+
+`ready` is whether the platform has reached the provider and the provider
+accepted the stored credential; one nothing has assessed yet reads `false`.
+Between it and `capabilities`, a form can offer what can be chosen and say why
+the rest cannot. Nothing else crosses: no provider, no `config`, and no
+condition messages — those are the provider's own words about the operator's
+credential, and belong on the operator's screen, which is where fixing them
+lives too. `GET /connections/{name}` and every write below stay `operator`.
 
 ```sh
 curl -sS -X POST -H "authorization: Bearer $TOKEN" \

@@ -148,7 +148,14 @@ func TestThePlatformsOwnSurfaceIsTheOperators(t *testing.T) {
 	}{
 		{http.MethodGet, "/api/v1/settings", "reading the platform's settings"},
 		{http.MethodPatch, "/api/v1/settings", "changing the platform's settings"},
-		{http.MethodGet, "/api/v1/connections", "reading the platform's connections"},
+		// The connection *list* is the picker every project is created from,
+		// so it answers a member a thinned body rather than a refusal (see
+		// TestAMemberPicksAConnectionWithoutSeeingOne). Everything else under
+		// /connections is still the operator's, credentials and all.
+		{http.MethodGet, "/api/v1/connections/gh", "reading a connection"},
+		{http.MethodPatch, "/api/v1/connections/gh", "changing a connection"},
+		{http.MethodDelete, "/api/v1/connections/gh", "deleting a connection"},
+		{http.MethodPost, "/api/v1/connections/test", "testing a connection"},
 		{http.MethodGet, "/api/v1/updates", "reading the platform's updates"},
 		{http.MethodGet, "/api/v1/platform/nodes", "reading the platform's nodes"},
 		{http.MethodGet, "/api/v1/compliance", "reading the platform's compliance posture"},

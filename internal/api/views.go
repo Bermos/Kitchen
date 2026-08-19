@@ -20,6 +20,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
@@ -518,6 +519,52 @@ func newConnectionView(connection *kitchenv1alpha1.Connection) connectionView {
 		Capabilities: capabilities,
 		CreatedAt:    connection.CreationTimestamp.Time,
 		Conditions:   conditionViews(connection.Status.Conditions),
+	}
+}
+
+// connectionChoiceView is a connection as somebody *choosing* one sees it,
+// which is the whole of what a project's members are told: what it is called,
+// what it can back, and whether the platform has it working.
+//
+// It is a type of its own rather than connectionView with fields left empty,
+// and that is the point of it. A blanked-out view is one forgetful `if` away
+// from publishing the operator's; worse, a field added to connectionView later
+// would be published to everybody by a struct they happen to share, without
+// anybody deciding to. Widening what a member sees has to be an edit to this
+// struct.
+//
+// What is deliberately not here: the provider, the config, the conditions and
+// their messages. A condition's message is the provider's own words — a
+// hostname, an API endpoint, an authentication failure — and it is the
+// operator's business. Ready plus Capabilities is enough to fill a dropdown
+// and to say why an entry cannot be chosen; the rest of the answer lives on
+// the operator's Connections screen, which is where fixing it lives too.
+type connectionChoiceView struct {
+	Name         string   `json:"name"`
+	Capabilities []string `json:"capabilities"`
+	Ready        bool     `json:"ready"`
+}
+
+// credentialsValidCondition is the condition the ConnectionReconciler writes
+// its verdict on the stored credential into. It is spelled here as well
+// because that reconciler keeps it unexported; the constant it has to agree
+// with is `condCredentialsValid` in internal/controller.
+const credentialsValidCondition = "CredentialsValid"
+
+// newConnectionChoiceView reads readiness off the one condition that answers
+// "would this work if a project named it": the platform has reached the
+// provider and the provider accepted the credential. A connection nothing has
+// assessed yet is not ready — which is the honest answer, and reads in a
+// dropdown as an entry to wait for rather than one to blame a failed build on.
+func newConnectionChoiceView(connection *kitchenv1alpha1.Connection) connectionChoiceView {
+	capabilities := make([]string, 0, len(connection.Status.Capabilities))
+	for _, capability := range connection.Status.Capabilities {
+		capabilities = append(capabilities, string(capability))
+	}
+	return connectionChoiceView{
+		Name:         connection.Name,
+		Capabilities: capabilities,
+		Ready:        meta.IsStatusConditionTrue(connection.Status.Conditions, credentialsValidCondition),
 	}
 }
 

@@ -138,6 +138,12 @@ type Server struct {
 	// one signal that probes DNS. A field for the same reason logStore is: a
 	// test must be able to answer without a network.
 	resolver signals.Resolver
+
+	// accounts builds the client the membership writes resolve an address to
+	// an account through. A field for the same reason logStore is: a test
+	// must be able to add a member without an identity provider to ask. Nil
+	// resolves it from the platform's own identity-provider secret.
+	accounts func(ctx context.Context) (accountDirectory, error)
 }
 
 // chartVersions lists the versions the platform's Helm chart has been

@@ -202,6 +202,13 @@ func (s *Server) createProject(w http.ResponseWriter, req *http.Request) {
 	if !s.requireConnection(ctx, w, "registry", body.Registry, kitchenv1alpha1.CapabilityImageStore) {
 		return
 	}
+	// Checked before anything is recorded, so a name somebody already took
+	// does not leave a record of a project that was never created. The Create
+	// below still has to answer the same way, because two people can want
+	// `shop` in the same second and only the API server can settle that.
+	if !s.projectNameIsFree(ctx, w, body.Name) {
+		return
+	}
 
 	branch := body.ProductionBranch
 	if branch == "" {
@@ -255,6 +262,10 @@ func (s *Server) createProject(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	if err := s.Client.Create(ctx, project); err != nil {
+		if apierrors.IsAlreadyExists(err) {
+			nameTaken(w, project.Name)
+			return
+		}
 		s.writeError(w, err)
 		return
 	}
@@ -267,6 +278,37 @@ func (s *Server) createProject(w http.ResponseWriter, req *http.Request) {
 		Actor:   callerName(caller),
 	})
 	writeJSON(w, http.StatusCreated, newProjectView(project, s.roleOn(ctx, project)))
+}
+
+// projectNameIsFree reports whether a project of that name can still be
+// created, answering the request itself when it cannot.
+func (s *Server) projectNameIsFree(ctx context.Context, w http.ResponseWriter, name string) bool {
+	existing := &kitchenv1alpha1.Project{}
+	switch err := s.Client.Get(ctx, types.NamespacedName{Namespace: s.Namespace, Name: name}, existing); {
+	case apierrors.IsNotFound(err):
+		return true
+	case err != nil:
+		s.writeError(w, err)
+		return false
+	default:
+		nameTaken(w, name)
+		return false
+	}
+}
+
+// nameTaken says the name has gone, and why there is nothing to appeal to.
+//
+// The raw AlreadyExists underneath it names a Kubernetes resource in a
+// Kubernetes namespace, which is exactly the vocabulary the platform exists to
+// keep out of a developer's day. What is worth saying instead is the rule:
+// project names are one flat namespace under the base domain — every URL the
+// platform generates is a subdomain of it — so there is no scope to qualify
+// the name with, and the second person to want `shop` needs a different one.
+func nameTaken(w http.ResponseWriter, name string) {
+	writeJSON(w, http.StatusConflict, errorBody{Error: fmt.Sprintf(
+		"the project name %q is taken: names are one flat namespace under the platform's base domain, "+
+			"since every URL the platform generates is a subdomain of it, so they are "+
+			"first-come-first-served — choose another name", name)})
 }
 
 // creatorGrant is the access list a new project starts with: its creator, as
@@ -1139,13 +1181,35 @@ func (s *Server) deleteEnvironment(w http.ResponseWriter, req *http.Request) {
 	writeJSON(w, http.StatusAccepted, newEnvironmentView(env))
 }
 
+// listConnections is the one connection route that is not the operator's
+// alone, and the only one that answers two shapes.
+//
+// A project needs a `gitSource` and a `registry` connection to exist at all,
+// so a member who cannot see that any connection exists cannot create a
+// project — self-service would stop at the first form field and hand them back
+// to an operator, which is the bottleneck the whole role model is trying to
+// remove. So the route is filtered by role rather than refused: an operator
+// gets the connections, and everybody else gets the picker's own shape
+// (connectionChoiceView) — names, capabilities and readiness, and no way in
+// from here to read, create, test, change or delete one. Everything under
+// /connections/ stays the operator's.
 func (s *Server) listConnections(w http.ResponseWriter, req *http.Request) {
+	ctx := req.Context()
 	list := &kitchenv1alpha1.ConnectionList{}
-	if err := s.Client.List(req.Context(), list, client.InNamespace(s.Namespace)); err != nil {
+	if err := s.Client.List(ctx, list, client.InNamespace(s.Namespace)); err != nil {
 		s.writeError(w, err)
 		return
 	}
 	sort.Slice(list.Items, func(i, j int) bool { return list.Items[i].Name < list.Items[j].Name })
+
+	if !platformRoleFrom(ctx).AtLeast(access.PlatformOperator) {
+		choices := make([]connectionChoiceView, 0, len(list.Items))
+		for i := range list.Items {
+			choices = append(choices, newConnectionChoiceView(&list.Items[i]))
+		}
+		writeList(w, choices)
+		return
+	}
 
 	views := make([]connectionView, 0, len(list.Items))
 	for i := range list.Items {

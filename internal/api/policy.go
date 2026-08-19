@@ -83,8 +83,18 @@ const (
 	// where "everything" means everything of the caller's.
 	requireVisibleProjects
 	// requireRoleShapedBody admits any valid token and hands the handler the
-	// caller's platform role, because the body varies by it. GET /status is
-	// the only route in this class and is meant to stay the only one.
+	// caller's platform role, because the body varies by it. It is the class
+	// docs/AUTH.md calls the exception to "a whole route is the unit of
+	// authorization", and it stays an exception: a route belongs here only
+	// when the same page is the answer for both people and a second endpoint
+	// would double a surface for one payload. Two routes qualify. GET /status
+	// is the dashboard's home page for a member and for an operator. GET
+	// /connections is the connection picker: a project cannot exist without a
+	// gitSource and a registry connection to name, so a member who cannot see
+	// that a connection exists cannot fill in the first form on the platform
+	// — and what they get back is names, capabilities and readiness, in a
+	// shape of its own (connectionChoiceView), never the operator's view with
+	// fields blanked out.
 	requireRoleShapedBody
 )
 
@@ -142,8 +152,15 @@ func acrossProjects() requirement {
 
 // byRole is a route whose body varies by the caller's platform role. The
 // handler reads it with platformRoleFrom.
-func byRole() requirement {
-	return requirement{Kind: requireRoleShapedBody}
+//
+// `doing` names the operation the same way operatorOnly's does. Nothing built
+// from it is ever a refusal — this kind refuses nobody — but the table is read
+// as well as executed: the dashboard's copy of the rules is generated from it,
+// and a row that says only "any account" would leave a reader unable to tell a
+// route that answers everybody the same thing from one that answers everybody
+// something different.
+func byRole(doing string) requirement {
+	return requirement{Kind: requireRoleShapedBody, Doing: doing}
 }
 
 // routes is the table. Every pattern the API serves is here, with the role it
@@ -171,6 +188,19 @@ func (s *Server) routes() []route {
 			onProject(access.ProjectViewer, ofProject, "reading a project's releases")},
 		{"GET /api/v1/projects/{name}/environments", s.listProjectEnvironments,
 			onProject(access.ProjectViewer, ofProject, "reading a project's environments")},
+
+		// Membership. It is the project's own admin who adds and removes
+		// people, which is the whole point: an operator holds admin on every
+		// project (access.ProjectRoleFor) and so needs no case of their own
+		// here, and everyone else stops needing to go and find one.
+		{"GET /api/v1/projects/{name}/members", s.listMembers,
+			onProject(access.ProjectAdmin, ofProject, "reading a project's members")},
+		{"POST /api/v1/projects/{name}/members", s.addMember,
+			onProject(access.ProjectAdmin, ofProject, "adding somebody to a project")},
+		{"PATCH /api/v1/projects/{name}/members", s.changeMemberRole,
+			onProject(access.ProjectAdmin, ofProject, "changing somebody's role on a project")},
+		{"DELETE /api/v1/projects/{name}/members", s.removeMember,
+			onProject(access.ProjectAdmin, ofProject, "removing somebody from a project")},
 
 		// Builds.
 		{"GET /api/v1/builds", s.listBuilds, acrossProjects()},
@@ -250,7 +280,7 @@ func (s *Server) routes() []route {
 
 		// The one route whose body varies by role: the build queue for
 		// everyone, the platform's own health for an operator.
-		{"GET /api/v1/status", s.getStatus, byRole()},
+		{"GET /api/v1/status", s.getStatus, byRole("reading the platform's status")},
 
 		// Who the caller is, to themselves. It reveals nothing about anyone
 		// else, so it needs nothing but a valid token.
@@ -275,8 +305,13 @@ func (s *Server) routes() []route {
 		{"POST /api/v1/updates", s.createUpdate, operatorOnly("upgrading the platform")},
 		{"GET /api/v1/updates/{name}", s.getUpdate, operatorOnly("reading a platform update")},
 
-		// Connections hold the platform's credentials to everything else.
-		{"GET /api/v1/connections", s.listConnections, operatorOnly("reading the platform's connections")},
+		// Connections hold the platform's credentials to everything else, so
+		// every one of these is the operator's — except the list, which is
+		// also the picker a project is created from. It answers an operator
+		// with the connections themselves and everybody else with the three
+		// things a dropdown needs: name, capabilities, readiness. Nothing on
+		// this route creates, edits, tests or deletes anything.
+		{"GET /api/v1/connections", s.listConnections, byRole("choosing a connection")},
 		{"POST /api/v1/connections", s.createConnection, operatorOnly("adding a connection")},
 		{"POST /api/v1/connections/test", s.testConnection, operatorOnly("testing a connection")},
 		{"GET /api/v1/connections/{name}", s.getConnection, operatorOnly("reading a connection")},
