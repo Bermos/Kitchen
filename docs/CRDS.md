@@ -105,6 +105,12 @@ spec:
         provenance: true                # ask the builder how it built it — SLSA, from BuildKit
         sbom: true                      # ask the builder what is in it; pulls a scanner every build
         sbomGenerator: ""               # unset: a pinned syft scanner, emitting SPDX 2.3
+    gates:                              # run over every artifact; they record findings, never verdicts
+      - name: trivy
+        image: aquasec/trivy:0.58.0
+        version: "0.58.0"               # what a finding is reproducible against
+        format: trivy-json
+        args: [image, --format=json, --output=$(KITCHEN_FINDINGS), $(KITCHEN_ARTIFACT)]
   observability:
     clickhouse:
       retentionDays: 30                 # TTL the operator keeps on every telemetry table,
@@ -399,6 +405,13 @@ status:
     ref: harbor.example.com/kitchen/my-shop:buildcache
     mode: max                           # empty for a buildpacks build
     message: ""                         # why there was no cache, when there was none
+  gates:                                # what each gate did — not what it found
+    - name: trivy
+      phase: Completed                  # it ran. Whether what it found is acceptable is a
+      source: platform                  # policy question about the environment, answered at promotion
+      predicateType: https://kitchen.bermos.dev/attestation/quality-gate/v1
+      attested: ...
+      finishedAt: ...
   startedAt: ...
   duration: 143s
   conditions: [...]
@@ -446,8 +459,17 @@ the reconciler's own knowledge would be the conflation the split exists to preve
 
 `status.artifact.evidence` is an index — predicate types and the manifests to fetch them
 by — and not a copy: the attestations live in the registry against the digest, which is
-the only copy an installation leaving Kitchen would keep. See
-[COMPLIANCE.md](COMPLIANCE.md).
+the only copy an installation leaving Kitchen would keep.
+
+`status.gates` is what the platform's **quality gates** did. Each is a pod: an image
+somebody else wrote, pointed at the artifact, writing findings to a file that a second
+container stores in the registry and the operator signs. They run after the build is
+terminal, so they hold nothing up, and they record **findings and never a verdict** —
+`Completed` means the gate ran, whatever it found, and `Failed` means it did not run at
+all. Whether findings are disqualifying is a property of the environment being promoted
+to. Results produced elsewhere are ingested through `POST /builds/{name}/gates` and
+carry who reported them, because a scan somebody submitted is a claim about an artifact
+and a claim about who said so. See [COMPLIANCE.md](COMPLIANCE.md).
 
 `status.cache` is what the layer cache did, and it is on every build including the
 ones that had none. The cache lives in the registry the project already pushes to,

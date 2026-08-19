@@ -65,6 +65,12 @@ spec:
             - --metrics-bind-address=0
             {{- end }}
             - --zap-devel={{ .Values.developmentLogging }}
+            # The publisher that carries a quality gate's findings out of the
+            # pod that produced them is a third binary in this same image.
+            # Passed unconditionally: gates are configured on the Kitchen
+            # object, which the operator reads at runtime, so the chart cannot
+            # know whether any exist.
+            - --quality-gate-image={{ include "kitchen.image" . }}
             {{- if (include "kitchen.previewGateEnabled" .) }}
             # The gate is a second binary in this same image, deployed by the
             # operator once it has registered an OAuth client for it.

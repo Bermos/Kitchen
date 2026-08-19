@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { useRoute } from "vue-router";
-import { api, type EvidenceSet, type LogLine, type LogQuery } from "../lib/api";
+import { api, type EvidenceSet, type LogLine, type LogQuery, type QualityGate } from "../lib/api";
 import { duration, shortSHA, timeAgo } from "../lib/format";
 import { callerFor } from "../lib/me";
 import { operatorMode } from "../lib/mode";
@@ -125,6 +125,29 @@ const evidenceLabels: Record<string, string> = {
 
 function evidenceLabel(kind: string): string {
   return evidenceLabels[kind] ?? evidenceLabels.other;
+}
+
+/** How a gate's run reads at a glance.
+ *
+ *  "Completed" is not "passed" and is never drawn as though it were: the icon
+ *  says the gate ran, and only a policy — which lives a phase away — decides
+ *  what its findings mean. The one thing worth warning about here is a gate
+ *  that did not run, because that is the state a compliance system can sit in
+ *  while looking green. */
+function gateIcon(ran: QualityGate): string {
+  if (ran.phase === "Failed") return "i-lucide-triangle-alert";
+  if (ran.phase === "Completed") return "i-lucide-clipboard-check";
+  return "i-lucide-loader";
+}
+
+function gateTone(ran: QualityGate): string {
+  if (ran.phase === "Failed") return "text-warning";
+  if (ran.phase === "Completed") return "text-toned";
+  return "text-dimmed";
+}
+
+function gateBadge(ran: QualityGate): "warning" | "neutral" {
+  return ran.phase === "Failed" ? "warning" : "neutral";
 }
 
 const logFetcher = (query: LogQuery) => api.buildLogs(name.value, query);
@@ -279,6 +302,35 @@ const logStreamer = (query: LogQuery, onLine: (line: LogLine) => void, signal: A
             is the point of storing them there.
           </p>
         </template>
+      </div>
+
+      <!-- What the gates did. Deliberately not what they found, and
+           deliberately not whether it was acceptable: a gate records facts and
+           the verdict belongs to the environment being deployed to. -->
+      <div v-if="build.gates?.length" class="rounded-md border border-default px-5 py-4 space-y-3">
+        <div>
+          <p class="text-sm font-medium text-highlighted">Quality gates</p>
+          <p class="text-xs text-muted mt-0.5">
+            What ran over this artifact. A gate that found problems still completed — what it found is in its
+            attestation, and whether that is disqualifying is a question about the environment being deployed to.
+          </p>
+        </div>
+        <div class="space-y-2">
+          <div v-for="ran in build.gates" :key="ran.name" class="rounded border border-default px-3 py-2">
+            <p class="text-xs flex items-center gap-2 flex-wrap">
+              <UIcon :name="gateIcon(ran)" class="size-4" :class="gateTone(ran)" />
+              <span class="font-medium text-highlighted">{{ ran.name }}</span>
+              <UBadge :color="gateBadge(ran)" variant="subtle" size="sm">{{ ran.phase?.toLowerCase() }}</UBadge>
+              <span v-if="ran.source === 'external'" class="text-dimmed">
+                reported by {{ ran.reportedBy || "somebody else" }}
+              </span>
+              <span v-if="ran.attested" class="text-success">signed</span>
+              <span v-else-if="ran.phase === 'Completed'" class="text-warning">not signed</span>
+            </p>
+            <p v-if="ran.message" class="text-[11px] text-warning mt-1">{{ ran.message }}</p>
+            <p v-else-if="ran.finishedAt" class="text-[11px] text-dimmed mt-1">{{ timeAgo(ran.finishedAt) }}</p>
+          </div>
+        </div>
       </div>
 
       <ConditionsTable v-if="operatorMode" :conditions="build.conditions" />

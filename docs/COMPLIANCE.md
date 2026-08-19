@@ -440,7 +440,128 @@ rather than one the platform made for it.
 
 ---
 
-## 7. Configuration
+## 7. Quality gates (issue #130)
+
+### 7.1 Facts, never verdicts
+
+A gate emits findings. Whether a finding is disqualifying is a property of the
+environment an artifact is being promoted to, not of the artifact — so
+`kitchen.bermos.dev/attestation/quality-gate/v1` records the gate, its version,
+when it ran and its raw output, and **has no pass field**.
+
+That is what lets the same scan be acceptable in staging and blocking in
+production without running the scanner twice. It is also what keeps application
+teams out of threshold negotiation: there is no threshold at the point where
+they could argue about one. Phase 3's policy engine reads these and decides.
+
+Two tests hold the line rather than a comment: both the gate runner's predicate
+and a submitted result's are asserted to carry no `pass`, `passed`, `verdict`,
+`ok` or `allowed` field.
+
+### 7.2 Ran and found problems is not failed
+
+A gate that scans an image and reports ninety critical vulnerabilities has
+**completed**: it did exactly its job. `Failed` is for a gate that did not run —
+the image would not pull, the scanner crashed, the deadline expired — where
+nothing is known either way.
+
+Collapsing those two is how a compliance system comes to report green while its
+scanners are quietly broken, so the runner keeps them apart by construction: the
+gate is an **init container**, and its exit status is only ever a statement
+about whether it ran. Nothing passes a scanner the flag that makes it exit
+non-zero on findings, and a gate configured with one shows up as every artifact
+failing to be scanned rather than as a policy nobody agreed to.
+
+### 7.3 A gate is a pod, and it is given nothing
+
+The gate is an image somebody else wrote, running in an application's
+namespace. It gets the artifact reference, a credential to pull it with, and a
+directory to write to. It gets no service account token, no cluster access, and
+it runs as an unprivileged user with every capability dropped.
+
+Kubernetes' own `$(VAR)` expansion is what points it at the artifact, so a gate
+is configured with environment variables rather than with templating of
+Kitchen's:
+
+```yaml
+gates:
+  - name: trivy
+    image: aquasec/trivy:0.58.0
+    version: "0.58.0"
+    format: trivy-json
+    args: [image, --format=json, --output=$(KITCHEN_FINDINGS), $(KITCHEN_ARTIFACT)]
+```
+
+Gates live on the Kitchen object, not on a Project. A team that chose which
+scanners ran over its own code would be marking its own homework — and adding a
+gate is a change to that list and to nothing else, which is the acceptance
+criterion "adding a gate requires no application-side change" restated.
+
+### 7.4 Getting a megabyte out of a pod
+
+Findings are large. A container scan of an ordinary Node application runs to
+several megabytes, and every obvious channel is wrong at that size:
+
+- a pod's **termination message** caps at 4 KiB — which is why the build digest
+  fits there and a scan report does not;
+- a **ConfigMap or Secret** caps at about a megabyte, and truncating findings
+  turns evidence into an opinion about which findings mattered;
+- the pod's **log** is shipped by the collector, which is fast but not
+  synchronous, so reading it back races the Job finishing — and a race that
+  silently shortens evidence is the worst of the three.
+
+So the findings go where large content-addressed blobs already go: the registry
+the artifact is in, under the artifact's own repository, with the credential the
+pod already holds because it had to pull the image to scan it. A second
+container — `cmd/qualitygate`, a third binary in the operator's image — reads
+the file, stores it, and reports the digest, which is 71 bytes and fits
+anywhere.
+
+**The blob is not evidence while it sits there.** It is unsigned, and anything
+with push access could have written it. It becomes evidence in the operator,
+where the signing key is and where the gate's image never reaches.
+
+### 7.5 Results produced somewhere else
+
+Many organisations already run their scanners in the application's own CI,
+minutes before Kitchen sees the commit. `POST /builds/{name}/gates` ingests such
+a result instead of re-deriving it — `kitchen gates submit` is the same call
+from a pipeline.
+
+What changes is not the predicate but the **attribution**. A result Kitchen
+produced is a claim about an artifact; a result somebody submitted is a claim
+about an artifact *and* a claim about who said so. So the statement records
+`reportedBy` — the authenticated identity that sent it — and `external: true`,
+and the Build records the source as `external`. A policy that trusts only what
+the platform ran itself can say so.
+
+The platform's signature still means what it always means: that these bytes were
+submitted by that identity at that moment and have not changed since. It is not
+a claim that the findings are true. Nothing can sign that.
+
+A submission does not overwrite a gate of the same name that the platform ran
+itself. Both attestations are attached and both are readable; what the Build
+shows is the one the platform can vouch for having observed.
+
+### 7.6 The awkward parts, said out loud
+
+- **Gates run after the Release exists.** They attach evidence to an artifact
+  that is already deployable, and on a project with previews it may already be
+  deployed. That is deliberate: blocking a preview on a scanner would make the
+  platform slower than the thing it replaces, and the consequence of missing
+  evidence belongs at promotion, which is phase 3. It does mean "gated" and
+  "deployed somewhere" are not the same thing, and a policy that assumes
+  otherwise is wrong.
+- **A gate is not retried.** `backoffLimit: 0`, because a retry that eventually
+  succeeded would leave a build whose evidence says the scanner works and whose
+  history says it did not.
+- **The findings blob is left in the registry.** It is content-addressed and
+  orphaned once the attestation carries the same bytes, so it is the registry's
+  garbage collector's problem rather than a reference anything follows.
+
+---
+
+## 8. Configuration
 
 ```yaml
 kitchen:
@@ -455,6 +576,12 @@ kitchen:
         provenance: true       # ask the builder how it built it
         sbom: true             # ask the builder what is in it
         sbomGenerator: ""      # empty: the pinned syft scanner, emitting SPDX
+    gates:                     # what runs over every artifact; findings, never verdicts
+      - name: trivy
+        image: aquasec/trivy:0.58.0
+        version: "0.58.0"
+        format: trivy-json
+        args: [image, --format=json, --output=$(KITCHEN_FINDINGS), $(KITCHEN_ARTIFACT)]
 ```
 
 Both live on the platform singleton rather than on a Project, because both are
@@ -464,7 +591,7 @@ attesting to nothing.
 
 ---
 
-## 8. Phases
+## 9. Phases
 
 | | |
 |---|---|
@@ -484,7 +611,7 @@ audit record.
 
 ---
 
-## 9. Things that are true and easy to get wrong
+## 10. Things that are true and easy to get wrong
 
 - **A gap in the sequence is not always a deletion.** It is also an append that
   claimed its number and then died before the row landed. The head object and
@@ -502,6 +629,9 @@ audit record.
   digests to fetch them by — and deliberately not a copy of the evidence. A
   copy would be a second source of truth, and it is exactly the copy an
   installation leaving Kitchen would lose.
+- **A gate's exit code says whether it ran, and nothing else.** Passing a
+  scanner its `--exit-code` flag turns "found a vulnerability" into "the gate
+  failed", which is the one confusion the whole design is arranged to prevent.
 - **BuildKit's provenance version is not the one you expect.** It emits
   `slsa.dev/provenance/v0.2` unless told `version=v1`, and its `builder.id` is
   the empty string unless told `builder-id=`. Both are silent: the attestation

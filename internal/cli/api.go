@@ -172,6 +172,46 @@ type build struct {
 	Conditions        []condition `json:"conditions,omitempty"`
 	Artifact          *artifact   `json:"artifact,omitempty"`
 	Cache             *buildCache `json:"cache,omitempty"`
+	Gates             []gate      `json:"gates,omitempty"`
+}
+
+// gateSubmission is a gate result produced somewhere else — usually the
+// application's own CI, which ran the scanner minutes before Kitchen saw the
+// commit.
+type gateSubmission struct {
+	Gate       string          `json:"gate"`
+	Version    string          `json:"version,omitempty"`
+	Format     string          `json:"format,omitempty"`
+	FinishedAt *time.Time      `json:"finishedAt,omitempty"`
+	Findings   json.RawMessage `json:"findings"`
+}
+
+// gateAccepted is what the API answers a submission with: where the evidence
+// went and whose word it is recorded as.
+type gateAccepted struct {
+	Gate          string `json:"gate"`
+	PredicateType string `json:"predicateType"`
+	Manifest      string `json:"manifest"`
+	ReportedBy    string `json:"reportedBy"`
+	Subject       string `json:"subject"`
+}
+
+// gate is one quality gate's run over a build's artifact.
+//
+// Phase is Pending, Running, Completed, Failed or Skipped. `Completed` means
+// the gate ran, whatever it found — a scanner reporting a hundred critical
+// vulnerabilities has completed. `Failed` means it did not run, and there is no
+// evidence either way. Nothing here says whether the findings were acceptable:
+// that is a policy question about the environment being deployed to.
+type gate struct {
+	Name          string     `json:"name"`
+	Phase         string     `json:"phase,omitempty"`
+	Source        string     `json:"source,omitempty"`
+	ReportedBy    string     `json:"reportedBy,omitempty"`
+	PredicateType string     `json:"predicateType,omitempty"`
+	Attested      bool       `json:"attested"`
+	FinishedAt    *time.Time `json:"finishedAt,omitempty"`
+	Message       string     `json:"message,omitempty"`
 }
 
 // terminal reports whether a build has stopped moving, whichever way it went.
@@ -352,6 +392,16 @@ func (c *client) startBuild(ctx context.Context, name, sha, branch string) (*bui
 	answer := &build{}
 	return answer, c.do(ctx, "starting a build of "+name,
 		http.MethodPost, "/projects/"+name+"/builds", nil, body, answer)
+}
+
+// submitGate ingests a gate result something else produced. The findings are
+// sent as the exact bytes the tool wrote: re-encoding somebody's evidence into
+// a shape of this CLI's choosing would be the CLI editing evidence.
+func (c *client) submitGate(ctx context.Context, name string, body gateSubmission) (*gateAccepted, error) {
+	answer := &gateAccepted{}
+	err := c.do(ctx, "submitting a gate result for "+name,
+		http.MethodPost, "/builds/"+name+"/gates", nil, body, answer)
+	return answer, err
 }
 
 func (c *client) build(ctx context.Context, name string) (*build, error) {

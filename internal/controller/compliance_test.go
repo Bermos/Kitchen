@@ -42,7 +42,13 @@ func complianceClient(t *testing.T, objects ...client.Object) client.Client {
 	if err := kitchenv1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
-	return fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()
+	return fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(objects...).
+		// Builds carry their evidence on the status subresource, and the fake
+		// client only honours a status write for a type that says it has one.
+		WithStatusSubresource(&kitchenv1alpha1.Build{}).
+		Build()
 }
 
 func TestEnsureSigningKeyGeneratesOnceAndReloadsTheSameKey(t *testing.T) {
@@ -143,6 +149,11 @@ type stubAttester struct {
 	harvested     []attestation.Statement
 	harvestDigest string
 	harvestErr    error
+
+	// blobs stands in for what a gate pod stored in the registry, keyed by
+	// the digest its report named.
+	blobs   map[string][]byte
+	blobErr error
 }
 
 func (s *stubAttester) Attach(
@@ -156,6 +167,17 @@ func (s *stubAttester) Attach(
 	s.predicates = append(s.predicates, predicateType)
 	s.refs = append(s.refs, ref)
 	return "sha256:" + strings.Repeat("f", 64), nil
+}
+
+func (s *stubAttester) Blob(_ context.Context, _, digest string) ([]byte, error) {
+	if s.blobErr != nil {
+		return nil, s.blobErr
+	}
+	body, held := s.blobs[digest]
+	if !held {
+		return nil, errors.New("no such blob")
+	}
+	return body, nil
 }
 
 func (s *stubAttester) Harvest(_ context.Context, ref string) (attestation.BuilderEvidence, error) {

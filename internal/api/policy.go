@@ -243,6 +243,12 @@ func (s *Server) routes() []route {
 			onProject(access.ProjectViewer, ofBuild, "reading a build's logs")},
 		{"GET /api/v1/builds/{name}/attestations", s.buildAttestations,
 			onProject(access.ProjectViewer, ofBuild, "reading a build's attestations")},
+		// Submitting a gate result is asserting something about the project's
+		// artifact, which is a developer's write rather than a viewer's read —
+		// and a CI key, which is what usually submits one, is a developer on
+		// exactly one project.
+		{"POST /api/v1/builds/{name}/gates", s.submitGate,
+			onProject(access.ProjectDeveloper, ofBuild, "submitting a quality gate result")},
 
 		// Releases.
 		{"GET /api/v1/releases", s.listReleases, acrossProjects()},

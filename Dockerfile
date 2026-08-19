@@ -68,6 +68,13 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
 RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
     go build -ldflags "-X github.com/Bermos/Kitchen/internal/version.Version=${VERSION}" \
     -o gate cmd/gate/main.go
+# The publisher that carries a quality gate's findings out of the pod that
+# produced them. It runs beside an image somebody else wrote, in an
+# application's namespace, and does one thing: read a file and store it in the
+# registry. Same source tree, same release, same image.
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
+    go build -ldflags "-X github.com/Bermos/Kitchen/internal/version.Version=${VERSION}" \
+    -o qualitygate cmd/qualitygate/main.go
 
 # Use distroless as minimal base image to package the manager binary
 # Refer to https://github.com/GoogleContainerTools/distroless for more details
@@ -75,6 +82,7 @@ FROM gcr.io/distroless/static:nonroot
 WORKDIR /
 COPY --from=builder /workspace/manager .
 COPY --from=builder /workspace/gate .
+COPY --from=builder /workspace/qualitygate .
 USER 65532:65532
 
 ENTRYPOINT ["/manager"]

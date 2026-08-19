@@ -39,9 +39,16 @@ import (
 // which is the point of storing it there. What this adds is the verification
 // against the platform's own key and a shape the dashboard can render.
 
-// EvidenceReader reads what is attached to an artifact's digest.
+// EvidenceReader reads what is attached to an artifact's digest, and attaches
+// what somebody submits.
+//
+// The write half is here rather than in a second interface because it is the
+// same registry, reached with the same credential, for the same artifact — and
+// because a caller holding one and not the other would be a caller that can
+// show evidence it cannot add to.
 type EvidenceReader interface {
 	Evidence(ctx context.Context, imageRef string, verifiers ...attestation.Verifier) (attestation.EvidenceSet, error)
+	Attach(ctx context.Context, imageRef string, envelope attestation.Envelope, predicateType string) (string, error)
 }
 
 // EvidenceFactory builds the reader for one registry out of the docker config

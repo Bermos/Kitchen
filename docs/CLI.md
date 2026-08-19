@@ -167,6 +167,7 @@ give.
 | `kitchen projects` | The projects this account can see, with its role on each | `GET /projects` |
 | `kitchen builds` | The project's builds, newest first | `GET /projects/{name}/builds` |
 | `kitchen attestations` | The signed evidence attached to a build's artifact | `GET /builds/{name}/attestations` |
+| `kitchen gates list/submit` | What ran over an artifact, and submitting a result from elsewhere | `GET /builds/{name}`, `POST /builds/{name}/gates` |
 | `kitchen releases` | The project's releases — what there is to roll back to | `GET /projects/{name}/releases` |
 | `kitchen environments` | The project's environments and where they answer | `GET /projects/{name}/environments` |
 | `kitchen api` | Any endpoint of the API, authenticated | anything |
@@ -285,6 +286,25 @@ apart — `source` on the build's own `artifact.evidence` can.
 `verified` means a signature was accepted by a key the platform holds. A set
 read where it holds none reports itself as a listing rather than a verification,
 and the two print differently on purpose.
+
+### Quality gates
+
+```sh
+kitchen gates list shop-bld-7
+trivy image --format json shop:latest | kitchen gates submit shop-bld-7 --gate trivy --findings -
+```
+
+`Completed` means the gate ran, whatever it found; `Failed` means it did not run
+and nothing is known either way. Neither says whether the findings were
+acceptable — that is decided at promotion, against the environment being
+deployed to.
+
+`submit` is for a scanner the pipeline already ran. The findings are sent as the
+exact bytes the tool wrote, and the result is recorded as reported by the
+credential that sent it: the platform signs it but did not witness it, and a
+policy that trusts only what the platform ran itself can tell the difference.
+Do not pass the scanner a flag that makes it exit non-zero on findings — the
+pipeline would fail on a fact rather than on a decision.
 
 ### Anything else
 

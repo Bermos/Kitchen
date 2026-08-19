@@ -73,6 +73,7 @@ export type Route =
   | "POST /api/v1/builds/{name}/cancel"
   | "GET /api/v1/builds/{name}/logs"
   | "GET /api/v1/builds/{name}/attestations"
+  | "POST /api/v1/builds/{name}/gates"
   | "GET /api/v1/releases"
   | "GET /api/v1/releases/{name}"
   | "GET /api/v1/environments"
@@ -162,6 +163,7 @@ export const POLICY: Readonly<Record<Route, Requirement>> = {
   "POST /api/v1/builds/{name}/cancel": { kind: "projectRole", role: "developer", doing: "cancelling a build" },
   "GET /api/v1/builds/{name}/logs": { kind: "projectRole", role: "viewer", doing: "reading a build's logs" },
   "GET /api/v1/builds/{name}/attestations": { kind: "projectRole", role: "viewer", doing: "reading a build's attestations" },
+  "POST /api/v1/builds/{name}/gates": { kind: "projectRole", role: "developer", doing: "submitting a quality gate result" },
   "GET /api/v1/releases": { kind: "visibleProjects" },
   "GET /api/v1/releases/{name}": { kind: "projectRole", role: "viewer", doing: "reading a release" },
   "GET /api/v1/environments": { kind: "visibleProjects" },
