@@ -414,11 +414,10 @@ included, plus operators. The gate resolves that itself, against its own cached
 client rather than by asking the REST API, so previews do not close when the API
 restarts and the membership rule has exactly one implementation.
 
-**This is the one part of this section that is built.** The gate runs as its own
-ServiceAccount, bound to a role with `get`, `list` and `watch` on `projects` and
-`kitchens` and nothing else, and reads both through an informer — an admission
-decision is a map lookup, since the gate is in the request path of every
-protected preview. Nothing in that path can reach the REST API at all: the one
+The gate runs as its own ServiceAccount, bound to a role with `get`, `list` and
+`watch` on `projects` and `kitchens` and nothing else, and reads both through an
+informer — an admission decision is a map lookup, since the gate is in the
+request path of every protected preview. Nothing in that path can reach the REST API at all: the one
 thing it holds is a `previewgate.Directory` over the cache, so "the gate never
 asks the API" is a property of what it was handed rather than a rule somebody
 has to keep remembering.
@@ -449,7 +448,12 @@ install that is the one account the bootstrap link created, and on an upgrade
 it is all of them. An *empty* list is somebody's decision and is left alone,
 which is why `spec.access.operators` carries neither a default nor `omitempty`
 — collapsing "nobody has said yet" into "somebody said nobody" on the first
-write is the whole failure this avoids. While no account exists at all,
+write is the whole failure this avoids. The API will not produce that state
+itself: `PATCH /settings` refuses to empty the list, for the same reason the
+last `admin` cannot leave a project. It is reachable by editing the object,
+and it is honoured when it is found, because an installation that has decided
+to run without a Kitchen operator should not have one appointed for it on the
+next reconcile. While no account exists at all,
 nothing is written and the reconciler tries again.
 
 Reviewing what was seeded is the settings screen's job, not `kubectl`'s: `GET

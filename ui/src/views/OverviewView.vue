@@ -206,7 +206,7 @@ function host(url?: string): string {
       color="neutral"
       variant="soft"
       icon="i-lucide-shield-off"
-      title="That page is the platform operator's"
+      title="That page is not yours to open"
       :description="denied"
       close
       @update:open="dismissDenied"

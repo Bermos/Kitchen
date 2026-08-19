@@ -31,9 +31,14 @@ import type { Config } from "./config.js";
  * hand-written grant can never resolve to a machine account by address. The
  * only way to grant a key anything is its `sub`.
  *
- * It is a constant rather than configuration on purpose. The operator never
- * parses it — it is handed the `sub` — so nothing outside this service has to
- * agree with it.
+ * It is a constant rather than configuration on purpose, and the operator has
+ * the same constant: authorization is decided from the `sub` alone and never
+ * from this address, but the operator does parse it to *display* a grant — a
+ * project's members list shows a key as the key `nightly` rather than as a
+ * person with a strange address (`MachineAccountDomain` in
+ * internal/idp/keys.go). Changing the domain here without changing it there
+ * breaks nothing and refuses nothing; it just quietly makes every CI key read
+ * as an account nobody recognises. Change both, or neither.
  */
 export const MACHINE_ACCOUNT_DOMAIN = "machines.kitchen.local";
 
