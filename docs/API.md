@@ -2076,6 +2076,44 @@ authority. `source` says who made the claim — the platform signs both, so the
 signature cannot tell them apart, and a claim about what a build did is worth
 more when the thing that did the building made it.
 
+### How a change was reviewed
+
+A build carries what the git provider said about how its commit arrived, on
+`source`:
+
+```json
+"source": {
+  "provider": "github",
+  "pullRequest": 42,
+  "title": "Add checkout flow",
+  "author": "alice",
+  "mergedBy": "bob",
+  "approvers": ["bob"],
+  "selfApproved": false,
+  "independent": true,
+  "required": true,
+  "checkedAt": "2026-08-19T10:02:11Z"
+}
+```
+
+Every field is the provider's claim rather than the platform's observation,
+which is why `provider` travels with them. `required` says whether the project
+demanded review for this commit, so a build carrying none reads as "not asked
+for" rather than "asked for and missing"; `selfApproved` and `independent` are
+separate because a change its author approved has been approved, and whether
+that is acceptable is a policy question.
+
+`message` explains a check that could not be made — a provider outage, a
+connection with no such capability. That is not a finding about the commit and
+does not refuse anything.
+
+A project sets `requirePullRequest` through `PATCH /projects/{name}`, which
+needs `admin`. Where it is set, a production-branch commit the provider cannot
+associate with an independently approved pull request is refused **before the
+build job is scheduled**: the Build exists with reason `SourceUnreviewed` and
+never runs. Accounts on the platform's `compliance.machineIdentities` allowlist
+are exempt, and every use of the exemption is an audit record.
+
 ### Quality gates
 
 A build carries what each gate did on `gates`, beside its artifact:

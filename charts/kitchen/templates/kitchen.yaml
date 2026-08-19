@@ -143,6 +143,12 @@ spec:
         {{- with .Values.kitchen.compliance.attestation.build.sbomGenerator }}
         sbomGenerator: {{ . | quote }}
         {{- end }}
+    {{- with .Values.kitchen.compliance.machineIdentities }}
+    # Accounts exempt from a project's pull request requirement. Naming them is
+    # what makes the exemption auditable rather than merely configured.
+    machineIdentities:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
     {{- with .Values.kitchen.compliance.gates }}
     # The quality gates run over every artifact. Each records what it found and
     # never whether that was acceptable: the verdict belongs to the environment

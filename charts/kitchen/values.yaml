@@ -298,6 +298,27 @@ kitchen:
     #       - $(KITCHEN_ARTIFACT)
     # ```
     gates: []
+    # -- Accounts whose commits are exempt from a project's "require a reviewed
+    # pull request" setting.
+    #
+    # The list exists because the requirement is otherwise unsatisfiable by the
+    # automation every repository has: Renovate merges its own dependency
+    # bumps, release-please merges its own release commits, and neither will
+    # ever have an independent reviewer. The realistic alternative to naming
+    # them here is somebody turning the requirement off altogether.
+    #
+    # Naming them is what makes the exemption auditable: every use of it is an
+    # audit record saying which identity was exempted for which commit. Entries
+    # are provider usernames, matched case-insensitively and exactly — no
+    # patterns, because a glob would eventually exempt more than whoever wrote
+    # it meant.
+    #
+    # ```yaml
+    # machineIdentities:
+    #   - renovate[bot]
+    #   - release-please[bot]
+    # ```
+    machineIdentities: []
   observability:
     clickhouse:
       # -- Days to retain logs, metrics, traces and flow data.

@@ -53,6 +53,12 @@ type Provider interface {
 	DeleteWebhook(ctx context.Context, repo, id string) error
 }
 
+// ProviderGitHub is the Connection provider name of the one git provider that
+// has an implementation behind it. It is a constant because it is also what a
+// provider's claims are attributed to in evidence, and the two spellings have
+// to be the same one.
+const ProviderGitHub = "github"
+
 // Factory builds a Provider for a Connection. The token comes from the
 // Connection's credentials secret.
 type Factory func(conn *kitchenv1alpha1.Connection, token string) (Provider, error)
@@ -60,7 +66,7 @@ type Factory func(conn *kitchenv1alpha1.Connection, token string) (Provider, err
 // Default resolves the built-in providers.
 func Default(conn *kitchenv1alpha1.Connection, token string) (Provider, error) {
 	switch conn.Spec.Provider {
-	case "github":
+	case ProviderGitHub:
 		apiURL := "https://api.github.com"
 		if conn.Spec.Config != nil {
 			var cfg struct {

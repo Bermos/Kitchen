@@ -84,6 +84,7 @@ type project struct {
 	Connection            string      `json:"connection"`
 	Registry              string      `json:"registry"`
 	ProductionBranch      string      `json:"productionBranch"`
+	RequirePullRequest    bool        `json:"requirePullRequest"`
 	Previews              bool        `json:"previews"`
 	PreviewsProtected     bool        `json:"previewsProtected"`
 	BuildStrategy         string      `json:"buildStrategy,omitempty"`
@@ -173,6 +174,28 @@ type build struct {
 	Artifact          *artifact   `json:"artifact,omitempty"`
 	Cache             *buildCache `json:"cache,omitempty"`
 	Gates             []gate      `json:"gates,omitempty"`
+	Source            *source     `json:"source,omitempty"`
+}
+
+// source is how the commit reached the branch: through review, or not.
+//
+// Every field is the git provider's claim rather than the platform's
+// observation, which is why Provider travels with them. Required says whether
+// the project demanded review for this commit, so a build carrying none reads
+// as "not asked for" rather than "asked for and missing".
+type source struct {
+	Provider        string     `json:"provider,omitempty"`
+	PullRequest     int32      `json:"pullRequest,omitempty"`
+	Title           string     `json:"title,omitempty"`
+	Author          string     `json:"author,omitempty"`
+	MergedBy        string     `json:"mergedBy,omitempty"`
+	Approvers       []string   `json:"approvers,omitempty"`
+	SelfApproved    bool       `json:"selfApproved"`
+	Independent     bool       `json:"independent"`
+	MachineIdentity string     `json:"machineIdentity,omitempty"`
+	Required        bool       `json:"required"`
+	CheckedAt       *time.Time `json:"checkedAt,omitempty"`
+	Message         string     `json:"message,omitempty"`
 }
 
 // gateSubmission is a gate result produced somewhere else — usually the

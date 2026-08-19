@@ -367,6 +367,74 @@ spec:
                 - Failed
                 - Cancelled
                 type: string
+              source:
+                description: 'Source is how the commit reached the branch: through
+                  review, or not.'
+                properties:
+                  approvers:
+                    description: |-
+                      Approvers are the reviewers whose approval still stood when this was
+                      resolved. Reviews a later push dismissed are already excluded.
+                    items:
+                      type: string
+                    type: array
+                  author:
+                    description: Author opened the request.
+                    type: string
+                  checkedAt:
+                    description: CheckedAt is when the provider was asked.
+                    format: date-time
+                    type: string
+                  independent:
+                    description: |-
+                      Independent is true when somebody other than the author approved. It is
+                      the question four-eyes actually asks.
+                    type: boolean
+                  machineIdentity:
+                    description: |-
+                      MachineIdentity is the allowlisted account this commit was exempted
+                      under, when it was. Empty means no exemption was used — which is not
+                      the same as no exemption existing.
+                    type: string
+                  mergedBy:
+                    description: |-
+                      MergedBy merged it, which is not always who approved it and is
+                      occasionally the only human involved.
+                    type: string
+                  message:
+                    description: |-
+                      Message explains a check that could not be made — a provider that
+                      cannot answer, a connection with no such capability. It is not a
+                      finding about the commit.
+                    type: string
+                  provider:
+                    description: Provider names who asserted this — `github`, `gitlab`.
+                    type: string
+                  pullRequest:
+                    description: |-
+                      PullRequest is the request the commit arrived through. Zero means the
+                      provider knows of none, which is what a direct push looks like.
+                    format: int32
+                    type: integer
+                  required:
+                    description: |-
+                      Required says whether the project demanded pull request provenance for
+                      this commit, so that a build carrying none is readable as "not asked
+                      for" rather than as "asked for and missing".
+                    type: boolean
+                  selfApproved:
+                    description: |-
+                      SelfApproved is true when the only approvals were the author's own.
+
+                      It is recorded rather than treated as no approval at all: a change its
+                      author approved has been approved, and whether that is acceptable is a
+                      policy question an installation answers for itself.
+                    type: boolean
+                  title:
+                    description: Title of that request, so a person reading this later
+                      recognises it.
+                    type: string
+                type: object
               startedAt:
                 format: date-time
                 type: string

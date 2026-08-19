@@ -121,6 +121,13 @@ const (
 	// the platform failing to run it at all, which reports differently on
 	// the commit.
 	reasonBuildFailed = "BuildFailed"
+
+	// reasonSourceUnreviewed is a build refused because the commit cannot be
+	// shown to have arrived through a reviewed pull request. It is a distinct
+	// reason from a build that failed, because nothing was built: the change
+	// was not run, and somebody has to be able to tell that from a broken
+	// compile without reading the message.
+	reasonSourceUnreviewed = "SourceUnreviewed"
 )
 
 // BuildReconciler reconciles a Build: it runs a BuildKit Job for the commit,
@@ -262,6 +269,21 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	err = r.Get(ctx, types.NamespacedName{Namespace: appNS, Name: build.Name}, job)
 	switch {
 	case apierrors.IsNotFound(err):
+		// How the commit reached the branch is established here, before the
+		// Job exists — that is what "refuse before the build is scheduled"
+		// means, and it is where the compute is. The Build stays and says why
+		// it was refused: refusing without a record would be the platform
+		// quietly dropping changes.
+		if build.Status.Source == nil {
+			source, refusal := r.resolveSourceProvenance(ctx, build, project)
+			build.Status.Source = source
+			if refusal != nil {
+				return r.fail(ctx, build, project, reasonSourceUnreviewed, refusal.Error())
+			}
+			if err := r.Status().Update(ctx, build); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
 		if waiting, res := r.gateConcurrency(ctx, build, builds.Concurrency); waiting {
 			return res, nil
 		}

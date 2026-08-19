@@ -53,6 +53,9 @@ export interface Project {
   connection: string;
   registry: string;
   productionBranch: string;
+  /** Refuse to build a production-branch commit the git provider cannot say
+   *  arrived through a reviewed pull request. */
+  requirePullRequest: boolean;
   previews: boolean;
   previewsProtected: boolean;
   buildStrategy?: string;
@@ -81,6 +84,7 @@ export interface Project {
  */
 export interface ProjectSettings {
   productionBranch?: string;
+  requirePullRequest?: boolean;
   previews?: boolean;
   previewsProtected?: boolean;
   buildStrategy?: string;
@@ -119,6 +123,7 @@ export interface Build {
   artifact?: Artifact;
   cache?: BuildCache;
   gates?: QualityGate[];
+  source?: SourceProvenance;
   startedAt?: string;
   completedAt?: string;
   createdAt: string;
@@ -153,6 +158,31 @@ export interface Artifact {
    *  evidence itself still comes from `attestations()`. */
   evidence?: ArtifactEvidence[];
   /** Why an artifact is unattested, when it is. */
+  message?: string;
+}
+
+/** How the commit reached the branch: through review, or not.
+ *
+ *  Every field is a third party's claim, which is why `provider` travels with
+ *  them — the platform did not witness the review, it asked and was answered.
+ *  `required` says whether the project demanded review for this commit, so a
+ *  build carrying none reads as "not asked for" rather than "asked for and
+ *  missing". */
+export interface SourceProvenance {
+  provider?: string;
+  pullRequest?: number;
+  title?: string;
+  author?: string;
+  mergedBy?: string;
+  approvers?: string[];
+  selfApproved: boolean;
+  independent: boolean;
+  /** The allowlisted machine identity this commit was exempted under, if any. */
+  machineIdentity?: string;
+  required: boolean;
+  checkedAt?: string;
+  /** Why nothing could be established — an outage, or a provider that cannot
+   *  answer. Not a finding about the commit. */
   message?: string;
 }
 

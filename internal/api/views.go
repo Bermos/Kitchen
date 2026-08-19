@@ -116,6 +116,7 @@ type projectView struct {
 	Connection            string          `json:"connection"`
 	Registry              string          `json:"registry"`
 	ProductionBranch      string          `json:"productionBranch"`
+	RequirePullRequest    bool            `json:"requirePullRequest"`
 	Previews              bool            `json:"previews"`
 	PreviewsProtected     bool            `json:"previewsProtected"`
 	BuildStrategy         string          `json:"buildStrategy,omitempty"`
@@ -134,22 +135,23 @@ type projectView struct {
 
 func newProjectView(project *kitchenv1alpha1.Project, role access.ProjectRole) projectView {
 	view := projectView{
-		Name:              project.Name,
-		Role:              role.String(),
-		Repo:              project.Spec.Source.Repo,
-		Connection:        project.Spec.Source.ConnectionRef.Name,
-		Registry:          project.Spec.Registry.ConnectionRef.Name,
-		ProductionBranch:  project.Spec.Source.ProductionBranch,
-		Previews:          project.Spec.Previews.Enabled,
-		PreviewsProtected: project.Spec.Previews.IsProtected(),
-		BuildStrategy:     string(project.Spec.Build.Strategy),
-		DockerfilePath:    project.Spec.Build.DockerfilePath,
-		RootDirectory:     project.Spec.Build.RootDirectory,
-		Env:               envVarViews(project.Spec.Env),
-		Port:              project.Spec.Runtime.Port,
-		Replicas:          project.Spec.Runtime.Replicas,
-		CreatedAt:         project.CreationTimestamp.Time,
-		Conditions:        conditionViews(project.Status.Conditions),
+		Name:               project.Name,
+		Role:               role.String(),
+		Repo:               project.Spec.Source.Repo,
+		Connection:         project.Spec.Source.ConnectionRef.Name,
+		Registry:           project.Spec.Registry.ConnectionRef.Name,
+		ProductionBranch:   project.Spec.Source.ProductionBranch,
+		RequirePullRequest: project.Spec.Source.RequirePullRequest,
+		Previews:           project.Spec.Previews.Enabled,
+		PreviewsProtected:  project.Spec.Previews.IsProtected(),
+		BuildStrategy:      string(project.Spec.Build.Strategy),
+		DockerfilePath:     project.Spec.Build.DockerfilePath,
+		RootDirectory:      project.Spec.Build.RootDirectory,
+		Env:                envVarViews(project.Spec.Env),
+		Port:               project.Spec.Runtime.Port,
+		Replicas:           project.Spec.Runtime.Replicas,
+		CreatedAt:          project.CreationTimestamp.Time,
+		Conditions:         conditionViews(project.Status.Conditions),
 	}
 	if quantity, ok := project.Spec.Runtime.Resources.Limits[corev1.ResourceCPU]; ok {
 		view.CPU = quantity.String()
@@ -195,6 +197,52 @@ type buildView struct {
 	// Gates is what each quality gate did — not what it found, which is in
 	// its attestation.
 	Gates []gateView `json:"gates,omitempty"`
+
+	// Source is how the commit reached the branch: through review, or not.
+	Source *sourceView `json:"source,omitempty"`
+}
+
+// sourceView is what the git provider said about how the commit arrived.
+//
+// Every field is a third party's claim, which is why `provider` travels with
+// them: the platform did not witness the review, it asked and was answered.
+type sourceView struct {
+	Provider        string     `json:"provider,omitempty"`
+	PullRequest     int32      `json:"pullRequest,omitempty"`
+	Title           string     `json:"title,omitempty"`
+	Author          string     `json:"author,omitempty"`
+	MergedBy        string     `json:"mergedBy,omitempty"`
+	Approvers       []string   `json:"approvers,omitempty"`
+	SelfApproved    bool       `json:"selfApproved"`
+	Independent     bool       `json:"independent"`
+	MachineIdentity string     `json:"machineIdentity,omitempty"`
+	Required        bool       `json:"required"`
+	CheckedAt       *time.Time `json:"checkedAt,omitempty"`
+	Message         string     `json:"message,omitempty"`
+}
+
+func newSourceView(source *kitchenv1alpha1.SourceProvenanceStatus) *sourceView {
+	if source == nil {
+		return nil
+	}
+	view := &sourceView{
+		Provider:        source.Provider,
+		PullRequest:     source.PullRequest,
+		Title:           source.Title,
+		Author:          source.Author,
+		MergedBy:        source.MergedBy,
+		Approvers:       source.Approvers,
+		SelfApproved:    source.SelfApproved,
+		Independent:     source.Independent,
+		MachineIdentity: source.MachineIdentity,
+		Required:        source.Required,
+		Message:         source.Message,
+	}
+	if at := source.CheckedAt; at != nil {
+		stamp := at.Time
+		view.CheckedAt = &stamp
+	}
+	return view
 }
 
 // buildCacheView is why a build took as long as it did, as far as the layer
@@ -352,6 +400,7 @@ func newBuildView(build *kitchenv1alpha1.Build) buildView {
 		Artifact:          newArtifactView(build.Status.Artifact),
 		Cache:             newBuildCacheView(build.Status.Cache),
 		Gates:             gateViews(build.Status.Gates),
+		Source:            newSourceView(build.Status.Source),
 		CreatedAt:         build.CreationTimestamp.Time,
 		Conditions:        conditionViews(build.Status.Conditions),
 	}

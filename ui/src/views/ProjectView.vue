@@ -196,6 +196,7 @@ watch(tabs, (items) => {
 const settings = reactive({
   loadedFor: "",
   productionBranch: "",
+  requirePullRequest: false,
   previews: true,
   previewsProtected: true,
   buildStrategy: "auto",
@@ -233,6 +234,7 @@ const strategyOptions = [
 function loadSettings(from: Project) {
   settings.loadedFor = from.name;
   settings.productionBranch = from.productionBranch;
+  settings.requirePullRequest = from.requirePullRequest;
   settings.previews = from.previews;
   settings.previewsProtected = from.previewsProtected;
   settings.buildStrategy = from.buildStrategy || "auto";
@@ -253,6 +255,7 @@ async function saveSettings() {
   try {
     const saved = await api.updateProject(name.value, {
       productionBranch: settings.productionBranch,
+      requirePullRequest: settings.requirePullRequest,
       previews: settings.previews,
       previewsProtected: settings.previewsProtected,
       buildStrategy: settings.buildStrategy,
@@ -749,6 +752,11 @@ function host(url?: string): string {
             <UFormField label="Production branch" help="Builds of this branch promote to production.">
               <UInput v-model="settings.productionBranch" class="w-full max-w-44 font-mono" />
             </UFormField>
+            <USwitch
+              v-model="settings.requirePullRequest"
+              label="Require a reviewed pull request"
+              description="Refuse to build a production-branch commit the git provider cannot say arrived through a pull request somebody other than its author approved. Preview builds are unaffected — they are what produces the thing being reviewed."
+            />
             <USwitch v-model="settings.previews" label="Preview environments" description="Every pull request gets its own environment." />
             <USwitch
               v-model="settings.previewsProtected"
