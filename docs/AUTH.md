@@ -348,23 +348,39 @@ whoever can claim that address at the issuer.
 
 | Surface | Role |
 |---|---|
-| `/platform/*`, `PATCH /settings`, `/connections/*`, `/updates`, `GET /environments/{name}/objects` | `operator` |
-| `GET /settings` | `operator` — it carries the base domain, the issuer and the gateway address |
-| `DELETE /projects/{name}`, the project's own settings, membership writes | project `admin` |
+| `/platform/*`, `PATCH /settings`, `/connections/{name}` and every connection write, `/updates`, `GET /environments/{name}/objects`, `GET /compliance`, `GET /audit/verify` | `operator` |
+| `GET /settings` | `operator` — it carries the base domain, the issuer, the gateway address and the operator list itself |
+| `DELETE /projects/{name}`, the project's own settings, membership and key writes | project `admin` |
 | Builds and cancellations, releases, environment variables, environments, domains, claims | project `developer` |
-| Projects, builds, releases, environments, logs, metrics, requests, diagnostics, signals, traces | project `viewer` |
+| Projects, builds, releases, environments, logs, metrics, requests, diagnostics, signals, traces, and a project's members and keys | project `viewer` |
 | `POST /projects` | any account |
-| `GET /status` | any account, with a body that varies by role |
-| `/logs`, `/events`, `/traffic`, `/metrics/overview` | filtered to the projects the caller can see |
+| `GET /status`, `GET /connections` | any account, with a body that varies by role |
+| `GET /me` | any account — it describes the caller to themselves |
+| `/logs`, `/events`, `/traffic`, `/metrics/overview`, `/traces`, `/audit` and the collection `GET`s | filtered to the projects the caller can see |
+
+Two things in that table are worth saying out loud, because both were places
+the first implementation drifted from this section and had to be moved back.
+**Environment variables are the developer's, the project's settings are the
+admin's** — so they are two routes (`PATCH /projects/{name}/env` and `PATCH
+/projects/{name}`), rather than one route sorting its own body by field.
+**Reading who is on a project is part of knowing what the project is**, so the
+members list is the viewer's and only the writes are the admin's; a project's
+CI keys are the same list with its non-human half shown, and go with it.
 
 Four rules go with that table:
 
 - **A whole route is the unit of authorization.** Filtering a response body by
-  role is the exception, and `GET /status` is the exception: it is the
+  role is the exception, and there are exactly two. `GET /status` is the
   dashboard's home page for both people, so it keeps the build queue for
   everyone — "why is my build waiting" is a developer question — and drops the
-  tunnel, the gateway, the component survey and the node counts for a `member`.
-  A second endpoint would have doubled the surface for one payload.
+  tunnel, the gateway, the component survey and the node counts for a `member`;
+  a second endpoint would have doubled the surface for one payload. `GET
+  /connections` answers a member with names, capabilities and readiness alone,
+  because a project needs a git source and a registry to exist at all, and
+  self-service that stops at the first form field hands the developer straight
+  back to the operator. Both thinned shapes are distinct types rather than the
+  operator's view with fields blanked, so that a field added to one later is
+  not published to everybody by a struct they share.
 - **A field withheld by role is absent, never zeroed.** The dashboard has to be
   able to tell "no tunnel is configured" from "you are not allowed to know", and
   an empty component survey reads as a healthy platform running nothing.
@@ -418,14 +434,29 @@ at the moment nobody is watching.
 The account created by the [bootstrap link](#bootstrap-settled) is the first
 operator. Nothing else grants the platform role implicitly.
 
-Installations that predate enforcement need care rather than a default. Today
-every authenticated account can call every route, which read honestly means
-every existing account **is** an operator; enforcing against an empty list would
-turn all of them into members with no projects — locked out of their own
-platform by a minor version bump, with no way back that does not involve
+Installations that predate enforcement need care rather than a default. Before
+it, every authenticated account could call every route, which read honestly
+means every existing account **was** an operator; enforcing against an empty
+list would turn all of them into members with no projects — locked out of their
+own platform by a minor version bump, with no way back that does not involve
 kubectl. So an upgrade seeds the operator list from the accounts that exist,
 writes it out explicitly, and says so in the release notes. Narrowing it is then
 a decision somebody takes, rather than one that happens to them.
+
+One rule does both. **An absent operator list means nobody has ever said who
+the operators are**, so the accounts that exist become the answer: on a fresh
+install that is the one account the bootstrap link created, and on an upgrade
+it is all of them. An *empty* list is somebody's decision and is left alone,
+which is why `spec.access.operators` carries neither a default nor `omitempty`
+— collapsing "nobody has said yet" into "somebody said nobody" on the first
+write is the whole failure this avoids. While no account exists at all,
+nothing is written and the reconciler tries again.
+
+Reviewing what was seeded is the settings screen's job, not `kubectl`'s: `GET
+/settings` carries the list and `PATCH /settings` writes it, and the list
+cannot be emptied — a platform with no operator has nobody left who can
+appoint one, which is the same rule that stops the last `admin` leaving a
+project.
 
 ## Decisions
 
