@@ -6,7 +6,11 @@ name: Tests
 # branch is covered by its pull request, and `main` is covered once, after the
 # merge.
 #
-# The run on `main` is deliberate and not a duplicate of the pull request's.
+# This workflow is cheap, and it keeps its run on `main` where the kind-based
+# ones no longer do. An Actions cache is readable by the branch that wrote it,
+# that branch's base, and the default branch — so `main`'s runs are the only
+# ones every pull request can restore from, the kind jobs in the other
+# workflows included. Dropping them would start every pull request cold.
 # See CONTRIBUTING.md, "What CI runs, and when".
 on:
   push:
