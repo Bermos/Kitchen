@@ -18,6 +18,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -229,13 +230,24 @@ func (a *authenticator) verifierFor(ctx context.Context, issuer string) (*oidc.I
 }
 
 // tokenClaims are the parts of a validated token the API reads.
+//
+// EmailVerified is decoded raw and read by access.VerifiedClaim, because
+// issuers disagree about its type: the specification says boolean and several
+// send the string "true". token.Claims is json.Unmarshal, so a plain bool here
+// does not merely lose the claim — the string makes the decode of the *whole*
+// claim set fail, which authenticate reports as "the token's claims are
+// unreadable" and which is therefore a 401 on every route for every caller,
+// dashboard and CI key alike. The lenient reading lives in internal/access
+// because that is the package the claim matters to (an entry naming an address
+// is honoured only for a verified one), and because the forward-auth gate has
+// to answer the same question about the same issuer.
 type tokenClaims struct {
-	Subject       string `json:"sub"`
-	Email         string `json:"email"`
-	EmailVerified bool   `json:"email_verified"`
-	Name          string `json:"name"`
-	ClientID      string `json:"azp"`
-	Scope         string `json:"scope"`
+	Subject       string          `json:"sub"`
+	Email         string          `json:"email"`
+	EmailVerified json.RawMessage `json:"email_verified"`
+	Name          string          `json:"name"`
+	ClientID      string          `json:"azp"`
+	Scope         string          `json:"scope"`
 }
 
 // authenticate validates the request's bearer token and returns who it belongs
@@ -273,7 +285,7 @@ func (a *authenticator) authenticate(ctx context.Context, req *http.Request, cfg
 	return Caller{
 		Subject:       claims.Subject,
 		Email:         claims.Email,
-		EmailVerified: claims.EmailVerified,
+		EmailVerified: access.VerifiedClaim(claims.EmailVerified),
 		Name:          claims.Name,
 		ClientID:      claims.ClientID,
 		Scopes:        strings.Fields(claims.Scope),

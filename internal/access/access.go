@@ -38,6 +38,8 @@ limitations under the License.
 package access
 
 import (
+	"encoding/json"
+	"strconv"
 	"strings"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
@@ -173,4 +175,39 @@ func VisibleProjects(caller Caller, kitchen *kitchenv1alpha1.Kitchen, projects [
 		}
 	}
 	return visible
+}
+
+// VerifiedClaim reads an `email_verified` claim that may be a boolean or the
+// string spelling of one, which is the shape several issuers send. Everything
+// else — an absent claim, a number, an object — is false.
+//
+// It lives here because this is the package that decides what a verified
+// address is worth: matches honours an entry naming an address only for a
+// verified one, so the claim's two spellings and the rule that reads them
+// belong together. Both halves of the platform's authorization call it. The
+// REST API decodes the claim raw and passes it through here; the forward-auth
+// gate still carries a copy of the same three lines (verifiedClaim in
+// internal/previewgate/oidc.go) that wants collapsing onto this one.
+//
+// Reading it leniently is not laxity. The strict alternative is worse in both
+// directions: decoded as a plain bool, a string "true" makes json.Unmarshal
+// fail over the *whole* claim set, which the API turns into "the token's
+// claims are unreadable" — a 401 on every route for every caller of an issuer
+// that spells it that way. Anything unrecognised still reads as unverified,
+// which is the safe direction: the claim only ever widens what its holder may
+// reach.
+func VerifiedClaim(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	var flag bool
+	if err := json.Unmarshal(raw, &flag); err == nil {
+		return flag
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err != nil {
+		return false
+	}
+	verified, err := strconv.ParseBool(text)
+	return err == nil && verified
 }

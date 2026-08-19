@@ -108,7 +108,7 @@ are not roles:
 |---|---|
 | `any account` | a valid token, and nothing more |
 | `any account — filtered` | a valid token; the answer is narrowed to the projects the caller can see |
-| `any account — body varies` | a valid token; the shape of the body depends on the caller's platform role. Two routes: `GET /status` and `GET /connections` |
+| `any account — body varies` | a valid token; the shape of the body depends on the caller's platform role, and any list inside it is narrowed to the projects they can see. Two routes: `GET /status` and `GET /connections` |
 
 The whole table lives in one place in the operator — `internal/api/policy.go`,
 which every route is registered from — so a route cannot exist without a
@@ -540,7 +540,9 @@ here.
 characters — it addresses the key in the path, and it is half of the machine
 account's own address at the issuer. One name per project: the same name twice
 is a `409`, because two credentials behind one grant would make "revoke that
-key" ambiguous.
+key" ambiguous. The clash is decided against the issuer's own list *before*
+anything is recorded, so the audit log never carries "the key `nightly` was
+issued for `shop`" for a request that issued nothing.
 
 ```sh
 curl -sS -H "authorization: Bearer $TOKEN" \
@@ -1216,7 +1218,20 @@ controller's concurrency gate is weighing: builds running against
 has waited — longest first, with `oldestWaitSeconds` repeating the head of the
 list. The wait is the half worth reading: a queue's length says the platform is
 busy, and only the wait says whether it is moving. Both are omitted when
-nothing is queued. `components` is
+nothing is queued.
+
+**The queue's counts are everybody's; its names are the caller's own.**
+`running`, `capacity`, `queued` and `oldestWaitSeconds` are the whole gate's,
+because that is what answers "why is my build waiting" — the queue is busy, or
+it has stopped moving. `waiting` is narrowed to the projects the caller can
+see, like every other list this API answers across projects: an operator gets
+the whole queue, and a member gets their own builds and a count for everyone
+else's. Naming the rest would enumerate every project on the platform and its
+build object names to any account with a token, thirty seconds at a time — and
+each of those names then answers `404` from `GET /builds/{name}`, which is the
+rule that a caller is not told an object they hold no role on exists.
+
+`components` is
 the operator's own survey of every workload labelled
 `app.kubernetes.io/part-of: kitchen`, which is the only place a workload whose
 pods were refused at admission shows up at all — it has no pods to look at.
@@ -1587,6 +1602,18 @@ the rule is about the list being emptied, not about who is on it. Every change
 to it is recorded in the [audit log](#endpoints) as an update to the `Kitchen`,
 naming who came on and who came off, the way a membership change names the
 member.
+
+**A patch that carries `operators` also carries the caller's
+`resourceVersion`**, so two operators editing the list at the same time is a
+`409` for the second rather than a lost update. It has to be: the list is
+replaced wholesale and the last-operator check was made against the list the
+request read, so without the lock two admins removing each other put each
+other back — `[A, B, C]`, A removes C and B removes A, and the result is
+`[B, C]` with C returned to a list they had been taken off. Re-read and try
+again. A patch that does not mention `operators` is not locked: its fields are
+independent scalars, and failing "set the build concurrency to 4" because
+somebody moved the log retention a moment earlier would be a conflict about
+nothing.
 
 Everything else on the singleton — the base domain, the issuer, the ingress —
 shapes URLs and credentials the platform has already handed out, so changing
@@ -2018,7 +2045,31 @@ the per-hour series is a read per hour, for the same reason applied to each
 bucket.
 
 `?project=` narrows everything to one project, drops the `projects` join, and
-answers the same numbers off that project's own rollups. There is deliberately
+answers the same numbers off that project's own rollups.
+
+**Without `?project=`, "everything" means everything of the caller's.** An
+operator is answered about the platform. Anybody else is answered about the
+projects they hold a role on, which is one project-scoped read per project,
+added together:
+
+- counts add, and so do their hourly and daily buckets;
+- `errorRate24h` is recomputed from the counts it is a ratio of, so it is
+  total errors over total requests rather than a mean of rates;
+- `p95Ms24h`, `p95MsPerHour` and `medianBuildSeconds` **do not merge**, for
+  the reason above — a mean of p95s is not a p95. Over several projects they
+  come back as `0`, which the dashboard renders as "—"; each project's own
+  honest p95 is still in `projects`. Over exactly one project there is nothing
+  to merge and both are that project's own. Answering them across a set of
+  projects needs the store's queries to take one, which they do not yet;
+- `storeBytes` and `storeRowsPerSecond` are the telemetry store's own figures
+  rather than any project's, and are reported as the store gives them — the
+  same numbers `?project=` already answers with.
+
+A caller who holds no project at all gets every number as `0`, and the store is
+not asked. Those zeroes are honest rather than withheld: they are *their*
+numbers, and they have none.
+
+There is deliberately
 no raw metrics query surface: the raw material is the logs, events and request
 tables, and `/logs` already exposes the store's own syntax for ad-hoc
 questions.
@@ -2102,6 +2153,19 @@ confirm the existence of the project the query names. The check errs towards
 hiding: a query mentioning such a name anywhere in its selection, title or
 description is withheld, and its results would have been narrowed to nothing
 for that reader anyway.
+
+**They are shared *and unowned*, which is a decision and not an oversight.**
+Any account may save one, and any account may delete one it can be shown — a
+query naming no project, "Platform 5xx" with a bare `where` clause, is
+therefore deletable by anybody with a token. `savedBy` is a byline, not an
+owner: it is the caller as the API knew them at the time, an address that
+changes when the account's does, so enforcing against it would take a role
+away from the person it was recorded for. Making a saved query owned means
+recording the issuer's `sub` on the object and letting its author or an
+operator delete it — a field on the CRD and a migration for the queries
+already saved, which is a bigger change than the risk (a shared shortcut
+nobody else can read anything through) is worth. The list is capped at 100 and
+every deletion is the platform's to see.
 
 ## Status codes
 

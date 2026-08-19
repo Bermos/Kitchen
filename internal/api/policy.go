@@ -83,7 +83,9 @@ const (
 	// where "everything" means everything of the caller's.
 	requireVisibleProjects
 	// requireRoleShapedBody admits any valid token and hands the handler the
-	// caller's platform role, because the body varies by it. It is the class
+	// caller's platform role — and the visible-project scope, since a body
+	// shaped by role can still carry rows that name projects — because the
+	// body varies by it. It is the class
 	// docs/AUTH.md calls the exception to "a whole route is the unit of
 	// authorization", and it stays an exception: a route belongs here only
 	// when the same page is the answer for both people and a second endpoint
@@ -151,7 +153,9 @@ func acrossProjects() requirement {
 }
 
 // byRole is a route whose body varies by the caller's platform role. The
-// handler reads it with platformRoleFrom.
+// handler reads it with platformRoleFrom, and — for the parts of the body that
+// are a list of somebody's projects rather than a fact about the platform —
+// with scopeFrom.
 //
 // `doing` names the operation the same way operatorOnly's does. Nothing built
 // from it is ever a refusal — this kind refuses nobody — but the table is read
@@ -567,8 +571,19 @@ func (s *Server) guard(requires requirement, handler http.HandlerFunc) http.Hand
 			req = req.WithContext(withScope(req.Context(), scope))
 
 		case requireRoleShapedBody:
-			// The platform role is in the context above; the handler shapes
-			// its own body from it.
+			// The platform role is in the context above, and the handler
+			// shapes its own body from it. The visible scope goes in as well,
+			// because a body that varies by role still has rows in it that
+			// name projects — GET /status carries the build queue, which is
+			// everybody's as a queue and nobody else's as a list of names.
+			// Resolving it here rather than in the handler keeps "what may
+			// this caller see" in the one place that answers it.
+			scope, err := s.scopeFor(req.Context(), caller, kitchen, platform)
+			if err != nil {
+				s.writeError(w, err)
+				return
+			}
+			req = req.WithContext(withScope(req.Context(), scope))
 		}
 
 		handler(w, req)

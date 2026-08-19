@@ -340,7 +340,9 @@ export interface PlatformStatus {
     queued: number;
     /** How long the build waiting longest has been waiting. Absent when none is. */
     oldestWaitSeconds?: number;
-    /** The queued builds themselves, longest wait first. */
+    /** The queued builds themselves, longest wait first — narrowed to the
+     * caller's own projects, while the counts above are the whole gate's. An
+     * operator holds every project, so theirs is the whole queue. */
     waiting?: { name: string; project: string; queuedAt: string; waitSeconds: number }[];
   };
   gateway?: { address?: string; programmed: boolean; message?: string };

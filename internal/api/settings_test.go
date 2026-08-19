@@ -22,10 +22,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/controller"
@@ -381,4 +383,101 @@ func marshalled(t *testing.T, view settingsView) map[string]string {
 		fields[name] = string(value)
 	}
 	return fields
+}
+
+// racingWrite lands one write on the Kitchen object between the handler
+// reading it and patching it, which is the window a lost update happens in.
+// It fires once, so a handler that patches after retrying is not raced twice.
+func racingWrite(t *testing.T, h *harness, edit func(*kitchenv1alpha1.Kitchen)) {
+	t.Helper()
+	base, ok := h.server.Client.(client.WithWatch)
+	if !ok {
+		t.Fatalf("the harness's client cannot be intercepted: %T", h.server.Client)
+	}
+	var once sync.Once
+	h.server.Client = interceptor.NewClient(base, interceptor.Funcs{
+		Patch: func(
+			ctx context.Context,
+			c client.WithWatch,
+			obj client.Object,
+			patch client.Patch,
+			opts ...client.PatchOption,
+		) error {
+			once.Do(func() {
+				current := &kitchenv1alpha1.Kitchen{}
+				if err := c.Get(ctx, types.NamespacedName{Name: controller.KitchenSingletonName}, current); err != nil {
+					t.Error(err)
+					return
+				}
+				edit(current)
+				if err := c.Update(ctx, current); err != nil {
+					t.Error(err)
+				}
+			})
+			return c.Patch(ctx, obj, patch, opts...)
+		},
+	})
+}
+
+// Two operators removing each other at once is the case the last-operator rule
+// exists to prevent, and a lost update is how it gets through: the list is
+// replaced wholesale, so the loser's write puts back somebody the winner's
+// took off — against a list that no longer exists by the time it lands.
+func TestRemovingAnOperatorConcurrentlyIsRefusedRatherThanLost(t *testing.T) {
+	h := newHarness(t, nil)
+	h.withDirectory()
+	h.updateKitchen(t, func(kitchen *kitchenv1alpha1.Kitchen) {
+		kitchen.Spec.Access.Operators = []kitchenv1alpha1.AccessSubject{
+			{Subject: testSubject, Email: testCaller},
+			{Subject: annaSubject, Email: annaEmail},
+			{Subject: "user_ben", Email: "ben@example.com"},
+		}
+	})
+	// While this request is in flight, somebody else takes anna off.
+	racingWrite(t, h, func(kitchen *kitchenv1alpha1.Kitchen) {
+		kitchen.Spec.Access.Operators = []kitchenv1alpha1.AccessSubject{
+			{Subject: testSubject, Email: testCaller},
+			{Subject: "user_ben", Email: "ben@example.com"},
+		}
+	})
+
+	// And this one takes ben off, from the list it read a moment ago.
+	recorder := h.do(t, http.MethodPatch, settingsPath,
+		`{"operators": [{"subject": "`+testSubject+`"}, {"subject": "`+annaSubject+`"}]}`)
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("want 409, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+
+	stored := operatorsOf(t, h)
+	if len(stored) != 2 || stored[1].Subject != "user_ben" {
+		t.Fatalf("the concurrent removal must stand rather than being undone: %+v", stored)
+	}
+}
+
+// The lock is on the list, not on the whole object. A settings patch that
+// changes nothing anybody decided anything against must not fail because
+// somebody else moved an unrelated field.
+func TestASettingsChangeIsNotRefusedOverAnUnrelatedConcurrentEdit(t *testing.T) {
+	h := newHarness(t, nil)
+	racingWrite(t, h, func(kitchen *kitchenv1alpha1.Kitchen) {
+		kitchen.Spec.Observability.ClickHouse.RetentionDays = 30
+	})
+
+	recorder := h.do(t, http.MethodPatch, settingsPath, `{"buildConcurrency": 4}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+
+	kitchen := &kitchenv1alpha1.Kitchen{}
+	if err := h.server.Client.Get(context.Background(),
+		types.NamespacedName{Name: controller.KitchenSingletonName}, kitchen); err != nil {
+		t.Fatal(err)
+	}
+	if kitchen.Spec.Builds.Concurrency != 4 {
+		t.Fatalf("want the concurrency written, got %+v", kitchen.Spec.Builds)
+	}
+	if kitchen.Spec.Observability.ClickHouse.RetentionDays != 30 {
+		t.Fatalf("a merge patch of one field must leave the other write alone, got %+v",
+			kitchen.Spec.Observability.ClickHouse)
+	}
 }

@@ -166,13 +166,30 @@ func (s *Server) createKey(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	directory, err := s.directory(ctx)
-	if err != nil {
-		s.noDirectory(w, err)
+	// The name is checked against the issuer's own list before anything is
+	// recorded, and that ordering is deliberate. Recording first is the house
+	// pattern and it is right wherever the only thing that can still go wrong
+	// is a cluster write: over-recording — a transition recorded whose write
+	// then failed — is the acceptable direction (audit.Recorder.Record says
+	// so), and a change nothing recorded is not. But a name already taken is
+	// an outcome this call has every day, and a tamper-evident log that says
+	// "the key nightly was issued for shop" for a request that was answered
+	// 409 is a record of something that did not happen — which is the one
+	// thing the log exists not to contain. So the foreseeable refusal is made
+	// first, and the ordering is kept for what remains: an issuer that will
+	// not answer, which nothing here can predict.
+	keys, directory, ok := s.keysOf(w, req, project)
+	if !ok {
 		return
 	}
+	for _, existing := range keys {
+		if existing.Name == name {
+			writeJSON(w, http.StatusConflict, errorBody{Error: keyNameTaken(project.Name, name)})
+			return
+		}
+	}
 
-	// The audit record comes first, as it does for every write this API makes:
+	// The audit record comes next, as it does for every write this API makes:
 	// a change the log cannot record is a change the platform does not make.
 	patch := membershipPatch(project)
 	if !s.recorded(w, req, audit.Transition{
@@ -194,9 +211,12 @@ func (s *Server) createKey(w http.ResponseWriter, req *http.Request) {
 	issued, err := directory.CreateKey(ctx, project.Name, name)
 	switch {
 	case errors.Is(err, idp.ErrKeyExists):
-		writeJSON(w, http.StatusConflict, errorBody{Error: fmt.Sprintf(
-			"%s already has a key called %s: delete it and make a new one rather than reusing the name, "+
-				"so that revoking either is unambiguous", project.Name, name)})
+		// Checked above, so reaching this is two requests for the same name at
+		// once rather than the everyday case. The record above stands and says
+		// a key was issued that was not — which is the over-recording the
+		// pattern accepts, and is now as rare as any other lost race instead
+		// of being what a repeated name does.
+		writeJSON(w, http.StatusConflict, errorBody{Error: keyNameTaken(project.Name, name)})
 		return
 	case errors.Is(err, idp.ErrNoKeyDirectory):
 		s.noKeyDirectory(w, err)
@@ -230,6 +250,15 @@ func (s *Server) createKey(w http.ResponseWriter, req *http.Request) {
 		keyView: newKeyView(issued.Key, role),
 		Key:     issued.Secret,
 	})
+}
+
+// keyNameTaken is the refusal a name already in use gets, from either the
+// check that foresees it or the race that beats it. One sentence, one place:
+// the two paths are the same answer to the same question.
+func keyNameTaken(project, name string) string {
+	return fmt.Sprintf(
+		"%s already has a key called %s: delete it and make a new one rather than reusing the name, "+
+			"so that revoking either is unambiguous", project, name)
 }
 
 func (s *Server) deleteKey(w http.ResponseWriter, req *http.Request) {

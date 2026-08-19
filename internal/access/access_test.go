@@ -372,3 +372,29 @@ func TestIsEmailSubject(t *testing.T) {
 		})
 	}
 }
+
+// The two spellings issuers actually send, and everything else reading as
+// unverified — which is the direction that withholds rather than grants.
+func TestVerifiedClaim(t *testing.T) {
+	cases := map[string]bool{
+		`true`:      true,
+		`false`:     false,
+		`"true"`:    true,
+		`"false"`:   false,
+		`"TRUE"`:    true,
+		`"1"`:       true,
+		`1`:         false,
+		`null`:      false,
+		``:          false,
+		`"perhaps"`: false,
+		`{}`:        false,
+	}
+
+	for claim, want := range cases {
+		t.Run(claim, func(t *testing.T) {
+			if got := VerifiedClaim([]byte(claim)); got != want {
+				t.Errorf("VerifiedClaim(%s) = %v, want %v", claim, got, want)
+			}
+		})
+	}
+}

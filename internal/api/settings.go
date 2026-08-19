@@ -163,7 +163,7 @@ func (s *Server) patchSettings(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	patch := client.MergeFrom(kitchen.DeepCopy())
+	patch := settingsPatch(kitchen, body)
 	if body.BuildStrategy != nil {
 		strategy := kitchenv1alpha1.BuildStrategy(strings.TrimSpace(*body.BuildStrategy))
 		switch strategy {
@@ -249,6 +249,33 @@ func (s *Server) patchSettings(w http.ResponseWriter, req *http.Request) {
 			"operators", len(kitchen.Spec.Access.Operators), "caller", callerName(caller))
 	}
 	writeJSON(w, http.StatusOK, newSettingsView(kitchen))
+}
+
+// settingsPatch is how a settings change reaches the cluster, and whether it
+// carries the caller's resourceVersion depends on what the request is
+// changing.
+//
+// A request that names `operators` gets the optimistic lock, for exactly
+// membershipPatch's reason and with more at stake. The list is replaced
+// wholesale, and the decision that it may be — the last-operator check — was
+// made against the list this handler read. Two operators removing each other
+// at the same time is the case that rule exists to prevent, and a lost update
+// is how it gets through: from [A, B, C], A removing C and B removing A land
+// as [B, C], with C back on a list they were taken off and the check having
+// run against a list that no longer exists. A conflict answers 409, which is
+// the client's cue to re-read and try again.
+//
+// A request that does not name it gets a plain merge patch. The other four
+// fields are independent scalars, each written from the caller's own body and
+// decided against nothing that was read: failing "set the build concurrency to
+// 4" because somebody else changed the log retention a moment earlier would be
+// a conflict about nothing, on the platform's busiest object.
+func settingsPatch(kitchen *kitchenv1alpha1.Kitchen, body patchSettingsRequest) client.Patch {
+	base := kitchen.DeepCopy()
+	if body.Operators == nil {
+		return client.MergeFrom(base)
+	}
+	return client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})
 }
 
 // lastOperatorRefusal is what a write that would leave the platform with no

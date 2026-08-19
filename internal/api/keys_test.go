@@ -25,11 +25,15 @@ import (
 	"testing"
 	"time"
 
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/audit"
+	"github.com/Bermos/Kitchen/internal/controller"
 	"github.com/Bermos/Kitchen/internal/idp"
 )
 
@@ -97,12 +101,15 @@ func (d *stubDirectory) DeleteKey(_ context.Context, project, name string) (*idp
 	return nil, idp.ErrKeyNotFound
 }
 
-// grantTo puts one grant on a project, which is how these tests write the
-// membership a key would have been created with.
-func (h *harness) grantTo(t *testing.T, project, subject, email string, role kitchenv1alpha1.AccessRole) {
+// grantTo puts one grant on the fixtures' project, which is how these tests
+// write the membership a key would have been created with. It names the
+// subject and the address itself, where `grant` always names the caller: a key
+// belongs to a machine account, and an entry may name an address rather than a
+// `sub`.
+func (h *harness) grantTo(t *testing.T, subject, email string, role kitchenv1alpha1.AccessRole) {
 	t.Helper()
 	obj := &kitchenv1alpha1.Project{}
-	key := types.NamespacedName{Namespace: testNamespace, Name: project}
+	key := types.NamespacedName{Namespace: testNamespace, Name: feedProject}
 	if err := h.server.Client.Get(context.Background(), key, obj); err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +139,7 @@ func (h *harness) storedAccess(t *testing.T, project string) []kitchenv1alpha1.A
 func TestACIKeyIsAMemberOfExactlyOneProject(t *testing.T) {
 	h := newHarness(t, nil, append(fixtures(), blogFixtures()...)...)
 	h.demoteCaller(t)
-	h.grantTo(t, feedProject, ciKeySubject, ciKeyEmail, kitchenv1alpha1.AccessRoleDeveloper)
+	h.grantTo(t, ciKeySubject, ciKeyEmail, kitchenv1alpha1.AccessRoleDeveloper)
 
 	// The token a key is exchanged for carries the machine account's `sub`,
 	// which is the subject the grant above names. Nothing about it says it is
@@ -376,4 +383,51 @@ func refusePatches(t *testing.T, h *harness) {
 			return errors.New("the api server said no")
 		},
 	})
+}
+
+// A log that cannot append refuses the write it was asked to record, so an
+// audit recorder pointed at nothing turns every recorded write into a 503.
+// That is what makes it a probe: whatever a handler does *before* it records
+// still answers in its own words.
+func (h *harness) withUnreachableAuditLog(t *testing.T) {
+	t.Helper()
+	scheme := runtime.NewScheme()
+	if err := kitchenv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	h.server.Audit = &audit.Recorder{
+		Client:    fake.NewClientBuilder().WithScheme(scheme).Build(),
+		Namespace: testNamespace,
+		Singleton: controller.KitchenSingletonName,
+	}
+}
+
+// The audit log must not carry "the key nightly was issued for shop" for a
+// request that was answered 409 and issued nothing. A name already taken is
+// the one failure this call has every day, so it is decided before anything is
+// recorded — which is visible as the answer being about the name rather than
+// about the log.
+func TestAKeyWhoseNameIsTakenIsRefusedBeforeAnythingIsRecorded(t *testing.T) {
+	h := asMember(t, kitchenv1alpha1.AccessRoleAdmin)
+	h.withDirectory()
+
+	if recorder := h.do(t, http.MethodPost, keysPath, `{"name":"`+ciKeyName+`"}`); recorder.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+
+	h.withUnreachableAuditLog(t)
+	recorder := h.do(t, http.MethodPost, keysPath, `{"name":"`+ciKeyName+`"}`)
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("want 409 about the name rather than %d about the log: %s", recorder.Code, recorder.Body.String())
+	}
+	if got := errorOf(t, recorder.Body.String()); got != keyNameTaken(feedProject, ciKeyName) {
+		t.Fatalf("want the refusal to name the clash, got %q", got)
+	}
+
+	// And the ordering is kept for everything that is not foreseeable: a name
+	// nobody has used is recorded before the key is issued, so a log that
+	// cannot append is a key that is not issued.
+	if recorder := h.do(t, http.MethodPost, keysPath, `{"name":"fresh"}`); recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("want 503, got %d: %s", recorder.Code, recorder.Body.String())
+	}
 }

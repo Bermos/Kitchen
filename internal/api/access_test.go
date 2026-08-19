@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -684,7 +685,7 @@ func TestAViewerReadsWhoIsOnTheirProject(t *testing.T) {
 	directory.keys = map[string][]idp.Key{feedProject: {{
 		Name: ciKeyName, Project: feedProject, Subject: ciKeySubject, Email: ciKeyEmail, Prefix: "abc123",
 	}}}
-	h.grantTo(t, feedProject, ciKeySubject, ciKeyEmail, kitchenv1alpha1.AccessRoleDeveloper)
+	h.grantTo(t, ciKeySubject, ciKeyEmail, kitchenv1alpha1.AccessRoleDeveloper)
 
 	members := h.do(t, http.MethodGet, membersPath, "")
 	if members.Code != http.StatusOK {
@@ -774,5 +775,128 @@ func TestAnAdminChangesBothHalvesOfAProject(t *testing.T) {
 	if recorder := h.do(t, http.MethodPatch, "/api/v1/projects/"+feedProject,
 		`{"previews": false}`); recorder.Code != http.StatusOK {
 		t.Fatalf("an admin must be able to change the settings: %d %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+// Several issuers spell `email_verified` as the string "true" rather than as a
+// boolean. Decoded strictly that is not a claim lost — token.Claims is
+// json.Unmarshal, so it fails over the whole claim set, and every route 401s
+// for every caller of such an issuer. It must authenticate, and the address it
+// verifies must still resolve a grant that names one.
+func TestAnEmailVerifiedClaimSentAsAStringAuthenticatesAndResolvesAnAddressGrant(t *testing.T) {
+	h := asMember(t, "")
+	// The grant names the address rather than the `sub`, which is the entry
+	// internal/access honours only for a verified address.
+	h.grantTo(t, testCaller, testCaller, kitchenv1alpha1.AccessRoleDeveloper)
+
+	token := h.issuer.sign(t, map[string]any{
+		"sub":            testSubject,
+		"email":          testCaller,
+		"email_verified": "true",
+		"iss":            h.issuer.url(),
+		"aud":            h.issuer.url(),
+		"iat":            time.Now().Add(-time.Minute).Unix(),
+		"exp":            time.Now().Add(time.Hour).Unix(),
+	}, nil)
+
+	me := h.do(t, http.MethodGet, "/api/v1/me", "", token)
+	if me.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", me.Code, me.Body.String())
+	}
+
+	recorder := h.do(t, http.MethodGet, "/api/v1/projects/"+feedProject, "", token)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if project := decode[projectView](t, recorder); project.Role != string(kitchenv1alpha1.AccessRoleDeveloper) {
+		t.Fatalf("want the address-named grant honoured, got %q", project.Role)
+	}
+}
+
+// The lenient reading widens nothing: a claim that is not a boolean and not
+// the spelling of one leaves the address unverified, so the grant naming it is
+// not honoured — and the project the caller holds nothing else on is not found.
+func TestAnUnrecognisedEmailVerifiedClaimLeavesTheAddressUnverified(t *testing.T) {
+	h := asMember(t, "")
+	h.grantTo(t, testCaller, testCaller, kitchenv1alpha1.AccessRoleViewer)
+
+	token := h.issuer.sign(t, map[string]any{
+		"sub":            testSubject,
+		"email":          testCaller,
+		"email_verified": "yesterday",
+		"iss":            h.issuer.url(),
+		"aud":            h.issuer.url(),
+		"iat":            time.Now().Add(-time.Minute).Unix(),
+		"exp":            time.Now().Add(time.Hour).Unix(),
+	}, nil)
+
+	recorder := h.do(t, http.MethodGet, "/api/v1/projects/"+feedProject, "", token)
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("want 404, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+// queuedBuild is a build waiting for a slot on the gate, made `waited` ago.
+func queuedBuild(name, project string, waited time.Duration) *kitchenv1alpha1.Build {
+	return &kitchenv1alpha1.Build{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              name,
+			Namespace:         testNamespace,
+			CreationTimestamp: metav1.NewTime(time.Now().Add(-waited)),
+		},
+		Spec: kitchenv1alpha1.BuildSpec{
+			ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: project},
+			Git:        kitchenv1alpha1.GitRevision{SHA: "abcabcabcabc", Branch: defaultProductionBranch},
+		},
+		Status: kitchenv1alpha1.BuildStatus{Phase: kitchenv1alpha1.BuildQueued},
+	}
+}
+
+// /status keeps the build queue for everybody because "why is my build
+// waiting" is a developer's question. The counts answer it; naming somebody
+// else's project does not, and the status bar polls this every thirty seconds.
+func TestTheBuildQueueCountsForEveryoneAndNamesOnlyTheCallersOwn(t *testing.T) {
+	mine := queuedBuild("shop-bld-mine00000000", feedProject, 5*time.Minute)
+	theirs := queuedBuild("blog-bld-theirs000000", otherProject, 30*time.Minute)
+	h := asMember(t, kitchenv1alpha1.AccessRoleViewer, append(blogFixtures(), mine, theirs)...)
+
+	status := decode[statusView](t, h.do(t, http.MethodGet, "/api/v1/status", ""))
+
+	// The queue is the platform's: both builds are counted, and the oldest
+	// wait is the oldest on the gate rather than the caller's own.
+	if status.Builds.Queued != 2 {
+		t.Errorf("the queue's length is everybody's, got %+v", status.Builds)
+	}
+	if status.Builds.OldestWaitSeconds < 1000 {
+		t.Errorf("the oldest wait is the whole queue's, got %+v", status.Builds)
+	}
+	// The names are not.
+	if len(status.Builds.Waiting) != 1 {
+		t.Fatalf("want only the caller's own queued build named, got %+v", status.Builds.Waiting)
+	}
+	if status.Builds.Waiting[0].Name != mine.Name || status.Builds.Waiting[0].Project != feedProject {
+		t.Fatalf("want %s named, got %+v", mine.Name, status.Builds.Waiting[0])
+	}
+
+	// And a caller on no project at all learns of no project at all.
+	none := asMember(t, "", append(blogFixtures(), mine, theirs)...)
+	empty := decode[statusView](t, none.do(t, http.MethodGet, "/api/v1/status", ""))
+	if len(empty.Builds.Waiting) != 0 {
+		t.Fatalf("a member holding nothing must be named nothing, got %+v", empty.Builds.Waiting)
+	}
+	if empty.Builds.Queued != 2 {
+		t.Errorf("they are still told how busy the gate is, got %+v", empty.Builds)
+	}
+}
+
+// The operator's queue is unchanged: they hold admin on every project.
+func TestTheBuildQueueNamesEverythingForAnOperator(t *testing.T) {
+	mine := queuedBuild("shop-bld-mine00000000", feedProject, 5*time.Minute)
+	theirs := queuedBuild("blog-bld-theirs000000", otherProject, 30*time.Minute)
+	h := newHarness(t, nil, append(append(fixtures(), blogFixtures()...), mine, theirs)...)
+
+	status := decode[statusView](t, h.do(t, http.MethodGet, "/api/v1/status", ""))
+	if len(status.Builds.Waiting) != 2 {
+		t.Fatalf("want the whole queue for an operator, got %+v", status.Builds.Waiting)
 	}
 }

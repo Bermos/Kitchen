@@ -20,6 +20,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 )
 
 func TestSavingAQueryNamesItFromItsTitle(t *testing.T) {
@@ -154,5 +156,46 @@ func TestRemovingAQueryThatIsNotThere(t *testing.T) {
 	res := h.do(t, http.MethodDelete, "/api/v1/logs/saved/nope", "")
 	if res.Code != http.StatusNotFound {
 		t.Fatalf("want 404, got %d: %s", res.Code, res.Body.String())
+	}
+}
+
+// Saved queries are shared and unowned, and that is written down in
+// docs/API.md rather than enforced: `savedBy` is a byline — the caller as the
+// API knew them, an address that changes when the account's does — and not an
+// owner. So a query naming no project is another member's to delete, while one
+// naming a project they cannot see is not theirs to know about at all. This
+// pins both halves, so that turning the byline into ownership is a deliberate
+// change to a test that says what today's answer is rather than a silent one.
+func TestASavedQueryIsSharedAndUnowned(t *testing.T) {
+	h := asMember(t, kitchenv1alpha1.AccessRoleViewer, blogFixtures()...)
+
+	// Somebody else's query, about nothing in particular.
+	created := h.do(t, http.MethodPost, "/api/v1/logs/saved",
+		`{"title":"Platform 5xx","where":"status >= 500"}`)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("POST /logs/saved = %d: %s", created.Code, created.Body.String())
+	}
+	other := h.do(t, http.MethodPost, "/api/v1/logs/saved",
+		`{"title":"Blog errors","query":"project:`+otherProject+` level:error"}`)
+	if other.Code != http.StatusCreated {
+		t.Fatalf("POST /logs/saved = %d: %s", other.Code, other.Body.String())
+	}
+
+	// A member on `shop` alone is never shown the one that names `blog`, and
+	// deleting it answers as if it were not there.
+	items := decode[struct {
+		Items []savedQueryView `json:"items"`
+	}](t, h.do(t, http.MethodGet, "/api/v1/logs/saved", "")).Items
+	if len(items) != 1 || items[0].Name != "platform-5xx" {
+		t.Fatalf("a query naming an invisible project must not be listed, got %+v", items)
+	}
+	if res := h.do(t, http.MethodDelete, "/api/v1/logs/saved/blog-errors", ""); res.Code != http.StatusNotFound {
+		t.Fatalf("want 404, got %d: %s", res.Code, res.Body.String())
+	}
+
+	// The one that names nothing is the platform's, so any account that can
+	// see it may forget it — including one that did not save it.
+	if res := h.do(t, http.MethodDelete, "/api/v1/logs/saved/platform-5xx", ""); res.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", res.Code, res.Body.String())
 	}
 }

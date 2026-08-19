@@ -26,11 +26,11 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/Bermos/Kitchen/internal/access"
 	"github.com/Bermos/Kitchen/internal/idp"
 )
 
@@ -237,26 +237,8 @@ func (o *oidcClient) identityFromIDToken(idToken string) (identity, error) {
 	return identity{
 		Subject:       c.Subject,
 		Email:         c.Email,
-		EmailVerified: verifiedClaim(c.EmailVerified),
+		EmailVerified: access.VerifiedClaim(c.EmailVerified),
 	}, nil
-}
-
-// verifiedClaim reads an email_verified claim that may be a boolean or the
-// string spelling of one. Everything else is false.
-func verifiedClaim(raw json.RawMessage) bool {
-	if len(raw) == 0 {
-		return false
-	}
-	var flag bool
-	if err := json.Unmarshal(raw, &flag); err == nil {
-		return flag
-	}
-	var text string
-	if err := json.Unmarshal(raw, &text); err != nil {
-		return false
-	}
-	verified, err := strconv.ParseBool(text)
-	return err == nil && verified
 }
 
 // audienceContains handles the audience being either a string or an array,
