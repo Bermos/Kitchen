@@ -126,11 +126,16 @@ one number.
 ## Regeneration
 
 Anything under `api/` or any `+kubebuilder:rbac` marker feeds generated files.
-After editing either:
+So does the API's route table (`internal/api/policy.go`), which the dashboard's
+copy of the permission model is generated from — `make ui-policy` writes
+`ui/src/lib/policy.generated.ts`, and `make test` and `make build` run it for
+you, so a route whose required role changes cannot be committed without the
+dashboard's copy moving with it. After editing any of the three:
 
 ```sh
 make manifests helm-manifests   # CRDs, RBAC, and the chart templates derived from them
-make test                       # also runs go fmt and regenerates deepcopy
+make ui-policy                  # the dashboard's copy of the route -> role table
+make test                       # also runs go fmt, regenerates deepcopy, and runs ui-policy
 ```
 
 CI fails if the checked-in output differs from a fresh run. `make test` needs

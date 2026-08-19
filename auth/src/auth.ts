@@ -119,7 +119,14 @@ export function authOptions(config: Config, database: Pool): BetterAuthOptions {
 			// Upstream identity providers registered at runtime (OIDC or SAML),
 			// for organisations that already have an IdP of their own.
 			sso(),
-			// Teams and per-organisation roles, the basis for platform RBAC.
+			// Organisations, for installations that model their people that
+			// way. Deliberately *not* where Kitchen's own roles live: putting
+			// membership here would widen the contract this service has to
+			// meet from "an OIDC issuer with dynamic client registration" to
+			// one that also exposes an organisation model as claims, and a
+			// role inside an hour-long access token is a stale snapshot of
+			// who may do what. Kitchen records that on its own objects
+			// instead — docs/AUTH.md, "Where membership lives".
 			organization(),
 			passkey({ rpID, rpName: "Kitchen", origin: config.baseURL }),
 			twoFactor({ issuer: "Kitchen" }),

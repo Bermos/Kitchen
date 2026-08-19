@@ -210,17 +210,18 @@ different issuer or callback.
 
 ## Who may do what
 
-Kitchen has two users, and one of them is currently pretending to be the other.
-The dashboard's operator mode changes what is *rendered*, not what is
-*permitted*: every valid token can call every route.
+Kitchen has two users, and until recently one of them was pretending to be the
+other: the dashboard's operator mode changed what was *rendered*, not what was
+*permitted*, and every valid token could call every route.
 
-**Almost nothing in this section is enforced yet** — [Preview
-admission](#preview-admission) is the exception, and the only one. It is the
-decided model, and
-[issue #100](https://github.com/Bermos/Kitchen/issues/100) tracks building it.
-It is written down before any of it is built on purpose — enforcement without a
+**This section is now enforced.** The REST API registers every route out of one
+route → role table (`internal/api/policy.go`), the preview gate and the API
+both resolve membership through `internal/access`, and the dashboard's copy of
+the table is generated from the API's so the two cannot disagree. It was
+written down before any of it was built on purpose — enforcement without a
 written model is how a permission system ends up meaning whatever the first
-three `if` statements happened to mean.
+three `if` statements happened to mean — and it remains the authority: where
+the code and this section disagree, the code is what moves.
 
 ### The two people it is for
 
@@ -379,10 +380,13 @@ Four rules go with that table:
 ### Machine accounts
 
 A CI key needs no role of its own. The api-key plugin runs with
-`enableSessionForAPIKeys`, so a key already stands in for a session and already
-*is* an identity with its own `sub`; what it is exchanged for at `GET /token`
-is an ordinary platform token. Granting that subject a project role in
-`spec.access` therefore makes a key a non-human member of exactly one project,
+`enableSessionForAPIKeys`, but the session it mints for a key is a session for
+the account the key *belongs to* — so a key has no `sub` of its own, and what
+it is exchanged for at `GET /token` is an ordinary platform token for its
+owner. Every key therefore gets an owner created for it: a machine account
+holding that one key and nothing else, never verified and never counted as a
+person. Granting **that** account's subject a project role in `spec.access`
+makes a key a non-human member of exactly one project,
 which is what stops a key that can trigger a build from also being able to
 change the base domain — without a fourth role, and without storing permissions
 on the key. Revocation stays where it already is: one place, at the issuer.
