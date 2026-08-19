@@ -24,6 +24,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"mime"
 	"net/http"
 	"net/url"
 	"strings"
@@ -159,6 +160,69 @@ func (c *client) do(ctx context.Context, doing, method, path string, query url.V
 			res.Status, err).doing(doing)
 	}
 	return nil
+}
+
+// download runs a request whose answer is a file rather than JSON, writing the
+// body straight to `w` and answering the filename the platform suggested.
+//
+// It is separate from `do` because the answer is neither JSON nor small: a
+// platform backup is every credential the installation holds, and holding it in
+// memory to hand it to a decoder that would not read it is the one thing this
+// path must not do. A failure still comes back as JSON — the API only starts
+// streaming once it has decided to answer — so the error half reads the body
+// the way every other call does.
+func (c *client) download(
+	ctx context.Context,
+	doing, method, path string,
+	query url.Values,
+	w io.Writer,
+) (string, int64, error) {
+	req, err := c.request(ctx, method, path, query, nil)
+	if err != nil {
+		return "", 0, annotate(err, doing)
+	}
+	req.Header.Set("accept", "application/gzip, application/json")
+
+	res, err := c.http.Do(req)
+	if err != nil {
+		return "", 0, unreachable(err, c.base).doing(doing)
+	}
+	defer func() { _ = res.Body.Close() }()
+
+	if res.StatusCode >= 400 {
+		answer, readErr := io.ReadAll(io.LimitReader(res.Body, 1<<20))
+		if readErr != nil {
+			return "", 0, unreachable(readErr, c.base).doing(doing)
+		}
+		return "", 0, fromStatus(res.StatusCode, answer).doing(doing)
+	}
+
+	written, err := io.Copy(w, res.Body)
+	if err != nil {
+		// The status line said 200 and the body stopped part-way, so what is on
+		// disk is a truncated archive. Saying so is the whole point: a
+		// half-written backup that reports success is worse than no backup.
+		return "", written, unreachable(err, c.base).doing(doing)
+	}
+	return filenameFrom(res.Header.Get("content-disposition")), written, nil
+}
+
+// filenameFrom reads the name a Content-Disposition suggests, and answers
+// nothing for a header that does not carry one or that names a path. A
+// filename off the network decides where a file is written, so a value with a
+// separator in it is refused rather than cleaned: the caller falls back to a
+// name of its own.
+func filenameFrom(disposition string) string {
+	_, parameters, err := mime.ParseMediaType(disposition)
+	if err != nil {
+		return ""
+	}
+	name := strings.TrimSpace(parameters["filename"])
+	if name == "" || name == "." || name == ".." ||
+		strings.ContainsAny(name, `/\`) || strings.HasPrefix(name, ".") {
+		return ""
+	}
+	return name
 }
 
 // raw is `kitchen api`: one request, and the bytes that came back.

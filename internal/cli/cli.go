@@ -236,6 +236,7 @@ shapes and exit codes — in one machine-readable document.`),
 		newGatesCommand(r),
 		newReleasesCommand(r),
 		newEnvironmentsCommand(r),
+		newBackupCommand(r),
 		newAPICommand(r),
 		newSchemaCommand(r),
 	)

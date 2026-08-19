@@ -172,6 +172,7 @@ give.
 | `kitchen environments` | The project's environments and where they answer | `GET /projects/{name}/environments` |
 | `kitchen api` | Any endpoint of the API, authenticated | anything |
 | `kitchen schema` | The whole CLI as JSON | — |
+| `kitchen backup` | Take a backup of the platform and write it to a file | `POST /platform/backup` |
 
 ### Deploying
 
@@ -318,6 +319,43 @@ The path may be written with or without the `/api/v1` prefix; the body is JSON,
 literally, from `@file`, or from `-` for stdin. The refusal a route gives is
 printed as the platform wrote it, and the exit status is this CLI's usual one —
 so a script branches on the outcome without parsing the body.
+
+### Backing the platform up
+
+One archive: every Kitchen object, every secret in the platform namespace, and
+the identity provider's database. Telemetry is not in it — ClickHouse is not
+backed up and is not expected to survive — and the archive's own manifest says
+so, which is what this prints.
+
+```sh
+kitchen backup                                   # into the current directory
+kitchen backup /backups/kitchen.tar.gz --force   # somewhere else, overwriting
+```
+
+The reason this exists next to the dashboard's button is scheduling: a backup
+that only happens when somebody remembers to click is not a backup. `--json`
+answers one object naming the file and what went into it, read back off the
+file rather than remembered — which is enough for a cron job to check that the
+archive it just took carries the accounts as well as the objects:
+
+```json
+{"file": "/backups/kitchen-backup-prod-2026-08-19T090000Z.tar.gz", "bytes": 41203,
+ "platformVersion": "0.9.0", "objects": 37, "secrets": 9, "accountRows": 214}
+```
+
+The archive is a credential. It holds every secret the platform has, in the
+clear; keep it where you would keep the cluster's root credentials, and off the
+cluster it came from. Taking one is recorded in the platform's audit log as an
+`export`.
+
+There is no `kitchen restore`, and there cannot be: a restore happens into a
+cluster whose accounts database is gone, so the credential this CLI signs in
+with is inside the archive and there is nobody left to run it. The chart renders
+a Job for that instead — [docs/BACKUP.md](BACKUP.md) is the procedure, and CI
+runs it on every change.
+
+Reading what an archive *would* carry, without taking one, is
+`kitchen api GET /platform/backup`.
 
 ## Output, exactly
 

@@ -151,6 +151,40 @@ func Read(r io.Reader) (*Archive, error) {
 	return archive, nil
 }
 
+// ReadManifest reads an archive's manifest and stops there.
+//
+// The manifest is the first entry in the tar precisely so this is cheap: it
+// answers "what is this archive, and what does it leave out" without unpacking
+// a file full of credentials. It is what `kitchen backup` reports after
+// writing one, and it is the same answer `tar xzOf backup.tar.gz manifest.json`
+// gives somebody with no Kitchen to hand.
+func ReadManifest(r io.Reader) (Manifest, error) {
+	gzipped, err := gzip.NewReader(r)
+	if err != nil {
+		return Manifest{}, fmt.Errorf("this is not a Kitchen backup archive: %w", err)
+	}
+	defer func() { _ = gzipped.Close() }()
+
+	reader := tar.NewReader(&boundedReader{reader: gzipped, left: maxArchiveBytes})
+	for {
+		header, err := reader.Next()
+		if errors.Is(err, io.EOF) {
+			return Manifest{}, errors.New("this archive has no manifest, so it is not a Kitchen backup")
+		}
+		if err != nil {
+			return Manifest{}, fmt.Errorf("the archive is truncated or corrupt: %w", err)
+		}
+		if header.Name != ManifestPath {
+			continue
+		}
+		manifest := Manifest{}
+		if err := json.NewDecoder(reader).Decode(&manifest); err != nil {
+			return Manifest{}, fmt.Errorf("the archive's manifest is unreadable: %w", err)
+		}
+		return manifest, nil
+	}
+}
+
 // errArchiveTooLarge is what an archive past maxArchiveBytes reads as. An
 // archive is the platform's configuration and its accounts — never its
 // telemetry, never its images — so anything this size is a mistake or an
