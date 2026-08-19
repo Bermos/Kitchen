@@ -178,6 +178,16 @@ func (s *Server) routes() []route {
 		{"GET /api/v1/projects/{name}", s.getProject, onProject(access.ProjectViewer, ofProject, "reading a project")},
 		{"PATCH /api/v1/projects/{name}", s.patchProject,
 			onProject(access.ProjectAdmin, ofProject, "changing a project's settings")},
+		// Environment variables are the one thing on a project that is the day
+		// job rather than the project's own settings (docs/AUTH.md lists them
+		// under developer, and the git source, the registry and the previews
+		// policy under admin). They are a route of their own rather than a
+		// field the admin route inspects, because a whole route is the unit of
+		// authorization here: a handler that decided by which key the body
+		// carried would be the exception the model keeps for response bodies,
+		// applied to a write.
+		{"PATCH /api/v1/projects/{name}/env", s.patchProjectEnv,
+			onProject(access.ProjectDeveloper, ofProject, "changing a project's environment variables")},
 		{"DELETE /api/v1/projects/{name}", s.deleteProject,
 			onProject(access.ProjectAdmin, ofProject, "deleting a project")},
 		{"GET /api/v1/projects/{name}/builds", s.listProjectBuilds,
@@ -193,8 +203,13 @@ func (s *Server) routes() []route {
 		// people, which is the whole point: an operator holds admin on every
 		// project (access.ProjectRoleFor) and so needs no case of their own
 		// here, and everyone else stops needing to go and find one.
+		//
+		// Only the writes are admin's. Reading who is on a project is part of
+		// knowing what the project is — a viewer opening its People tab would
+		// otherwise be refused on load — and docs/AUTH.md puts membership
+		// *writes* behind admin, not the list.
 		{"GET /api/v1/projects/{name}/members", s.listMembers,
-			onProject(access.ProjectAdmin, ofProject, "reading a project's members")},
+			onProject(access.ProjectViewer, ofProject, "reading a project's members")},
 		{"POST /api/v1/projects/{name}/members", s.addMember,
 			onProject(access.ProjectAdmin, ofProject, "adding somebody to a project")},
 		{"PATCH /api/v1/projects/{name}/members", s.changeMemberRole,
@@ -204,11 +219,12 @@ func (s *Server) routes() []route {
 
 		// CI keys. A key is a member of the project — a machine account with a
 		// grant in the same `spec.access` (keys.go) — so issuing one is adding
-		// a member, and adding a member is admin's. The list is admin's for
-		// the same reason the membership list is: it is the membership list,
-		// with the non-human half of it shown.
+		// a member, and adding a member is admin's. The list follows the
+		// membership list for the same reason: it *is* the membership list,
+		// with the non-human half of it shown, and it carries no key value —
+		// only the prefix the issuer keeps, which is useless as a credential.
 		{"GET /api/v1/projects/{name}/keys", s.listKeys,
-			onProject(access.ProjectAdmin, ofProject, "reading a project's CI keys")},
+			onProject(access.ProjectViewer, ofProject, "reading a project's CI keys")},
 		{"POST /api/v1/projects/{name}/keys", s.createKey,
 			onProject(access.ProjectAdmin, ofProject, "issuing a CI key for a project")},
 		{"DELETE /api/v1/projects/{name}/keys/{key}", s.deleteKey,

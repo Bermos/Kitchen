@@ -55,6 +55,7 @@ export type Route =
   | "POST /api/v1/projects"
   | "GET /api/v1/projects/{name}"
   | "PATCH /api/v1/projects/{name}"
+  | "PATCH /api/v1/projects/{name}/env"
   | "DELETE /api/v1/projects/{name}"
   | "GET /api/v1/projects/{name}/builds"
   | "POST /api/v1/projects/{name}/builds"
@@ -143,16 +144,17 @@ export const POLICY: Readonly<Record<Route, Requirement>> = {
   "POST /api/v1/projects": { kind: "authenticated" },
   "GET /api/v1/projects/{name}": { kind: "projectRole", role: "viewer", doing: "reading a project" },
   "PATCH /api/v1/projects/{name}": { kind: "projectRole", role: "admin", doing: "changing a project's settings" },
+  "PATCH /api/v1/projects/{name}/env": { kind: "projectRole", role: "developer", doing: "changing a project's environment variables" },
   "DELETE /api/v1/projects/{name}": { kind: "projectRole", role: "admin", doing: "deleting a project" },
   "GET /api/v1/projects/{name}/builds": { kind: "projectRole", role: "viewer", doing: "reading a project's builds" },
   "POST /api/v1/projects/{name}/builds": { kind: "projectRole", role: "developer", doing: "starting a build" },
   "GET /api/v1/projects/{name}/releases": { kind: "projectRole", role: "viewer", doing: "reading a project's releases" },
   "GET /api/v1/projects/{name}/environments": { kind: "projectRole", role: "viewer", doing: "reading a project's environments" },
-  "GET /api/v1/projects/{name}/members": { kind: "projectRole", role: "admin", doing: "reading a project's members" },
+  "GET /api/v1/projects/{name}/members": { kind: "projectRole", role: "viewer", doing: "reading a project's members" },
   "POST /api/v1/projects/{name}/members": { kind: "projectRole", role: "admin", doing: "adding somebody to a project" },
   "PATCH /api/v1/projects/{name}/members": { kind: "projectRole", role: "admin", doing: "changing somebody's role on a project" },
   "DELETE /api/v1/projects/{name}/members": { kind: "projectRole", role: "admin", doing: "removing somebody from a project" },
-  "GET /api/v1/projects/{name}/keys": { kind: "projectRole", role: "admin", doing: "reading a project's CI keys" },
+  "GET /api/v1/projects/{name}/keys": { kind: "projectRole", role: "viewer", doing: "reading a project's CI keys" },
   "POST /api/v1/projects/{name}/keys": { kind: "projectRole", role: "admin", doing: "issuing a CI key for a project" },
   "DELETE /api/v1/projects/{name}/keys/{key}": { kind: "projectRole", role: "admin", doing: "revoking a project's CI key" },
   "GET /api/v1/builds": { kind: "visibleProjects" },

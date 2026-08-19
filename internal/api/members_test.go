@@ -270,14 +270,15 @@ func TestTheLastAdminCannotBeRemovedOrDemoted(t *testing.T) {
 	}
 }
 
-// A member who is not an admin is refused, in the words every other refusal
-// uses: what you have, what you were doing, and what it would have taken.
+// A member who is not an admin is refused the *writes*, in the words every
+// other refusal uses: what you have, what you were doing, and what it would
+// have taken. The list itself is not one of them — see
+// TestAViewerReadsWhoIsOnTheirProject.
 func TestAMemberIsRefusedTheMembershipWrites(t *testing.T) {
 	h := asMember(t, kitchenv1alpha1.AccessRoleDeveloper)
 	h.withDirectory()
 
 	for _, attempt := range []struct{ method, body, doing string }{
-		{http.MethodGet, "", "reading a project's members"},
 		{http.MethodPost, `{"email": "` + annaEmail + `", "role": "viewer"}`, "adding somebody to a project"},
 		{http.MethodPatch, `{"subject": "` + annaSubject + `", "role": "viewer"}`,
 			"changing somebody's role on a project"},

@@ -39,6 +39,11 @@ import (
 // reconcilers would, because the writes only matter if the reconcilers see
 // what they expect.
 
+// envPath is the one URL a project's environment variables are written on. It
+// is a route of its own because they are the developer's day job, where the
+// project's settings next door are the admin's.
+const envPath = "/api/v1/projects/" + feedProject + "/env"
+
 func getSecret(t *testing.T, h *harness, name string) (*corev1.Secret, error) {
 	t.Helper()
 	secret := &corev1.Secret{}
@@ -57,11 +62,6 @@ func TestPatchingAProjectsSettings(t *testing.T) {
 		"buildStrategy": "buildpacks",
 		"dockerfilePath": "build/Dockerfile",
 		"rootDirectory": "apps/shop",
-		"env": [
-			{"name": "PUBLIC_URL", "value": "https://shop.example.com", "previewValue": "preview"},
-			{"name": "DATABASE_URL", "fromClaim": {"name": "shop-db", "key": "url"}},
-			{"name": "API_KEY", "fromSecret": {"name": "shop-api-key", "key": "key"}}
-		],
 		"port": 8080,
 		"replicas": 3,
 		"cpu": "250m",
@@ -76,16 +76,6 @@ func TestPatchingAProjectsSettings(t *testing.T) {
 	}
 	if view.CPU != "250m" || view.Memory != "512Mi" || view.Port != 8080 {
 		t.Fatalf("the runtime settings did not echo: %+v", view)
-	}
-	if len(view.Env) != 3 || view.Env[1].FromClaim == nil || view.Env[2].FromSecret == nil {
-		t.Fatalf("the env vars did not echo: %+v", view.Env)
-	}
-	// The literal variable comes back as presence, not as a value.
-	if !view.Env[0].Set || !view.Env[0].PreviewSet {
-		t.Fatalf("want the literal variable reported as set: %+v", view.Env[0])
-	}
-	if view.Env[1].Set || view.Env[2].Set {
-		t.Fatalf("want reference-backed variables reported as unset: %+v", view.Env)
 	}
 
 	stored := &kitchenv1alpha1.Project{}
@@ -102,9 +92,6 @@ func TestPatchingAProjectsSettings(t *testing.T) {
 	if stored.Spec.Previews.IsProtected() {
 		t.Fatal("previewsProtected=false did not stick")
 	}
-	if len(stored.Spec.Env) != 3 || stored.Spec.Env[1].FromResourceClaim == nil || stored.Spec.Env[2].SecretRef == nil {
-		t.Fatalf("the env vars did not stick: %+v", stored.Spec.Env)
-	}
 	if stored.Spec.Runtime.Replicas == nil || *stored.Spec.Runtime.Replicas != 3 {
 		t.Fatalf("the replicas did not stick: %+v", stored.Spec.Runtime)
 	}
@@ -112,6 +99,107 @@ func TestPatchingAProjectsSettings(t *testing.T) {
 	cpu := stored.Spec.Runtime.Resources.Requests[corev1.ResourceCPU]
 	if cpu.String() != "250m" {
 		t.Fatalf("want the cpu request set with the limit, got %q", cpu.String())
+	}
+}
+
+func TestPatchingAProjectsEnvVars(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+
+	recorder := h.do(t, http.MethodPatch, envPath, `{
+		"env": [
+			{"name": "PUBLIC_URL", "value": "https://shop.example.com", "previewValue": "preview"},
+			{"name": "DATABASE_URL", "fromClaim": {"name": "shop-db", "key": "url"}},
+			{"name": "API_KEY", "fromSecret": {"name": "shop-api-key", "key": "key"}}
+		]
+	}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	view := decode[projectView](t, recorder)
+	if len(view.Env) != 3 || view.Env[1].FromClaim == nil || view.Env[2].FromSecret == nil {
+		t.Fatalf("the env vars did not echo: %+v", view.Env)
+	}
+	// The literal variable comes back as presence, not as a value.
+	if !view.Env[0].Set || !view.Env[0].PreviewSet {
+		t.Fatalf("want the literal variable reported as set: %+v", view.Env[0])
+	}
+	if view.Env[1].Set || view.Env[2].Set {
+		t.Fatalf("want reference-backed variables reported as unset: %+v", view.Env)
+	}
+
+	stored := &kitchenv1alpha1.Project{}
+	if err := h.server.get(context.Background(), "shop", stored); err != nil {
+		t.Fatal(err)
+	}
+	if len(stored.Spec.Env) != 3 || stored.Spec.Env[1].FromResourceClaim == nil || stored.Spec.Env[2].SecretRef == nil {
+		t.Fatalf("the env vars did not stick: %+v", stored.Spec.Env)
+	}
+	// And nothing else on the project moved.
+	if stored.Spec.Source.ProductionBranch != defaultProductionBranch {
+		t.Fatalf("the env write touched the project's settings: %+v", stored.Spec.Source)
+	}
+}
+
+// The two halves of a project are now two routes, and the settings route says
+// so rather than dropping a list it no longer writes.
+func TestPatchingAProjectRefusesEnvVarsAndNamesTheRouteThatTakesThem(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+
+	recorder := h.do(t, http.MethodPatch, "/api/v1/projects/shop",
+		`{"previews": false, "env": [{"name": "PUBLIC_URL", "value": "https://shop.example.com"}]}`)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(errorOf(t, recorder.Body.String()), "PATCH /projects/shop/env") {
+		t.Fatalf("want the other route named, got %q", recorder.Body.String())
+	}
+
+	// A refused request changes nothing at all — including the settings it
+	// carried alongside the variables.
+	stored := &kitchenv1alpha1.Project{}
+	if err := h.server.get(context.Background(), "shop", stored); err != nil {
+		t.Fatal(err)
+	}
+	if len(stored.Spec.Env) != 0 {
+		t.Fatalf("the refused variables were written anyway: %+v", stored.Spec.Env)
+	}
+	if !stored.Spec.Previews.Enabled {
+		t.Fatal("the settings in a refused request were written anyway")
+	}
+}
+
+// A body with no list at all is refused rather than read as "clear them": the
+// route replaces the whole list, and an empty body is a client that forgot the
+// field.
+func TestPatchingEnvVarsWantsTheListAndClearsItWhenAsked(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+
+	if recorder := h.do(t, http.MethodPatch, envPath,
+		`{"env": [{"name": "PUBLIC_URL", "value": "https://shop.example.com"}]}`); recorder.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+
+	recorder := h.do(t, http.MethodPatch, envPath, `{}`)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	stored := &kitchenv1alpha1.Project{}
+	if err := h.server.get(context.Background(), "shop", stored); err != nil {
+		t.Fatal(err)
+	}
+	if len(stored.Spec.Env) != 1 {
+		t.Fatalf("a body with no list cleared the variables: %+v", stored.Spec.Env)
+	}
+
+	// An empty list is how somebody says it on purpose.
+	if recorder := h.do(t, http.MethodPatch, envPath, `{"env": []}`); recorder.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if err := h.server.get(context.Background(), "shop", stored); err != nil {
+		t.Fatal(err)
+	}
+	if len(stored.Spec.Env) != 0 {
+		t.Fatalf("want every variable gone, got %+v", stored.Spec.Env)
 	}
 }
 
@@ -124,7 +212,7 @@ func TestProjectEnvVarValuesAreNeverReadBack(t *testing.T) {
 	const secret = "sk-live-3f9a1c-never-echo-me"
 	const previewSecret = "sk-test-77b2-never-echo-me-either"
 
-	patch := h.do(t, http.MethodPatch, "/api/v1/projects/shop",
+	patch := h.do(t, http.MethodPatch, envPath,
 		`{"env": [{"name": "API_KEY", "value": "`+secret+`", "previewValue": "`+previewSecret+`"}]}`)
 	if patch.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d: %s", patch.Code, patch.Body.String())
@@ -166,7 +254,7 @@ func TestPatchingEnvVarsKeepsTheValuesTheRequestOmits(t *testing.T) {
 	h := newHarness(t, nil, fixtures()...)
 
 	const value = "https://shop.example.com"
-	seed := h.do(t, http.MethodPatch, "/api/v1/projects/shop",
+	seed := h.do(t, http.MethodPatch, envPath,
 		`{"env": [{"name": "PUBLIC_URL", "value": "`+value+`", "previewValue": "https://preview.invalid"}]}`)
 	if seed.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d: %s", seed.Code, seed.Body.String())
@@ -174,7 +262,7 @@ func TestPatchingEnvVarsKeepsTheValuesTheRequestOmits(t *testing.T) {
 
 	// Renaming nothing and adding a variable: the untouched one keeps both of
 	// its values, exactly as a UI that never saw them would send it.
-	recorder := h.do(t, http.MethodPatch, "/api/v1/projects/shop",
+	recorder := h.do(t, http.MethodPatch, envPath,
 		`{"env": [{"name": "PUBLIC_URL"}, {"name": "LOG_LEVEL", "value": "debug"}]}`)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
@@ -194,7 +282,7 @@ func TestPatchingEnvVarsKeepsTheValuesTheRequestOmits(t *testing.T) {
 	}
 
 	// An empty value is a value: it clears what was there.
-	recorder = h.do(t, http.MethodPatch, "/api/v1/projects/shop",
+	recorder = h.do(t, http.MethodPatch, envPath,
 		`{"env": [{"name": "PUBLIC_URL", "value": "", "previewValue": ""}]}`)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
@@ -213,12 +301,12 @@ func TestPatchingEnvVarsKeepsTheValuesTheRequestOmits(t *testing.T) {
 func TestPatchingAnEnvVarToASecretDropsItsValue(t *testing.T) {
 	h := newHarness(t, nil, fixtures()...)
 
-	seed := h.do(t, http.MethodPatch, "/api/v1/projects/shop", `{"env": [{"name": "API_KEY", "value": "pasted"}]}`)
+	seed := h.do(t, http.MethodPatch, envPath, `{"env": [{"name": "API_KEY", "value": "pasted"}]}`)
 	if seed.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d: %s", seed.Code, seed.Body.String())
 	}
 
-	recorder := h.do(t, http.MethodPatch, "/api/v1/projects/shop",
+	recorder := h.do(t, http.MethodPatch, envPath,
 		`{"env": [{"name": "API_KEY", "fromSecret": {"name": "shop-api-key", "key": "key"}}]}`)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
@@ -258,15 +346,31 @@ func TestPatchingAProjectRejectsUnusableRequests(t *testing.T) {
 		"a port out of range":        `{"port": 70000}`,
 		"zero replicas":              `{"replicas": 0}`,
 		"cpu that is not a quantity": `{"cpu": "fast"}`,
-		"an env var with no name":    `{"env": [{"value": "x"}]}`,
-		"an env var named twice":     `{"env": [{"name": "A", "value": "1"}, {"name": "A", "value": "2"}]}`,
-		"an env var with two sources": `{"env": [{"name": "A", "value": "x",
-			"fromSecret": {"name": "s", "key": "k"}}]}`,
-		"an unknown field": `{"branch": "main"}`,
-		"not JSON":         `{`,
+		"an unknown field":           `{"branch": "main"}`,
+		"not JSON":                   `{`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			recorder := h.do(t, http.MethodPatch, "/api/v1/projects/shop", body)
+			if recorder.Code != http.StatusBadRequest {
+				t.Fatalf("want 400, got %d: %s", recorder.Code, recorder.Body.String())
+			}
+		})
+	}
+}
+
+func TestPatchingEnvVarsRejectsUnusableRequests(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+
+	for name, body := range map[string]string{
+		"an env var with no name": `{"env": [{"value": "x"}]}`,
+		"an env var named twice":  `{"env": [{"name": "A", "value": "1"}, {"name": "A", "value": "2"}]}`,
+		"an env var with two sources": `{"env": [{"name": "A", "value": "x",
+			"fromSecret": {"name": "s", "key": "k"}}]}`,
+		"a project setting": `{"previews": false}`,
+		"not JSON":          `{`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			recorder := h.do(t, http.MethodPatch, envPath, body)
 			if recorder.Code != http.StatusBadRequest {
 				t.Fatalf("want 400, got %d: %s", recorder.Code, recorder.Body.String())
 			}

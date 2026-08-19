@@ -334,17 +334,37 @@ func creatorGrant(caller Caller) []kitchenv1alpha1.AccessGrant {
 // repository and the two connections are deliberately not here: rebinding a
 // project to another repository or registry is a different project.
 type patchProjectRequest struct {
-	ProductionBranch  *string          `json:"productionBranch,omitempty"`
-	Previews          *bool            `json:"previews,omitempty"`
-	PreviewsProtected *bool            `json:"previewsProtected,omitempty"`
-	BuildStrategy     *string          `json:"buildStrategy,omitempty"`
-	DockerfilePath    *string          `json:"dockerfilePath,omitempty"`
-	RootDirectory     *string          `json:"rootDirectory,omitempty"`
-	Env               *[]envVarRequest `json:"env,omitempty"`
-	Port              *int32           `json:"port,omitempty"`
-	Replicas          *int32           `json:"replicas,omitempty"`
-	CPU               *string          `json:"cpu,omitempty"`
-	Memory            *string          `json:"memory,omitempty"`
+	ProductionBranch  *string `json:"productionBranch,omitempty"`
+	Previews          *bool   `json:"previews,omitempty"`
+	PreviewsProtected *bool   `json:"previewsProtected,omitempty"`
+	BuildStrategy     *string `json:"buildStrategy,omitempty"`
+	DockerfilePath    *string `json:"dockerfilePath,omitempty"`
+	RootDirectory     *string `json:"rootDirectory,omitempty"`
+	// Env is on this request only so that it can be refused by name. This
+	// route is the project's own settings and is the admin's; environment
+	// variables are the day job and are the developer's, on
+	// PATCH /projects/{name}/env. Decoding refuses a field it has never heard
+	// of, so leaving Env off the struct would answer with an unknown-field
+	// error — true, and no help at all to a client that used to send it here.
+	// Dropping it silently would be worse: a lost write that read as a
+	// successful one.
+	Env      *[]envVarRequest `json:"env,omitempty"`
+	Port     *int32           `json:"port,omitempty"`
+	Replicas *int32           `json:"replicas,omitempty"`
+	CPU      *string          `json:"cpu,omitempty"`
+	Memory   *string          `json:"memory,omitempty"`
+}
+
+// patchProjectEnvRequest is the whole of the environment-variable write: the
+// list, which replaces the project's.
+//
+// It is a pointer so that a body carrying no `env` at all is refused rather
+// than read as "replace the list with nothing". Clearing every variable is a
+// thing somebody may well mean, and `{"env": []}` is how they say it — but an
+// empty body is a client that forgot the field, and answering that by deleting
+// the project's configuration is not a reading of it anybody wants.
+type patchProjectEnvRequest struct {
+	Env *[]envVarRequest `json:"env"`
 }
 
 // envVarRequest is one variable on its way in. It no longer mirrors
@@ -471,6 +491,11 @@ func (s *Server) patchProject(w http.ResponseWriter, req *http.Request) {
 		badRequest(w, "%s", err.Error())
 		return
 	}
+	if body.Env != nil {
+		badRequest(w, "environment variables are not changed here any more: send them to "+
+			"PATCH /projects/%s/env, which needs developer rather than admin", project.Name)
+		return
+	}
 
 	patch := client.MergeFrom(project.DeepCopy())
 	if body.ProductionBranch != nil {
@@ -502,14 +527,6 @@ func (s *Server) patchProject(w http.ResponseWriter, req *http.Request) {
 	}
 	if body.RootDirectory != nil {
 		project.Spec.Build.RootDirectory = strings.TrimSpace(*body.RootDirectory)
-	}
-	if body.Env != nil {
-		env, err := envVarsFromRequest(*body.Env, project.Spec.Env)
-		if err != nil {
-			badRequest(w, "%s", err.Error())
-			return
-		}
-		project.Spec.Env = env
 	}
 	if body.Port != nil {
 		// Zero is not "no port": it is the project handing the question back
@@ -558,6 +575,69 @@ func (s *Server) patchProject(w http.ResponseWriter, req *http.Request) {
 
 	caller, _ := CallerFrom(ctx)
 	s.log().Info("project settings changed through the api",
+		"project", project.Name, "caller", callerName(caller))
+	writeJSON(w, http.StatusOK, newProjectView(project, s.roleOn(ctx, project)))
+}
+
+// patchProjectEnv is the developer's half of a project: its environment
+// variables, which docs/AUTH.md puts in the day job next to builds, redeploys
+// and rollbacks, while the project's own settings stay the admin's.
+//
+// It is a second route rather than a role check inside patchProject because a
+// whole route is the unit of authorization on this platform. The merge
+// semantics are patchProject's own, unchanged — envVarsFromRequest is the one
+// implementation of them — so a client that used to send `env` alongside the
+// settings sends the same list to a different path.
+func (s *Server) patchProjectEnv(w http.ResponseWriter, req *http.Request) {
+	ctx := req.Context()
+
+	project := &kitchenv1alpha1.Project{}
+	if err := s.get(ctx, req.PathValue("name"), project); err != nil {
+		s.writeError(w, err)
+		return
+	}
+
+	body := patchProjectEnvRequest{}
+	if err := decodeBody(req, &body); err != nil {
+		badRequest(w, "%s", err.Error())
+		return
+	}
+	if body.Env == nil {
+		badRequest(w, "env is required: it is the whole list, and it replaces the project's. "+
+			"Send [] to clear every variable")
+		return
+	}
+
+	env, err := envVarsFromRequest(*body.Env, project.Spec.Env)
+	if err != nil {
+		badRequest(w, "%s", err.Error())
+		return
+	}
+
+	patch := client.MergeFrom(project.DeepCopy())
+	project.Spec.Env = env
+
+	// Recorded the way every other project write is, and for the same reason
+	// changedProjectFields records no values: the variables are exactly where
+	// somebody pastes an API key, and a log that copied them would be a second
+	// place secrets live.
+	if !s.recorded(w, req, audit.Transition{
+		Object:    project,
+		Kind:      audit.KindProject,
+		Operation: clickhouse.AuditUpdate,
+		Project:   project.Name,
+		Reason:    fmt.Sprintf("project %s environment variables changed", project.Name),
+		Details:   map[string]any{"fields": []string{"env"}},
+	}) {
+		return
+	}
+	if err := s.Client.Patch(ctx, project, patch); err != nil {
+		s.writeError(w, err)
+		return
+	}
+
+	caller, _ := CallerFrom(ctx)
+	s.log().Info("project environment variables changed through the api",
 		"project", project.Name, "caller", callerName(caller))
 	writeJSON(w, http.StatusOK, newProjectView(project, s.roleOn(ctx, project)))
 }
@@ -1325,7 +1405,6 @@ func changedProjectFields(body patchProjectRequest) []string {
 		{"buildStrategy", body.BuildStrategy != nil},
 		{"dockerfilePath", body.DockerfilePath != nil},
 		{"rootDirectory", body.RootDirectory != nil},
-		{"env", body.Env != nil},
 		{"port", body.Port != nil},
 		{"replicas", body.Replicas != nil},
 		{"cpu", body.CPU != nil},

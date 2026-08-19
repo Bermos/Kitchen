@@ -148,17 +148,18 @@ sent the request. The `Requires` column is explained under
 | GET | `/projects` | List projects | any account — filtered |
 | POST | `/projects` | Create a project | any account |
 | GET | `/projects/{name}` | One project — its env vars by name, never their values | `viewer` |
-| PATCH | `/projects/{name}` | Change its settings — branch, previews, build, env vars, runtime | `admin` |
+| PATCH | `/projects/{name}` | Change its settings — branch, previews, build, runtime. Not its env vars | `admin` |
+| PATCH | `/projects/{name}/env` | Change its environment variables — the whole list | `developer` |
 | DELETE | `/projects/{name}` | Delete it, and everything derived from it | `admin` |
 | GET | `/projects/{name}/builds` | That project's builds, newest first | `viewer` |
 | POST | `/projects/{name}/builds` | Build a commit — a rebuild | `developer` |
 | GET | `/projects/{name}/releases` | That project's releases, newest first | `viewer` |
 | GET | `/projects/{name}/environments` | That project's environments | `viewer` |
-| GET | `/projects/{name}/members` | Who holds a role on it — the readable form of `spec.access` | `admin` |
+| GET | `/projects/{name}/members` | Who holds a role on it — the readable form of `spec.access` | `viewer` |
 | POST | `/projects/{name}/members` | Give somebody a role. The address is resolved to a `sub` before it is written | `admin` |
 | PATCH | `/projects/{name}/members` | Move a member to another role | `admin` |
 | DELETE | `/projects/{name}/members` | Take a member off the project | `admin` |
-| GET | `/projects/{name}/keys` | That project's CI keys — never their values | `admin` |
+| GET | `/projects/{name}/keys` | That project's CI keys — never their values | `viewer` |
 | POST | `/projects/{name}/keys` | Issue one. The key is answered once, and the grant is written with it | `admin` |
 | DELETE | `/projects/{name}/keys/{key}` | Revoke one, and take its grant off the project | `admin` |
 | GET | `/builds` | Every build. `?project=` filters | any account — filtered |
@@ -206,8 +207,8 @@ sent the request. The `Requires` column is explained under
 | GET | `/platform/storage` | Volumes and what mounts them, plus the telemetry store's own health | `operator` |
 | GET | `/platform/events` | The cluster's Warning history, faceted. `?reason=`, `?kind=`, `?node=`, `?search=` | `operator` |
 | GET | `/platform/ingest` | Collector presence and freshness, and what the flow follower lost | `operator` |
-| GET | `/settings` | The platform's settings — the `Kitchen` singleton | `operator` |
-| PATCH | `/settings` | Change the build and telemetry defaults | `operator` |
+| GET | `/settings` | The platform's settings — the `Kitchen` singleton, operator list included | `operator` |
+| PATCH | `/settings` | Change the build and telemetry defaults, or who the operators are | `operator` |
 | GET | `/updates` | The platform's own version, what it can upgrade to, and every upgrade it has attempted | `operator` |
 | POST | `/updates` | Upgrade the platform | `operator` |
 | GET | `/updates/{name}` | One upgrade | `operator` |
@@ -322,19 +323,44 @@ optional and absent ones keep their value:
 ```json
 {"productionBranch": "trunk", "previews": true, "previewsProtected": false,
  "buildStrategy": "dockerfile", "dockerfilePath": "build/Dockerfile", "rootDirectory": "apps/shop",
- "port": 8080, "replicas": 3, "cpu": "250m", "memory": "512Mi",
- "env": [
+ "port": 8080, "replicas": 3, "cpu": "250m", "memory": "512Mi"}
+```
+
+`cpu` and `memory` are Kubernetes quantities and set request and limit alike;
+an empty string clears one. The repository and the two connections are
+deliberately not editable: rebinding a project to another repository is a
+different project.
+
+**Environment variables are not on this route.** They are the developer's day
+job where the project's own settings are the admin's, and a whole route is the
+unit of authorization here — so they have one of their own, below. A body that
+carries `env` is a `400` naming it, rather than a field quietly dropped:
+
+```json
+{"error": "environment variables are not changed here any more: send them to PATCH /projects/shop/env, which needs developer rather than admin"}
+```
+
+Settings land in the next release's snapshot — what is already running keeps
+the configuration it was released with until the next deploy.
+
+### Changing a project's environment variables
+
+`PATCH /projects/{name}/env` carries one field, and it replaces the whole
+list:
+
+```json
+{"env": [
    {"name": "PUBLIC_URL", "value": "https://shop.example.com", "previewValue": "https://preview.invalid"},
    {"name": "API_KEY", "fromSecret": {"name": "shop-api-key", "key": "key"}},
    {"name": "DATABASE_URL", "fromClaim": {"name": "shop-db", "key": "url"}}]}
 ```
 
-`env`, when present, replaces the whole list. A variable is a literal `value`
-(with an optional `previewValue` used in previews), a `fromSecret` reference,
-or a `fromClaim` reference; naming more than one source is a `400`. `cpu` and
-`memory` are Kubernetes quantities and set request and limit alike; an empty
-string clears one. The repository and the two connections are deliberately not
-editable: rebinding a project to another repository is a different project.
+A variable is a literal `value` (with an optional `previewValue` used in
+previews), a `fromSecret` reference, or a `fromClaim` reference; naming more
+than one source is a `400`. `{"env": []}` clears every variable, which somebody
+may well mean; a body with no `env` at all is a `400` rather than the same
+thing, because that is a client that forgot the field and not one asking for an
+empty list.
 
 A value goes in and never comes back out. Reading a project reports whether a
 variable has one, not what it is:
@@ -354,15 +380,23 @@ request leaves out keeps the one it already has, and an empty `value` clears it
 `fromSecret` or a `fromClaim` drops the value it used to carry, since the
 reference is what replaces it.
 
-Settings land in the next release's snapshot — what is already running keeps
-the configuration it was released with until the next deploy.
+The answer is the project, so a client that changed a variable renders the new
+list without a second read. Variables land in the next release's snapshot, like
+every other project setting.
 
 ### Who is on a project
 
-Membership is a project `admin`'s to change, which is the point of it: adding
+Membership is a project `admin`'s to *change*, which is the point of it: adding
 somebody to `shop` does not go through whoever installed the platform. An
 operator holds `admin` on every project, so they can do it too — they need no
 rule of their own here, and neither does anybody else.
+
+**Reading the list is a `viewer`'s**, because knowing who else is on a project
+is part of knowing what the project is: a viewer who opened the People tab and
+was refused on load would be reading a screen about a project they can
+otherwise see in full. Only the three writes want `admin`. The same split
+applies to [the CI keys](#keys-for-ci), which are the same list with its
+non-human half shown.
 
 All four methods answer on one path, `/projects/{name}/members`, and it is the
 readable form of `spec.access` on the Project:
@@ -457,8 +491,11 @@ rather than one of them silently overwriting the other's decision.
 ### Keys for CI
 
 A key is a member of the project, so its routes sit next to the membership
-ones and want the same role: **project `admin`**, because issuing a key is
-adding a member.
+ones and want the same roles: **`admin` to issue or revoke one**, because that
+is adding and removing a member, and **`viewer` to list them**, because the
+listing is the membership list with its non-human half shown and carries no key
+value — only the prefix the issuer keeps of one, which is useless as a
+credential.
 
 **A key is owned by a machine account created for it.** That is the part worth
 knowing, because the obvious reading is wrong: the identity provider's api-key
@@ -1502,18 +1539,58 @@ it did no following.
 ### Settings
 
 `GET /settings` is the `Kitchen` singleton as a view: the base domain, the
-derived API and issuer URLs, the gateway's address and conditions, and the
-defaults the platform builds and retains telemetry with.
+derived API and issuer URLs, the gateway's address and conditions, the defaults
+the platform builds and retains telemetry with, and **who the platform's
+operators are**:
+
+```json
+{"baseDomain": "apps.example.com", "buildConcurrency": 2, "logRetentionDays": 30,
+ "operators": [{"subject": "user_01H8X…", "email": "anna@example.com"}]}
+```
+
+`operators` is `spec.access.operators`, the list every `operator` requirement
+in the table above is resolved against. It is on this route because this route
+already carries the base domain, the issuer and the gateway address and is the
+operator's for that reason — and because a list that is enforced against and
+seeded on upgrade, but served by nothing, is one somebody has to open `kubectl`
+to read.
+
+Three states, and they are three: `null` means nobody has ever said who the
+operators are and the reconciler will seed the list from the accounts that
+exist; `[]` means somebody narrowed it to nobody; a list means what it says.
+The field carries no `omitempty` for exactly that reason.
 
 `PATCH /settings` changes the fields that are safe to change at runtime:
 
 ```json
-{"buildStrategy": "auto", "buildConcurrency": 2, "logRetentionDays": 30}
+{"buildStrategy": "auto", "buildConcurrency": 2, "logRetentionDays": 30,
+ "operators": [{"email": "anna@example.com"}, {"subject": "user_01H8X…"}]}
 ```
 
-Fields left out stay as they are. Everything else on the singleton — the base
-domain, the issuer, the ingress — shapes URLs and credentials the platform has
-already handed out, so changing those stays a deliberate kubectl operation.
+Fields left out stay as they are, `operators` included — a settings patch that
+does not mention the list cannot disturb it. When it does, the list replaces
+the old one wholesale, and each entry names its account the same two ways a
+[membership write](#who-is-on-a-project) does: an `email` the platform resolves
+to the issuer's `sub` before anything is written, or a `subject` taken as
+given. Exactly one of the two, an address the identity provider has never heard
+of is a `404` about the person, and the same account twice is a `400`.
+
+**The last operator cannot be removed**, for the reason the last admin on a
+project cannot:
+
+```json
+{"error": "the operator list cannot be emptied: a platform with no operator has nobody left who can appoint one, and the only way back is editing the Kitchen object with kubectl. Name whoever is to stay — remove the others, and keep the last"}
+```
+
+That is a `409`. Handing the platform to somebody else in one write is fine —
+the rule is about the list being emptied, not about who is on it. Every change
+to it is recorded in the [audit log](#endpoints) as an update to the `Kitchen`,
+naming who came on and who came off, the way a membership change names the
+member.
+
+Everything else on the singleton — the base domain, the issuer, the ingress —
+shapes URLs and credentials the platform has already handed out, so changing
+those stays a deliberate kubectl operation.
 
 ### Updating the platform
 
@@ -2038,7 +2115,9 @@ for that reader anyway.
 | CI tokens | better-auth's api-key plugin, exchanged for a JWT at the issuer | The plugin already holds the operator's own credential; keeping key lookup at the issuer keeps the operator's request path stateless |
 | What a CI key may do | A project role on a machine account created for the key, in the same `spec.access` as everybody else's | A key that carried permissions of its own would be a second permission system; a grant on the project means a key cannot outrank the project it was made for, and revocation stays at the issuer |
 | Response shapes | The API's own vocabulary, not raw custom resources | A stable contract for the UI, and freedom to change how state is stored |
-| Write surface | The full project, connection and claim lifecycle, rebuild and cancel, promote/rollback, preview teardown, and the settings' runtime defaults | Nothing a user does in the platform's normal running should need `kubectl`; domain writes wait for their reconciler, because a write over objects nothing reconciles only looks like it works |
+| Write surface | The full project, connection and claim lifecycle, rebuild and cancel, promote/rollback, preview teardown, the settings' runtime defaults, and the platform's operator list | Nothing a user does in the platform's normal running should need `kubectl`; domain writes wait for their reconciler, because a write over objects nothing reconciles only looks like it works |
+| Environment variables | A route of their own, `PATCH /projects/{name}/env`, rather than a field the settings route lets a developer through for | A whole route is the unit of authorization; a handler that decided by which key the body carried would apply the response-body exception to a write, and a dropped `env` would be a lost write that read as a successful one |
+| The operator list | On `GET`/`PATCH /settings`, which are already operator-only, rather than a surface of its own | It is the platform's own access list, like the base domain and the issuer beside it; a list that is enforced against and seeded on upgrade but served by nothing is one somebody opens `kubectl` to read |
 | Credentials | Write-only: the operator stores them in Secrets and never echoes them | "Credentials never leave the operator" survives the API growing a write surface |
 | Introspection shapes | Kubernetes' own vocabulary — replicas, restarts, manifests | The exception that proves the rule above: these endpoints exist to explain the platform's machinery, and a reader comparing them against `kubectl` should not have to translate |
 | Empty request surfaces | `edge.routed` beside the numbers, on every request answer | "Nothing reaches this environment through the edge" and "nothing was asked of it in this window" are both zeroes and different sentences; four empty charts would describe the platform rather than the application |

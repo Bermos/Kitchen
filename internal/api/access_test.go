@@ -30,6 +30,7 @@ import (
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/clickhouse"
 	"github.com/Bermos/Kitchen/internal/controller"
+	"github.com/Bermos/Kitchen/internal/idp"
 )
 
 // What the enforcement table promises, from the outside: each requirement kind
@@ -670,5 +671,108 @@ func TestAQueryNamingAnInvisibleProjectIsNotFound(t *testing.T) {
 				t.Fatalf("want the same 404 for both, got %d and %d", invisible.Code, missing.Code)
 			}
 		})
+	}
+}
+
+// Reading who is on a project is part of knowing what the project is, so it is
+// the viewer's — a viewer opening the People tab must not be refused on load.
+// The writes are still the admin's, and the keys ride with the members because
+// they are the same list with its non-human half shown.
+func TestAViewerReadsWhoIsOnTheirProject(t *testing.T) {
+	h := asMember(t, kitchenv1alpha1.AccessRoleViewer)
+	directory := h.withDirectory()
+	directory.keys = map[string][]idp.Key{feedProject: {{
+		Name: ciKeyName, Project: feedProject, Subject: ciKeySubject, Email: ciKeyEmail, Prefix: "abc123",
+	}}}
+	h.grantTo(t, feedProject, ciKeySubject, ciKeyEmail, kitchenv1alpha1.AccessRoleDeveloper)
+
+	members := h.do(t, http.MethodGet, membersPath, "")
+	if members.Code != http.StatusOK {
+		t.Fatalf("a viewer must be able to read a project's members: %d %s", members.Code, members.Body.String())
+	}
+	keys := h.do(t, http.MethodGet, keysPath, "")
+	if keys.Code != http.StatusOK {
+		t.Fatalf("a viewer must be able to read a project's keys: %d %s", keys.Code, keys.Body.String())
+	}
+	// And the listing is still no way to get at a credential: it carries the
+	// issuer's prefix, which is useless as one, and no value at all.
+	listed := decode[listBody[keyView]](t, keys)
+	if len(listed.Items) != 1 || listed.Items[0].Prefix != "abc123" {
+		t.Fatalf("want the one key with its prefix, got %+v", listed.Items)
+	}
+	if strings.Contains(keys.Body.String(), `"key"`) {
+		t.Fatalf("the key listing carries a value: %s", keys.Body.String())
+	}
+}
+
+// The other half of the same rule: reading is the viewer's, writing is not.
+func TestAViewerWritesNeitherMembersNorKeys(t *testing.T) {
+	h := asMember(t, kitchenv1alpha1.AccessRoleViewer)
+	h.withDirectory()
+
+	for _, attempt := range []struct{ method, path, body, doing string }{
+		{http.MethodPost, membersPath, `{"email": "` + annaEmail + `", "role": "viewer"}`,
+			"adding somebody to a project"},
+		{http.MethodPost, keysPath, `{"name":"nightly"}`, "issuing a CI key for a project"},
+		{http.MethodDelete, keysPath + "/nightly", "", "revoking a project's CI key"},
+	} {
+		t.Run(attempt.method+" "+attempt.path, func(t *testing.T) {
+			recorder := h.do(t, attempt.method, attempt.path, attempt.body)
+			if recorder.Code != http.StatusForbidden {
+				t.Fatalf("want 403, got %d: %s", recorder.Code, recorder.Body.String())
+			}
+			want := "you have viewer on " + feedProject + "; " + attempt.doing + " needs admin"
+			if got := errorOf(t, recorder.Body.String()); got != want {
+				t.Fatalf("want %q, got %q", want, got)
+			}
+		})
+	}
+}
+
+// Environment variables are the developer's day job; the project's own
+// settings next door are the admin's. Splitting the route is what lets one
+// account hold the first without the second.
+func TestADeveloperChangesEnvVarsAndNotTheProjectsSettings(t *testing.T) {
+	h := asMember(t, kitchenv1alpha1.AccessRoleDeveloper)
+
+	if recorder := h.do(t, http.MethodPatch, envPath,
+		`{"env": [{"name": "LOG_LEVEL", "value": "debug"}]}`); recorder.Code != http.StatusOK {
+		t.Fatalf("a developer must be able to change an env var: %d %s", recorder.Code, recorder.Body.String())
+	}
+
+	recorder := h.do(t, http.MethodPatch, "/api/v1/projects/"+feedProject, `{"previews": false}`)
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("want 403, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	want := "you have developer on " + feedProject + "; changing a project's settings needs admin"
+	if got := errorOf(t, recorder.Body.String()); got != want {
+		t.Fatalf("want %q, got %q", want, got)
+	}
+}
+
+func TestAViewerChangesNoEnvVars(t *testing.T) {
+	h := asMember(t, kitchenv1alpha1.AccessRoleViewer)
+
+	recorder := h.do(t, http.MethodPatch, envPath, `{"env": []}`)
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("want 403, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	want := "you have viewer on " + feedProject + "; changing a project's environment variables needs developer"
+	if got := errorOf(t, recorder.Body.String()); got != want {
+		t.Fatalf("want %q, got %q", want, got)
+	}
+}
+
+// An admin holds everything a developer does, so both halves answer them.
+func TestAnAdminChangesBothHalvesOfAProject(t *testing.T) {
+	h := asMember(t, kitchenv1alpha1.AccessRoleAdmin)
+
+	if recorder := h.do(t, http.MethodPatch, envPath,
+		`{"env": [{"name": "LOG_LEVEL", "value": "debug"}]}`); recorder.Code != http.StatusOK {
+		t.Fatalf("an admin must be able to change an env var: %d %s", recorder.Code, recorder.Body.String())
+	}
+	if recorder := h.do(t, http.MethodPatch, "/api/v1/projects/"+feedProject,
+		`{"previews": false}`); recorder.Code != http.StatusOK {
+		t.Fatalf("an admin must be able to change the settings: %d %s", recorder.Code, recorder.Body.String())
 	}
 }
