@@ -708,6 +708,17 @@ does not run in.
 {{- fail "selfUpdate.chart is required when selfUpdate.enabled is true: the update job has nothing to upgrade from. Set it to the published chart (oci://ghcr.io/bermos/charts/kitchen) or to your own mirror." }}
 {{- end }}
 {{- end }}
+{{- if .Values.restore.enabled }}
+{{- if and (not .Values.restore.secretName) (not .Values.restore.existingClaim) }}
+{{- fail "restore.enabled is true but neither restore.secretName nor restore.existingClaim names the archive: the Job has nothing to restore. Put the backup in a Secret under `backup.tar.gz`, or on a volume and set restore.existingClaim." }}
+{{- end }}
+{{- if and .Values.restore.secretName .Values.restore.existingClaim }}
+{{- fail "restore.secretName and restore.existingClaim are both set: the archive comes from one place. Clear whichever is not the one holding it." }}
+{{- end }}
+{{- if not (hasPrefix "/" .Values.restore.path) }}
+{{- fail (printf "restore.path must be an absolute path inside the container (got %q): its directory is the mount point and its filename is what the archive is projected as." .Values.restore.path) }}
+{{- end }}
+{{- end }}
 {{- if and (gt (int .Values.replicaCount) 1) (not .Values.leaderElection) }}
 {{- fail "leaderElection must stay enabled when replicaCount > 1, otherwise every replica reconciles concurrently." }}
 {{- end }}

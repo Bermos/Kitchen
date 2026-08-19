@@ -1,0 +1,197 @@
+{{- include "kitchen.validate" . -}}
+{{- if .Values.restore.enabled }}
+{{- /*
+Restoring a backup archive into this installation.
+
+This is a Job and not a button, and the reason is who is left to press one: a
+restore happens into a cluster whose accounts database is gone, and the
+credentials to log into the dashboard are inside the archive. That puts it in
+the same category as installing the chart and following the bootstrap link —
+cluster bootstrap, the exception CLAUDE.md keeps to "nothing needs kubectl".
+
+It is a plain Job rather than a hook. A hook would run inside `helm install`,
+before the identity provider has ever started, and the accounts dump is data
+only: the tables it fills are the ones the identity provider migrates into
+place on its own first start. So the Job waits for the database to answer
+(--wait-for-schema) and the install does not wait for the Job.
+
+Re-running is `--set restore.id=2`: a Job's pod template is immutable, so the
+id is in the name and a second restore is a second Job whose log stands beside
+the first. See docs/BACKUP.md.
+*/}}
+{{- $name := printf "%s-restore-%s" (include "kitchen.fullname" .) (toString .Values.restore.id) }}
+{{- $serviceAccount := default (printf "%s-restore" (include "kitchen.fullname" .)) .Values.restore.serviceAccountName }}
+{{- if .Values.restore.rbac.create }}
+# The restore's own identity. It is not cluster-admin, unlike self-update's:
+# a restore writes the kinds this chart owns and the secrets in this namespace,
+# and that is an enumerable list. It is a separate account from the manager's
+# so the grant is visible in one place and gone with the release.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $serviceAccount }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kitchen.labels" . | nindent 4 }}
+    app.kubernetes.io/component: restore
+---
+# The Kitchen singleton is cluster-scoped, so this half has to be as well.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "kitchen.fullname" . }}-restore
+  labels:
+    {{- include "kitchen.labels" . | nindent 4 }}
+    app.kubernetes.io/component: restore
+rules:
+  - apiGroups: ["kitchen.bermos.dev"]
+    resources: ["kitchens", "kitchens/status"]
+    verbs: ["get", "list", "create", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "kitchen.fullname" . }}-restore
+  labels:
+    {{- include "kitchen.labels" . | nindent 4 }}
+    app.kubernetes.io/component: restore
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "kitchen.fullname" . }}-restore
+subjects:
+  - kind: ServiceAccount
+    name: {{ $serviceAccount }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "kitchen.fullname" . }}-restore
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kitchen.labels" . | nindent 4 }}
+    app.kubernetes.io/component: restore
+rules:
+  - apiGroups: ["kitchen.bermos.dev"]
+    resources:
+      - connections
+      - connections/status
+      - projects
+      - projects/status
+      - builds
+      - builds/status
+      - releases
+      - releases/status
+      - environments
+      - environments/status
+      - domains
+      - domains/status
+      - resourceclaims
+      - resourceclaims/status
+      - savedqueries
+      - savedqueries/status
+    verbs: ["get", "list", "create", "update", "patch"]
+  # The credentials the archive carries, and the one it reads: the connection
+  # to the accounts database, which is the freshly installed Postgres and not
+  # the archive's copy of its password.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "create", "update", "patch"]
+  # Rolling the identity provider afterwards. Its signing secret is what every
+  # restored session and API key was signed with, and the pods that are running
+  # came up with the one this install generated — so until they restart, every
+  # restored login is refused by a platform that otherwise looks healthy.
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "kitchen.fullname" . }}-restore
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kitchen.labels" . | nindent 4 }}
+    app.kubernetes.io/component: restore
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "kitchen.fullname" . }}-restore
+subjects:
+  - kind: ServiceAccount
+    name: {{ $serviceAccount }}
+    namespace: {{ .Release.Namespace }}
+---
+{{- end }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kitchen.labels" . | nindent 4 }}
+    app.kubernetes.io/component: restore
+spec:
+  # A restore that failed is never retried on its own. It is one transaction
+  # for the accounts and idempotent for the objects, so a retry is safe — but
+  # what a failure needs is somebody reading the log, not another attempt
+  # against the same archive.
+  backoffLimit: 0
+  template:
+    metadata:
+      # Deliberately *not* `kitchen.selectorLabels`: the API and metrics
+      # Services select on those, so a restore pod wearing them would be added
+      # as an endpoint of kitchen-api — and requests would be balanced onto a
+      # pod that is running a one-shot command and listening on nothing.
+      labels:
+        app.kubernetes.io/name: {{ include "kitchen.name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: restore
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ $serviceAccount }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: restore
+          image: {{ include "kitchen.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - /restore
+          args:
+            - --archive={{ .Values.restore.path }}
+            - --namespace={{ .Release.Namespace }}
+            - --wait-for-schema={{ .Values.restore.waitForSchema }}
+            {{- if .Values.restore.force }}
+            - --force
+            {{- end }}
+            {{- if .Values.restore.skipAccounts }}
+            - --skip-accounts
+            {{- end }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          resources:
+            {{- toYaml .Values.restore.resources | nindent 12 }}
+          volumeMounts:
+            - name: archive
+              mountPath: {{ dir .Values.restore.path }}
+              readOnly: true
+      volumes:
+        - name: archive
+          {{- if .Values.restore.existingClaim }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.restore.existingClaim | quote }}
+            readOnly: true
+          {{- else }}
+          secret:
+            secretName: {{ .Values.restore.secretName | quote }}
+            items:
+              - key: {{ .Values.restore.secretKey | quote }}
+                path: {{ base .Values.restore.path }}
+          {{- end }}
+{{- end }}

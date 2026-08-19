@@ -1122,6 +1122,214 @@ jobs:
           kubectl -n kitchen-system delete release idler-rel-1
           kubectl -n kitchen-system delete project idler
 
+      # The half of a backup that is worth anything: a restore that has been
+      # run. Nothing new is installed here — the release is already up, with a
+      # real Postgres behind a real identity provider — so what is under test
+      # is the archive itself, the chart's restore Job, and whether the
+      # platform's state actually comes back once it has been taken away.
+      #
+      # The wipe deletes the platform's *state* rather than the cluster: the
+      # custom resources, an irreplaceable credential, and every row the
+      # identity provider holds. Reinstalling the whole release would take
+      # another eight minutes and would test Helm rather than the restore.
+      # docs/BACKUP.md is the procedure this follows.
+      - name: Back up, wipe and restore
+        run: |
+          set -euo pipefail
+          password=$(kubectl -n kitchen-system get secret kitchen-postgres \
+            -o jsonpath='{.data.password}' | base64 -d)
+          pg() {
+            kubectl -n kitchen-system exec sts/kitchen-postgres -- \
+              env PGPASSWORD="${password}" psql -U kitchen -d kitchen_auth -tAc "$1"
+          }
+          # Every row the identity provider holds, counted without knowing what
+          # better-auth calls its tables — which is the same reason the dump
+          # itself reads the catalogue rather than a list of names.
+          tables() {
+            pg "SELECT relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname = 'public' AND c.relkind = 'r' ORDER BY relname"
+          }
+          accounts_rows() {
+            local total=0
+            for table in $(tables); do
+              total=$((total + $(pg "SELECT count(*) FROM \"${table}\"")))
+            done
+            echo "${total}"
+          }
+
+          # Something to lose: a project, the connection it names, and a
+          # credential nothing in the cluster could reproduce.
+          kubectl apply -f - <<'EOF'
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: irreplaceable-token
+            namespace: kitchen-system
+          stringData:
+            token: only-in-the-backup
+          ---
+          apiVersion: kitchen.bermos.dev/v1alpha1
+          kind: Connection
+          metadata:
+            name: backup-git
+            namespace: kitchen-system
+          spec:
+            provider: github
+            credentialsSecretRef: {name: irreplaceable-token}
+          ---
+          apiVersion: kitchen.bermos.dev/v1alpha1
+          kind: Project
+          metadata:
+            name: survivor
+            namespace: kitchen-system
+          spec:
+            source:
+              connectionRef: {name: backup-git}
+              repo: acme/survivor
+            registry:
+              connectionRef: {name: backup-git}
+          EOF
+
+          before=$(accounts_rows)
+          echo "the identity provider holds ${before} rows"
+          # The auth probe registered an OAuth client and the operator
+          # registered the preview gate's, so this is never legitimately zero —
+          # and a zero here would make the restore assertion below vacuous.
+          [ "${before}" -gt 0 ] || {
+            echo "::error::the identity provider's database is empty, so a restore of it would prove nothing"
+            exit 1
+          }
+
+          # Somewhere for the archive to live between the two Jobs. It outlives
+          # the wipe because it is a volume and not platform state.
+          kubectl apply -f - <<'EOF'
+          apiVersion: v1
+          kind: PersistentVolumeClaim
+          metadata:
+            name: kitchen-backup-ci
+            namespace: kitchen-system
+          spec:
+            accessModes: [ReadWriteOnce]
+            resources:
+              requests:
+                storage: 1Gi
+          ---
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: kitchen-backup-ci
+            namespace: kitchen-system
+          spec:
+            backoffLimit: 0
+            template:
+              spec:
+                restartPolicy: Never
+                # The operator's own account: taking a backup reads exactly
+                # what the operator already reads.
+                serviceAccountName: kitchen-controller-manager
+                containers:
+                  - name: backup
+                    image: kitchen:ci
+                    imagePullPolicy: IfNotPresent
+                    command: [/backup]
+                    args: [--output=/backup/backup.tar.gz]
+                    volumeMounts:
+                      - name: archive
+                        mountPath: /backup
+                volumes:
+                  - name: archive
+                    persistentVolumeClaim:
+                      claimName: kitchen-backup-ci
+          EOF
+          kubectl -n kitchen-system wait --for=condition=complete --timeout=5m job/kitchen-backup-ci || {
+            kubectl -n kitchen-system describe job kitchen-backup-ci
+            kubectl -n kitchen-system logs job/kitchen-backup-ci --tail=100 || true
+            echo "::error::the backup job did not finish"
+            exit 1
+          }
+          kubectl -n kitchen-system logs job/kitchen-backup-ci
+
+          # The wipe. The state, not the cluster.
+          kubectl -n kitchen-system delete project survivor --wait=false
+          kubectl -n kitchen-system patch project survivor --type=merge \
+            -p '{"metadata":{"finalizers":null}}' || true
+          kubectl -n kitchen-system delete project survivor --ignore-not-found
+          kubectl -n kitchen-system delete connection backup-git --ignore-not-found
+          kubectl -n kitchen-system delete secret irreplaceable-token --ignore-not-found
+          quoted=$(tables | sed 's/.*/"&"/' | paste -sd, -)
+          pg "TRUNCATE ${quoted} RESTART IDENTITY"
+          [ "$(accounts_rows)" = 0 ] || {
+            echo "::error::the wipe did not empty the identity provider's database"
+            exit 1
+          }
+          echo "wiped: no project, no credential, no accounts"
+
+          # The documented restore: the chart's own Job, reading the archive
+          # off the volume. `--wait` waits for the Job to complete, so a
+          # restore that fails fails this step.
+          helm upgrade kitchen charts/kitchen \
+            --namespace kitchen-system --reuse-values \
+            --set restore.enabled=true \
+            --set restore.existingClaim=kitchen-backup-ci \
+            --set kitchen.applyOnUpgrade=false \
+            --wait --timeout 6m || {
+              kubectl -n kitchen-system describe job kitchen-restore-1 || true
+              kubectl -n kitchen-system logs job/kitchen-restore-1 --tail=200 || true
+              echo "::error::the restore job did not finish"
+              exit 1
+            }
+          kubectl -n kitchen-system logs job/kitchen-restore-1
+
+          # The acceptance criterion, in the words the issue asked for: the
+          # project is back.
+          repo=$(kubectl -n kitchen-system get project survivor -o jsonpath='{.spec.source.repo}')
+          [ "${repo}" = acme/survivor ] || {
+            echo "::error::the project did not come back (repo '${repo}')"
+            exit 1
+          }
+          kubectl -n kitchen-system get connection backup-git
+          # And the credential with it: a platform restored without its secrets
+          # is a platform that cannot talk to anything.
+          token=$(kubectl -n kitchen-system get secret irreplaceable-token \
+            -o jsonpath='{.data.token}' | base64 -d)
+          [ "${token}" = only-in-the-backup ] || {
+            echo "::error::the credential did not come back (got '${token}')"
+            exit 1
+          }
+          # And the half no sweep of custom resources could have recovered.
+          after=$(accounts_rows)
+          [ "${after}" = "${before}" ] || {
+            echo "::error::the identity provider came back with ${after} rows, not ${before}"
+            exit 1
+          }
+          echo "restored: the project, its credential, and ${after} account rows"
+
+          # The freshly provisioned credentials are deliberately not written
+          # back, and the Job says which it left alone — an archive's copy of
+          # the accounts database's password belongs to a database that no
+          # longer exists.
+          kubectl -n kitchen-system logs job/kitchen-restore-1 | grep -q 'left alone: kitchen-postgres' || {
+            echo "::error::the restore did not report leaving the accounts database's own credential alone"
+            exit 1
+          }
+
+          # Leave the release as the later steps expect to find it. The two
+          # Jobs go first and the volume second: a PVC still referenced by a
+          # finished pod sits in Terminating, and the uninstall step at the end
+          # of this job compares the namespace's PVCs before and after — one
+          # disappearing on its own would read as an uninstall taking volumes
+          # with it.
+          helm upgrade kitchen charts/kitchen \
+            --namespace kitchen-system --reuse-values \
+            --set restore.enabled=false --wait --timeout 5m
+          kubectl -n kitchen-system delete job kitchen-backup-ci --ignore-not-found
+          kubectl -n kitchen-system delete pvc kitchen-backup-ci --ignore-not-found --timeout=120s
+          kubectl -n kitchen-system delete project survivor --ignore-not-found --timeout=120s || {
+            kubectl -n kitchen-system patch project survivor --type=merge \
+              -p '{"metadata":{"finalizers":null}}' || true
+          }
+          kubectl -n kitchen-system delete connection backup-git --ignore-not-found
+
       # The upgrade below has to cross a *chart version*, not re-apply the same
       # one. Every object the chart owns is labelled with `helm.sh/chart` and
       # `app.kubernetes.io/version`, so a same-version upgrade re-applies

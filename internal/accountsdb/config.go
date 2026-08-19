@@ -1,0 +1,107 @@
+/*
+Copyright 2026.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package accountsdb
+
+import (
+	"fmt"
+	"net/url"
+	"strings"
+
+	corev1 "k8s.io/api/core/v1"
+
+	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+)
+
+// Secret keys the chart writes into the accounts database's secret. The auth
+// service reads `dsn` and nothing else; the pieces are here because a secret
+// somebody wrote by hand for an external Postgres may carry those instead.
+const (
+	SecretKeyDSN      = "dsn"
+	SecretKeyHost     = "host"
+	SecretKeyPort     = "port"
+	SecretKeyDatabase = "database"
+	SecretKeyUsername = "username"
+	SecretKeyPassword = "password"
+)
+
+// DefaultSecretName is the accounts database's secret on an installation whose
+// Kitchen object does not name one.
+//
+// The Kitchen singleton is applied as a post-install hook and is not
+// re-applied on upgrade, so an installation that predates
+// `spec.auth.databaseSecretRef` would otherwise have no accounts in its
+// backups and no explanation for it. Every chart-generated name is release-name
+// prefixed and the conventional release name is `kitchen`, which is the same
+// fallback the bundled registry's credential uses.
+const DefaultSecretName = "kitchen-postgres"
+
+// SecretName is where the connection to the accounts database is kept.
+func SecretName(kitchen *kitchenv1alpha1.Kitchen) string {
+	if kitchen != nil && kitchen.Spec.Auth.DatabaseSecretRef != nil &&
+		kitchen.Spec.Auth.DatabaseSecretRef.Name != "" {
+		return kitchen.Spec.Auth.DatabaseSecretRef.Name
+	}
+	return DefaultSecretName
+}
+
+// DSNFromSecret reads the connection string out of the secret the chart
+// writes, assembling one from the pieces where the secret carries those
+// instead.
+func DSNFromSecret(secret *corev1.Secret) (string, error) {
+	if dsn := strings.TrimSpace(string(secret.Data[SecretKeyDSN])); dsn != "" {
+		return dsn, nil
+	}
+
+	value := func(key string) string { return strings.TrimSpace(string(secret.Data[key])) }
+	host, database := value(SecretKeyHost), value(SecretKeyDatabase)
+	username, password := value(SecretKeyUsername), value(SecretKeyPassword)
+
+	var missing []string
+	for key, present := range map[string]string{
+		SecretKeyHost: host, SecretKeyDatabase: database, SecretKeyUsername: username,
+	} {
+		if present == "" {
+			missing = append(missing, key)
+		}
+	}
+	if len(missing) > 0 {
+		return "", fmt.Errorf("the secret %s/%s carries no %s, and none of %s to build one from",
+			secret.Namespace, secret.Name, SecretKeyDSN, strings.Join(sorted(missing), ", "))
+	}
+
+	port := value(SecretKeyPort)
+	if port == "" {
+		port = "5432"
+	}
+	dsn := url.URL{
+		Scheme: "postgres",
+		User:   url.UserPassword(username, password),
+		Host:   host + ":" + port,
+		Path:   "/" + database,
+	}
+	return dsn.String(), nil
+}
+
+// sorted keeps the missing-key message stable, since it is built from a map.
+func sorted(values []string) []string {
+	for i := 1; i < len(values); i++ {
+		for j := i; j > 0 && values[j] < values[j-1]; j-- {
+			values[j], values[j-1] = values[j-1], values[j]
+		}
+	}
+	return values
+}

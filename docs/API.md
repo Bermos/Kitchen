@@ -215,6 +215,8 @@ name against `internal/api/policy.go`, so a route that moves fails them too.
 | GET | `/platform/storage` | Volumes and what mounts them, plus the telemetry store's own health | `operator` |
 | GET | `/platform/events` | The cluster's Warning history, faceted. `?reason=`, `?kind=`, `?node=`, `?search=` | `operator` |
 | GET | `/platform/ingest` | Collector presence and freshness, and what the flow follower lost | `operator` |
+| GET | `/platform/backup` | What an export would carry, what it would not, and whether this cluster can snapshot volumes | `operator` |
+| POST | `/platform/backup` | Export the platform's state as one gzipped tar | `operator` |
 | GET | `/settings` | The platform's settings — the `Kitchen` singleton, operator list included | `operator` |
 | PATCH | `/settings` | Change the build and telemetry defaults, or who the operators are | `operator` |
 | GET | `/updates` | The platform's own version, what it can upgrade to, and every upgrade it has attempted. `?refresh=true` asks the registry again | `operator` |
@@ -1558,6 +1560,45 @@ trailing hour, not a total since start.
 The counts come from whichever replica answers the request, and the follower
 runs on the leader alone: a replica that never followed reports no loss because
 it did no following.
+
+#### Backup
+
+`GET /platform/backup` is what an archive taken now would hold, before anybody
+takes one:
+
+```json
+{"platformVersion": "0.9.0", "clusterName": "prod", "baseDomain": "apps.example.com",
+ "resources": {"projects": 4, "releases": 31, "environments": 7}, "secrets": 9,
+ "accounts": {"available": true, "database": "kitchen"},
+ "excluded": ["telemetry: logs, metrics, traces and flow data in ClickHouse are not backed up …"],
+ "snapshots": {"supported": false,
+               "message": "the VolumeSnapshot API is registered but no VolumeSnapshotClass exists …"},
+ "filename": "kitchen-backup-prod-2026-08-19T090000Z.tar.gz"}
+```
+
+`excluded` is served rather than written into the dashboard, so the screen and
+the archive's own manifest cannot come to disagree about what is missing.
+`accounts.available` distinguishes the two reasons an archive carries none: an
+installation with no identity provider has none to take, and one whose database
+cannot be reached has accounts it is not backing up — a difference that would
+otherwise only surface at restore time. `snapshots` is checked rather than
+assumed, because a cluster can run a snapshot controller with no CRDs
+registered, where a `VolumeSnapshot` is accepted by nothing and nobody is told.
+
+`POST /platform/backup` answers the archive itself: `application/gzip`, with a
+`Content-Disposition` naming the installation and the day. It is a POST and not
+a GET because the body is every credential the platform holds — not something
+to leave in a browser history or a proxy cache — and because it is recorded in
+the audit log as an `export` against the `Kitchen` object. The headers go out
+before the archive is built, so a failure part-way truncates the stream rather
+than becoming a JSON error; a truncated archive is what a restore refuses, and
+the operator's log carries the reason.
+
+There is no restore route, and its absence is the design. A restore happens
+into a cluster whose accounts database is gone, so the credentials to
+authenticate here are inside the archive and there is nobody left to call it.
+The chart renders a Job for it instead — see
+[docs/BACKUP.md](BACKUP.md).
 
 ### Settings
 

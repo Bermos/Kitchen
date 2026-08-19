@@ -66,6 +66,7 @@ spec:
     enabled: true                       # the platform's identity provider
     host: auth.apps.example.com         # also the OIDC issuer; defaults to auth.<baseDomain>
     secretRef: { name: kitchen-auth }   # written by the chart; issuer + the operator's registration credential
+    databaseSecretRef: { name: kitchen-postgres }  # the accounts database; read by backups alone
     previewGate:                        # forward-auth for protected previews
       enabled: true
       host: previews.apps.example.com   # where logins come back to; defaults to previews.<baseDomain>

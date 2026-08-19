@@ -20,6 +20,7 @@ three, and the operator writes the flows and owns the schema under all of it.
 - [The `kitchen` CLI](docs/CLI.md) — deploy, logs, env and rollback from a
   terminal, and the JSON surface that makes it drivable by something that is not
   a person
+- [Backup and restore](docs/BACKUP.md) — what one archive holds, what it does not, and the tested way back
 - [Compliance](docs/COMPLIANCE.md) — evidence as a byproduct of deployment: the audit
   log, and the attestations attached to every artifact
 

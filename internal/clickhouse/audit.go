@@ -51,6 +51,12 @@ const (
 	// AuditDelete is the object going away, recorded while it still exists
 	// so that what was deleted is in the record rather than inferred.
 	AuditDelete = "delete"
+	// AuditExport is a copy of the object leaving the platform. It is the one
+	// operation here that changes nothing, and it is recorded for the same
+	// reason the others are: a platform backup carries every credential the
+	// installation holds, and "who took a copy of everything, and when" is
+	// precisely the sentence an audit log exists to be able to produce.
+	AuditExport = "export"
 )
 
 // Actor kinds. An actor is always one of these two and never "the operator":

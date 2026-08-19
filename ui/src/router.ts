@@ -88,6 +88,16 @@ export const router = createRouter({
       meta: { requires: "GET /api/v1/platform/events" },
     },
     {
+      // Backing the platform up is the operator's: the archive is every
+      // credential the installation holds. Restoring has no screen at all —
+      // it happens into a cluster whose accounts are gone, so there is nobody
+      // left to log in. See docs/BACKUP.md.
+      path: "/platform/backup",
+      name: "platform-backup",
+      component: () => import("./views/PlatformBackupView.vue"),
+      meta: { requires: "POST /api/v1/platform/backup" },
+    },
+    {
       // The audit log itself is filtered to what the caller can see, but this
       // screen is built around the compliance posture and the chain
       // verification beside it, and both of those are the operator's.

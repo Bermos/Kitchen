@@ -478,6 +478,25 @@ type AuthSpec struct {
 	// +optional
 	SecretRef *LocalObjectReference `json:"secretRef,omitempty"`
 
+	// DatabaseSecretRef names the Secret in the platform namespace holding the
+	// connection to the identity provider's own Postgres: the key dsn, or the
+	// pieces host, port, database, username and password. The chart writes it
+	// as <release>-postgres.
+	//
+	// The identity provider is handed this connection by the chart and does not
+	// need the operator to find it. What does is the backup: the accounts,
+	// sessions and OAuth clients in that database are the one part of the
+	// platform's state that deliberately does not live in a CRD
+	// (docs/SCOPE.md item 9), so they are also the one part an export has to
+	// reach into a database for, and a restore has to put back.
+	//
+	// Left unset it is the conventional release name's, kitchen-postgres —
+	// which is what gives an installation whose Kitchen object predates this
+	// field a backup with its accounts in it rather than one that quietly
+	// leaves them out.
+	// +optional
+	DatabaseSecretRef *LocalObjectReference `json:"databaseSecretRef,omitempty"`
+
 	// +kubebuilder:default={}
 	// +optional
 	PreviewGate PreviewGateSpec `json:"previewGate,omitempty"`

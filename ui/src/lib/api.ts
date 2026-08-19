@@ -1598,6 +1598,38 @@ async function authorized(send: (bearer: string) => Promise<Response>): Promise<
   return retry;
 }
 
+/** Whether this cluster could snapshot a volume. Both halves have to be there:
+ * a snapshot controller with no CRDs registered — which is what issue #64
+ * found on a real cluster — accepts nothing and reports nothing. */
+export interface SnapshotSupport {
+  supported: boolean;
+  classes?: string[];
+  message?: string;
+}
+
+/** The identity provider's database, as a backup sees it. */
+export interface BackupAccounts {
+  available: boolean;
+  database?: string;
+  message?: string;
+}
+
+/** What an export would carry, and what it deliberately would not. */
+export interface Backup {
+  platformVersion: string;
+  clusterName?: string;
+  baseDomain?: string;
+  /** How many objects of each kind, keyed by plural name. */
+  resources: Record<string, number>;
+  secrets: number;
+  accounts: BackupAccounts;
+  /** Served rather than written into the dashboard, so this screen and the
+   * archive's own manifest cannot come to disagree about what is missing. */
+  excluded: string[];
+  snapshots: SnapshotSupport;
+  filename: string;
+}
+
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const config = await loadConfig();
   const base = config.apiURL === window.location.origin ? "" : config.apiURL;
@@ -1623,6 +1655,41 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   // A delete that answers 204 has nothing to parse.
   if (res.status === 204) return undefined as T;
   return res.json();
+}
+
+/**
+ * Take a platform backup and hand back the archive.
+ *
+ * It does not go through `request`, because the answer is a gzip stream and
+ * not JSON — and it cannot be a plain link either: every call to this API
+ * carries a bearer token, which an <a download> has no way to send. So the
+ * archive is fetched here and handed to the caller as a Blob to save.
+ *
+ * A POST, matching the API: the body is every credential the platform holds,
+ * and this is the request the audit log records as "somebody took a copy of
+ * everything".
+ */
+export async function downloadBackup(): Promise<{ blob: Blob; filename: string }> {
+  const config = await loadConfig();
+  const base = config.apiURL === window.location.origin ? "" : config.apiURL;
+  const res = await authorized((bearer) =>
+    fetch(`${base}/api/v1/platform/backup`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${bearer}` },
+    }),
+  );
+  if (!res.ok) {
+    let message = `${res.status}`;
+    try {
+      message = ((await res.json()) as { error: string }).error;
+    } catch {
+      // keep the status
+    }
+    throw new APIError(res.status, message);
+  }
+  const disposition = res.headers.get("content-disposition") ?? "";
+  const named = /filename="?([^";]+)"?/.exec(disposition);
+  return { blob: await res.blob(), filename: named?.[1] ?? "kitchen-backup.tar.gz" };
 }
 
 const list =
@@ -2027,6 +2094,9 @@ export const api = {
     return request<PlatformEvents>("GET", `/platform/events?${params}`);
   },
   platformIngest: () => request<PlatformIngest>("GET", "/platform/ingest"),
+  // What an export would carry. Taking one is downloadBackup, which answers a
+  // gzip stream rather than JSON and so cannot live in this table.
+  backup: () => request<Backup>("GET", "/platform/backup"),
 
   compliance: () => request<Compliance>("GET", "/compliance"),
   audit: (query: AuditQuery = {}) => {

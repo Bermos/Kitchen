@@ -73,6 +73,16 @@ spec:
     secretRef:
       name: {{ include "kitchen.authSecretName" . }}
     {{- end }}
+    {{- if or .Values.postgres.enabled .Values.postgres.external.host }}
+    # The identity provider's own database. The operator does not run the
+    # identity provider and does not need this to — the chart hands the auth
+    # service its connection directly. What needs it is the backup: the
+    # accounts, sessions and OAuth clients in there are the one part of the
+    # platform's state that deliberately does not live in a CRD, so they are
+    # the one part an export has to reach into a database for.
+    databaseSecretRef:
+      name: {{ include "kitchen.postgresSecretName" . }}
+    {{- end }}
     previewGate:
       enabled: {{ and .Values.auth.enabled .Values.previewGate.enabled }}
       {{- with include "kitchen.previewGateHost" . }}
