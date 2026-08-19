@@ -68,7 +68,16 @@ const mayReadMembers = computed(() => may("GET /api/v1/projects/{name}/members",
 // Environment variables are the developer's day job and have a route of their
 // own, so they are a tab of their own rather than a section of a form only an
 // admin has. An admin has both, since admin contains developer.
-const mayEditEnv = computed(() => may("PATCH /api/v1/projects/{name}/env", caller.value));
+//
+// **The tab is keyed to reading the project, not to writing the variables.**
+// `GET /projects/{name}` is a viewer's and already carries the list — names,
+// whether each has a value, and the secret and claim references — so hiding
+// the tab from a viewer would be the dashboard enforcing something the API
+// does not, which is the mirror image of the mistake this whole table exists
+// to prevent. What a viewer gets is the same screen with the write
+// affordances gone, which is what every other screen here does; EnvVarsPanel
+// keys those to the write route itself.
+const mayReadProject = computed(() => may("GET /api/v1/projects/{name}", caller.value));
 
 const production = computed(() =>
   data.value?.environments.find((e) => e.name === data.value?.project.productionEnvironment),
@@ -155,7 +164,7 @@ const tab = ref("deployments");
 // Which tabs exist is a matter of what the API would answer, never of the
 // mode the dashboard is in. Settings is the project admin's whole tab, not a
 // tab with the controls removed: everything on it is an admin's write.
-// Variables is the developer's, on its own route and its own role — which is
+// Variables is everybody's to read and the developer's to change — which is
 // why it is a tab beside People rather than a section inside a form a
 // developer does not have. People is everybody's now that reading the list is
 // a viewer's, with the add, change and remove controls absent for anyone but
@@ -168,7 +177,7 @@ const tabs = computed(() =>
     { label: `Environments (${data.value?.environments.length ?? 0})`, value: "environments", shown: true },
     { label: `Domains (${data.value?.domains.length ?? 0})`, value: "domains", shown: true },
     { label: `Resources (${data.value?.claims.length ?? 0})`, value: "resources", shown: true },
-    { label: `Variables (${data.value?.project.env?.length ?? 0})`, value: "variables", shown: mayEditEnv.value },
+    { label: `Variables (${data.value?.project.env?.length ?? 0})`, value: "variables", shown: mayReadProject.value },
     { label: `People`, value: "people", shown: mayReadMembers.value },
     { label: `Settings`, value: "settings", shown: mayConfigure.value },
   ].filter((item) => item.shown),
@@ -710,8 +719,8 @@ function host(url?: string): string {
         </div>
       </div>
 
-      <!-- Variables: the developer's day job, on its own route and its own
-           role. It is a tab rather than a section of the settings form
+      <!-- Variables: read by anybody who can read the project, changed by a
+           developer. It is a tab rather than a section of the settings form
            because the settings form is an admin's and this is not — a
            developer who is not an admin has this and nothing else here. -->
       <EnvVarsPanel

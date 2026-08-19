@@ -3,7 +3,7 @@ import { computed, ref, watch } from "vue";
 import { api, type EnvVar } from "../lib/api";
 import { type EnvVarDraft, envVarDrafts, envVarWrites, newEnvVarDraft, renamed } from "../lib/envvars";
 import { callerFor } from "../lib/me";
-import { may } from "../lib/policy";
+import { may, refusal } from "../lib/policy";
 
 // A project's environment variables, on a route and a role of their own.
 //
@@ -15,6 +15,14 @@ import { may } from "../lib/policy";
 // and not a section of the settings form — a developer who is not an admin has
 // no settings form, and had no way to change a variable while it lived inside
 // one.
+//
+// **Reading them is every role's, and the tab is keyed to that.** `GET
+// /projects/{name}` is a viewer's route and already carries the list — names,
+// whether each has a value, and the references the backed ones were written
+// as — so withholding the screen would be the dashboard enforcing something
+// the API does not. A viewer gets exactly this, with the add, replace, remove
+// and save affordances gone rather than disabled. No value is involved either
+// way: the API stopped reading them back, so there is nothing here to leak.
 //
 // The list replaces the stored one wholesale, so every variable has to be in
 // what is sent. Values are the exception, and deliberately: the API reports
@@ -30,6 +38,9 @@ const toast = useToast();
 
 const caller = computed(() => callerFor(props.role, props.project));
 const maySave = computed(() => may("PATCH /api/v1/projects/{name}/env", caller.value));
+// Why not, in the words the API refuses in — under the list, where the save
+// button would have been.
+const readOnlyReason = computed(() => refusal("PATCH /api/v1/projects/{name}/env", caller.value));
 
 // Drafts are loaded once per project, not on every payload: the project view
 // polls every ten seconds, and a re-load on each answer would type over
@@ -71,6 +82,11 @@ function keepPreviewValue(envVar: EnvVarDraft) {
 
 const saving = ref(false);
 async function save() {
+  // The save control does not exist without the role, and neither does the
+  // form's only submit path — but a role that changes under an open page is
+  // exactly the case the rest of the dashboard guards, so the write checks
+  // too rather than trusting the render.
+  if (!maySave.value || saving.value) return;
   saving.value = true;
   try {
     const saved = await api.updateProjectEnv(props.project, envVarWrites(drafts.value));
@@ -103,9 +119,11 @@ async function save() {
       <div>
         <h2 class="text-sm font-semibold text-highlighted">Environment variables</h2>
         <p class="text-xs text-muted mt-1">
-          What <span class="font-mono">{{ project }}</span> runs with. Values are never read back — a variable that has
-          one shows <span class="font-mono">•••• set</span>, and replacing it means typing the new one. They land in new
-          releases: what is running keeps its release's snapshot until the next deploy.
+          What <span class="font-mono">{{ project }}</span> runs with. Values are never read back — by anybody, this
+          dashboard included — so a variable that has one shows <span class="font-mono">•••• set</span><template
+            v-if="maySave"
+          >, and replacing it means typing the new one</template>. They land in new releases: what is running keeps its
+          release's snapshot until the next deploy.
         </p>
         <p class="text-xs text-dimmed mt-1">
           <span class="font-mono">PORT</span> is the platform's, is set on every environment, and is injected ahead of
@@ -136,7 +154,7 @@ async function save() {
             <!-- The value: shown as presence, replaced by typing. -->
             <div class="flex items-center gap-2 min-h-8">
               <UInput
-                v-if="envVar.value !== undefined"
+                v-if="maySave && envVar.value !== undefined"
                 v-model="envVar.value"
                 :placeholder="envVar.set ? 'new value' : 'value'"
                 autocomplete="off"
@@ -175,7 +193,7 @@ async function save() {
             <!-- The preview value, on the same terms. -->
             <div class="flex items-center gap-2 min-h-8">
               <UInput
-                v-if="envVar.previewValue !== undefined"
+                v-if="maySave && envVar.previewValue !== undefined"
                 v-model="envVar.previewValue"
                 :placeholder="envVar.previewSet ? 'new preview value' : 'preview value (optional)'"
                 autocomplete="off"
@@ -233,6 +251,7 @@ async function save() {
       <div v-if="maySave" class="flex justify-end">
         <UButton type="submit" :loading="saving" icon="i-lucide-check">Save variables</UButton>
       </div>
+      <p v-else-if="readOnlyReason" class="text-xs text-muted">{{ readOnlyReason }}.</p>
     </form>
   </div>
 </template>

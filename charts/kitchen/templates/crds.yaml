@@ -938,6 +938,15 @@ spec:
                       The entries name accounts the same way a Project's grants do, minus the
                       role: there is exactly one platform role worth writing down, and being
                       on this list is it.
+
+                      The field carries no `omitempty`, unlike almost everything else in
+                      these types, for the same reason spec.access carries no default: an
+                      absent list and an empty one mean different things here. With
+                      `omitempty` an empty list marshals away, so narrowing the operators to
+                      nobody would be indistinguishable from never having named any — and
+                      the reconciler would seed the list straight back from the accounts
+                      that exist. Writers diff two marshalled objects (client.MergeFrom), so
+                      a nil list on both sides is still no change to patch.
                     items:
                       description: |-
                         AccessSubject names the account an access entry is about.
