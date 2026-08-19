@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.6.0](https://github.com/Bermos/Kitchen/compare/v0.5.1...v0.6.0) (2026-08-19)
+
+
+### Features
+
+* **api:** configure the registry the platform runs for itself ([732cee1](https://github.com/Bermos/Kitchen/commit/732cee10304ff77444512393b7d9d9bf80e1e1b6)), closes [#122](https://github.com/Bermos/Kitchen/issues/122)
+* **chart:** run zot as the platform's image registry ([69e1f6f](https://github.com/Bermos/Kitchen/commit/69e1f6f37003dc013519dfb42a6771753f887044)), closes [#122](https://github.com/Bermos/Kitchen/issues/122)
+* **operator:** answer where a release is live, and bound how many a project keeps ([#125](https://github.com/Bermos/Kitchen/issues/125)) ([507d38a](https://github.com/Bermos/Kitchen/commit/507d38a34adb6bf0b0bd2ef8ad8de6e7635ce2f0)), closes [#68](https://github.com/Bermos/Kitchen/issues/68)
+* **operator:** build with Cloud Native Buildpacks ([462b02c](https://github.com/Bermos/Kitchen/commit/462b02c91f8d10fe780740627e9883406d2a56d0)), closes [#69](https://github.com/Bermos/Kitchen/issues/69)
+* **operator:** detect the framework a repository is built with ([c6092ba](https://github.com/Bermos/Kitchen/commit/c6092ba57fddec926f7c8ee2afdab8015e9183f5)), closes [#69](https://github.com/Bermos/Kitchen/issues/69)
+* **operator:** publish the bundled registry and seed its connection ([525abe9](https://github.com/Bermos/Kitchen/commit/525abe97557566f33eef2905bc4c87923255ae33)), closes [#122](https://github.com/Bermos/Kitchen/issues/122)
+* **ui:** preselect a connection when there is only one to pick ([adab9fa](https://github.com/Bermos/Kitchen/commit/adab9faf1fd72c58fcd646229424e6232a1dcf82)), closes [#122](https://github.com/Bermos/Kitchen/issues/122)
+
+
+### Bug fixes
+
+* **chart:** give zot a tag pattern it will actually start on ([e6961ea](https://github.com/Bermos/Kitchen/commit/e6961eacc798ca39b1358ed453104a992e5d3ffc)), closes [#122](https://github.com/Bermos/Kitchen/issues/122)
+* **operator:** pull application images with the registry credential ([#117](https://github.com/Bermos/Kitchen/issues/117)) ([c90a863](https://github.com/Bermos/Kitchen/commit/c90a863a0172211a9f019d5dd293e622fba84f4f))
+* **operator:** stop reporting the platform's own URL as unrouted traffic ([1a5d269](https://github.com/Bermos/Kitchen/commit/1a5d269234058bfe3b88fb9075a29f5e457550cf))
+
+
+### Documentation
+
+* write down how a build's framework is detected ([47894f8](https://github.com/Bermos/Kitchen/commit/47894f8200a5de9232aae5d750b599d09d795199))
+* write down the bundled registry and why it faces outward ([b783ad8](https://github.com/Bermos/Kitchen/commit/b783ad8d26cd9e744510aa26b3d2caab1894d934)), closes [#122](https://github.com/Bermos/Kitchen/issues/122)
+
 ## [0.5.1](https://github.com/Bermos/Kitchen/compare/v0.5.0...v0.5.1) (2026-08-18)
 
 
