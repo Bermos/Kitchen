@@ -40,6 +40,7 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/audit"
 	"github.com/Bermos/Kitchen/internal/clickhouse"
 )
 
@@ -125,6 +126,13 @@ type KitchenReconciler struct {
 	// SetupWithManager fills it in; a nil reader only costs the survey the
 	// explanatory half of its message.
 	APIReader client.Reader
+
+	// Audit is the platform's audit recorder, read here for the sequence
+	// number the platform publishes as the chain's external anchor. This
+	// reconciler records nothing itself: the Kitchen singleton is
+	// configuration, and its own edits are recorded by the API that made
+	// them.
+	Audit *audit.Recorder
 }
 
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=kitchens,verbs=get;list;watch;create;update;patch;delete
@@ -135,6 +143,7 @@ type KitchenReconciler struct {
 // +kubebuilder:rbac:groups=apps,resources=statefulsets;daemonsets,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;create
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch
+// +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups="",resources=events,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=connections,verbs=get;list;watch;create;update;patch;delete
@@ -184,6 +193,7 @@ func (r *KitchenReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 	certReady := r.reconcileTLS(ctx, kitchen, setCond)
 	schemaReady := r.reconcileTelemetrySchema(ctx, kitchen, setCond)
+	complianceReady := r.reconcileCompliance(ctx, kitchen, setCond)
 	gateReady := r.reconcilePreviewGate(ctx, kitchen, setCond)
 	registryReady := r.reconcileRegistry(ctx, kitchen, setCond)
 	programmed := r.observeGateway(ctx, kitchen, setCond)
@@ -199,8 +209,10 @@ func (r *KitchenReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		"previewGateReady", gateReady,
 		"registryReady", registryReady,
 		"certificateReady", certReady,
+		"complianceReady", complianceReady,
 		"componentsHealthy", componentsHealthy)
-	if !programmed || !schemaReady || !gateReady || !registryReady || !certReady || !componentsHealthy {
+	if !programmed || !schemaReady || !gateReady || !registryReady || !certReady ||
+		!complianceReady || !componentsHealthy {
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 	return ctrl.Result{}, nil

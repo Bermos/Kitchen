@@ -34,6 +34,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/audit"
+	"github.com/Bermos/Kitchen/internal/clickhouse"
 	"github.com/Bermos/Kitchen/internal/provider"
 )
 
@@ -228,11 +230,6 @@ func (s *Server) createConnection(w http.ResponseWriter, req *http.Request) {
 	}
 
 	secretName := connectionSecretPrefix + body.Name
-	if err := s.writeCredentialsSecret(req, secretName, data, secretType); err != nil {
-		s.writeError(w, err)
-		return
-	}
-
 	caller, _ := CallerFrom(ctx)
 	connection := &kitchenv1alpha1.Connection{
 		ObjectMeta: metav1.ObjectMeta{
@@ -245,6 +242,23 @@ func (s *Server) createConnection(w http.ResponseWriter, req *http.Request) {
 			CredentialsSecretRef: kitchenv1alpha1.LocalObjectReference{Name: secretName},
 			Config:               config,
 		},
+	}
+	// Recorded before the credential is written, not before the Connection:
+	// the secret is the part of this request that matters, and a credential
+	// on the cluster that no record mentions is the failure to avoid.
+	if !s.recorded(w, req, audit.Transition{
+		Object:    connection,
+		Kind:      audit.KindConnection,
+		Operation: clickhouse.AuditCreate,
+		To:        body.Provider,
+		Reason:    fmt.Sprintf("connection %s created for provider %s", body.Name, body.Provider),
+		Details:   map[string]any{"provider": body.Provider, "secret": secretName},
+	}) {
+		return
+	}
+	if err := s.writeCredentialsSecret(req, secretName, data, secretType); err != nil {
+		s.writeError(w, err)
+		return
 	}
 	if err := s.Client.Create(ctx, connection); err != nil {
 		s.writeError(w, err)
@@ -451,6 +465,19 @@ func (s *Server) patchConnection(w http.ResponseWriter, req *http.Request) {
 			badRequest(w, "%s", err.Error())
 			return
 		}
+		// A rotated credential is the security-relevant half of this
+		// endpoint, so it is recorded as its own transition rather than
+		// folded into "the connection changed".
+		if !s.recorded(w, req, audit.Transition{
+			Object:    connection,
+			Kind:      audit.KindConnection,
+			Operation: clickhouse.AuditUpdate,
+			To:        connection.Spec.Provider,
+			Reason:    fmt.Sprintf("the credential for connection %s was replaced", connection.Name),
+			Details:   map[string]any{"provider": connection.Spec.Provider, "rotated": true},
+		}) {
+			return
+		}
 		if err := s.writeCredentialsSecret(req, connection.Spec.CredentialsSecretRef.Name, data, secretType); err != nil {
 			s.writeError(w, err)
 			return
@@ -461,6 +488,16 @@ func (s *Server) patchConnection(w http.ResponseWriter, req *http.Request) {
 		config, err := rawConfig(*body.Config)
 		if err != nil {
 			badRequest(w, "config is not serializable: %s", err.Error())
+			return
+		}
+		if !s.recorded(w, req, audit.Transition{
+			Object:    connection,
+			Kind:      audit.KindConnection,
+			Operation: clickhouse.AuditUpdate,
+			To:        connection.Spec.Provider,
+			Reason:    fmt.Sprintf("the configuration of connection %s was changed", connection.Name),
+			Details:   map[string]any{"provider": connection.Spec.Provider, "rotated": false},
+		}) {
 			return
 		}
 		patch := client.MergeFrom(connection.DeepCopy())
@@ -518,6 +555,16 @@ func (s *Server) deleteConnection(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	if !s.recorded(w, req, audit.Transition{
+		Object:    connection,
+		Kind:      audit.KindConnection,
+		Operation: clickhouse.AuditDelete,
+		From:      connection.Spec.Provider,
+		Reason:    fmt.Sprintf("connection %s and the credential the platform wrote for it were deleted", connection.Name),
+		Details:   map[string]any{"provider": connection.Spec.Provider},
+	}) {
+		return
+	}
 	if err := s.Client.Delete(ctx, connection); err != nil {
 		s.writeError(w, err)
 		return

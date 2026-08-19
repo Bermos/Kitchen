@@ -96,6 +96,40 @@ spec:
           status:
             description: BuildStatus defines the observed state of a Build.
             properties:
+              artifact:
+                description: |-
+                  Artifact is what the build produced, identified by content rather than
+                  by name, and what the platform has asserted about it.
+                properties:
+                  attestedAt:
+                    description: |-
+                      AttestedAt is when the platform attached its own build record to the
+                      digest.
+                    format: date-time
+                    type: string
+                  digest:
+                    description: |-
+                      Digest of the image manifest, as `sha256:…`. Empty when the builder
+                      pushed successfully but did not report a digest, which is the one case
+                      where the platform has an image it cannot make claims about.
+                    type: string
+                  keyID:
+                    description: |-
+                      KeyID is the signing key the build record was signed under, which is
+                      what a verifier matches against the published public key.
+                    type: string
+                  message:
+                    description: |-
+                      Message explains an artifact the platform could not attest. An
+                      unattested artifact is not a failed build — the image is real and the
+                      deployment is honest — but it is one that no policy requiring evidence
+                      will ever let move, which is where that fact is meant to bite.
+                    type: string
+                  repository:
+                    description: Repository the image was pushed to, without a tag
+                      or digest.
+                    type: string
+                type: object
               completedAt:
                 format: date-time
                 type: string

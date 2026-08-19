@@ -106,6 +106,40 @@ spec:
           status:
             description: BuildStatus defines the observed state of a Build.
             properties:
+              artifact:
+                description: |-
+                  Artifact is what the build produced, identified by content rather than
+                  by name, and what the platform has asserted about it.
+                properties:
+                  attestedAt:
+                    description: |-
+                      AttestedAt is when the platform attached its own build record to the
+                      digest.
+                    format: date-time
+                    type: string
+                  digest:
+                    description: |-
+                      Digest of the image manifest, as `sha256:…`. Empty when the builder
+                      pushed successfully but did not report a digest, which is the one case
+                      where the platform has an image it cannot make claims about.
+                    type: string
+                  keyID:
+                    description: |-
+                      KeyID is the signing key the build record was signed under, which is
+                      what a verifier matches against the published public key.
+                    type: string
+                  message:
+                    description: |-
+                      Message explains an artifact the platform could not attest. An
+                      unattested artifact is not a failed build — the image is real and the
+                      deployment is honest — but it is one that no policy requiring evidence
+                      will ever let move, which is where that fact is meant to bite.
+                    type: string
+                  repository:
+                    description: Repository the image was pushed to, without a tag
+                      or digest.
+                    type: string
+                type: object
               completedAt:
                 format: date-time
                 type: string
@@ -1007,6 +1041,68 @@ spec:
                   platform and a production one reads to tell which is on screen.
                   Defaults to the first label of the base domain.
                 type: string
+              compliance:
+                description: |-
+                  Compliance configures the evidence the platform produces about its own
+                  operation: the audit log and the attestations attached to artifacts.
+                properties:
+                  attestation:
+                    description: Attestation is the signed evidence attached to built
+                      artifacts.
+                    properties:
+                      enabled:
+                        default: true
+                        description: |-
+                          Enabled signs an attestation for every artifact the platform builds
+                          and attaches it to the artifact's digest.
+                        type: boolean
+                      signingKeyRef:
+                        description: |-
+                          SigningKeyRef names the Secret in the platform namespace holding the
+                          key attestations are signed with: the keys `tls.key` and `tls.crt`
+                          spelling are deliberately not used — it is `private.pem` and
+                          `public.pem`, an ECDSA P-256 keypair in PKCS#8 and PKIX PEM.
+
+                          Left unset the operator generates one once, into
+                          `kitchen-attestation-key`, and keeps it across upgrades. Supplying one
+                          is how an installation whose key custody rules forbid a key the
+                          platform generated brings its own.
+                        properties:
+                          name:
+                            minLength: 1
+                            type: string
+                        required:
+                        - name
+                        type: object
+                    type: object
+                  audit:
+                    description: Audit is the tamper-evident log of state transitions.
+                    properties:
+                      enabled:
+                        default: true
+                        description: |-
+                          Enabled records every state transition the platform makes.
+
+                          Off is a deliberate choice with a consequence worth stating: the
+                          decisions the rest of the compliance suite produces still happen, they
+                          just leave nothing behind that can be shown to anyone.
+                        type: boolean
+                      retentionDays:
+                        default: 365
+                        description: |-
+                          RetentionDays is how long audit records are kept.
+
+                          The floor is 90 days and it is not a rounded-up guess: the incident
+                          reporting duty the log exists to serve runs from when an institution
+                          became aware, which can be well after the transition that caused it,
+                          and a log that has already aged out cannot substantiate the report.
+                          Installations under a records-retention obligation will want years
+                          rather than months — the ceiling is disk.
+                        format: int32
+                        minimum: 90
+                        type: integer
+                    type: object
+                type: object
               ingress:
                 description: IngressSpec configures how traffic enters the cluster.
                 properties:
@@ -1324,6 +1420,62 @@ spec:
           status:
             description: KitchenStatus defines the observed state of the platform.
             properties:
+              compliance:
+                description: |-
+                  Compliance reports the audit log and the signing identity, so that an
+                  installation which believes it is producing evidence can find out that
+                  it is not.
+                properties:
+                  attestation:
+                    description: |-
+                      AttestationStatus reports the identity evidence is signed under. The key id
+                      is the SHA-256 of the public key's DER encoding, which is what a verifier
+                      matches an envelope's `keyid` against.
+                    properties:
+                      keyID:
+                        description: KeyID identifies the public key attestations
+                          are signed under.
+                        type: string
+                      message:
+                        description: Message explains a platform that is not signing.
+                        type: string
+                      secretName:
+                        description: |-
+                          SecretName is where that key lives, so an operator rotating it knows
+                          what to replace without guessing at defaults.
+                        type: string
+                      signing:
+                        description: Signing is true when the operator holds a usable
+                          key.
+                        type: boolean
+                    required:
+                    - signing
+                    type: object
+                  audit:
+                    description: |-
+                      AuditStatus reports whether the audit log is actually recording, which is
+                      not the same question as whether it is enabled: it needs the telemetry
+                      store, and an installation configured without one records nothing however
+                      the spec reads.
+                    properties:
+                      message:
+                        description: Message explains a log that is not recording.
+                        type: string
+                      recording:
+                        description: Recording is true when the operator has a store
+                          to append to.
+                        type: boolean
+                      sequence:
+                        description: |-
+                          Sequence is the number of the last record appended, so that a jump
+                          backwards is visible without reading the log itself. Zero means
+                          nothing has been recorded yet.
+                        format: int64
+                        type: integer
+                    required:
+                    - recording
+                    type: object
+                type: object
               components:
                 description: |-
                   Components reports every platform workload the operator can see, in

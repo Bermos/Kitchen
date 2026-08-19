@@ -1159,6 +1159,10 @@ kubectl delete namespace kitchen-system
 | `kitchen.builds.defaultStrategy` | `auto` | `auto`, `dockerfile` or `buildpacks`. |
 | `kitchen.builds.concurrency` | `2` | Builds running at once. |
 | `kitchen.builds.releaseRetention` | `10` | Releases each project keeps. Older ones are pruned, except any an environment still points at — a rollback target never disappears. `0` keeps every release forever. |
+| `kitchen.compliance.audit.enabled` | `true` | Record every state transition into an append-only, hash-chained log in the telemetry store. Off leaves the platform with no evidence of what it did. |
+| `kitchen.compliance.audit.retentionDays` | `365` | Audit retention, deliberately separate from telemetry retention: evidence must outlive logs. Minimum 90. |
+| `kitchen.compliance.attestation.enabled` | `true` | Sign a build record for every artifact and attach it to the artifact's digest as a DSSE envelope over an in-toto statement, through OCI referrers. |
+| `kitchen.compliance.attestation.signingKeySecretName` | `""` | Secret holding the signing keypair (`private.pem`, `public.pem`). Empty has the operator generate one into `kitchen-attestation-key`. |
 | `kitchen.observability.clickhouse.retentionDays` | `30` | Telemetry retention. |
 | `kitchen.observability.hubble.relayAddress` | `""` | host:port of Hubble Relay's gRPC endpoint (e.g. `hubble-relay.kube-system.svc.cluster.local:80`). When set, the operator ships flow observations into the telemetry store for the dashboard's traffic view. Empty disables flow collection. |
 | `kitchen.observability.metrics.enabled` | `true` | The operator's half of the environment history: restarts, OOM kills, configured limits and replica counts, sampled off the API server and exported to the agent over OTLP. CPU and memory come from the agent's kubelet scrape instead. |

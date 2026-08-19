@@ -28,6 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/audit"
 	"github.com/Bermos/Kitchen/internal/clickhouse"
 )
 
@@ -122,6 +123,21 @@ func (s *Server) createClaim(w http.ResponseWriter, req *http.Request) {
 			Config:         config,
 		},
 	}
+	if !s.recorded(w, req, audit.Transition{
+		Object:    claim,
+		Kind:      audit.KindResourceClaim,
+		Operation: clickhouse.AuditCreate,
+		To:        body.Type,
+		Project:   body.Project,
+		Reason:    fmt.Sprintf("claim %s created: %s via %s", claim.Name, body.Type, body.Connection),
+		Details: map[string]any{
+			"type":           body.Type,
+			"connection":     body.Connection,
+			"deletionPolicy": string(policy),
+		},
+	}) {
+		return
+	}
 	if err := s.Client.Create(ctx, claim); err != nil {
 		s.writeError(w, err)
 		return
@@ -147,15 +163,28 @@ func (s *Server) deleteClaim(w http.ResponseWriter, req *http.Request) {
 		s.writeError(w, err)
 		return
 	}
-	if err := s.Client.Delete(ctx, claim); err != nil {
-		s.writeError(w, err)
-		return
-	}
-
 	caller, _ := CallerFrom(ctx)
 	outcome := "the database is kept at the provider"
 	if claim.Spec.DeletionPolicy == kitchenv1alpha1.ClaimDelete {
 		outcome = "the database is deprovisioned"
+	}
+	if !s.recorded(w, req, audit.Transition{
+		Object:    claim,
+		Kind:      audit.KindResourceClaim,
+		Operation: clickhouse.AuditDelete,
+		From:      string(claim.Status.Phase),
+		Project:   claim.Spec.ProjectRef.Name,
+		Reason:    fmt.Sprintf("claim %s deleted: %s", claim.Name, outcome),
+		Details: map[string]any{
+			"type":           claim.Spec.Type,
+			"deletionPolicy": string(claim.Spec.DeletionPolicy),
+		},
+	}) {
+		return
+	}
+	if err := s.Client.Delete(ctx, claim); err != nil {
+		s.writeError(w, err)
+		return
 	}
 	s.log().Info("claim deleted through the api",
 		"claim", claim.Name, "project", claim.Spec.ProjectRef.Name,

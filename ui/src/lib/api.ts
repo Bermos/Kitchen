@@ -89,10 +89,117 @@ export interface Build {
   git: Revision;
   detectedFramework?: string;
   image?: string;
+  artifact?: Artifact;
   startedAt?: string;
   completedAt?: string;
   createdAt: string;
   conditions?: Condition[];
+}
+
+/** What a build produced, by content, and whether the platform attested it.
+ *  The evidence itself is not here — it lives in the registry against the
+ *  digest, and `attestations()` is what reads it back. */
+export interface Artifact {
+  repository?: string;
+  digest?: string;
+  attested: boolean;
+  attestedAt?: string;
+  keyID?: string;
+  /** Why an artifact is unattested, when it is. */
+  message?: string;
+}
+
+/** One entry in the tamper-evident log. The chain fields come back with every
+ *  record on purpose: a view that hid them would be asking to be believed. */
+export interface AuditRecord {
+  sequence: number;
+  timestamp: string;
+  actor: string;
+  actorKind: string;
+  correlation?: string;
+  operation: string;
+  kind: string;
+  name: string;
+  project?: string;
+  fromState?: string;
+  toState?: string;
+  reason?: string;
+  details?: string;
+  prevHash: string;
+  hash: string;
+}
+
+export interface AuditQuery {
+  kind?: string;
+  name?: string;
+  project?: string;
+  actor?: string;
+  since?: string;
+  until?: string;
+  limit?: number;
+}
+
+/** A break in the chain: a record edited, removed, or slipped in. */
+export interface AuditFinding {
+  sequence: number;
+  break: "mutated" | "missing" | "unlinked";
+  detail: string;
+}
+
+export interface AuditVerification {
+  from: number;
+  to: number;
+  checked: number;
+  intact: boolean;
+  findings: AuditFinding[];
+  /** Where the platform believes the chain ends, held outside the table. A
+   *  run that is intact but ends below this is a log cut short from the end. */
+  anchor: number;
+  truncated: boolean;
+}
+
+/** What the platform is producing about itself. */
+export interface Compliance {
+  audit: {
+    enabled: boolean;
+    recording: boolean;
+    retentionDays: number;
+    sequence: number;
+    message?: string;
+  };
+  attestation: {
+    enabled: boolean;
+    signing: boolean;
+    keyID?: string;
+    /** The verification key, PEM. Public by construction — evidence signed
+     *  under a key nobody can obtain is evidence nobody can check. */
+    publicKey?: string;
+    message?: string;
+  };
+}
+
+/** One attestation attached to an artifact's digest. */
+export interface Evidence {
+  predicateType: string;
+  statement: {
+    _type: string;
+    subject: { name?: string; digest?: Record<string, string> }[];
+    predicateType: string;
+    predicate: unknown;
+  };
+  envelope: { payloadType: string; payload: string; signatures: { keyid?: string; sig: string }[] };
+  verified: boolean;
+  keyIDs?: string[];
+  digest: string;
+}
+
+export interface EvidenceSet {
+  subject: string;
+  /** Whether signatures were checked at all. A listing and a verification are
+   *  different things, and a reader that cannot tell them apart will
+   *  eventually treat one as the other. */
+  verified: boolean;
+  attestations: Evidence[];
 }
 
 export interface Release {
@@ -1687,6 +1794,17 @@ export const api = {
     return request<PlatformEvents>("GET", `/platform/events?${params}`);
   },
   platformIngest: () => request<PlatformIngest>("GET", "/platform/ingest"),
+
+  compliance: () => request<Compliance>("GET", "/compliance"),
+  audit: (query: AuditQuery = {}) => {
+    const params: Record<string, string> = {};
+    for (const [key, value] of Object.entries(query)) {
+      if (value !== undefined && value !== "") params[key] = String(value);
+    }
+    return list<AuditRecord>("/audit")(params);
+  },
+  verifyAudit: (from = 1) => request<AuditVerification>("GET", `/audit/verify?from=${from}`),
+  attestations: (build: string) => request<EvidenceSet>("GET", `/builds/${encodeURIComponent(build)}/attestations`),
 
   settings: () => request<Settings>("GET", "/settings"),
   updateSettings: (

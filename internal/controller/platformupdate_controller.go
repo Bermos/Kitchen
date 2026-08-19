@@ -37,6 +37,7 @@ import (
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/activity"
+	"github.com/Bermos/Kitchen/internal/audit"
 	"github.com/Bermos/Kitchen/internal/clickhouse"
 )
 
@@ -146,6 +147,10 @@ type PlatformUpdateReconciler struct {
 
 	// Activity feeds the dashboard's recent-activity feed. May be nil.
 	Activity *activity.Recorder
+	// Audit appends this reconciler's state transitions to the tamper-evident
+	// log. Unlike Activity it is waited on: a transition it refuses is a
+	// transition this reconciler does not make. May be nil.
+	Audit *audit.Recorder
 }
 
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=platformupdates,verbs=get;list;watch;create;update;patch;delete
@@ -415,6 +420,21 @@ func (r *PlatformUpdateReconciler) succeedUpdate(
 	update *kitchenv1alpha1.PlatformUpdate,
 	job *batchv1.Job,
 ) (ctrl.Result, error) {
+	if err := r.Audit.Record(ctx, audit.Transition{
+		Object:     update,
+		Kind:       audit.KindPlatformUpdate,
+		Controller: actorPlatformUpdateController,
+		From:       string(update.Status.Phase),
+		To:         string(kitchenv1alpha1.PlatformUpdateSucceeded),
+		Reason: fmt.Sprintf("platform upgraded from %s to %s",
+			updateFromVersion(update), update.Spec.Version),
+		Details: map[string]any{
+			"fromVersion": update.Status.FromVersion,
+			"toVersion":   update.Spec.Version,
+		},
+	}); err != nil {
+		return ctrl.Result{}, err
+	}
 	update.Status.Phase = kitchenv1alpha1.PlatformUpdateSucceeded
 	update.Status.Message = fmt.Sprintf("the platform is on %s", update.Spec.Version)
 	if job.Status.CompletionTime != nil {
@@ -439,6 +459,21 @@ func (r *PlatformUpdateReconciler) failUpdate(
 	update *kitchenv1alpha1.PlatformUpdate,
 	reason, message string,
 ) (ctrl.Result, error) {
+	if err := r.Audit.Record(ctx, audit.Transition{
+		Object:     update,
+		Kind:       audit.KindPlatformUpdate,
+		Controller: actorPlatformUpdateController,
+		From:       string(update.Status.Phase),
+		To:         string(kitchenv1alpha1.PlatformUpdateFailed),
+		Reason:     fmt.Sprintf("upgrade to %s failed: %s", update.Spec.Version, message),
+		Details: map[string]any{
+			"fromVersion": update.Status.FromVersion,
+			"toVersion":   update.Spec.Version,
+			"reason":      reason,
+		},
+	}); err != nil {
+		return ctrl.Result{}, err
+	}
 	update.Status.Phase = kitchenv1alpha1.PlatformUpdateFailed
 	update.Status.Message = message
 	update.Status.CompletedAt = ptr.To(metav1.Now())

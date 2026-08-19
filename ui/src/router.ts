@@ -34,6 +34,7 @@ export const router = createRouter({
     { path: "/platform/edge", name: "platform-edge", component: () => import("./views/PlatformEdgeView.vue") },
     { path: "/platform/storage", name: "platform-storage", component: () => import("./views/PlatformStorageView.vue") },
     { path: "/platform/events", name: "platform-events", component: () => import("./views/PlatformEventsView.vue") },
+    { path: "/platform/audit", name: "platform-audit", component: () => import("./views/PlatformAuditView.vue") },
     { path: "/builds/:name", name: "build", component: () => import("./views/BuildView.vue") },
     {
       path: "/environments/:name",

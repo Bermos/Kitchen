@@ -25,6 +25,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/audit"
+	"github.com/Bermos/Kitchen/internal/clickhouse"
 	"github.com/Bermos/Kitchen/internal/controller"
 	"github.com/Bermos/Kitchen/internal/ui"
 )
@@ -143,6 +145,17 @@ func (s *Server) patchSettings(w http.ResponseWriter, req *http.Request) {
 		kitchen.Spec.Observability.ClickHouse.RetentionDays = *body.LogRetentionDays
 	}
 
+	// Platform settings are the operator's own configuration, so a change to
+	// them is recorded like any other: what moved, and who moved it.
+	if !s.recorded(w, req, audit.Transition{
+		Object:    kitchen,
+		Kind:      audit.KindKitchen,
+		Operation: clickhouse.AuditUpdate,
+		Reason:    "platform settings were changed",
+		Details:   map[string]any{"fields": changedSettingsFields(body)},
+	}) {
+		return
+	}
 	if err := s.Client.Patch(req.Context(), kitchen, patch); err != nil {
 		s.writeError(w, err)
 		return
@@ -169,4 +182,24 @@ func UIConfig(c client.Client, clientID string) func(ctx context.Context) (ui.Co
 		}
 		return cfg, nil
 	}
+}
+
+// changedSettingsFields names the settings a PATCH carried, for the audit
+// record's details.
+func changedSettingsFields(body patchSettingsRequest) []string {
+	fields := []string{}
+	for _, field := range []struct {
+		name    string
+		changed bool
+	}{
+		{"buildStrategy", body.BuildStrategy != nil},
+		{"buildConcurrency", body.BuildConcurrency != nil},
+		{"releaseRetention", body.ReleaseRetention != nil},
+		{"logRetentionDays", body.LogRetentionDays != nil},
+	} {
+		if field.changed {
+			fields = append(fields, field.name)
+		}
+	}
+	return fields
 }

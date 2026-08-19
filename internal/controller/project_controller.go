@@ -36,6 +36,8 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/audit"
+	"github.com/Bermos/Kitchen/internal/clickhouse"
 	"github.com/Bermos/Kitchen/internal/gitprovider"
 )
 
@@ -62,6 +64,10 @@ type ProjectReconciler struct {
 	// GitProviders resolves a Provider for a Connection. Defaults to
 	// gitprovider.Default; tests inject fakes.
 	GitProviders gitprovider.Factory
+	// Audit appends this reconciler's state transitions to the tamper-evident
+	// log. Unlike Activity it is waited on: a transition it refuses is a
+	// transition this reconciler does not make. May be nil.
+	Audit *audit.Recorder
 }
 
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=projects,verbs=get;list;watch;create;update;patch;delete
@@ -86,6 +92,20 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 
 	if controllerutil.AddFinalizer(project, projectFinalizer) {
+		if err := r.Audit.Record(ctx, audit.Transition{
+			Object:     project,
+			Kind:       audit.KindProject,
+			Operation:  clickhouse.AuditCreate,
+			Controller: actorProjectController,
+			Project:    project.Name,
+			Reason:     fmt.Sprintf("project %s appeared", project.Name),
+			Details: map[string]any{
+				"repo":             project.Spec.Source.Repo,
+				"productionBranch": project.Spec.Source.ProductionBranch,
+			},
+		}); err != nil {
+			return ctrl.Result{}, err
+		}
 		if err := r.Update(ctx, project); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -167,6 +187,22 @@ func (r *ProjectReconciler) finalize(ctx context.Context, project *kitchenv1alph
 		return ctrl.Result{}, err
 	}
 
+	// Recorded here rather than where the deletion was requested, because
+	// this is the point at which everything the project owned is actually
+	// gone — which is the fact worth having a record of.
+	if err := r.Audit.Record(ctx, audit.Transition{
+		Object:     project,
+		Kind:       audit.KindProject,
+		Operation:  clickhouse.AuditDelete,
+		Controller: actorProjectController,
+		Project:    project.Name,
+		Reason: fmt.Sprintf(
+			"project %s deleted: its environments, builds, releases, domains, claims and namespace went with it",
+			project.Name),
+		Details: map[string]any{"repo": project.Spec.Source.Repo},
+	}); err != nil {
+		return ctrl.Result{}, err
+	}
 	controllerutil.RemoveFinalizer(project, projectFinalizer)
 	return ctrl.Result{}, r.Update(ctx, project)
 }

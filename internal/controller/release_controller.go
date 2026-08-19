@@ -34,6 +34,7 @@ import (
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/activity"
+	"github.com/Bermos/Kitchen/internal/audit"
 	"github.com/Bermos/Kitchen/internal/clickhouse"
 )
 
@@ -60,6 +61,10 @@ type ReleaseReconciler struct {
 	Scheme *runtime.Scheme
 	// Activity records pruned releases into the platform's feed. May be nil.
 	Activity *activity.Recorder
+	// Audit appends this reconciler's state transitions to the tamper-evident
+	// log. Unlike Activity it is waited on: a transition it refuses is a
+	// transition this reconciler does not make. May be nil.
+	Audit *audit.Recorder
 }
 
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=releases,verbs=get;list;watch;create;update;patch;delete
@@ -165,6 +170,19 @@ func (r *ReleaseReconciler) prune(
 		stale := &siblings[i]
 		if _, live := referenced[stale.Name]; live {
 			continue
+		}
+		if err := r.Audit.Record(ctx, audit.Transition{
+			Object:     stale,
+			Kind:       audit.KindRelease,
+			Operation:  clickhouse.AuditDelete,
+			Controller: actorReleaseController,
+			From:       stale.Spec.Image,
+			Project:    project,
+			Reason: fmt.Sprintf("pruned: %s keeps the newest %d releases and nothing is serving this one",
+				project, keep),
+			Details: map[string]any{"image": stale.Spec.Image, "retention": keep},
+		}); err != nil {
+			return err
 		}
 		if err := r.Delete(ctx, stale); err != nil {
 			if apierrors.IsNotFound(err) {

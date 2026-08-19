@@ -600,6 +600,9 @@ does not run in.
 {{- if and (gt (int .Values.replicaCount) 1) (not .Values.leaderElection) }}
 {{- fail "leaderElection must stay enabled when replicaCount > 1, otherwise every replica reconciles concurrently." }}
 {{- end }}
+{{- if and .Values.kitchen.compliance.audit.enabled (lt (int .Values.kitchen.compliance.audit.retentionDays) 90) }}
+{{- fail (printf "kitchen.compliance.audit.retentionDays must be at least 90 (got %d): the incident reporting duty the log exists to serve runs from when an institution became aware, which can be well after the transition that caused it, and a log that has already aged out cannot substantiate the report." (int .Values.kitchen.compliance.audit.retentionDays)) }}
+{{- end }}
 {{- if and .Values.clickhouse.enabled .Values.clickhouse.external.host }}
 {{- fail "clickhouse.enabled and clickhouse.external.host are mutually exclusive: either the chart runs ClickHouse or it points at yours." }}
 {{- end }}

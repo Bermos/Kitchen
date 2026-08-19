@@ -17,6 +17,7 @@ limitations under the License.
 package api
 
 import (
+	"fmt"
 	"net/http"
 	"sort"
 	"strings"
@@ -26,7 +27,9 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/audit"
 	"github.com/Bermos/Kitchen/internal/chartrepo"
+	"github.com/Bermos/Kitchen/internal/clickhouse"
 )
 
 // The updates endpoints are the platform's own upgrades: what it is running,
@@ -221,6 +224,17 @@ func (s *Server) createUpdate(w http.ResponseWriter, req *http.Request) {
 			Annotations:  map[string]string{requestedByAnnotation: callerName(caller)},
 		},
 		Spec: kitchenv1alpha1.PlatformUpdateSpec{Version: version},
+	}
+	if !s.recorded(w, req, audit.Transition{
+		Object:    update,
+		Kind:      audit.KindPlatformUpdate,
+		Operation: clickhouse.AuditCreate,
+		From:      s.Version,
+		To:        version,
+		Reason:    fmt.Sprintf("an upgrade of the platform to %s was requested", version),
+		Details:   map[string]any{"fromVersion": s.Version, "toVersion": version},
+	}) {
+		return
 	}
 	if err := s.Client.Create(ctx, update); err != nil {
 		s.writeError(w, err)

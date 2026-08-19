@@ -83,6 +83,16 @@ const (
 	RequestsHourView    = "http_requests_1h_mv"
 )
 
+// AuditTable holds the tamper-evident record of every state transition the
+// platform made: who moved what, from which state to which, chained so that a
+// row removed or edited afterwards can be detected.
+//
+// It is the one table in this schema whose retention is not the telemetry
+// one — see EnsureAuditSchema — and the one nothing but internal/audit is
+// allowed to write, because a second writer breaks the chain rather than
+// racing on it.
+const AuditTable = "audit_log"
+
 // K8sEventsTable holds the cluster's Warning events, recorded by the operator
 // from the same watch the component survey reads one at a time. It is what
 // turns "what happened at 03:00" from an hour-lived mystery — a Kubernetes
@@ -312,6 +322,20 @@ func (c *Client) EnsureRequestsSchema(ctx context.Context, retentionDays int32) 
 		return err
 	}
 	return c.Exec(ctx, createRequestsHourView(c.cfg.Database))
+}
+
+// EnsureAuditSchema creates the audit log and keeps its TTL in step with the
+// compliance retention configured on the Kitchen object.
+//
+// It is not part of EnsureTelemetrySchema and takes its own retention for the
+// reason AuditSpec.RetentionDays gives: telemetry ages out in weeks and the
+// evidence an incident is reconstructed from must not go with it. It is also
+// the one schema call that runs on an installation which has disabled every
+// other kind of collection — turning telemetry down is a storage decision,
+// turning the audit log off is a compliance one, and they are asked
+// separately.
+func (c *Client) EnsureAuditSchema(ctx context.Context, retentionDays int32) error {
+	return c.ensureTable(ctx, AuditTable, createAuditTable(c.cfg.Database, retentionDays), retentionDays)
 }
 
 // EnsureK8sEventsSchema creates the cluster's Warning-event history.
@@ -1007,6 +1031,51 @@ GROUP BY bucket, project, environment, host, route, method, status`,
 		quoteIdentifier(database), quoteIdentifier(view),
 		quoteIdentifier(database), quoteIdentifier(table), bucket,
 		quoteIdentifier(database), quoteIdentifier(RequestsTable))
+}
+
+// createAuditTable is the audit log's schema: one row per recorded state
+// transition, in chain order.
+//
+// The ordering key is the sequence alone, and that is the whole point. Every
+// other table here is ordered by what it is read by; this one is ordered by
+// what it is *verified* by, because a verifier walks the chain from 1 upwards
+// and a key that led with the project would make that walk a full scan. The
+// reads the audit view makes — one object, one actor, a window — are served by
+// the skip indexes instead, which is the right trade for a table whose row
+// count is deploys and edits rather than requests.
+//
+// Nothing here is nullable and nothing has a default: a column the writer
+// forgot would otherwise be hashed as an empty string on the way in and read
+// back as one, which is a chain that verifies over a record that lost a field.
+func createAuditTable(database string, retentionDays int32) string {
+	return fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.%s
+(
+    sequence    UInt64,
+    timestamp   DateTime64(3, 'UTC'),
+    actor       String,
+    actor_kind  LowCardinality(String),
+    correlation String,
+    operation   LowCardinality(String),
+    kind        LowCardinality(String),
+    namespace   LowCardinality(String),
+    name        String,
+    uid         String,
+    project     LowCardinality(String),
+    from_state  LowCardinality(String),
+    to_state    LowCardinality(String),
+    reason      String,
+    details     String,
+    prev_hash   String,
+    hash        String,
+    INDEX idx_object (kind, name) TYPE bloom_filter(0.01) GRANULARITY 1,
+    INDEX idx_actor actor TYPE bloom_filter(0.01) GRANULARITY 1,
+    INDEX idx_project project TYPE bloom_filter(0.01) GRANULARITY 1,
+    INDEX idx_timestamp timestamp TYPE minmax GRANULARITY 1
+)
+ENGINE = MergeTree
+PARTITION BY toYYYYMM(timestamp)
+ORDER BY (sequence)
+TTL %s`, quoteIdentifier(database), quoteIdentifier(AuditTable), ttlExpression(retentionDays))
 }
 
 // createK8sEventsTable is the cluster's Warning events as a history.

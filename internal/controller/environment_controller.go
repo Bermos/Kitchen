@@ -42,6 +42,7 @@ import (
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/activity"
+	"github.com/Bermos/Kitchen/internal/audit"
 	"github.com/Bermos/Kitchen/internal/clickhouse"
 	"github.com/Bermos/Kitchen/internal/gitprovider"
 	"github.com/Bermos/Kitchen/internal/previewgate"
@@ -108,6 +109,10 @@ type EnvironmentReconciler struct {
 	// deployment (and a preview's URL) back to the pull request. Defaults to
 	// gitprovider.Default; tests inject fakes.
 	GitProviders gitprovider.Factory
+	// Audit appends this reconciler's state transitions to the tamper-evident
+	// log. Unlike Activity it is waited on: a transition it refuses is a
+	// transition this reconciler does not make. May be nil.
+	Audit *audit.Recorder
 }
 
 // git reports deploy status back to the repository the Environment's commit
@@ -142,7 +147,23 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return r.finalize(ctx, env)
 	}
 
+	// The finalizer is added exactly once, on the first reconcile after the
+	// object appears, which makes it the one place an Environment's creation
+	// can be recorded no matter who created it — a build, the API, or
+	// somebody with kubectl.
 	if controllerutil.AddFinalizer(env, environmentFinalizer) {
+		if err := r.Audit.Record(ctx, audit.Transition{
+			Object:     env,
+			Kind:       audit.KindEnvironment,
+			Operation:  clickhouse.AuditCreate,
+			Controller: actorEnvironmentController,
+			To:         env.Spec.ReleaseRef.Name,
+			Project:    env.Spec.ProjectRef.Name,
+			Reason:     fmt.Sprintf("environment %s appeared", env.Name),
+			Details:    map[string]any{"type": string(env.Spec.Type), "release": env.Spec.ReleaseRef.Name},
+		}); err != nil {
+			return ctrl.Result{}, err
+		}
 		if err := r.Update(ctx, env); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -265,6 +286,18 @@ func (r *EnvironmentReconciler) finalize(ctx context.Context, env *kitchenv1alph
 	// would go on advertising a URL that no longer answers.
 	r.git().retireEnvironment(ctx, env, env.Status.GitReport)
 
+	if err := r.Audit.Record(ctx, audit.Transition{
+		Object:     env,
+		Kind:       audit.KindEnvironment,
+		Operation:  clickhouse.AuditDelete,
+		Controller: actorEnvironmentController,
+		From:       env.Spec.ReleaseRef.Name,
+		Project:    env.Spec.ProjectRef.Name,
+		Reason:     fmt.Sprintf("environment %s and everything it was running were torn down", env.Name),
+		Details:    map[string]any{"type": string(env.Spec.Type), "release": env.Spec.ReleaseRef.Name},
+	}); err != nil {
+		return ctrl.Result{}, err
+	}
 	controllerutil.RemoveFinalizer(env, environmentFinalizer)
 	if err := r.Update(ctx, env); err != nil {
 		return ctrl.Result{}, err

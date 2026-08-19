@@ -41,6 +41,7 @@ import (
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/activity"
+	"github.com/Bermos/Kitchen/internal/audit"
 	"github.com/Bermos/Kitchen/internal/clickhouse"
 	"github.com/Bermos/Kitchen/internal/framework"
 	"github.com/Bermos/Kitchen/internal/gitprovider"
@@ -102,10 +103,45 @@ type BuildReconciler struct {
 	Scheme *runtime.Scheme
 	// Activity feeds the dashboard's recent-activity feed. May be nil.
 	Activity *activity.Recorder
+	// Audit appends this reconciler's state transitions to the tamper-evident
+	// log. Unlike Activity it is waited on: a transition it refuses is a
+	// transition this reconciler does not make. May be nil.
+	Audit *audit.Recorder
 	// GitProviders resolves a Provider for a Connection, for reporting the
 	// build's outcome back onto its commit. Defaults to gitprovider.Default;
 	// tests inject fakes.
 	GitProviders gitprovider.Factory
+	// Attesters resolves how signed evidence reaches the registry a build
+	// pushed to. Nil talks to the real registry with the build's own
+	// credential; tests point it at an in-process one.
+	Attesters AttesterFactory
+}
+
+// buildTarget is where a build pushed and how: the registry, the credential
+// it authenticated with, and the strategy it was built under. It travels
+// together because everything downstream of a finished build — the digest, the
+// evidence attached to it, the pull secret the deployment needs — is a
+// question about the same registry.
+type buildTarget struct {
+	// Connection is the dockerRegistry Connection the project pushes
+	// through, in the platform namespace.
+	Connection *kitchenv1alpha1.Connection
+	// Registry is that connection resolved: prefix, server and base URL.
+	Registry provider.RegistryTarget
+	// Strategy the build was actually run under, after detection.
+	Strategy kitchenv1alpha1.BuildStrategy
+	// Tag is the reference the builder was told to push, before the digest
+	// is known.
+	Tag string
+	// Namespace is the application namespace the Job ran in.
+	Namespace string
+}
+
+// correlationFor ties every record a commit produces together: the build's own
+// transitions, the Release it leaves behind, and the Environment that takes
+// it. The commit is the cause, so the commit is the correlation.
+func correlationFor(build *kitchenv1alpha1.Build) string {
+	return build.Spec.Git.SHA
 }
 
 // git reports the build's progress back to the repository the commit came
@@ -190,6 +226,25 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		log.Info("build job created",
 			"namespace", appNS, "job", build.Name, "image", tagRef,
 			"strategy", strategy, "framework", detected.Name)
+		if err := r.Audit.Record(ctx, audit.Transition{
+			Object:      build,
+			Kind:        audit.KindBuild,
+			Controller:  actorBuildController,
+			Correlation: correlationFor(build),
+			From:        string(build.Status.Phase),
+			To:          string(kitchenv1alpha1.BuildRunning),
+			Project:     project.Name,
+			Reason:      "the build job was created",
+			Details: map[string]any{
+				"commit":    build.Spec.Git.SHA,
+				"branch":    build.Spec.Git.Branch,
+				"strategy":  string(strategy),
+				"framework": detected.Name,
+				"image":     tagRef,
+			},
+		}); err != nil {
+			return ctrl.Result{}, err
+		}
 		build.Status.Phase = kitchenv1alpha1.BuildRunning
 		build.Status.DetectedFramework = detected.Name
 		build.Status.StartedAt = ptr.To(metav1.Now())
@@ -209,7 +264,13 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	complete, failed, message := jobOutcome(job)
 	switch {
 	case complete:
-		return r.succeed(ctx, build, project, job, appNS, tagRef)
+		return r.succeed(ctx, build, project, job, buildTarget{
+			Connection: registryConn,
+			Registry:   registry,
+			Strategy:   strategy,
+			Tag:        tagRef,
+			Namespace:  appNS,
+		})
 	case failed:
 		return r.fail(ctx, build, project, reasonBuildFailed, message)
 	default:
@@ -482,9 +543,27 @@ func (r *BuildReconciler) succeed(
 	build *kitchenv1alpha1.Build,
 	project *kitchenv1alpha1.Project,
 	job *batchv1.Job,
-	appNS, tagRef string,
+	target buildTarget,
 ) (ctrl.Result, error) {
-	image, digestFound := r.imageWithDigest(ctx, appNS, build.Name, tagRef)
+	image, digestFound := r.imageWithDigest(ctx, target.Namespace, build.Name, target.Tag)
+
+	if err := r.Audit.Record(ctx, audit.Transition{
+		Object:      build,
+		Kind:        audit.KindBuild,
+		Controller:  actorBuildController,
+		Correlation: correlationFor(build),
+		From:        string(build.Status.Phase),
+		To:          string(kitchenv1alpha1.BuildSucceeded),
+		Project:     project.Name,
+		Reason:      "the build job completed and pushed an image",
+		Details: map[string]any{
+			"commit":      build.Spec.Git.SHA,
+			"image":       image,
+			"digestKnown": digestFound,
+		},
+	}); err != nil {
+		return ctrl.Result{}, err
+	}
 
 	release := &kitchenv1alpha1.Release{
 		ObjectMeta: metav1.ObjectMeta{
@@ -502,6 +581,23 @@ func (r *BuildReconciler) succeed(
 			},
 		},
 	}
+	if err := r.Audit.Record(ctx, audit.Transition{
+		Object:      release,
+		Kind:        audit.KindRelease,
+		Operation:   clickhouse.AuditCreate,
+		Controller:  actorBuildController,
+		Correlation: correlationFor(build),
+		To:          image,
+		Project:     project.Name,
+		Reason:      fmt.Sprintf("build %s produced a release", build.Name),
+		Details: map[string]any{
+			"build":  build.Name,
+			"commit": build.Spec.Git.SHA,
+			"image":  image,
+		},
+	}); err != nil {
+		return ctrl.Result{}, err
+	}
 	if err := r.Create(ctx, release); err != nil && !apierrors.IsAlreadyExists(err) {
 		return ctrl.Result{}, err
 	}
@@ -515,14 +611,14 @@ func (r *BuildReconciler) succeed(
 			}
 			envName := fmt.Sprintf("%s-pr-%d", project.Name, *build.Spec.Git.PullRequest)
 			if err := r.ensureEnvironment(ctx, build.Namespace, project, envName,
-				kitchenv1alpha1.EnvironmentPreview, preview, release.Name, build.Name); err != nil {
+				kitchenv1alpha1.EnvironmentPreview, preview, release.Name, build); err != nil {
 				return ctrl.Result{}, err
 			}
 		}
 	case build.Spec.Git.Branch == project.Spec.Source.ProductionBranch:
 		envName := project.Name + "-production"
 		if err := r.ensureEnvironment(ctx, build.Namespace, project, envName,
-			kitchenv1alpha1.EnvironmentProduction, nil, release.Name, build.Name); err != nil {
+			kitchenv1alpha1.EnvironmentProduction, nil, release.Name, build); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
@@ -534,6 +630,10 @@ func (r *BuildReconciler) succeed(
 	} else {
 		build.Status.CompletedAt = ptr.To(metav1.Now())
 	}
+	// Attested after the times are stamped and before the status is written,
+	// so the record carries the Job's own start and finish and the Build
+	// carries the outcome in the same update.
+	build.Status.Artifact = r.attestBuild(ctx, build, project, target, image)
 	reason, msg := "BuildSucceeded", fmt.Sprintf("image %s pushed", image)
 	if !digestFound {
 		reason, msg = "ImageDigestUnavailable", "build succeeded but the image digest could not be read; recorded the tag reference"
@@ -585,8 +685,9 @@ func (r *BuildReconciler) ensureEnvironment(
 	envType kitchenv1alpha1.EnvironmentType,
 	preview *kitchenv1alpha1.PreviewInfo,
 	releaseName string,
-	buildName string,
+	build *kitchenv1alpha1.Build,
 ) error {
+	buildName := build.Name
 	env := &kitchenv1alpha1.Environment{}
 	err := r.Get(ctx, types.NamespacedName{Namespace: namespace, Name: envName}, env)
 	if apierrors.IsNotFound(err) {
@@ -602,6 +703,19 @@ func (r *BuildReconciler) ensureEnvironment(
 				Preview:    preview,
 				ReleaseRef: kitchenv1alpha1.LocalObjectReference{Name: releaseName},
 			},
+		}
+		if err := r.Audit.Record(ctx, audit.Transition{
+			Object:      env,
+			Kind:        audit.KindEnvironment,
+			Operation:   clickhouse.AuditCreate,
+			Controller:  actorBuildController,
+			Correlation: correlationFor(build),
+			To:          releaseName,
+			Project:     project.Name,
+			Reason:      fmt.Sprintf("build %s created environment %s", buildName, envName),
+			Details:     map[string]any{"type": string(envType), "release": releaseName, "build": buildName},
+		}); err != nil {
+			return err
 		}
 		if err := r.Create(ctx, env); err != nil {
 			return err
@@ -632,6 +746,19 @@ func (r *BuildReconciler) ensureEnvironment(
 		return nil
 	}
 	outgoing := env.Spec.ReleaseRef.Name
+	if err := r.Audit.Record(ctx, audit.Transition{
+		Object:      env,
+		Kind:        audit.KindEnvironment,
+		Controller:  actorBuildController,
+		Correlation: correlationFor(build),
+		From:        outgoing,
+		To:          releaseName,
+		Project:     project.Name,
+		Reason:      fmt.Sprintf("build %s promoted release %s to %s", buildName, releaseName, envName),
+		Details:     map[string]any{"release": releaseName, "previousRelease": outgoing, "build": buildName},
+	}); err != nil {
+		return err
+	}
 	env.Spec.ReleaseRef = kitchenv1alpha1.LocalObjectReference{Name: releaseName}
 	if err := r.Update(ctx, env); err != nil {
 		return err
@@ -757,6 +884,19 @@ func (r *BuildReconciler) fail(
 	project *kitchenv1alpha1.Project,
 	reason, message string,
 ) (ctrl.Result, error) {
+	if err := r.Audit.Record(ctx, audit.Transition{
+		Object:      build,
+		Kind:        audit.KindBuild,
+		Controller:  actorBuildController,
+		Correlation: correlationFor(build),
+		From:        string(build.Status.Phase),
+		To:          string(kitchenv1alpha1.BuildFailed),
+		Project:     build.Spec.ProjectRef.Name,
+		Reason:      message,
+		Details:     map[string]any{"commit": build.Spec.Git.SHA, "reason": reason},
+	}); err != nil {
+		return ctrl.Result{}, err
+	}
 	build.Status.Phase = kitchenv1alpha1.BuildFailed
 	build.Status.CompletedAt = ptr.To(metav1.Now())
 	meta.SetStatusCondition(&build.Status.Conditions, metav1.Condition{

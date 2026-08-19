@@ -42,6 +42,8 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/audit"
+	"github.com/Bermos/Kitchen/internal/clickhouse"
 )
 
 const (
@@ -82,6 +84,10 @@ type DomainReconciler struct {
 	// Resolver answers the verification lookups. Nil uses the system
 	// resolver; tests inject a fake.
 	Resolver DNSResolver
+	// Audit appends this reconciler's state transitions to the tamper-evident
+	// log. Unlike Activity it is waited on: a transition it refuses is a
+	// transition this reconciler does not make. May be nil.
+	Audit *audit.Recorder
 }
 
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=domains,verbs=get;list;watch;create;update;patch;delete
@@ -106,6 +112,20 @@ func (r *DomainReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	}
 
 	if controllerutil.AddFinalizer(domain, domainFinalizer) {
+		if err := r.Audit.Record(ctx, audit.Transition{
+			Object:     domain,
+			Kind:       audit.KindDomain,
+			Operation:  clickhouse.AuditCreate,
+			Controller: actorDomainController,
+			To:         domain.Spec.Hostname,
+			Reason:     fmt.Sprintf("domain %s was attached to environment %s", domain.Spec.Hostname, domain.Spec.EnvironmentRef.Name),
+			Details: map[string]any{
+				"hostname":    domain.Spec.Hostname,
+				"environment": domain.Spec.EnvironmentRef.Name,
+			},
+		}); err != nil {
+			return ctrl.Result{}, err
+		}
 		if err := r.Update(ctx, domain); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -194,6 +214,20 @@ func (r *DomainReconciler) finalize(ctx context.Context, domain *kitchenv1alpha1
 		}
 	}
 
+	if err := r.Audit.Record(ctx, audit.Transition{
+		Object:     domain,
+		Kind:       audit.KindDomain,
+		Operation:  clickhouse.AuditDelete,
+		Controller: actorDomainController,
+		From:       domain.Spec.Hostname,
+		Reason:     fmt.Sprintf("domain %s was removed, with its listener and certificate", domain.Spec.Hostname),
+		Details: map[string]any{
+			"hostname":    domain.Spec.Hostname,
+			"environment": domain.Spec.EnvironmentRef.Name,
+		},
+	}); err != nil {
+		return ctrl.Result{}, err
+	}
 	controllerutil.RemoveFinalizer(domain, domainFinalizer)
 	return ctrl.Result{}, r.Update(ctx, domain)
 }

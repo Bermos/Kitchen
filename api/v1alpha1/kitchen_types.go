@@ -459,6 +459,11 @@ type KitchenSpec struct {
 
 	// +optional
 	Observability ObservabilitySpec `json:"observability,omitempty"`
+
+	// Compliance configures the evidence the platform produces about its own
+	// operation: the audit log and the attestations attached to artifacts.
+	// +optional
+	Compliance ComplianceSpec `json:"compliance,omitempty"`
 }
 
 // ComponentStatus reports the runtime health of one platform workload.
@@ -532,6 +537,12 @@ type KitchenStatus struct {
 	// +listType=map
 	// +listMapKey=name
 	Components []ComponentStatus `json:"components,omitempty"`
+
+	// Compliance reports the audit log and the signing identity, so that an
+	// installation which believes it is producing evidence can find out that
+	// it is not.
+	// +optional
+	Compliance *ComplianceStatus `json:"compliance,omitempty"`
 }
 
 // +kubebuilder:object:root=true

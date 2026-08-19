@@ -48,6 +48,7 @@ import (
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/activity"
+	"github.com/Bermos/Kitchen/internal/audit"
 	"github.com/Bermos/Kitchen/internal/chartrepo"
 	"github.com/Bermos/Kitchen/internal/clickhouse"
 	"github.com/Bermos/Kitchen/internal/controller"
@@ -85,6 +86,18 @@ type Server struct {
 	// Activity records the writes this API carries out — a project created,
 	// a release promoted — into the platform's activity feed. May be nil.
 	Activity *activity.Recorder
+
+	// EvidenceReaders resolves how the attestations endpoint reaches the
+	// registry an artifact lives in. Nil talks to the real one with the
+	// project's own registry credential; tests point it at an in-process
+	// registry.
+	EvidenceReaders EvidenceFactory
+
+	// Audit records the same writes into the tamper-evident log, and is the
+	// other half of the contract: the feed is best-effort and this is not.
+	// A write this refuses is a write the API does not make. May be nil,
+	// which records nothing.
+	Audit *audit.Recorder
 
 	// Flows is the Hubble follower, for its loss accounting alone. It is the
 	// only thing that sees Relay's LostEvent notices, so it is the only thing
@@ -185,6 +198,13 @@ type logReader interface {
 	// a store that appears after the operator started answers these reads too.
 	NodeUsage(ctx context.Context, query clickhouse.NodeUsageQuery) ([]clickhouse.NodeUsage, error)
 	VolumeUsage(ctx context.Context, query clickhouse.VolumeUsageQuery) ([]clickhouse.VolumeUsage, error)
+
+	// The audit log's two reads. They live on the same store as everything
+	// above, so they resolve the same way — but they answer to a different
+	// retention and a different guarantee, which is why the table is not one
+	// of the telemetry ones.
+	QueryAuditRecords(ctx context.Context, query clickhouse.AuditQuery) ([]clickhouse.AuditRecord, error)
+	ScanAuditRecords(ctx context.Context, from int64, limit int) ([]clickhouse.AuditRecord, error)
 }
 
 // The store reads the signals gatherer needs are a subset of the ones above, so
@@ -272,6 +292,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/builds/{name}", s.getBuild)
 	mux.HandleFunc("POST /api/v1/builds/{name}/cancel", s.cancelBuild)
 	mux.HandleFunc("GET /api/v1/builds/{name}/logs", s.buildLogs)
+	mux.HandleFunc("GET /api/v1/builds/{name}/attestations", s.buildAttestations)
 
 	mux.HandleFunc("GET /api/v1/releases", s.listReleases)
 	mux.HandleFunc("GET /api/v1/releases/{name}", s.getRelease)
@@ -300,6 +321,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/v1/logs/saved/{name}", s.deleteSavedQuery)
 
 	mux.HandleFunc("GET /api/v1/events", s.listEvents)
+	mux.HandleFunc("GET /api/v1/compliance", s.getCompliance)
+	mux.HandleFunc("GET /api/v1/audit", s.listAuditRecords)
+	mux.HandleFunc("GET /api/v1/audit/verify", s.verifyAuditChain)
 	mux.HandleFunc("GET /api/v1/metrics/overview", s.metricsOverview)
 	mux.HandleFunc("GET /api/v1/traffic", s.traffic)
 
