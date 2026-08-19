@@ -59,7 +59,18 @@ that died is not a backup. Taking one is recorded in the audit log as an
 `export` against the Kitchen object, because "who took a copy of everything,
 and when" is exactly the sentence an audit log exists to be able to produce.
 
-The same thing over the API, for a cron job of your own:
+The same thing from a terminal, which is what a scheduled backup uses — a
+backup that only happens when somebody remembers to click is not a backup:
+
+```sh
+kitchen backup                                   # into the current directory
+kitchen backup /backups/kitchen.tar.gz --force   # somewhere else, overwriting
+```
+
+With `--json` it answers one object naming the file and what went into it, read
+back off the archive rather than remembered, so a cron job can check that what
+it just took carries the accounts as well as the objects. Or over the API
+directly:
 
 ```sh
 curl -fsSL -X POST -H "authorization: Bearer $TOKEN" \

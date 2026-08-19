@@ -374,6 +374,7 @@ var publishedShapes = map[string]struct {
 	"deployEvent":     {"One event of a followed deploy: build, log, release, environment or result", deployEvent{}},
 	"linked":          {"What a directory was linked to, and where the fact was written", linked{}},
 	"forgotten":       {"Which installations this machine no longer holds a credential for", forgotten{}},
+	"backupTaken":     {"An archive that was taken: where it went, and what the platform put in it", backupTaken{}},
 	"schema":          {"This document", schema{}},
 }
 

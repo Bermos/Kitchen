@@ -64,6 +64,12 @@ type platform struct {
 	buildPhases []string
 	phaseReads  int
 
+	// backup is the archive POST /platform/backup answers with, and
+	// backupFilename the name it suggests. A nil archive is refused the way
+	// the API refuses a member.
+	backup         []byte
+	backupFilename string
+
 	// refuse answers every API call with this status and message when set.
 	refuseStatus  int
 	refuseMessage string
@@ -145,11 +151,28 @@ func (p *platform) serve(w http.ResponseWriter, req *http.Request) {
 		p.answerBuild(w)
 	case strings.HasPrefix(path, "/environments/") && req.Method == http.MethodPatch:
 		p.moveEnvironment(w, body)
+	case path == "/platform/backup" && req.Method == http.MethodPost:
+		p.answerBackup(w)
 	case strings.HasPrefix(path, "/environments/"):
 		p.answerEnvironment(w, strings.TrimPrefix(path, "/environments/"))
 	default:
 		writeAnswer(w, http.StatusNotFound, errorBody{Error: "no such endpoint: " + path})
 	}
+}
+
+// answerBackup streams a real archive, built by the same package the operator
+// builds one with. A fixture of bytes would prove the command wrote a file; a
+// real archive proves it wrote one that reads back.
+func (p *platform) answerBackup(w http.ResponseWriter) {
+	if p.backup == nil {
+		writeAnswer(w, http.StatusForbidden, errorBody{
+			Error: "exporting the platform's state needs the operator role; you are a member"})
+		return
+	}
+	w.Header().Set("Content-Type", "application/gzip")
+	w.Header().Set("Content-Disposition", `attachment; filename="`+p.backupFilename+`"`)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(p.backup)
 }
 
 func (p *platform) startBuild(w http.ResponseWriter, body []byte) {
