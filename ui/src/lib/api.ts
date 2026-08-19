@@ -468,6 +468,12 @@ export interface PlatformUpdates {
    */
   upgradableTo?: string[];
   allowMinor: boolean;
+  /**
+   * When the published versions were last read from the registry. The listing
+   * is cached for an hour, so a re-check that turns up nothing new is only
+   * legible next to the time it was taken.
+   */
+  checkedAt?: string;
   /** Why the published versions could not be listed — usually no egress. */
   discoveryError?: string;
   items: PlatformUpdate[];
@@ -1564,7 +1570,9 @@ export const api = {
 
   // The platform upgrading itself. Creating an update takes a version and
   // nothing else; every other decision is the operator's.
-  updates: () => request<PlatformUpdates>("GET", "/updates"),
+  // `refresh` skips the hour-long cache in front of the chart registry and
+  // asks it again, which is what the settings page's re-check does.
+  updates: (refresh = false) => request<PlatformUpdates>("GET", `/updates${refresh ? "?refresh=true" : ""}`),
   startUpdate: (version: string) => request<PlatformUpdate>("POST", "/updates", { version }),
 
   builds: list<Build>("/builds"),
