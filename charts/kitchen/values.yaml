@@ -176,6 +176,33 @@ kitchen:
     # one behind; older ones are pruned, except any an environment still
     # references. `0` keeps every release forever.
     releaseRetention: 10
+  compliance:
+    audit:
+      # -- Record every state transition the platform makes into an
+      # append-only, hash-chained log, so that what the platform did can be
+      # shown to somebody later rather than only believed. Off is a
+      # deliberate choice: the decisions still happen, they just leave
+      # nothing behind. Needs a telemetry store — the log is a table in it.
+      enabled: true
+      # -- Days to retain audit records. This is deliberately not the
+      # telemetry retention above: logs and metrics age out in weeks, and the
+      # evidence an incident is reconstructed from must not go with them. The
+      # floor is 90 days; installations under a records-retention obligation
+      # will want years.
+      retentionDays: 365
+    attestation:
+      # -- Sign a build record for every artifact the platform builds and
+      # attach it to the artifact's digest, as a DSSE envelope over an
+      # in-toto statement, through OCI referrers. The evidence is readable
+      # with cosign and needs nothing from Kitchen.
+      enabled: true
+      # -- Secret in the platform namespace holding the ECDSA P-256 keypair
+      # attestations are signed with, under `private.pem` and `public.pem`.
+      # Empty has the operator generate one into `kitchen-attestation-key`
+      # and keep it across upgrades. Set it to bring your own key, which is
+      # what an installation whose custody rules forbid a platform-generated
+      # key does.
+      signingKeySecretName: ""
   observability:
     clickhouse:
       # -- Days to retain logs, metrics, traces and flow data.

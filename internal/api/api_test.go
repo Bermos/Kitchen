@@ -267,6 +267,11 @@ func fixtures() []runtime.Object {
 
 // stubLogs stands in for the telemetry store.
 type stubLogs struct {
+	auditRecords  []clickhouse.AuditRecord
+	lastAudit     clickhouse.AuditQuery
+	auditErr      error
+	lastScanFrom  int64
+	lastScanLimit int
 	lines         []clickhouse.LogLine
 	last          clickhouse.LogQuery
 	lastFilter    clickhouse.LogFilter
@@ -582,6 +587,34 @@ func (s *stubLogs) NodeUsage(
 		return nil, s.nodeUsageErr
 	}
 	return s.nodeUsage, nil
+}
+
+func (s *stubLogs) QueryAuditRecords(
+	_ context.Context,
+	query clickhouse.AuditQuery,
+) ([]clickhouse.AuditRecord, error) {
+	s.lastAudit = query
+	if s.auditErr != nil {
+		return nil, s.auditErr
+	}
+	return s.auditRecords, nil
+}
+
+// ScanAuditRecords answers the run starting at `from`, out of whatever the
+// stub was given. It filters rather than returning everything, because the
+// chain verifier's whole behaviour is about which records it was handed.
+func (s *stubLogs) ScanAuditRecords(_ context.Context, from int64, limit int) ([]clickhouse.AuditRecord, error) {
+	s.lastScanFrom, s.lastScanLimit = from, limit
+	if s.auditErr != nil {
+		return nil, s.auditErr
+	}
+	run := []clickhouse.AuditRecord{}
+	for _, record := range s.auditRecords {
+		if record.Sequence >= from && len(run) < limit {
+			run = append(run, record)
+		}
+	}
+	return run, nil
 }
 
 func (s *stubLogs) VolumeUsage(

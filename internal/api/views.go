@@ -165,6 +165,41 @@ type buildView struct {
 	CompletedAt       *time.Time      `json:"completedAt,omitempty"`
 	CreatedAt         time.Time       `json:"createdAt"`
 	Conditions        []conditionView `json:"conditions,omitempty"`
+	// Artifact is what the build produced, by content, and whether the
+	// platform managed to attest it. Absent on a build that never got as far
+	// as pushing anything.
+	Artifact *artifactView `json:"artifact,omitempty"`
+}
+
+// artifactView is the artifact half of a build. It carries whether evidence
+// was attached and under which key, but not the evidence itself: that lives in
+// the registry against the digest, and the attestations endpoint is where it
+// is read from.
+type artifactView struct {
+	Repository string     `json:"repository,omitempty"`
+	Digest     string     `json:"digest,omitempty"`
+	Attested   bool       `json:"attested"`
+	AttestedAt *time.Time `json:"attestedAt,omitempty"`
+	KeyID      string     `json:"keyID,omitempty"`
+	Message    string     `json:"message,omitempty"`
+}
+
+func newArtifactView(artifact *kitchenv1alpha1.ArtifactStatus) *artifactView {
+	if artifact == nil {
+		return nil
+	}
+	view := &artifactView{
+		Repository: artifact.Repository,
+		Digest:     artifact.Digest,
+		Attested:   artifact.AttestedAt != nil,
+		KeyID:      artifact.KeyID,
+		Message:    artifact.Message,
+	}
+	if at := artifact.AttestedAt; at != nil {
+		stamp := at.Time
+		view.AttestedAt = &stamp
+	}
+	return view
 }
 
 func newBuildView(build *kitchenv1alpha1.Build) buildView {
@@ -181,6 +216,7 @@ func newBuildView(build *kitchenv1alpha1.Build) buildView {
 		},
 		DetectedFramework: build.Status.DetectedFramework,
 		Image:             build.Status.Image,
+		Artifact:          newArtifactView(build.Status.Artifact),
 		CreatedAt:         build.CreationTimestamp.Time,
 		Conditions:        conditionViews(build.Status.Conditions),
 	}

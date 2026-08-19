@@ -17,6 +17,8 @@ three, and the operator writes the flows and owns the schema under all of it.
 - [CRD schema](docs/CRDS.md) — the operator's data model and reconcile flows
 - [Auth architecture](docs/AUTH.md) — the platform's identity provider
 - [REST API](docs/API.md) — the endpoints, and how to get a token for them
+- [Compliance](docs/COMPLIANCE.md) — evidence as a byproduct of deployment: the audit
+  log, and the attestations attached to every artifact
 
 ## Layout
 
@@ -25,6 +27,9 @@ three, and the operator writes the flows and owns the schema under all of it.
   SavedQuery
 - `internal/controller/` — one reconciler per CRD
 - `internal/api/` — the REST API, behind the platform's identity provider
+- `internal/audit/`, `internal/attestation/` — the evidence layer: the hash-chained
+  record of every state transition, and the DSSE/in-toto attestations attached to
+  built artifacts through OCI referrers
 - `internal/flows/`, `internal/usage/` — the telemetry no collector produces:
   Hubble flow observations, and the restarts, OOM kills, resource limits and
   replica counts the operator samples off the API server and exports to the

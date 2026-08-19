@@ -36,6 +36,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/audit"
 	"github.com/Bermos/Kitchen/internal/clickhouse"
 	"github.com/Bermos/Kitchen/internal/controller"
 )
@@ -207,6 +208,22 @@ func (s *Server) createProject(w http.ResponseWriter, req *http.Request) {
 			},
 			Previews: kitchenv1alpha1.PreviewsSpec{Enabled: previews},
 		},
+	}
+	if !s.recorded(w, req, audit.Transition{
+		Object:    project,
+		Kind:      audit.KindProject,
+		Operation: clickhouse.AuditCreate,
+		To:        project.Name,
+		Project:   project.Name,
+		Reason:    fmt.Sprintf("project %s created from %s", project.Name, body.Repo),
+		Details: map[string]any{
+			"repo":             body.Repo,
+			"productionBranch": branch,
+			"sourceConnection": body.Connection,
+			"registry":         body.Registry,
+		},
+	}) {
+		return
 	}
 	if err := s.Client.Create(ctx, project); err != nil {
 		s.writeError(w, err)
@@ -404,6 +421,16 @@ func (s *Server) patchProject(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 
+	if !s.recorded(w, req, audit.Transition{
+		Object:    project,
+		Kind:      audit.KindProject,
+		Operation: clickhouse.AuditUpdate,
+		Project:   project.Name,
+		Reason:    fmt.Sprintf("project %s settings changed", project.Name),
+		Details:   map[string]any{"fields": changedProjectFields(body)},
+	}) {
+		return
+	}
 	if err := s.Client.Patch(ctx, project, patch); err != nil {
 		s.writeError(w, err)
 		return
@@ -421,6 +448,18 @@ func (s *Server) deleteProject(w http.ResponseWriter, req *http.Request) {
 	project := &kitchenv1alpha1.Project{}
 	if err := s.get(ctx, req.PathValue("name"), project); err != nil {
 		s.writeError(w, err)
+		return
+	}
+	if !s.recorded(w, req, audit.Transition{
+		Object:    project,
+		Kind:      audit.KindProject,
+		Operation: clickhouse.AuditDelete,
+		From:      project.Name,
+		Project:   project.Name,
+		Reason: fmt.Sprintf(
+			"project %s deleted, with its environments, builds, releases, domains and claims", project.Name),
+		Details: map[string]any{"repo": project.Spec.Source.Repo},
+	}) {
 		return
 	}
 	if err := s.Client.Delete(ctx, project); err != nil {
@@ -555,6 +594,18 @@ func (s *Server) createBuild(w http.ResponseWriter, req *http.Request) {
 			ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: project.Name},
 			Git:        revision,
 		},
+	}
+	if !s.recorded(w, req, audit.Transition{
+		Object:      build,
+		Kind:        audit.KindBuild,
+		Operation:   clickhouse.AuditCreate,
+		Correlation: revision.SHA,
+		To:          string(kitchenv1alpha1.BuildQueued),
+		Project:     project.Name,
+		Reason:      fmt.Sprintf("a build of %s was requested", revision.SHA),
+		Details:     map[string]any{"commit": revision.SHA, "branch": revision.Branch},
+	}) {
+		return
 	}
 	if err := s.Client.Create(ctx, build); err != nil {
 		s.writeError(w, err)
@@ -832,6 +883,23 @@ func (s *Server) patchEnvironment(w http.ResponseWriter, req *http.Request) {
 		moveType, verb = clickhouse.EventReleaseRolledBack, "rolled back to"
 	}
 
+	if !s.recorded(w, req, audit.Transition{
+		Object:  env,
+		Kind:    audit.KindEnvironment,
+		From:    outgoing,
+		To:      release.Name,
+		Project: env.Spec.ProjectRef.Name,
+		Reason:  fmt.Sprintf("environment %s was %s release %s", env.Name, verb, release.Name),
+		Details: map[string]any{
+			"release":         release.Name,
+			"previousRelease": outgoing,
+			"image":           release.Spec.Image,
+			"move":            string(reason),
+		},
+	}) {
+		return
+	}
+
 	patch := client.MergeFrom(env.DeepCopy())
 	env.Spec.ReleaseRef = kitchenv1alpha1.LocalObjectReference{Name: release.Name}
 	if err := s.Client.Patch(ctx, env, patch); err != nil {
@@ -890,6 +958,18 @@ func (s *Server) cancelBuild(w http.ResponseWriter, req *http.Request) {
 	}}
 	// Background propagation takes the build pod with the job; a cancelled
 	// build that keeps building would only be a lie.
+	if !s.recorded(w, req, audit.Transition{
+		Object:      build,
+		Kind:        audit.KindBuild,
+		Correlation: build.Spec.Git.SHA,
+		From:        string(build.Status.Phase),
+		To:          string(kitchenv1alpha1.BuildCancelled),
+		Project:     build.Spec.ProjectRef.Name,
+		Reason:      fmt.Sprintf("build %s was cancelled", build.Name),
+		Details:     map[string]any{"commit": build.Spec.Git.SHA},
+	}) {
+		return
+	}
 	if err := s.Client.Delete(ctx, job, client.PropagationPolicy(metav1.DeletePropagationBackground)); err != nil &&
 		!apierrors.IsNotFound(err) {
 		s.writeError(w, err)
@@ -929,6 +1009,17 @@ func (s *Server) deleteEnvironment(w http.ResponseWriter, req *http.Request) {
 	}
 	if env.Spec.Type != kitchenv1alpha1.EnvironmentPreview {
 		badRequest(w, "environment %q is the production environment: it is torn down with its project, not on its own", env.Name)
+		return
+	}
+	if !s.recorded(w, req, audit.Transition{
+		Object:    env,
+		Kind:      audit.KindEnvironment,
+		Operation: clickhouse.AuditDelete,
+		From:      env.Spec.ReleaseRef.Name,
+		Project:   env.Spec.ProjectRef.Name,
+		Reason:    fmt.Sprintf("preview environment %s was removed", env.Name),
+		Details:   map[string]any{"type": string(env.Spec.Type)},
+	}) {
 		return
 	}
 	if err := s.Client.Delete(ctx, env); err != nil {
@@ -1021,4 +1112,37 @@ func (s *Server) getClaim(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, newClaimView(claim))
+}
+
+// changedProjectFields names the settings a PATCH actually carried, for the
+// audit record's details.
+//
+// The values are deliberately not recorded. A project's environment variables
+// go through this endpoint, and an audit log that copied them would be a
+// second place secrets live — which is precisely the sort of thing the log
+// exists to make impossible. What changed is the auditable fact; what it
+// changed to is on the object.
+func changedProjectFields(body patchProjectRequest) []string {
+	fields := []string{}
+	for _, field := range []struct {
+		name    string
+		changed bool
+	}{
+		{"productionBranch", body.ProductionBranch != nil},
+		{"previews", body.Previews != nil},
+		{"previewsProtected", body.PreviewsProtected != nil},
+		{"buildStrategy", body.BuildStrategy != nil},
+		{"dockerfilePath", body.DockerfilePath != nil},
+		{"rootDirectory", body.RootDirectory != nil},
+		{"env", body.Env != nil},
+		{"port", body.Port != nil},
+		{"replicas", body.Replicas != nil},
+		{"cpu", body.CPU != nil},
+		{"memory", body.Memory != nil},
+	} {
+		if field.changed {
+			fields = append(fields, field.name)
+		}
+	}
+	return fields
 }

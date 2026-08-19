@@ -60,6 +60,47 @@ const (
 	BuildCancelled BuildPhase = "Cancelled"
 )
 
+// ArtifactStatus identifies what a build produced and records whether the
+// platform managed to attest it.
+//
+// The digest is the identity everything downstream keys on: the artifact is
+// built once and never rebuilt, so a rebuild is a different artifact and every
+// claim about the old one is a claim about something that no longer exists.
+//
+// What is deliberately *not* here is the evidence itself. Attestations live in
+// the registry, attached to this digest through OCI referrers, and a copy of
+// them on this object would be a second source of truth that an installation
+// which stopped using Kitchen would lose. The fields below say where to look
+// and under whose key, and nothing more.
+type ArtifactStatus struct {
+	// Repository the image was pushed to, without a tag or digest.
+	// +optional
+	Repository string `json:"repository,omitempty"`
+
+	// Digest of the image manifest, as `sha256:…`. Empty when the builder
+	// pushed successfully but did not report a digest, which is the one case
+	// where the platform has an image it cannot make claims about.
+	// +optional
+	Digest string `json:"digest,omitempty"`
+
+	// AttestedAt is when the platform attached its own build record to the
+	// digest.
+	// +optional
+	AttestedAt *metav1.Time `json:"attestedAt,omitempty"`
+
+	// KeyID is the signing key the build record was signed under, which is
+	// what a verifier matches against the published public key.
+	// +optional
+	KeyID string `json:"keyID,omitempty"`
+
+	// Message explains an artifact the platform could not attest. An
+	// unattested artifact is not a failed build — the image is real and the
+	// deployment is honest — but it is one that no policy requiring evidence
+	// will ever let move, which is where that fact is meant to bite.
+	// +optional
+	Message string `json:"message,omitempty"`
+}
+
 // BuildStatus defines the observed state of a Build.
 type BuildStatus struct {
 	// +optional
@@ -72,6 +113,11 @@ type BuildStatus struct {
 	// Image reference by digest, never by tag.
 	// +optional
 	Image string `json:"image,omitempty"`
+
+	// Artifact is what the build produced, identified by content rather than
+	// by name, and what the platform has asserted about it.
+	// +optional
+	Artifact *ArtifactStatus `json:"artifact,omitempty"`
 
 	// +optional
 	StartedAt *metav1.Time `json:"startedAt,omitempty"`

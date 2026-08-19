@@ -47,6 +47,7 @@ import (
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/activity"
 	"github.com/Bermos/Kitchen/internal/api"
+	"github.com/Bermos/Kitchen/internal/audit"
 	"github.com/Bermos/Kitchen/internal/controller"
 	"github.com/Bermos/Kitchen/internal/flows"
 	"github.com/Bermos/Kitchen/internal/k8sevents"
@@ -291,10 +292,27 @@ func main() {
 		Singleton: controller.KitchenSingletonName,
 	}
 
+	// One audit recorder for the whole process, shared by every reconciler
+	// and by the REST API. It has to be one: the chain's next hash is a
+	// function of its last, so two of them would produce two chains — which
+	// is also why the chart refuses a second replica while the audit log is
+	// on (see internal/audit).
+	auditor := &audit.Recorder{
+		Client: mgr.GetClient(),
+		// The chain's head is read back on the very next append, so it is
+		// read straight from the API server: a cached read would hand back
+		// the version before the last write and every append after the first
+		// would conflict with itself.
+		Reader:    mgr.GetAPIReader(),
+		Namespace: controller.PlatformNamespace,
+		Singleton: controller.KitchenSingletonName,
+	}
+
 	if err = (&controller.KitchenReconciler{
 		Client:           mgr.GetClient(),
 		Scheme:           mgr.GetScheme(),
 		PreviewGateImage: previewGateImage,
+		Audit:            auditor,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Kitchen")
 		os.Exit(1)
@@ -302,6 +320,7 @@ func main() {
 	if err = (&controller.ConnectionReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
+		Audit:  auditor,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Connection")
 		os.Exit(1)
@@ -309,6 +328,7 @@ func main() {
 	if err = (&controller.ProjectReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
+		Audit:  auditor,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Project")
 		os.Exit(1)
@@ -317,6 +337,7 @@ func main() {
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
 		Activity: recorder,
+		Audit:    auditor,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Build")
 		os.Exit(1)
@@ -325,6 +346,7 @@ func main() {
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
 		Activity: recorder,
+		Audit:    auditor,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Release")
 		os.Exit(1)
@@ -333,6 +355,7 @@ func main() {
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
 		Activity: recorder,
+		Audit:    auditor,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Environment")
 		os.Exit(1)
@@ -340,6 +363,7 @@ func main() {
 	if err = (&controller.DomainReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
+		Audit:  auditor,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Domain")
 		os.Exit(1)
@@ -348,6 +372,7 @@ func main() {
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
 		Activity: recorder,
+		Audit:    auditor,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "ResourceClaim")
 		os.Exit(1)
@@ -358,6 +383,7 @@ func main() {
 		SelfUpdate:     selfUpdate,
 		CurrentVersion: version.Version,
 		Activity:       recorder,
+		Audit:          auditor,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "PlatformUpdate")
 		os.Exit(1)
@@ -408,6 +434,7 @@ func main() {
 		ExtraAudiences: splitList(apiAudiences),
 		UI:             ui.Handler(api.UIConfig(mgr.GetClient(), uiClientID)),
 		Activity:       recorder,
+		Audit:          auditor,
 		Version:        version.Version,
 		SelfUpdate:     selfUpdate,
 		// The follower's own accounting of what Hubble told it it lost, which

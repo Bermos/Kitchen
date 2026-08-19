@@ -104,6 +104,20 @@ spec:
       namespace: {{ .Values.scaleToZero.interceptor.namespace | quote }}
       port: {{ int .Values.scaleToZero.interceptor.port }}
     {{- end }}
+  compliance:
+    # The audit log and the artifact attestations. Both are the operator's own
+    # word about what it did, which is why they are configured here and not
+    # per project: a team that could turn its own audit log off, or sign its
+    # own evidence, would be attesting to nothing.
+    audit:
+      enabled: {{ .Values.kitchen.compliance.audit.enabled }}
+      retentionDays: {{ int .Values.kitchen.compliance.audit.retentionDays }}
+    attestation:
+      enabled: {{ .Values.kitchen.compliance.attestation.enabled }}
+      {{- with .Values.kitchen.compliance.attestation.signingKeySecretName }}
+      signingKeyRef:
+        name: {{ . | quote }}
+      {{- end }}
   observability:
     clickhouse:
       retentionDays: {{ int .Values.kitchen.observability.clickhouse.retentionDays }}

@@ -28,6 +28,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/audit"
 	"github.com/Bermos/Kitchen/internal/clickhouse"
 	"github.com/Bermos/Kitchen/internal/controller"
 )
@@ -153,6 +154,21 @@ func (s *Server) createDomain(w http.ResponseWriter, req *http.Request) {
 			TLS:            tls,
 		},
 	}
+	if !s.recorded(w, req, audit.Transition{
+		Object:    domain,
+		Kind:      audit.KindDomain,
+		Operation: clickhouse.AuditCreate,
+		To:        body.Hostname,
+		Project:   env.Spec.ProjectRef.Name,
+		Reason:    fmt.Sprintf("domain %s attached to %s", body.Hostname, env.Name),
+		Details: map[string]any{
+			"hostname":    body.Hostname,
+			"environment": env.Name,
+			"tls":         string(tls),
+		},
+	}) {
+		return
+	}
 	if err := s.Client.Create(ctx, domain); err != nil {
 		s.writeError(w, err)
 		return
@@ -176,6 +192,19 @@ func (s *Server) deleteDomain(w http.ResponseWriter, req *http.Request) {
 	domain := &kitchenv1alpha1.Domain{}
 	if err := s.get(ctx, req.PathValue("name"), domain); err != nil {
 		s.writeError(w, err)
+		return
+	}
+	if !s.recorded(w, req, audit.Transition{
+		Object:    domain,
+		Kind:      audit.KindDomain,
+		Operation: clickhouse.AuditDelete,
+		From:      domain.Spec.Hostname,
+		Reason:    fmt.Sprintf("domain %s removed", domain.Spec.Hostname),
+		Details: map[string]any{
+			"hostname":    domain.Spec.Hostname,
+			"environment": domain.Spec.EnvironmentRef.Name,
+		},
+	}) {
 		return
 	}
 	if err := s.Client.Delete(ctx, domain); err != nil {

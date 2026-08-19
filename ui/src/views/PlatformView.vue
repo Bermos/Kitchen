@@ -61,6 +61,7 @@ const sections = [
   { label: "Edge", to: "/platform/edge", icon: "i-lucide-globe", hint: "traffic, the Gateway, the tunnel, certificates" },
   { label: "Storage", to: "/platform/storage", icon: "i-lucide-hard-drive", hint: "volumes, and the store's own health" },
   { label: "Events", to: "/platform/events", icon: "i-lucide-list", hint: "the cluster's warning history" },
+  { label: "Audit", to: "/platform/audit", icon: "i-lucide-shield-check", hint: "what the platform did, and whether the record holds" },
 ];
 </script>
 

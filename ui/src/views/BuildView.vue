@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { useRoute } from "vue-router";
-import { api, type LogLine, type LogQuery } from "../lib/api";
+import { api, type EvidenceSet, type LogLine, type LogQuery } from "../lib/api";
 import { duration, shortSHA, timeAgo } from "../lib/format";
 import { operatorMode } from "../lib/mode";
 import { useAsync, usePoll } from "../lib/useAsync";
@@ -38,6 +38,48 @@ async function cancel() {
   } finally {
     cancelling.value = false;
   }
+}
+
+// The evidence attached to what this build produced. It is fetched on demand
+// rather than with the build: it is a round trip to the registry, and a build
+// page is opened far more often to read the log than to check the signature.
+//
+// Nothing here is stored on the Build. The attestations live in the registry
+// against the artifact's digest and are readable with cosign — this panel is a
+// convenience over that, not the record itself.
+const evidence = ref<EvidenceSet | null>(null);
+const evidenceError = ref("");
+const loadingEvidence = ref(false);
+
+async function loadEvidence() {
+  loadingEvidence.value = true;
+  evidenceError.value = "";
+  try {
+    evidence.value = await api.attestations(name.value);
+  } catch (cause) {
+    evidenceError.value = cause instanceof Error ? cause.message : String(cause);
+  } finally {
+    loadingEvidence.value = false;
+  }
+}
+
+// A different build is a different artifact, so whatever was on screen is
+// about something else now.
+watch(name, () => {
+  evidence.value = null;
+  evidenceError.value = "";
+});
+
+/** Enough of a digest to recognise it by; the whole thing is in the title. */
+function shortDigest(digest?: string): string {
+  const hex = digest?.split(":")[1];
+  return hex ? hex.slice(0, 12) : "—";
+}
+
+/** The last path segment of a predicate type — `build-record/v1` out of the
+ *  URI — which is what distinguishes one piece of evidence from another. */
+function predicateLabel(uri: string): string {
+  return uri.replace(/^https?:\/\//, "");
 }
 
 const logFetcher = (query: LogQuery) => api.buildLogs(name.value, query);
@@ -97,6 +139,75 @@ const logStreamer = (query: LogQuery, onLine: (line: LogLine) => void, signal: A
           <p class="text-xs text-muted mb-1">Image</p>
           <p class="text-sm text-toned font-mono truncate" :title="build.image">{{ build.image || "not pushed yet" }}</p>
         </div>
+      </div>
+
+      <!-- The artifact, by content. An image reference is a name; this is the
+           identity every claim about it is keyed to. -->
+      <div v-if="build.artifact?.digest" class="rounded-md border border-default px-5 py-4 space-y-3">
+        <div class="flex items-start justify-between gap-4 flex-wrap">
+          <div class="min-w-0">
+            <p class="text-sm font-medium text-highlighted flex items-center gap-2">
+              Artifact
+              <UBadge v-if="build.artifact.attested" color="success" variant="subtle" size="sm">attested</UBadge>
+              <UBadge v-else color="neutral" variant="subtle" size="sm">no evidence</UBadge>
+            </p>
+            <p class="text-xs text-muted font-mono mt-0.5 break-all" :title="build.artifact.digest">
+              {{ build.artifact.repository }}@{{ build.artifact.digest }}
+            </p>
+            <p v-if="build.artifact.attested" class="text-[11px] text-dimmed mt-0.5 font-mono">
+              signed under {{ shortDigest("sha256:" + build.artifact.keyID) }}, {{ timeAgo(build.artifact.attestedAt!) }}
+            </p>
+            <p v-else-if="build.artifact.message" class="text-[11px] text-warning mt-0.5">
+              {{ build.artifact.message }}
+            </p>
+          </div>
+          <UButton size="xs" color="neutral" variant="subtle" :loading="loadingEvidence" @click="loadEvidence">
+            {{ evidence ? "Re-read the evidence" : "Read the evidence" }}
+          </UButton>
+        </div>
+
+        <UAlert
+          v-if="evidenceError"
+          color="error"
+          variant="soft"
+          icon="i-lucide-triangle-alert"
+          :title="evidenceError"
+        />
+
+        <template v-else-if="evidence">
+          <p v-if="!evidence.attestations.length" class="text-xs text-muted">
+            Nothing is attached to this digest. The artifact is real and what is deployed from it is honest about what
+            it is running — what it cannot do is satisfy a policy that requires evidence.
+          </p>
+          <div v-else class="space-y-2">
+            <div
+              v-for="found in evidence.attestations"
+              :key="found.digest"
+              class="rounded border border-default px-3 py-2"
+            >
+              <p class="text-xs flex items-center gap-2 flex-wrap">
+                <UIcon
+                  :name="found.verified ? 'i-lucide-shield-check' : 'i-lucide-shield-question'"
+                  class="size-4"
+                  :class="found.verified ? 'text-success' : 'text-dimmed'"
+                />
+                <span class="font-mono text-highlighted break-all">{{ predicateLabel(found.predicateType) }}</span>
+                <span v-if="found.verified" class="text-success">verified</span>
+                <span v-else-if="evidence.verified" class="text-warning">not signed by a key this platform holds</span>
+                <span v-else class="text-dimmed">not checked</span>
+              </p>
+              <p class="text-[11px] text-dimmed font-mono mt-1 break-all" :title="found.digest">
+                {{ shortDigest(found.digest) }}
+                <template v-if="found.keyIDs?.length"> · {{ found.keyIDs.map(shortDigest).join(", ") }}</template>
+              </p>
+            </div>
+          </div>
+          <p class="text-[11px] text-dimmed leading-relaxed">
+            Read straight out of the registry, attached to the digest above through OCI referrers. The same envelopes
+            answer <span class="font-mono">cosign download attestation</span> with this platform out of the loop, which
+            is the point of storing them there.
+          </p>
+        </template>
       </div>
 
       <ConditionsTable v-if="operatorMode" :conditions="build.conditions" />

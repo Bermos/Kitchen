@@ -85,6 +85,7 @@ sent the request.
 | GET | `/builds/{name}` | One build |
 | POST | `/builds/{name}/cancel` | Stop it — the Build stays, phase `Cancelled` |
 | GET | `/builds/{name}/logs` | That build's output |
+| GET | `/builds/{name}/attestations` | The signed evidence attached to that build's artifact |
 | GET | `/releases` | Every release. `?project=` filters |
 | GET | `/releases/{name}` | One release |
 | GET | `/environments` | Every environment. `?project=` filters |
@@ -109,6 +110,9 @@ sent the request.
 | POST | `/logs/saved` | Keep the current selection under a name |
 | DELETE | `/logs/saved/{name}` | Forget one |
 | GET | `/events` | The platform's recent activity, newest first. `?project=` and `?limit=` filter |
+| GET | `/audit` | The tamper-evident log of state transitions. `?kind=`, `?name=`, `?project=`, `?actor=`, `?since=`, `?until=`, `?limit=` |
+| GET | `/audit/verify` | Re-derive the chain's hashes over a run and report every break. `?from=`, `?limit=` |
+| GET | `/compliance` | What the platform is producing: whether the audit log is recording, and the key artifacts are signed under |
 | GET | `/metrics/overview` | The dashboard's numbers, pre-aggregated. `?project=` narrows |
 | GET | `/traffic` | The service map: aggregated flow edges. `?project=`, `?since=`, `?until=` |
 | GET | `/traces` | Traces in a window. `?project=`, `?environment=`, `?service=`, `?errors=1`, `?minDuration=` |
@@ -1423,6 +1427,97 @@ The feed is written by the reconcilers and the API into the events table of
 the telemetry store, under the same retention as the logs. Kubernetes Events
 were deliberately not the source of truth: they expire in an hour and carry
 machinery noise the feed would have to filter back out.
+
+### The audit log
+
+`GET /audit` answers what the platform *did* — as evidence rather than as
+prose. It is not the activity feed above and does not replace it: the feed is
+best-effort and reads like a story, this is an append-only hash chain and a
+transition it could not record is a transition the platform refused to make.
+See [COMPLIANCE.md](COMPLIANCE.md) for the model.
+
+```
+GET /audit?kind=Project&name=shop&actor=grace@example.com&since=2026-08-13T00:00:00Z
+```
+
+Records are
+`{sequence, timestamp, actor, actorKind, correlation, operation, kind, name, project, fromState, toState, reason, details, prevHash, hash}`,
+newest first. `actorKind` is `user` or `service`; a transition the platform
+decided on its own is attributed to the reconciler that decided it
+(`system:controller/build`), never to "the operator". `correlation` ties every
+record from one cause together — for a deploy, the commit.
+
+The chain fields come back with every record on purpose. An audit view that
+hid them would be asking to be believed, and the point of a chain is that it
+does not have to be.
+
+```
+GET /audit/verify?from=1
+```
+
+answers `{from, to, checked, intact, findings, anchor, truncated}`. Each
+finding is `{sequence, break, detail}` with `break` one of `mutated`
+(a record no longer hashes to the hash stored beside it), `missing` (a gap) or
+`unlinked` (a record whose `prevHash` is not its predecessor's hash). A run
+that starts partway through is linked to the record before it, so a tail
+lifted out of another chain does not verify; asking for a `from` whose
+predecessor is not in the log answers `400`. `anchor` is where the platform
+believes the chain ends, held outside the table — a run that is `intact` but
+ends below the anchor is a log cut short from the end.
+
+`GET /compliance` answers whether any of this is actually happening:
+
+```json
+{
+  "audit": {"enabled": true, "recording": true, "retentionDays": 365, "sequence": 1428},
+  "attestation": {
+    "enabled": true,
+    "signing": true,
+    "keyID": "9f2c…",
+    "publicKey": "-----BEGIN PUBLIC KEY-----\n…"
+  }
+}
+```
+
+The public key is handed out deliberately. It is not a credential — evidence
+signed under a key nobody can obtain is evidence nobody can check — and it is
+what lets an auditor run `cosign verify-attestation --key` against the
+registry with Kitchen out of the loop.
+
+### An artifact's evidence
+
+`GET /builds/{name}/attestations` answers everything attached to what the
+build produced:
+
+```json
+{
+  "subject": "registry.apps.example.com/shop@sha256:9d3f…",
+  "verified": true,
+  "attestations": [
+    {
+      "predicateType": "https://kitchen.bermos.dev/attestation/build-record/v1",
+      "statement": {"_type": "https://in-toto.io/Statement/v1", "subject": [...], "predicate": {...}},
+      "envelope": {"payloadType": "application/vnd.in-toto+json", "payload": "…", "signatures": [...]},
+      "verified": true,
+      "keyIDs": ["9f2c…"],
+      "digest": "sha256:41a0…"
+    }
+  ]
+}
+```
+
+`verified` on the set says whether signatures were checked at all, and on each
+attestation whether one was accepted — a listing and a verification are
+different things and a client that could not tell them apart would eventually
+treat one as the other.
+
+A build that produced no artifact digest answers `409`: it is a build nothing
+can be said about, which is not the same as one with no evidence. A registry
+that cannot be asked answers `502`.
+
+The endpoint is a convenience. Everything it returns lives in the registry
+against the artifact's digest, as DSSE envelopes attached through OCI 1.1
+referrers, and is readable by anything that speaks them.
 
 ### Metrics
 

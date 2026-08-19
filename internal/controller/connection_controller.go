@@ -35,6 +35,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/audit"
 	"github.com/Bermos/Kitchen/internal/provider"
 )
 
@@ -72,6 +73,10 @@ type ConnectionReconciler struct {
 	// Probes resolves the credential probe for a Connection. Defaults to
 	// provider.Default; tests inject fakes.
 	Probes provider.Factory
+	// Audit appends this reconciler's state transitions to the tamper-evident
+	// log. Unlike Activity it is waited on: a transition it refuses is a
+	// transition this reconciler does not make. May be nil.
+	Audit *audit.Recorder
 }
 
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=connections,verbs=get;list;watch;create;update;patch;delete
@@ -104,8 +109,18 @@ func (r *ConnectionReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	// capability matching never selects a connection nothing can use.
 	conn.Status.Capabilities = provider.Capabilities(conn.Spec.Provider)
 
+	// A credential that stops being accepted is worth a record, and it is the
+	// one thing this reconciler learns that nobody asked it to. Reachability
+	// is not: a registry that goes down and comes back would fill the log
+	// with an outage, which is what the telemetry store is for. The two
+	// conditions are already kept apart for this reason.
+	wasValid := meta.FindStatusCondition(conn.Status.Conditions, condCredentialsValid)
+
 	requeueAfter := r.probe(ctx, conn, setCond)
 
+	if err := r.recordCredentialVerdict(ctx, conn, wasValid); err != nil {
+		return ctrl.Result{}, err
+	}
 	if err := r.Status().Update(ctx, conn); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -213,4 +228,38 @@ func (r *ConnectionReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.mapSecretToConnections)).
 		Named("connection").
 		Complete(r)
+}
+
+// recordCredentialVerdict appends a record when the provider's ruling on the
+// credential has changed. The first ruling on a new Connection counts as a
+// change: "the credential was accepted" is the fact the connection was created
+// to establish.
+func (r *ConnectionReconciler) recordCredentialVerdict(
+	ctx context.Context,
+	conn *kitchenv1alpha1.Connection,
+	previous *metav1.Condition,
+) error {
+	current := meta.FindStatusCondition(conn.Status.Conditions, condCredentialsValid)
+	if current == nil {
+		return nil
+	}
+	from := ""
+	if previous != nil {
+		if previous.Status == current.Status {
+			return nil
+		}
+		from = string(previous.Status)
+	}
+	return r.Audit.Record(ctx, audit.Transition{
+		Object:     conn,
+		Kind:       audit.KindConnection,
+		Controller: actorConnectionController,
+		From:       from,
+		To:         string(current.Status),
+		Reason:     current.Message,
+		Details: map[string]any{
+			"provider": conn.Spec.Provider,
+			"reason":   current.Reason,
+		},
+	})
 }

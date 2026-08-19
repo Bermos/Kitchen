@@ -36,6 +36,7 @@ import (
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/activity"
+	"github.com/Bermos/Kitchen/internal/audit"
 	"github.com/Bermos/Kitchen/internal/clickhouse"
 	"github.com/Bermos/Kitchen/internal/provider/database"
 )
@@ -79,6 +80,10 @@ type ResourceClaimReconciler struct {
 	// Databases resolves a Provisioner for a Connection. Defaults to
 	// database.Default; tests inject providers pointed at httptest.
 	Databases database.Factory
+	// Audit appends this reconciler's state transitions to the tamper-evident
+	// log. Unlike Activity it is waited on: a transition it refuses is a
+	// transition this reconciler does not make. May be nil.
+	Audit *audit.Recorder
 }
 
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=resourceclaims,verbs=get;list;watch;create;update;patch;delete
@@ -153,6 +158,24 @@ func (r *ResourceClaimReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	branchErr := r.reconcileBranches(ctx, claim, project.Name, provisioner, appNS)
 
 	wasBound := claim.Status.Phase == kitchenv1alpha1.ClaimBound
+	if !wasBound {
+		if err := r.Audit.Record(ctx, audit.Transition{
+			Object:     claim,
+			Kind:       audit.KindResourceClaim,
+			Controller: actorResourceClaimController,
+			From:       string(claim.Status.Phase),
+			To:         string(kitchenv1alpha1.ClaimBound),
+			Project:    claim.Spec.ProjectRef.Name,
+			Reason:     fmt.Sprintf("claim %s bound: %s via %s", claim.Name, claim.Spec.Type, conn.Name),
+			Details: map[string]any{
+				"type":       claim.Spec.Type,
+				"connection": conn.Name,
+				"secret":     claim.Status.SecretName,
+			},
+		}); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
 	claim.Status.Phase = kitchenv1alpha1.ClaimBound
 	setClaimCondition(claim, condReady, metav1.ConditionTrue, "Bound",
 		fmt.Sprintf("binding written to secret %s", claim.Status.SecretName))
@@ -406,6 +429,23 @@ func (r *ResourceClaimReconciler) finalize(ctx context.Context, claim *kitchenv1
 		}
 	}
 
+	if err := r.Audit.Record(ctx, audit.Transition{
+		Object:     claim,
+		Kind:       audit.KindResourceClaim,
+		Operation:  clickhouse.AuditDelete,
+		Controller: actorResourceClaimController,
+		From:       string(claim.Status.Phase),
+		Project:    claim.Spec.ProjectRef.Name,
+		Reason: fmt.Sprintf("claim %s removed under deletion policy %s",
+			claim.Name, claim.Spec.DeletionPolicy),
+		Details: map[string]any{
+			"type":           claim.Spec.Type,
+			"deletionPolicy": string(claim.Spec.DeletionPolicy),
+			"instance":       claim.Status.InstanceID,
+		},
+	}); err != nil {
+		return ctrl.Result{}, err
+	}
 	controllerutil.RemoveFinalizer(claim, resourceClaimFinalizer)
 	return ctrl.Result{}, r.Update(ctx, claim)
 }
@@ -457,6 +497,20 @@ func (r *ResourceClaimReconciler) failed(
 	cause error,
 ) (ctrl.Result, error) {
 	wasFailed := claim.Status.Phase == kitchenv1alpha1.ClaimFailed
+	if !wasFailed {
+		if err := r.Audit.Record(ctx, audit.Transition{
+			Object:     claim,
+			Kind:       audit.KindResourceClaim,
+			Controller: actorResourceClaimController,
+			From:       string(claim.Status.Phase),
+			To:         string(kitchenv1alpha1.ClaimFailed),
+			Project:    claim.Spec.ProjectRef.Name,
+			Reason:     cause.Error(),
+			Details:    map[string]any{"type": claim.Spec.Type, "reason": reason},
+		}); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
 	claim.Status.Phase = kitchenv1alpha1.ClaimFailed
 	setClaimCondition(claim, condReady, metav1.ConditionFalse, reason, cause.Error())
 	if reason == "ProvisionFailed" {

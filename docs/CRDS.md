@@ -86,6 +86,13 @@ spec:
       service: keda-add-ons-http-interceptor-proxy
       namespace: kitchen-system
       port: 8080
+  compliance:
+    audit:
+      enabled: true                     # append-only, hash-chained record of every state transition
+      retentionDays: 365                # its own retention, minimum 90 — evidence outlives telemetry
+    attestation:
+      enabled: true                     # sign a build record for every artifact, attached to its digest
+      signingKeyRef: { name: kitchen-attestation-key }   # unset: the operator generates one, once
   observability:
     clickhouse:
       retentionDays: 30                 # TTL the operator keeps on every telemetry table,
@@ -102,11 +109,20 @@ spec:
                                         # the operator exports its own samples
 status:
   conditions: [...]                     # Ready, GatewayProgrammed, TunnelConnected,
-                                        # TelemetrySchemaReady, PreviewGateReady, RegistryReady
+                                        # TelemetrySchemaReady, PreviewGateReady, RegistryReady,
+                                        # ComplianceReady
   gatewayAddress: 203.0.113.7
   registry:
     host: registry.apps.example.com
     connection: kitchen-registry        # the Connection the operator seeded, once
+  compliance:
+    audit:
+      recording: true                   # false with a message when there is nowhere to append to
+      sequence: 1428                    # where the chain ends, published outside the table
+    attestation:
+      signing: true
+      keyID: 9f2c...                    # SHA-256 of the public key's DER encoding
+      secretName: kitchen-attestation-key
 ```
 
 `registry` is why a fresh installation can build something without anyone
@@ -132,6 +148,20 @@ has been seeded". A Connection someone deletes stays deleted: the seed is a
 good default, not a fixture the platform keeps reinstating. While it is still
 there and still labelled `app.kubernetes.io/managed-by: kitchen`, its URL and
 credential are kept in step with the registry.
+
+`compliance` is the platform's own evidence, and it is on the singleton rather
+than on a Project deliberately: a team that could turn its own audit log off,
+or sign its own evidence with a key it chose, would be attesting to nothing.
+The audit log is a hash-chained table in the telemetry store with a retention
+of its own — telemetry ages out in weeks and the evidence an incident is
+reconstructed from must not go with it. Attestation signs a build record for
+every artifact and attaches it to the artifact's digest as a DSSE envelope
+over an in-toto statement, through OCI referrers, so the evidence is readable
+by anything that speaks those and by nothing that has to speak Kitchen. Both
+report on `status.compliance`, because the failure mode of evidence is
+silence: an installation that believes it is producing evidence and is not
+should find that out from the platform rather than from an auditor. See
+[COMPLIANCE.md](COMPLIANCE.md).
 
 `observability` is one retention over a store that two things write. An
 OpenTelemetry collector DaemonSet fills the logs, traces and metrics tables
@@ -262,6 +292,12 @@ status:
   phase: Succeeded                      # Queued | Running | Succeeded | Failed | Cancelled
   detectedFramework: nextjs
   image: harbor.example.com/kitchen/my-shop@sha256:ab12...   # digest, never a tag
+  artifact:
+    repository: harbor.example.com/kitchen/my-shop
+    digest: sha256:ab12...              # the identity everything downstream keys on
+    attestedAt: ...                     # when the platform attached its build record
+    keyID: 9f2c...                      # what it was signed under
+    message: ""                         # why it is unattested, when it is
   startedAt: ...
   duration: 143s
   conditions: [...]
@@ -282,6 +318,18 @@ own unprivileged user throughout.
 Either builder reports the digest it pushed through the pod's termination message —
 BuildKit as JSON metadata, the lifecycle as its TOML report — which is what puts a
 digest rather than a tag in `status.image`.
+
+`status.artifact` is that digest as an identity rather than as a string, and what
+the platform has asserted about it. On success the reconciler signs a build record —
+project, commit, strategy, framework, times — and attaches it to the digest through
+OCI referrers, under Kitchen's own predicate type rather than SLSA's, because a
+reconciler's account of a build it orchestrated is a weaker claim than provenance
+from the builder itself. Failing to attest does not fail the build: the image is real
+and the deployment that follows is honest about what it is running. What an unattested
+artifact cannot do is satisfy a policy that requires evidence, which is where the
+consequence belongs. Nothing mirrors the attestations onto this object — they live in
+the registry against the digest, which is the only copy an installation leaving Kitchen
+would keep. See [COMPLIANCE.md](COMPLIANCE.md).
 
 A project on `strategy: auto` takes `Kitchen.spec.builds.defaultStrategy`; when that
 is `auto` too, the platform reads the repository at the commit under build and decides
