@@ -1,8 +1,33 @@
 import { timingSafeEqual } from "node:crypto";
 
+import type { Where } from "better-auth/types";
+
 import type { Auth } from "./auth.js";
 import type { Config } from "./config.js";
 import { log } from "./log.js";
+
+/**
+ * Accounts that belong to a person.
+ *
+ * The service account that owns the operator's API key is a credential with a
+ * row in the user table, not somebody who signs in — so it is not what makes
+ * an installation bootstrapped, and it is not in the account directory the
+ * operator seeds its operator list from. This is the one place that line is
+ * drawn: two places drawing it slightly differently is how the platform ends
+ * up believing it has an administrator it does not have.
+ */
+export function peopleOnly(config: Config): Where[] {
+	return [{ field: "email", operator: "ne", value: config.serviceAccountEmail }];
+}
+
+/**
+ * Normalises an email address for comparison: addresses are not
+ * case-sensitive, so an account created as Anna@Example.com is the one a
+ * lookup for anna@example.com means.
+ */
+export function normalizeEmail(email: string): string {
+	return email.trim().toLowerCase();
+}
 
 /**
  * The first administrator.
@@ -18,10 +43,7 @@ import { log } from "./log.js";
  */
 export async function isBootstrapped(auth: Auth, config: Config): Promise<boolean> {
 	const ctx = await auth.$context;
-	const people = await ctx.adapter.count({
-		model: "user",
-		where: [{ field: "email", operator: "ne", value: config.serviceAccountEmail }],
-	});
+	const people = await ctx.adapter.count({ model: "user", where: peopleOnly(config) });
 	return people > 0;
 }
 
@@ -65,7 +87,7 @@ export async function bootstrapFirstUser(
 		return { ok: false, status: 410, error: "this installation already has an account" };
 	}
 
-	const email = request.email.trim().toLowerCase();
+	const email = normalizeEmail(request.email);
 	const name = request.name.trim();
 	if (!email.includes("@")) {
 		return { ok: false, status: 400, error: "a valid email address is required" };
