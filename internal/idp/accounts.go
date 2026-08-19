@@ -39,7 +39,9 @@ import (
 // get from somewhere. So this rides on the identity provider the chart ships,
 // under a prefix that is Kitchen's, authenticated by the operator's service
 // credential; an installation federating to an issuer of its own keeps
-// discovery and dynamic client registration, and loses only the seeding.
+// discovery and dynamic client registration, and has to name its operators
+// itself rather than have them seeded — see ErrNoDirectory for what that
+// means in practice.
 const AccountsPath = "/kitchen/accounts"
 
 // ErrAccountNotFound is what AccountByEmail returns when nobody holds the
@@ -49,8 +51,26 @@ var ErrAccountNotFound = errors.New("no account with that address")
 
 // ErrNoDirectory says the issuer serves no account directory. It is a
 // federated issuer, or one older than this endpoint: everything else about
-// the integration still works, and what the platform loses is the ability to
-// enumerate accounts. Callers report it rather than retry it.
+// the integration still works — discovery, token validation, dynamic client
+// registration — and it is not a fault to be fixed, since OIDC never offered
+// account enumeration in the first place.
+//
+// What it costs is not "the ability to enumerate accounts". It is two things
+// that are built on top of enumerating them, and the first is load-bearing:
+//
+//   - **The operator list cannot be seeded.** The platform's first operator
+//     is otherwise the account that exists, and on such an issuer there is no
+//     way to ask which one that is — so nothing is written, nobody holds the
+//     operator role, and every operator-only route refuses everybody,
+//     including the one that names an operator. An installation on a
+//     federated issuer has to name its operators at install time, which is
+//     what the chart value `kitchen.access.operators` is for.
+//   - The dashboard cannot resolve an address to a `sub` when writing a
+//     grant. Grants there name a verified email address instead, with the
+//     condition that comes with one.
+//
+// Callers report it rather than retry it: an absent endpoint does not become
+// present by being asked again.
 var ErrNoDirectory = errors.New("the issuer serves no account directory")
 
 // Account is one account at the identity provider.

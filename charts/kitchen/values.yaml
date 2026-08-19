@@ -123,6 +123,30 @@ kitchen:
   # running a staging platform and a production one tells which is on screen.
   # Defaults to the first label of `kitchen.baseDomain`.
   clusterName: ""
+  # Who owns the platform. An account named here is an operator — everything,
+  # everywhere, plus `admin` on every project, present and future — and every
+  # other account is an ordinary member.
+  access:
+    # -- Name the platform's operators at install time. Each entry is an email
+    # address, the issuer's opaque `sub`, or a map of `subject` and an
+    # informational `email`. Empty leaves it to the operator, which seeds the
+    # list once from the accounts the bundled identity provider holds: the
+    # bootstrap account on a fresh install, every existing account on one
+    # upgrading into enforcement.
+    #
+    # **An installation federated to an issuer of its own has to set this.**
+    # There is no account directory on a Keycloak or an Auth0 — OIDC does not
+    # define one — so nothing would ever be seeded, no account would hold the
+    # operator role, and every operator-only route would refuse everybody,
+    # including the `PATCH /settings` that names an operator. The `Kitchen`
+    # object's `OperatorsConfigured` condition says so when it happens.
+    #
+    # Setting it also makes the chart the source of truth for who owns the
+    # platform: with `kitchen.applyOnUpgrade=true`, every upgrade puts exactly
+    # this list back, so somebody added on the settings screen and not added
+    # here is removed again. Left empty, an upgrade preserves the list that is
+    # live rather than dropping it.
+    operators: []
   api:
     # -- Public base URL of the operator API and git webhook receiver.
     # Defaults to `kitchen.<baseDomain>` under the scheme `kitchen.tls.mode`

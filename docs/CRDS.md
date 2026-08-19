@@ -176,6 +176,25 @@ The entries name accounts the same way a Project's grants do, minus the role —
 `subject` plus an informational `email` — and the rule for what `subject` may
 hold is the same one, described under `Project` below.
 
+Seeding reads the account directory the bundled identity provider serves, and
+**an installation federated to an issuer of its own has none**: OpenID Connect
+defines no way to enumerate accounts, so on a Keycloak or an Auth0 nothing is
+ever seeded, nobody holds the operator role, and every operator-only route
+refuses everybody — including the `PATCH /settings` that would name an
+operator. Such an installation names its operators at install time, through
+the chart value `kitchen.access.operators`, which renders into this field; a
+list the chart wrote is a list somebody wrote, and is never re-seeded over.
+The `OperatorsConfigured` condition distinguishes the three: `OperatorsSeeded`
+and `OperatorsNamed` say who holds the role, `NoAccountDirectory` says this
+issuer serves none and names the value to set, and `DirectoryUnavailable` says
+one that should have answered did not, and is retried.
+
+The chart writes this field only on install, and on an upgrade with
+`kitchen.applyOnUpgrade=true`, where it carries the live list across rather
+than dropping it — the singleton is a Helm hook that is deleted and recreated,
+and a recreated object with the field absent would be re-seeded from every
+account that exists.
+
 `compliance` is the platform's own evidence, and it is on the singleton rather
 than on a Project deliberately: a team that could turn its own audit log off,
 or sign its own evidence with a key it chose, would be attesting to nothing.

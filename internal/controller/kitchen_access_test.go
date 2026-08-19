@@ -47,6 +47,12 @@ type fakeDirectory struct {
 	*httptest.Server
 	accounts []idp.Account
 	reads    int
+
+	// serve404 makes this a federated issuer: one that has never heard of
+	// Kitchen's directory prefix, which is what every issuer but the bundled
+	// one is. It is not an outage, and the difference is the whole of what
+	// separates "try again" from "name your operators yourself".
+	serve404 bool
 }
 
 func newFakeDirectory(accounts ...idp.Account) *fakeDirectory {
@@ -54,6 +60,10 @@ func newFakeDirectory(accounts ...idp.Account) *fakeDirectory {
 	mux := http.NewServeMux()
 	mux.HandleFunc(idp.AccountsPath, func(w http.ResponseWriter, _ *http.Request) {
 		directory.reads++
+		if directory.serve404 {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"accounts": directory.accounts})
 	})
 	directory.Server = httptest.NewServer(mux)
@@ -85,6 +95,19 @@ var _ = Describe("The platform's operator list", func() {
 			kitchen := &kitchenv1alpha1.Kitchen{}
 			ExpectWithOffset(1, k8sClient.Get(ctx, singletonKey, kitchen)).To(Succeed())
 			return kitchen.Spec.Access.Operators
+		}
+
+		// reconcileAccessDirectly answers the one thing a full Reconcile
+		// cannot be asked in envtest: whether *this* piece wants to be come
+		// back to. The Result the controller returns is the whole platform's
+		// — no Gateway controller runs here, so it always asks for a retry —
+		// and the requeue is exactly what a permanently absent endpoint must
+		// not cause.
+		reconcileAccessDirectly := func() bool {
+			kitchen := &kitchenv1alpha1.Kitchen{}
+			ExpectWithOffset(1, k8sClient.Get(ctx, singletonKey, kitchen)).To(Succeed())
+			return reconciler.reconcileAccess(ctx, kitchen,
+				func(string, metav1.ConditionStatus, string, string) {})
 		}
 
 		condition := func() *metav1.Condition {
@@ -247,7 +270,7 @@ var _ = Describe("The platform's operator list", func() {
 			Expect(condition().Reason).To(Equal("OperatorsSeeded"))
 		})
 
-		It("reports an identity provider it cannot read the accounts from", func() {
+		It("reports an identity provider it cannot read the accounts from, and comes back", func() {
 			start(account("user_anna", "anna@example.com"))
 			directory.Close()
 			reconcileOnce()
@@ -257,6 +280,84 @@ var _ = Describe("The platform's operator list", func() {
 			Expect(cond).NotTo(BeNil())
 			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 			Expect(cond.Reason).To(Equal("DirectoryUnavailable"))
+			Expect(cond.Message).To(ContainSubstring("This is retried"),
+				"a directory that did not answer is asked again")
+			Expect(cond.Message).To(ContainSubstring(chartOperatorsValue),
+				"and if it never answers, the message still names the way out")
+
+			// A failure that might clear is worth coming back for.
+			Expect(reconcileAccessDirectly()).To(BeFalse())
+		})
+
+		It("names the way out on an issuer that serves no account directory", func() {
+			// A federated issuer — Keycloak, Auth0 — answers 404 on Kitchen's
+			// own directory prefix, because OIDC defines no such endpoint.
+			// Nothing can be seeded from one, so an installation on it has to
+			// have named its operators at install time; a condition that only
+			// reported the 404 would leave the way out to be guessed.
+			start(account("user_anna", "anna@example.com"))
+			directory.serve404 = true
+			reconcileOnce()
+
+			Expect(operators()).To(BeNil(), "there is nothing honest to write")
+			cond := condition()
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(cond.Reason).To(Equal("NoAccountDirectory"))
+			Expect(cond.Message).To(ContainSubstring("serves no account directory"), "what is wrong")
+			Expect(cond.Message).To(ContainSubstring(chartOperatorsValue), "and what would fix it")
+			Expect(cond.Message).To(ContainSubstring("PATCH /settings"),
+				"including why the platform cannot talk its own way out of this")
+
+			By("not asking a permanently absent endpoint again on a timer")
+			Expect(reconcileAccessDirectly()).To(BeTrue(),
+				"an absent endpoint does not become present by being polled every 30 seconds")
+		})
+
+		It("leaves an operator list the chart wrote exactly as the chart wrote it", func() {
+			// kitchen.access.operators renders into spec.access.operators at
+			// install time, which is the only answer a federated installation
+			// has. It is the same statement as a hand-written one and gets
+			// the same treatment: present means somebody has said, so the
+			// accounts that exist are not consulted and nothing is re-seeded.
+			directory = newFakeDirectory(
+				account("user_anna", "anna@example.com"),
+				account("user_bo", "bo@example.com"),
+				account("user_cy", "cy@example.com"),
+			)
+			Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{Name: PlatformNamespace},
+			}))).To(Succeed())
+			Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: directorySecretName, Namespace: PlatformNamespace},
+				StringData: map[string]string{
+					idp.SecretKeyIssuer:     directory.URL,
+					idp.SecretKeyServiceKey: "the-service-key",
+				},
+			}))).To(Succeed())
+			Expect(k8sClient.Create(ctx, &kitchenv1alpha1.Kitchen{
+				ObjectMeta: metav1.ObjectMeta{Name: KitchenSingletonName},
+				Spec: kitchenv1alpha1.KitchenSpec{
+					BaseDomain: "apps.example.com",
+					TLS:        acmeTLS(),
+					Auth: kitchenv1alpha1.AuthSpec{
+						Enabled:   true,
+						SecretRef: &kitchenv1alpha1.LocalObjectReference{Name: directorySecretName},
+					},
+					Access: kitchenv1alpha1.AccessSpec{
+						Operators: []kitchenv1alpha1.AccessSubject{
+							{Subject: "anna@example.com", Email: "anna@example.com"},
+						},
+					},
+				},
+			})).To(Succeed())
+
+			reconcileOnce()
+
+			Expect(operators()).To(HaveLen(1), "the chart's list is not widened to the three accounts")
+			Expect(operators()[0].Subject).To(Equal("anna@example.com"))
+			Expect(directory.reads).To(Equal(0), "a decision somebody took needs no accounts to second-guess it")
+			Expect(condition().Reason).To(Equal("OperatorsNamed"))
 		})
 
 		It("seeds without disturbing anything else on the object", func() {

@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -43,8 +44,21 @@ const condOperatorsConfigured = "OperatorsConfigured"
 // enough that `kubectl describe` stays readable.
 const operatorsInMessage = 5
 
+// chartOperatorsValue is the chart value that names the platform's operators
+// at install time. It is the way out of every case below where seeding cannot
+// happen, so the condition messages spell it, and spelling it once means the
+// three of them cannot drift apart.
+const chartOperatorsValue = "kitchen.access.operators"
+
 // reconcileAccess seeds the platform's operator list, once, from the accounts
-// the identity provider holds.
+// the identity provider holds — for the installations where that is possible,
+// which is the ones running the identity provider the chart ships.
+//
+// It answers with whether there is anything to come back for: false asks the
+// caller for its retry, true says a timer would learn nothing. Both of the
+// cases below that end in a `False` condition are settled in that sense — the
+// list is empty because nothing can fill it from here, and what fills it is a
+// write to the spec, which brings the reconciler round on its own.
 //
 // The rule is one rule, and it covers both of the cases it was written for.
 // **An absent list means nobody has ever said who the operators are**, so the
@@ -69,6 +83,16 @@ const operatorsInMessage = 5
 // become an operator. And it never touches a list that is already there,
 // empty included: an empty list is somebody narrowing the platform to nobody
 // on purpose, which is a decision, not an accident.
+//
+// A list the chart wrote is a list somebody wrote. `kitchen.access.operators`
+// renders into `spec.access.operators` at install time, and this cannot tell
+// that apart from a hand-written one, on purpose: it is the same statement,
+// made in the file the installation is declared in. It is also the only
+// answer for an installation federated to an issuer of its own — there is no
+// account directory to seed from there, so nothing would ever be written and
+// every operator-only route would refuse everybody, `PATCH /settings`
+// included. That is the lockout the value exists to prevent, and why the
+// condition names the value rather than only reporting the 404.
 func (r *KitchenReconciler) reconcileAccess(
 	ctx context.Context,
 	kitchen *kitchenv1alpha1.Kitchen,
@@ -110,8 +134,32 @@ func (r *KitchenReconciler) reconcileAccess(
 	}
 
 	accounts, err := idp.New(cfg).Accounts(ctx)
-	if err != nil {
-		setCond(condOperatorsConfigured, metav1.ConditionFalse, "DirectoryUnavailable", err.Error())
+	switch {
+	case errors.Is(err, idp.ErrNoDirectory):
+		// A federated issuer, and there is no seeding on one: OIDC has no way
+		// to enumerate accounts, which is the whole reason the directory is
+		// Kitchen's own endpoint rather than a standard one. Nothing here
+		// improves by being asked again — the endpoint is absent, not busy —
+		// so this is reported and left. The way out is a write to the spec,
+		// and a write to the spec wakes this controller by itself; the
+		// informer's own resync still comes round in hours, so a directory
+		// that appears later is still found, without polling a 404 2,880
+		// times a day.
+		setCond(condOperatorsConfigured, metav1.ConditionFalse, "NoAccountDirectory",
+			fmt.Sprintf("the identity provider at %s serves no account directory, so the operator list "+
+				"cannot be seeded from the accounts that exist and no account holds the operator role: "+
+				"name the platform's operators in the chart value %s, which writes them to "+
+				"spec.access.operators here. Until one is named every account is a member, and every "+
+				"operator-only route — PATCH /settings, the one that names an operator, included — "+
+				"refuses everybody. This is not retried on a timer: naming them is what moves it on",
+				cfg.Issuer, chartOperatorsValue))
+		return true
+	case err != nil:
+		setCond(condOperatorsConfigured, metav1.ConditionFalse, "DirectoryUnavailable",
+			fmt.Sprintf("the account directory at %s did not answer, so the operator list has not been "+
+				"seeded yet and no account holds the operator role: %v. This is retried; if the issuer "+
+				"serves no directory at all — a federated one does not — name the platform's operators "+
+				"in the chart value %s instead", cfg.Issuer, err, chartOperatorsValue))
 		return false
 	}
 

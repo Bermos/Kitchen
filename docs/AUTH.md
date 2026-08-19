@@ -456,6 +456,16 @@ to run without a Kitchen operator should not have one appointed for it on the
 next reconcile. While no account exists at all,
 nothing is written and the reconciler tries again.
 
+Seeding reads the accounts from the identity provider, which only the bundled
+one can be asked for — an installation federated to somebody else's issuer has
+no account directory to enumerate, so there is nothing to seed from and nobody
+would hold the platform role at all. That installation names its operators at
+install time instead, in the chart value `kitchen.access.operators`, which
+writes them to the same field; it is the "deploy-time chart values" exception,
+and the reconciler treats a list the chart wrote exactly like one a person
+wrote. The `OperatorsConfigured` condition says which of the two situations an
+installation is in, and names the way out of the one it cannot seed itself.
+
 Reviewing what was seeded is the settings screen's job, not `kubectl`'s: `GET
 /settings` carries the list and `PATCH /settings` writes it, and the list
 cannot be emptied — a platform with no operator has nobody left who can

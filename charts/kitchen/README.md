@@ -592,6 +592,60 @@ connection details in `<release>-postgres` (`host`, `port`, `database`,
 Install without an identity provider — no login for the UI, no issuer for apps
 — with `--set auth.enabled=false --set postgres.enabled=false`.
 
+### Who owns the platform
+
+An account is either an **operator** — everything, everywhere, plus `admin` on
+every project — or an ordinary **member**. The list lives on the `Kitchen`
+singleton, under `spec.access.operators`, and is edited from the settings
+screen (`PATCH /settings`) once somebody holds the role.
+
+Somebody has to hold it first, and there are two ways that happens:
+
+- **The bundled identity provider seeds it.** With no list at all, the operator
+  seeds one from the accounts that exist — the account the bootstrap link
+  created on a fresh install, every existing account on an installation
+  upgrading into enforcement — and then never touches it again. An empty list
+  is a decision and is left alone; an absent one is what "nobody has said yet"
+  looks like.
+- **The chart names it**, with `kitchen.access.operators`:
+
+  ```sh
+  --set kitchen.access.operators[0]=anna@example.com \
+  --set kitchen.access.operators[1]=bo@example.com
+  ```
+
+  Each entry is an email address, the issuer's opaque `sub`, or a map of
+  `subject` and an informational `email`. An address is honoured only for a
+  token whose `email_verified` claim is true.
+
+**On a federated issuer the second one is not optional.** Seeding reads
+Kitchen's own account directory, which the bundled provider serves and a
+Keycloak or an Auth0 does not — OpenID Connect defines no way to enumerate
+accounts. Point the platform at one without naming operators and nothing is
+ever written: every account is a member, every operator-only route refuses
+everybody, and that includes the `PATCH /settings` that would name an
+operator. The singleton says so rather than leaving it to be discovered:
+
+```sh
+kubectl get kitchen default \
+  -o jsonpath='{.status.conditions[?(@.type=="OperatorsConfigured")].message}'
+```
+
+An installation that has already got itself into that state recovers with an
+upgrade that both names the operators and re-applies the singleton:
+
+```sh
+helm upgrade kitchen oci://ghcr.io/bermos/charts/kitchen \
+  --namespace kitchen-system --reuse-values \
+  --set kitchen.applyOnUpgrade=true \
+  --set kitchen.access.operators[0]=anna@example.com
+```
+
+Once the value is set, the chart is the source of truth for who owns the
+platform on every upgrade that re-applies the singleton: somebody added on the
+settings screen and not added here is removed again. Left empty, an upgrade
+preserves whatever list is live — see [Upgrade](#upgrade).
+
 ## Preview protection
 
 Preview URLs are gated behind platform login by default: an anonymous request
@@ -1091,6 +1145,35 @@ and re-applying it every upgrade would silently revert those edits. Set
 object is then deleted and recreated on each upgrade (nothing is owned by it,
 so the Gateway and tunnel survive).
 
+**What `kitchen.applyOnUpgrade=true` costs.** Deleting and recreating the
+object means every field the chart does not render is gone, and every field it
+does render is set back to the value in your `--set` flags and values files. A
+base domain, a retention, a build strategy changed on the settings screen is
+reverted. So is the object's `status`, which is rebuilt from scratch on the
+next reconcile — nothing about the installation can be remembered there.
+
+Two things are carried across rather than dropped, because losing them changes
+who may do what:
+
+- **The operator list.** `spec.access.operators` is [who owns the
+  platform](#who-owns-the-platform), and an *absent* list is how the operator
+  is told that nobody has ever said — so a recreated object with no list would
+  be re-seeded from every account the identity provider holds. Narrow the
+  platform to two operators on the settings screen and the next upgrade would
+  hand it back to all fourteen, silently, and a deliberate `operators: []`
+  would be destroyed outright. The chart therefore reads the live list at
+  render time and writes it back, `[]` included. Set
+  `kitchen.access.operators` to override it deliberately.
+- The identity provider's and the databases' generated credentials, read back
+  out of their secrets the same way.
+
+Both are lookups against the cluster, so `helm template` and `--dry-run`
+cannot see them: a rendered diff shows the operator list absent while the
+upgrade itself preserves it. There is a moment during the upgrade when the
+singleton does not exist at all, between the delete and the create; the API
+answers nothing useful for that moment, and the reconciler rebuilds the status
+afterwards.
+
 ## Uninstall
 
 ```sh
@@ -1140,7 +1223,8 @@ kubectl delete namespace kitchen-system
 | `crds.install` | `true` | Install the `kitchen.bermos.dev` CRDs. |
 | `crds.keep` | `true` | Keep CRDs (and custom resources) on uninstall. |
 | `kitchen.create` | `true` | Create the `Kitchen` singleton. Needs `baseDomain`. |
-| `kitchen.applyOnUpgrade` | `false` | Re-apply the singleton on every upgrade. |
+| `kitchen.applyOnUpgrade` | `false` | Re-apply the singleton on every upgrade, reverting anything changed on the settings screen. The object is deleted and recreated; the operator list and the generated credentials are carried across, nothing else is. See [Upgrade](#upgrade). |
+| `kitchen.access.operators` | `[]` | Who owns the platform, named at install time: email addresses, `sub`s, or maps of `subject` and `email`. Empty leaves it to be seeded from the accounts the bundled identity provider holds — **an installation on a federated issuer has to set this**, or nobody ever holds the operator role. See [Who owns the platform](#who-owns-the-platform). |
 | `kitchen.baseDomain` | `""` | Generated URLs are `<slug>.<baseDomain>`. |
 | `kitchen.clusterName` | `""` | What the dashboard's status bar calls this cluster. Defaults to the first label of `baseDomain`. |
 | `kitchen.api.externalURL` | `""` | Defaults to `kitchen.<baseDomain>`, under the scheme `kitchen.tls.mode` serves. |

@@ -103,6 +103,23 @@ soon as this installation has an account:
 Bootstrap is disabled (auth.bootstrap.enabled=false), so no first-run link was
 generated. Create the first account another way before anyone can sign in.
 {{ end }}
+{{ if .Values.kitchen.access.operators -}}
+These accounts own the platform (kitchen.access.operators), and every other
+account is an ordinary member:
+{{ range .Values.kitchen.access.operators }}
+  {{ if kindIs "string" . }}{{ . }}{{ else }}{{ get . "subject" }}{{ end }}
+{{- end }}
+{{ else -}}
+Nobody has been named an operator yet. The first account to exist becomes one:
+the operator seeds the list from the accounts the identity provider holds, once,
+and leaves it alone after that. Who ended up on it is on the dashboard's
+settings page — and, before anyone can sign in, here:
+
+  kubectl get kitchen default -o jsonpath='{.status.conditions[?(@.type=="OperatorsConfigured")].message}'
+
+Federating to an issuer of your own instead? Name the operators yourself —
+kitchen.access.operators — because there are no accounts to seed from on one.
+{{ end }}
 The operator's credential for registering OAuth clients lives in the secret
 {{ include "kitchen.authSecretName" . }} under `serviceKey`; accounts and clients live in Postgres
 ({{ include "kitchen.postgresHost" . }}).

@@ -566,6 +566,77 @@ serving — so this only reports whether it has been told how.
 {{- end }}
 
 {{/*
+The singleton's `access` block: who owns the platform.
+
+Three answers, in order, and the order is the whole of the design.
+
+1. `kitchen.access.operators`, when it is set. The installation has named its
+   operators in the file it is declared in, and that is the one answer an
+   installation federated to an issuer of its own can give — there is no
+   account directory to seed from on a Keycloak, so without this nobody would
+   ever hold the operator role.
+2. The list that is already live, when this is an upgrade that re-applies the
+   singleton. `kitchen.applyOnUpgrade=true` makes the object a hook with
+   `hook-delete-policy: before-hook-creation`, which *deletes and recreates*
+   it — and an absent operator list is how the reconciler is told that nobody
+   has ever said who the operators are, so rendering nothing here would seed
+   the list straight back from every account the identity provider holds.
+   Somebody who narrowed the platform to two operators would get all fourteen
+   back on the next upgrade, silently, and a deliberate `operators: []` would
+   be destroyed outright. So the live list is read and re-emitted, empty
+   included: an upgrade re-applies the platform's configuration without
+   re-granting the platform.
+3. Nothing, on a fresh install with no value set — which is the absence the
+   reconciler seeds from, on purpose.
+
+The lookup is what the same file already does for the identity provider's
+generated credentials, for the same reason: something that must survive an
+upgrade cannot be reconstructed from values. It is guarded on `.Release.IsUpgrade`
+because a lookup of a kind the cluster does not yet know is an error rather
+than an empty answer, and on a first install this chart's own CRDs are not
+registered at render time. Under `helm template` and `--dry-run` it answers
+empty, so a rendered diff shows the list absent while a real upgrade preserves
+it; that is a property of every lookup in this chart and of no guard here.
+*/}}
+{{- define "kitchen.accessBlock" -}}
+{{- if .Values.kitchen.access.operators -}}
+access:
+  operators:
+{{- range .Values.kitchen.access.operators }}
+{{- if kindIs "string" . }}
+    - subject: {{ . | quote }}
+{{- if contains "@" . }}
+      # An entry naming an address resolves against a token's `email` claim,
+      # and only when the issuer has verified it.
+      email: {{ . | quote }}
+{{- end }}
+{{- else }}
+    - subject: {{ get . "subject" | quote }}
+{{- with get . "email" }}
+      email: {{ . | quote }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- else if and .Release.IsUpgrade .Values.kitchen.applyOnUpgrade -}}
+{{- $live := lookup "kitchen.bermos.dev/v1alpha1" "Kitchen" "" "default" -}}
+{{- $access := default dict (dig "spec" "access" dict (default dict $live)) -}}
+{{- if hasKey $access "operators" -}}
+{{- $operators := index $access "operators" -}}
+{{- if $operators -}}
+access:
+  operators:
+{{ toYaml $operators | indent 4 }}
+{{- else -}}
+access:
+  # Somebody narrowed the platform to nobody on purpose. An empty list is not
+  # an absent one, and only an empty list survives being re-applied as one.
+  operators: []
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{/*
 Guard rails. The operator resolves the platform namespace from a compiled-in
 constant, so a chart installed elsewhere would reconcile into a namespace it
 does not run in.
@@ -595,6 +666,24 @@ does not run in.
 {{- end }}
 {{- if and .Values.kitchen.create (eq .Values.kitchen.tls.mode "acme") (ne (include "kitchen.acmeConfigured" .) "true") }}
 {{- fail "kitchen.tls.mode is acme but kitchen.tls.acme is not configured: set kitchen.tls.acme.email and kitchen.tls.acme.dns01.cloudflare.apiTokenSecretName. The API server refuses a Kitchen in acme mode without them, because the shared Gateway's HTTPS listener would terminate with a certificate nothing issues. To bring a cluster up before DNS and certificates are ready, set kitchen.tls.mode=none — every published URL is then http://." }}
+{{- end }}
+{{- if .Values.kitchen.access.operators }}
+{{- if not .Values.kitchen.create }}
+{{- fail "kitchen.access.operators is set but kitchen.create is false: the list is written into the Kitchen object, which this chart is not creating, so naming operators here would grant nobody anything. Set kitchen.create=true, or write spec.access.operators on the Kitchen object you manage yourself." }}
+{{- end }}
+{{- range .Values.kitchen.access.operators }}
+{{- if kindIs "string" . }}
+{{- if not . }}
+{{- fail "kitchen.access.operators has an empty entry: each one is an email address, the issuer's `sub`, or a map with a `subject`. The API server refuses an access entry whose subject is empty, so the whole install would fail on the singleton." }}
+{{- end }}
+{{- else if kindIs "map" . }}
+{{- if not (get . "subject") }}
+{{- fail (printf "kitchen.access.operators has a map entry with no `subject` (%v): a map entry names the account in `subject` — the issuer's `sub`, or an email address — and may carry an informational `email` beside it." .) }}
+{{- end }}
+{{- else }}
+{{- fail (printf "kitchen.access.operators entries must be strings or maps (got %s): each one is an email address, the issuer's `sub`, or a map of `subject` and `email`." (kindOf .)) }}
+{{- end }}
+{{- end }}
 {{- end }}
 {{- if and .Values.kitchen.create .Values.kitchen.ingress.cloudflared.enabled (not .Values.kitchen.ingress.cloudflared.tunnelSecretName) }}
 {{- fail "kitchen.ingress.cloudflared.tunnelSecretName is required when cloudflared is enabled: create a secret holding the tunnel token under the key `token` first." }}
