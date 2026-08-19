@@ -10,7 +10,7 @@ RUN npm ci --no-audit --no-fund
 COPY ui/ ./
 RUN npm run build
 
-# Build the manager and gate binaries.
+# Build the manager and the commands that ride along in its image.
 #
 # This stage runs on the build host's architecture and cross-compiles to the
 # target, rather than running an emulated toolchain. Without the `--platform`
@@ -56,12 +56,22 @@ COPY --from=ui-builder /ui/dist/ internal/ui/dist/
 # Go 1.10, when it was how you got a static binary out of CGO_ENABLED=0 — the
 # build cache has handled that correctly since. Dropping it produced
 # byte-identical binaries for both architectures while halving the compile
-# step, because the gate shares nearly all of its dependencies with the manager
-# and can now reuse what the manager build just compiled. Re-adding it would
-# buy nothing and cost that again.
+# step, because the other binaries share nearly all of their dependencies with
+# the manager and can now reuse what the manager build just compiled. Re-adding
+# it would buy nothing and cost that again.
 RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
     go build -ldflags "-X github.com/Bermos/Kitchen/internal/version.Version=${VERSION}" \
     -o manager cmd/main.go
+# The backup and restore commands. They ride in this image for the same reason
+# the gate below does — same source tree, same release — and for one more: the
+# archive and the code that reads it have to agree about the schema underneath,
+# and the version stamped here is what decides whether they do.
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
+    go build -ldflags "-X github.com/Bermos/Kitchen/internal/version.Version=${VERSION}" \
+    -o backup cmd/backup/main.go
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
+    go build -ldflags "-X github.com/Bermos/Kitchen/internal/version.Version=${VERSION}" \
+    -o restore cmd/restore/main.go
 # The forward-auth gate protected previews are routed through. It is a
 # separate process with a separate Deployment, but the same source tree and
 # the same release, so it rides along in this image.
@@ -81,6 +91,8 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
 FROM gcr.io/distroless/static:nonroot
 WORKDIR /
 COPY --from=builder /workspace/manager .
+COPY --from=builder /workspace/backup .
+COPY --from=builder /workspace/restore .
 COPY --from=builder /workspace/gate .
 COPY --from=builder /workspace/qualitygate .
 USER 65532:65532

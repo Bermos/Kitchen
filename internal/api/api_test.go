@@ -709,6 +709,16 @@ func newHarness(t *testing.T, kitchen *kitchenv1alpha1.Kitchen, objs ...runtime.
 	scheme.AddKnownTypeWithName(certificates.WithKind("CertificateList"), &unstructured.UnstructuredList{})
 	metav1.AddToGroupVersion(scheme, certificates)
 
+	// The CSI snapshot controller's classes, addressed as unstructured for the
+	// same reason: Kitchen neither installs nor imports it, and the Backup
+	// screen only asks whether a class exists. Registering the kind here is
+	// what makes a cluster that has the API and no class — the state issue #64
+	// found — testable at all.
+	snapshots := schema.GroupVersion{Group: "snapshot.storage.k8s.io", Version: "v1"}
+	scheme.AddKnownTypeWithName(snapshots.WithKind("VolumeSnapshotClass"), &unstructured.Unstructured{})
+	scheme.AddKnownTypeWithName(snapshots.WithKind("VolumeSnapshotClassList"), &unstructured.UnstructuredList{})
+	metav1.AddToGroupVersion(scheme, snapshots)
+
 	if kitchen == nil {
 		kitchen = &kitchenv1alpha1.Kitchen{
 			ObjectMeta: metav1.ObjectMeta{Name: controller.KitchenSingletonName},

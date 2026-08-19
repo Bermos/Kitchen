@@ -240,6 +240,11 @@ func (in *AuthSpec) DeepCopyInto(out *AuthSpec) {
 		*out = new(LocalObjectReference)
 		**out = **in
 	}
+	if in.DatabaseSecretRef != nil {
+		in, out := &in.DatabaseSecretRef, &out.DatabaseSecretRef
+		*out = new(LocalObjectReference)
+		**out = **in
+	}
 	in.PreviewGate.DeepCopyInto(&out.PreviewGate)
 }
 

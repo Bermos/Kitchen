@@ -142,9 +142,11 @@ check-commits: ## Check the commit messages this branch adds to origin/main (BAS
 ##@ Build
 
 .PHONY: build
-build: manifests generate ui-policy fmt vet ## Build the manager and preview-gate binaries.
+build: manifests generate ui-policy fmt vet ## Build the manager, preview-gate, backup and restore binaries.
 	go build -ldflags "$(LDFLAGS)" -o bin/manager cmd/main.go
 	go build -ldflags "$(LDFLAGS)" -o bin/gate cmd/gate/main.go
+	go build -ldflags "$(LDFLAGS)" -o bin/backup cmd/backup/main.go
+	go build -ldflags "$(LDFLAGS)" -o bin/restore cmd/restore/main.go
 
 # The CLI is not in `build`: it goes on a developer's machine rather than into
 # the operator's image, so building it is a thing somebody asks for. It takes

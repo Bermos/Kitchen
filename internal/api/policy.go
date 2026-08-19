@@ -334,6 +334,15 @@ func (s *Server) routes() []route {
 		{"GET /api/v1/platform/events", s.platformEvents, operatorOnly("reading the platform's cluster events")},
 		{"GET /api/v1/platform/ingest", s.platformIngest, operatorOnly("reading the platform's ingest")},
 
+		// The backup. Reading what an archive would carry is already the
+		// platform's shape — how many projects, which secrets, which database —
+		// and taking one hands over every credential the installation holds, so
+		// both are the operator's and neither is anybody else's. There is no
+		// restore route: a restore happens into a cluster whose accounts are
+		// gone, so there is nobody left to authenticate. See internal/api/backup.go.
+		{"GET /api/v1/platform/backup", s.getBackup, operatorOnly("reading what a platform backup would carry")},
+		{"POST /api/v1/platform/backup", s.createBackup, operatorOnly("exporting the platform's state")},
+
 		// Settings carry the base domain, the issuer and the gateway address,
 		// so even reading them is the operator's.
 		{"GET /api/v1/settings", s.getSettings, operatorOnly("reading the platform's settings")},

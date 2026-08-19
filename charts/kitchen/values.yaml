@@ -97,6 +97,54 @@ selfUpdate:
     repository: alpine/helm
     tag: 3.19.0
 
+# Restoring a backup archive into this installation.
+#
+# It is off, and it stays off in normal running: this is a bootstrap step. A
+# restore happens into a cluster whose accounts database is gone, so the
+# credentials to log into the dashboard are inside the archive and there is
+# nobody left to press a button — which is why it is a Job the chart renders
+# rather than a screen. See docs/BACKUP.md for the order it belongs in.
+#
+# The archive comes from a Secret or from an existing volume. A Secret is the
+# obvious answer and has etcd's limit behind it (about 1 MiB), which a real
+# installation's archive will pass; a volume is the answer past that.
+restore:
+  # -- Run the restore Job. Requires either `secretName` or `existingClaim`.
+  enabled: false
+  # -- Secret holding the archive. Ignored when `existingClaim` is set.
+  secretName: ""
+  # -- Key inside that Secret.
+  secretKey: backup.tar.gz
+  # -- An existing PersistentVolumeClaim holding the archive instead, for an
+  # archive past what a Secret can carry.
+  existingClaim: ""
+  # -- Where the archive is read from inside the container. Its directory is
+  # the mount point, and its filename is the key the Secret is projected under.
+  path: /backup/backup.tar.gz
+  # -- Changing this runs the restore again. A Job's pod template is immutable,
+  # so the id is part of its name and a second restore is a second Job whose
+  # log stands beside the first.
+  id: "1"
+  # -- Restore an archive written by a different release. The accounts dump
+  # carries rows and not a schema, so it only fits the schema its own release
+  # migrates into place: crossing releases is a deliberate act.
+  force: false
+  # -- Restore the objects and secrets alone, leaving the identity provider's
+  # database as it is.
+  skipAccounts: false
+  # -- How long the Job waits for the identity provider's database to answer.
+  # The chart starts both at once and the identity provider is what creates the
+  # tables, so a restore that connected immediately would find nothing to fill.
+  waitForSchema: 5m
+  # -- Name of the restore Job's ServiceAccount. Generated when empty.
+  serviceAccountName: ""
+  rbac:
+    # -- Create the restore's ServiceAccount and its roles. Unlike self-update's
+    # this is not cluster-admin: a restore writes the kinds this chart owns and
+    # the secrets in its own namespace, which is an enumerable list.
+    create: true
+  resources: {}
+
 crds:
   # -- Install the kitchen.bermos.dev CRDs. Disable when they are managed
   # out of band (GitOps, cluster bootstrap).

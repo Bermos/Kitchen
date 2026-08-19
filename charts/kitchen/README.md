@@ -1074,6 +1074,37 @@ It cannot rescue an installation that needs manual steps first: read
 and [Upgrading from 0.1.0](#upgrading-from-010) below, which are exactly the
 cases where a `helm upgrade` fails part-way and leaves the release mixed.
 
+### Backup and restore
+
+Taking a backup is a button on the dashboard's Platform → Backup screen, and
+needs no chart value at all: the archive is one gzipped tar carrying every
+Kitchen object, every credential in `kitchen-system`, and the identity
+provider's database. What it does **not** carry is telemetry — ClickHouse is
+expendable and already expires on its own retention.
+
+Restoring is the half that needs the chart, because it happens into a cluster
+whose accounts database is gone: the credentials to log into the dashboard are
+inside the archive, so there is nobody left to press a button. Install the
+chart at the release the archive was written by, put the archive in a Secret,
+and turn the Job on:
+
+```sh
+kubectl -n kitchen-system create secret generic kitchen-backup \
+  --from-file=backup.tar.gz=./kitchen-backup-prod-2026-08-19T090000Z.tar.gz
+helm upgrade kitchen oci://ghcr.io/bermos/charts/kitchen \
+  --namespace kitchen-system --reuse-values \
+  --set restore.enabled=true --set restore.secretName=kitchen-backup
+```
+
+The Job waits for the identity provider to have migrated its schema — the
+accounts dump is data only — then writes the objects, the secrets and the rows,
+and rolls the identity provider so it reads the restored signing secret. Its
+ServiceAccount is bound to a Role over the kinds this chart owns and the
+secrets in its own namespace, not to cluster-admin: unlike an upgrade, a
+restore writes an enumerable list of things. `--set restore.id=2` runs it
+again. The whole procedure, and what the archive deliberately leaves out, is
+[docs/BACKUP.md](../../docs/BACKUP.md).
+
 ### Upgrading to the telemetry agent
 
 The Vector log collector was replaced by an OpenTelemetry collector that also
@@ -1220,6 +1251,17 @@ kubectl delete namespace kitchen-system
 | `selfUpdate.timeout` | `15m` | How long helm is given to finish. |
 | `selfUpdate.serviceAccountName` | `""` | Generated when empty. |
 | `selfUpdate.image.repository` / `.tag` | `alpine/helm` / `3.19.0` | Image the update job runs helm from. |
+| `restore.enabled` | `false` | Run the restore Job. A bootstrap step, not something an install does — see [docs/BACKUP.md](../../docs/BACKUP.md). Needs one of the two sources below. |
+| `restore.secretName` / `.secretKey` | `""` / `backup.tar.gz` | Secret holding the archive. Bounded by etcd's object limit (about 1 MiB). |
+| `restore.existingClaim` | `""` | A PersistentVolumeClaim holding the archive instead, for one past that. |
+| `restore.path` | `/backup/backup.tar.gz` | Where the archive is read from. Its directory is the mount point. |
+| `restore.id` | `"1"` | Changing it runs the restore again: a Job's pod template is immutable, so the id is in its name. |
+| `restore.force` | `false` | Restore an archive written by a different release. The accounts dump carries rows and not a schema. |
+| `restore.skipAccounts` | `false` | Restore the objects and secrets alone. |
+| `restore.waitForSchema` | `5m` | How long to wait for the identity provider to have migrated its schema. |
+| `restore.serviceAccountName` | `""` | Generated when empty. |
+| `restore.rbac.create` | `true` | Create the restore's ServiceAccount and roles. Not cluster-admin, unlike self-update's. |
+| `restore.resources` | `{}` | |
 | `crds.install` | `true` | Install the `kitchen.bermos.dev` CRDs. |
 | `crds.keep` | `true` | Keep CRDs (and custom resources) on uninstall. |
 | `kitchen.create` | `true` | Create the `Kitchen` singleton. Needs `baseDomain`. |

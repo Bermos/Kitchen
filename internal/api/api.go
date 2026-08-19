@@ -48,6 +48,7 @@ import (
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/activity"
 	"github.com/Bermos/Kitchen/internal/audit"
+	"github.com/Bermos/Kitchen/internal/backup"
 	"github.com/Bermos/Kitchen/internal/chartrepo"
 	"github.com/Bermos/Kitchen/internal/clickhouse"
 	"github.com/Bermos/Kitchen/internal/controller"
@@ -143,6 +144,25 @@ type Server struct {
 	// must be able to add a member without an identity provider to ask. Nil
 	// resolves it from the platform's own identity-provider secret.
 	accounts func(ctx context.Context) (accountDirectory, error)
+
+	// accountsDB opens the identity provider's database, which the backup
+	// endpoints dump the accounts out of. A field for the same reason the two
+	// above are: a test must be able to describe and take a backup without a
+	// Postgres to connect to. Nil resolves it from the Kitchen object's
+	// spec.auth.databaseSecretRef. The second return is why there is no
+	// connection, which the archive's manifest carries so that an installation
+	// with no identity provider and one whose database was unreachable are not
+	// the same archive.
+	accountsDB func(ctx context.Context, kitchen *kitchenv1alpha1.Kitchen) (accountsConnection, string)
+}
+
+// accountsConnection is the identity provider's database as the backup
+// endpoints use it: named, dumped and closed. It is an interface for the same
+// reason logStore is — a test must be able to take a backup without a Postgres
+// to connect to — and *accountsdb.Client is what satisfies it in the operator.
+type accountsConnection interface {
+	backup.AccountsSource
+	Close(ctx context.Context)
 }
 
 // chartVersions lists the versions the platform's Helm chart has been

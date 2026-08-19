@@ -150,6 +150,7 @@ const platformNav = [
   { label: "Edge", icon: "i-lucide-globe", to: "/platform/edge", name: "platform-edge" },
   { label: "Storage", icon: "i-lucide-hard-drive", to: "/platform/storage", name: "platform-storage" },
   { label: "Events", icon: "i-lucide-list", to: "/platform/events", name: "platform-events" },
+  { label: "Backup", icon: "i-lucide-archive", to: "/platform/backup", name: "platform-backup" },
 ];
 
 const activeProject = computed(() => {
