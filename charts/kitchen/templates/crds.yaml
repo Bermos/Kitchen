@@ -909,6 +909,82 @@ spec:
               Kitchen object per cluster; it is the operator's runtime configuration and
               is editable from the management UI.
             properties:
+              access:
+                description: |-
+                  Access is who may do what with the platform itself. It belongs on this
+                  object because this object is already the platform's configuration and
+                  is already edited through PATCH /settings, so granting somebody the
+                  operator hat needs no new store and no kubectl.
+
+                  It deliberately carries no `+kubebuilder:default={}`, unlike the fields
+                  above it. Those defaults exist so that an installation predating a
+                  field still gets the feature; here the absence is the information. An
+                  absent operator list means nobody has ever said who the operators are —
+                  an installation upgrading into enforcement, where every account today
+                  can call every route and so every account read honestly *is* an
+                  operator, and the list is seeded from the accounts that exist. An empty
+                  list means somebody narrowed it to nobody on purpose, and is left
+                  exactly as it is. Defaulting the object into existence would collapse
+                  those two into one on the first write, and the upgraded installation
+                  would be locked out of its own platform by a minor version bump.
+                properties:
+                  operators:
+                    description: |-
+                      Operators own the platform: everything, everywhere, and project admin
+                      on every project, present and future. Every other account is a member —
+                      an ordinary account, with no platform surface at all, which sees what
+                      project membership grants it and may create projects.
+
+                      The entries name accounts the same way a Project's grants do, minus the
+                      role: there is exactly one platform role worth writing down, and being
+                      on this list is it.
+                    items:
+                      description: |-
+                        AccessSubject names the account an access entry is about.
+
+                        The canonical subject is the issuer's `sub`, which is opaque: the dashboard
+                        resolves an address to one when it writes an entry, and Email is carried
+                        beside it only so that a list of opaque strings still reads. Hand-written
+                        YAML may name an address in Subject instead, and the rule that tells the two
+                        apart is deliberately blunt: **a subject containing `@` is read as an email
+                        address**, matched case-insensitively (addresses are), and honoured only for
+                        a token whose `email_verified` claim is true.
+
+                        That last condition is the whole point. An unverified address is something
+                        the token holder said about themselves, so an unverified-email grant is a
+                        grant to whoever can get the identity provider to let them type that
+                        address — it resolves to no role at all rather than to the one written down.
+
+                        The rule has one corollary worth knowing: an issuer whose `sub` is itself an
+                        address cannot be named by `sub` here, because that spelling is read as the
+                        email it looks like. That is the conservative direction — it asks for a
+                        verified address rather than trusting an opaque string that happens to
+                        contain an `@`.
+                      properties:
+                        email:
+                          description: |-
+                            Email is informational: it is what makes a list of opaque subjects
+                            readable in `kubectl get -o yaml` and in a git diff. Nothing resolves
+                            against it — an entry that means to name an address puts the address in
+                            Subject, and accepts the verified-email condition that comes with it.
+                          type: string
+                        subject:
+                          description: |-
+                            Subject is the issuer's `sub` for the account, or an email address. A
+                            value containing `@` is treated as an address and resolves against the
+                            token's `email` claim only when `email_verified` is true, because an
+                            unverified-email grant is a grant to whoever can claim that address at
+                            the identity provider.
+                          minLength: 1
+                          type: string
+                      required:
+                      - subject
+                      type: object
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - subject
+                    x-kubernetes-list-type: map
+                type: object
               api:
                 description: APISpec configures how the operator's API is exposed.
                 properties:
@@ -1863,6 +1939,58 @@ spec:
               ProjectSpec defines the desired state of a Project: a repository that
               becomes a running application.
             properties:
+              access:
+                description: |-
+                  Access is who may do what with this Project, and it is the whole of the
+                  answer: an account with no entry here holds no role on the Project at
+                  all, so it is not in their project list and not theirs to build,
+                  redeploy or read. The one exception is a platform operator, who holds
+                  admin on every project, present and future — see
+                  `spec.access.operators` on the Kitchen singleton.
+
+                  Membership lives here, on the object the access is about, rather than
+                  in the identity provider or in a token claim. A role carried in a token
+                  is a snapshot good for as long as the token is, which means removing
+                  somebody leaves them on the project for up to an hour — and removal is
+                  the case where that delay matters most. See docs/AUTH.md, "Where
+                  membership lives".
+
+                  Entries merge per subject rather than by position (listType=map), so an
+                  apply that adds one person cannot drop another.
+                items:
+                  description: AccessGrant is one account's role on a Project.
+                  properties:
+                    email:
+                      description: |-
+                        Email is informational: it is what makes a list of opaque subjects
+                        readable in `kubectl get -o yaml` and in a git diff. Nothing resolves
+                        against it — an entry that means to name an address puts the address in
+                        Subject, and accepts the verified-email condition that comes with it.
+                      type: string
+                    role:
+                      description: Role this subject holds on the Project.
+                      enum:
+                      - admin
+                      - developer
+                      - viewer
+                      type: string
+                    subject:
+                      description: |-
+                        Subject is the issuer's `sub` for the account, or an email address. A
+                        value containing `@` is treated as an address and resolves against the
+                        token's `email` claim only when `email_verified` is true, because an
+                        unverified-email grant is a grant to whoever can claim that address at
+                        the identity provider.
+                      minLength: 1
+                      type: string
+                  required:
+                  - role
+                  - subject
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - subject
+                x-kubernetes-list-type: map
               build:
                 description: ProjectBuildSpec overrides platform build defaults for
                   one project.

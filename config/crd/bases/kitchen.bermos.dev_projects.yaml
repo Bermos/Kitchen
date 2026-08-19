@@ -51,6 +51,58 @@ spec:
               ProjectSpec defines the desired state of a Project: a repository that
               becomes a running application.
             properties:
+              access:
+                description: |-
+                  Access is who may do what with this Project, and it is the whole of the
+                  answer: an account with no entry here holds no role on the Project at
+                  all, so it is not in their project list and not theirs to build,
+                  redeploy or read. The one exception is a platform operator, who holds
+                  admin on every project, present and future — see
+                  `spec.access.operators` on the Kitchen singleton.
+
+                  Membership lives here, on the object the access is about, rather than
+                  in the identity provider or in a token claim. A role carried in a token
+                  is a snapshot good for as long as the token is, which means removing
+                  somebody leaves them on the project for up to an hour — and removal is
+                  the case where that delay matters most. See docs/AUTH.md, "Where
+                  membership lives".
+
+                  Entries merge per subject rather than by position (listType=map), so an
+                  apply that adds one person cannot drop another.
+                items:
+                  description: AccessGrant is one account's role on a Project.
+                  properties:
+                    email:
+                      description: |-
+                        Email is informational: it is what makes a list of opaque subjects
+                        readable in `kubectl get -o yaml` and in a git diff. Nothing resolves
+                        against it — an entry that means to name an address puts the address in
+                        Subject, and accepts the verified-email condition that comes with it.
+                      type: string
+                    role:
+                      description: Role this subject holds on the Project.
+                      enum:
+                      - admin
+                      - developer
+                      - viewer
+                      type: string
+                    subject:
+                      description: |-
+                        Subject is the issuer's `sub` for the account, or an email address. A
+                        value containing `@` is treated as an address and resolves against the
+                        token's `email` claim only when `email_verified` is true, because an
+                        unverified-email grant is a grant to whoever can claim that address at
+                        the identity provider.
+                      minLength: 1
+                      type: string
+                  required:
+                  - role
+                  - subject
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - subject
+                x-kubernetes-list-type: map
               build:
                 description: ProjectBuildSpec overrides platform build defaults for
                   one project.

@@ -71,6 +71,10 @@ spec:
       host: previews.apps.example.com   # where logins come back to; defaults to previews.<baseDomain>
       replicas: 2
       sessionTTL: 8h
+  access:                               # who may do what with the platform itself
+    operators:                          # everything, everywhere, plus admin on every project
+      - subject: user_01H8X…            # the issuer's `sub`, or an address — see below
+        email: anna@example.com         # informational, so the YAML reads
   builds:
     defaultStrategy: auto               # dockerfile | buildpacks | auto (what a project on "auto" takes)
     concurrency: 2
@@ -148,6 +152,29 @@ has been seeded". A Connection someone deletes stays deleted: the seed is a
 good default, not a fixture the platform keeps reinstating. While it is still
 there and still labelled `app.kubernetes.io/managed-by: kitchen`, its URL and
 credential are kept in step with the registry.
+
+`access.operators` is the platform role, and the only one there is: an account
+on the list is an operator — everything, everywhere, and project `admin` on
+every project, present and future — and every other account is a member, which
+has no platform surface at all, sees what project membership grants it, and
+may create projects. It lives on this object because this object is already
+the platform's configuration and is already edited through `PATCH /settings`,
+so granting somebody the operator hat needs no new store and no kubectl.
+
+It is the one field here with no `{}` default, deliberately. The others have
+one so that an installation predating them still gets the feature; here the
+absence carries information. **No `access` block at all means nobody has ever
+said who the operators are** — an installation upgrading into enforcement,
+where every account can call every route today and so every account read
+honestly *is* an operator, and the list is seeded from the accounts that
+exist. **An empty list means somebody narrowed it to nobody on purpose**, and
+is left exactly as it is. A default would collapse the two on the first write
+and lock an upgraded installation out of its own platform. See
+[AUTH.md](AUTH.md#bootstrap-and-what-happens-on-upgrade).
+
+The entries name accounts the same way a Project's grants do, minus the role —
+`subject` plus an informational `email` — and the rule for what `subject` may
+hold is the same one, described under `Project` below.
 
 `compliance` is the platform's own evidence, and it is on the singleton rather
 than on a Project deliberately: a team that could turn its own audit log off,
@@ -246,6 +273,10 @@ spec:
     mode: previews                      # previews (default) | always | never
     idleAfter: 5m                       # quiet for this long, then no pods at all
     maxReplicas: 5                      # ceiling for a cold-started environment
+  access:                               # who may do what with this project
+    - subject: user_01H8X…              # the issuer's `sub`, or an address — see below
+      email: anna@example.com           # informational, so the YAML reads
+      role: developer                   # admin | developer | viewer
   env:                                  # env vars with per-environment-type overlay
     - name: DATABASE_URL
       fromResourceClaim: { name: shop-db, key: url }   # injected by claim binding
@@ -263,6 +294,33 @@ status:
   productionEnvironmentRef: { name: my-shop-production }
   latestBuildRef: { name: my-shop-bld-8f3a2c1 }
 ```
+
+`access` is the project's membership, and it is the whole of the answer: an
+account with no entry holds no role here at all, so the project is not in
+their list and not theirs to build, redeploy or read. `admin` adds membership,
+the project's own settings and deleting it to what a `developer` may do;
+`viewer` reads status, URLs, builds, releases and logs, and may open a
+protected preview. The one account that needs no entry is a platform operator,
+who holds `admin` on every project — that rule lives in exactly one place in
+the code, so a project's list can never lock one out. Membership is here,
+rather than in the identity provider or in a token claim, because a role
+carried in a token is a snapshot good for as long as the token is: removing
+somebody would leave them on the project for up to an hour, and removal is the
+case where that delay matters most. See
+[AUTH.md](AUTH.md#where-membership-lives).
+
+The list merges per `subject` rather than by position, so an apply that adds
+one person cannot drop another. `subject` is normally the issuer's `sub`,
+which is opaque — the dashboard resolves an address to one when it writes a
+grant, and `email` beside it is informational, so that a list of opaque
+strings still reads. Hand-written YAML may name an address in `subject`
+instead, and the rule telling the two apart is blunt on purpose: **a subject
+containing `@` is read as an email address**, matched case-insensitively, and
+honoured only for a token whose `email_verified` claim is true. An unverified
+address is something the token holder said about themselves, so an
+unverified-email grant is a grant to whoever can get the identity provider to
+let them type that address — it resolves to no role rather than to the one
+written down.
 
 Reconcile: ensure per-project namespace, register the git webhook via the Connection
 (signing secret generated per project), validate that the referenced Connections carry

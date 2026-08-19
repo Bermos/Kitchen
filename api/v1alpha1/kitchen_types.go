@@ -443,6 +443,25 @@ type KitchenSpec struct {
 	// +optional
 	Auth AuthSpec `json:"auth,omitempty"`
 
+	// Access is who may do what with the platform itself. It belongs on this
+	// object because this object is already the platform's configuration and
+	// is already edited through PATCH /settings, so granting somebody the
+	// operator hat needs no new store and no kubectl.
+	//
+	// It deliberately carries no `+kubebuilder:default={}`, unlike the fields
+	// above it. Those defaults exist so that an installation predating a
+	// field still gets the feature; here the absence is the information. An
+	// absent operator list means nobody has ever said who the operators are —
+	// an installation upgrading into enforcement, where every account today
+	// can call every route and so every account read honestly *is* an
+	// operator, and the list is seeded from the accounts that exist. An empty
+	// list means somebody narrowed it to nobody on purpose, and is left
+	// exactly as it is. Defaulting the object into existence would collapse
+	// those two into one on the first write, and the upgraded installation
+	// would be locked out of its own platform by a minor version bump.
+	// +optional
+	Access AccessSpec `json:"access,omitempty"`
+
 	// +optional
 	Builds BuildsSpec `json:"builds,omitempty"`
 
