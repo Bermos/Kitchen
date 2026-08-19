@@ -4,7 +4,9 @@ import { useRoute } from "vue-router";
 import { api } from "../lib/api";
 import { user, signOut } from "../lib/auth";
 import { loadConfig } from "../lib/config";
-import { operatorMode } from "../lib/mode";
+import { callerFor, forgetMe, meError } from "../lib/me";
+import { canSwitchMode, operatorMode } from "../lib/mode";
+import { may } from "../lib/policy";
 import { unhealthyConditions, type Tone } from "../lib/status";
 import { useAsync, usePoll } from "../lib/useAsync";
 import CommandPalette from "./CommandPalette.vue";
@@ -71,27 +73,58 @@ function previewCount(name: string): number {
   return (inventory.data.value?.environments ?? []).filter((e) => e.project === name && e.type === "preview").length;
 }
 
-const nav = computed(() => [
-  {
-    label: "Overview",
-    icon: "i-lucide-layout-dashboard",
-    to: "/",
-    name: "overview",
-    count: inventory.data.value?.projects.length,
-  },
-  {
-    label: "Builds",
-    icon: "i-lucide-hammer",
-    to: "/builds",
-    name: "builds",
-    count: inventory.data.value?.builds.length,
-  },
-  { label: "Observability", icon: "i-lucide-activity", to: "/observability", name: "observability", count: undefined },
-  { label: "Traffic", icon: "i-lucide-waypoints", to: "/traffic", name: "traffic", count: undefined },
-  { label: "Traces", icon: "i-lucide-git-fork", to: "/traces", name: "traces", count: undefined },
-  { label: "Connections", icon: "i-lucide-plug", to: "/connections", name: "connections", count: undefined },
-  { label: "Settings", icon: "i-lucide-settings-2", to: "/settings", name: "settings", count: undefined },
-]);
+// The navigation is the role's, not the mode's. Everything down to Traces is
+// filtered server-side to the caller's own projects, so it is everybody's
+// screen with everybody's answer in it; Connections and Settings are the
+// operator's outright, and a member gets no entry rather than an entry that
+// leads to a refusal. Each one names the API route it stands for, so this and
+// the route guard are the same decision made twice from the same table.
+const nav = computed(() =>
+  [
+    {
+      label: "Overview",
+      icon: "i-lucide-layout-dashboard",
+      to: "/",
+      name: "overview",
+      count: inventory.data.value?.projects.length,
+      shown: true,
+    },
+    {
+      label: "Builds",
+      icon: "i-lucide-hammer",
+      to: "/builds",
+      name: "builds",
+      count: inventory.data.value?.builds.length,
+      shown: true,
+    },
+    {
+      label: "Observability",
+      icon: "i-lucide-activity",
+      to: "/observability",
+      name: "observability",
+      count: undefined,
+      shown: true,
+    },
+    { label: "Traffic", icon: "i-lucide-waypoints", to: "/traffic", name: "traffic", count: undefined, shown: true },
+    { label: "Traces", icon: "i-lucide-git-fork", to: "/traces", name: "traces", count: undefined, shown: true },
+    {
+      label: "Connections",
+      icon: "i-lucide-plug",
+      to: "/connections",
+      name: "connections",
+      count: undefined,
+      shown: may("GET /api/v1/connections/{name}", callerFor()),
+    },
+    {
+      label: "Settings",
+      icon: "i-lucide-settings-2",
+      to: "/settings",
+      name: "settings",
+      count: undefined,
+      shown: may("GET /api/v1/settings", callerFor()),
+    },
+  ].filter((item) => item.shown),
+);
 
 function navActive(item: { name: string }): boolean {
   if (item.name === "overview") return route.name === "overview";
@@ -100,10 +133,13 @@ function navActive(item: { name: string }): boolean {
 }
 
 // The operator's section: the platform seen across every project, which is a
-// different question from any of the screens above and — one day — a
-// differently authorized one. It is shown in operator mode alone, but the
-// routes exist in both: a finding's evidence link is a link somebody pastes,
-// and it should land where it says it does.
+// different question from any of the screens above and a differently
+// authorized one. It is shown in operator mode alone — and operator mode is
+// now something only an operator can be in, so a member never sees it and an
+// operator who has switched to the developer's view does not either.
+//
+// The routes still exist for an operator in both modes: a finding's evidence
+// link is a link somebody pastes, and it should land where it says it does.
 //
 // The paths are the ones the API emits as evidence, and they are load-bearing:
 // `internal/signals/evidence.go` names them.
@@ -121,9 +157,11 @@ const activeProject = computed(() => {
   return null;
 });
 
+// The gateway is the operator's half of /status: absent, not zeroed, for an
+// account that may not read it — so there is simply no tile.
 const gateway = computed(() => {
   const s = status.data.value;
-  if (!s) return null;
+  if (!s?.gateway) return null;
   return { address: s.gateway.address || "—", healthy: s.gateway.programmed };
 });
 
@@ -172,6 +210,7 @@ const userMenu = computed(() => [
         // Waiting lets the refresh token be revoked at the issuer before the
         // page goes away; a revocation that fails still leaves nothing behind
         // in this browser.
+        forgetMe();
         await signOut();
         window.location.assign("/login");
       },
@@ -293,11 +332,11 @@ const userMenu = computed(() => [
             <span class="text-dimmed pl-3.5 font-mono truncate" :title="gateway.address">{{ gateway.address }}</span>
           </div>
         </template>
-        <div v-if="status.data.value?.tunnel.enabled" class="flex items-center gap-2">
-          <StatusDot :tone="status.data.value.tunnel.connected ? 'success' : 'warning'" />
+        <div v-if="status.data.value?.tunnel?.enabled" class="flex items-center gap-2">
+          <StatusDot :tone="status.data.value?.tunnel?.connected ? 'success' : 'warning'" />
           <span class="text-muted">Tunnel</span>
-          <span class="ml-auto font-mono text-toned" :title="status.data.value.tunnel.message">
-            {{ status.data.value.tunnel.connected ? "connected" : "pending" }}
+          <span class="ml-auto font-mono text-toned" :title="status.data.value?.tunnel?.message">
+            {{ status.data.value?.tunnel?.connected ? "connected" : "pending" }}
           </span>
         </div>
         <div v-if="builds" class="flex items-center gap-2">
@@ -334,8 +373,13 @@ const userMenu = computed(() => [
         <CommandPalette />
         <span class="flex-1" />
         <!-- Both labels collapse to their icons on a phone: the pair is the
-             widest thing in the header and the least in need of words. -->
-        <UFieldGroup size="sm">
+             widest thing in the header and the least in need of words.
+
+             The switch is an operator's own choice to look at the platform the
+             way a developer does. A member has nothing on the other side of it,
+             so they get no switch rather than a switch that leads to panels
+             they may not fill. -->
+        <UFieldGroup v-if="canSwitchMode" size="sm">
           <UButton
             :color="operatorMode ? 'neutral' : 'primary'"
             :variant="operatorMode ? 'subtle' : 'soft'"
@@ -371,7 +415,20 @@ const userMenu = computed(() => [
       </header>
 
       <main class="flex-1 overflow-y-auto">
-        <div class="max-w-6xl mx-auto px-4 sm:px-6 py-5 sm:py-6">
+        <div class="max-w-6xl mx-auto px-4 sm:px-6 py-5 sm:py-6 space-y-5">
+          <!-- What the dashboard renders is decided by the role /me answers
+               with, so a /me that never answered is worth saying out loud:
+               without it every screen is the narrowest one, and a missing
+               Settings entry would otherwise look like a decision somebody
+               made rather than a request that failed. -->
+          <UAlert
+            v-if="meError"
+            color="warning"
+            variant="soft"
+            icon="i-lucide-user-x"
+            title="The platform could not say who you are signed in as"
+            :description="`${meError} — until it can, only what every account may see is shown.`"
+          />
           <slot />
         </div>
       </main>

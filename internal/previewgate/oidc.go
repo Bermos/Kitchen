@@ -30,6 +30,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Bermos/Kitchen/internal/access"
 	"github.com/Bermos/Kitchen/internal/idp"
 )
 
@@ -119,6 +120,12 @@ func (o *oidcClient) authorizeURL(ctx context.Context, state, verifier string) (
 type identity struct {
 	Subject string
 	Email   string
+	// EmailVerified is the issuer's own answer to whether it has checked the
+	// address. It travels with the address everywhere it goes, because an
+	// access grant naming an address is a grant to whoever the issuer says
+	// holds it — and an unverified address is only what the account said
+	// about itself.
+	EmailVerified bool
 }
 
 // tokenResponse is the part of the token endpoint's answer the gate reads.
@@ -181,11 +188,16 @@ func (o *oidcClient) exchange(ctx context.Context, code, verifier string) (ident
 
 // idTokenClaims is what the gate needs out of an ID token.
 type idTokenClaims struct {
-	Issuer    string          `json:"iss"`
-	Subject   string          `json:"sub"`
-	Email     string          `json:"email"`
-	Audience  json.RawMessage `json:"aud"`
-	ExpiresAt int64           `json:"exp"`
+	Issuer   string          `json:"iss"`
+	Subject  string          `json:"sub"`
+	Email    string          `json:"email"`
+	Audience json.RawMessage `json:"aud"`
+	// EmailVerified is read raw because issuers disagree about its type: the
+	// specification says boolean and several send the string "true". Anything
+	// else at all reads as unverified, which is the safe direction — the
+	// claim only ever widens what a visitor may reach.
+	EmailVerified json.RawMessage `json:"email_verified"`
+	ExpiresAt     int64           `json:"exp"`
 }
 
 // identityFromIDToken reads and checks an ID token.
@@ -222,7 +234,11 @@ func (o *oidcClient) identityFromIDToken(idToken string) (identity, error) {
 	if c.Subject == "" {
 		return identity{}, fmt.Errorf("the ID token names no subject")
 	}
-	return identity{Subject: c.Subject, Email: c.Email}, nil
+	return identity{
+		Subject:       c.Subject,
+		Email:         c.Email,
+		EmailVerified: access.VerifiedClaim(c.EmailVerified),
+	}, nil
 }
 
 // audienceContains handles the audience being either a string or an array,

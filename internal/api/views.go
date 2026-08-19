@@ -20,9 +20,11 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/access"
 )
 
 // The API answers in its own shapes rather than in raw custom resources.
@@ -56,15 +58,21 @@ func conditionViews(conditions []metav1.Condition) []conditionView {
 	return out
 }
 
-// envVarView is one of a project's environment variables. The value of a
-// secret- or claim-backed variable is a reference here, never the resolved
-// value: the API hands out configuration, not credentials.
+// envVarView is one of a project's environment variables, minus its value.
+// A literal value is reported as present and never echoed: a plain variable is
+// exactly where somebody pastes an API key, and the API never reads a
+// credential back. A secret- or claim-backed variable carries the reference it
+// was written as, which was never a credential to begin with.
 type envVarView struct {
-	Name         string      `json:"name"`
-	Value        string      `json:"value,omitempty"`
-	PreviewValue string      `json:"previewValue,omitempty"`
-	FromSecret   *keyRefView `json:"fromSecret,omitempty"`
-	FromClaim    *keyRefView `json:"fromClaim,omitempty"`
+	Name string `json:"name"`
+	// Set and PreviewSet are the whole of what a screen needs from a value:
+	// whether there is one, so a configured variable reads differently from
+	// an empty one. Both are false for a reference-backed variable, which
+	// holds no literal value of its own.
+	Set        bool        `json:"set"`
+	PreviewSet bool        `json:"previewSet"`
+	FromSecret *keyRefView `json:"fromSecret,omitempty"`
+	FromClaim  *keyRefView `json:"fromClaim,omitempty"`
 }
 
 // keyRefView names one key of a Secret or a ResourceClaim binding.
@@ -79,7 +87,7 @@ func envVarViews(env []kitchenv1alpha1.EnvVar) []envVarView {
 	}
 	out := make([]envVarView, 0, len(env))
 	for _, v := range env {
-		view := envVarView{Name: v.Name, Value: v.Value, PreviewValue: v.PreviewValue}
+		view := envVarView{Name: v.Name, Set: v.Value != "", PreviewSet: v.PreviewValue != ""}
 		if v.SecretRef != nil {
 			view.FromSecret = &keyRefView{Name: v.SecretRef.Name, Key: v.SecretRef.Key}
 		}
@@ -92,7 +100,17 @@ func envVarViews(env []kitchenv1alpha1.EnvVar) []envVarView {
 }
 
 type projectView struct {
-	Name                  string          `json:"name"`
+	Name string `json:"name"`
+	// Role is the calling account's role on this project — admin, developer
+	// or viewer. It travels with every project rather than as a list to join
+	// against, because the overview renders a list of them; and it is the
+	// role itself rather than a set of capability booleans, so that what the
+	// dashboard may offer is derived from the same table the API enforces
+	// (internal/api/policy.go) instead of from a second opinion about it.
+	//
+	// An operator reads `admin` on every project, including one they are not
+	// listed on, which is access.ProjectRoleFor's rule and not this view's.
+	Role                  string          `json:"role"`
 	Repo                  string          `json:"repo"`
 	Connection            string          `json:"connection"`
 	Registry              string          `json:"registry"`
@@ -113,9 +131,10 @@ type projectView struct {
 	Conditions            []conditionView `json:"conditions,omitempty"`
 }
 
-func newProjectView(project *kitchenv1alpha1.Project) projectView {
+func newProjectView(project *kitchenv1alpha1.Project, role access.ProjectRole) projectView {
 	view := projectView{
 		Name:              project.Name,
+		Role:              role.String(),
 		Repo:              project.Spec.Source.Repo,
 		Connection:        project.Spec.Source.ConnectionRef.Name,
 		Registry:          project.Spec.Registry.ConnectionRef.Name,
@@ -392,10 +411,15 @@ type objectsView struct {
 
 // clusterStatusView is the cluster the platform owns, as the status bar shows
 // it: "chef · 8 nodes".
+//
+// The name is everybody's — it is what this installation is called. The counts
+// are the operator's, and they are pointers so that a member's answer has no
+// counts at all rather than two zeroes, which would read as a platform with
+// nothing running on it.
 type clusterStatusView struct {
 	Name       string `json:"name,omitempty"`
-	Nodes      int    `json:"nodes"`
-	ReadyNodes int    `json:"readyNodes"`
+	Nodes      *int   `json:"nodes,omitempty"`
+	ReadyNodes *int   `json:"readyNodes,omitempty"`
 	// Message carries why the nodes could not be counted, which on an
 	// installation upgraded from before this endpoint means the operator's
 	// ClusterRole has not been rolled forward yet.
@@ -453,11 +477,23 @@ type componentStatusView struct {
 // statusView is everything the dashboard's status bar shows, in one request.
 // It overlaps /settings on the gateway deliberately: settings is the platform
 // as configured, this is the platform as it is running.
+//
+// It is the one payload that varies by role, and docs/AUTH.md says why: it is
+// the home page for both of the platform's people, so it keeps the build queue
+// for everyone — "why is my build waiting" is a developer's question — and
+// drops the platform's own health for a member. A second endpoint would have
+// doubled the surface for one payload.
+//
+// The operator's three halves are pointers and a slice for one reason: a
+// withheld field is absent, never zeroed. The dashboard has to be able to tell
+// "no tunnel is configured" from "you are not allowed to know", and an empty
+// component survey reads as a healthy platform running nothing.
 type statusView struct {
-	Cluster    clusterStatusView     `json:"cluster"`
-	Tunnel     tunnelStatusView      `json:"tunnel"`
-	Builds     buildQueueView        `json:"builds"`
-	Gateway    gatewayStatusView     `json:"gateway"`
+	Cluster clusterStatusView `json:"cluster"`
+	Builds  buildQueueView    `json:"builds"`
+
+	Tunnel     *tunnelStatusView     `json:"tunnel,omitempty"`
+	Gateway    *gatewayStatusView    `json:"gateway,omitempty"`
 	Components []componentStatusView `json:"components,omitempty"`
 }
 
@@ -483,6 +519,52 @@ func newConnectionView(connection *kitchenv1alpha1.Connection) connectionView {
 		Capabilities: capabilities,
 		CreatedAt:    connection.CreationTimestamp.Time,
 		Conditions:   conditionViews(connection.Status.Conditions),
+	}
+}
+
+// connectionChoiceView is a connection as somebody *choosing* one sees it,
+// which is the whole of what a project's members are told: what it is called,
+// what it can back, and whether the platform has it working.
+//
+// It is a type of its own rather than connectionView with fields left empty,
+// and that is the point of it. A blanked-out view is one forgetful `if` away
+// from publishing the operator's; worse, a field added to connectionView later
+// would be published to everybody by a struct they happen to share, without
+// anybody deciding to. Widening what a member sees has to be an edit to this
+// struct.
+//
+// What is deliberately not here: the provider, the config, the conditions and
+// their messages. A condition's message is the provider's own words — a
+// hostname, an API endpoint, an authentication failure — and it is the
+// operator's business. Ready plus Capabilities is enough to fill a dropdown
+// and to say why an entry cannot be chosen; the rest of the answer lives on
+// the operator's Connections screen, which is where fixing it lives too.
+type connectionChoiceView struct {
+	Name         string   `json:"name"`
+	Capabilities []string `json:"capabilities"`
+	Ready        bool     `json:"ready"`
+}
+
+// credentialsValidCondition is the condition the ConnectionReconciler writes
+// its verdict on the stored credential into. It is spelled here as well
+// because that reconciler keeps it unexported; the constant it has to agree
+// with is `condCredentialsValid` in internal/controller.
+const credentialsValidCondition = "CredentialsValid"
+
+// newConnectionChoiceView reads readiness off the one condition that answers
+// "would this work if a project named it": the platform has reached the
+// provider and the provider accepted the credential. A connection nothing has
+// assessed yet is not ready — which is the honest answer, and reads in a
+// dropdown as an entry to wait for rather than one to blame a failed build on.
+func newConnectionChoiceView(connection *kitchenv1alpha1.Connection) connectionChoiceView {
+	capabilities := make([]string, 0, len(connection.Status.Capabilities))
+	for _, capability := range connection.Status.Capabilities {
+		capabilities = append(capabilities, string(capability))
+	}
+	return connectionChoiceView{
+		Name:         connection.Name,
+		Capabilities: capabilities,
+		Ready:        meta.IsStatusConditionTrue(connection.Status.Conditions, credentialsValidCondition),
 	}
 }
 

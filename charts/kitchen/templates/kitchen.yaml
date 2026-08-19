@@ -20,13 +20,22 @@ metadata:
     {{- if .Values.kitchen.applyOnUpgrade }}
     # Re-applying a hook means deleting and recreating it. Nothing is
     # owned by the Kitchen object, so the Gateway and the tunnel survive;
-    # only its status is rebuilt on the next reconcile.
+    # only its status is rebuilt on the next reconcile. The status is also
+    # why nothing here can be remembered *in* the status — it dies with the
+    # object — and why the operator list is read back off the live object at
+    # render time instead: see `kitchen.accessBlock`.
     helm.sh/hook-delete-policy: before-hook-creation
     {{- end }}
 spec:
   baseDomain: {{ .Values.kitchen.baseDomain | quote }}
   {{- with .Values.kitchen.clusterName }}
   clusterName: {{ . | quote }}
+  {{- end }}
+  {{- with include "kitchen.accessBlock" . }}
+  # Who owns the platform. Absent means nobody has ever said, which is what
+  # the operator seeds from — so on an upgrade that re-applies this object,
+  # the list that is live is carried across rather than dropped.
+  {{- . | nindent 2 }}
   {{- end }}
   api:
     externalURL: {{ include "kitchen.apiExternalURL" . | quote }}

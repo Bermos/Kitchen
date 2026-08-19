@@ -25,6 +25,7 @@ import (
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -84,14 +85,65 @@ func newSavedQueryView(query *kitchenv1alpha1.SavedQuery) savedQueryView {
 	}
 }
 
+// hiddenFrom reports whether a saved query is one this caller must not be
+// shown, because it names a project they cannot see.
+//
+// A saved query is shared by everyone on the platform and carries no project
+// of its own: what it is about is inside its selection, as `project:billing`
+// or as a `where` naming the column. Rather than parse the query language a
+// second time here — which is how the parser and the guard end up disagreeing
+// — this looks for the names of the projects the caller cannot see, as whole
+// words in either half of the selection or in the title and description that
+// were written to describe them.
+//
+// It errs towards hiding: a query whose title happens to contain a word that
+// is also somebody else's project name is withheld from a caller who cannot
+// see that project. That is the safe direction, and the query's results would
+// have been filtered to nothing for them anyway.
+func hiddenFrom(scope projectScope, query *kitchenv1alpha1.SavedQuery) bool {
+	if scope.all || len(scope.hidden) == 0 {
+		return false
+	}
+	for _, text := range []string{query.Spec.Query, query.Spec.Where, query.Spec.Title, query.Spec.Description} {
+		if namesAny(text, scope.hidden) {
+			return true
+		}
+	}
+	return false
+}
+
+// namesAny reports whether text contains any of these names as a whole word.
+// The split is on everything a Kubernetes object name cannot contain, so
+// `project:billing` and `project = 'billing'` both name `billing`, and
+// `billing-api` does not.
+func namesAny(text string, names []string) bool {
+	if text == "" {
+		return false
+	}
+	for _, word := range strings.FieldsFunc(text, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '-'
+	}) {
+		for _, name := range names {
+			if word == name {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (s *Server) listSavedQueries(w http.ResponseWriter, req *http.Request) {
 	list := &kitchenv1alpha1.SavedQueryList{}
 	if err := s.Client.List(req.Context(), list, client.InNamespace(s.Namespace)); err != nil {
 		s.writeError(w, err)
 		return
 	}
+	scope := scopeFrom(req.Context())
 	views := make([]savedQueryView, 0, len(list.Items))
 	for i := range list.Items {
+		if hiddenFrom(scope, &list.Items[i]) {
+			continue
+		}
 		views = append(views, newSavedQueryView(&list.Items[i]))
 	}
 	// By title, because that is what the sidebar shows and creation order is
@@ -211,6 +263,15 @@ func (s *Server) deleteSavedQuery(w http.ResponseWriter, req *http.Request) {
 	saved := &kitchenv1alpha1.SavedQuery{}
 	if err := s.get(ctx, req.PathValue("name"), saved); err != nil {
 		s.writeError(w, err)
+		return
+	}
+	if hiddenFrom(scopeFrom(ctx), saved) {
+		// A query the caller was never shown is one they are told does not
+		// exist. A 403 here would say it does, which is the whole of what was
+		// being kept from them.
+		s.writeError(w, apierrors.NewNotFound(
+			schema.GroupResource{Group: kitchenv1alpha1.GroupVersion.Group, Resource: "savedqueries"},
+			saved.Name))
 		return
 	}
 	// Nothing owns a saved query and nothing cleans up after it, so the delete

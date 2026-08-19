@@ -83,6 +83,7 @@ func main() {
 	var probeAddr string
 	var gitWebhookAddr string
 	var previewGateImage string
+	var previewGateServiceAccount string
 	var apiAddr string
 	var apiAudiences string
 	var uiClientID string
@@ -98,6 +99,12 @@ func main() {
 		"Image the forward-auth gate for protected previews runs. It is this operator's own image — "+
 			"the gate is a second binary in it — and a pod cannot read its own image back, so the chart passes it in. "+
 			"Without it, previews that ask to be protected get no route at all.")
+	flag.StringVar(&previewGateServiceAccount, "preview-gate-service-account", "",
+		"ServiceAccount the forward-auth gate runs as. It is separate from the manager's, and bound to a "+
+			"read-only role on projects and kitchens, because the gate resolves who is on a project itself "+
+			"rather than asking the REST API. The chart creates it and passes the name in, since only the "+
+			"chart knows its release-name prefix. Without it the gate reads nothing and refuses every "+
+			"protected preview.")
 	flag.StringVar(&apiAddr, "api-bind-address", ":8092",
 		"The address the REST API binds to.")
 	flag.StringVar(&apiAudiences, "api-audiences", "",
@@ -309,10 +316,11 @@ func main() {
 	}
 
 	if err = (&controller.KitchenReconciler{
-		Client:           mgr.GetClient(),
-		Scheme:           mgr.GetScheme(),
-		PreviewGateImage: previewGateImage,
-		Audit:            auditor,
+		Client:                    mgr.GetClient(),
+		Scheme:                    mgr.GetScheme(),
+		PreviewGateImage:          previewGateImage,
+		PreviewGateServiceAccount: previewGateServiceAccount,
+		Audit:                     auditor,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Kitchen")
 		os.Exit(1)

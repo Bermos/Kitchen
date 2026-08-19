@@ -63,6 +63,15 @@ const (
 // anything that is not an in-cluster Service address.
 const UpstreamHeader = "X-Kitchen-Upstream"
 
+// ProjectHeader carries the Kitchen Project the preview belongs to, which is
+// what turns "is this visitor signed in" into "is this visitor on this
+// project". The Environment reconciler sets it on the same
+// RequestHeaderModifier filter as UpstreamHeader, so the Gateway overwrites
+// whatever the client sent — and the gate checks it against the route it
+// arrived on anyway (see routedFor), because a header that decides who sees
+// unreleased work is not believed merely because it arrived.
+const ProjectHeader = "X-Kitchen-Project"
+
 // Headers the gate hands the application about the visitor. Inbound copies
 // are dropped, so an application can trust them exactly as far as it trusts
 // the platform.

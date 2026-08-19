@@ -69,6 +69,11 @@ spec:
             # The gate is a second binary in this same image, deployed by the
             # operator once it has registered an OAuth client for it.
             - --preview-gate-image={{ include "kitchen.image" . }}
+            # And the identity it reads Projects and the Kitchen singleton as,
+            # which is how it decides who may open a protected preview without
+            # asking the REST API. The name is release-name prefixed, so the
+            # operator can only learn it from here.
+            - --preview-gate-service-account={{ include "kitchen.previewGateServiceAccountName" . }}
             {{- end }}
             {{- if .Values.selfUpdate.enabled }}
             # Self-update reaches the operator as flags rather than as fields

@@ -646,11 +646,21 @@ func (r *EnvironmentReconciler) applyHTTPRoute(
 			rule.Filters = []gatewayv1.HTTPRouteFilter{{
 				Type: gatewayv1.HTTPRouteFilterRequestHeaderModifier,
 				RequestHeaderModifier: &gatewayv1.HTTPHeaderFilter{
-					// Set, not Add: whatever the client sent under this name
-					// is overwritten before the gate ever sees it.
+					// Set, not Add: whatever the client sent under these
+					// names is overwritten before the gate ever sees them.
+					//
+					// The project is the other half of what the gate needs:
+					// the upstream says where to forward, and this says whose
+					// preview it is, which is what turns "signed in" into "on
+					// this project". The gate does not take it on trust — it
+					// checks the route it arrived on really is this project's
+					// (see previewgate.routedFor).
 					Set: []gatewayv1.HTTPHeader{{
 						Name:  previewgate.UpstreamHeader,
 						Value: application,
+					}, {
+						Name:  previewgate.ProjectHeader,
+						Value: env.Spec.ProjectRef.Name,
 					}},
 				},
 			}}
@@ -927,7 +937,11 @@ func AppNamespace(projectName string) string {
 }
 
 func appNamespace(projectName string) string {
-	return "kitchen-" + projectName
+	// Spelled in previewgate, because the preview gate checks a route's
+	// project header against the namespace of the address it is told to
+	// forward to. A second spelling here would be the two of them agreeing
+	// only until one of them was renamed.
+	return previewgate.AppNamespace(projectName)
 }
 
 // hostname computes the environment's generated host. Production gets the

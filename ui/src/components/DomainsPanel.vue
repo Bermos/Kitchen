@@ -2,6 +2,8 @@
 import { computed, ref, watch } from "vue";
 import { api, type Domain } from "../lib/api";
 import { timeAgo } from "../lib/format";
+import { callerFor } from "../lib/me";
+import { may } from "../lib/policy";
 import { useAsync, usePoll } from "../lib/useAsync";
 import ConditionsTable from "./ConditionsTable.vue";
 import StatusDot from "./StatusDot.vue";
@@ -11,9 +13,17 @@ import StatusDot from "./StatusDot.vue";
 // confirmation. Creating a domain changes nothing by itself — DNS is the
 // user's move — so the panel's job is showing exactly what that move is.
 
-const props = defineProps<{ environment: string }>();
+// The role is the caller's on the project this environment belongs to,
+// handed down rather than fetched: the panel is always on a screen that has
+// already loaded the project, and a second read of it here would be the same
+// answer one request later.
+const props = defineProps<{ environment: string; role?: string }>();
 
 const toast = useToast();
+
+const caller = computed(() => callerFor(props.role));
+const mayAttach = computed(() => may("POST /api/v1/domains", caller.value));
+const mayDetach = computed(() => may("DELETE /api/v1/domains/{name}", caller.value));
 
 const { data, error, refresh } = useAsync(() => api.domains({ environment: props.environment }));
 watch(
@@ -153,7 +163,7 @@ async function detach() {
   <div>
     <div class="flex items-center justify-between mb-2">
       <h2 class="text-sm font-medium text-highlighted">Custom domains</h2>
-      <UButton color="neutral" variant="subtle" size="xs" icon="i-lucide-plus" @click="adding = true">
+      <UButton v-if="mayAttach" color="neutral" variant="subtle" size="xs" icon="i-lucide-plus" @click="adding = true">
         Add domain
       </UButton>
     </div>
@@ -178,6 +188,7 @@ async function detach() {
           <span class="text-xs text-muted">{{ domainState(domain) }}</span>
           <span class="ml-auto text-xs text-dimmed whitespace-nowrap">{{ timeAgo(domain.createdAt) }}</span>
           <UButton
+            v-if="mayDetach"
             color="neutral"
             variant="ghost"
             size="xs"

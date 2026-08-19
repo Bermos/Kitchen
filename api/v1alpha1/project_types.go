@@ -206,6 +206,27 @@ type ProjectSpec struct {
 	// +optional
 	ScaleToZero ScaleToZeroPolicy `json:"scaleToZero,omitempty"`
 
+	// Access is who may do what with this Project, and it is the whole of the
+	// answer: an account with no entry here holds no role on the Project at
+	// all, so it is not in their project list and not theirs to build,
+	// redeploy or read. The one exception is a platform operator, who holds
+	// admin on every project, present and future — see
+	// `spec.access.operators` on the Kitchen singleton.
+	//
+	// Membership lives here, on the object the access is about, rather than
+	// in the identity provider or in a token claim. A role carried in a token
+	// is a snapshot good for as long as the token is, which means removing
+	// somebody leaves them on the project for up to an hour — and removal is
+	// the case where that delay matters most. See docs/AUTH.md, "Where
+	// membership lives".
+	//
+	// Entries merge per subject rather than by position (listType=map), so an
+	// apply that adds one person cannot drop another.
+	// +optional
+	// +listType=map
+	// +listMapKey=subject
+	Access []AccessGrant `json:"access,omitempty"`
+
 	// Environment variables, overlaid per environment type.
 	// +optional
 	// +listType=map

@@ -64,86 +64,168 @@ That token's audience is the issuer, which the API accepts. The key itself
 never reaches the operator, so a leaked API key is revoked in one place and
 the operator has nothing to invalidate.
 
+**What that token may do is a project role, and nothing else.** A key belongs
+to a machine account created for it, and the project it was made for holds a
+grant for that account in `spec.access` — `developer` by default, which is the
+day job: builds, promotions, rollbacks, environment variables, logs. So a key
+is a member of exactly one project and has no platform surface at all: it can
+trigger a build on `shop` and it cannot change the base domain, read another
+project, or see that another project exists. Nothing about the role is stored
+on the key, and there is no fourth role for machines — it is an ordinary grant
+on an ordinary project, which is why a key can never outrank the project it was
+made for. See [Keys for CI](#keys-for-ci) for issuing one, and
+[AUTH.md](AUTH.md#machine-accounts) for why it is built this way.
+
+**Revocation is at the issuer.** Deleting a key stops it working immediately,
+and the operator has nothing to invalidate because it never held anything;
+`DELETE /projects/{name}/keys/{key}` deletes it there and takes the grant off
+the project in the same request.
+
+## Authorization
+
+A token says **who** the caller is. What they may do is Kitchen's own answer,
+resolved from the access recorded on its objects. The model — two platform
+roles, three project roles, `operator` containing `developer` — is
+[AUTH.md, "Who may do what"](AUTH.md#who-may-do-what); it is not restated
+here, only applied.
+
+Two axes, because one list cannot answer both "may Anna change the base
+domain?" and "may Anna deploy `billing`?":
+
+- the **platform role**, exactly one per account, from `spec.access.operators`
+  on the `Kitchen` singleton;
+- the **project role**, per account per project, from `spec.access` on each
+  `Project`. An operator holds `admin` on every project, present and future.
+
+The `Requires` column on every endpoint below says which of the two it wants.
+An unqualified `viewer`, `developer` or `admin` is a **project** role, on the
+project the request is about — the path's for `/projects/{name}/…`, and
+otherwise the object's own (`spec.projectRef` on a build, a release, an
+environment or a claim; the environment's project for a domain). Three values
+are not roles:
+
+| Value | Means |
+|---|---|
+| `any account` | a valid token, and nothing more |
+| `any account — filtered` | a valid token; the answer is narrowed to the projects the caller can see |
+| `any account — body varies` | a valid token; the shape of the body depends on the caller's platform role, and any list inside it is narrowed to the projects they can see. Two routes: `GET /status` and `GET /connections` |
+
+The whole table lives in one place in the operator — `internal/api/policy.go`,
+which every route is registered from — so a route cannot exist without a
+requirement, and the dashboard's copy of it is generated rather than written
+twice.
+
+### Being refused
+
+**`403` names the role it wanted**, and what would have satisfied it:
+
+```json
+{"error": "you have viewer on shop; redeploying needs developer"}
+```
+
+```json
+{"error": "changing the platform's settings needs the operator role; you are a member"}
+```
+
+**`404` is what an object you hold no role on looks like.** Not `403`: on a
+platform where developers are not meant to see each other's projects, "you may
+not know whether `billing` exists" is the right answer, and a refusal that
+differed from a missing object would be the answer to the question it was
+withholding. So a build of somebody else's project, a `?project=` naming one,
+and a saved query that mentions one are all answered exactly as if they were
+not there. A `403` therefore always means *you can see this, and you may not do
+that* — which is what makes it worth naming a role in.
+
 ## Endpoints
 
 All paths are relative to `/api/v1`. Collections answer `{"items": [...]}`;
 errors answer `{"error": "..."}` with a message meant to be read by whoever
-sent the request.
+sent the request. The `Requires` column is explained under
+[Authorization](#authorization) above.
 
-| Method | Path | Does |
-|---|---|---|
-| GET | `/projects` | List projects |
-| POST | `/projects` | Create a project |
-| GET | `/projects/{name}` | One project |
-| PATCH | `/projects/{name}` | Change its settings — branch, previews, build, env vars, runtime |
-| DELETE | `/projects/{name}` | Delete it, and everything derived from it |
-| GET | `/projects/{name}/builds` | That project's builds, newest first |
-| POST | `/projects/{name}/builds` | Build a commit — a rebuild |
-| GET | `/projects/{name}/releases` | That project's releases, newest first |
-| GET | `/projects/{name}/environments` | That project's environments |
-| GET | `/builds` | Every build. `?project=` filters |
-| GET | `/builds/{name}` | One build |
-| POST | `/builds/{name}/cancel` | Stop it — the Build stays, phase `Cancelled` |
-| GET | `/builds/{name}/logs` | That build's output |
-| GET | `/builds/{name}/attestations` | The signed evidence attached to that build's artifact |
-| GET | `/releases` | Every release. `?project=` filters |
-| GET | `/releases/{name}` | One release |
-| GET | `/environments` | Every environment. `?project=` filters |
-| GET | `/environments/{name}` | One environment |
-| PATCH | `/environments/{name}` | Move it to another release — promotion and rollback |
-| DELETE | `/environments/{name}` | Tear down a stuck preview. Previews only |
-| GET | `/environments/{name}/logs` | That environment's runtime logs |
-| GET | `/environments/{name}/workload` | What it is running: replicas, restarts, uptime, resources, pods |
-| GET | `/environments/{name}/metrics` | What it *has been* running: CPU, memory, replicas and restarts over a window |
-| GET | `/environments/{name}/requests/summary` | The golden-signal header: traffic, error rate and latency over a window |
-| GET | `/environments/{name}/requests/series` | The same signals over time — the charts |
-| GET | `/environments/{name}/requests/routes` | One row per route template, sortable — the per-path breakdown |
-| GET | `/environments/{name}/requests` | The requests themselves, newest first. Filterable, and live-tails like logs |
-| GET | `/environments/{name}/diagnostics` | The crash report: everything about the last abnormal termination, assembled |
-| GET | `/environments/{name}/signals` | What is wrong with it right now — the diagnostics strip |
-| GET | `/environments/{name}/objects` | The Kubernetes objects the operator materialized for it |
-| GET | `/logs` | The whole logs table, filtered by a query. `?q=`, `?where=` |
-| GET | `/logs/histogram` | The same selection counted over time — the shape of the window |
-| GET | `/logs/facets` | The same selection's distinct values per field, with counts |
-| GET | `/logs/patterns` | The same selection's messages collapsed into templates |
-| GET | `/logs/saved` | Saved queries — selections someone kept under a name |
-| POST | `/logs/saved` | Keep the current selection under a name |
-| DELETE | `/logs/saved/{name}` | Forget one |
-| GET | `/events` | The platform's recent activity, newest first. `?project=` and `?limit=` filter |
-| GET | `/audit` | The tamper-evident log of state transitions. `?kind=`, `?name=`, `?project=`, `?actor=`, `?since=`, `?until=`, `?limit=` |
-| GET | `/audit/verify` | Re-derive the chain's hashes over a run and report every break. `?from=`, `?limit=` |
-| GET | `/compliance` | What the platform is producing: whether the audit log is recording, and the key artifacts are signed under |
-| GET | `/metrics/overview` | The dashboard's numbers, pre-aggregated. `?project=` narrows |
-| GET | `/traffic` | The service map: aggregated flow edges. `?project=`, `?since=`, `?until=` |
-| GET | `/traces` | Traces in a window. `?project=`, `?environment=`, `?service=`, `?errors=1`, `?minDuration=` |
-| GET | `/traces/{traceId}` | One trace's spans, oldest first — the waterfall |
-| GET | `/status` | The platform as it is running: cluster, tunnel, build queue, components |
-| GET | `/platform/signals` | Every finding firing anywhere on the platform, worst first — the problems list |
-| GET | `/platform/nodes` | Per node: conditions, pods, and when its collector last shipped anything |
-| GET | `/platform/workloads` | Every workload and pod on the platform — and the workloads with no pods at all |
-| GET | `/platform/edge` | Cross-project traffic, the Gateway, the tunnel and the certificates |
-| GET | `/platform/storage` | Volumes and what mounts them, plus the telemetry store's own health |
-| GET | `/platform/events` | The cluster's Warning history, faceted. `?reason=`, `?kind=`, `?node=`, `?search=` |
-| GET | `/platform/ingest` | Collector presence and freshness, and what the flow follower lost |
-| GET | `/settings` | The platform's settings — the `Kitchen` singleton |
-| PATCH | `/settings` | Change the build and telemetry defaults |
-| GET | `/updates` | The platform's own version, what it can upgrade to, and every upgrade it has attempted. `?refresh=true` asks the registry again |
-| POST | `/updates` | Upgrade the platform |
-| GET | `/updates/{name}` | One upgrade |
-| GET | `/connections` | Every connection (never their credentials) |
-| POST | `/connections` | Create one — the credential goes in, and never comes back out |
-| POST | `/connections/test` | Try a credential against its provider, storing nothing |
-| GET | `/connections/{name}` | One connection |
-| PATCH | `/connections/{name}` | Rotate the credential, change the config, or both |
-| DELETE | `/connections/{name}` | Delete it, unless something still uses it |
-| GET | `/domains` | Every custom domain. `?environment=` filters |
-| POST | `/domains` | Attach one — the response carries the DNS record to create |
-| GET | `/domains/{name}` | One domain, verification instructions included |
-| DELETE | `/domains/{name}` | Detach it; the operator removes its certificate |
-| GET | `/claims` | Every resource claim. `?project=` filters |
-| POST | `/claims` | Ask a database-capable connection to provision one |
-| GET | `/claims/{name}` | One claim |
-| DELETE | `/claims/{name}` | Delete it — what happens to the data is its `deletionPolicy`'s call |
+| Method | Path | Does | Requires |
+|---|---|---|---|
+| GET | `/projects` | List projects | any account — filtered |
+| POST | `/projects` | Create a project | any account |
+| GET | `/projects/{name}` | One project — its env vars by name, never their values | `viewer` |
+| PATCH | `/projects/{name}` | Change its settings — branch, previews, build, runtime. Not its env vars | `admin` |
+| PATCH | `/projects/{name}/env` | Change its environment variables — the whole list | `developer` |
+| DELETE | `/projects/{name}` | Delete it, and everything derived from it | `admin` |
+| GET | `/projects/{name}/builds` | That project's builds, newest first | `viewer` |
+| POST | `/projects/{name}/builds` | Build a commit — a rebuild | `developer` |
+| GET | `/projects/{name}/releases` | That project's releases, newest first | `viewer` |
+| GET | `/projects/{name}/environments` | That project's environments | `viewer` |
+| GET | `/projects/{name}/members` | Who holds a role on it — the readable form of `spec.access` | `viewer` |
+| POST | `/projects/{name}/members` | Give somebody a role. The address is resolved to a `sub` before it is written | `admin` |
+| PATCH | `/projects/{name}/members` | Move a member to another role | `admin` |
+| DELETE | `/projects/{name}/members` | Take a member off the project | `admin` |
+| GET | `/projects/{name}/keys` | That project's CI keys — never their values | `viewer` |
+| POST | `/projects/{name}/keys` | Issue one. The key is answered once, and the grant is written with it | `admin` |
+| DELETE | `/projects/{name}/keys/{key}` | Revoke one, and take its grant off the project | `admin` |
+| GET | `/builds` | Every build. `?project=` filters | any account — filtered |
+| GET | `/builds/{name}` | One build | `viewer` |
+| POST | `/builds/{name}/cancel` | Stop it — the Build stays, phase `Cancelled` | `developer` |
+| GET | `/builds/{name}/logs` | That build's output | `viewer` |
+| GET | `/builds/{name}/attestations` | The signed evidence attached to that build's artifact | `viewer` |
+| GET | `/releases` | Every release. `?project=` filters | any account — filtered |
+| GET | `/releases/{name}` | One release | `viewer` |
+| GET | `/environments` | Every environment. `?project=` filters | any account — filtered |
+| GET | `/environments/{name}` | One environment | `viewer` |
+| PATCH | `/environments/{name}` | Move it to another release — promotion and rollback | `developer` |
+| DELETE | `/environments/{name}` | Tear down a stuck preview. Previews only | `developer` |
+| GET | `/environments/{name}/logs` | That environment's runtime logs | `viewer` |
+| GET | `/environments/{name}/workload` | What it is running: replicas, restarts, uptime, resources, pods | `viewer` |
+| GET | `/environments/{name}/metrics` | What it *has been* running: CPU, memory, replicas and restarts over a window | `viewer` |
+| GET | `/environments/{name}/requests/summary` | The golden-signal header: traffic, error rate and latency over a window | `viewer` |
+| GET | `/environments/{name}/requests/series` | The same signals over time — the charts | `viewer` |
+| GET | `/environments/{name}/requests/routes` | One row per route template, sortable — the per-path breakdown | `viewer` |
+| GET | `/environments/{name}/requests` | The requests themselves, newest first. Filterable, and live-tails like logs | `viewer` |
+| GET | `/environments/{name}/diagnostics` | The crash report: everything about the last abnormal termination, assembled | `viewer` |
+| GET | `/environments/{name}/signals` | What is wrong with it right now — the diagnostics strip | `viewer` |
+| GET | `/environments/{name}/objects` | The Kubernetes objects the operator materialized for it | `operator` |
+| GET | `/logs` | The whole logs table, filtered by a query. `?q=`, `?where=` | any account — filtered |
+| GET | `/logs/histogram` | The same selection counted over time — the shape of the window | any account — filtered |
+| GET | `/logs/facets` | The same selection's distinct values per field, with counts | any account — filtered |
+| GET | `/logs/patterns` | The same selection's messages collapsed into templates | any account — filtered |
+| GET | `/logs/saved` | Saved queries — selections someone kept under a name | any account — filtered |
+| POST | `/logs/saved` | Keep the current selection under a name | any account |
+| DELETE | `/logs/saved/{name}` | Forget one | any account — filtered |
+| GET | `/events` | The platform's recent activity, newest first. `?project=` and `?limit=` filter | any account — filtered |
+| GET | `/audit` | The tamper-evident log of state transitions. `?kind=`, `?name=`, `?project=`, `?actor=`, `?since=`, `?until=`, `?limit=` | any account — filtered |
+| GET | `/audit/verify` | Re-derive the chain's hashes over a run and report every break. `?from=`, `?limit=` | `operator` |
+| GET | `/compliance` | What the platform is producing: whether the audit log is recording, and the key artifacts are signed under | `operator` |
+| GET | `/metrics/overview` | The dashboard's numbers, pre-aggregated. `?project=` narrows | any account — filtered |
+| GET | `/traffic` | The service map: aggregated flow edges. `?project=`, `?since=`, `?until=` | any account — filtered |
+| GET | `/traces` | Traces in a window. `?project=`, `?environment=`, `?service=`, `?errors=1`, `?minDuration=` | any account — filtered |
+| GET | `/traces/{traceId}` | One trace's spans, oldest first — the waterfall | any account — filtered |
+| GET | `/me` | Who the caller is: subject, address, name and platform role | any account |
+| GET | `/status` | The platform as it is running: cluster, tunnel, build queue, components | any account — body varies |
+| GET | `/platform/signals` | Every finding firing anywhere on the platform, worst first — the problems list | `operator` |
+| GET | `/platform/nodes` | Per node: conditions, pods, and when its collector last shipped anything | `operator` |
+| GET | `/platform/workloads` | Every workload and pod on the platform — and the workloads with no pods at all | `operator` |
+| GET | `/platform/edge` | Cross-project traffic, the Gateway, the tunnel and the certificates | `operator` |
+| GET | `/platform/storage` | Volumes and what mounts them, plus the telemetry store's own health | `operator` |
+| GET | `/platform/events` | The cluster's Warning history, faceted. `?reason=`, `?kind=`, `?node=`, `?search=` | `operator` |
+| GET | `/platform/ingest` | Collector presence and freshness, and what the flow follower lost | `operator` |
+| GET | `/settings` | The platform's settings — the `Kitchen` singleton, operator list included | `operator` |
+| PATCH | `/settings` | Change the build and telemetry defaults, or who the operators are | `operator` |
+| GET | `/updates` | The platform's own version, what it can upgrade to, and every upgrade it has attempted. `?refresh=true` asks the registry again | `operator` |
+| POST | `/updates` | Upgrade the platform | `operator` |
+| GET | `/updates/{name}` | One upgrade | `operator` |
+| GET | `/connections` | An operator: every connection (never their credentials). Anybody else: the picker — name, capabilities, readiness | any account — body varies |
+| POST | `/connections` | Create one — the credential goes in, and never comes back out | `operator` |
+| POST | `/connections/test` | Try a credential against its provider, storing nothing | `operator` |
+| GET | `/connections/{name}` | One connection | `operator` |
+| PATCH | `/connections/{name}` | Rotate the credential, change the config, or both | `operator` |
+| DELETE | `/connections/{name}` | Delete it, unless something still uses it | `operator` |
+| GET | `/domains` | Every custom domain. `?environment=` filters | any account — filtered |
+| POST | `/domains` | Attach one — the response carries the DNS record to create | `developer` |
+| GET | `/domains/{name}` | One domain, verification instructions included | `viewer` |
+| DELETE | `/domains/{name}` | Detach it; the operator removes its certificate | `developer` |
+| GET | `/claims` | Every resource claim. `?project=` filters | any account — filtered |
+| POST | `/claims` | Ask a database-capable connection to provision one | `developer` |
+| GET | `/claims/{name}` | One claim | `viewer` |
+| DELETE | `/claims/{name}` | Delete it — what happens to the data is its `deletionPolicy`'s call | `developer` |
 
 ### Creating a claim
 
@@ -185,12 +267,53 @@ everything the platform derives from it — the application namespace, release
 names, generated hostnames — has to fit Kubernetes' 63-character limit.
 Naming a Connection that does not exist, or one without the needed
 capability, is a `400`; a Connection the operator has not assessed yet is
-accepted, and the project's own conditions report whether it fits. A name
-already in use is a `409`.
+accepted, and the project's own conditions report whether it fits.
+
+**Project names are one flat namespace under the platform's base domain**, and
+they are first-come-first-served. Every URL the platform generates is a
+subdomain of that domain, so there is no scope a second `shop` could be
+qualified with — and the second person to want the name is told so in words
+rather than being handed the API server's account of an object in a namespace:
+
+```json
+{"error": "the project name \"shop\" is taken: names are one flat namespace under the platform's base domain, since every URL the platform generates is a subdomain of it, so they are first-come-first-served — choose another name"}
+```
 
 Answers `201` with the new project. The operator takes it from there:
 namespace, webhook, and — once the first build of the production branch
 lands — the production environment.
+
+**Creating a project is self-service, and the account that creates one becomes
+its `admin`** — written into `spec.access` on the new Project, not implied, so
+that `kubectl get project -o yaml` and a git diff both tell the whole truth
+about who may do what with it. The grant is part of the create itself, one
+request carrying both, so there is never an instant in which a project exists
+that nobody administers.
+
+### Who the caller is, and what they may do
+
+`GET /me` is the caller described to themselves, and nothing about anybody
+else — which is why any valid token may ask for it:
+
+```json
+{"subject": "user_01H8X…", "email": "anna@example.com", "name": "Anna",
+ "platformRole": "operator"}
+```
+
+The project half of the answer is not here, because a dashboard rendering a
+list of projects would have to join it back on: **every project payload carries
+the calling account's role on that project**, as `role`, in `GET /projects` and
+`GET /projects/{name}` alike.
+
+```json
+{"name": "shop", "role": "developer", "repo": "acme/shop", "…": "…"}
+```
+
+It is the role itself rather than a set of capability booleans (`canDeploy`,
+`canDelete`). The role is what the API enforces, and what a client may offer is
+derived from the same table it is enforced from — a second vocabulary would be
+a second opinion, and the two would drift. An operator reads `admin` on every
+project, including ones they are not listed on.
 
 ### Changing a project's settings
 
@@ -200,23 +323,265 @@ optional and absent ones keep their value:
 ```json
 {"productionBranch": "trunk", "previews": true, "previewsProtected": false,
  "buildStrategy": "dockerfile", "dockerfilePath": "build/Dockerfile", "rootDirectory": "apps/shop",
- "port": 8080, "replicas": 3, "cpu": "250m", "memory": "512Mi",
- "env": [
+ "port": 8080, "replicas": 3, "cpu": "250m", "memory": "512Mi"}
+```
+
+`cpu` and `memory` are Kubernetes quantities and set request and limit alike;
+an empty string clears one. The repository and the two connections are
+deliberately not editable: rebinding a project to another repository is a
+different project.
+
+**Environment variables are not on this route.** They are the developer's day
+job where the project's own settings are the admin's, and a whole route is the
+unit of authorization here — so they have one of their own, below. A body that
+carries `env` is a `400` naming it, rather than a field quietly dropped:
+
+```json
+{"error": "environment variables are not changed here any more: send them to PATCH /projects/shop/env, which needs developer rather than admin"}
+```
+
+Settings land in the next release's snapshot — what is already running keeps
+the configuration it was released with until the next deploy.
+
+### Changing a project's environment variables
+
+`PATCH /projects/{name}/env` carries one field, and it replaces the whole
+list:
+
+```json
+{"env": [
    {"name": "PUBLIC_URL", "value": "https://shop.example.com", "previewValue": "https://preview.invalid"},
    {"name": "API_KEY", "fromSecret": {"name": "shop-api-key", "key": "key"}},
    {"name": "DATABASE_URL", "fromClaim": {"name": "shop-db", "key": "url"}}]}
 ```
 
-`env`, when present, replaces the whole list — read the project, edit, write
-back. A variable is a literal `value` (with an optional `previewValue` used in
+A variable is a literal `value` (with an optional `previewValue` used in
 previews), a `fromSecret` reference, or a `fromClaim` reference; naming more
-than one source is a `400`. `cpu` and `memory` are Kubernetes quantities and
-set request and limit alike; an empty string clears one. The repository and the
-two connections are deliberately not editable: rebinding a project to another
-repository is a different project.
+than one source is a `400`. `{"env": []}` clears every variable, which somebody
+may well mean; a body with no `env` at all is a `400` rather than the same
+thing, because that is a client that forgot the field and not one asking for an
+empty list.
 
-Settings land in the next release's snapshot — what is already running keeps
-the configuration it was released with until the next deploy.
+A value goes in and never comes back out. Reading a project reports whether a
+variable has one, not what it is:
+
+```json
+{"env": [
+   {"name": "PUBLIC_URL", "set": true, "previewSet": true},
+   {"name": "API_KEY", "set": false, "previewSet": false,
+    "fromSecret": {"name": "shop-api-key", "key": "key"}}]}
+```
+
+A plain variable is exactly where somebody in a hurry pastes an API key, so it
+is held to the same rule as a connection's credential. Replacing the whole list
+therefore does not mean sending the values back: a variable whose `value` the
+request leaves out keeps the one it already has, and an empty `value` clears it
+— the bargain the credential fields make too. Repointing a variable at a
+`fromSecret` or a `fromClaim` drops the value it used to carry, since the
+reference is what replaces it.
+
+The answer is the project, so a client that changed a variable renders the new
+list without a second read. Variables land in the next release's snapshot, like
+every other project setting.
+
+### Who is on a project
+
+Membership is a project `admin`'s to *change*, which is the point of it: adding
+somebody to `shop` does not go through whoever installed the platform. An
+operator holds `admin` on every project, so they can do it too — they need no
+rule of their own here, and neither does anybody else.
+
+**Reading the list is a `viewer`'s**, because knowing who else is on a project
+is part of knowing what the project is: a viewer who opened the People tab and
+was refused on load would be reading a screen about a project they can
+otherwise see in full. Only the three writes want `admin`. The same split
+applies to [the CI keys](#keys-for-ci), which are the same list with its
+non-human half shown.
+
+All four methods answer on one path, `/projects/{name}/members`, and it is the
+readable form of `spec.access` on the Project:
+
+```sh
+curl -sS -H "authorization: Bearer $TOKEN" \
+  https://kitchen.apps.example.com/api/v1/projects/shop/members
+{"items": [
+   {"subject": "user_01H8X…", "email": "grace@example.com", "role": "admin"},
+   {"subject": "user_01J2Q…", "email": "anna@example.com", "role": "developer"}]}
+```
+
+`subject` is the issuer's `sub` and is the canonical identifier; `email` is
+informational, so a list of opaque strings still reads. (The two swap round for
+an entry hand-written against an address — see
+[AUTH.md](AUTH.md#where-membership-lives) — where `subject` carries the address
+and `email` is usually empty.)
+
+**Adding somebody names them by address, and the platform resolves it.**
+
+```sh
+curl -sS -X POST -H "authorization: Bearer $TOKEN" \
+  -d '{"email": "anna@example.com", "role": "developer"}' \
+  https://kitchen.apps.example.com/api/v1/projects/shop/members
+{"subject": "user_01J2Q…", "email": "anna@example.com", "role": "developer"}
+```
+
+The address is turned into the account's `sub` at the identity provider before
+anything is written, because the address is what a person can type and the
+`sub` is what a token will actually carry. An address the identity provider
+does not know is a `404` — *they have to sign in to Kitchen once before they
+can be given a role on a project* — rather than a grant that would sit on the
+project matching nobody. Somebody who is already a member is a `409`; change
+their role rather than adding a second entry.
+
+`subject` is the other way in, and takes an identifier as given:
+
+```json
+{"subject": "svc_ci", "role": "developer"}
+```
+
+That is for an identity with no address to resolve, and for an installation
+federated to an issuer that serves no account directory, where resolving an
+address answers `503` saying exactly this. Exactly one of `email` and
+`subject` is required, and a `subject` that looks like an address is refused:
+pass it as `email`, so it is resolved rather than stored as the weaker
+verified-address grant. A CI key is a machine account and so is one of these
+grants, but it is not written this way — [`POST
+/projects/{name}/keys`](#keys-for-ci) creates the account, the credential and
+the grant together, which is the only way to end up with all three.
+
+**A member is addressed by `subject` in the body, not in the path**, on both of
+the writes that change one:
+
+```sh
+curl -sS -X PATCH -H "authorization: Bearer $TOKEN" \
+  -d '{"subject": "user_01J2Q…", "role": "admin"}' \
+  https://kitchen.apps.example.com/api/v1/projects/shop/members
+
+curl -sS -X DELETE -H "authorization: Bearer $TOKEN" \
+  -d '{"subject": "user_01J2Q…"}' \
+  https://kitchen.apps.example.com/api/v1/projects/shop/members
+```
+
+A `sub` is opaque and may contain `/`, `%` or `#`; every path segment this API
+addresses an object by is a Kubernetes name, and adding a percent-encoding rule
+that only bites on the accounts with awkward identifiers is worse than a
+`DELETE` that carries a body. `PATCH` answers `200` with the grant, `DELETE`
+answers `204`, and a subject the project has no grant for is a `404`.
+
+**The last `admin` cannot be removed or demoted.** Both writes refuse with a
+`409` that says what would fix it:
+
+```json
+{"error": "anna@example.com is the only admin on shop, and a project with no admin has nobody left who can add one: make somebody else an admin first, then remove this one"}
+```
+
+An operator is not counted as a substitute. They could indeed repair such a
+project, but a project whose only listed admin is gone is exactly the abandoned
+project the rule exists to prevent: everyone working on it would have to go and
+find an operator to get anything changed, which is the bottleneck self-service
+membership was built to remove.
+
+Every membership write is recorded in the [audit log](#endpoints) as an update
+to the `Project`, with the member, the role and whether they were added,
+changed or removed. A grant is the most consequential thing an admin can do to
+a project short of deleting it, and — like a deletion — removing one leaves no
+trace anywhere else once the entry is gone. The writes also carry the caller's
+`resourceVersion`, so two admins editing the list at the same time get a `409`
+rather than one of them silently overwriting the other's decision.
+
+### Keys for CI
+
+A key is a member of the project, so its routes sit next to the membership
+ones and want the same roles: **`admin` to issue or revoke one**, because that
+is adding and removing a member, and **`viewer` to list them**, because the
+listing is the membership list with its non-human half shown and carries no key
+value — only the prefix the issuer keeps of one, which is useless as a
+credential.
+
+**A key is owned by a machine account created for it.** That is the part worth
+knowing, because the obvious reading is wrong: the identity provider's api-key
+plugin runs with `enableSessionForAPIKeys`, and the session it mints for a key
+is a session for *the account the key belongs to*. So the `sub` in the token a
+key is exchanged for is its owner's, and granting "the key's subject" a role
+would grant it to whoever created the key, on their own account. Every key
+therefore gets an owner of its own — an account that is not a person, holds
+that one key, and exists only to have a `sub` the project can grant a role to.
+
+```sh
+curl -sS -X POST -H "authorization: Bearer $TOKEN" \
+  -d '{"name": "nightly"}' \
+  https://kitchen.apps.example.com/api/v1/projects/shop/keys
+{"name": "nightly", "subject": "user_01K4M…",
+ "email": "shop.nightly@machines.kitchen.local", "role": "developer",
+ "prefix": "9f3a1c", "created": "2026-08-19T09:12:44Z",
+ "key": "9f3a1c…"}
+```
+
+**`key` is in that response and in no other.** It is stored hashed, exactly as
+every other key at the issuer is, so a lost key is deleted and reissued rather
+than looked up. Every read answers the `prefix` alone, which is enough to tell
+two keys apart and useless as a credential.
+
+**Creating writes both halves, or neither.** The key at the issuer and the
+grant in `spec.access` are the whole of the feature: a key nothing has granted
+anything to authenticates and can do nothing, which reads as a broken platform.
+So if the grant cannot be written the key is taken back before the request
+answers, and in the one case where it cannot be taken back either, the error
+says so and names the key rather than leaving a credential nobody knows about.
+
+`role` is optional and defaults to `developer`. `viewer` is the other value, for
+a key that only reads; `admin` is refused, because admin is the role that issues
+keys and a credential in a build pipeline that can mint its own successors is one
+nobody can account for. A narrower role than `developer` — a `deployer` that can
+build and promote and nothing else — is
+[deliberately open](AUTH.md#machine-accounts) and would arrive as another value
+here.
+
+**A key name is a DNS label**, lowercase letters, digits and dashes, at most 32
+characters — it addresses the key in the path, and it is half of the machine
+account's own address at the issuer. One name per project: the same name twice
+is a `409`, because two credentials behind one grant would make "revoke that
+key" ambiguous. The clash is decided against the issuer's own list *before*
+anything is recorded, so the audit log never carries "the key `nightly` was
+issued for `shop`" for a request that issued nothing.
+
+```sh
+curl -sS -H "authorization: Bearer $TOKEN" \
+  https://kitchen.apps.example.com/api/v1/projects/shop/keys
+{"items": [
+   {"name": "nightly", "subject": "user_01K4M…",
+    "email": "shop.nightly@machines.kitchen.local", "role": "developer",
+    "prefix": "9f3a1c", "created": "2026-08-19T09:12:44Z",
+    "lastUsed": "2026-08-19T09:40:02Z"}]}
+
+curl -sS -X DELETE -H "authorization: Bearer $TOKEN" \
+  https://kitchen.apps.example.com/api/v1/projects/shop/keys/nightly
+```
+
+`role` on a listed key is read from `spec.access`, not from anything stored on
+the key. A key listed with no role is one whose grant has been removed — it can
+authenticate and do nothing, and the listing says so rather than hiding it.
+
+**`DELETE` revokes and un-grants, in that order**, and answers `204`. The
+credential goes first because that is the half that matters: a grant naming an
+account that no longer exists is a line to tidy up, and a key that still works
+is not. Both writes are recorded in the [audit log](#the-audit-log) as updates
+to the `Project`, the same way a membership change is.
+
+**Keys and people are one list.** A key's grant appears in
+`GET /projects/{name}/members` like anybody else's, carrying `"kind": "key"`
+and the key's name so it reads as what it is rather than as a stranger with an
+odd address:
+
+```json
+{"subject": "user_01K4M…", "email": "shop.nightly@machines.kitchen.local",
+ "role": "developer", "kind": "key", "name": "nightly"}
+```
+
+`kind` is derived from the address and is a display rule only — no access
+decision anywhere reads it, and a role is resolved from the subject alone.
+
+An installation federated to an issuer of its own serves no key endpoints: all
+three answer `503` saying so, because keys are that issuer's to hand out.
 
 ### Deleting a project
 
@@ -309,6 +674,33 @@ provisioner — and its credential is the reason these endpoints are shaped the
 way they are: **the API never reads credentials back.** Writing one means the
 operator stores it in a Secret it manages, and every response is the same
 credential-free view `GET` answers.
+
+Every one of these is the operator's except the list, which answers **two
+shapes**. A project cannot exist without a `gitSource` and a `registry`
+connection to name, so a member who could not see that any connection exists
+could not create a project — self-service would stop at the first form field
+and hand them back to an operator. So `GET /connections` is filtered by role
+rather than refused. An operator gets the connections:
+
+```json
+{"items": [{"name": "harbor", "provider": "dockerRegistry", "capabilities": ["imageStore"],
+            "createdAt": "2026-03-01T09:00:00Z", "conditions": [{"…": "…"}]}]}
+```
+
+and everybody else gets the picker — the three things a dropdown needs, in a
+shape of its own rather than the one above with fields blanked out:
+
+```json
+{"items": [{"name": "harbor", "capabilities": ["imageStore"], "ready": true}]}
+```
+
+`ready` is whether the platform has reached the provider and the provider
+accepted the stored credential; one nothing has assessed yet reads `false`.
+Between it and `capabilities`, a form can offer what can be chosen and say why
+the rest cannot. Nothing else crosses: no provider, no `config`, and no
+condition messages — those are the provider's own words about the operator's
+credential, and belong on the operator's screen, which is where fixing them
+lives too. `GET /connections/{name}` and every write below stay `operator`.
 
 ```sh
 curl -sS -X POST -H "authorization: Bearer $TOKEN" \
@@ -763,6 +1155,12 @@ reconciler did, so the objects are deliberately *not* translated into the API's
 own vocabulary: whoever opens this wants the manifest, and a summary would send
 them to a terminal anyway.
 
+**It is `operator`-only, and a developer needing it is a bug.** The premise of
+the platform is that a developer never needs a Deployment; and the manifest is
+the materialized one, so a project's literal environment variables are in it.
+If somebody has to open this to answer a question, the missing thing is a
+product surface — file it, rather than widening the role.
+
 ```json
 {"environment": "shop-production", "namespace": "kitchen-shop", "objects": [
   {"kind": "Deployment", "apiVersion": "apps/v1", "name": "shop-production",
@@ -795,6 +1193,23 @@ question — the dashboard's status bar:
    "available": 0, "desired": 3, "message": "0 of 3 pods available: …"}]}
 ```
 
+**It is the one payload that varies by role**, and that is deliberate: it is
+the home page for both of the platform's people, so a second endpoint would
+have doubled the surface for one body. `cluster.name` and `builds` are
+everybody's — "why is my build waiting" is a developer's question. `tunnel`,
+`gateway`, `components` and the node counts are the operator's, and a member
+gets this instead:
+
+```json
+{"cluster": {"name": "chef"},
+ "builds": {"running": 1, "capacity": 2, "queued": 0}}
+```
+
+**Withheld means absent, never zeroed.** `tunnel === undefined` is "you are not
+allowed to know" and `{"enabled": false}` is "no tunnel is configured"; an
+empty `components` would read as a healthy platform running nothing, so it is
+not sent at all.
+
 `cluster.name` is `spec.clusterName` on the `Kitchen` singleton, falling back
 to the first label of the base domain — Kitchen owns the cluster it is
 installed into, so naming it names the installation. `builds` is what the build
@@ -803,7 +1218,20 @@ controller's concurrency gate is weighing: builds running against
 has waited — longest first, with `oldestWaitSeconds` repeating the head of the
 list. The wait is the half worth reading: a queue's length says the platform is
 busy, and only the wait says whether it is moving. Both are omitted when
-nothing is queued. `components` is
+nothing is queued.
+
+**The queue's counts are everybody's; its names are the caller's own.**
+`running`, `capacity`, `queued` and `oldestWaitSeconds` are the whole gate's,
+because that is what answers "why is my build waiting" — the queue is busy, or
+it has stopped moving. `waiting` is narrowed to the projects the caller can
+see, like every other list this API answers across projects: an operator gets
+the whole queue, and a member gets their own builds and a count for everyone
+else's. Naming the rest would enumerate every project on the platform and its
+build object names to any account with a token, thirty seconds at a time — and
+each of those names then answers `404` from `GET /builds/{name}`, which is the
+rule that a caller is not told an object they hold no role on exists.
+
+`components` is
 the operator's own survey of every workload labelled
 `app.kubernetes.io/part-of: kitchen`, which is the only place a workload whose
 pods were refused at admission shows up at all — it has no pods to look at.
@@ -820,12 +1248,10 @@ the platform seen across every project, which is a different question and —
 one day — a differently authorized one.
 
 **Everything platform-scoped lives under this prefix, and nothing
-project-scoped does.** Today the API authenticates every request and authorizes
-none of them (an open item in [AUTH.md](AUTH.md)), so the prefix enforces
-nothing yet. It is drawn now because the enforcement it is designed for is a
-middleware over a path prefix rather than an audit of every handler — which is
-also why a platform-wide question never appears as a query parameter on a
-project-scoped endpoint, however convenient that would be.
+project-scoped does.** That is what makes the whole prefix one row of the
+enforcement table: every `/platform/*` route requires `operator`, and a
+platform-wide question never appears as a query parameter on a project-scoped
+endpoint, however convenient that would be.
 
 None of these adds a watch. They read the cluster through the same uncached
 reader the introspection endpoints use and the store through the same client
@@ -1128,18 +1554,70 @@ it did no following.
 ### Settings
 
 `GET /settings` is the `Kitchen` singleton as a view: the base domain, the
-derived API and issuer URLs, the gateway's address and conditions, and the
-defaults the platform builds and retains telemetry with.
+derived API and issuer URLs, the gateway's address and conditions, the defaults
+the platform builds and retains telemetry with, and **who the platform's
+operators are**:
+
+```json
+{"baseDomain": "apps.example.com", "buildConcurrency": 2, "logRetentionDays": 30,
+ "operators": [{"subject": "user_01H8X…", "email": "anna@example.com"}]}
+```
+
+`operators` is `spec.access.operators`, the list every `operator` requirement
+in the table above is resolved against. It is on this route because this route
+already carries the base domain, the issuer and the gateway address and is the
+operator's for that reason — and because a list that is enforced against and
+seeded on upgrade, but served by nothing, is one somebody has to open `kubectl`
+to read.
+
+Three states, and they are three: `null` means nobody has ever said who the
+operators are and the reconciler will seed the list from the accounts that
+exist; `[]` means somebody narrowed it to nobody; a list means what it says.
+The field carries no `omitempty` for exactly that reason.
 
 `PATCH /settings` changes the fields that are safe to change at runtime:
 
 ```json
-{"buildStrategy": "auto", "buildConcurrency": 2, "logRetentionDays": 30}
+{"buildStrategy": "auto", "buildConcurrency": 2, "logRetentionDays": 30,
+ "operators": [{"email": "anna@example.com"}, {"subject": "user_01H8X…"}]}
 ```
 
-Fields left out stay as they are. Everything else on the singleton — the base
-domain, the issuer, the ingress — shapes URLs and credentials the platform has
-already handed out, so changing those stays a deliberate kubectl operation.
+Fields left out stay as they are, `operators` included — a settings patch that
+does not mention the list cannot disturb it. When it does, the list replaces
+the old one wholesale, and each entry names its account the same two ways a
+[membership write](#who-is-on-a-project) does: an `email` the platform resolves
+to the issuer's `sub` before anything is written, or a `subject` taken as
+given. Exactly one of the two, an address the identity provider has never heard
+of is a `404` about the person, and the same account twice is a `400`.
+
+**The last operator cannot be removed**, for the reason the last admin on a
+project cannot:
+
+```json
+{"error": "the operator list cannot be emptied: a platform with no operator has nobody left who can appoint one, and the only way back is editing the Kitchen object with kubectl. Name whoever is to stay — remove the others, and keep the last"}
+```
+
+That is a `409`. Handing the platform to somebody else in one write is fine —
+the rule is about the list being emptied, not about who is on it. Every change
+to it is recorded in the [audit log](#endpoints) as an update to the `Kitchen`,
+naming who came on and who came off, the way a membership change names the
+member.
+
+**A patch that carries `operators` also carries the caller's
+`resourceVersion`**, so two operators editing the list at the same time is a
+`409` for the second rather than a lost update. It has to be: the list is
+replaced wholesale and the last-operator check was made against the list the
+request read, so without the lock two admins removing each other put each
+other back — `[A, B, C]`, A removes C and B removes A, and the result is
+`[B, C]` with C returned to a list they had been taken off. Re-read and try
+again. A patch that does not mention `operators` is not locked: its fields are
+independent scalars, and failing "set the build concurrency to 4" because
+somebody moved the log retention a moment earlier would be a conflict about
+nothing.
+
+Everything else on the singleton — the base domain, the issuer, the ingress —
+shapes URLs and credentials the platform has already handed out, so changing
+those stays a deliberate kubectl operation.
 
 ### Updating the platform
 
@@ -1358,8 +1836,12 @@ else, because they are what the table is ordered by.
 
 It reaches ClickHouse as query text, which is the point — and why it runs pinned
 read-only (`readonly=2`: no writes, no DDL) under an execution cap, as the
-operator's own database user. What that user can read is the telemetry database;
-per-caller scoping arrives with scopes and RBAC ([open item](#open)).
+operator's own database user. What that user can read is the whole telemetry
+database, so a cross-project read is narrowed by the API before it runs: a
+caller who is not an operator has `project IN (…their own…)` composed onto
+their selection with `AND`, which is why a `where` cannot reach another
+project's lines — and why the narrowing goes into the query rather than over
+the answer, so a page is a page of the caller's own lines.
 
 A query either side refuses — a bracket that never closes, an unknown column —
 answers `400` carrying the diagnostic that says how to fix it: Kitchen's parser
@@ -1563,7 +2045,31 @@ the per-hour series is a read per hour, for the same reason applied to each
 bucket.
 
 `?project=` narrows everything to one project, drops the `projects` join, and
-answers the same numbers off that project's own rollups. There is deliberately
+answers the same numbers off that project's own rollups.
+
+**Without `?project=`, "everything" means everything of the caller's.** An
+operator is answered about the platform. Anybody else is answered about the
+projects they hold a role on, which is one project-scoped read per project,
+added together:
+
+- counts add, and so do their hourly and daily buckets;
+- `errorRate24h` is recomputed from the counts it is a ratio of, so it is
+  total errors over total requests rather than a mean of rates;
+- `p95Ms24h`, `p95MsPerHour` and `medianBuildSeconds` **do not merge**, for
+  the reason above — a mean of p95s is not a p95. Over several projects they
+  come back as `0`, which the dashboard renders as "—"; each project's own
+  honest p95 is still in `projects`. Over exactly one project there is nothing
+  to merge and both are that project's own. Answering them across a set of
+  projects needs the store's queries to take one, which they do not yet;
+- `storeBytes` and `storeRowsPerSecond` are the telemetry store's own figures
+  rather than any project's, and are reported as the store gives them — the
+  same numbers `?project=` already answers with.
+
+A caller who holds no project at all gets every number as `0`, and the store is
+not asked. Those zeroes are honest rather than withheld: they are *their*
+numbers, and they have none.
+
+There is deliberately
 no raw metrics query surface: the raw material is the logs, events and request
 tables, and `/logs` already exposes the store's own syntax for ad-hoc
 questions.
@@ -1640,6 +2146,27 @@ query is compiled before it is stored, because a saved query that cannot be
 run is found later, by someone who did not write it, at the moment they needed
 an answer.
 
+Saved queries are shared by everyone on the platform, but **a query that names
+a project the reader cannot see is not listed to them, and deleting it answers
+the same `404` as a name nobody ever saved** — a refusal that differed would
+confirm the existence of the project the query names. The check errs towards
+hiding: a query mentioning such a name anywhere in its selection, title or
+description is withheld, and its results would have been narrowed to nothing
+for that reader anyway.
+
+**They are shared *and unowned*, which is a decision and not an oversight.**
+Any account may save one, and any account may delete one it can be shown — a
+query naming no project, "Platform 5xx" with a bare `where` clause, is
+therefore deletable by anybody with a token. `savedBy` is a byline, not an
+owner: it is the caller as the API knew them at the time, an address that
+changes when the account's does, so enforcing against it would take a role
+away from the person it was recorded for. Making a saved query owned means
+recording the issuer's `sub` on the object and letting its author or an
+operator delete it — a field on the CRD and a migration for the queries
+already saved, which is a bigger change than the risk (a shared shortcut
+nobody else can read anything through) is worth. The list is capped at 100 and
+every deletion is the platform's to see.
+
 ## Status codes
 
 | Code | When |
@@ -1649,7 +2176,7 @@ an answer.
 | `204` | Deleted, nothing left to describe |
 | `400` | The request cannot be carried out as written |
 | `401` | No valid token — including when the platform has no identity provider |
-| `403` | The operator's own service account may not do this |
+| `403` | Your account may not do this — the message names the role it wanted. Also the operator's own service account being refused by the cluster |
 | `404` | No such object, or no such endpoint |
 | `409` | Someone else changed the object first, it already exists, it already finished, or something still uses it |
 | `503` | A capability this endpoint needs is not installed |
@@ -1661,13 +2188,18 @@ an answer.
 | Token validation | Stateless, against the issuer's JWKS | No session state in the operator; the identity provider stays swappable |
 | Token audience | The API's own URL (`resource=`), or the issuer | A resource server should be able to tell a token meant for it from a token meant for everything |
 | CI tokens | better-auth's api-key plugin, exchanged for a JWT at the issuer | The plugin already holds the operator's own credential; keeping key lookup at the issuer keeps the operator's request path stateless |
+| What a CI key may do | A project role on a machine account created for the key, in the same `spec.access` as everybody else's | A key that carried permissions of its own would be a second permission system; a grant on the project means a key cannot outrank the project it was made for, and revocation stays at the issuer |
 | Response shapes | The API's own vocabulary, not raw custom resources | A stable contract for the UI, and freedom to change how state is stored |
-| Write surface | The full project, connection and claim lifecycle, rebuild and cancel, promote/rollback, preview teardown, and the settings' runtime defaults | Nothing a user does in the platform's normal running should need `kubectl`; domain writes wait for their reconciler, because a write over objects nothing reconciles only looks like it works |
+| Write surface | The full project, connection and claim lifecycle, rebuild and cancel, promote/rollback, preview teardown, the settings' runtime defaults, and the platform's operator list | Nothing a user does in the platform's normal running should need `kubectl`; domain writes wait for their reconciler, because a write over objects nothing reconciles only looks like it works |
+| Environment variables | A route of their own, `PATCH /projects/{name}/env`, rather than a field the settings route lets a developer through for | A whole route is the unit of authorization; a handler that decided by which key the body carried would apply the response-body exception to a write, and a dropped `env` would be a lost write that read as a successful one |
+| The operator list | On `GET`/`PATCH /settings`, which are already operator-only, rather than a surface of its own | It is the platform's own access list, like the base domain and the issuer beside it; a list that is enforced against and seeded on upgrade but served by nothing is one somebody opens `kubectl` to read |
 | Credentials | Write-only: the operator stores them in Secrets and never echoes them | "Credentials never leave the operator" survives the API growing a write surface |
 | Introspection shapes | Kubernetes' own vocabulary — replicas, restarts, manifests | The exception that proves the rule above: these endpoints exist to explain the platform's machinery, and a reader comparing them against `kubectl` should not have to translate |
 | Empty request surfaces | `edge.routed` beside the numbers, on every request answer | "Nothing reaches this environment through the edge" and "nothing was asked of it in this window" are both zeroes and different sentences; four empty charts would describe the platform rather than the application |
 | The crash report | One endpoint that joins five sources, all-or-nothing | Troubleshooting should be reading rather than hunting, and a section that failed silently would be read as evidence that nothing happened |
-| Operator screens | Their own `/platform/` prefix, never a parameter on a project-scoped endpoint | Authorization is not enforced yet; when it is, an operator-only surface separable by path is a middleware rather than a redesign |
+| Operator screens | Their own `/platform/` prefix, never a parameter on a project-scoped endpoint | An operator-only surface separable by path is one row of the enforcement table rather than an audit of every handler |
+| Authorization | One table every route is registered from, in `internal/api/policy.go` | A route cannot be added without a requirement, and the dashboard's copy of the rules is generated from it rather than written twice |
+| Roles on the wire | The role itself on each project payload, not capability booleans | What a client may offer is derived from the same table the API enforces; a second vocabulary would be a second opinion, and they would drift |
 | Signals | Evaluated when a screen asks, and answered with what could *not* be read | Findings are ephemeral until a background loop records them, and an empty problems list is the strongest claim the platform makes — it may only be made about inputs that were actually read |
 | Pods and nodes | Read uncached, straight from the API server | Serving them from the manager's cache would mean an informer over every pod in the cluster, kept warm for a question only an open dashboard asks |
 | The dashboard | Served by the same process, outside `/api/` | The SPA is public, stateless files plus `/config.json` (issuer, client id, audience — the same values every login redirect shows); everything with state stays behind the token check |
@@ -1677,10 +2209,11 @@ an answer.
 
 ## Open
 
-- **Scopes and RBAC.** Tokens carry their scopes and the API records who asked
-  for what, but nothing is enforced beyond "the issuer vouches for you". Teams
-  and per-organisation roles land with the organizations plugin, and the token
-  shape follows them. `/platform/*` is drawn to be the first thing that
-  enforcement applies to, and is not authorized today.
+- **Teams.** Access is per account, on the object it is about: a role for every
+  member of a team is that many entries. Per-organisation roles would land with
+  the identity provider's organizations plugin — and would widen the contract
+  this API rests on, so they wait until somebody asks. Nothing about the token
+  changes either way: it says who the caller is, and Kitchen says what they may
+  do (see [Authorization](#authorization)).
 - **Paging.** Collections answer in full. `{"items": …}` is an object rather
   than a bare array so a cursor can be added without breaking clients.

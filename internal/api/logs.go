@@ -152,6 +152,38 @@ func logSelectionFrom(req *http.Request) (clickhouse.LogSelection, error) {
 	}, nil
 }
 
+// scopedSelection narrows a cross-project selection to the projects the caller
+// can see. An operator's is returned untouched.
+//
+// The narrowing goes into the query rather than over the answer, because these
+// reads are bounded: filtering afterwards would spend the caller's limit on
+// lines they are not shown, and a page could come back empty while the store
+// held plenty of theirs. `project` is a real column on the log table — the
+// query language's `project:` compiles to the same one — and the names are
+// Kubernetes object names, so the only thing composed into the statement is a
+// list of DNS labels, quoted anyway.
+//
+// A line belonging to no project at all is the platform's own (the cluster
+// source), and stays out: the condition names projects, and an empty `project`
+// is not one of them.
+func scopedSelection(scope projectScope, selection clickhouse.LogSelection) clickhouse.LogSelection {
+	if scope.all {
+		return selection
+	}
+	names := scope.names()
+	quoted := make([]string, 0, len(names))
+	for _, name := range names {
+		quoted = append(quoted, "'"+strings.ReplaceAll(name, "'", "''")+"'")
+	}
+	mine := "project IN (" + strings.Join(quoted, ", ") + ")"
+	if selection.Where == "" {
+		selection.Where = mine
+		return selection
+	}
+	selection.Where = "(" + selection.Where + ") AND " + mine
+	return selection
+}
+
 // writeQueryError answers the two ways a caller's own query can be wrong —
 // Kitchen's parser refusing it, and ClickHouse refusing it — with the
 // diagnostic that says how to fix it. Anything else is the platform's fault
@@ -185,12 +217,18 @@ func (s *Server) queryLogs(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	scope := scopeFrom(req.Context())
+	if scope.empty() {
+		writeList(w, []clickhouse.LogLine{})
+		return
+	}
+
 	store := s.openLogStore(w, req)
 	if store == nil {
 		return
 	}
 
-	filter := clickhouse.LogFilter{LogSelection: selection, Limit: limit}
+	filter := clickhouse.LogFilter{LogSelection: scopedSelection(scope, selection), Limit: limit}
 	if wantsEventStream(req) {
 		s.streamLogs(w, req, func(ctx context.Context, followSince time.Time) ([]clickhouse.LogLine, error) {
 			follow := filter
@@ -226,13 +264,19 @@ func (s *Server) logHistogram(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	scope := scopeFrom(req.Context())
+	if scope.empty() {
+		writeJSON(w, http.StatusOK, clickhouse.LogHistogram{})
+		return
+	}
+
 	store := s.openLogStore(w, req)
 	if store == nil {
 		return
 	}
 
 	histogram, err := store.LogHistogram(req.Context(),
-		clickhouse.LogHistogramQuery{LogSelection: selection, Buckets: buckets})
+		clickhouse.LogHistogramQuery{LogSelection: scopedSelection(scope, selection), Buckets: buckets})
 	if err != nil {
 		s.writeQueryError(w, err)
 		return
@@ -263,13 +307,19 @@ func (s *Server) logFacets(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 
+	scope := scopeFrom(req.Context())
+	if scope.empty() {
+		writeList(w, []clickhouse.LogFacet{})
+		return
+	}
+
 	store := s.openLogStore(w, req)
 	if store == nil {
 		return
 	}
 
 	facets, err := store.LogFacets(req.Context(),
-		clickhouse.LogFacetQuery{LogSelection: selection, Fields: fields, Limit: limit})
+		clickhouse.LogFacetQuery{LogSelection: scopedSelection(scope, selection), Fields: fields, Limit: limit})
 	if err != nil {
 		s.writeQueryError(w, err)
 		return
@@ -297,13 +347,19 @@ func (s *Server) logPatterns(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	scope := scopeFrom(req.Context())
+	if scope.empty() {
+		writeList(w, []clickhouse.LogPattern{})
+		return
+	}
+
 	store := s.openLogStore(w, req)
 	if store == nil {
 		return
 	}
 
 	patterns, err := store.LogPatterns(req.Context(),
-		clickhouse.LogPatternQuery{LogSelection: selection, Limit: limit, Scan: scan})
+		clickhouse.LogPatternQuery{LogSelection: scopedSelection(scope, selection), Limit: limit, Scan: scan})
 	if err != nil {
 		s.writeQueryError(w, err)
 		return

@@ -6,6 +6,7 @@ import { operatorMode } from "../lib/mode";
 import { timeAgo } from "../lib/format";
 import { useAsync, usePoll } from "../lib/useAsync";
 import ConditionsTable from "../components/ConditionsTable.vue";
+import OperatorsPanel from "../components/OperatorsPanel.vue";
 import PhaseBadge from "../components/PhaseBadge.vue";
 import StatusDot from "../components/StatusDot.vue";
 
@@ -189,6 +190,8 @@ async function startUpdate() {
           <p class="font-mono text-toned">{{ version }}</p>
         </div>
       </div>
+
+      <OperatorsPanel :settings="settings" @saved="refresh" />
 
       <div class="rounded-md border border-default px-5 py-4 space-y-4">
         <h2 class="text-sm font-medium text-highlighted">Builds and telemetry</h2>

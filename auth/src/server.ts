@@ -6,6 +6,7 @@ import type { Auth } from "./auth.js";
 import { CONSENT_PATH, LOGIN_PATH } from "./auth.js";
 import { bootstrapFirstUser, isBootstrapped, tokenMatches } from "./bootstrap.js";
 import type { Config } from "./config.js";
+import { handleKitchenRequest, isKitchenPath } from "./directory.js";
 import { log } from "./log.js";
 import { bootstrapPage, consentPage, loginPage, messagePage } from "./pages.js";
 
@@ -27,6 +28,15 @@ const sendHTML = (res: ServerResponse, status: number, body: string) =>
 	send(res, status, "text/html; charset=utf-8", body);
 const sendJSON = (res: ServerResponse, status: number, body: unknown) =>
 	send(res, status, "application/json", JSON.stringify(body));
+
+/** One request header, taking the first when a header arrives repeated. */
+function headerValue(req: IncomingMessage, name: string): string | null {
+	const value = req.headers[name];
+	if (Array.isArray(value)) {
+		return value[0] ?? null;
+	}
+	return value ?? null;
+}
 
 async function readBody(req: IncomingMessage): Promise<Record<string, string>> {
 	const chunks: Buffer[] = [];
@@ -194,6 +204,35 @@ export function createServer(auth: Auth, config: Config, pool: Pool): Server {
 
 		if (path === BOOTSTRAP_PATH) {
 			await handleBootstrap(req, res, url);
+			return;
+		}
+
+		// Kitchen's own endpoints, mounted ahead of the better-auth catch-all
+		// so the prefix belongs to the platform rather than to whatever
+		// better-auth might route there later. They answer to the operator's
+		// service credential and to nothing else — see src/directory.ts.
+		if (isKitchenPath(path)) {
+			// A body is read only for the methods that carry one, so a GET or
+			// a DELETE under the prefix cannot be refused over a body it never
+			// sent. Unreadable JSON is the caller's fault and is said so here,
+			// before the routing table is consulted at all.
+			let body: Record<string, unknown> = {};
+			if (req.method === "POST" || req.method === "PUT" || req.method === "PATCH") {
+				try {
+					body = await readBody(req);
+				} catch (error) {
+					sendJSON(res, 400, { error: String(error instanceof Error ? error.message : error) });
+					return;
+				}
+			}
+			const answer = await handleKitchenRequest(auth, config, {
+				method: req.method ?? "GET",
+				path,
+				query: url.searchParams,
+				body,
+				apiKey: headerValue(req, "x-api-key"),
+			});
+			sendJSON(res, answer.status, answer.body);
 			return;
 		}
 

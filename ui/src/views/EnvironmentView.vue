@@ -3,7 +3,9 @@ import { computed, nextTick, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { api, type LogLine, type LogQuery, type MaterializedObject, type Release, type WorkloadPod } from "../lib/api";
 import { shortImage, timeAgo, uptime } from "../lib/format";
+import { callerFor } from "../lib/me";
 import { operatorMode } from "../lib/mode";
+import { may } from "../lib/policy";
 import type { Tone } from "../lib/status";
 import { useAsync, usePoll } from "../lib/useAsync";
 import ConditionsTable from "../components/ConditionsTable.vue";
@@ -23,12 +25,26 @@ const name = computed(() => route.params.name as string);
 
 const { data, error, loading, refresh } = useAsync(async () => {
   const environment = await api.environment(name.value);
-  const releases = await api.projectReleases(environment.project);
-  return { environment, releases };
+  // The project comes along for the role on it. An Environment carries no
+  // role of its own — the API resolves which project a request is about from
+  // the object it names — so the one place the caller's role is written down
+  // is the project's own payload, and this screen's controls are keyed to it.
+  const [releases, project] = await Promise.all([
+    api.projectReleases(environment.project),
+    api.project(environment.project),
+  ]);
+  return { environment, releases, project };
 });
 watch(name, () => void refresh());
 
 const environment = computed(() => data.value?.environment);
+
+// Redeploying and deleting are the project developer's; the materialized
+// objects are the operator's and stay behind the mode toggle, which only an
+// operator can now be on the far side of.
+const caller = computed(() => callerFor(data.value?.project.role, data.value?.environment.project));
+const mayDeploy = computed(() => may("PATCH /api/v1/environments/{name}", caller.value));
+const mayDeleteEnvironment = computed(() => may("DELETE /api/v1/environments/{name}", caller.value));
 const moving = computed(() => environment.value?.phase === "Deploying" || environment.value?.phase === "Pending");
 usePoll(() => void refresh(), 5000, () => moving.value);
 
@@ -185,7 +201,7 @@ function historyBy(entry: { reason: string; by?: string }): string {
         </div>
         <div class="flex items-center gap-2">
           <UButton
-            v-if="environment.type === 'preview'"
+            v-if="mayDeleteEnvironment && environment.type === 'preview'"
             color="neutral"
             variant="subtle"
             size="sm"
@@ -361,7 +377,7 @@ function historyBy(entry: { reason: string; by?: string }): string {
         <ResourceHistory :environment="environment.name" :live="moving" />
       </div>
 
-      <DomainsPanel :environment="environment.name" />
+      <DomainsPanel :environment="environment.name" :role="data?.project.role" />
 
       <ConditionsTable v-if="operatorMode" :conditions="environment.conditions" />
 
@@ -407,7 +423,10 @@ function historyBy(entry: { reason: string; by?: string }): string {
         </div>
       </div>
 
-      <div v-if="otherReleases.length">
+      <!-- The whole section is the move, not a list with a button on it: the
+           releases themselves are already on the project's Deployments tab,
+           so for a viewer this would be the same table twice. -->
+      <div v-if="mayDeploy && otherReleases.length">
         <h2 class="text-sm font-medium text-highlighted mb-2">Move to another release</h2>
         <p class="text-xs text-muted mb-3">
           Rollback and promotion are the same one-field change: point the environment at an immutable release and the

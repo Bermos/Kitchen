@@ -2,6 +2,7 @@ import { timingSafeEqual } from "node:crypto";
 
 import type { Auth } from "./auth.js";
 import type { Config } from "./config.js";
+import { listPeople, normalizeEmail } from "./identity.js";
 import { log } from "./log.js";
 
 /**
@@ -13,16 +14,14 @@ import { log } from "./log.js";
  * still lying around in the Secret. That makes the token one-time without
  * needing state of its own — the account it creates is the state.
  *
- * The service account that owns the operator's API key is not a person and
- * does not count.
+ * Only a person counts. The service account that owns the operator's API key
+ * does not, and neither does a machine account holding a CI key — both are
+ * credentials with a row in the user table, and an installation whose only
+ * accounts are credentials has nobody who can sign in. src/identity.ts is
+ * where that line is drawn, and this asks it rather than restating it.
  */
 export async function isBootstrapped(auth: Auth, config: Config): Promise<boolean> {
-	const ctx = await auth.$context;
-	const people = await ctx.adapter.count({
-		model: "user",
-		where: [{ field: "email", operator: "ne", value: config.serviceAccountEmail }],
-	});
-	return people > 0;
+	return (await listPeople(auth, config)).length > 0;
 }
 
 export function tokenMatches(expected: string | undefined, provided: string | null): boolean {
@@ -65,7 +64,7 @@ export async function bootstrapFirstUser(
 		return { ok: false, status: 410, error: "this installation already has an account" };
 	}
 
-	const email = request.email.trim().toLowerCase();
+	const email = normalizeEmail(request.email);
 	const name = request.name.trim();
 	if (!email.includes("@")) {
 		return { ok: false, status: 400, error: "a valid email address is required" };

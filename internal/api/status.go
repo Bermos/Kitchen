@@ -28,6 +28,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/access"
 	"github.com/Bermos/Kitchen/internal/controller"
 )
 
@@ -57,23 +58,30 @@ func (s *Server) getStatus(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	view := statusView{
-		Cluster: s.clusterStatus(ctx, kitchen),
-		Tunnel:  tunnelStatus(kitchen),
-		Gateway: gatewayStatus(kitchen),
-	}
-	for _, component := range kitchen.Status.Components {
-		view.Components = append(view.Components, componentStatusView{
-			Name:      component.Name,
-			Kind:      component.Kind,
-			Healthy:   component.Healthy,
-			Available: component.Available,
-			Desired:   component.Desired,
-			Message:   component.Message,
-		})
+	// Everyone gets the platform's name and the build queue. The tunnel, the
+	// gateway, the component survey and the node counts are the operator's,
+	// and a member's answer leaves them out rather than emptying them — see
+	// statusView.
+	view := statusView{Cluster: clusterStatusView{Name: clusterName(kitchen)}}
+	if platformRoleFrom(ctx).AtLeast(access.PlatformOperator) {
+		view.Cluster = s.clusterStatus(ctx, kitchen)
+		tunnel := tunnelStatus(kitchen)
+		view.Tunnel = &tunnel
+		gateway := gatewayStatus(kitchen)
+		view.Gateway = &gateway
+		for _, component := range kitchen.Status.Components {
+			view.Components = append(view.Components, componentStatusView{
+				Name:      component.Name,
+				Kind:      component.Kind,
+				Healthy:   component.Healthy,
+				Available: component.Available,
+				Desired:   component.Desired,
+				Message:   component.Message,
+			})
+		}
 	}
 
-	builds, err := s.buildQueue(ctx, kitchen)
+	builds, err := s.buildQueue(ctx, kitchen, scopeFrom(ctx))
 	if err != nil {
 		s.writeError(w, err)
 		return
@@ -97,12 +105,13 @@ func (s *Server) clusterStatus(ctx context.Context, kitchen *kitchenv1alpha1.Kit
 		view.Message = err.Error()
 		return view
 	}
-	view.Nodes = len(nodes.Items)
+	total, ready := len(nodes.Items), 0
 	for i := range nodes.Items {
 		if nodeReady(&nodes.Items[i]) {
-			view.ReadyNodes++
+			ready++
 		}
 	}
+	view.Nodes, view.ReadyNodes = &total, &ready
 	return view
 }
 
@@ -151,7 +160,23 @@ func gatewayStatus(kitchen *kitchenv1alpha1.Kitchen) gatewayStatusView {
 // platform is; only the wait says whether it is moving, and a build that has
 // been queued for half an hour against a gate with free capacity is a stuck
 // controller rather than a busy one.
-func (s *Server) buildQueue(ctx context.Context, kitchen *kitchenv1alpha1.Kitchen) (buildQueueView, error) {
+//
+// The counts are everybody's and the names are not. docs/AUTH.md keeps this
+// payload for both of the platform's people because "why is my build waiting"
+// is a developer's question, and running-against-capacity, how many are
+// queued and how long the oldest of them has waited answer it whole: they say
+// the queue is busy, or that it has stopped moving. What they do not require
+// is knowing *whose* builds those are. So `waiting` is narrowed to the
+// caller's own projects, like every other list the API answers across
+// projects — otherwise a member on nothing gets a live enumeration of every
+// project on the platform and its build object names, refreshed every thirty
+// seconds by the status bar, each of which then 404s when they ask about it.
+// An operator's scope is everything, so their queue is unchanged.
+func (s *Server) buildQueue(
+	ctx context.Context,
+	kitchen *kitchenv1alpha1.Kitchen,
+	scope projectScope,
+) (buildQueueView, error) {
 	capacity := kitchen.Spec.Builds.Concurrency
 	if capacity <= 0 {
 		capacity = controller.DefaultBuildConcurrency
@@ -189,9 +214,14 @@ func (s *Server) buildQueue(ctx context.Context, kitchen *kitchenv1alpha1.Kitche
 	sort.Slice(view.Waiting, func(i, j int) bool {
 		return view.Waiting[i].WaitSeconds > view.Waiting[j].WaitSeconds
 	})
+	// The oldest wait is read off the whole queue before it is narrowed: it is
+	// one of the counts, and the question it answers — is this queue moving —
+	// is about the gate rather than about whose build is on the front of it.
 	if len(view.Waiting) > 0 {
 		view.OldestWaitSeconds = view.Waiting[0].WaitSeconds
 	}
+	view.Waiting = visibleTo(scope, view.Waiting,
+		func(queued *queuedBuildView) string { return queued.Project })
 	return view, nil
 }
 

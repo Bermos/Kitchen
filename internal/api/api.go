@@ -137,6 +137,12 @@ type Server struct {
 	// one signal that probes DNS. A field for the same reason logStore is: a
 	// test must be able to answer without a network.
 	resolver signals.Resolver
+
+	// accounts builds the client the membership writes resolve an address to
+	// an account through. A field for the same reason logStore is: a test
+	// must be able to add a member without an identity provider to ask. Nil
+	// resolves it from the platform's own identity-provider secret.
+	accounts func(ctx context.Context) (accountDirectory, error)
 }
 
 // chartVersions lists the versions the platform's Helm chart has been
@@ -276,106 +282,14 @@ func (s *Server) Handler() http.Handler {
 		s.charts = charts
 	}
 
+	// Every route the API serves is registered from the enforcement table in
+	// policy.go, wrapped in the requirement its row carries. Registering from
+	// the table is the point: a route cannot be added without saying who may
+	// call it.
 	mux := http.NewServeMux()
-
-	mux.HandleFunc("GET /api/v1/projects", s.listProjects)
-	mux.HandleFunc("POST /api/v1/projects", s.createProject)
-	mux.HandleFunc("GET /api/v1/projects/{name}", s.getProject)
-	mux.HandleFunc("PATCH /api/v1/projects/{name}", s.patchProject)
-	mux.HandleFunc("DELETE /api/v1/projects/{name}", s.deleteProject)
-	mux.HandleFunc("GET /api/v1/projects/{name}/builds", s.listProjectBuilds)
-	mux.HandleFunc("POST /api/v1/projects/{name}/builds", s.createBuild)
-	mux.HandleFunc("GET /api/v1/projects/{name}/releases", s.listProjectReleases)
-	mux.HandleFunc("GET /api/v1/projects/{name}/environments", s.listProjectEnvironments)
-
-	mux.HandleFunc("GET /api/v1/builds", s.listBuilds)
-	mux.HandleFunc("GET /api/v1/builds/{name}", s.getBuild)
-	mux.HandleFunc("POST /api/v1/builds/{name}/cancel", s.cancelBuild)
-	mux.HandleFunc("GET /api/v1/builds/{name}/logs", s.buildLogs)
-	mux.HandleFunc("GET /api/v1/builds/{name}/attestations", s.buildAttestations)
-
-	mux.HandleFunc("GET /api/v1/releases", s.listReleases)
-	mux.HandleFunc("GET /api/v1/releases/{name}", s.getRelease)
-
-	mux.HandleFunc("GET /api/v1/environments", s.listEnvironments)
-	mux.HandleFunc("GET /api/v1/environments/{name}", s.getEnvironment)
-	mux.HandleFunc("PATCH /api/v1/environments/{name}", s.patchEnvironment)
-	mux.HandleFunc("DELETE /api/v1/environments/{name}", s.deleteEnvironment)
-	mux.HandleFunc("GET /api/v1/environments/{name}/logs", s.environmentLogs)
-	mux.HandleFunc("GET /api/v1/environments/{name}/workload", s.environmentWorkload)
-	mux.HandleFunc("GET /api/v1/environments/{name}/metrics", s.environmentMetrics)
-	mux.HandleFunc("GET /api/v1/environments/{name}/objects", s.environmentObjects)
-	mux.HandleFunc("GET /api/v1/environments/{name}/requests", s.environmentRequests)
-	mux.HandleFunc("GET /api/v1/environments/{name}/requests/summary", s.environmentRequestSummary)
-	mux.HandleFunc("GET /api/v1/environments/{name}/requests/series", s.environmentRequestSeries)
-	mux.HandleFunc("GET /api/v1/environments/{name}/requests/routes", s.environmentRequestRoutes)
-	mux.HandleFunc("GET /api/v1/environments/{name}/diagnostics", s.environmentDiagnostics)
-	mux.HandleFunc("GET /api/v1/environments/{name}/signals", s.environmentSignals)
-
-	mux.HandleFunc("GET /api/v1/logs", s.queryLogs)
-	mux.HandleFunc("GET /api/v1/logs/histogram", s.logHistogram)
-	mux.HandleFunc("GET /api/v1/logs/facets", s.logFacets)
-	mux.HandleFunc("GET /api/v1/logs/patterns", s.logPatterns)
-	mux.HandleFunc("GET /api/v1/logs/saved", s.listSavedQueries)
-	mux.HandleFunc("POST /api/v1/logs/saved", s.createSavedQuery)
-	mux.HandleFunc("DELETE /api/v1/logs/saved/{name}", s.deleteSavedQuery)
-
-	mux.HandleFunc("GET /api/v1/events", s.listEvents)
-	mux.HandleFunc("GET /api/v1/compliance", s.getCompliance)
-	mux.HandleFunc("GET /api/v1/audit", s.listAuditRecords)
-	mux.HandleFunc("GET /api/v1/audit/verify", s.verifyAuditChain)
-	mux.HandleFunc("GET /api/v1/metrics/overview", s.metricsOverview)
-	mux.HandleFunc("GET /api/v1/traffic", s.traffic)
-
-	mux.HandleFunc("GET /api/v1/traces", s.listTraces)
-	mux.HandleFunc("GET /api/v1/traces/{traceId}", s.getTrace)
-
-	mux.HandleFunc("GET /api/v1/status", s.getStatus)
-
-	// The operator's own screens. Everything platform-scoped lives under this
-	// one prefix and nothing project-scoped does, so the authorization the
-	// dashboard's operator mode only pretends to have today is a middleware
-	// over a path prefix tomorrow rather than a redesign — see platform.go.
-	mux.HandleFunc("GET /api/v1/platform/signals", s.platformSignals)
-	mux.HandleFunc("GET /api/v1/platform/nodes", s.platformNodes)
-	mux.HandleFunc("GET /api/v1/platform/workloads", s.platformWorkloads)
-	mux.HandleFunc("GET /api/v1/platform/edge", s.platformEdge)
-	mux.HandleFunc("GET /api/v1/platform/storage", s.platformStorage)
-	mux.HandleFunc("GET /api/v1/platform/events", s.platformEvents)
-	mux.HandleFunc("GET /api/v1/platform/ingest", s.platformIngest)
-
-	mux.HandleFunc("GET /api/v1/settings", s.getSettings)
-	mux.HandleFunc("PATCH /api/v1/settings", s.patchSettings)
-
-	mux.HandleFunc("GET /api/v1/updates", s.listUpdates)
-	mux.HandleFunc("POST /api/v1/updates", s.createUpdate)
-	mux.HandleFunc("GET /api/v1/updates/{name}", s.getUpdate)
-
-	mux.HandleFunc("GET /api/v1/connections", s.listConnections)
-	mux.HandleFunc("POST /api/v1/connections", s.createConnection)
-	mux.HandleFunc("POST /api/v1/connections/test", s.testConnection)
-	mux.HandleFunc("GET /api/v1/connections/{name}", s.getConnection)
-	mux.HandleFunc("PATCH /api/v1/connections/{name}", s.patchConnection)
-	mux.HandleFunc("DELETE /api/v1/connections/{name}", s.deleteConnection)
-
-	mux.HandleFunc("GET /api/v1/domains", s.listDomains)
-	mux.HandleFunc("POST /api/v1/domains", s.createDomain)
-	mux.HandleFunc("GET /api/v1/domains/{name}", s.getDomain)
-	mux.HandleFunc("DELETE /api/v1/domains/{name}", s.deleteDomain)
-
-	mux.HandleFunc("GET /api/v1/claims", s.listClaims)
-	mux.HandleFunc("POST /api/v1/claims", s.createClaim)
-	mux.HandleFunc("GET /api/v1/claims/{name}", s.getClaim)
-	mux.HandleFunc("DELETE /api/v1/claims/{name}", s.deleteClaim)
-
-	// Anything else under the API prefix is a 404 rather than a fall-through,
-	// and it is still a 404 only after the caller has been identified: an
-	// anonymous request should not be able to map the API's shape.
-	mux.HandleFunc("/", func(w http.ResponseWriter, req *http.Request) {
-		writeJSON(w, http.StatusNotFound, errorBody{
-			Error: fmt.Sprintf("no such endpoint: %s %s", req.Method, req.URL.Path),
-		})
-	})
+	for _, route := range s.routes() {
+		mux.HandleFunc(route.Pattern, s.guard(route.Requires, route.Handler))
+	}
 
 	authenticated := s.authenticated(mux)
 	if s.UI == nil {

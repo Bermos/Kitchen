@@ -1,14 +1,19 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { api, type Claim, type EnvVar, type Project, type Release } from "../lib/api";
+import { api, type Claim, type Project, type Release } from "../lib/api";
 import { duration, shortImage, shortSHA, timeAgo } from "../lib/format";
+import { callerFor } from "../lib/me";
 import { operatorMode } from "../lib/mode";
+import { may } from "../lib/policy";
 import { releaseHistoryEntry, releaseHistoryLabel } from "../lib/status";
 import { useAsync, usePoll } from "../lib/useAsync";
 import ClaimModal from "../components/ClaimModal.vue";
 import ConditionsTable from "../components/ConditionsTable.vue";
 import EnvironmentCard from "../components/EnvironmentCard.vue";
+import EnvVarsPanel from "../components/EnvVarsPanel.vue";
+import KeysPanel from "../components/KeysPanel.vue";
+import MembersPanel from "../components/MembersPanel.vue";
 import PhaseBadge from "../components/PhaseBadge.vue";
 import StatusDot from "../components/StatusDot.vue";
 
@@ -36,6 +41,44 @@ watch(name, () => void refresh());
 usePoll(() => void refresh(), 10000, () => true);
 
 const project = computed(() => data.value?.project);
+
+// What this account may do here, keyed to the role that arrived on this
+// project's own payload rather than to the mode the dashboard is in. A viewer
+// gets the same screens as a developer with the write controls gone — not
+// disabled with a tooltip. A disabled button is an invitation to go and find
+// somebody who can press it, which is right for a shared enterprise tool and
+// wrong here: the screens are the same, and the buttons are simply not part of
+// a viewer's dashboard.
+//
+// The route is named once, at the control, and `may` answers from the same
+// table the API enforces (`policy.generated.ts`), so nothing here is a second
+// opinion about who may redeploy.
+const caller = computed(() => callerFor(project.value?.role, name.value));
+const mayBuild = computed(() => may("POST /api/v1/projects/{name}/builds", caller.value));
+const mayDeploy = computed(() => may("PATCH /api/v1/environments/{name}", caller.value));
+const mayClaim = computed(() => may("POST /api/v1/claims", caller.value));
+const mayUnclaim = computed(() => may("DELETE /api/v1/claims/{name}", caller.value));
+const mayConfigure = computed(() => may("PATCH /api/v1/projects/{name}", caller.value));
+const mayDelete = computed(() => may("DELETE /api/v1/projects/{name}", caller.value));
+// Who is on a project is every member's to read and an admin's to change, so
+// the People tab is everybody's and the controls inside it are not. The CI
+// keys sit under it on the same terms — they are the same list with its
+// non-human half shown.
+const mayReadMembers = computed(() => may("GET /api/v1/projects/{name}/members", caller.value));
+// Environment variables are the developer's day job and have a route of their
+// own, so they are a tab of their own rather than a section of a form only an
+// admin has. An admin has both, since admin contains developer.
+//
+// **The tab is keyed to reading the project, not to writing the variables.**
+// `GET /projects/{name}` is a viewer's and already carries the list — names,
+// whether each has a value, and the secret and claim references — so hiding
+// the tab from a viewer would be the dashboard enforcing something the API
+// does not, which is the mirror image of the mistake this whole table exists
+// to prevent. What a viewer gets is the same screen with the write
+// affordances gone, which is what every other screen here does; EnvVarsPanel
+// keys those to the write route itself.
+const mayReadProject = computed(() => may("GET /api/v1/projects/{name}", caller.value));
+
 const production = computed(() =>
   data.value?.environments.find((e) => e.name === data.value?.project.productionEnvironment),
 );
@@ -118,20 +161,38 @@ async function rollBack() {
 }
 
 const tab = ref("deployments");
-const tabs = computed(() => [
-  { label: `Deployments`, value: "deployments" },
-  { label: `Previews (${previews.value.length})`, value: "previews" },
-  { label: `Builds (${data.value?.builds.length ?? 0})`, value: "builds" },
-  { label: `Environments (${data.value?.environments.length ?? 0})`, value: "environments" },
-  { label: `Domains (${data.value?.domains.length ?? 0})`, value: "domains" },
-  { label: `Resources (${data.value?.claims.length ?? 0})`, value: "resources" },
-  { label: `Settings`, value: "settings" },
-]);
+// Which tabs exist is a matter of what the API would answer, never of the
+// mode the dashboard is in. Settings is the project admin's whole tab, not a
+// tab with the controls removed: everything on it is an admin's write.
+// Variables is everybody's to read and the developer's to change — which is
+// why it is a tab beside People rather than a section inside a form a
+// developer does not have. People is everybody's now that reading the list is
+// a viewer's, with the add, change and remove controls absent for anyone but
+// an admin.
+const tabs = computed(() =>
+  [
+    { label: `Deployments`, value: "deployments", shown: true },
+    { label: `Previews (${previews.value.length})`, value: "previews", shown: true },
+    { label: `Builds (${data.value?.builds.length ?? 0})`, value: "builds", shown: true },
+    { label: `Environments (${data.value?.environments.length ?? 0})`, value: "environments", shown: true },
+    { label: `Domains (${data.value?.domains.length ?? 0})`, value: "domains", shown: true },
+    { label: `Resources (${data.value?.claims.length ?? 0})`, value: "resources", shown: true },
+    { label: `Variables (${data.value?.project.env?.length ?? 0})`, value: "variables", shown: mayReadProject.value },
+    { label: `People`, value: "people", shown: mayReadMembers.value },
+    { label: `Settings`, value: "settings", shown: mayConfigure.value },
+  ].filter((item) => item.shown),
+);
+// A tab this account does not have — a bookmarked settings tab, or a role
+// that changed under an open page — falls back to the one every role has.
+watch(tabs, (items) => {
+  if (!items.some((item) => item.value === tab.value)) tab.value = "deployments";
+});
 
 // The settings tab edits a copy of the project, loaded once per project so
-// the 10s poll never types over the user. Env vars ride along in full — the
-// PATCH replaces the whole list, so secret- and claim-backed variables are
-// kept in the copy even though only literal ones are editable here.
+// the 10s poll never types over the user. Environment variables are not in
+// this copy and must not be: `PATCH /projects/{name}` now refuses a body that
+// carries `env`, naming the route that takes them instead — they are the
+// Variables tab's, and EnvVarsPanel holds its own drafts.
 const settings = reactive({
   loadedFor: "",
   productionBranch: "",
@@ -146,7 +207,6 @@ const settings = reactive({
   replicas: 1,
   cpu: "",
   memory: "",
-  env: [] as EnvVar[],
 });
 // An empty port field is not an unconfigured one: it is the framework's,
 // decided per build, so the field shows nothing and says where the number
@@ -182,18 +242,10 @@ function loadSettings(from: Project) {
   settings.replicas = from.replicas ?? 1;
   settings.cpu = from.cpu ?? "";
   settings.memory = from.memory ?? "";
-  settings.env = (from.env ?? []).map((v) => ({ ...v }));
 }
 watch(project, (value) => {
   if (value && value.name !== settings.loadedFor) loadSettings(value);
 });
-
-function addEnvVar() {
-  settings.env.push({ name: "", value: "" });
-}
-function removeEnvVar(index: number) {
-  settings.env.splice(index, 1);
-}
 
 const savingSettings = ref(false);
 async function saveSettings() {
@@ -210,7 +262,6 @@ async function saveSettings() {
       replicas: settings.replicas,
       cpu: settings.cpu,
       memory: settings.memory,
-      env: settings.env.filter((v) => v.name.trim() !== ""),
     });
     loadSettings(saved);
     toast.add({
@@ -337,7 +388,15 @@ function host(url?: string): string {
           </div>
         </div>
         <div class="flex items-center gap-2">
-          <UButton color="neutral" variant="subtle" size="sm" icon="i-lucide-rotate-cw" :loading="redeploying" @click="redeploy">
+          <UButton
+            v-if="mayBuild"
+            color="neutral"
+            variant="subtle"
+            size="sm"
+            icon="i-lucide-rotate-cw"
+            :loading="redeploying"
+            @click="redeploy"
+          >
             Redeploy
           </UButton>
           <UButton
@@ -448,7 +507,7 @@ function host(url?: string): string {
               <td class="px-4 py-3 text-xs text-muted whitespace-nowrap">{{ timeAgo(release.createdAt) }}</td>
               <td class="px-4 py-3 text-right whitespace-nowrap">
                 <UButton
-                  v-if="production && release.name !== currentRelease"
+                  v-if="mayDeploy && production && release.name !== currentRelease"
                   color="neutral"
                   variant="subtle"
                   size="xs"
@@ -611,7 +670,7 @@ function host(url?: string): string {
 
       <!-- Resources: provisioned claims (databases, OIDC clients, …) bound to this project. -->
       <div v-else-if="tab === 'resources'" class="space-y-3">
-        <div class="flex justify-end">
+        <div v-if="mayClaim" class="flex justify-end">
           <ClaimModal :project="project.name" @saved="refresh">
             <UButton icon="i-lucide-plus" size="sm">New claim</UButton>
           </ClaimModal>
@@ -643,7 +702,14 @@ function host(url?: string): string {
                 </td>
                 <td class="px-4 py-3 text-right text-xs text-muted whitespace-nowrap">{{ timeAgo(claim.createdAt) }}</td>
                 <td class="px-4 py-3 text-right whitespace-nowrap">
-                  <UButton color="neutral" variant="subtle" size="xs" icon="i-lucide-trash-2" @click="claimToDelete = claim">
+                  <UButton
+                    v-if="mayUnclaim"
+                    color="neutral"
+                    variant="subtle"
+                    size="xs"
+                    icon="i-lucide-trash-2"
+                    @click="claimToDelete = claim"
+                  >
                     Delete
                   </UButton>
                 </td>
@@ -651,6 +717,27 @@ function host(url?: string): string {
             </tbody>
           </table>
         </div>
+      </div>
+
+      <!-- Variables: read by anybody who can read the project, changed by a
+           developer. It is a tab rather than a section of the settings form
+           because the settings form is an admin's and this is not — a
+           developer who is not an admin has this and nothing else here. -->
+      <EnvVarsPanel
+        v-else-if="tab === 'variables'"
+        :project="project.name"
+        :role="project.role"
+        :env="project.env"
+        @saved="refresh"
+      />
+
+      <!-- People, and the CI keys underneath them: they are one list. A key
+           is a non-human member of exactly one project, so its grant is in
+           the members list above and its credential is issued and revoked
+           below. -->
+      <div v-else-if="tab === 'people'" class="space-y-10">
+        <MembersPanel :project="project.name" :role="project.role" />
+        <KeysPanel :project="project.name" :role="project.role" />
       </div>
 
       <!-- Settings: everything on the project a user may change after
@@ -704,48 +791,16 @@ function host(url?: string): string {
             </div>
           </div>
 
-          <div class="rounded-md border border-default bg-muted p-5 space-y-4">
-            <div class="flex items-center justify-between">
-              <h2 class="text-sm font-semibold text-highlighted">Environment variables</h2>
-              <UButton color="neutral" variant="subtle" size="xs" icon="i-lucide-plus" @click="addEnvVar">
-                Add variable
-              </UButton>
-            </div>
-            <p v-if="!settings.env.length" class="text-xs text-muted">
-              None yet. Values land in new releases — what is running keeps its release's snapshot until the next
-              deploy.
-            </p>
-            <div v-for="(envVar, index) in settings.env" :key="index" class="flex items-start gap-2 flex-wrap sm:flex-nowrap">
-              <UInput v-model="envVar.name" placeholder="NAME" class="w-full sm:w-44 font-mono" />
-              <template v-if="!envVar.fromSecret && !envVar.fromClaim">
-                <UInput v-model="envVar.value" placeholder="value" class="flex-1 min-w-40 font-mono" />
-                <UInput
-                  v-model="envVar.previewValue"
-                  placeholder="preview value (optional)"
-                  class="flex-1 min-w-40 font-mono"
-                />
-              </template>
-              <UBadge v-else color="neutral" variant="subtle" size="sm" class="font-mono mt-1.5 flex-1">
-                {{ envVar.fromSecret ? `secret ${envVar.fromSecret.name}/${envVar.fromSecret.key}` : `claim ${envVar.fromClaim!.name}/${envVar.fromClaim!.key}` }}
-              </UBadge>
-              <UButton
-                color="neutral"
-                variant="ghost"
-                size="xs"
-                icon="i-lucide-x"
-                aria-label="Remove variable"
-                class="mt-1"
-                @click="removeEnvVar(index)"
-              />
-            </div>
-          </div>
-
           <div class="flex justify-end">
             <UButton type="submit" :loading="savingSettings" icon="i-lucide-check">Save settings</UButton>
           </div>
         </form>
 
-        <div class="rounded-md border border-error/40 p-5 space-y-3">
+        <!-- Deleting is the admin's alone, and it is on the admin's own tab —
+             but it is named separately from the settings above it, because
+             `PATCH` and `DELETE` are two rows of the table and only one of
+             them takes the project away. -->
+        <div v-if="mayDelete" class="rounded-md border border-error/40 p-5 space-y-3">
           <h2 class="text-sm font-semibold text-error">Danger zone</h2>
           <p class="text-xs text-muted">
             Deleting the project tears down its environments — production included — and removes its builds, releases,

@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { api } from "../lib/api";
+import { connectionChoices, noteFor, selectableChoices, type ConnectionChoice } from "../lib/connections";
+import { callerFor } from "../lib/me";
+import { may } from "../lib/policy";
 
 // The create flow for resource claims: ask a database-capable connection to
 // provision something for this project. The binding credentials stay in the
@@ -28,29 +31,30 @@ const policyOptions = [
   { label: "Delete — destroy the database and its data with the claim", value: "Delete" },
 ];
 
-const connections = ref<{ label: string; value: string }[]>([]);
+const connections = ref<ConnectionChoice[]>([]);
 const connectionsLoaded = ref(false);
 
-// Only connections that can actually provision a database are offered. A
-// connection that has not reported capabilities yet (the operator has not
-// validated it) is offered with a caveat rather than hidden — the reconciler
-// holds the claim Pending until validation either way.
+// Every connection is listed and the ones that cannot provision a database
+// say so, on the same terms as the project's own two pickers — and read out
+// of the same shape, which is the thinned one for anybody who is not an
+// operator: a name, what it can back, and whether the platform has it
+// working. A connection nothing has assessed yet is offered with the caveat
+// rather than hidden; the reconciler holds the claim Pending until validation
+// either way.
 async function loadConnections() {
   connectionsLoaded.value = false;
   try {
-    const all = await api.connections();
-    connections.value = all
-      .filter((c) => !c.capabilities?.length || c.capabilities.includes("database"))
-      .map((c) => ({
-        label: c.capabilities?.length ? `${c.name} (${c.provider})` : `${c.name} (${c.provider}, not validated yet)`,
-        value: c.name,
-      }));
+    connections.value = connectionChoices(await api.connections(), "database");
   } catch {
     connections.value = [];
   } finally {
     connectionsLoaded.value = true;
   }
 }
+
+const connectionNote = computed(() => noteFor(connections.value, connection.value));
+const available = computed(() => selectableChoices(connections.value));
+const managesConnections = computed(() => may("POST /api/v1/connections", callerFor()));
 
 watch(open, (value) => {
   if (!value) return;
@@ -112,17 +116,23 @@ async function save() {
           </UFormField>
         </div>
 
-        <UFormField label="Connection" help="A connection with the database capability provisions and owns the instance." required>
+        <UFormField
+          label="Connection"
+          :help="connectionNote || 'A connection with the database capability provisions and owns the instance.'"
+          required
+        >
           <USelect
             v-model="connection"
             :items="connections"
-            :placeholder="connectionsLoaded && !connections.length ? 'No database-capable connections' : 'Select a connection'"
-            :disabled="connectionsLoaded && !connections.length"
+            :placeholder="connectionsLoaded && !available.length ? 'No database-capable connections' : 'Select a connection'"
+            :disabled="connectionsLoaded && !available.length"
             class="w-full"
           />
         </UFormField>
-        <p v-if="connectionsLoaded && !connections.length" class="text-xs text-muted">
-          No connection can provision databases — create one first (e.g. a Neon connection) on the Connections page.
+        <p v-if="connectionsLoaded && !available.length" class="text-xs text-muted">
+          No connection can provision databases —
+          <template v-if="managesConnections">create one first (e.g. a Neon connection) on the Connections page.</template>
+          <template v-else>ask an operator to add one (e.g. a Neon connection).</template>
         </p>
 
         <USwitch

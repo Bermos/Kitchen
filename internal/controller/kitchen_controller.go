@@ -119,6 +119,16 @@ type KitchenReconciler struct {
 	// Without it, protected previews have nothing to route through.
 	PreviewGateImage string
 
+	// PreviewGateServiceAccount is the identity the gate reads Projects and
+	// the Kitchen singleton as, so that it can decide who is on a project
+	// without asking the REST API. The chart creates it and binds it to a
+	// read-only role, and passes the name in for the same reason it passes
+	// the self-update account's: the name is release-name prefixed, so only
+	// the chart knows it. Empty leaves the gate on the namespace's default
+	// account, which can read nothing — the gate then fails closed and says
+	// so on every protected preview.
+	PreviewGateServiceAccount string
+
 	// APIReader reads straight from the API server, bypassing the cache.
 	// The component survey needs it for events and pods: field selectors are
 	// not served by the cache, and caching every event and pod in the cluster
@@ -196,6 +206,7 @@ func (r *KitchenReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	complianceReady := r.reconcileCompliance(ctx, kitchen, setCond)
 	gateReady := r.reconcilePreviewGate(ctx, kitchen, setCond)
 	registryReady := r.reconcileRegistry(ctx, kitchen, setCond)
+	accessReady := r.reconcileAccess(ctx, kitchen, setCond)
 	programmed := r.observeGateway(ctx, kitchen, setCond)
 	componentsHealthy := r.surveyComponents(ctx, kitchen, setCond)
 	setCond(condReady, metav1.ConditionTrue, "Reconciled", "platform infrastructure is in place")
@@ -210,9 +221,10 @@ func (r *KitchenReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		"registryReady", registryReady,
 		"certificateReady", certReady,
 		"complianceReady", complianceReady,
+		"operatorsConfigured", accessReady,
 		"componentsHealthy", componentsHealthy)
 	if !programmed || !schemaReady || !gateReady || !registryReady || !certReady ||
-		!complianceReady || !componentsHealthy {
+		!complianceReady || !accessReady || !componentsHealthy {
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 	return ctrl.Result{}, nil

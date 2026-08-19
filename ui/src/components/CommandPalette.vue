@@ -2,6 +2,8 @@
 import { onMounted, onUnmounted, ref, shallowRef } from "vue";
 import { useRouter } from "vue-router";
 import { api, type Build, type Domain, type Environment, type Project } from "../lib/api";
+import { callerFor } from "../lib/me";
+import { may } from "../lib/policy";
 
 // The mockup's "Jump to project, release, domain… ⌘K": one palette over
 // everything the API can list, fetched fresh when it opens.
@@ -98,12 +100,19 @@ const groups = () => {
     {
       id: "pages",
       label: "Pages",
+      // The pages this account has. A palette is a list of things to jump to,
+      // so an entry the router would turn round at the door does not belong
+      // on it — the same rule the sidebar follows, asked of the same table.
       items: [
         { label: "Overview", icon: "i-lucide-layout-dashboard", onSelect: () => go({ name: "overview" }) },
         { label: "Builds", icon: "i-lucide-hammer", onSelect: () => go({ name: "builds" }) },
         { label: "Observability", icon: "i-lucide-activity", onSelect: () => go({ name: "observability" }) },
-        { label: "Connections", icon: "i-lucide-plug", onSelect: () => go({ name: "connections" }) },
-        { label: "Settings", icon: "i-lucide-settings-2", onSelect: () => go({ name: "settings" }) },
+        ...(may("GET /api/v1/connections/{name}", callerFor())
+          ? [{ label: "Connections", icon: "i-lucide-plug", onSelect: () => go({ name: "connections" }) }]
+          : []),
+        ...(may("GET /api/v1/settings", callerFor())
+          ? [{ label: "Settings", icon: "i-lucide-settings-2", onSelect: () => go({ name: "settings" }) }]
+          : []),
       ],
     },
   ];

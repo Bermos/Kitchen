@@ -37,12 +37,16 @@ import (
 // platform: which application a request belongs to comes from the route it
 // arrived on, not from configuration.
 type Server struct {
-	cfg    Config
-	sign   *signer
-	oidc   *oidcClient
-	proxy  *httputil.ReverseProxy
-	log    logr.Logger
-	scheme string // scheme of the gate's own host, from the callback URL
+	cfg   Config
+	sign  *signer
+	oidc  *oidcClient
+	proxy *httputil.ReverseProxy
+	// directory answers who is on a project. A nil one admits nobody, which
+	// is what makes "the gate cannot check membership" fail closed by
+	// construction rather than by remembering to.
+	directory Directory
+	log       logr.Logger
+	scheme    string // scheme of the gate's own host, from the callback URL
 }
 
 // contextKey carries the resolved upstream and visitor into the proxy's
@@ -56,14 +60,21 @@ type routedRequest struct {
 
 // NewServer builds a gate from a validated configuration. The HTTP client is
 // the one used to talk to the identity provider; nil gets a sensible default.
-func NewServer(cfg Config, httpClient *http.Client, log logr.Logger) *Server {
+//
+// The directory is where membership is resolved. It is a parameter rather
+// than something the gate reaches for, so that the one thing it must never do
+// — decide admission by asking the REST API — is not available to it: nothing
+// in this package can reach the API, and a preview therefore cannot close
+// because the API is restarting. A nil directory refuses every request.
+func NewServer(cfg Config, httpClient *http.Client, directory Directory, log logr.Logger) *Server {
 	callback, _ := url.Parse(cfg.CallbackURL)
 	s := &Server{
-		cfg:    cfg,
-		sign:   newSigner(cfg.CookieSecret),
-		oidc:   newOIDCClient(cfg, httpClient),
-		log:    log,
-		scheme: callback.Scheme,
+		cfg:       cfg,
+		sign:      newSigner(cfg.CookieSecret),
+		oidc:      newOIDCClient(cfg, httpClient),
+		directory: directory,
+		log:       log,
+		scheme:    callback.Scheme,
 	}
 	s.proxy = &httputil.ReverseProxy{
 		Rewrite:      s.rewrite,
@@ -246,11 +257,12 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 	// the one place this request is not. One more hop, carrying a token that
 	// is good for a minute and for that host only.
 	handoff, err := s.sign.mint(claims{
-		Purpose:   purposeHandoff,
-		Host:      returnTo.Host,
-		Subject:   visitor.Subject,
-		Email:     visitor.Email,
-		ReturnURL: flow.ReturnURL,
+		Purpose:       purposeHandoff,
+		Host:          returnTo.Host,
+		Subject:       visitor.Subject,
+		Email:         visitor.Email,
+		EmailVerified: visitor.EmailVerified,
+		ReturnURL:     flow.ReturnURL,
 	}, handoffTTL)
 	if err != nil {
 		s.fail(w, r, http.StatusInternalServerError, "Sign in failed", "The gate could not hand the login back.")
@@ -277,10 +289,11 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	session, err := s.sign.mint(claims{
-		Purpose: purposeSession,
-		Host:    r.Host,
-		Subject: handoff.Subject,
-		Email:   handoff.Email,
+		Purpose:       purposeSession,
+		Host:          r.Host,
+		Subject:       handoff.Subject,
+		Email:         handoff.Email,
+		EmailVerified: handoff.EmailVerified,
 	}, s.cfg.SessionTTL)
 	if err != nil {
 		s.fail(w, r, http.StatusInternalServerError, "Sign in failed", "The gate could not start a session.")
@@ -322,6 +335,15 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request, visitor claims)
 			"This hostname is not routed to an application.")
 		return
 	}
+
+	// Signed in is not the same as allowed in: a protected preview belongs to
+	// a project, and only that project's people — and the platform's
+	// operators — may open it.
+	if refused := s.admit(r, upstream, visitor); refused != nil {
+		s.fail(w, r, refused.status, refused.title, refused.message)
+		return
+	}
+
 	ctx := context.WithValue(r.Context(), contextKey{}, routedRequest{upstream: upstream, visitor: visitor})
 	s.proxy.ServeHTTP(w, r.WithContext(ctx))
 }
@@ -345,6 +367,7 @@ func (s *Server) rewrite(pr *httputil.ProxyRequest) {
 	stripCookie(pr.Out.Header, CookieName)
 	stripCookie(pr.Out.Header, FlowCookieName)
 	pr.Out.Header.Del(UpstreamHeader)
+	pr.Out.Header.Del(ProjectHeader)
 	pr.Out.Header.Set(UserHeader, routed.visitor.Subject)
 	pr.Out.Header.Set(EmailHeader, routed.visitor.Email)
 }
@@ -359,8 +382,8 @@ func (s *Server) upstreamUnreachable(w http.ResponseWriter, r *http.Request, err
 // the proxy's port belongs to the applications behind the gate, and an
 // application is entitled to its own /healthz.
 //
-// Readiness is the issuer being reachable, because a gate that cannot reach
-// it can only turn visitors away.
+// Readiness is the issuer being reachable and the platform's own objects
+// being readable, because a gate missing either can only turn visitors away.
 func (s *Server) HealthHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -370,6 +393,18 @@ func (s *Server) HealthHandler() http.Handler {
 		if _, err := s.oidc.endpoints(r.Context()); err != nil {
 			s.log.V(1).Info("not ready", "error", err.Error())
 			writeText(w, http.StatusServiceUnavailable, "identity provider unavailable\n")
+			return
+		}
+		// The platform's own objects are the other half of an admission
+		// decision, and a gate that cannot read them can only turn visitors
+		// away — the same reason the issuer is checked here.
+		if s.directory == nil {
+			writeText(w, http.StatusServiceUnavailable, "no directory to check membership against\n")
+			return
+		}
+		if _, err := s.directory.Kitchen(r.Context()); err != nil {
+			s.log.V(1).Info("not ready", "error", err.Error())
+			writeText(w, http.StatusServiceUnavailable, "the platform's objects are unreadable\n")
 			return
 		}
 		writeText(w, http.StatusOK, "ok\n")

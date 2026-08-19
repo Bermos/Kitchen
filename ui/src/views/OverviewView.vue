@@ -1,7 +1,10 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
+import { useRoute, useRouter } from "vue-router";
 import { api, type Build, type Environment, type PlatformEvent, type ProjectTraffic } from "../lib/api";
 import { compactCount, formatSeconds, timeAgo } from "../lib/format";
+import { callerFor } from "../lib/me";
+import { refusal } from "../lib/policy";
 import { statusDetail, unhealthyConditions, type Tone } from "../lib/status";
 import { useAsync, usePoll } from "../lib/useAsync";
 import NewProjectModal from "../components/NewProjectModal.vue";
@@ -14,6 +17,27 @@ import StatusDot from "../components/StatusDot.vue";
 // latest build's phase. The API answers newest-first, so "latest" is "first".
 // The numbers and the feed ride separately on /metrics/overview and /events,
 // so an installation without a telemetry store still gets the table.
+
+// Where the router sends an account that opened a screen it does not have —
+// a bookmark, or an evidence link pasted from somebody else's dashboard. It
+// is the overview because that is every account's screen; the notice is here
+// because arriving somewhere other than the address in the link, with no
+// explanation, reads as a broken dashboard.
+//
+// The sentence is the policy table's own, in the vocabulary the API's 403
+// uses, so what the screen says and what the call would have said agree.
+const route = useRoute();
+const router = useRouter();
+const denied = computed(() => {
+  const path = route.query.denied;
+  if (typeof path !== "string" || !path) return "";
+  const requires = router.resolve(path).meta.requires;
+  const why = requires ? refusal(requires, callerFor()) : "";
+  return why ? `${path} — ${why}.` : `${path} is not a page this account can open.`;
+});
+function dismissDenied() {
+  void router.replace({ name: "overview" });
+}
 
 const { data, error, loading, refresh } = useAsync(() =>
   Promise.all([api.projects(), api.environments(), api.builds()]),
@@ -176,6 +200,17 @@ function host(url?: string): string {
         <NewProjectModal @created="refresh" />
       </div>
     </div>
+
+    <UAlert
+      v-if="denied"
+      color="neutral"
+      variant="soft"
+      icon="i-lucide-shield-off"
+      title="That page is not yours to open"
+      :description="denied"
+      close
+      @update:open="dismissDenied"
+    />
 
     <UAlert v-if="error" color="error" variant="soft" icon="i-lucide-triangle-alert" :title="error" />
 

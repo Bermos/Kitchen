@@ -123,6 +123,9 @@ func (s *Server) listTraces(w http.ResponseWriter, req *http.Request) {
 		Limit:         limit,
 	}
 	if project := strings.TrimSpace(req.URL.Query().Get("project")); project != "" {
+		if !s.visibleProject(w, req, project) {
+			return
+		}
 		// The project has to exist before its traces are worth looking for, the
 		// same way the metrics overview insists on it: a typo should say "no
 		// such project" rather than "no traces".
@@ -143,7 +146,11 @@ func (s *Server) listTraces(w http.ResponseWriter, req *http.Request) {
 		s.writeStoreError(w, err, "the trace query")
 		return
 	}
-	writeList(w, traces)
+	// A trace carries the project it ran in, which the platform puts into
+	// every application's resource attributes. One that names no project came
+	// from the platform's own components, and is the operator's.
+	writeList(w, visibleTo(scopeFrom(ctx), traces,
+		func(trace *clickhouse.Trace) string { return trace.Project }))
 }
 
 // getTrace serves one trace's spans, oldest first.
@@ -167,6 +174,11 @@ func (s *Server) getTrace(w http.ResponseWriter, req *http.Request) {
 		s.writeStoreError(w, err, "the trace query")
 		return
 	}
+	// A trace with nothing of the caller's in it is a trace they do not have:
+	// the same answer as one the store never kept, rather than a refusal that
+	// would confirm the id names something.
+	spans = visibleTo(scopeFrom(req.Context()), spans,
+		func(span *clickhouse.Span) string { return span.Project })
 	if len(spans) == 0 {
 		// A trace nothing was kept for is a 404 rather than an empty list:
 		// the id was a name, and the platform does not have it. Retention is

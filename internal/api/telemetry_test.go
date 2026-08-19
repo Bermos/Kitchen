@@ -341,3 +341,128 @@ func TestLogsStreamAsServerSentEvents(t *testing.T) {
 		t.Errorf("expected the initial lines as SSE events, got:\n%s", body)
 	}
 }
+
+// `/metrics/overview` is a cross-project read, and every one of those is
+// answered about the caller's own projects. A member holding nothing must not
+// be told how much the platform deployed, served or stored — and the store
+// must not be asked, because there is nothing of theirs to ask about.
+func TestTheMetricsOverviewOfACallerWithNoProjectsIsZeroesAndNoStoreRead(t *testing.T) {
+	h := asMember(t, "")
+	h.logs.overview = clickhouse.MetricsOverview{
+		Deploys7d:          9,
+		MedianBuildSeconds: 30,
+		LogLines24h:        5000,
+		StoreBytes:         1 << 40,
+		StoreRowsPerSecond: 12,
+	}
+	h.logs.platformRequests = clickhouse.PlatformRequests{Requests: 900, ErrorRate: 0.02, P95Ms: 42}
+
+	res := h.do(t, http.MethodGet, "/api/v1/metrics/overview", "")
+	if res.Code != http.StatusOK {
+		t.Fatalf("GET /metrics/overview = %d: %s", res.Code, res.Body.String())
+	}
+	body := decode[metricsOverviewBody](t, res)
+	if body.Deploys7d != 0 || body.LogLines24h != 0 || body.Requests24h != 0 ||
+		body.MedianBuildSeconds != 0 || body.P95Ms24h != 0 ||
+		body.StoreBytes != 0 || body.StoreRowsPerSecond != 0 {
+		t.Fatalf("the platform's numbers are not a member's to read: %+v", body.MetricsOverview)
+	}
+	// Zeroes, but the right shape: a sparkline is a flat day rather than a
+	// missing one.
+	if len(body.RequestsPerHour) != 24 || len(body.LogLinesPerHour) != 24 || len(body.DeploysPerDay) != 7 {
+		t.Errorf("the series keep the widths the dashboard draws: %+v", body.MetricsOverview)
+	}
+	if h.logs.overviewReads != 0 || len(h.logs.platformQueries) != 0 {
+		t.Errorf("nothing of theirs to aggregate is nothing to ask the store: %d overview reads, %d platform reads",
+			h.logs.overviewReads, len(h.logs.platformQueries))
+	}
+}
+
+// A member on one project is answered about that project — the same reads
+// `?project=` makes — and never through the platform-wide rollup.
+func TestTheMetricsOverviewOfAMemberIsScopedToTheirProjects(t *testing.T) {
+	h := asMember(t, kitchenv1alpha1.AccessRoleViewer)
+	h.logs.overview = clickhouse.MetricsOverview{Deploys7d: 4, MedianBuildSeconds: 30}
+	h.logs.requestSummary = clickhouse.RequestSummary{Requests: 100, ErrorRate: 0.03, P95Ms: 42}
+	h.logs.platformRequests = clickhouse.PlatformRequests{Requests: 900, ErrorRate: 0.02, P95Ms: 99}
+
+	res := h.do(t, http.MethodGet, "/api/v1/metrics/overview", "")
+	if res.Code != http.StatusOK {
+		t.Fatalf("GET /metrics/overview = %d: %s", res.Code, res.Body.String())
+	}
+	body := decode[metricsOverviewBody](t, res)
+
+	if len(h.logs.platformQueries) != 0 {
+		t.Errorf("a member's overview must not read across projects: %+v", h.logs.platformQueries)
+	}
+	if h.logs.lastMetrics.Project != feedProject {
+		t.Errorf("want the store asked about %s, got %+v", feedProject, h.logs.lastMetrics)
+	}
+	if h.logs.lastRequestSummary.Project != feedProject {
+		t.Errorf("want the traffic read scoped to %s, got %+v", feedProject, h.logs.lastRequestSummary)
+	}
+	// One project is nothing to merge, so its own percentile and median are
+	// the answer rather than being dropped.
+	if body.Requests24h != 100 || body.P95Ms24h != 42 || body.MedianBuildSeconds != 30 {
+		t.Errorf("want the project's own numbers, got %+v", body.MetricsOverview)
+	}
+}
+
+// On several projects the counts add up and the numbers that cannot be merged
+// from per-project answers are left at zero rather than invented: a mean of
+// p95s is not a p95, and the honest per-project ones are in `projects`.
+func TestTheMetricsOverviewMergesTheCountsAndNotThePercentiles(t *testing.T) {
+	h := asMember(t, kitchenv1alpha1.AccessRoleViewer, blogFixtures()...)
+	h.grant(t, otherProject, kitchenv1alpha1.AccessRoleViewer)
+	h.logs.overview = clickhouse.MetricsOverview{
+		Deploys7d:          4,
+		DeploysPerDay:      repeated(7, 1),
+		MedianBuildSeconds: 30,
+		LogLines24h:        100,
+		StoreBytes:         2048,
+		StoreRowsPerSecond: 8,
+	}
+	h.logs.requestSummary = clickhouse.RequestSummary{Requests: 100, ErrorRate: 0.5, P95Ms: 42}
+
+	res := h.do(t, http.MethodGet, "/api/v1/metrics/overview", "")
+	if res.Code != http.StatusOK {
+		t.Fatalf("GET /metrics/overview = %d: %s", res.Code, res.Body.String())
+	}
+	body := decode[metricsOverviewBody](t, res)
+
+	if body.Deploys7d != 8 || body.LogLines24h != 200 || body.Requests24h != 200 {
+		t.Errorf("counts over two projects add up, got %+v", body.MetricsOverview)
+	}
+	if body.DeploysPerDay[0] != 2 {
+		t.Errorf("the buckets add up bucket by bucket, got %+v", body.DeploysPerDay)
+	}
+	// The rate is the pooled one — total errors over total requests — not a
+	// sum of rates.
+	if body.ErrorRate24h != 0.5 {
+		t.Errorf("want the pooled error rate, got %v", body.ErrorRate24h)
+	}
+	if body.P95Ms24h != 0 || body.MedianBuildSeconds != 0 {
+		t.Errorf("a percentile merged out of per-project percentiles would be a made-up number: %+v",
+			body.MetricsOverview)
+	}
+	// The store's own size is the store's, and is reported once rather than
+	// once per project.
+	if body.StoreBytes != 2048 || body.StoreRowsPerSecond != 8 {
+		t.Errorf("the store's own figures are not per-project sums, got %+v", body.MetricsOverview)
+	}
+}
+
+// The operator's answer is unchanged: the platform, whole.
+func TestTheMetricsOverviewAnswersTheOperatorAboutThePlatform(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+	h.logs.overview = clickhouse.MetricsOverview{Deploys7d: 9}
+	h.logs.platformRequests = clickhouse.PlatformRequests{Requests: 900, ErrorRate: 0.02, P95Ms: 42}
+
+	body := decode[metricsOverviewBody](t, h.do(t, http.MethodGet, "/api/v1/metrics/overview", ""))
+	if body.Deploys7d != 9 || body.Requests24h != 900 || body.P95Ms24h != 42 {
+		t.Errorf("an operator's overview is the platform's, got %+v", body.MetricsOverview)
+	}
+	if h.logs.lastMetrics.Project != "" || len(h.logs.platformQueries) == 0 {
+		t.Errorf("the operator's read is the platform-wide one: %+v / %+v", h.logs.lastMetrics, h.logs.platformQueries)
+	}
+}

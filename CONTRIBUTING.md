@@ -258,7 +258,8 @@ finish to do it.
 
 ```sh
 make manifests helm-manifests   # if you touched api/ or an RBAC marker
-make test                       # also runs go fmt and regenerates deepcopy
+make ui-policy                  # if you touched the API's route table
+make test                       # also runs go fmt, regenerates deepcopy, and runs ui-policy
 make lint                       # CI runs it as its own job; test passing does not imply it
 ```
 
