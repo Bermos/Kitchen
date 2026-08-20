@@ -11,21 +11,16 @@ name: Hubble flows
 # workflow still triggers there, because the cheap jobs it also carries are
 # what seed the caches every pull request restores from.
 #
-# The release pull request is the exception, and the reason this is safe to do.
-# It is opened as a draft and skips the kind job for as long as it is one, then
-# runs it in full when it is marked ready — and *its* tree is exactly what gets
-# tagged and published, which makes it a truer last gate before a release than
-# `main`, which is already several merges stale by the time one is cut.
-#
-# `ready_for_review` is listed below for that reason. It is not one of the
-# default `pull_request` types, and without it marking the release pull request
-# ready would start nothing and it would merge on checks that only ever
-# reported as skipped. See CONTRIBUTING.md, "What CI runs, and when".
+# The release pull request runs this job unconditionally — it is exempt from
+# the changed-paths filter below, because its tree is exactly what gets tagged
+# and published. It is not gated on anything else: its runs need approving by
+# hand anyway (release-please opens it as `github-actions[bot]`, so GitHub
+# holds the run at `action_required`), and that approval is already the
+# deliberate step. See CONTRIBUTING.md, "What CI runs, and when".
 on:
   push:
     branches: [main]
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
 
 # One run per branch or pull request. A pull request's older runs are
 # superseded by the push that follows them and are cancelled; `main`'s are
@@ -100,13 +95,10 @@ jobs:
     name: Gateway L7 flows on kind
     needs: changes
     # Pull requests only, and only when something this job can see has changed.
-    # The release pull request is the exception on both counts: it skips while
-    # it is a draft and then runs in full when marked ready, whatever it
-    # touched, because its tree is what gets tagged and published.
+    # The release pull request is the exception: it runs whatever it touched,
+    # because its tree is what gets tagged and published.
     if: >-
       github.event_name == 'pull_request'
-      && !(github.event.pull_request.draft
-      && startsWith(github.head_ref, 'release-please--'))
       && (needs.changes.outputs.run == 'true'
       || startsWith(github.head_ref, 'release-please--'))
     runs-on: ubuntu-latest

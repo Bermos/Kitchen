@@ -92,10 +92,9 @@ Nobody edits a version number by hand, and nobody writes the changelog.
    `ui/package.json` and `auth/package.json` with their lockfiles. The files
    are listed in `release-please-config.json`; a new one goes there, not into a
    release checklist.
-3. Review it as a release note, then **mark it ready for review**. It is
-   opened as a draft, and the three kind jobs only run once it is ready — see
-   "What CI runs, and when". This is the run that checks the tree that will be
-   tagged, so wait for it.
+3. Review it as a release note, and approve its workflow runs — they sit at
+   `action_required` until you do, and they are what checks the tree that will
+   be tagged. Wait for them.
 4. Merging it is the decision to release: it creates the GitHub release from
    the changelog entry, **as a draft**.
 5. `.github/workflows/release.yml` then calls the publish workflow, which
@@ -248,7 +247,10 @@ What that means in practice:
   check of its own.
 - **The release pull request runs all three regardless.** Its `if:` says so
   explicitly. Its tree is what gets tagged and published, so it is the one
-  place where "nothing relevant changed" is not a good enough answer.
+  place where "nothing relevant changed" is not a good enough answer. Nothing
+  else gates it either: release-please opens it as `github-actions[bot]`, so
+  GitHub holds its runs at `action_required` until they are approved by hand,
+  and that approval is already the deliberate step before a release.
 
 Run the script against a branch to see what CI will decide before pushing:
 
@@ -257,26 +259,6 @@ Run the script against a branch to see what CI will decide before pushing:
 ./hack/changed-paths.sh e2e origin/main
 ./hack/changed-paths.sh hubble origin/main
 ```
-
-### The release pull request is the gate, and it is a draft
-
-release-please opens its release pull request as a draft
-(`draft-pull-request` in `release-please-config.json`), and the three kind jobs
-skip a draft release pull request the same way they skip `main`. Marking it
-ready runs them in full, against the tree that will be tagged.
-
-That is a better last gate than the run on `main` ever was. `publish.yml`
-builds and ships and runs no tests, so something has to check the release; the
-release pull request's tree is byte-for-byte what gets published, while `main`
-may be several merges past whatever was last checked there. It also stops the
-release pull request from re-running everything on every merge — release-please
-force-pushes that branch each time a commit lands on `main`, which is a
-`synchronize` event, which was a third full copy of the kind jobs per merge.
-
-Releasing is therefore two steps: mark the release pull request ready, wait for
-green, merge. `ready_for_review` is in those three workflows' `types` list for
-exactly that — it is not one of the default `pull_request` event types, and
-without it marking the pull request ready would start nothing at all.
 
 ### Skipped is not missing
 
