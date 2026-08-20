@@ -1,0 +1,218 @@
+# Kitchen — Builds
+
+Starting a build, stopping one, and reading back what the platform recorded
+about it: the layers it reused, the attestations it signed, and the quality
+gates that ran over the artifact.
+
+Part of the [REST API](../API.md), which carries the authentication, the
+authorization model and the full route table these sections belong to.
+
+## Triggering a build
+
+```sh
+curl -sS -X POST -H "authorization: Bearer $TOKEN" \
+  https://kitchen.apps.example.com/api/v1/projects/shop/builds
+```
+
+An empty body rebuilds the commit the project built last — a rerun after a
+flaky build or a changed secret. To build a particular commit:
+
+```json
+{"sha": "abc123def456789", "branch": "main"}
+```
+
+The branch may be left out for a commit that has been built before; for one
+that has not, it falls back to the project's production branch. Builds are
+immutable, so a rebuild is always a new `Build` with a generated name
+(`shop-bld-abc123def456-xk2p9`) rather than a mutation of the old one.
+
+Answers `201` with the new build.
+
+## Cancelling a build
+
+```sh
+curl -sS -X POST -H "authorization: Bearer $TOKEN" \
+  https://kitchen.apps.example.com/api/v1/builds/shop-bld-abc123def456-xk2p9/cancel
+```
+
+The build job is deleted, pod and all; the `Build` itself stays, phase
+`Cancelled`, with who cancelled it in its condition — Builds are the history of
+who asked for what, so cancellation never removes one. A build that already
+finished answers `409`.
+
+## What a build reused
+
+Every build carries `cache`, which is the platform's answer to "why did that
+take four minutes":
+
+```json
+{
+  "enabled": true,
+  "warm": false,
+  "ref": "harbor.example.com/kitchen/my-shop:buildcache",
+  "mode": "max",
+  "message": "nothing had been cached under harbor.example.com/kitchen/my-shop:buildcache yet, so this build had nothing to reuse"
+}
+```
+
+`warm` is whether the cache existed when the build started, which is the honest
+half: neither BuildKit nor the buildpacks lifecycle reports how many layers it
+went on to reuse, so nothing here claims a hit rate. A cold build is not a
+fault — it is the first of its scope, or the first after the cache was removed —
+and `message` says which. `enabled: false` with a message is the platform having
+turned the cache off for this build because the registry did not keep the last
+one; without a message it is an installation that asked for no caching.
+
+`mode` is empty on a buildpacks build: the lifecycle has one cache image and no
+`max`/`min` to choose between.
+
+## An artifact's evidence
+
+`GET /builds/{name}/attestations` answers everything attached to what the
+build produced:
+
+```json
+{
+  "subject": "registry.apps.example.com/shop@sha256:9d3f…",
+  "verified": true,
+  "attestations": [
+    {
+      "predicateType": "https://kitchen.bermos.dev/attestation/build-record/v1",
+      "statement": {"_type": "https://in-toto.io/Statement/v1", "subject": [...], "predicate": {...}},
+      "envelope": {"payloadType": "application/vnd.in-toto+json", "payload": "…", "signatures": [...]},
+      "verified": true,
+      "keyIDs": ["9f2c…"],
+      "digest": "sha256:41a0…"
+    }
+  ]
+}
+```
+
+`verified` on the set says whether signatures were checked at all, and on each
+attestation whether one was accepted — a listing and a verification are
+different things and a client that could not tell them apart would eventually
+treat one as the other.
+
+A build that produced no artifact digest answers `409`: it is a build nothing
+can be said about, which is not the same as one with no evidence. A registry
+that cannot be asked answers `502`.
+
+The endpoint is a convenience. Everything it returns lives in the registry
+against the artifact's digest, as DSSE envelopes attached through OCI 1.1
+referrers, and is readable by anything that speaks them.
+
+What is attached to a successful build is Kitchen's own build record and, from
+the builder, SLSA provenance and a bill of materials — the last two harvested
+from what BuildKit pushed and countersigned by the platform, because BuildKit
+leaves them unsigned. The build itself carries an index of them without a
+registry round trip, on `artifact.evidence`:
+
+```json
+"artifact": {
+  "repository": "registry.apps.example.com/shop",
+  "digest": "sha256:9d3f…",
+  "attested": true,
+  "keyID": "9f2c…",
+  "evidence": [
+    {"predicateType": "https://kitchen.bermos.dev/attestation/build-record/v1",
+     "kind": "buildRecord", "source": "platform", "manifest": "sha256:41a0…"},
+    {"predicateType": "https://slsa.dev/provenance/v1",
+     "kind": "provenance", "source": "builder", "manifest": "sha256:41a0…"},
+    {"predicateType": "https://spdx.dev/Document",
+     "kind": "sbom", "source": "builder", "manifest": "sha256:41a0…"}
+  ]
+}
+```
+
+`kind` is a label derived from the predicate type so that a client does not
+have to carry the vocabulary; the URI travels with it because the URI is the
+authority. `source` says who made the claim — the platform signs both, so the
+signature cannot tell them apart, and a claim about what a build did is worth
+more when the thing that did the building made it.
+
+## How a change was reviewed
+
+A build carries what the git provider said about how its commit arrived, on
+`source`:
+
+```json
+"source": {
+  "provider": "github",
+  "pullRequest": 42,
+  "title": "Add checkout flow",
+  "author": "alice",
+  "mergedBy": "bob",
+  "approvers": ["bob"],
+  "selfApproved": false,
+  "independent": true,
+  "required": true,
+  "checkedAt": "2026-08-19T10:02:11Z"
+}
+```
+
+Every field is the provider's claim rather than the platform's observation,
+which is why `provider` travels with them. `required` says whether the project
+demanded review for this commit, so a build carrying none reads as "not asked
+for" rather than "asked for and missing"; `selfApproved` and `independent` are
+separate because a change its author approved has been approved, and whether
+that is acceptable is a policy question.
+
+`message` explains a check that could not be made — a provider outage, a
+connection with no such capability. That is not a finding about the commit and
+does not refuse anything.
+
+A project sets `requirePullRequest` through `PATCH /projects/{name}`, which
+needs `admin`. Where it is set, a production-branch commit the provider cannot
+associate with an independently approved pull request is refused **before the
+build job is scheduled**: the Build exists with reason `SourceUnreviewed` and
+never runs. Accounts on the platform's `compliance.machineIdentities` allowlist
+are exempt, and every use of the exemption is an audit record.
+
+## Quality gates
+
+A build carries what each gate did on `gates`, beside its artifact:
+
+```json
+"gates": [
+  {"name": "trivy", "phase": "Completed", "source": "platform",
+   "predicateType": "https://kitchen.bermos.dev/attestation/quality-gate/v1",
+   "attested": true, "finishedAt": "2026-08-19T22:41:07Z"},
+  {"name": "sast", "phase": "Failed", "source": "platform", "attested": false,
+   "message": "the gate did not run: the scanner exited 137"}
+]
+```
+
+`Completed` means the gate **ran**, whatever it found — a scanner reporting a
+hundred critical vulnerabilities has completed, because it did its job.
+`Failed` means it did not run and nothing is known either way. Nothing here
+says whether the findings were acceptable: gates record facts, and whether a
+fact is disqualifying is a property of the environment being deployed to.
+
+`POST /builds/{name}/gates` ingests a result that was produced somewhere else —
+typically a scanner the application's own CI already ran:
+
+```json
+{
+  "gate": "trivy",
+  "version": "0.58.0",
+  "format": "trivy-json",
+  "findings": { "Results": [ ... ] }
+}
+```
+
+The findings are carried unmodified into a signed attestation attached to the
+artifact's digest, and the answer says where it went. It is the one endpoint
+whose body is not a handful of fields, so it takes up to 16 MiB rather than the
+API's usual megabyte: a container scan of an ordinary application runs to
+several.
+
+The result is recorded as **reported by** the authenticated caller, and the
+Build's `source` for it is `external`. The platform's signature means these
+bytes were submitted by that identity at that moment and have not changed
+since — not that the findings are true. A submission does not overwrite a gate
+of the same name that the platform ran itself.
+
+A build with no artifact digest answers `409`; a registry that cannot be
+written answers `502`; an installation holding no signing key answers `409`,
+because storing an unsigned result would leave something in the registry that
+looks like evidence and is not.

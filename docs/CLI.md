@@ -215,7 +215,7 @@ environment's phase and URL either way.
 ### Environment variables
 
 Two things about the API shape this command, and both are deliberate (see
-[API.md](API.md#changing-a-projects-environment-variables)):
+[the API reference](api/projects.md#changing-a-projects-environment-variables)):
 
 - **A value goes in and never comes back out.** Reading a project reports
   whether a variable has one, not what it is. So `kitchen env list` prints the
