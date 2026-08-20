@@ -109,9 +109,10 @@ than by which word describes the diff most flatteringly.
 
 `hack/check-commit-message.sh` is the one implementation of these rules; the
 Commits workflow runs it over every commit in a pull request **and over the
-pull request title**, because squash-merging makes the title the subject that
-lands on main. When opening a pull request, write the title as a Conventional
-Commit. `make hooks` installs the same check as a local `commit-msg` hook, and
+pull request title**, because either can be what lands on `main` — a squash
+merge lands the title, a rebase merge lands the commits, and the check cannot
+know which will be chosen. When opening a pull request, write the title as a
+Conventional Commit. `make hooks` installs the same check as a local `commit-msg` hook, and
 `make check-commits` runs it over what the branch already has.
 
 Breaking changes take `!` and a `BREAKING CHANGE:` footer. **While Kitchen is
@@ -121,16 +122,30 @@ pre-1.0 reading of SemVer, not an oversight.
 
 ## Merging, and sharing `main` with other branches
 
-**`main` requires a linear history.** The only merge methods compatible with
-that are the ones that put a single commit on top of it, and **squash and merge
-is the one this repository uses**. "Create a merge commit" is refused outright;
-rebase and merge would satisfy the rule but not the tooling, because everything
-downstream assumes one commit per pull request. The Commits workflow checks the
-pull request *title* for exactly that reason — squashing makes the title the
-subject that lands on `main`, and release-please reads that subject to decide
-the next version and write the change notes. A rebase merge would land the
-branch's own subjects instead, which are checked but were never the ones the
-release notes were written from.
+**`main` requires a linear history**, which leaves the two methods that put
+linear history on top of it: **squash and merge** and **rebase and merge**.
+"Create a merge commit" is refused outright. Which of the two to use is a
+judgement about the branch rather than a house default:
+
+- **Squash** a branch whose commits are iterations on one change — the fix, its
+  test, and three rounds of review. One subject describes all of it and the
+  steps along the way are noise in the history.
+- **Rebase** a branch whose commits are genuinely separate pieces of one piece
+  of work, each worth a line of its own in the change notes.
+
+The choice decides **which subjects reach `main`**, and release-please reads
+whatever reaches it:
+
+- Squashing lands **the pull request title** and nothing else. The title is
+  the whole of the release note, and its type alone decides the version.
+- Rebasing lands **every commit's own subject**. Each is a change note in its
+  own right, and the largest bump among them decides the version — one `fix:`
+  in a branch of `docs:` commits still cuts a patch.
+
+That is why the Commits workflow checks the title *and* every commit: either
+can be the thing that lands, and nothing knows in advance which will be
+chosen. Whichever you pick, read the subjects that are about to land and check
+they describe the release you meant to cut.
 
 **The rule is enforced on the push, not only on what lands on `main`.** A merge
 commit anywhere in a branch's history is refused before there is a pull request

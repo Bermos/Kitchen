@@ -65,10 +65,13 @@ run it:
   ```
 
 - **On every pull request**, over each commit the branch adds.
-- **On the pull request title**, because squash-merging makes that title the
-  subject of the commit that lands on main — so it, not the branch's history,
-  is what release-please reads. Get the title right even if the commits behind
-  it are messy.
+- **On the pull request title.**
+
+Both, because either can be what reaches `main` — a squash merge lands the
+title, a rebase merge lands the branch's own subjects, and this check cannot
+know which will be chosen ([Merging](#merging)). Whichever it is, that is what
+release-please reads, so get the title right *and* keep the commits behind it
+readable.
 
 The Commits workflow is the check to make required on `main`. With it required,
 neither a merge nor a direct push can land a message the release tooling cannot
@@ -319,13 +322,24 @@ apart — see [Merging](#merging) below.
 
 ## Merging
 
-**`main` requires a linear history, and the only merge method used here is
-squash and merge.** A merge commit is refused by the rule; a rebase merge would
-satisfy it but lands the branch's own commit subjects, when everything
-downstream is built around one commit per pull request whose subject is the
-pull request title. That is why the Commits workflow checks the title as well
-as the commits, and why release-please can read a single subject to decide the
-next version.
+**`main` requires a linear history**, so both methods that produce it are
+available — **squash and merge** and **rebase and merge** — and a merge commit
+is refused. The two are not interchangeable, and the branch decides which fits:
+
+| | use it when | what lands on `main` |
+|---|---|---|
+| **Squash** | the commits are iterations on one change: the fix, its test, three rounds of review | one commit, subject = **the pull request title** |
+| **Rebase** | the commits are separate pieces of one piece of work, each worth its own change note | every commit, each keeping **its own subject** |
+
+Whatever lands is what release-please reads. Squashing makes the title the
+entire release note and its type the whole of the version decision; rebasing
+makes every subject a note, and the largest bump among them wins — a single
+`fix:` among `docs:` commits still cuts a patch release.
+
+That is why the Commits workflow checks the pull request title **and** every
+commit on the branch. Either can be what reaches `main`, and the workflow
+cannot know which will be chosen. Before merging, read the subjects that are
+about to land and confirm they are the release you meant to cut.
 
 The rule is enforced **on the push**, not only on what lands on `main`: a merge
 commit anywhere in a branch's history is refused with `GH013`, naming the
