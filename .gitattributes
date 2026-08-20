@@ -8,11 +8,13 @@
 # at the time. It surfaces later as "the checked-in output differs from a fresh
 # run" in CI, on a branch that did nothing wrong.
 #
-# hack/merge-generated.sh therefore resolves these to the side being merged
-# into, and hack/hooks/post-merge regenerates them from the merged sources —
-# which is the only answer that is right by construction. `make hooks`
-# installs both; without it these lines do nothing and git merges them as text,
-# exactly as it does today.
+# hack/merge-generated.sh therefore resolves these to one side, and
+# hack/regenerate-generated.sh rebuilds them from the merged sources — which is
+# the only answer that is right by construction. It runs from hack/hooks/
+# post-merge and hack/hooks/post-rewrite, because git reports a merge and a
+# rebase through different hooks and catching up here is a rebase. `make hooks`
+# installs all of it; without it these lines do nothing and git merges the
+# files as text, exactly as it does today.
 api/v1alpha1/zz_generated.deepcopy.go              merge=kitchen-generated
 config/crd/bases/*.yaml                            merge=kitchen-generated
 config/rbac/role.yaml                              merge=kitchen-generated

@@ -174,8 +174,10 @@ rules remove most of it:
   conflicted file in the repository.
 - **Never resolve a generated file by hand.** The files listed in
   `.gitattributes` are merged by `hack/merge-generated.sh`, which keeps one
-  side and lets `hack/hooks/post-merge` regenerate them from the merged
-  sources. Both are installed by `make hooks`. Merging two generated outputs
+  side and lets `hack/regenerate-generated.sh` rebuild them from the merged
+  sources — from `post-merge` and from `post-rewrite`, since a rebase does not
+  fire the former. All of it is installed by `make hooks`. Merging two
+  generated outputs
   textually is the one case where a *clean* merge is worse than a conflict: it
   produces a file matching neither branch's input, and says nothing until CI
   reports it stale on a branch that did nothing wrong.

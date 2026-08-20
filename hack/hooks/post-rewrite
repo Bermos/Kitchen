@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# The rebase half of post-merge, and the one that actually fires here: catching
+# up with main is a rebase in this repository (CONTRIBUTING.md, "Merging"), and
+# git does not run post-merge for one.
+#
+# $1 is the command that rewrote the history — `rebase` or `amend`. An amend
+# merges nothing, so it has no generated file to reconcile.
+[ "${1:-}" = "rebase" ] || exit 0
+exec "$(git rev-parse --show-toplevel)/hack/regenerate-generated.sh"

@@ -376,8 +376,24 @@ repository — the thing to avoid is a branch sitting green and unmerged while
 `.gitattributes` routes every generated file — the deepcopy functions, the CRD
 bases, the chart's CRD and ClusterRole templates, the dashboard's copy of the
 policy table — through `hack/merge-generated.sh`. It keeps one side rather than
-interleaving two outputs, and `hack/hooks/post-merge` then regenerates them all
-from the merged sources.
+interleaving two outputs, and `hack/regenerate-generated.sh` then rebuilds them
+all from the merged sources.
+
+That second half runs from **two** hooks, `post-merge` and `post-rewrite`, and
+the second one is the one that matters here: git does not run `post-merge` for
+a rebase, and a rebase is how this repository catches up with `main`. It is
+also not a nicety on that path — during a rebase your commits are replayed onto
+the upstream, so "ours" is *main's* side and the driver keeps main's copy of
+the generated file. Without the rebuild, a rebase leaves those files reflecting
+`main` and not your branch at all.
+
+**Generating a file does not remove a conflict; it moves it to the source.**
+Two branches that both add a route still collide in `internal/api/policy.go`
+whatever is derived from it — the win is that they collide *once*, in the file
+a human wrote, instead of once there and again in every output. Deriving
+something is worth it when the source is structured so that two features touch
+different parts of it, and worth little when it is one list they both append
+to.
 
 This is the one place where a clean merge is worse than a conflict. Git will
 happily combine two branches' generated output into a file that matches neither
