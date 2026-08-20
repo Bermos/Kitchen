@@ -39,6 +39,29 @@ type PreviewInfo struct {
 	Branch string `json:"branch"`
 }
 
+// EnvironmentRequirements is the bar this environment sets: a policy bundle,
+// pinned by digest, that an artifact's attested evidence is judged against
+// before a release may land here.
+//
+// The digest is the point. A bundle named by digest cannot drift under a
+// decision that cited it, which is what makes every verdict reproducible:
+// the same bundle, the same evidence, the same answer, however much later
+// the question is asked again. Evaluation reads the attestations attached
+// to the artifact — never a live check at promotion time.
+type EnvironmentRequirements struct {
+	// BundleDigest names the policy bundle by its sha256, in the
+	// `sha256:<64 hex>` form every artifact digest already uses. Anything
+	// else is refused at admission.
+	// +kubebuilder:validation:Pattern=`^sha256:[a-f0-9]{64}$`
+	BundleDigest string `json:"bundleDigest"`
+
+	// Parameters reach the policy as input.parameters: the owner's tuning of
+	// the bundle's rules — which gate to require, a severity ceiling —
+	// without a bundle of their own for every environment.
+	// +optional
+	Parameters map[string]string `json:"parameters,omitempty"`
+}
+
 // EnvironmentSpec defines a running instance of a Release with a URL.
 // Rollback is changing ReleaseRef to an older Release.
 type EnvironmentSpec struct {
@@ -52,6 +75,28 @@ type EnvironmentSpec struct {
 	// Required when Type is preview.
 	// +optional
 	Preview *PreviewInfo `json:"preview,omitempty"`
+
+	// Owners name who may change this environment's Requirements. Entries
+	// use the AccessSubject vocabulary: the issuer's `sub`, or an email
+	// address — a value containing `@` is read as one, matched
+	// case-insensitively and honoured only for a token whose address is
+	// verified. Platform operators always may.
+	//
+	// This list is segregation of duties written as a schema: the team that
+	// deploys into an environment holds project roles, the people who decide
+	// what it demands are named here, and neither grants the other. An empty
+	// or absent list leaves the requirements to the platform's operators
+	// alone — the safe default, since an environment nobody owns must not be
+	// one whoever deploys into it can lower the bar of.
+	// +optional
+	Owners []string `json:"owners,omitempty"`
+
+	// Requirements is what an artifact must bring in order to land here,
+	// declared by the environment's owners rather than by the project that
+	// deploys into it. Absent means this environment declares no bar, which
+	// is every environment's starting state and exactly today's behaviour.
+	// +optional
+	Requirements *EnvironmentRequirements `json:"requirements,omitempty"`
 }
 
 // EnvironmentPhase is the coarse lifecycle summary of an Environment.

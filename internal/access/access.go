@@ -86,12 +86,16 @@ func IsEmailSubject(subject string) bool {
 	return strings.Contains(subject, emailMarker)
 }
 
-// matches reports whether an entry naming subject is an entry about caller.
+// SubjectMatches reports whether an entry naming subject is an entry about
+// caller. It is exported because roles are not the only thing an entry can
+// grant: an Environment's owners list names who may change its requirements
+// in the same vocabulary, and a second implementation of "is this entry about
+// this person" would be a second chance for the two to disagree.
 //
 // Addresses are matched case-insensitively, since addresses are: an entry
 // written Anna@Example.com and a token claiming anna@example.com are the same
 // person, and reading them as two would be a grant that silently does nothing.
-func matches(subject string, caller Caller) bool {
+func SubjectMatches(subject string, caller Caller) bool {
 	if subject == "" {
 		return false
 	}
@@ -116,7 +120,7 @@ func PlatformRoleFor(caller Caller, kitchen *kitchenv1alpha1.Kitchen) PlatformRo
 		return PlatformMember
 	}
 	for _, operator := range kitchen.Spec.Access.Operators {
-		if matches(operator.Subject, caller) {
+		if SubjectMatches(operator.Subject, caller) {
 			return PlatformOperator
 		}
 	}
@@ -145,7 +149,7 @@ func ProjectRoleFor(caller Caller, kitchen *kitchenv1alpha1.Kitchen, project *ki
 	}
 	held := ProjectRoleNone
 	for _, grant := range project.Spec.Access {
-		if !matches(grant.Subject, caller) {
+		if !SubjectMatches(grant.Subject, caller) {
 			continue
 		}
 		if role, ok := ParseProjectRole(string(grant.Role)); ok && role > held {

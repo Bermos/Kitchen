@@ -448,6 +448,37 @@ type releaseHistoryView struct {
 	By      string    `json:"by,omitempty"`
 }
 
+// requirementsView is the bar an environment declares: the policy bundle it
+// pins, and the parameters its owners tuned it with. Neither is a secret —
+// the whole point of a declared requirement is that the team deploying into
+// the environment can read what it will be judged against.
+type requirementsView struct {
+	BundleDigest string            `json:"bundleDigest"`
+	Parameters   map[string]string `json:"parameters,omitempty"`
+}
+
+func newRequirementsView(requirements *kitchenv1alpha1.EnvironmentRequirements) *requirementsView {
+	if requirements == nil {
+		return nil
+	}
+	return &requirementsView{
+		BundleDigest: requirements.BundleDigest,
+		Parameters:   requirements.Parameters,
+	}
+}
+
+// eligibilityEvidenceView is one attestation as an eligibility answer counts
+// it: what kind of claim, who attached it, and whether its signature checked
+// out against the platform's key. The evidence itself stays in the registry.
+type eligibilityEvidenceView struct {
+	PredicateType string `json:"predicateType"`
+	// Source is `platform` or `builder` for evidence the platform indexed,
+	// and empty for evidence found in the registry that nothing here
+	// attached — present, but nobody's claim about who made it.
+	Source   string `json:"source,omitempty"`
+	Verified bool   `json:"verified"`
+}
+
 type environmentView struct {
 	Name            string               `json:"name"`
 	Project         string               `json:"project"`
@@ -457,6 +488,8 @@ type environmentView struct {
 	Phase           string               `json:"phase,omitempty"`
 	URL             string               `json:"url,omitempty"`
 	Preview         *previewView         `json:"preview,omitempty"`
+	Owners          []string             `json:"owners,omitempty"`
+	Requirements    *requirementsView    `json:"requirements,omitempty"`
 	History         []releaseHistoryView `json:"history,omitempty"`
 	CreatedAt       time.Time            `json:"createdAt"`
 	Conditions      []conditionView      `json:"conditions,omitempty"`
@@ -471,6 +504,8 @@ func newEnvironmentView(env *kitchenv1alpha1.Environment) environmentView {
 		ObservedRelease: env.Status.ObservedRelease,
 		Phase:           string(env.Status.Phase),
 		URL:             env.Status.URL,
+		Owners:          env.Spec.Owners,
+		Requirements:    newRequirementsView(env.Spec.Requirements),
 		CreatedAt:       env.CreationTimestamp.Time,
 		Conditions:      conditionViews(env.Status.Conditions),
 	}

@@ -343,6 +343,15 @@ export interface ReleaseHistoryEntry {
   by?: string;
 }
 
+/** The bar an environment declares: a policy bundle pinned by digest, and the
+ * parameters its owners tuned it with. Neither is a secret — the point of a
+ * declared requirement is that the deploying team can read what it will be
+ * judged against. */
+export interface EnvironmentRequirements {
+  bundleDigest: string;
+  parameters?: Record<string, string>;
+}
+
 export interface Environment {
   name: string;
   project: string;
@@ -352,9 +361,42 @@ export interface Environment {
   phase?: string;
   url?: string;
   preview?: Preview;
+  /** Who may change this environment's requirements — subjects or verified
+   * email addresses, the access-entry vocabulary. Platform operators always
+   * may; an empty or absent list leaves the bar to the operators alone. */
+  owners?: string[];
+  requirements?: EnvironmentRequirements;
   history?: ReleaseHistoryEntry[];
   createdAt: string;
   conditions?: Condition[];
+}
+
+/** One attestation as an eligibility answer counts it: what kind of claim,
+ * whose it is, and whether it verified against the platform's key. */
+export interface EligibilityEvidence {
+  predicateType: string;
+  /** "platform" or "builder" for evidence the platform indexed; absent for
+   * evidence found in the registry that nothing here attached. */
+  source?: string;
+  verified: boolean;
+}
+
+/** How a release measures up against an environment's requirements
+ * (GET /environments/{name}/eligibility) — a pure function of stored
+ * evidence. `eligible` is three-valued on purpose: null means nothing has
+ * judged the pair yet, which is not the same claim as passed. */
+export interface EnvironmentEligibility {
+  environment: string;
+  project: string;
+  release: string;
+  requirements: EnvironmentRequirements | null;
+  evidence: EligibilityEvidence[];
+  eligible: boolean | null;
+  evaluated: boolean;
+  /** The rules that fired, as stable rule ids — never a generic failure.
+   * Empty until the policy engine evaluates. */
+  unmetRules: string[];
+  message?: string;
 }
 
 /** One pod behind an environment (GET /environments/{name}/workload). */
@@ -2037,6 +2079,18 @@ export const api = {
   moveEnvironment: (name: string, release: string) =>
     request<Environment>("PATCH", `/environments/${name}`, { release }),
   deleteEnvironment: (name: string) => request<Environment>("DELETE", `/environments/${name}`),
+  // The requirements write is the environment's owners' (or an operator's):
+  // the API enforces it in the handler, so `may()` alone cannot decide this
+  // control — the screen also checks the owners list against the caller.
+  patchEnvironmentRequirements: (
+    name: string,
+    body: { bundleDigest?: string; parameters?: Record<string, string>; owners?: string[] },
+  ) => request<Environment>("PATCH", `/environments/${name}/requirements`, body),
+  environmentEligibility: (name: string, release?: string) =>
+    request<EnvironmentEligibility>(
+      "GET",
+      `/environments/${name}/eligibility${release ? `?release=${encodeURIComponent(release)}` : ""}`,
+    ),
   environmentWorkload: (name: string) => request<Workload>("GET", `/environments/${name}/workload`),
   // What the workload endpoint cannot be: the same environment over time.
   environmentMetrics: (name: string, query: { since?: string; until?: string; points?: number } = {}) => {
