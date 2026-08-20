@@ -323,7 +323,8 @@ to GHCR.
 
 The identity provider serves OIDC discovery, JWKS and dynamic client
 registration, and hands the operator a service credential to register clients
-with — which is how the preview gate gets its own OAuth client. Logs are
+with — which is how the preview gate gets its own OAuth client, and how a
+project asks for single sign-on with one claim. Logs are
 queryable by project, environment and build as soon as a build runs or an app
 deploys.
 
@@ -338,5 +339,9 @@ operator materialized for an environment. Resource claims provision through
 their connection (Neon Postgres first, a DB branch per preview with
 `previewBranching`) with create/delete in the dashboard, and custom domains
 attach from the environment screen — the dashboard shows the DNS record to
-create and tracks verification, certificate and routing live. Still missing:
-`oidcClient` claims and Infisical sync.
+create and tracks verification, certificate and routing live. A claim of type
+`oidcClient` needs no connection at all: it registers an OAuth client at the
+platform's own identity provider, hands the application `OIDC_ISSUER`,
+`CLIENT_ID` and `CLIENT_SECRET`, and keeps its redirect list in step with
+every environment — a preview's callback works the moment it deploys and stops
+being accepted when the pull request closes. Still missing: Infisical sync.

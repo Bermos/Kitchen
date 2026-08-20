@@ -956,6 +956,99 @@ func TestCreatingAClaimRejectsUnusableRequests(t *testing.T) {
 	}
 }
 
+func TestCreatingAnOIDCClientClaim(t *testing.T) {
+	h := newHarness(t, nil, append(fixtures(), neonConnection())...)
+
+	recorder := h.do(t, http.MethodPost, "/api/v1/claims",
+		`{"name": "shop-auth", "project": "shop", "connection": "", "type": "oidcClient",
+			"callbackPaths": ["/auth/callback"], "redirectURIs": ["http://localhost:3000/auth/callback"],
+			"scopes": ["openid", "email"]}`)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	view := decode[claimView](t, recorder)
+	if view.Connection != "" {
+		t.Fatalf("an oidcClient claim has no connection: %+v", view)
+	}
+	if len(view.CallbackPaths) != 1 || view.CallbackPaths[0] != "/auth/callback" {
+		t.Fatalf("the callback paths did not come back: %+v", view.CallbackPaths)
+	}
+
+	stored := &kitchenv1alpha1.ResourceClaim{}
+	if err := h.server.get(context.Background(), "shop-auth", stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored.Spec.ConnectionRef != nil {
+		t.Fatalf("a Connection was named for a claim that has none: %+v", stored.Spec.ConnectionRef)
+	}
+	config := stored.OIDCClient()
+	if len(config.Scopes) != 2 || config.Scopes[0] != "openid" {
+		t.Fatalf("the scopes did not reach spec.config: %+v", config)
+	}
+	if len(config.RedirectURIs) != 1 {
+		t.Fatalf("the verbatim redirect URIs did not reach spec.config: %+v", config)
+	}
+}
+
+// TestAnOIDCClientClaimTakesThePlatformsDefaults: the promise is one claim and
+// no configuration, so a request with neither paths nor scopes has to answer
+// with the ones the reconciler will actually register.
+func TestAnOIDCClientClaimTakesThePlatformsDefaults(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+
+	recorder := h.do(t, http.MethodPost, "/api/v1/claims",
+		`{"name": "bare-auth", "project": "shop", "connection": "", "type": "oidcClient"}`)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	view := decode[claimView](t, recorder)
+	if len(view.CallbackPaths) != len(kitchenv1alpha1.DefaultOIDCCallbackPaths) {
+		t.Fatalf("the defaults were not answered: %+v", view.CallbackPaths)
+	}
+	if len(view.Scopes) != len(kitchenv1alpha1.DefaultOIDCScopes) {
+		t.Fatalf("the default scopes were not answered: %+v", view.Scopes)
+	}
+
+	stored := &kitchenv1alpha1.ResourceClaim{}
+	if err := h.server.get(context.Background(), "bare-auth", stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored.Spec.Config != nil {
+		t.Fatal("a claim that configured nothing must not store a config")
+	}
+}
+
+// TestCreatingAClaimRefusesTheOtherTypesFields: each type is refused the
+// other's fields rather than ignoring them, because a claim that quietly did
+// half of what it was asked is worse than one that says so.
+func TestCreatingAClaimRefusesTheOtherTypesFields(t *testing.T) {
+	h := newHarness(t, nil, append(fixtures(), neonConnection())...)
+
+	for name, body := range map[string]string{
+		"a connection on an oidcClient claim": `{"name": "shop-auth", "project": "shop", "connection": "neon",
+			"type": "oidcClient"}`,
+		"preview branching on an oidcClient claim": `{"name": "shop-auth", "project": "shop", "connection": "",
+			"type": "oidcClient", "previewBranching": true}`,
+		"a deletion policy on an oidcClient claim": `{"name": "shop-auth", "project": "shop", "connection": "",
+			"type": "oidcClient", "deletionPolicy": "Delete"}`,
+		"callback paths on a postgres claim": `{"name": "orders-db", "project": "shop", "connection": "neon",
+			"type": "postgres", "callbackPaths": ["/auth/callback"]}`,
+		"a callback path that is a URL": `{"name": "shop-auth", "project": "shop", "connection": "",
+			"type": "oidcClient", "callbackPaths": ["https://shop.example.com/auth/callback"]}`,
+		"a redirect URI that is a path": `{"name": "shop-auth", "project": "shop", "connection": "",
+			"type": "oidcClient", "redirectURIs": ["/auth/callback"]}`,
+		"scopes without openid": `{"name": "shop-auth", "project": "shop", "connection": "",
+			"type": "oidcClient", "scopes": ["email"]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			recorder := h.do(t, http.MethodPost, "/api/v1/claims", body)
+			if recorder.Code != http.StatusBadRequest {
+				t.Fatalf("want 400, got %d: %s", recorder.Code, recorder.Body.String())
+			}
+		})
+	}
+}
+
 func TestCreatingAClaimUnderATakenNameIsRefused(t *testing.T) {
 	// shop-db is already in the fixtures.
 	h := newHarness(t, nil, append(fixtures(), neonConnection())...)

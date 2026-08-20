@@ -249,7 +249,7 @@ var _ = Describe("Project Controller", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: projectName + "-db", Namespace: namespace},
 				Spec: kitchenv1alpha1.ResourceClaimSpec{
 					ProjectRef:    kitchenv1alpha1.LocalObjectReference{Name: projectName},
-					ConnectionRef: kitchenv1alpha1.LocalObjectReference{Name: "neon"},
+					ConnectionRef: &kitchenv1alpha1.LocalObjectReference{Name: "neon"},
 					Type:          "postgres",
 				},
 			}

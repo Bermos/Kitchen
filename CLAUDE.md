@@ -30,9 +30,11 @@ The corollaries that shape how such writes are built:
   operator creates the Secret from the request body; no response ever echoes
   it. Secrets the API wrote carry `app.kubernetes.io/managed-by: kitchen` and
   are deleted with their connection — secrets anything else wrote are not.
-- **A write surface waits for its reconciler.** Domain and ResourceClaim
-  writes are deliberately absent while their reconcilers are stubs: an API
-  over objects nothing reconciles only looks like it works.
+- **A write surface waits for its reconciler.** An API over objects nothing
+  reconciles only looks like it works, so a route lands with the controller
+  behind it — which is why Domain and ResourceClaim writes arrived only once
+  their reconcilers did, and why a claim type is a new value in an enum *plus*
+  a reconcile path or it is nothing.
 - **Destructive writes are honest about blast radius.** Project deletion is a
   finalizer that tears down environments, builds, releases, domains, claims
   and the app namespace (nothing owner-references them — the finalizer is the
@@ -502,6 +504,15 @@ through its Go types, to avoid tying the build to its release cadence.
   application that never had a Dockerfile has no other way to be told. It is
   injected ahead of the project's own variables, like the telemetry ones, so a
   project that sets `PORT` still wins.
+- **`KITCHEN_URL` is the other one an application cannot work out.** It is
+  where this environment is published, and a preview's hostname carries a pull
+  request number nothing in the repository has heard of. It is *derived* from
+  the project, the environment and the base domain rather than read off
+  `status.url`, because the status is written at the end of the reconcile that
+  applies the Deployment — reading it would leave an environment not knowing
+  its own URL for its first deployment and roll it again once it did. It is
+  empty exactly when the environment gets no route, which is a preview the
+  platform will not publish.
 - **An idling Deployment's replica count belongs to KEDA, not to the
   reconciler.** While an Environment is allowed to scale to zero,
   `applyDeployment` does not touch `spec.replicas` at all: the number it would

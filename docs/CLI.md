@@ -450,4 +450,8 @@ cannot write it carries on and exchanges every time.
 - **`kitchen domains` and `kitchen claims`.** Both are reachable through
   `kitchen api` today. They earn commands of their own when the domain
   reconciler lands ([API.md](API.md), write surface) and when somebody types
-  them often enough.
+  them often enough. The `oidcClient` claim type did not change that: it added
+  no route and renamed none — `POST /claims` gained three optional fields —
+  so `kitchen api POST /claims` reaches it, and a `kitchen claims` command
+  would still be one command family for two kinds of claim rather than the
+  other way round.

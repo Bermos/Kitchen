@@ -161,7 +161,12 @@ var _ = Describe("Environment Controller", func() {
 			// The platform's own variables come first, so that a project
 			// setting one of them wins.
 			Expect(container.Env[0]).To(Equal(corev1.EnvVar{Name: "PORT", Value: "8080"}))
-			Expect(container.Env[2].ValueFrom.SecretKeyRef.Name).To(Equal("shop-secrets"))
+			// Where this environment is published, which the application has
+			// no other way of knowing — a preview's hostname carries a pull
+			// request number nothing in the repository has heard of.
+			Expect(container.Env).To(ContainElement(corev1.EnvVar{
+				Name: "KITCHEN_URL", Value: "https://" + projectName + ".apps.example.com"}))
+			Expect(container.Env[len(container.Env)-1].ValueFrom.SecretKeyRef.Name).To(Equal("shop-secrets"))
 			// The image came from a registry that wanted a credential to push
 			// and wants one to pull: the build left that docker config in this
 			// namespace, and without naming it the pods would sit in

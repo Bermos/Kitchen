@@ -15,15 +15,47 @@ curl -sS -X POST -H "authorization: Bearer $TOKEN" \
   https://kitchen.apps.example.com/api/v1/claims
 ```
 
-A claim asks a Connection with the `database` capability to provision a
-resource for a project; the reconciler writes the credentials into a binding
-secret that `Project.spec.env`'s `fromClaim` references, and the API never
-reads them back. `previewBranching` gives every preview environment its own
-database branch. `deletionPolicy` (`Retain`, the default, or `Delete`) decides
-what deleting the claim later does to the provisioned database — `Retain` is
-the default because destroying data has to be asked for, never implied.
+A claim asks for something the project needs; the reconciler writes the
+credentials into a binding secret that `Project.spec.env`'s `fromClaim`
+references, and the API never reads them back. There are two `type`s, and each
+is refused the other's fields rather than having them ignored:
+
+**`postgres`** asks a Connection with the `database` capability to provision a
+database. `previewBranching` gives every preview environment its own database
+branch. `deletionPolicy` (`Retain`, the default, or `Delete`) decides what
+deleting the claim later does to the provisioned database — `Retain` is the
+default because destroying data has to be asked for, never implied.
+
+**`oidcClient`** asks the platform's own identity provider for an OAuth
+client, so that the application signs its users in with the same accounts as
+the dashboard:
+
+```sh
+curl -sS -X POST -H "authorization: Bearer $TOKEN" \
+  -d '{"name": "shop-auth", "project": "shop", "type": "oidcClient"}' \
+  https://kitchen.apps.example.com/api/v1/claims
+```
+
+It takes **no `connection`** — the provider is the issuer the platform is
+already configured with — and no `deletionPolicy`, because its client is
+always deregistered with the claim. Three optional fields shape it, and the
+answer carries all three with the platform's defaults filled in, so a claim
+never reports "unset" for something it does have an answer to:
+
+| Field | Default | What it does |
+|---|---|---|
+| `callbackPaths` | `["/auth/callback", "/api/auth/callback/kitchen"]` | Appended to every URL the project's environments are reachable at |
+| `redirectURIs` | none | Registered verbatim, for addresses the platform does not own — `http://localhost:3000/auth/callback` |
+| `scopes` | `["openid", "profile", "email", "offline_access"]` | What the client may ask the issuer for; `openid` is required |
+
+`redirectURIs` in the *answer* is a different thing from the one in the
+request: it is what the client currently accepts, which the operator keeps in
+step with the project's environments as previews come and go. It is the one
+part of that automation anybody can check.
+
 Deleting a claim answers `202`: the operator's finalizer still has branches,
-binding secrets and — under `Delete` — the database itself to remove.
+binding secrets, the registered client and — under `Delete` — the database
+itself to remove.
 
 ## Connections
 

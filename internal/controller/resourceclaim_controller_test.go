@@ -79,7 +79,7 @@ var _ = Describe("ResourceClaim Controller", func() {
 			ObjectMeta: metav1.ObjectMeta{Name: claimName, Namespace: namespace},
 			Spec: kitchenv1alpha1.ResourceClaimSpec{
 				ProjectRef:    kitchenv1alpha1.LocalObjectReference{Name: projectName},
-				ConnectionRef: kitchenv1alpha1.LocalObjectReference{Name: connectionName},
+				ConnectionRef: &kitchenv1alpha1.LocalObjectReference{Name: connectionName},
 				Type:          "postgres",
 			},
 		}
@@ -427,11 +427,12 @@ var _ = Describe("ResourceClaim Controller", func() {
 
 			deploy := &appsv1.Deployment{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: appNS, Name: previewEnvName}, deploy)).To(Succeed())
-			// The platform's PORT leads; the claim's binding is the
-			// project's one variable.
+			// The platform's own variables lead; the claim's binding is the
+			// project's one variable, and it is the last of them.
 			podEnv := deploy.Spec.Template.Spec.Containers[0].Env
-			Expect(podEnv).To(HaveLen(2))
-			Expect(podEnv[1].ValueFrom.SecretKeyRef.Name).To(Equal(claimName+"-binding-"+previewEnvName),
+			Expect(podEnv[0].Name).To(Equal("PORT"))
+			Expect(podEnv[len(podEnv)-1].ValueFrom.SecretKeyRef.Name).To(
+				Equal(claimName+"-binding-"+previewEnvName),
 				"a branching claim's preview must read the branch binding, not the shared one")
 		})
 	})

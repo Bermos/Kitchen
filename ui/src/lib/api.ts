@@ -630,16 +630,25 @@ export interface NewDomain {
 export interface Claim {
   name: string;
   project: string;
+  /** Empty for an oidcClient claim: the platform's own identity provider
+   * registers the client, and there is no Connection in front of it. */
   connection: string;
   type: string;
   phase?: string;
   secret?: string;
   /** Retain (default) keeps the provisioned database when the claim is
-   * deleted; Delete destroys it and its data. */
+   * deleted; Delete destroys it and its data. An oidcClient claim has none:
+   * its client is always deregistered. */
   deletionPolicy?: string;
   previewBranching: boolean;
   createdAt: string;
   conditions?: Condition[];
+  /** What an oidcClient claim's client currently accepts as a callback. The
+   * operator keeps it in step with the project's environment URLs, so this is
+   * where a preview's callback shows up after it is deployed. */
+  redirectURIs?: string[];
+  callbackPaths?: string[];
+  scopes?: string[];
 }
 
 export interface NewClaim {
@@ -649,6 +658,13 @@ export interface NewClaim {
   type: string;
   previewBranching?: boolean;
   deletionPolicy?: string;
+  /** oidcClient only: appended to every environment URL of the project. */
+  callbackPaths?: string[];
+  /** oidcClient only: registered verbatim, for addresses the platform does
+   * not own — a developer's localhost, typically. */
+  redirectURIs?: string[];
+  /** oidcClient only: what the client may ask the issuer for. */
+  scopes?: string[];
 }
 
 export interface Settings {
