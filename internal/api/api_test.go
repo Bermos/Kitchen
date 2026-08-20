@@ -272,7 +272,7 @@ func fixtures() []runtime.Object {
 		ObjectMeta: metav1.ObjectMeta{Name: "shop-db", Namespace: testNamespace},
 		Spec: kitchenv1alpha1.ResourceClaimSpec{
 			ProjectRef:    kitchenv1alpha1.LocalObjectReference{Name: "shop"},
-			ConnectionRef: kitchenv1alpha1.LocalObjectReference{Name: "neon"},
+			ConnectionRef: &kitchenv1alpha1.LocalObjectReference{Name: "neon"},
 			Type:          "postgres",
 		},
 	}

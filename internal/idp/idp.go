@@ -179,12 +179,23 @@ type ClientRegistration struct {
 type RegisteredClient struct {
 	ID     string
 	Secret string
+
+	// Management is how to get back to this client — the RFC 7592 client
+	// configuration endpoint and its token, when the issuer named them. Its
+	// zero value means the issuer offered no way to change the client, which
+	// is what ErrNoClientManagement is about.
+	Management ClientHandle
 }
 
 // registrationResponse is RFC 7591's client information response.
 type registrationResponse struct {
 	ClientID     string `json:"client_id"`
 	ClientSecret string `json:"client_secret"`
+
+	// RFC 7592's two fields. An issuer that does not implement client
+	// management leaves both out, which is not an error at registration time.
+	RegistrationClientURI   string `json:"registration_client_uri"`
+	RegistrationAccessToken string `json:"registration_access_token"`
 }
 
 // Register creates an OAuth client at the issuer and returns its credentials.
@@ -199,17 +210,7 @@ func (c *Client) Register(ctx context.Context, want ClientRegistration) (*Regist
 		return nil, fmt.Errorf("issuer %s does not support dynamic client registration", metadata.Issuer)
 	}
 
-	payload := map[string]any{
-		"client_name":                want.Name,
-		"redirect_uris":              want.RedirectURIs,
-		"grant_types":                want.GrantTypes,
-		"response_types":             []string{"code"},
-		"token_endpoint_auth_method": "client_secret_basic",
-	}
-	if len(want.Scopes) > 0 {
-		payload["scope"] = strings.Join(want.Scopes, " ")
-	}
-	body, err := json.Marshal(payload)
+	body, err := json.Marshal(clientRequest(want))
 	if err != nil {
 		return nil, err
 	}
@@ -244,7 +245,15 @@ func (c *Client) Register(ctx context.Context, want ClientRegistration) (*Regist
 	if registered.ClientID == "" || registered.ClientSecret == "" {
 		return nil, fmt.Errorf("registering the OAuth client %q: the issuer returned no credentials", want.Name)
 	}
-	return &RegisteredClient{ID: registered.ClientID, Secret: registered.ClientSecret}, nil
+	return &RegisteredClient{
+		ID:     registered.ClientID,
+		Secret: registered.ClientSecret,
+		Management: ClientHandle{
+			ID:                registered.ClientID,
+			RegistrationURI:   registered.RegistrationClientURI,
+			RegistrationToken: registered.RegistrationAccessToken,
+		},
+	}, nil
 }
 
 // request builds a request to the identity provider.
@@ -305,6 +314,22 @@ func rebase(endpoint, from, to string) string {
 	parsed.Scheme, parsed.Host = base.Scheme, base.Host
 	parsed.Path = strings.TrimSuffix(base.Path, "/") + parsed.Path
 	return parsed.String()
+}
+
+// readLimited reads an answer from the issuer, refusing to be handed an
+// unbounded one.
+func readLimited(body io.Reader) ([]byte, error) {
+	return io.ReadAll(io.LimitReader(body, 1<<20))
+}
+
+// bytesReader is a reader over a request body, and nil for a request that
+// carries none — an empty non-nil reader would have a DELETE announce a body
+// it does not have.
+func bytesReader(body []byte) io.Reader {
+	if body == nil {
+		return nil
+	}
+	return bytes.NewReader(body)
 }
 
 // summarize keeps an error message readable when the issuer answers with an

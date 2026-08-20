@@ -52,21 +52,119 @@ Connections.
   it caps the auth service at one replica forever.
 - **Kitchen UI/API**: the first OIDC client. The Go API verifies bearer JWTs
   via the issuer's JWKS endpoint — no session state in the operator.
-- **Apps**: opt in via a `ResourceClaim` of type `oidcClient`. The operator
-  registers a client with the auth service (dynamic client registration) and
-  writes the binding secret (`OIDC_ISSUER`, `CLIENT_ID`, `CLIENT_SECRET`),
-  which reaches the app through the existing `fromResourceClaim` env
-  mechanism. Same mental model as a database claim, zero new concepts.
+- **Apps**: ✅ Shipped. Opt in via a `ResourceClaim` of type `oidcClient`. The
+  operator registers a client with the auth service (dynamic client
+  registration) and writes the binding secret (`OIDC_ISSUER`, `CLIENT_ID`,
+  `CLIENT_SECRET`), which reaches the app through the existing
+  `fromResourceClaim` env mechanism. Same mental model as a database claim,
+  zero new concepts. See [App auth](#app-auth-a-claim-for-single-sign-on).
 
 ## What falls out of this
 
-1. **Redirect URI automation.** The operator owns every environment's URL, so
-   it keeps each OIDC client's redirect list in sync as previews come and go —
-   the OAuth chore nobody wants to do by hand, automated by the component that
-   owns the URLs.
+1. **Redirect URI automation.** ✅ Shipped with the claim above: the operator
+   owns every environment's URL, so it keeps each OIDC client's redirect list
+   in sync as previews come and go — the OAuth chore nobody wants to do by
+   hand, automated by the component that owns the URLs.
 2. **Preview protection (forward-auth).** ✅ Shipped: previews are gated
    behind platform login Cloudflare-Access-style, and the app doesn't change
    at all. See [Preview protection](#preview-protection-forward-auth) below.
+
+## App auth: a claim for single sign-on
+
+A project asks for one thing and gets sign-in on every environment it has:
+
+```yaml
+apiVersion: kitchen.bermos.dev/v1alpha1
+kind: ResourceClaim
+metadata:
+  name: shop-auth
+spec:
+  projectRef: { name: my-shop }
+  type: oidcClient
+```
+
+and reads it the way it reads a database:
+
+```yaml
+# Project.spec.env
+- name: OIDC_ISSUER
+  fromResourceClaim: { name: shop-auth, key: OIDC_ISSUER }
+- name: OIDC_CLIENT_ID
+  fromResourceClaim: { name: shop-auth, key: CLIENT_ID }
+- name: OIDC_CLIENT_SECRET
+  fromResourceClaim: { name: shop-auth, key: CLIENT_SECRET }
+```
+
+There is **no `connectionRef`**, and it is refused rather than ignored: every
+other claim type names the Connection that provisions it, and this one's
+provider is the identity provider the platform is already configured with. The
+operator registers the client with the `serviceKey` credential from
+`<release>-auth` — dynamic client registration, the contract this whole
+document rests on, so a federated issuer that supports it works without the
+operator learning anything new.
+
+The application also gets **`KITCHEN_URL`**, the address this environment is
+published at, injected alongside `PORT` for every environment. It is the other
+half of what an OIDC client needs and the half the application cannot work out
+for itself: a preview's hostname carries a pull request number nothing in the
+repository has heard of.
+
+### The redirect list is the point
+
+An OAuth client only accepts the callback URLs it was registered with, and a
+preview's URL does not exist until somebody opens a pull request. So the
+operator maintains the list, out of what it already knows:
+
+| Source | Why it is in the list |
+|---|---|
+| The **production URL**, computed from the project name and the base domain | Knowable before the project has ever been deployed — which it has to be, since the first deployment is waiting on this claim's binding |
+| Every **Environment's `status.url`** | The only thing that knows a preview's URL is the preview |
+| Every **verified custom `Domain`** pointing at one of them | Production sign-in happens at the address the visitor typed. An unverified one is left out: a callback on a hostname nobody has proven they own is the one entry here worth having wrong |
+| The claim's own **`config.redirectURIs`** | The addresses the platform does not own — a developer's `http://localhost:3000/auth/callback` |
+
+Each of the first three is crossed with `config.callbackPaths`, which defaults
+to `/auth/callback` and `/api/auth/callback/kitchen` — the plain convention,
+and what Auth.js builds for a provider called `kitchen`. Registering a path the
+application does not serve costs nothing: every generated URI is on the
+application's own origin, so the worst an unused one can do is land a code on a
+page that does not exist.
+
+The result is sorted and compared against `status.redirectURIs`, so a reconcile
+that agrees with the world sends the issuer nothing, and **a redirect list
+changing never costs the application a new client id**.
+
+### What the operator keeps, and what it takes away
+
+| Object | Where | What it is |
+|---|---|---|
+| `<claim>-oidc-client` (Secret) | `kitchen-system` | The operator's record: issuer, client id and secret, and the management handle. Never in the application's namespace |
+| `<claim>-binding` (Secret) | `kitchen-<project>` | What the application reads: `OIDC_ISSUER`, `CLIENT_ID`, `CLIENT_SECRET` |
+
+The record is the source of truth, for the reason the preview gate's is: an
+issuer hands out a client secret once and never again, so a binding Secret
+somebody deleted is rewritten from the record rather than costing the
+application a new client. Deleting the claim deregisters the client —
+`deletionPolicy` has no say, because it exists to protect *data* from a
+deletion nobody meant and an OAuth client holds none. What it holds is
+permission to sign people in, which is the thing that must not outlive the
+claim.
+
+### Changing a client is not standard, and where that leaves a federated issuer
+
+Registration is RFC 7591. *Changing* a registered client is RFC 7592, a
+separate specification an issuer may implement or not — and the OAuth provider
+plugin this chart ships does not: its registration answer names no client
+configuration endpoint. So the operator prefers the standard route when the
+issuer offers one, and otherwise maintains the client at `/kitchen/clients`,
+the same private prefix the account directory lives on, authenticated by the
+same service credential and refusing to touch any client the operator did not
+itself register — the dashboard's own client included.
+
+An issuer that offers neither is not a fault to fix, and the claim says so
+rather than looking bound and behaving otherwise: it stays `Bound`, the client
+keeps working everywhere it was registered for, and `RedirectURIsInSync` goes
+`False` naming the URIs somebody has to add by hand. It is not retried on a
+timer — an endpoint that is not there does not appear by being asked again.
 
 ## Preview protection (forward-auth)
 
@@ -480,6 +578,8 @@ project.
 | Default IdP | better-auth + OAuth/OIDC provider plugin | Excellent DX; the provider plugin is its youngest part — accepted risk, mitigated by the contract above |
 | Auth storage | Chart-managed single-node Postgres (external override) | OLTP; SQLite would cap replicas at 1; mirrors the ClickHouse pattern |
 | App auth surface | `ResourceClaim` type `oidcClient` | Reuses the existing claim → binding-secret → env flow |
+| An app client's redirect list | Maintained by the operator, out of the URLs it owns | The component that creates and deletes environments is the only one that knows when a callback appears or goes |
+| Changing a registered client | RFC 7592 where the issuer has it, Kitchen's own prefix otherwise | The shipped provider plugin implements registration and not management; a federated issuer keeps its clients and loses the maintenance, reported on the claim |
 | API tokens for CI | better-auth's api-key plugin, exchanged for a JWT at the issuer | The plugin already holds the operator's credential; the operator stays stateless and revocation stays in one place |
 | Dashboard sessions | Rotating refresh tokens (`offline_access`), one per browser in `localStorage` | Renewal that needs no redirect and no framing of the login page; rotation is what makes browser storage defensible |
 | Preview protection | An in-path gate the routes pass through | Gateway API has no external-auth filter, and Cilium exposes none of Envoy's |
@@ -514,7 +614,8 @@ preserved across upgrades:
 
 - `serviceKey` — the operator's API key. Sent as `x-api-key`, it authenticates
   dynamic client registration, which is how `ResourceClaim` type `oidcClient`
-  will mint a client per app.
+  mints a client per app, and the account directory and client management
+  under `/kitchen`.
 - `bootstrapToken` — the first-administrator link, below.
 
 ### Bootstrap (settled)

@@ -313,7 +313,17 @@ async function deleteProject() {
 
 // Deleting a claim is honest about its blast radius: what happens to the
 // data is the deletionPolicy's call, and the confirmation says which it is
-// before asking for the click.
+// before asking for the click. An OAuth client is not data and has no policy
+// — it always goes, which is the whole point of deleting the claim.
+function claimDeletionOutcome(claim: Claim): string {
+  if (claim.type === "oidcClient") {
+    return "The OAuth client is deregistered: nothing can be signed in with it again.";
+  }
+  return claim.deletionPolicy === "Delete"
+    ? "The database and its data are being deprovisioned."
+    : "The database is kept at the provider; only the platform's binding is removed.";
+}
+
 const claimToDelete = ref<Claim | null>(null);
 const deletingClaim = ref(false);
 async function deleteClaim() {
@@ -324,10 +334,7 @@ async function deleteClaim() {
     await api.deleteClaim(claim.name);
     toast.add({
       title: `Claim ${claim.name} is being deleted`,
-      description:
-        claim.deletionPolicy === "Delete"
-          ? "The database and its data are being deprovisioned."
-          : "The database is kept at the provider; only the platform's binding is removed.",
+      description: claimDeletionOutcome(claim),
       color: "success",
       icon: "i-lucide-trash-2",
     });
@@ -683,8 +690,9 @@ function host(url?: string): string {
             <tbody>
               <tr v-if="!data?.claims.length">
                 <td class="px-4 py-8 text-center text-muted">
-                  No resource claims — a claim asks a connection to provision something (a database) and binds it into
-                  the project's environment through a secret its env vars reference.
+                  No resource claims — a claim asks for something the project needs (a database from a connection,
+                  or single sign-on from the platform's own identity provider) and binds it into the project's
+                  environment through a secret its env vars reference.
                 </td>
               </tr>
               <tr v-for="claim in data?.claims" :key="claim.name" class="border-b border-muted last:border-0">
@@ -695,13 +703,24 @@ function host(url?: string): string {
                     branch per preview
                   </UBadge>
                 </td>
-                <td class="px-4 py-3 font-mono text-xs text-toned">via {{ claim.connection }}</td>
+                <td class="px-4 py-3 font-mono text-xs text-toned">
+                  <template v-if="claim.connection">via {{ claim.connection }}</template>
+                  <template v-else-if="claim.redirectURIs?.length">
+                    <span :title="claim.redirectURIs.join('\n')">
+                      {{ claim.redirectURIs.length }} redirect URI{{ claim.redirectURIs.length === 1 ? "" : "s" }}
+                    </span>
+                  </template>
+                  <template v-else>—</template>
+                </td>
                 <td class="px-4 py-3"><PhaseBadge :phase="claim.phase" /></td>
                 <td class="px-4 py-3 font-mono text-xs text-muted truncate max-w-48" :title="claim.secret">
                   {{ claim.secret || "not bound yet" }}
                 </td>
                 <td class="px-4 py-3 text-xs text-muted whitespace-nowrap">
-                  on delete: {{ claim.deletionPolicy === "Delete" ? "delete data" : "retain data" }}
+                  <template v-if="claim.type === 'oidcClient'">on delete: deregister the client</template>
+                  <template v-else>
+                    on delete: {{ claim.deletionPolicy === "Delete" ? "delete data" : "retain data" }}
+                  </template>
                 </td>
                 <td class="px-4 py-3 text-right text-xs text-muted whitespace-nowrap">{{ timeAgo(claim.createdAt) }}</td>
                 <td class="px-4 py-3 text-right whitespace-nowrap">

@@ -51,15 +51,18 @@ spec:
             type: object
           spec:
             description: |-
-              ResourceClaimSpec is a Project's request for a provisioned resource (e.g. a
-              Postgres database) from a capable Connection.
+              ResourceClaimSpec is a Project's request for a provisioned resource — a
+              Postgres database from a capable Connection, or an OAuth client from the
+              platform's own identity provider.
             properties:
               config:
                 description: Provider-specific configuration, validated by the plugin.
                 type: object
                 x-kubernetes-preserve-unknown-fields: true
               connectionRef:
-                description: Connection with a capability matching Type (e.g. database).
+                description: |-
+                  Connection with a capability matching Type (e.g. database). Required
+                  for every type but oidcClient, which has no Connection to name.
                 properties:
                   name:
                     minLength: 1
@@ -75,6 +78,11 @@ spec:
                   database: destroying data has to be opted into, never implied by
                   removing the platform object in front of it. Preview branches and the
                   binding Secrets are cleaned up under either policy.
+
+                  It says nothing about an oidcClient claim, whose client is always
+                  deregistered: the policy exists to protect data from a deletion nobody
+                  meant, and an OAuth client holds none — what it holds is permission to
+                  sign people in, which is the thing that must not outlive the claim.
                 enum:
                 - Retain
                 - Delete
@@ -91,15 +99,34 @@ spec:
                 - name
                 type: object
               type:
-                description: Kind of resource requested.
+                description: |-
+                  Kind of resource requested. It is immutable: the type decides who
+                  provisions the resource and what the binding Secret holds, so changing
+                  it on a bound claim would leave a database behind while the
+                  application's environment quietly started reading OAuth credentials
+                  out of the same keys. Ask for the other one and delete this.
                 enum:
                 - postgres
+                - oidcClient
                 type: string
+                x-kubernetes-validations:
+                - message: 'type is immutable: delete the claim and ask for the other
+                    kind'
+                  rule: self == oldSelf
             required:
-            - connectionRef
             - projectRef
             - type
             type: object
+            x-kubernetes-validations:
+            - message: 'connectionRef is required: it names the Connection that provisions
+                the resource. Only an oidcClient claim goes without one, because the
+                platform''s own identity provider provisions it.'
+              rule: self.type == 'oidcClient' || has(self.connectionRef)
+            - message: 'an oidcClient claim takes no connectionRef: the client is
+                registered at the identity provider named by the Kitchen object''s
+                spec.auth, and a Connection here would name a provider nothing would
+                ask.'
+              rule: self.type != 'oidcClient' || !has(self.connectionRef)
           status:
             description: ResourceClaimStatus defines the observed state of a ResourceClaim.
             properties:
@@ -199,6 +226,16 @@ spec:
                 - Bound
                 - Failed
                 type: string
+              redirectURIs:
+                description: |-
+                  RedirectURIs is the redirect list an oidcClient claim's client is
+                  registered with, as the operator last wrote it. It is what a reconcile
+                  compares the project's environment URLs against, so that a preview
+                  appearing costs one call to the issuer and a reconcile that changes
+                  nothing costs none.
+                items:
+                  type: string
+                type: array
               secretName:
                 description: |-
                   Secret in the project namespace holding the binding keys

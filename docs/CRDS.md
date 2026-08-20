@@ -753,8 +753,9 @@ only ever include live, verified Domains.
 
 ## `ResourceClaim` (namespaced: kitchen-system)
 
-A project's request for a provisioned resource from a `database`-capable (or future
-capability) Connection. Generic on purpose — this is the plugin abstraction.
+A project's request for something the platform provisions: a database from a
+`database`-capable (or future capability) Connection, or an OAuth client from the
+platform's own identity provider. Generic on purpose — this is the plugin abstraction.
 
 ```yaml
 apiVersion: kitchen.bermos.dev/v1alpha1
@@ -797,6 +798,52 @@ with its data. Retain is the default because a claim can front a production
 database — destroying data is opted into, never implied. Branches and binding
 Secrets are cleaned up under either policy: they belong to the platform, not to the
 data.
+
+### `type: oidcClient` — single sign-on for the application
+
+The second type, and the one with no Connection: the provider is the identity
+provider the Kitchen object's `spec.auth` already names, and the operator
+registers clients there with the service credential it holds. `connectionRef` is
+therefore *refused* on this type at admission, and required on every other.
+
+```yaml
+apiVersion: kitchen.bermos.dev/v1alpha1
+kind: ResourceClaim
+metadata:
+  name: shop-auth
+spec:
+  projectRef: { name: my-shop }
+  type: oidcClient                      # immutable, like every claim's type
+  config:
+    callbackPaths:                      # appended to every environment URL
+      - /auth/callback                  # default: /auth/callback and /api/auth/callback/kitchen
+    redirectURIs:                       # registered verbatim, for addresses the platform does not own
+      - http://localhost:3000/auth/callback
+    scopes: [openid, profile, email, offline_access]   # the default
+status:
+  phase: Bound
+  secretName: shop-auth-binding         # binding keys: OIDC_ISSUER, CLIENT_ID, CLIENT_SECRET
+  instanceID: 9f3c…                     # the client_id at the issuer
+  redirectURIs:                         # what the client currently accepts, as last registered
+    - https://my-shop.apps.example.com/auth/callback
+    - https://my-shop-pr-41.apps.example.com/auth/callback
+  conditions: [...]                     # Ready, Provisioned, RedirectURIsInSync
+```
+
+Reconcile: register the client if the operator holds no record of one, write the
+binding Secret the application's `fromResourceClaim` variables read, and keep the
+redirect list level with the project's URLs. The list is built from the production
+URL — *computed* from the project name and the base domain, so a claim binds before
+the project has ever been deployed and the first deployment is not waiting on
+it — plus every Environment's own `status.url`, every verified custom `Domain`
+pointing at one of them, and the claim's verbatim `redirectURIs`, each crossed with
+`callbackPaths`. A preview appearing or closing is what moves it, and a reconcile
+that agrees with `status.redirectURIs` sends the issuer nothing.
+
+`deletionPolicy` has no say here: the client is always deregistered with the claim.
+The policy protects *data* from a deletion nobody meant, and an OAuth client holds
+none — what it holds is permission to sign people in, which is the thing that must
+not outlive the claim. See [AUTH.md](AUTH.md#app-auth-a-claim-for-single-sign-on).
 
 ---
 

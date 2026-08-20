@@ -544,7 +544,7 @@ func (s *Server) deleteConnection(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	for i := range claims.Items {
-		if claims.Items[i].Spec.ConnectionRef.Name == connection.Name {
+		if claims.Items[i].Connection() == connection.Name {
 			users = append(users, "claim "+claims.Items[i].Name)
 		}
 	}

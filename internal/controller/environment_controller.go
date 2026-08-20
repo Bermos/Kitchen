@@ -189,20 +189,6 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, err
 	}
 
-	podEnv, requeue, err := r.resolveEnv(ctx, env, release)
-	if err != nil {
-		return ctrl.Result{}, err
-	}
-	if requeue {
-		return r.notReady(ctx, env, "ClaimNotBound",
-			fmt.Errorf("a referenced ResourceClaim is not bound yet"))
-	}
-	// The platform's own variables go first, so that a project setting one of
-	// them wins: the kubelet takes the last value of a repeated name, and an
-	// application that has been told where to send its spans knows something
-	// the platform does not.
-	podEnv = append(platformEnv(kitchen, project.Name, env, release), podEnv...)
-
 	labels := childLabels(project.Name, env)
 	host := hostname(project.Name, env, kitchen.Spec.BaseDomain)
 
@@ -216,6 +202,30 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	if !protected {
 		gate = nil
 	}
+
+	podEnv, requeue, err := r.resolveEnv(ctx, env, release)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if requeue {
+		return r.notReady(ctx, env, "ClaimNotBound",
+			fmt.Errorf("a referenced ResourceClaim is not bound yet"))
+	}
+	// The platform's own variables go first, so that a project setting one of
+	// them wins: the kubelet takes the last value of a repeated name, and an
+	// application that has been told where to send its spans knows something
+	// the platform does not.
+	//
+	// The address is passed in rather than read off the status, because the
+	// status is written at the end of this reconcile: an environment would
+	// otherwise spend its first deployment not knowing its own URL and roll
+	// again once it did. It is empty exactly when the environment gets no
+	// route, which is a preview the platform will not publish.
+	publicURL := ""
+	if !unprotectable {
+		publicURL = fmt.Sprintf("%s://%s", platformScheme(kitchen), host)
+	}
+	podEnv = append(platformEnv(kitchen, project.Name, env, release, publicURL), podEnv...)
 
 	runtimeSpec := release.Spec.ConfigSnapshot.Runtime
 	idle, idleCond, err := r.reconcileScaleToZero(ctx, env, project, kitchen, appNS, host, labels,
@@ -412,11 +422,23 @@ func platformEnv(
 	projectName string,
 	env *kitchenv1alpha1.Environment,
 	release *kitchenv1alpha1.Release,
+	publicURL string,
 ) []corev1.EnvVar {
 	port := containerPort(release.Spec.ConfigSnapshot.Runtime)
-	return append([]corev1.EnvVar{
+	vars := []corev1.EnvVar{
 		{Name: "PORT", Value: strconv.Itoa(int(port))},
-	}, telemetryEnv(kitchen, projectName, env)...)
+	}
+	if publicURL != "" {
+		// Where this environment is published, which the application cannot
+		// work out for itself: a preview's hostname carries a pull request
+		// number nothing in the repository knows. It is what an OIDC client
+		// builds its redirect URI from — the address half of what a
+		// ResourceClaim of type oidcClient hands over — and what every
+		// framework that needs to write an absolute link is asking for when
+		// it demands a base URL.
+		vars = append(vars, corev1.EnvVar{Name: "KITCHEN_URL", Value: publicURL})
+	}
+	return append(vars, telemetryEnv(kitchen, projectName, env)...)
 }
 
 // telemetryEnv is what the platform tells an application about itself: where
@@ -947,11 +969,20 @@ func appNamespace(projectName string) string {
 // hostname computes the environment's generated host. Production gets the
 // project slug; previews get <project>-pr-<n>.
 func hostname(projectName string, env *kitchenv1alpha1.Environment, baseDomain string) string {
-	slug := projectName
 	if env.Spec.Type == kitchenv1alpha1.EnvironmentPreview && env.Spec.Preview != nil {
-		slug = fmt.Sprintf("%s-pr-%d", projectName, env.Spec.Preview.PullRequest)
+		return fmt.Sprintf("%s-pr-%d.%s", projectName, env.Spec.Preview.PullRequest, baseDomain)
 	}
-	return fmt.Sprintf("%s.%s", slug, baseDomain)
+	return projectHost(projectName, baseDomain)
+}
+
+// projectHost is where a project's production environment is published, and
+// it is derived rather than observed: it follows from the project's name and
+// the platform's base domain, so it is knowable before the Environment
+// exists. That is what lets an oidcClient claim register a working redirect
+// URI for production on a project that has never been deployed — which it has
+// to, since the deployment is waiting on the claim's binding.
+func projectHost(projectName, baseDomain string) string {
+	return fmt.Sprintf("%s.%s", projectName, baseDomain)
 }
 
 func childLabels(projectName string, env *kitchenv1alpha1.Environment) map[string]string {

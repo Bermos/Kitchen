@@ -91,6 +91,7 @@ type ResourceClaimReconciler struct {
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=resourceclaims/finalizers,verbs=update
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=projects;connections,verbs=get;list;watch
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=environments,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=kitchens;domains,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;create
 
@@ -119,8 +120,15 @@ func (r *ResourceClaimReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return r.pending(ctx, claim, "ProjectMissing", err)
 	}
 
+	// The one claim type with no Connection: its provider is the identity
+	// provider the platform is already configured with, so everything below
+	// — capability, credentials, provisioner — is about somebody else.
+	if claim.Spec.Type == kitchenv1alpha1.ClaimTypeOIDCClient {
+		return r.reconcileOIDCClaim(ctx, claim, project)
+	}
+
 	conn := &kitchenv1alpha1.Connection{}
-	if err := r.Get(ctx, types.NamespacedName{Namespace: claim.Namespace, Name: claim.Spec.ConnectionRef.Name}, conn); err != nil {
+	if err := r.Get(ctx, types.NamespacedName{Namespace: claim.Namespace, Name: claim.Connection()}, conn); err != nil {
 		return r.pending(ctx, claim, "ConnectionMissing", err)
 	}
 	if len(conn.Status.Capabilities) == 0 {
@@ -157,6 +165,33 @@ func (r *ResourceClaimReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 	branchErr := r.reconcileBranches(ctx, claim, project.Name, provisioner, appNS)
 
+	reason := fmt.Sprintf("claim %s bound: %s via %s", claim.Name, claim.Spec.Type, conn.Name)
+	if err := r.bind(ctx, claim, reason, map[string]any{
+		"type":       claim.Spec.Type,
+		"connection": conn.Name,
+		"secret":     claim.Status.SecretName,
+	}); err != nil {
+		return ctrl.Result{}, err
+	}
+	if branchErr != nil {
+		// The shared binding works either way; the branch condition carries
+		// the provider's complaint and the requeue retries it.
+		return ctrl.Result{RequeueAfter: claimRequeueDelay}, nil
+	}
+	log.Info("reconciled resource claim", "claim", claim.Name, "secret", claim.Status.SecretName)
+	return ctrl.Result{}, nil
+}
+
+// bind records a claim reaching Bound: the audit entry first — a transition
+// the log refuses is a transition this reconciler does not make — then the
+// status, then the activity feed. Both claim types come through here, so the
+// two of them cannot drift into recording their bindings differently.
+func (r *ResourceClaimReconciler) bind(
+	ctx context.Context,
+	claim *kitchenv1alpha1.ResourceClaim,
+	reason string,
+	details map[string]any,
+) error {
 	wasBound := claim.Status.Phase == kitchenv1alpha1.ClaimBound
 	if !wasBound {
 		if err := r.Audit.Record(ctx, audit.Transition{
@@ -166,37 +201,27 @@ func (r *ResourceClaimReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 			From:       string(claim.Status.Phase),
 			To:         string(kitchenv1alpha1.ClaimBound),
 			Project:    claim.Spec.ProjectRef.Name,
-			Reason:     fmt.Sprintf("claim %s bound: %s via %s", claim.Name, claim.Spec.Type, conn.Name),
-			Details: map[string]any{
-				"type":       claim.Spec.Type,
-				"connection": conn.Name,
-				"secret":     claim.Status.SecretName,
-			},
+			Reason:     reason,
+			Details:    details,
 		}); err != nil {
-			return ctrl.Result{}, err
+			return err
 		}
 	}
 	claim.Status.Phase = kitchenv1alpha1.ClaimBound
 	setClaimCondition(claim, condReady, metav1.ConditionTrue, "Bound",
 		fmt.Sprintf("binding written to secret %s", claim.Status.SecretName))
 	if err := r.Status().Update(ctx, claim); err != nil {
-		return ctrl.Result{}, err
+		return err
 	}
 	if !wasBound {
 		r.Activity.Record(ctx, clickhouse.Event{
 			Type:    clickhouse.EventClaimBound,
 			Project: claim.Spec.ProjectRef.Name,
 			Claim:   claim.Name,
-			Message: fmt.Sprintf("claim %s bound: %s via %s", claim.Name, claim.Spec.Type, conn.Name),
+			Message: reason,
 		})
 	}
-	if branchErr != nil {
-		// The shared binding works either way; the branch condition carries
-		// the provider's complaint and the requeue retries it.
-		return ctrl.Result{RequeueAfter: claimRequeueDelay}, nil
-	}
-	log.Info("reconciled resource claim", "claim", claim.Name, "secret", claim.Status.SecretName)
-	return ctrl.Result{}, nil
+	return nil
 }
 
 // provision creates the provider-side instance and the shared binding Secret
@@ -395,30 +420,39 @@ func (r *ResourceClaimReconciler) finalize(ctx context.Context, claim *kitchenv1
 		return ctrl.Result{}, nil
 	}
 
-	// Best-effort: with the Connection or its credentials already gone there
-	// is no provider to talk to, and blocking deletion on one would wedge the
-	// claim (and any project teardown behind it) forever. Provider *errors*
-	// below do return and retry — an unreachable API is transient, a deleted
-	// Connection is not.
-	provisioner, err := r.provisionerForClaim(ctx, claim)
-	if err != nil {
-		log.Info("finalizing claim without its provider", "claim", claim.Name, "reason", err.Error())
-	}
-
 	appNS := appNamespace(claim.Spec.ProjectRef.Name)
-	for _, branch := range claim.Status.Branches {
-		if err := r.deleteBranch(ctx, claim, provisioner, appNS, branch); err != nil {
+
+	if claim.Spec.Type == kitchenv1alpha1.ClaimTypeOIDCClient {
+		// No Connection, no branches, and nothing deletionPolicy has a say
+		// over: what goes is the OAuth client, always.
+		if err := r.deregisterOIDCClient(ctx, claim); err != nil {
 			return ctrl.Result{}, err
 		}
-	}
-	if err := r.releaseEnvironments(ctx, claim); err != nil {
-		return ctrl.Result{}, err
-	}
+	} else {
+		// Best-effort: with the Connection or its credentials already gone there
+		// is no provider to talk to, and blocking deletion on one would wedge the
+		// claim (and any project teardown behind it) forever. Provider *errors*
+		// below do return and retry — an unreachable API is transient, a deleted
+		// Connection is not.
+		provisioner, err := r.provisionerForClaim(ctx, claim)
+		if err != nil {
+			log.Info("finalizing claim without its provider", "claim", claim.Name, "reason", err.Error())
+		}
 
-	if claim.Spec.DeletionPolicy == kitchenv1alpha1.ClaimDelete &&
-		claim.Status.InstanceID != "" && provisioner != nil {
-		if err := provisioner.Deprovision(ctx, claim.Status.InstanceID); err != nil {
+		for _, branch := range claim.Status.Branches {
+			if err := r.deleteBranch(ctx, claim, provisioner, appNS, branch); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+		if err := r.releaseEnvironments(ctx, claim); err != nil {
 			return ctrl.Result{}, err
+		}
+
+		if claim.Spec.DeletionPolicy == kitchenv1alpha1.ClaimDelete &&
+			claim.Status.InstanceID != "" && provisioner != nil {
+			if err := provisioner.Deprovision(ctx, claim.Status.InstanceID); err != nil {
+				return ctrl.Result{}, err
+			}
 		}
 	}
 
@@ -574,7 +608,7 @@ func (r *ResourceClaimReconciler) provisionerFor(ctx context.Context, conn *kitc
 // finalization, where the Connection may already be gone.
 func (r *ResourceClaimReconciler) provisionerForClaim(ctx context.Context, claim *kitchenv1alpha1.ResourceClaim) (database.Provisioner, error) {
 	conn := &kitchenv1alpha1.Connection{}
-	key := types.NamespacedName{Namespace: claim.Namespace, Name: claim.Spec.ConnectionRef.Name}
+	key := types.NamespacedName{Namespace: claim.Namespace, Name: claim.Connection()}
 	if err := r.Get(ctx, key, conn); err != nil {
 		return nil, err
 	}
@@ -626,15 +660,37 @@ func claimBranchSecretName(claim, environment string) string {
 	return claim + "-binding-" + environment
 }
 
-// mapEnvironmentToClaims enqueues every claim of a preview Environment's
-// project: previews appearing and disappearing is what drives branch
-// creation and teardown.
+// mapEnvironmentToClaims enqueues every claim of an Environment's project.
+//
+// Environments appearing and disappearing is what drives both halves of this
+// controller: a preview's database branch, and an OAuth client's redirect
+// list. It used to be narrowed to previews, because branches are a preview
+// thing; the redirect list is not — a production environment's URL is on it
+// too, and a claim that only heard about previews would register the wrong
+// list on the first deployment and never correct it.
 func (r *ResourceClaimReconciler) mapEnvironmentToClaims(ctx context.Context, obj client.Object) []ctrl.Request {
 	env, ok := obj.(*kitchenv1alpha1.Environment)
-	if !ok || env.Spec.Type != kitchenv1alpha1.EnvironmentPreview {
+	if !ok {
 		return nil
 	}
 	return r.claimsOfProject(ctx, env.Namespace, env.Spec.ProjectRef.Name)
+}
+
+// mapDomainToClaims enqueues the claims of the project a custom Domain
+// belongs to, so that a domain becoming verified reaches the redirect list of
+// an oidcClient claim. The Domain names an Environment rather than a project,
+// so the Environment is what says whose it is.
+func (r *ResourceClaimReconciler) mapDomainToClaims(ctx context.Context, obj client.Object) []ctrl.Request {
+	domain, ok := obj.(*kitchenv1alpha1.Domain)
+	if !ok {
+		return nil
+	}
+	env := &kitchenv1alpha1.Environment{}
+	key := types.NamespacedName{Namespace: domain.Namespace, Name: domain.Spec.EnvironmentRef.Name}
+	if err := r.Get(ctx, key, env); err != nil {
+		return nil
+	}
+	return r.claimsOfProject(ctx, domain.Namespace, env.Spec.ProjectRef.Name)
 }
 
 // mapConnectionToClaims enqueues every claim referencing a Connection, so a
@@ -647,7 +703,7 @@ func (r *ResourceClaimReconciler) mapConnectionToClaims(ctx context.Context, obj
 	}
 	requests := make([]ctrl.Request, 0, len(claims.Items))
 	for i := range claims.Items {
-		if claims.Items[i].Spec.ConnectionRef.Name != obj.GetName() {
+		if claims.Items[i].Connection() != obj.GetName() {
 			continue
 		}
 		requests = append(requests, ctrl.Request{NamespacedName: types.NamespacedName{
@@ -681,6 +737,7 @@ func (r *ResourceClaimReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&kitchenv1alpha1.ResourceClaim{}).
 		Watches(&kitchenv1alpha1.Environment{}, handler.EnqueueRequestsFromMapFunc(r.mapEnvironmentToClaims)).
 		Watches(&kitchenv1alpha1.Connection{}, handler.EnqueueRequestsFromMapFunc(r.mapConnectionToClaims)).
+		Watches(&kitchenv1alpha1.Domain{}, handler.EnqueueRequestsFromMapFunc(r.mapDomainToClaims)).
 		Named("resourceclaim").
 		Complete(r)
 }

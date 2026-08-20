@@ -17,9 +17,12 @@ limitations under the License.
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
+	"slices"
 	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -33,12 +36,19 @@ import (
 )
 
 // The resource claim write surface: asking a database-capable Connection to
-// provision something for a project, and taking that request away again. The
+// provision something for a project, asking the platform's own identity
+// provider for an OAuth client, and taking either request away again. The
 // binding credentials the reconciler writes stay in the cluster — the API
 // hands out the claim's status, never the secret's contents.
 
 // createClaimRequest asks for one provisioned resource. deletionPolicy
 // defaults to Retain, mirroring the CRD: destroying data is opted into.
+//
+// The last three fields belong to type oidcClient, and the first two to type
+// postgres. Sending a field of the other type's is refused rather than
+// ignored: a request that says previewBranching and gets an OAuth client has
+// been misunderstood, and the caller should hear about it here rather than
+// wonder later why no branches appeared.
 type createClaimRequest struct {
 	Name             string `json:"name"`
 	Project          string `json:"project"`
@@ -46,6 +56,17 @@ type createClaimRequest struct {
 	Type             string `json:"type"`
 	PreviewBranching bool   `json:"previewBranching,omitempty"`
 	DeletionPolicy   string `json:"deletionPolicy,omitempty"`
+
+	// CallbackPaths are appended to every environment URL of the project to
+	// build the client's redirect list; empty takes the platform's defaults.
+	CallbackPaths []string `json:"callbackPaths,omitempty"`
+
+	// RedirectURIs are registered verbatim as well — the addresses the
+	// platform does not own, a developer's localhost above all.
+	RedirectURIs []string `json:"redirectURIs,omitempty"`
+
+	// Scopes the client may ask for; empty takes the platform's defaults.
+	Scopes []string `json:"scopes,omitempty"`
 }
 
 func (s *Server) createClaim(w http.ResponseWriter, req *http.Request) {
@@ -70,8 +91,11 @@ func (s *Server) createClaim(w http.ResponseWriter, req *http.Request) {
 		badRequest(w, "name must work as a DNS label — lowercase letters, digits and '-', starting and ending alphanumeric (got %q)", body.Name)
 		return
 	}
-	if body.Type != "postgres" {
-		badRequest(w, "type must be postgres (got %q) — it is the one resource type the platform provisions today", body.Type)
+	switch body.Type {
+	case kitchenv1alpha1.ClaimTypePostgres, kitchenv1alpha1.ClaimTypeOIDCClient:
+	default:
+		badRequest(w, "type must be %s or %s (got %q)",
+			kitchenv1alpha1.ClaimTypePostgres, kitchenv1alpha1.ClaimTypeOIDCClient, body.Type)
 		return
 	}
 	if body.Project == "" {
@@ -87,9 +111,6 @@ func (s *Server) createClaim(w http.ResponseWriter, req *http.Request) {
 		}
 		return
 	}
-	if !s.requireConnection(ctx, w, "connection", body.Connection, kitchenv1alpha1.CapabilityDatabase) {
-		return
-	}
 	policy := kitchenv1alpha1.ClaimDeletionPolicy(body.DeletionPolicy)
 	switch policy {
 	case "", kitchenv1alpha1.ClaimRetain, kitchenv1alpha1.ClaimDelete:
@@ -98,14 +119,9 @@ func (s *Server) createClaim(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	var config *runtime.RawExtension
-	if body.PreviewBranching {
-		raw, err := json.Marshal(map[string]any{"previewBranching": true})
-		if err != nil {
-			s.writeError(w, err)
-			return
-		}
-		config = &runtime.RawExtension{Raw: raw}
+	config, ref, ok := s.claimShape(ctx, w, &body)
+	if !ok {
+		return
 	}
 
 	caller, _ := CallerFrom(ctx)
@@ -117,11 +133,15 @@ func (s *Server) createClaim(w http.ResponseWriter, req *http.Request) {
 		},
 		Spec: kitchenv1alpha1.ResourceClaimSpec{
 			ProjectRef:     kitchenv1alpha1.LocalObjectReference{Name: body.Project},
-			ConnectionRef:  kitchenv1alpha1.LocalObjectReference{Name: body.Connection},
+			ConnectionRef:  ref,
 			Type:           body.Type,
 			DeletionPolicy: policy,
 			Config:         config,
 		},
+	}
+	reason := fmt.Sprintf("claim %s created: %s", claim.Name, body.Type)
+	if body.Connection != "" {
+		reason += " via " + body.Connection
 	}
 	if !s.recorded(w, req, audit.Transition{
 		Object:    claim,
@@ -129,7 +149,7 @@ func (s *Server) createClaim(w http.ResponseWriter, req *http.Request) {
 		Operation: clickhouse.AuditCreate,
 		To:        body.Type,
 		Project:   body.Project,
-		Reason:    fmt.Sprintf("claim %s created: %s via %s", claim.Name, body.Type, body.Connection),
+		Reason:    reason,
 		Details: map[string]any{
 			"type":           body.Type,
 			"connection":     body.Connection,
@@ -144,15 +164,119 @@ func (s *Server) createClaim(w http.ResponseWriter, req *http.Request) {
 	}
 
 	s.log().Info("claim created through the api",
-		"claim", claim.Name, "project", body.Project, "connection", body.Connection, "caller", callerName(caller))
+		"claim", claim.Name, "project", body.Project, "type", body.Type,
+		"connection", body.Connection, "caller", callerName(caller))
 	s.Activity.Record(ctx, clickhouse.Event{
 		Type:    clickhouse.EventClaimCreated,
 		Project: body.Project,
 		Claim:   claim.Name,
-		Message: fmt.Sprintf("claim %s created: %s via %s", claim.Name, body.Type, body.Connection),
+		Message: reason,
 		Actor:   callerName(caller),
 	})
 	writeJSON(w, http.StatusCreated, newClaimView(claim))
+}
+
+// claimShape validates the half of the request that belongs to the claim's
+// type, and answers with the two things that differ between types: the
+// Connection the claim provisions through, and the config the reconciler
+// reads. ok=false means a refusal has already been written.
+//
+// The two types are refused each other's fields rather than quietly ignoring
+// them, and the CRD refuses the same shapes at admission — this is the layer
+// that can say why in a sentence.
+func (s *Server) claimShape(
+	ctx context.Context,
+	w http.ResponseWriter,
+	body *createClaimRequest,
+) (*runtime.RawExtension, *kitchenv1alpha1.LocalObjectReference, bool) {
+	if body.Type == kitchenv1alpha1.ClaimTypePostgres {
+		if len(body.CallbackPaths) > 0 || len(body.RedirectURIs) > 0 || len(body.Scopes) > 0 {
+			badRequest(w, "callbackPaths, redirectURIs and scopes belong to a claim of type %s: "+
+				"a %s claim provisions a database, which has no redirect list",
+				kitchenv1alpha1.ClaimTypeOIDCClient, kitchenv1alpha1.ClaimTypePostgres)
+			return nil, nil, false
+		}
+		if !s.requireConnection(ctx, w, "connection", body.Connection, kitchenv1alpha1.CapabilityDatabase) {
+			return nil, nil, false
+		}
+		var config *runtime.RawExtension
+		if body.PreviewBranching {
+			raw, err := json.Marshal(map[string]any{"previewBranching": true})
+			if err != nil {
+				s.writeError(w, err)
+				return nil, nil, false
+			}
+			config = &runtime.RawExtension{Raw: raw}
+		}
+		return config, &kitchenv1alpha1.LocalObjectReference{Name: body.Connection}, true
+	}
+
+	// type oidcClient. There is no Connection to name: the client is
+	// registered at the identity provider the platform is already configured
+	// with, by the operator's own credential.
+	if body.Connection != "" {
+		badRequest(w, "an %s claim takes no connection: the client is registered at the platform's own "+
+			"identity provider, and there is no Connection in front of it",
+			kitchenv1alpha1.ClaimTypeOIDCClient)
+		return nil, nil, false
+	}
+	if body.PreviewBranching {
+		badRequest(w, "previewBranching belongs to a claim of type %s: an OAuth client is not branched per "+
+			"preview, its redirect list grows one entry per preview instead",
+			kitchenv1alpha1.ClaimTypePostgres)
+		return nil, nil, false
+	}
+	if body.DeletionPolicy != "" {
+		badRequest(w, "an %s claim takes no deletionPolicy: the policy decides what happens to provisioned "+
+			"data, and an OAuth client holds none — it is always deregistered with the claim",
+			kitchenv1alpha1.ClaimTypeOIDCClient)
+		return nil, nil, false
+	}
+
+	cfg := kitchenv1alpha1.OIDCClientConfig{}
+	for _, path := range body.CallbackPaths {
+		path = strings.TrimSpace(path)
+		if !strings.HasPrefix(path, "/") {
+			badRequest(w, "callbackPaths are paths, not URLs, and start with '/' (got %q): they are appended "+
+				"to every URL the project's environments are reachable at, which is what keeps previews "+
+				"working without anyone writing their URLs down", path)
+			return nil, nil, false
+		}
+		cfg.CallbackPaths = append(cfg.CallbackPaths, path)
+	}
+	for _, uri := range body.RedirectURIs {
+		uri = strings.TrimSpace(uri)
+		parsed, err := url.Parse(uri)
+		if err != nil || !parsed.IsAbs() || parsed.Host == "" ||
+			(parsed.Scheme != "http" && parsed.Scheme != "https") {
+			badRequest(w, "redirectURIs are absolute http(s) URLs (got %q): they are registered verbatim, "+
+				"for the addresses the platform does not own", uri)
+			return nil, nil, false
+		}
+		cfg.RedirectURIs = append(cfg.RedirectURIs, uri)
+	}
+	for _, scope := range body.Scopes {
+		scope = strings.TrimSpace(scope)
+		if scope == "" || strings.ContainsAny(scope, " \t") {
+			badRequest(w, "scopes are single words (got %q)", scope)
+			return nil, nil, false
+		}
+		cfg.Scopes = append(cfg.Scopes, scope)
+	}
+	if len(cfg.Scopes) > 0 && !slices.Contains(cfg.Scopes, "openid") {
+		badRequest(w, "scopes must include openid: without it the issuer answers with an OAuth token and no "+
+			"identity, which is not what a sign-in needs")
+		return nil, nil, false
+	}
+	if len(cfg.CallbackPaths) == 0 && len(cfg.RedirectURIs) == 0 && len(cfg.Scopes) == 0 {
+		return nil, nil, true
+	}
+	raw, err := json.Marshal(cfg)
+	if err != nil {
+		s.writeError(w, err)
+		return nil, nil, false
+	}
+	return &runtime.RawExtension{Raw: raw}, nil, true
 }
 
 func (s *Server) deleteClaim(w http.ResponseWriter, req *http.Request) {
@@ -165,7 +289,10 @@ func (s *Server) deleteClaim(w http.ResponseWriter, req *http.Request) {
 	}
 	caller, _ := CallerFrom(ctx)
 	outcome := "the database is kept at the provider"
-	if claim.Spec.DeletionPolicy == kitchenv1alpha1.ClaimDelete {
+	switch {
+	case claim.Spec.Type == kitchenv1alpha1.ClaimTypeOIDCClient:
+		outcome = "the OAuth client is deregistered"
+	case claim.Spec.DeletionPolicy == kitchenv1alpha1.ClaimDelete:
 		outcome = "the database is deprovisioned"
 	}
 	if !s.recorded(w, req, audit.Transition{

@@ -789,13 +789,25 @@ type claimView struct {
 	PreviewBranching bool            `json:"previewBranching"`
 	CreatedAt        time.Time       `json:"createdAt"`
 	Conditions       []conditionView `json:"conditions,omitempty"`
+
+	// RedirectURIs is what an oidcClient claim's client currently accepts as
+	// a callback — the list the operator keeps in step with the project's
+	// environments. It is the one part of that automation anybody can check,
+	// which is why it is answered rather than left on the custom resource.
+	RedirectURIs []string `json:"redirectURIs,omitempty"`
+
+	// CallbackPaths and Scopes are what the claim asked to be registered
+	// with, with the platform's defaults filled in, so that a claim never
+	// answers "unset" to a question it does have an answer to.
+	CallbackPaths []string `json:"callbackPaths,omitempty"`
+	Scopes        []string `json:"scopes,omitempty"`
 }
 
 func newClaimView(claim *kitchenv1alpha1.ResourceClaim) claimView {
 	return claimView{
 		Name:             claim.Name,
 		Project:          claim.Spec.ProjectRef.Name,
-		Connection:       claim.Spec.ConnectionRef.Name,
+		Connection:       claim.Connection(),
 		Type:             claim.Spec.Type,
 		Phase:            string(claim.Status.Phase),
 		Secret:           claim.Status.SecretName,
@@ -803,5 +815,25 @@ func newClaimView(claim *kitchenv1alpha1.ResourceClaim) claimView {
 		PreviewBranching: claim.PreviewBranching(),
 		CreatedAt:        claim.CreationTimestamp.Time,
 		Conditions:       conditionViews(claim.Status.Conditions),
+		RedirectURIs:     claim.Status.RedirectURIs,
+		CallbackPaths:    callbackPathsOf(claim),
+		Scopes:           scopesOf(claim),
 	}
+}
+
+// callbackPathsOf and scopesOf are the oidcClient configuration as the
+// reconciler will read it, defaults included, and nothing at all for a claim
+// of another type.
+func callbackPathsOf(claim *kitchenv1alpha1.ResourceClaim) []string {
+	if claim.Spec.Type != kitchenv1alpha1.ClaimTypeOIDCClient {
+		return nil
+	}
+	return claim.OIDCClient().CallbackPaths
+}
+
+func scopesOf(claim *kitchenv1alpha1.ResourceClaim) []string {
+	if claim.Spec.Type != kitchenv1alpha1.ClaimTypeOIDCClient {
+		return nil
+	}
+	return claim.OIDCClient().Scopes
 }
