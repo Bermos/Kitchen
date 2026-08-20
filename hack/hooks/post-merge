@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# A merge brought in generated files the driver would not merge. Rebuild them.
+exec "$(git rev-parse --show-toplevel)/hack/regenerate-generated.sh"

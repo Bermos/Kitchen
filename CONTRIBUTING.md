@@ -65,10 +65,13 @@ run it:
   ```
 
 - **On every pull request**, over each commit the branch adds.
-- **On the pull request title**, because squash-merging makes that title the
-  subject of the commit that lands on main — so it, not the branch's history,
-  is what release-please reads. Get the title right even if the commits behind
-  it are messy.
+- **On the pull request title.**
+
+Both, because either can be what reaches `main` — a squash merge lands the
+title, a rebase merge lands the branch's own subjects, and this check cannot
+know which will be chosen ([Merging](#merging)). Whichever it is, that is what
+release-please reads, so get the title right *and* keep the commits behind it
+readable.
 
 The Commits workflow is the check to make required on `main`. With it required,
 neither a merge nor a direct push can land a message the release tooling cannot
@@ -217,6 +220,44 @@ wrote it, that branch's base, and the default branch. `main`'s runs are the
 only ones every pull request can restore from, so dropping them would start
 every pull request cold, kind jobs included.
 
+### And only when they have something to check
+
+They are also skipped on a pull request that cannot have changed what they
+prove. Each of the three has a `changes` job in front of it that runs
+`hack/changed-paths.sh <profile>` over the diff against the base branch and
+answers `run=true` or `run=false`; the kind job's `if:` reads it.
+
+The script holds a list of what each profile may **ignore**, never a list of
+what it needs. A path nobody has classified runs the job, so adding a directory
+cannot quietly switch a gate off — the worst a missing entry costs is twelve
+wasted minutes, which is recoverable, where an unchecked merge is not.
+
+What that means in practice:
+
+- **The Hubble job almost never runs.** Its own header says why: it installs no
+  Kitchen and what it tests is the platform's CNI. Only its scripts, its
+  fixtures and the two workflows that pin Cilium's version can change the
+  answer, so everything else is ignorable there.
+- **The E2E job skips chart-only, dashboard-only and CLI-only changes.**
+  `make test-e2e` runs the operator's suite against kind; it installs no chart
+  and runs no auth service.
+- **The chart install job skips dashboard-only and CLI-only changes.** The CLI
+  holds no kubeconfig and is not installed by the chart. The dashboard reaches
+  that job only through the image build, and a dashboard that does not build
+  fails the Dashboard workflow's `npm run build` in forty seconds — a required
+  check of its own.
+- **The release pull request runs all three regardless.** Its `if:` says so
+  explicitly. Its tree is what gets tagged and published, so it is the one
+  place where "nothing relevant changed" is not a good enough answer.
+
+Run the script against a branch to see what CI will decide before pushing:
+
+```sh
+./hack/changed-paths.sh chart origin/main
+./hack/changed-paths.sh e2e origin/main
+./hack/changed-paths.sh hubble origin/main
+```
+
 ### The release pull request is the gate, and it is a draft
 
 release-please opens its release pull request as a draft
@@ -265,3 +306,113 @@ make lint                       # CI runs it as its own job; test passing does n
 
 See [CLAUDE.md](CLAUDE.md) for the design constraints these commands exist to
 protect.
+
+Catch up with `main` in the same breath, so that a conflict is found here
+rather than by whoever is holding the merge button twelve minutes later. It is
+a rebase, not a merge — see [Merging](#merging) for why a merge commit cannot
+be pushed at all:
+
+```sh
+git fetch origin main && git rebase origin/main
+```
+
+`make hooks` is worth running once per clone. It installs the `commit-msg`
+check, the `post-merge` regeneration, and the merge driver that keeps the two
+apart — see [Merging](#merging) below.
+
+## Merging
+
+**`main` requires a linear history**, so both methods that produce it are
+available — **squash and merge** and **rebase and merge** — and a merge commit
+is refused. The two are not interchangeable, and the branch decides which fits:
+
+| | use it when | what lands on `main` |
+|---|---|---|
+| **Squash** | the commits are iterations on one change: the fix, its test, three rounds of review | one commit, subject = **the pull request title** |
+| **Rebase** | the commits are separate pieces of one piece of work, each worth its own change note | every commit, each keeping **its own subject** |
+
+Whatever lands is what release-please reads. Squashing makes the title the
+entire release note and its type the whole of the version decision; rebasing
+makes every subject a note, and the largest bump among them wins — a single
+`fix:` among `docs:` commits still cuts a patch release.
+
+That is why the Commits workflow checks the pull request title **and** every
+commit on the branch. Either can be what reaches `main`, and the workflow
+cannot know which will be chosen. Before merging, read the subjects that are
+about to land and confirm they are the release you meant to cut.
+
+The rule is enforced **on the push**, not only on what lands on `main`: a merge
+commit anywhere in a branch's history is refused with `GH013`, naming the
+commit, before there is a pull request to refuse it on. Catching up with `main`
+is therefore a rebase:
+
+```sh
+git fetch origin main && git rebase origin/main
+```
+
+Never rebase or force-push a branch somebody else is working on. A branch here
+belongs to one session at a time, which is what makes rewriting its history
+safe; if two people are on one, whoever is behind starts a fresh branch.
+
+### The two merge commits already on `main`
+
+`main` carries two commits from before the rule existed — `6aed36f`, a
+`Merge branch 'main' into ...`, and `c90d526`, pull request #151 merged with a
+merge commit. They are grandfathered on `main` itself, but they are still in
+the history of every branch cut from it.
+
+That matters because of how the rule is evaluated for a branch that does not
+yet exist on the remote: there is no previous value of the ref to diff against,
+so the whole history is examined, those two commits are found, and the branch
+is refused. **A rule scoped to more than `main` therefore stops any new branch
+from being created at all** — including through the API, which fails the same
+way with a bare `422 Reference update failed`.
+
+Keep the rule scoped to `main`. It is a statement about what may land, not
+about what a branch is allowed to look like on the way there, and scoping it
+there still refuses every merge commit that tries to land while leaving the
+history behind it alone.
+
+**Enable auto-merge when you open the pull request.** The kind jobs take twelve
+to fourteen minutes and there is nothing to learn by watching them:
+
+```sh
+gh pr merge --squash --auto
+```
+
+The branch lands the moment the required checks are green. Several pull
+requests can be in flight at once this way, which is the normal state of this
+repository — the thing to avoid is a branch sitting green and unmerged while
+`main` moves underneath it.
+
+### Generated files are regenerated, not merged
+
+`.gitattributes` routes every generated file — the deepcopy functions, the CRD
+bases, the chart's CRD and ClusterRole templates, the dashboard's copy of the
+policy table — through `hack/merge-generated.sh`. It keeps one side rather than
+interleaving two outputs, and `hack/regenerate-generated.sh` then rebuilds them
+all from the merged sources.
+
+That second half runs from **two** hooks, `post-merge` and `post-rewrite`, and
+the second one is the one that matters here: git does not run `post-merge` for
+a rebase, and a rebase is how this repository catches up with `main`. It is
+also not a nicety on that path — during a rebase your commits are replayed onto
+the upstream, so "ours" is *main's* side and the driver keeps main's copy of
+the generated file. Without the rebuild, a rebase leaves those files reflecting
+`main` and not your branch at all.
+
+**Generating a file does not remove a conflict; it moves it to the source.**
+Two branches that both add a route still collide in `internal/api/policy.go`
+whatever is derived from it — the win is that they collide *once*, in the file
+a human wrote, instead of once there and again in every output. Deriving
+something is worth it when the source is structured so that two features touch
+different parts of it, and worth little when it is one list they both append
+to.
+
+This is the one place where a clean merge is worse than a conflict. Git will
+happily combine two branches' generated output into a file that matches neither
+branch's *input*, and nothing says so at the time; it surfaces later as CI
+reporting that the checked-in output differs from a fresh run, on a branch that
+did nothing wrong. Both halves are installed by `make hooks`. Without it the
+attributes are inert and git merges those files as text, exactly as it did
+before the driver existed.

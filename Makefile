@@ -123,9 +123,16 @@ lint-config: golangci-lint ## Verify golangci-lint linter configuration
 	$(GOLANGCI_LINT) config verify
 
 .PHONY: hooks
-hooks: ## Install the git hooks: reject a commit message CI would reject anyway.
+hooks: ## Install the git hooks and the generated-file merge driver.
 	git config core.hooksPath hack/hooks
+	git config merge.kitchen-generated.name "regenerate rather than merge (see .gitattributes)"
+	git config merge.kitchen-generated.driver "./hack/merge-generated.sh %O %A %B %P"
 	@echo "core.hooksPath -> hack/hooks. Undo with: git config --unset core.hooksPath"
+	@# The driver is named by .gitattributes and defined here. A clone that has
+	@# not run this merges those files as text, which is what git did before the
+	@# driver existed — so the attribute is inert rather than broken.
+	@echo "merge.kitchen-generated -> hack/merge-generated.sh. Undo with:"
+	@echo "  git config --remove-section merge.kitchen-generated"
 
 .PHONY: check-commits
 check-commits: ## Check the commit messages this branch adds to origin/main (BASE overrides).
