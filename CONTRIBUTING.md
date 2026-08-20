@@ -303,3 +303,86 @@ make lint                       # CI runs it as its own job; test passing does n
 
 See [CLAUDE.md](CLAUDE.md) for the design constraints these commands exist to
 protect.
+
+Catch up with `main` in the same breath, so that a conflict is found here
+rather than by whoever is holding the merge button twelve minutes later. It is
+a rebase, not a merge — see [Merging](#merging) for why a merge commit cannot
+be pushed at all:
+
+```sh
+git fetch origin main && git rebase origin/main
+```
+
+`make hooks` is worth running once per clone. It installs the `commit-msg`
+check, the `post-merge` regeneration, and the merge driver that keeps the two
+apart — see [Merging](#merging) below.
+
+## Merging
+
+**`main` requires a linear history, and the only merge method used here is
+squash and merge.** A merge commit is refused by the rule; a rebase merge would
+satisfy it but lands the branch's own commit subjects, when everything
+downstream is built around one commit per pull request whose subject is the
+pull request title. That is why the Commits workflow checks the title as well
+as the commits, and why release-please can read a single subject to decide the
+next version.
+
+The rule is enforced **on the push**, not only on what lands on `main`: a merge
+commit anywhere in a branch's history is refused with `GH013`, naming the
+commit, before there is a pull request to refuse it on. Catching up with `main`
+is therefore a rebase:
+
+```sh
+git fetch origin main && git rebase origin/main
+```
+
+Never rebase or force-push a branch somebody else is working on. A branch here
+belongs to one session at a time, which is what makes rewriting its history
+safe; if two people are on one, whoever is behind starts a fresh branch.
+
+### The two merge commits already on `main`
+
+`main` carries two commits from before the rule existed — `6aed36f`, a
+`Merge branch 'main' into ...`, and `c90d526`, pull request #151 merged with a
+merge commit. They are grandfathered on `main` itself, but they are still in
+the history of every branch cut from it.
+
+That matters because of how the rule is evaluated for a branch that does not
+yet exist on the remote: there is no previous value of the ref to diff against,
+so the whole history is examined, those two commits are found, and the branch
+is refused. **A rule scoped to more than `main` therefore stops any new branch
+from being created at all** — including through the API, which fails the same
+way with a bare `422 Reference update failed`.
+
+Keep the rule scoped to `main`. It is a statement about what may land, not
+about what a branch is allowed to look like on the way there, and scoping it
+there still refuses every merge commit that tries to land while leaving the
+history behind it alone.
+
+**Enable auto-merge when you open the pull request.** The kind jobs take twelve
+to fourteen minutes and there is nothing to learn by watching them:
+
+```sh
+gh pr merge --squash --auto
+```
+
+The branch lands the moment the required checks are green. Several pull
+requests can be in flight at once this way, which is the normal state of this
+repository — the thing to avoid is a branch sitting green and unmerged while
+`main` moves underneath it.
+
+### Generated files are regenerated, not merged
+
+`.gitattributes` routes every generated file — the deepcopy functions, the CRD
+bases, the chart's CRD and ClusterRole templates, the dashboard's copy of the
+policy table — through `hack/merge-generated.sh`. It keeps one side rather than
+interleaving two outputs, and `hack/hooks/post-merge` then regenerates them all
+from the merged sources.
+
+This is the one place where a clean merge is worse than a conflict. Git will
+happily combine two branches' generated output into a file that matches neither
+branch's *input*, and nothing says so at the time; it surfaces later as CI
+reporting that the checked-in output differs from a fresh run, on a branch that
+did nothing wrong. Both halves are installed by `make hooks`. Without it the
+attributes are inert and git merges those files as text, exactly as it did
+before the driver existed.

@@ -119,6 +119,71 @@ on 0.x that bumps the minor, not the major** — that is
 `bump-minor-pre-major` in `release-please-config.json`, and it is the correct
 pre-1.0 reading of SemVer, not an oversight.
 
+## Merging, and sharing `main` with other branches
+
+**`main` requires a linear history.** The only merge methods compatible with
+that are the ones that put a single commit on top of it, and **squash and merge
+is the one this repository uses**. "Create a merge commit" is refused outright;
+rebase and merge would satisfy the rule but not the tooling, because everything
+downstream assumes one commit per pull request. The Commits workflow checks the
+pull request *title* for exactly that reason — squashing makes the title the
+subject that lands on `main`, and release-please reads that subject to decide
+the next version and write the change notes. A rebase merge would land the
+branch's own subjects instead, which are checked but were never the ones the
+release notes were written from.
+
+**The rule is enforced on the push, not only on what lands on `main`.** A merge
+commit anywhere in a branch's history is refused before there is a pull request
+to refuse it on — `GH013`, naming the commit. So catching up with `main` is a
+rebase, and `git merge origin/main` is not available here however convenient it
+would be:
+
+```sh
+git fetch origin main && git rebase origin/main
+```
+
+That rewrites history that has already been pushed, which is safe only because
+a branch here belongs to one session at a time. Never rebase or force-push a
+branch somebody else is working on; if two people are on one branch, whoever is
+behind starts a fresh branch rather than reconciling.
+
+**Catch up before you push, not after CI has told you to.** A branch that first
+meets `main` at merge time meets it in the worst place: twelve minutes of CI
+have already been spent, and the conflict has to be resolved by whoever is
+holding the merge button rather than by whoever wrote the code and still
+remembers why. The rebase above costs nothing when there is nothing to resolve.
+
+**Arm auto-merge when you open the pull request.** The three kind jobs are
+twelve to fourteen minutes; nothing is gained by watching them. `gh pr merge
+--squash --auto` (or the Enable auto-merge button) lands the branch the moment
+the required checks are green, which is what makes the wait somebody else's
+problem. Come back to it only if a check fails.
+
+### What stops two branches colliding
+
+Several sessions working different issues at once is normal here, and roughly
+half of any two concurrent branches conflict on something. Almost none of it is
+genuine disagreement — it is two changes appending to the same place. Three
+rules remove most of it:
+
+- **Endpoint documentation goes in `docs/api/<resource>.md`.** One page per
+  resource, so two features documenting two endpoints are two changes to two
+  files. `docs/API.md` keeps only what is common to every route —
+  authentication, the authorization model, the route table and the status
+  codes — and it was a single 2371-line page until it became the most
+  conflicted file in the repository.
+- **Never resolve a generated file by hand.** The files listed in
+  `.gitattributes` are merged by `hack/merge-generated.sh`, which keeps one
+  side and lets `hack/hooks/post-merge` regenerate them from the merged
+  sources. Both are installed by `make hooks`. Merging two generated outputs
+  textually is the one case where a *clean* merge is worse than a conflict: it
+  produces a file matching neither branch's input, and says nothing until CI
+  reports it stale on a branch that did nothing wrong.
+- **Keep a branch to one concern.** The single largest source of conflicts in
+  the recent history is one branch that touched forty files across the API, the
+  operator and the dashboard at once. It collided with everything open at the
+  time; nothing else collided with much of anything.
+
 ## Releases
 
 Never edit a version number, and never write a changelog entry. Both are
