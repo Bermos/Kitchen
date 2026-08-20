@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# Regenerate what a merge cannot merge.
+#
+# hack/merge-generated.sh resolves the generated files in .gitattributes to one
+# side and relies on this hook to make them true again. It runs after a merge
+# that git completed on its own — which, thanks to that driver, is now most of
+# them.
+#
+# It never fails the merge. A tree without Go or make is a tree that cannot
+# have run the generators anyway; `make test` regenerates them too, and CI
+# fails on the difference, so this is the convenience and not the guarantee.
+set -uo pipefail
+
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+cd "${repo_root}" || exit 0
+
+generated=(
+  api/v1alpha1/zz_generated.deepcopy.go
+  config/crd/bases
+  config/rbac/role.yaml
+  charts/kitchen/templates/crds.yaml
+  charts/kitchen/templates/manager-clusterrole.yaml
+  ui/src/lib/policy.generated.ts
+)
+
+# Only when the merge actually brought one of them in. A merge that touched no
+# generated file has nothing to correct, and this hook should be silent.
+if ! git diff --name-only ORIG_HEAD HEAD -- "${generated[@]}" 2>/dev/null | grep -q .; then
+  exit 0
+fi
+
+if ! command -v make >/dev/null 2>&1 || ! command -v go >/dev/null 2>&1; then
+  echo "post-merge: generated files came in with this merge, but make or go is" >&2
+  echo "            missing here. Run 'make manifests generate helm-manifests" >&2
+  echo "            ui-policy' where you can." >&2
+  exit 0
+fi
+
+echo "post-merge: regenerating the generated files from the merged sources"
+if ! make manifests generate helm-manifests ui-policy; then
+  echo "post-merge: regeneration failed. Run 'make manifests generate" >&2
+  echo "            helm-manifests ui-policy' by hand and commit the result." >&2
+  exit 0
+fi
+
+if ! git diff --quiet -- "${generated[@]}"; then
+  echo
+  echo "post-merge: the generated files moved. Review and commit them:"
+  git diff --stat -- "${generated[@]}"
+fi
+exit 0

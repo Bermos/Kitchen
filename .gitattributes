@@ -1,0 +1,21 @@
+# Generated files are regenerated on a merge, never merged.
+#
+# Every path below is written by `make manifests`, `make generate`,
+# `make helm-manifests` or `make ui-policy` from a source file in this tree.
+# Merging two branches' *output* is the one case where a clean merge is worse
+# than a conflict: git will happily interleave two deepcopy functions, or two
+# CRD schemas, into a file that matches neither branch's input. Nothing says so
+# at the time. It surfaces later as "the checked-in output differs from a fresh
+# run" in CI, on a branch that did nothing wrong.
+#
+# hack/merge-generated.sh therefore resolves these to the side being merged
+# into, and hack/hooks/post-merge regenerates them from the merged sources —
+# which is the only answer that is right by construction. `make hooks`
+# installs both; without it these lines do nothing and git merges them as text,
+# exactly as it does today.
+api/v1alpha1/zz_generated.deepcopy.go              merge=kitchen-generated
+config/crd/bases/*.yaml                            merge=kitchen-generated
+config/rbac/role.yaml                              merge=kitchen-generated
+charts/kitchen/templates/crds.yaml                 merge=kitchen-generated
+charts/kitchen/templates/manager-clusterrole.yaml  merge=kitchen-generated
+ui/src/lib/policy.generated.ts                     merge=kitchen-generated
