@@ -346,12 +346,18 @@ jobs:
           rendered=$(helm template kitchen charts/kitchen --namespace kitchen-system \
             ${CHART_BASE} ${CHART_ACME} --set scaleToZero.enabled=true \
             --set scaleToZero.install.enabled=true)
+          # Every grep here reads a here-string rather than a pipe from echo.
+          # Under `set -o pipefail`, `grep -q` exiting the moment it matches
+          # closes the pipe under the echo still writing into it, and the
+          # EPIPE makes the whole pipeline fail — so a matching grep would
+          # read as no match, which is how this step first went red.
+          #
           # KEDA's own kinds, and KEDA's own CRDs by name. Not a bare grep for
           # "keda.sh": the manager ClusterRole names http.keda.sh as an API
           # group it may write HTTPScaledObjects in, which is the whole point of
           # the feature and not a bundled copy of anything.
-          if echo "${rendered}" | grep -qE '^kind: (ScaledObject|HTTPScaledObject)$' \
-             || echo "${rendered}" | grep -qE '^ +name: [a-z]+\.(http\.)?keda\.sh$'; then
+          if grep -qE '^kind: (ScaledObject|HTTPScaledObject)$' <<<"${rendered}" \
+             || grep -qE '^ +name: [a-z]+\.(http\.)?keda\.sh$' <<<"${rendered}"; then
             echo "::error::the chart renders KEDA's own objects; it must point at an" \
                  "installation instead of carrying one"
             exit 1
@@ -359,11 +365,11 @@ jobs:
           # The grant the operator installs with, on the other hand, is the
           # chart's: an account of its own bound to cluster-admin, so that
           # turning the feature off takes the grant away with it.
-          echo "${rendered}" | grep -q 'name: kitchen-keda-install' || {
+          grep -q 'name: kitchen-keda-install' <<<"${rendered}" || {
             echo "::error::scaleToZero.install.enabled rendered no install ServiceAccount"
             exit 1
           }
-          echo "${rendered}" | grep -q -- '--keda-install-service-account=kitchen-keda-install' || {
+          grep -q -- '--keda-install-service-account=kitchen-keda-install' <<<"${rendered}" || {
             echo "::error::the operator was not told which account it may install KEDA with"
             exit 1
           }
