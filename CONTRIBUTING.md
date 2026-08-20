@@ -217,6 +217,44 @@ wrote it, that branch's base, and the default branch. `main`'s runs are the
 only ones every pull request can restore from, so dropping them would start
 every pull request cold, kind jobs included.
 
+### And only when they have something to check
+
+They are also skipped on a pull request that cannot have changed what they
+prove. Each of the three has a `changes` job in front of it that runs
+`hack/changed-paths.sh <profile>` over the diff against the base branch and
+answers `run=true` or `run=false`; the kind job's `if:` reads it.
+
+The script holds a list of what each profile may **ignore**, never a list of
+what it needs. A path nobody has classified runs the job, so adding a directory
+cannot quietly switch a gate off — the worst a missing entry costs is twelve
+wasted minutes, which is recoverable, where an unchecked merge is not.
+
+What that means in practice:
+
+- **The Hubble job almost never runs.** Its own header says why: it installs no
+  Kitchen and what it tests is the platform's CNI. Only its scripts, its
+  fixtures and the two workflows that pin Cilium's version can change the
+  answer, so everything else is ignorable there.
+- **The E2E job skips chart-only, dashboard-only and CLI-only changes.**
+  `make test-e2e` runs the operator's suite against kind; it installs no chart
+  and runs no auth service.
+- **The chart install job skips dashboard-only and CLI-only changes.** The CLI
+  holds no kubeconfig and is not installed by the chart. The dashboard reaches
+  that job only through the image build, and a dashboard that does not build
+  fails the Dashboard workflow's `npm run build` in forty seconds — a required
+  check of its own.
+- **The release pull request runs all three regardless.** Its `if:` says so
+  explicitly. Its tree is what gets tagged and published, so it is the one
+  place where "nothing relevant changed" is not a good enough answer.
+
+Run the script against a branch to see what CI will decide before pushing:
+
+```sh
+./hack/changed-paths.sh chart origin/main
+./hack/changed-paths.sh e2e origin/main
+./hack/changed-paths.sh hubble origin/main
+```
+
 ### The release pull request is the gate, and it is a draft
 
 release-please opens its release pull request as a draft
