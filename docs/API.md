@@ -191,6 +191,8 @@ name against `internal/api/policy.go`, so a route that moves fails them too.
 | GET | `/environments/{name}/requests` | The requests themselves, newest first. Filterable, and live-tails like logs | `viewer` |
 | GET | `/environments/{name}/diagnostics` | The crash report: everything about the last abnormal termination, assembled | `viewer` |
 | GET | `/environments/{name}/signals` | What is wrong with it right now — the diagnostics strip | `viewer` |
+| PATCH | `/environments/{name}/requirements` | Change the bar it sets — the policy bundle, its parameters, its owners | `viewer` to reach; the handler admits only `spec.owners` and operators |
+| GET | `/environments/{name}/eligibility` | How a release measures up against that bar, from stored evidence alone | `viewer` |
 | GET | `/environments/{name}/objects` | The Kubernetes objects the operator materialized for it | `operator` |
 | GET | `/logs` | The whole logs table, filtered by a query. `?q=`, `?where=` | any account — filtered |
 | GET | `/logs/histogram` | The same selection counted over time — the shape of the window | any account — filtered |
@@ -254,7 +256,7 @@ such changes two changes to two different files.
 - [Accounts](api/accounts.md) — who the caller is, and what they may do
 - [Projects](api/projects.md) — settings, environment variables, membership, CI keys, and deletion
 - [Builds](api/builds.md) — starting and cancelling one, what it reused, and the evidence it left
-- [Environments and releases](api/environments.md) — rolling back, what is running, and what is wrong with it
+- [Environments and releases](api/environments.md) — rolling back, what is running, what is wrong with it, and the bar an environment sets
 - [Connections and claims](api/connections.md) — the credentials the platform holds, and asking one for a resource
 - [Custom domains](api/domains.md) — putting an environment on an address of its own
 - [Logs and queries](api/logs.md) — reading them, following them live, querying them, and saving a query

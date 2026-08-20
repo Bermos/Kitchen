@@ -15,6 +15,7 @@ import FindingList from "../components/FindingList.vue";
 import LogViewer from "../components/LogViewer.vue";
 import PhaseBadge from "../components/PhaseBadge.vue";
 import RequestsPanel from "../components/RequestsPanel.vue";
+import RequirementsPanel from "../components/RequirementsPanel.vue";
 import ResourceHistory from "../components/ResourceHistory.vue";
 import StatusDot from "../components/StatusDot.vue";
 
@@ -376,6 +377,12 @@ function historyBy(entry: { reason: string; by?: string }): string {
       <div id="section-resources">
         <ResourceHistory :environment="environment.name" :live="moving" />
       </div>
+
+      <!-- The bar this environment sets, and how the deployed release
+           measures up against it. Reading it is everybody's; the edit is
+           the environment's owners' (or an operator's), which the panel
+           decides from the same owners list the API enforces. -->
+      <RequirementsPanel :environment="environment" :role="data?.project.role" @changed="refresh" />
 
       <DomainsPanel :environment="environment.name" :role="data?.project.role" />
 

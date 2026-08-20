@@ -37,6 +37,78 @@ automatic ones):
 `rolledBack` when the environment was moved back to an older release, and
 `superseded` when another release replaced it any other way.
 
+## The bar an environment sets
+
+An environment may declare *requirements*: a policy bundle, pinned by digest,
+that an artifact's attested evidence will be judged against before a release
+lands here. Who may change that bar is written on the environment itself —
+`owners`, a list of accounts in the same vocabulary as every access entry (an
+issuer `sub`, or an email address, honoured only for a verified one) — and it
+is deliberately not a project role. The team that deploys into an environment
+and the people who decide what it demands are two lists, and neither grants
+the other: that separation *is* segregation of duties, expressed as a schema
+instead of a policy document.
+
+```sh
+curl -sS -X PATCH -H "authorization: Bearer $TOKEN" \
+  -d '{"bundleDigest": "sha256:4f6c…", "parameters": {"maxSeverity": "high"},
+       "owners": ["risk-officer@example.com"]}' \
+  https://kitchen.apps.example.com/api/v1/environments/shop-production/requirements
+```
+
+Every field is optional and absent means untouched, so one call can change the
+bundle, the parameters or the owners without restating the rest. `parameters`
+and `owners`, when present, each replace their whole list. An empty
+`bundleDigest` removes the requirements — the environment goes back to
+declaring no bar. The digest must be `sha256:` plus 64 hex characters; the CRD
+refuses anything else at admission, because a bundle named loosely is a
+decision that cannot be replayed.
+
+Only the environment's owners or a platform operator may call this; anyone
+else with a role on the project is answered `403` with who may. **An
+environment naming no owners is locked, not open**: only operators may set its
+requirements, which makes "nobody has owned this yet" the safe state rather
+than the writable one.
+
+Every change is recorded in the audit log before it is made, marked
+privileged, with the previous bundle digest and the *names* of the parameters
+that moved — so the log alone says what the bar was at any moment, and a
+change can be walked back on paper.
+
+## Whether a release clears it
+
+`GET /environments/{name}/eligibility` answers how a release measures up
+against the environment's requirements — by default the release the
+environment currently runs, or any of the project's releases with
+`?release=<name>`. The answer is a pure function of stored evidence: the
+attestations attached to the release's artifact, read as they were recorded,
+never a live check. Nothing is stored and nothing is decided — the promotion
+pipeline is what will act on the comparison.
+
+```json
+{"environment": "shop-production", "project": "shop", "release": "shop-rel-42",
+ "requirements": {"bundleDigest": "sha256:4f6c…", "parameters": {"maxSeverity": "high"}},
+ "evidence": [
+   {"predicateType": "https://slsa.dev/provenance/v1", "source": "builder", "verified": true},
+   {"predicateType": "https://spdx.dev/Document", "source": "builder", "verified": true}],
+ "eligible": null, "evaluated": false, "unmetRules": [],
+ "message": "requirements are declared but not evaluated: policy engine evaluation lands with the promotion pipeline"}
+```
+
+`eligible` is three-valued on purpose. An environment that declares no
+requirements answers `true` — a bar of height zero, and the message says so.
+An environment that declares any answers `null` with `evaluated: false` until
+the policy engine ships: "not judged" and "passed" are different claims, and
+this endpoint will not blur them. When evaluation lands, `unmetRules` names
+the specific rules that fired, as stable rule ids — a release is never refused
+with a generic failure.
+
+The `evidence` list is the screen's half meanwhile: what the artifact carries
+(by predicate type), whose claim each piece is (`platform`, `builder`, or
+nothing for evidence something else attached), and whether it verified against
+the platform's signing key. A registry that cannot be asked degrades to the
+build's own evidence index, listed unverified, with the message saying so.
+
 ## Deleting a stuck preview
 
 `DELETE /environments/{name}` tears a preview down — its Deployment, Service

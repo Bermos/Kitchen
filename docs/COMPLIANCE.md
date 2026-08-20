@@ -716,7 +716,7 @@ attesting to nothing.
 |---|---|
 | **1 — Foundations** | audit log (#126), artifact identity (#127) — **built** |
 | **2 — Evidence production** | provenance + SBOM (#128), PR verification (#129), quality gates (#130) — **built** |
-| **3 — Policy** | environment ownership (#131), OPA engine (#132), staged promotion (#133) |
+| **3 — Policy** | environment ownership (#131) — **built**; OPA engine (#132), staged promotion (#133) |
 | **4 — Continuous compliance** | rescan (#134), OpenVEX (#135), exceptions (#136) |
 | **5 — Institutional surface** | data class (#137), resource contract (#138), access (#139), retention (#140), criticality (#141), export (#142) |
 | **6 — The mapping doc** | #143, kept current |

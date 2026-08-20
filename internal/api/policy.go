@@ -288,6 +288,19 @@ func (s *Server) routes() []route {
 			onProject(access.ProjectViewer, ofEnvironment, "reading an environment's diagnostics")},
 		{"GET /api/v1/environments/{name}/signals", s.environmentSignals,
 			onProject(access.ProjectViewer, ofEnvironment, "reading an environment's signals")},
+		// The requirements write is the one row whose project role is not the
+		// whole answer, because the answer is not a project role at all: only
+		// the environment's owners (spec.owners) or a platform operator may
+		// change what it demands, and the table has no kind for "named on the
+		// object". So the row admits anyone who may see the environment —
+		// viewer, like every environment read — and the handler enforces
+		// ownership with a 403 that says who may. What must not happen is a
+		// developer role granting the write: deploying into an environment and
+		// deciding what it demands are separated on purpose.
+		{"PATCH /api/v1/environments/{name}/requirements", s.patchEnvironmentRequirements,
+			onProject(access.ProjectViewer, ofEnvironment, "changing an environment's requirements")},
+		{"GET /api/v1/environments/{name}/eligibility", s.environmentEligibility,
+			onProject(access.ProjectViewer, ofEnvironment, "reading a release's eligibility for an environment")},
 
 		// The observability surface asks across projects and is answered
 		// about the caller's own — including the saved queries, where a query

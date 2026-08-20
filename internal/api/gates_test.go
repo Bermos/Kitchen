@@ -46,12 +46,20 @@ type stubEvidence struct {
 	predicate string
 	subject   string
 	err       error
+	// set and evidenceErr are what Evidence answers, for the reads that ask
+	// what an artifact carries. The zero values keep the old behaviour: an
+	// empty set, successfully.
+	set         attestation.EvidenceSet
+	evidenceErr error
 }
 
 func (s *stubEvidence) Evidence(
 	context.Context, string, ...attestation.Verifier,
 ) (attestation.EvidenceSet, error) {
-	return attestation.EvidenceSet{}, nil
+	if s.evidenceErr != nil {
+		return attestation.EvidenceSet{}, s.evidenceErr
+	}
+	return s.set, nil
 }
 
 func (s *stubEvidence) Attach(
