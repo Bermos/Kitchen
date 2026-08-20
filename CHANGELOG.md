@@ -1,5 +1,55 @@
 # Changelog
 
+## [0.9.0](https://github.com/Bermos/Kitchen/compare/v0.8.0...v0.9.0) (2026-08-20)
+
+
+### ⚠ BREAKING CHANGES
+
+* **api:** the REST API now enforces the developer/operator split from docs/AUTH.md. A token that could call every route can now call what its account's roles allow. Installations upgrading into this have their operator list seeded from the accounts that exist, so nothing locks itself out — that list should be reviewed and narrowed.
+
+### Features
+
+* **api:** enforce the role model, and tell the dashboard what it may do ([8241e11](https://github.com/Bermos/Kitchen/commit/8241e112c2fe321c0a6799effc8fbd3a79d30f62))
+* **api:** make a CI key a member of one project and nothing else ([4c5b3fa](https://github.com/Bermos/Kitchen/commit/4c5b3fa46c7ff3d6261a839ae4571f00a1be7857)), closes [#111](https://github.com/Bermos/Kitchen/issues/111)
+* **api:** make projects self-service, and let their admins manage membership ([d0d62a6](https://github.com/Bermos/Kitchen/commit/d0d62a629dfbeac83c6998299a9ce74ef1e8a8de)), closes [#106](https://github.com/Bermos/Kitchen/issues/106)
+* **backup:** back the platform up, and restore it ([669a07f](https://github.com/Bermos/Kitchen/commit/669a07f201800e30db3c81be256ef84c127fa9a8)), closes [#74](https://github.com/Bermos/Kitchen/issues/74)
+* **cli:** kitchen backup ([629b819](https://github.com/Bermos/Kitchen/commit/629b819441ea90f7de7ad6e943dc3c6a16193416))
+* **cli:** kitchen link, deploy, logs, env and rollback, built to be driven ([8b51813](https://github.com/Bermos/Kitchen/commit/8b518134b2cbf5fc1c839b5423e9b6145ba44794)), closes [#76](https://github.com/Bermos/Kitchen/issues/76)
+* **gate:** admit a protected preview by project membership, not by being signed in ([5f71367](https://github.com/Bermos/Kitchen/commit/5f71367cfb4963e15eb1073e65ac263f59123dd6)), closes [#110](https://github.com/Bermos/Kitchen/issues/110)
+* implement the developer/operator split ([c90d526](https://github.com/Bermos/Kitchen/commit/c90d526a1e1ef1dfc6d28bc18f9277f1cbb32e23))
+* **operator:** app sign-on with a ResourceClaim of type oidcClient ([#161](https://github.com/Bermos/Kitchen/issues/161)) ([facf601](https://github.com/Bermos/Kitchen/commit/facf6013fa0d9c73d826588e17234b2e1dfc3468))
+* **operator:** ask the builder for provenance and a bill of materials ([acd15d3](https://github.com/Bermos/Kitchen/commit/acd15d39d3e528257f706f6efca21c5b8178f89a)), closes [#128](https://github.com/Bermos/Kitchen/issues/128)
+* **operator:** establish how a commit was reviewed, and refuse one that was not ([a320cdb](https://github.com/Bermos/Kitchen/commit/a320cdbc81d4b1bb47eeacedb6999008630f2cde)), closes [#129](https://github.com/Bermos/Kitchen/issues/129)
+* **operator:** install KEDA and its HTTP add-on for the platform ([29d5b48](https://github.com/Bermos/Kitchen/commit/29d5b48aa73dc098d5ec09d4a5d7164753392b73))
+* **operator:** name the first operator, and grandfather the installs that upgrade into enforcement ([ea841c5](https://github.com/Bermos/Kitchen/commit/ea841c51dc2013f57873c254255d7667895485f3)), closes [#104](https://github.com/Bermos/Kitchen/issues/104)
+* **operator:** reuse build layers through a cache in the connected registry ([5cf01f6](https://github.com/Bermos/Kitchen/commit/5cf01f60e9ac45a42ae8f39a0a7f436dfd139b6e)), closes [#70](https://github.com/Bermos/Kitchen/issues/70)
+* **operator:** run quality gates over every artifact and sign what they find ([f7f3906](https://github.com/Bermos/Kitchen/commit/f7f390647e8dff15605b2cb35177cd04502ec094)), closes [#130](https://github.com/Bermos/Kitchen/issues/130)
+* **ui:** a project's people and keys, its variables, and the platform's operators ([258e734](https://github.com/Bermos/Kitchen/commit/258e734be59a21000c466a7d9e0d174dfd765f5b))
+* **ui:** make the dashboard follow the role, and default the mode from it ([0e33de1](https://github.com/Bermos/Kitchen/commit/0e33de10405afb62eb78ad9cb24c5d628bbea6cf))
+
+
+### Bug fixes
+
+* **api:** move three surfaces to the role the model gives them ([0fff41b](https://github.com/Bermos/Kitchen/commit/0fff41b499e92a3e8379df13610841bf5a527ed9))
+* **api:** stop the enforcement pass leaking across projects, and read a claim the way the gate does ([f171657](https://github.com/Bermos/Kitchen/commit/f17165710ac4db6ef07fff3bd41947d47af97272))
+* **chart:** hash the registry password the Secret publishes ([166a580](https://github.com/Bermos/Kitchen/commit/166a580da4f7cf0696e4c94173af8b56ca9a5153))
+* **chart:** keep a restore's archive off the image's own binaries ([edbeac7](https://github.com/Bermos/Kitchen/commit/edbeac7f324ccd08a3148dbec17da757d8c05f9a))
+* **chart:** let an installation name its operators, and stop an upgrade re-granting the platform ([392a719](https://github.com/Bermos/Kitchen/commit/392a719b1a56c75e4060097ba2bbd95cbaef2f43))
+* **ci:** publish the GitHub release only once the artifacts exist ([d8749da](https://github.com/Bermos/Kitchen/commit/d8749da61956048ee486ff925bb7d9f15bdae5c8))
+* **ui:** let a viewer read a project's variables, and regenerate the CRDs ([0dbf692](https://github.com/Bermos/Kitchen/commit/0dbf69214c3cc6811ddd1b30776f16878ff1d8d8))
+
+
+### Documentation
+
+* **auth:** bring the surface table in line with what shipped ([ceab0db](https://github.com/Bermos/Kitchen/commit/ceab0db71ddb125b7fdadee3501d412c8deec294))
+* correct three things a review found saying the wrong thing ([950e26d](https://github.com/Bermos/Kitchen/commit/950e26d5f7b9e5b7e93a824330dab695b9581e9e))
+* say that the role model is enforced, and correct what it says about keys ([c4499d8](https://github.com/Bermos/Kitchen/commit/c4499d8cd78cfa377aa290317df9cdd55dcb3374))
+
+
+### Build and dependencies
+
+* **ui:** generate the dashboard's copy of the role table from the API's ([c3d328f](https://github.com/Bermos/Kitchen/commit/c3d328face16db054646a1b1f17e3d06c47157d4)), closes [#108](https://github.com/Bermos/Kitchen/issues/108)
+
 ## [0.8.0](https://github.com/Bermos/Kitchen/compare/v0.7.0...v0.8.0) (2026-08-19)
 
 
