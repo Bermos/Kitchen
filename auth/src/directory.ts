@@ -1,4 +1,10 @@
 import type { Auth } from "./auth.js";
+import {
+	deleteClient,
+	type ManagedClient,
+	NotOurClientError,
+	updateClient,
+} from "./clients.js";
 import type { Config } from "./config.js";
 import { isLabel, LABEL_RULE, listPeople, normalizeEmail } from "./identity.js";
 import {
@@ -61,6 +67,13 @@ export interface KitchenRequest {
 	/** The decoded JSON body, or an empty object for a request without one. */
 	body: Record<string, unknown>;
 	apiKey: string | null;
+	/**
+	 * The account the credential belongs to, filled in by the prefix's own
+	 * check before any route runs. It is the service account — that is what
+	 * the check establishes — and a route needs it when what it may do
+	 * depends on what the operator itself created.
+	 */
+	operator?: string;
 }
 
 /** What the caller should be answered with. */
@@ -85,6 +98,8 @@ const routes: KitchenRoute[] = [
 	{ method: "GET", path: `${KITCHEN_API_PREFIX}/keys`, handle: getKeys },
 	{ method: "POST", path: `${KITCHEN_API_PREFIX}/keys`, handle: postKey },
 	{ method: "DELETE", path: `${KITCHEN_API_PREFIX}/keys`, handle: deleteKey },
+	{ method: "PUT", path: `${KITCHEN_API_PREFIX}/clients`, handle: putClient },
+	{ method: "DELETE", path: `${KITCHEN_API_PREFIX}/clients`, handle: removeClient },
 ];
 
 /** Whether a path belongs to this prefix at all. */
@@ -101,10 +116,11 @@ export async function handleKitchenRequest(
 	config: Config,
 	request: KitchenRequest,
 ): Promise<KitchenResponse> {
-	const refusal = await authenticate(auth, config, request.apiKey);
-	if (refusal) {
-		return refusal;
+	const caller = await authenticate(auth, config, request.apiKey);
+	if ("refusal" in caller) {
+		return caller.refusal;
 	}
+	request.operator = caller.operator;
 
 	const matching = routes.filter((route) => route.path === request.path);
 	if (matching.length === 0) {
@@ -136,14 +152,19 @@ async function authenticate(
 	auth: Auth,
 	config: Config,
 	apiKey: string | null,
-): Promise<KitchenResponse | null> {
+): Promise<{ refusal: KitchenResponse } | { operator: string }> {
 	if (!apiKey) {
-		return { status: 401, body: { error: `this endpoint requires the ${SERVICE_KEY_HEADER} header` } };
+		return {
+			refusal: {
+				status: 401,
+				body: { error: `this endpoint requires the ${SERVICE_KEY_HEADER} header` },
+			},
+		};
 	}
 
 	const verified = await apiKeys(auth).verifyApiKey({ body: { key: apiKey } });
 	if (!verified.valid || !verified.key) {
-		return { status: 401, body: { error: "invalid api key" } };
+		return { refusal: { status: 401, body: { error: "invalid api key" } } };
 	}
 
 	const ownerId = ownerOf(verified.key);
@@ -152,11 +173,13 @@ async function authenticate(
 	if (!owner || normalizeEmail(owner.email) !== normalizeEmail(config.serviceAccountEmail)) {
 		log.warn("refused a Kitchen API call from a key that is not the operator's");
 		return {
-			status: 403,
-			body: { error: "this endpoint is for the Kitchen operator's service credential only" },
+			refusal: {
+				status: 403,
+				body: { error: "this endpoint is for the Kitchen operator's service credential only" },
+			},
 		};
 	}
-	return null;
+	return { operator: owner.id };
 }
 
 /**
@@ -283,6 +306,91 @@ async function deleteKey(auth: Auth, _config: Config, request: KitchenRequest): 
 		return { status: 404, body: { error: `${project} has no key called ${name}` } };
 	}
 	return { status: 200, body: removed };
+}
+
+/**
+ * PUT /kitchen/clients — what the operator maintains about a client it
+ * registered, and DELETE /kitchen/clients — taking that client away.
+ *
+ * Both address the client by its `client_id`, which is the only name it has,
+ * and both are here rather than at a standard endpoint because there is no
+ * standard endpoint: the OAuth provider plugin implements RFC 7591's
+ * registration and not RFC 7592's management, so a registered client cannot
+ * be changed or removed through anything the discovery document names. See
+ * src/clients.ts for what that costs an issuer this prefix is not on.
+ *
+ * The redirect list is the field that moves. The operator keeps it in step
+ * with the URLs of a project's environments — a preview appears with a URL,
+ * a merged pull request takes it away — which is the whole of what
+ * `ResourceClaim` type `oidcClient` promises an application: sign-in that
+ * works on every environment without anybody visiting an OAuth console.
+ */
+async function putClient(auth: Auth, _config: Config, request: KitchenRequest): Promise<KitchenResponse> {
+	const clientId = text(request.body.clientId);
+	if (!clientId) {
+		return { status: 400, body: { error: "clientId is required" } };
+	}
+	const redirectURIs = list(request.body.redirectURIs);
+	if (redirectURIs && redirectURIs.length === 0) {
+		// An empty list would leave a client nothing can sign in to, and the
+		// operator never asks for one: a claim with no environments to point
+		// at keeps the redirect URIs it has until it has better ones.
+		return { status: 400, body: { error: "redirectURIs cannot be empty" } };
+	}
+
+	return manage(async () => {
+		const updated = await updateClient(auth, request.operator ?? "", clientId, {
+			clientName: text(request.body.clientName) || undefined,
+			redirectURIs,
+			grantTypes: list(request.body.grantTypes),
+			scopes: list(request.body.scopes),
+		});
+		return [updated, clientId];
+	});
+}
+
+async function removeClient(auth: Auth, _config: Config, request: KitchenRequest): Promise<KitchenResponse> {
+	const clientId = (request.query.get("clientId") ?? "").trim();
+	if (!clientId) {
+		return { status: 400, body: { error: "clientId is required" } };
+	}
+	return manage(async () => [await deleteClient(auth, request.operator ?? "", clientId), clientId]);
+}
+
+/**
+ * The two answers a client operation has that are not the client itself: it
+ * is not there (404, which is also what an issuer without this prefix says),
+ * and it is there but belongs to somebody else (403, because retrying cannot
+ * help and the operator has to be told which client it is being kept away
+ * from).
+ */
+async function manage(
+	operation: () => Promise<[ManagedClient | null, string]>,
+): Promise<KitchenResponse> {
+	try {
+		const [client, clientId] = await operation();
+		if (!client) {
+			return { status: 404, body: { error: `no client with the id ${clientId}` } };
+		}
+		return { status: 200, body: client };
+	} catch (error) {
+		if (error instanceof NotOurClientError) {
+			return { status: 403, body: { error: error.message } };
+		}
+		throw error;
+	}
+}
+
+/**
+ * A string array field of a request body, and undefined for a field that is
+ * absent — which is how a caller says "leave this as it is" rather than "set
+ * it to nothing".
+ */
+function list(value: unknown): string[] | undefined {
+	if (!Array.isArray(value)) {
+		return undefined;
+	}
+	return value.filter((entry): entry is string => typeof entry === "string" && entry.trim() !== "");
 }
 
 /** One string field of a request body, and the empty string for anything else. */
