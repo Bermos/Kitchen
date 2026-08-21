@@ -99,6 +99,16 @@ const (
 	// it pushes with, and the value of DOCKER_CONFIG in every builder.
 	dockerConfigDir = "/kitchen/.docker"
 
+	// gitCredentialDir is where a build pod finds the token it clones the
+	// repository with, and gitCredentialFile the one file in it. Neither is
+	// ever the token itself: the value stays in a mounted Secret, so it
+	// reaches no pod spec, no argv and no clone URL.
+	gitCredentialDir  = "/kitchen/.git-credentials"
+	gitCredentialFile = gitCredentialDir + "/token"
+
+	// volumeGitCredential is that mount's volume, named in both pod shapes.
+	volumeGitCredential = "git-credential"
+
 	// terminationLogPath is where a builder writes what the reconciler needs
 	// back from it — the digest of the image it pushed. Kubernetes surfaces
 	// the file as the container's termination message, so nothing has to be
@@ -257,6 +267,13 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	if err != nil {
 		return r.pending(ctx, build, "RegistryCredentialsMissing", err)
 	}
+	// A repository nobody can read anonymously needs the source Connection's
+	// token to clone, and one anybody can read needs nothing. Which of the
+	// two this is cannot be known from here — GitHub answers a private
+	// repository and a repository that does not exist identically — so a
+	// credential that cannot be resolved parks nothing: the build runs
+	// anonymously and says, if it fails, what it did not have.
+	gitCreds := r.resolveGitCredential(ctx, project, build.Namespace, appNS)
 
 	tagRef := fmt.Sprintf("%s/%s:%s", registry.Prefix, project.Name, shortSHA(build.Spec.Git.SHA))
 	target := buildTarget{
@@ -300,7 +317,7 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		// Planned before the Job exists, because the plan is part of the pod
 		// spec and a Job's template cannot be edited afterwards.
 		cache := r.planCache(ctx, build, project, builds.Cache, target)
-		if err := r.createJob(ctx, build, project, strategy, detected, cache, appNS, credsSecret, tagRef); err != nil {
+		if err := r.createJob(ctx, build, project, strategy, detected, cache, appNS, credsSecret, gitCreds.Secret, tagRef); err != nil {
 			return ctrl.Result{}, err
 		}
 		log.Info("build job created",
@@ -349,7 +366,7 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	case complete:
 		return r.succeed(ctx, build, project, job, target)
 	case failed:
-		return r.fail(ctx, build, project, reasonBuildFailed, message)
+		return r.fail(ctx, build, project, reasonBuildFailed, gitCreds.explain(message))
 	default:
 		if build.Status.Phase != kitchenv1alpha1.BuildRunning {
 			build.Status.Phase = kitchenv1alpha1.BuildRunning
@@ -513,11 +530,11 @@ func (r *BuildReconciler) createJob(
 	strategy kitchenv1alpha1.BuildStrategy,
 	detected framework.Framework,
 	cache *kitchenv1alpha1.BuildCacheStatus,
-	appNS, credsSecret, tagRef string,
+	appNS, credsSecret, gitSecret, tagRef string,
 ) error {
-	template := dockerfilePod(project, build, cache, credsSecret, tagRef, r.platformAttestation(ctx))
+	template := dockerfilePod(project, build, cache, credsSecret, gitSecret, tagRef, r.platformAttestation(ctx))
 	if strategy == kitchenv1alpha1.BuildStrategyBuildpacks {
-		template = buildpacksPod(project, build, detected, cache, credsSecret, tagRef)
+		template = buildpacksPod(project, build, detected, cache, credsSecret, gitSecret, tagRef)
 	}
 
 	labels := map[string]string{
@@ -553,7 +570,7 @@ func dockerfilePod(
 	project *kitchenv1alpha1.Project,
 	build *kitchenv1alpha1.Build,
 	cache *kitchenv1alpha1.BuildCacheStatus,
-	credsSecret, tagRef string,
+	credsSecret, gitSecret, tagRef string,
 	attest kitchenv1alpha1.BuildAttestationSpec,
 ) corev1.PodTemplateSpec {
 	buildContext := repoCloneURL(project) + "#" + build.Spec.Git.SHA
@@ -609,6 +626,20 @@ func dockerfilePod(
 		"--progress", "plain",
 	)
 	args = append(args, buildkitCacheArgs(cache)...)
+	if gitSecret != "" {
+		// BuildKit resolves the git context itself, and GIT_AUTH_TOKEN is
+		// the secret it looks for when the remote asks for authentication.
+		// Only the path is an argument: the token is read from the mounted
+		// file inside the pod, so it appears in no pod spec and no argv.
+		args = append(args, "--secret", "id=GIT_AUTH_TOKEN,src="+gitCredentialFile)
+	}
+
+	mounts := []corev1.VolumeMount{dockerConfigMount()}
+	volumes := []corev1.Volume{dockerConfigVolume(credsSecret)}
+	if gitSecret != "" {
+		mounts = append(mounts, gitCredentialMount())
+		volumes = append(volumes, gitCredentialVolume(gitSecret))
+	}
 
 	return corev1.PodTemplateSpec{
 		ObjectMeta: metav1.ObjectMeta{
@@ -627,21 +658,25 @@ func dockerfilePod(
 					{Name: "BUILDKITD_FLAGS", Value: "--oci-worker-no-process-sandbox"},
 					{Name: "DOCKER_CONFIG", Value: dockerConfigDir},
 				},
-				VolumeMounts: []corev1.VolumeMount{dockerConfigMount()},
+				VolumeMounts: mounts,
 				SecurityContext: &corev1.SecurityContext{
 					RunAsUser:      ptr.To(int64(1000)),
 					SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeUnconfined},
 				},
 			}},
-			Volumes: []corev1.Volume{dockerConfigVolume(credsSecret)},
+			Volumes: volumes,
 		},
 	}
 }
 
 // repoCloneURL is where a build fetches the project's repository from.
 //
-// TODO: derive the clone URL (and auth) from the project's git Connection
-// once git providers beyond public GitHub are wired up.
+// It carries no credential, deliberately: what a private repository needs is
+// mounted into the pod instead — see resolveGitCredential — so the URL is the
+// same one anybody would type, in the pod spec and in `git remote -v` alike.
+//
+// TODO: derive the host from the project's git Connection once git providers
+// beyond GitHub are wired up.
 func repoCloneURL(project *kitchenv1alpha1.Project) string {
 	return fmt.Sprintf("https://github.com/%s.git", project.Spec.Source.Repo)
 }
@@ -674,6 +709,24 @@ func dockerConfigVolume(credsSecret string) corev1.Volume {
 
 func dockerConfigMount() corev1.VolumeMount {
 	return corev1.VolumeMount{Name: "docker-config", MountPath: dockerConfigDir, ReadOnly: true}
+}
+
+// gitCredentialVolume mounts the token a build clones a private repository
+// with. One key, projected to one file, because that is all either strategy
+// reads: BuildKit takes the path as a build secret, and the clone container's
+// askpass reads it.
+func gitCredentialVolume(gitSecret string) corev1.Volume {
+	return corev1.Volume{
+		Name: volumeGitCredential,
+		VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{
+			SecretName: gitSecret,
+			Items:      []corev1.KeyToPath{{Key: gitCredentialsTokenKey, Path: "token"}},
+		}},
+	}
+}
+
+func gitCredentialMount() corev1.VolumeMount {
+	return corev1.VolumeMount{Name: volumeGitCredential, MountPath: gitCredentialDir, ReadOnly: true}
 }
 
 // succeed records the digest, creates the Release, and promotes it when the
@@ -1138,6 +1191,79 @@ func (r *BuildReconciler) syncRegistrySecret(
 // with the same secret, so the name is shared rather than spelled twice.
 func registrySecretName(connectionName string) string {
 	return "kitchen-registry-" + connectionName
+}
+
+// gitCredential is what a build has to clone a private repository with, or
+// why it has nothing. Both halves matter: the second is the only thing that
+// can turn a builder's "could not read Username" into a sentence naming the
+// Connection somebody has to go and look at.
+type gitCredential struct {
+	// Secret is the name of the Secret in the application namespace holding
+	// the token, empty when the build clones anonymously.
+	Secret string
+	// Absent is why there is no token, empty when there is one.
+	Absent string
+}
+
+// explain appends what the build did not have to a failure message, when it
+// did not have a credential. A public repository builds without one and this
+// says nothing; a private one fails inside git with an error about a terminal
+// that does not exist, and this is what names the cause.
+func (g gitCredential) explain(message string) string {
+	if g.Absent == "" {
+		return message
+	}
+	return message + " (the build cloned anonymously: " + g.Absent +
+		" — a private repository cannot be cloned without one)"
+}
+
+// gitSecretName is the token a project's application namespace holds for one
+// git source Connection.
+func gitSecretName(connectionName string) string {
+	return "kitchen-git-" + connectionName
+}
+
+// resolveGitCredential syncs the project's git source token into the
+// application namespace, so the build pod can mount it.
+//
+// Nothing here fails a build. A repository the platform can clone anonymously
+// is the common case and needs none of this, and there is no way to tell one
+// from a private repository without trying — so every reason a token cannot
+// be resolved is recorded rather than raised, and reaches the operator only
+// if the build then goes on to fail.
+func (r *BuildReconciler) resolveGitCredential(
+	ctx context.Context,
+	project *kitchenv1alpha1.Project,
+	srcNS, appNS string,
+) gitCredential {
+	connName := project.Spec.Source.ConnectionRef.Name
+	if connName == "" {
+		return gitCredential{Absent: "the project names no source connection"}
+	}
+
+	conn := &kitchenv1alpha1.Connection{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: srcNS, Name: connName}, conn); err != nil {
+		return gitCredential{Absent: fmt.Sprintf("source connection %q could not be read: %v", connName, err)}
+	}
+	src := &corev1.Secret{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: srcNS, Name: conn.Spec.CredentialsSecretRef.Name}, src); err != nil {
+		return gitCredential{Absent: fmt.Sprintf("the credentials of source connection %q could not be read: %v", connName, err)}
+	}
+	if len(src.Data[gitCredentialsTokenKey]) == 0 {
+		return gitCredential{Absent: fmt.Sprintf(
+			"source connection %q has no %q in its credentials", connName, gitCredentialsTokenKey)}
+	}
+
+	name := gitSecretName(conn.Name)
+	dst := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: appNS}}
+	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, dst, func() error {
+		dst.Labels = map[string]string{labelManagedByKey: labelManagedByValue}
+		dst.Data = map[string][]byte{gitCredentialsTokenKey: src.Data[gitCredentialsTokenKey]}
+		return nil
+	}); err != nil {
+		return gitCredential{Absent: fmt.Sprintf("the credentials of source connection %q could not be synced: %v", connName, err)}
+	}
+	return gitCredential{Secret: name}
 }
 
 func (r *BuildReconciler) pending(

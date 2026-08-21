@@ -241,6 +241,7 @@ var _ = Describe("Build Controller", func() {
 				&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "registry-creds", Namespace: namespace}},
 				&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "gh-build-creds", Namespace: namespace}},
 				&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "kitchen-registry-registry", Namespace: appNS}},
+				&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "kitchen-git-gh", Namespace: appNS}},
 				&kitchenv1alpha1.Kitchen{ObjectMeta: metav1.ObjectMeta{Name: KitchenSingletonName}},
 			} {
 				Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, obj))).To(Succeed())
@@ -270,6 +271,17 @@ var _ = Describe("Build Controller", func() {
 			synced := &corev1.Secret{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "kitchen-registry-registry", Namespace: appNS}, synced)).To(Succeed())
 			Expect(synced.Type).To(Equal(corev1.SecretTypeDockerConfigJson))
+
+			// The project's source connection holds a token, so the build gets
+			// it too — synced beside the registry credential, mounted, and
+			// named as the secret BuildKit resolves the git context with.
+			gitSynced := &corev1.Secret{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "kitchen-git-gh", Namespace: appNS}, gitSynced)).To(Succeed())
+			Expect(gitSynced.Labels).To(HaveKeyWithValue(labelManagedByKey, labelManagedByValue))
+			Expect(gitSynced.Data).To(HaveKeyWithValue(gitCredentialsTokenKey, []byte("gh-token")))
+			Expect(joined).To(ContainSubstring("--secret id=GIT_AUTH_TOKEN,src=" + gitCredentialFile))
+			Expect(mountsGitCredential(container.VolumeMounts)).To(BeTrue())
+			Expect(hasGitCredentialVolume(job.Spec.Template.Spec.Volumes, "kitchen-git-gh")).To(BeTrue())
 
 			build := &kitchenv1alpha1.Build{}
 			Expect(k8sClient.Get(ctx, buildKey, build)).To(Succeed())
@@ -909,7 +921,7 @@ func buildFixtures() (*kitchenv1alpha1.Project, *kitchenv1alpha1.Build) {
 
 func TestDockerfilePodAsksTheBuilderForProvenanceAndAnSBOM(t *testing.T) {
 	project, build := buildFixtures()
-	pod := dockerfilePod(project, build, nil, "creds", "registry.example.com/shop:abc123",
+	pod := dockerfilePod(project, build, nil, "creds", "", "registry.example.com/shop:abc123",
 		kitchenv1alpha1.BuildAttestationSpec{Provenance: true, SBOM: true})
 	args := strings.Join(pod.Spec.Containers[0].Args, " ")
 
@@ -934,7 +946,7 @@ func TestDockerfilePodAsksTheBuilderForProvenanceAndAnSBOM(t *testing.T) {
 
 func TestDockerfilePodAsksForNothingWhenNothingIsConfigured(t *testing.T) {
 	project, build := buildFixtures()
-	pod := dockerfilePod(project, build, nil, "creds", "registry.example.com/shop:abc123",
+	pod := dockerfilePod(project, build, nil, "creds", "", "registry.example.com/shop:abc123",
 		kitchenv1alpha1.BuildAttestationSpec{})
 	args := strings.Join(pod.Spec.Containers[0].Args, " ")
 
@@ -953,7 +965,7 @@ func TestDockerfilePodTakesTheGeneratorAnInstallationNames(t *testing.T) {
 	// The format follows the generator, which is how CycloneDX is asked for:
 	// the platform records what came out rather than converting it.
 	project, build := buildFixtures()
-	pod := dockerfilePod(project, build, nil, "creds", "registry.example.com/shop:abc123",
+	pod := dockerfilePod(project, build, nil, "creds", "", "registry.example.com/shop:abc123",
 		kitchenv1alpha1.BuildAttestationSpec{SBOM: true, SBOMGenerator: "example.com/cyclonedx-scanner:1"})
 	args := strings.Join(pod.Spec.Containers[0].Args, " ")
 
@@ -977,4 +989,144 @@ func outputArg(t *testing.T, pod corev1.PodTemplateSpec) string {
 	}
 	t.Fatal("the build was given no --output")
 	return ""
+}
+
+// What a private repository needs, and what a public one still must not get.
+// The second half is the whole of the compatibility question: a project whose
+// source connection carries no token has to produce the pod it produced
+// before any of this existed.
+
+func TestDockerfilePodTakesTheGitTokenAsABuildSecret(t *testing.T) {
+	project, build := buildFixtures()
+	pod := dockerfilePod(project, build, nil, "creds", "kitchen-git-gh", "registry.example.com/shop:abc123",
+		kitchenv1alpha1.BuildAttestationSpec{})
+	args := strings.Join(pod.Spec.Containers[0].Args, " ")
+
+	// GIT_AUTH_TOKEN is the id BuildKit looks for when the git context it
+	// resolves for itself is asked for authentication.
+	if !strings.Contains(args, "--secret id=GIT_AUTH_TOKEN,src="+gitCredentialFile) {
+		t.Errorf("the git token was not passed as a build secret: %s", args)
+	}
+	// The clone URL is what a pod spec, a `git remote -v` and a build log all
+	// show. A token in it would be in all three.
+	if strings.Contains(args, "@github.com") {
+		t.Errorf("a credential reached the clone URL: %s", args)
+	}
+	if !mountsGitCredential(pod.Spec.Containers[0].VolumeMounts) {
+		t.Error("the buildkit container does not mount the git credential")
+	}
+	if !hasGitCredentialVolume(pod.Spec.Volumes, "kitchen-git-gh") {
+		t.Error("the pod does not carry the git credential volume")
+	}
+}
+
+func TestDockerfilePodAsksForNoGitSecretWithoutOne(t *testing.T) {
+	project, build := buildFixtures()
+	pod := dockerfilePod(project, build, nil, "creds", "", "registry.example.com/shop:abc123",
+		kitchenv1alpha1.BuildAttestationSpec{})
+
+	if args := strings.Join(pod.Spec.Containers[0].Args, " "); strings.Contains(args, "--secret") {
+		t.Errorf("a build with no git credential still asked for a secret: %s", args)
+	}
+	if mountsGitCredential(pod.Spec.Containers[0].VolumeMounts) {
+		t.Error("a build with no git credential mounted one anyway")
+	}
+	if hasGitCredentialVolume(pod.Spec.Volumes, "") {
+		t.Error("a build with no git credential carries the volume anyway")
+	}
+}
+
+func TestBuildpacksPodGivesTheCloneTheTokenToAskWith(t *testing.T) {
+	project, build := buildFixtures()
+	pod := buildpacksPod(project, build, framework.Framework{}, nil, "creds", "kitchen-git-gh",
+		"registry.example.com/shop:abc123")
+	clone := pod.Spec.InitContainers[0]
+
+	// The clone reads the token out of the mounted file through an askpass
+	// helper. Neither the value nor anything derived from it is in the spec.
+	if envValue(clone.Env, "KITCHEN_GIT_TOKEN_FILE") != gitCredentialFile {
+		t.Errorf("the clone was not pointed at the mounted token: %v", clone.Env)
+	}
+	if envValue(clone.Env, "KITCHEN_ASKPASS") == "" {
+		t.Errorf("the clone was given no askpass to write: %v", clone.Env)
+	}
+	if url := envValue(clone.Env, "KITCHEN_GIT_URL"); strings.Contains(url, "@") {
+		t.Errorf("a credential reached the clone URL: %s", url)
+	}
+	if !mountsGitCredential(clone.VolumeMounts) {
+		t.Error("the clone container does not mount the git credential")
+	}
+	if !hasGitCredentialVolume(pod.Spec.Volumes, "kitchen-git-gh") {
+		t.Error("the pod does not carry the git credential volume")
+	}
+	// The lifecycle builds the checkout; it has no business holding the
+	// credential that fetched it.
+	if mountsGitCredential(pod.Spec.Containers[0].VolumeMounts) {
+		t.Error("the creator container mounts the git credential")
+	}
+}
+
+func TestBuildpacksPodClonesAnonymouslyWithoutAToken(t *testing.T) {
+	project, build := buildFixtures()
+	pod := buildpacksPod(project, build, framework.Framework{}, nil, "creds", "",
+		"registry.example.com/shop:abc123")
+	clone := pod.Spec.InitContainers[0]
+
+	if envValue(clone.Env, "KITCHEN_GIT_TOKEN_FILE") != "" {
+		t.Errorf("a build with no git credential was pointed at one: %v", clone.Env)
+	}
+	if mountsGitCredential(clone.VolumeMounts) {
+		t.Error("a build with no git credential mounted one anyway")
+	}
+}
+
+// A failure with no credential behind it says so, naming what to go and look
+// at. A failure with one says exactly what the builder said and nothing else:
+// the credential was not the problem, and a hint about it would send the
+// reader somewhere there is nothing to find.
+func TestAFailureNamesTheConnectionOnlyWhenThereWasNoCredential(t *testing.T) {
+	const failure = "BackoffLimitExceeded"
+
+	absent := gitCredential{Absent: `source connection "gh" has no "token" in its credentials`}.explain(failure)
+	if !strings.Contains(absent, failure) {
+		t.Errorf("the builder's own message was lost: %s", absent)
+	}
+	if !strings.Contains(absent, `source connection "gh"`) {
+		t.Errorf("the failure does not name the connection: %s", absent)
+	}
+
+	if got := (gitCredential{Secret: "kitchen-git-gh"}).explain(failure); got != failure {
+		t.Errorf("a credentialled failure was embellished: %s", got)
+	}
+}
+
+func envValue(env []corev1.EnvVar, name string) string {
+	for _, v := range env {
+		if v.Name == name {
+			return v.Value
+		}
+	}
+	return ""
+}
+
+// mountsGitCredential reports whether a container mounts the token volume.
+func mountsGitCredential(mounts []corev1.VolumeMount) bool {
+	for _, m := range mounts {
+		if m.Name == volumeGitCredential {
+			return true
+		}
+	}
+	return false
+}
+
+// hasGitCredentialVolume reports whether the pod carries the token volume, and
+// when secret is given, that it is backed by that Secret.
+func hasGitCredentialVolume(volumes []corev1.Volume, secret string) bool {
+	for _, v := range volumes {
+		if v.Name != volumeGitCredential {
+			continue
+		}
+		return secret == "" || (v.Secret != nil && v.Secret.SecretName == secret)
+	}
+	return false
 }
