@@ -146,21 +146,10 @@ func (p *platform) serve(w http.ResponseWriter, req *http.Request) {
 	}
 
 	path := strings.TrimPrefix(req.URL.Path, apiPrefix)
+	if p.answerProjectSetup(w, req, path, body) {
+		return
+	}
 	switch {
-	case path == "/me":
-		writeAnswer(w, http.StatusOK, p.me)
-	case path == "/projects" && req.Method == http.MethodGet:
-		writeAnswer(w, http.StatusOK, list[project]{Items: p.projects})
-	case path == "/projects" && req.Method == http.MethodPost:
-		p.createProject(w, body)
-	case path == "/connections" && req.Method == http.MethodGet:
-		writeAnswer(w, http.StatusOK, list[connection]{Items: p.connections})
-	case strings.HasSuffix(path, "/detect") && req.Method == http.MethodPost:
-		if p.detected == nil {
-			writeAnswer(w, http.StatusBadGateway, errorBody{Error: "the provider is unreachable"})
-			return
-		}
-		writeAnswer(w, http.StatusOK, p.detected)
 	case strings.HasSuffix(path, "/builds") && req.Method == http.MethodPost:
 		p.startBuild(w, body)
 	case strings.HasSuffix(path, "/builds"):
@@ -194,6 +183,31 @@ func (p *platform) serve(w http.ResponseWriter, req *http.Request) {
 	default:
 		writeAnswer(w, http.StatusNotFound, errorBody{Error: "no such endpoint: " + path})
 	}
+}
+
+// answerProjectSetup carries the directory the create command walks — the
+// caller, the project list, the connections and the repository preflight —
+// so that serve stays a dispatch and not a catalogue.
+func (p *platform) answerProjectSetup(w http.ResponseWriter, req *http.Request, path string, body []byte) bool {
+	switch {
+	case path == "/me":
+		writeAnswer(w, http.StatusOK, p.me)
+	case path == "/projects" && req.Method == http.MethodGet:
+		writeAnswer(w, http.StatusOK, list[project]{Items: p.projects})
+	case path == "/projects" && req.Method == http.MethodPost:
+		p.createProject(w, body)
+	case path == "/connections" && req.Method == http.MethodGet:
+		writeAnswer(w, http.StatusOK, list[connection]{Items: p.connections})
+	case strings.HasSuffix(path, "/detect") && req.Method == http.MethodPost:
+		if p.detected == nil {
+			writeAnswer(w, http.StatusBadGateway, errorBody{Error: "the provider is unreachable"})
+			return true
+		}
+		writeAnswer(w, http.StatusOK, p.detected)
+	default:
+		return false
+	}
+	return true
 }
 
 // answerBackup streams a real archive, built by the same package the operator

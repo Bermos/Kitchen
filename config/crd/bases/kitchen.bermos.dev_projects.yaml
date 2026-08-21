@@ -128,6 +128,24 @@ spec:
                     - buildpacks
                     type: string
                 type: object
+              dataClass:
+                description: |-
+                  DataClass is the sensitivity classification of the data this project
+                  handles: public, internal, confidential or strictlyConfidential, in
+                  that order. Absent means unclassified — surfaced as such, never
+                  defaulted. It is the parent of the classification hierarchy: a claim's
+                  class may not exceed it (checked at the API), and at promotion the
+                  policy engine checks it does not exceed the target environment's
+                  (rule dataclass-le-environment). Reclassifying a project is always
+                  possible — it makes environments below the new class non-compliant,
+                  which the drift and inventory views surface rather than the API
+                  refusing the correction.
+                enum:
+                - public
+                - internal
+                - confidential
+                - strictlyConfidential
+                type: string
               env:
                 description: Environment variables, overlaid per environment type.
                 items:
@@ -207,6 +225,57 @@ spec:
                       Grace period before a preview Environment is torn down after its
                       pull request closes.
                     type: string
+                type: object
+              promotion:
+                description: |-
+                  Promotion is the project's staged pipeline, absent for the default
+                  build-straight-to-production flow. The stages are topology — which
+                  environments, in which order — and deliberately not policy: what each
+                  environment demands lives on the Environment (spec.requirements), owned
+                  by its owners, so the team that arranges the pipeline cannot lower any
+                  stage's bar by rearranging it.
+                properties:
+                  stages:
+                    description: |-
+                      Stages, in promotion order. The order is the pipeline, so this is a
+                      plain ordered list rather than a merge-by-name map.
+                    items:
+                      description: |-
+                        PromotionStage is one rung of a project's promotion ladder: a name for the
+                        rung, the Environment that is the rung, and whether an artifact climbs onto
+                        the next one by itself.
+                      properties:
+                        autoPromote:
+                          description: |-
+                            AutoPromote creates the next Promotion into this stage automatically
+                            when the stage before it applies successfully. Whether that promotion
+                            then goes through is this stage's environment's own requirements —
+                            evidence-gating an automatic promotion is a rule on the environment
+                            (a required gate, a severity ceiling), not a second mechanism here.
+                          type: boolean
+                        environment:
+                          description: |-
+                            Environment names the Environment this stage deploys into. It must
+                            belong to this project — validated where the stages are written and
+                            where they are acted on, since a cross-object rule cannot live in CEL.
+                            The first build for a stage creates the Environment if it is missing.
+                          minLength: 1
+                          type: string
+                        name:
+                          description: |-
+                            Name of the stage — "staging", "production" — a DNS label so it can
+                            appear in generated names.
+                          maxLength: 63
+                          pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                          type: string
+                      required:
+                      - environment
+                      - name
+                      type: object
+                    minItems: 1
+                    type: array
+                required:
+                - stages
                 type: object
               registry:
                 description: RegistrySpec selects where built images are stored.

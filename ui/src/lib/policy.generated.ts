@@ -76,6 +76,13 @@ export type Route =
   | "POST /api/v1/builds/{name}/gates"
   | "GET /api/v1/releases"
   | "GET /api/v1/releases/{name}"
+  | "GET /api/v1/projects/{name}/promotions"
+  | "POST /api/v1/projects/{name}/promotions"
+  | "GET /api/v1/promotions/{name}"
+  | "POST /api/v1/projects/{name}/exceptions"
+  | "GET /api/v1/exceptions"
+  | "GET /api/v1/exceptions/{name}"
+  | "PATCH /api/v1/exceptions/{name}"
   | "GET /api/v1/environments"
   | "GET /api/v1/environments/{name}"
   | "PATCH /api/v1/environments/{name}"
@@ -90,6 +97,8 @@ export type Route =
   | "GET /api/v1/environments/{name}/requests/routes"
   | "GET /api/v1/environments/{name}/diagnostics"
   | "GET /api/v1/environments/{name}/signals"
+  | "PATCH /api/v1/environments/{name}/requirements"
+  | "GET /api/v1/environments/{name}/eligibility"
   | "GET /api/v1/logs"
   | "GET /api/v1/logs/histogram"
   | "GET /api/v1/logs/facets"
@@ -98,7 +107,12 @@ export type Route =
   | "POST /api/v1/logs/saved"
   | "DELETE /api/v1/logs/saved/{name}"
   | "GET /api/v1/events"
+  | "GET /api/v1/decisions"
+  | "GET /api/v1/decisions/{id}"
+  | "POST /api/v1/decisions/{id}/replay"
+  | "GET /api/v1/policy/bundles"
   | "GET /api/v1/compliance"
+  | "GET /api/v1/compliance/inventory"
   | "GET /api/v1/audit"
   | "GET /api/v1/audit/verify"
   | "GET /api/v1/metrics/overview"
@@ -170,6 +184,13 @@ export const POLICY: Readonly<Record<Route, Requirement>> = {
   "POST /api/v1/builds/{name}/gates": { kind: "projectRole", role: "developer", doing: "submitting a quality gate result" },
   "GET /api/v1/releases": { kind: "visibleProjects" },
   "GET /api/v1/releases/{name}": { kind: "projectRole", role: "viewer", doing: "reading a release" },
+  "GET /api/v1/projects/{name}/promotions": { kind: "projectRole", role: "viewer", doing: "reading a project's promotions" },
+  "POST /api/v1/projects/{name}/promotions": { kind: "projectRole", role: "developer", doing: "promoting a release" },
+  "GET /api/v1/promotions/{name}": { kind: "projectRole", role: "viewer", doing: "reading a promotion" },
+  "POST /api/v1/projects/{name}/exceptions": { kind: "projectRole", role: "developer", doing: "requesting a break-glass exception" },
+  "GET /api/v1/exceptions": { kind: "visibleProjects" },
+  "GET /api/v1/exceptions/{name}": { kind: "projectRole", role: "viewer", doing: "reading an exception" },
+  "PATCH /api/v1/exceptions/{name}": { kind: "projectRole", role: "admin", doing: "resolving an exception" },
   "GET /api/v1/environments": { kind: "visibleProjects" },
   "GET /api/v1/environments/{name}": { kind: "projectRole", role: "viewer", doing: "reading an environment" },
   "PATCH /api/v1/environments/{name}": { kind: "projectRole", role: "developer", doing: "redeploying" },
@@ -184,6 +205,8 @@ export const POLICY: Readonly<Record<Route, Requirement>> = {
   "GET /api/v1/environments/{name}/requests/routes": { kind: "projectRole", role: "viewer", doing: "reading an environment's requests" },
   "GET /api/v1/environments/{name}/diagnostics": { kind: "projectRole", role: "viewer", doing: "reading an environment's diagnostics" },
   "GET /api/v1/environments/{name}/signals": { kind: "projectRole", role: "viewer", doing: "reading an environment's signals" },
+  "PATCH /api/v1/environments/{name}/requirements": { kind: "projectRole", role: "viewer", doing: "changing an environment's requirements" },
+  "GET /api/v1/environments/{name}/eligibility": { kind: "projectRole", role: "viewer", doing: "reading a release's eligibility for an environment" },
   "GET /api/v1/logs": { kind: "visibleProjects" },
   "GET /api/v1/logs/histogram": { kind: "visibleProjects" },
   "GET /api/v1/logs/facets": { kind: "visibleProjects" },
@@ -192,7 +215,12 @@ export const POLICY: Readonly<Record<Route, Requirement>> = {
   "POST /api/v1/logs/saved": { kind: "authenticated" },
   "DELETE /api/v1/logs/saved/{name}": { kind: "visibleProjects" },
   "GET /api/v1/events": { kind: "visibleProjects" },
+  "GET /api/v1/decisions": { kind: "visibleProjects" },
+  "GET /api/v1/decisions/{id}": { kind: "visibleProjects" },
+  "POST /api/v1/decisions/{id}/replay": { kind: "visibleProjects" },
+  "GET /api/v1/policy/bundles": { kind: "operator", doing: "listing the platform's policy bundles" },
   "GET /api/v1/compliance": { kind: "operator", doing: "reading the platform's compliance posture" },
+  "GET /api/v1/compliance/inventory": { kind: "visibleProjects" },
   "GET /api/v1/audit": { kind: "visibleProjects" },
   "GET /api/v1/audit/verify": { kind: "operator", doing: "verifying the audit log's chain" },
   "GET /api/v1/metrics/overview": { kind: "visibleProjects" },
