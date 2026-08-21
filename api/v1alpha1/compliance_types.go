@@ -285,6 +285,21 @@ type AttestationStatus struct {
 	Message string `json:"message,omitempty"`
 }
 
+// PolicyStatus reports whether policy decisions are being stored, which —
+// like AuditStatus — is a different question from whether they are being
+// made. The engine is a pure function and always answers; what needs the
+// telemetry store is keeping the answer, with the inputs that make it
+// reproducible. An installation without one still gets decisions, and this
+// is where it is told they leave no replayable record behind.
+type PolicyStatus struct {
+	// Storing is true when the operator has a store to keep decisions in.
+	Storing bool `json:"storing"`
+
+	// Message explains decisions that are not being stored.
+	// +optional
+	Message string `json:"message,omitempty"`
+}
+
 // ComplianceStatus reports what the compliance machinery is doing.
 type ComplianceStatus struct {
 	// +optional
@@ -292,4 +307,7 @@ type ComplianceStatus struct {
 
 	// +optional
 	Attestation *AttestationStatus `json:"attestation,omitempty"`
+
+	// +optional
+	Policy *PolicyStatus `json:"policy,omitempty"`
 }

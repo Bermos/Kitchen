@@ -237,6 +237,16 @@ type logReader interface {
 	// of the telemetry ones.
 	QueryAuditRecords(ctx context.Context, query clickhouse.AuditQuery) ([]clickhouse.AuditRecord, error)
 	ScanAuditRecords(ctx context.Context, from int64, limit int) ([]clickhouse.AuditRecord, error)
+
+	// The decision register: the policy engine's stored decisions and the
+	// bundles they cite. InsertDecision is the one write in this interface,
+	// and it is here because a replay is a decision of its own — served by
+	// the API, stored beside the one it re-ran, through the same store the
+	// reads resolve.
+	QueryDecisions(ctx context.Context, query clickhouse.DecisionQuery) ([]clickhouse.Decision, error)
+	Decision(ctx context.Context, id string) (clickhouse.Decision, bool, error)
+	InsertDecision(ctx context.Context, decision clickhouse.Decision) error
+	PolicyBundle(ctx context.Context, digest string) (string, bool, error)
 }
 
 // The store reads the signals gatherer needs are a subset of the ones above, so

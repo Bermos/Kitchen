@@ -86,6 +86,14 @@ type complianceBody struct {
 		PublicKey string `json:"publicKey,omitempty"`
 		Message   string `json:"message,omitempty"`
 	} `json:"attestation"`
+	// Policy is whether decisions are being stored. The engine always
+	// evaluates — what needs the store is keeping a replayable record, and an
+	// installation without one is told so here rather than discovering it at
+	// its first audit.
+	Policy struct {
+		Storing bool   `json:"storing"`
+		Message string `json:"message,omitempty"`
+	} `json:"policy"`
 }
 
 // getCompliance reports the audit log and the signing identity.
@@ -113,6 +121,10 @@ func (s *Server) getCompliance(w http.ResponseWriter, req *http.Request) {
 			body.Attestation.Signing = status.Attestation.Signing
 			body.Attestation.KeyID = status.Attestation.KeyID
 			body.Attestation.Message = status.Attestation.Message
+		}
+		if status.Policy != nil {
+			body.Policy.Storing = status.Policy.Storing
+			body.Policy.Message = status.Policy.Message
 		}
 	}
 

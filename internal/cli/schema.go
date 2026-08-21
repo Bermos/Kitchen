@@ -376,6 +376,11 @@ var publishedShapes = map[string]struct {
 	"evidenceSet": {"The signed evidence attached to an artifact, read out of the registry. " +
 		"`verified` false with attestations present means signatures were not checked, " +
 		"not that they failed", evidenceSet{}},
+	"decision": {"One stored policy decision, with the bundle digest, input digest and full " +
+		"input it can be replayed from. Verdict is allowed, allowed-with-exception or blocked", decision{}},
+	"decisionList": {"A list of stored decisions, newest first", list[decision]{}},
+	"decisionReplay": {"A stored decision re-evaluated from its stored inputs: both verdicts, " +
+		"and whether they match", decisionReplay{}},
 	"release":         {"An immutable snapshot of an image and its configuration", release{}},
 	"releaseList":     {"A list of releases, newest first", list[release]{}},
 	"environment":     {"One environment. Phase is Pending, Deploying, Live, Degraded or Terminating", environment{}},

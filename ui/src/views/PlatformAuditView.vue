@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
+import DecisionsPanel from "../components/DecisionsPanel.vue";
 import { api, type AuditRecord } from "../lib/api";
 import { timeAgo } from "../lib/format";
 import { useAsync } from "../lib/useAsync";
@@ -201,6 +202,10 @@ const truncated = computed(() => {
             </template>
             <template v-else>Reading the platform's compliance status…</template>
           </p>
+          <p v-if="compliance.data.value && !compliance.data.value.policy.storing" class="text-xs mt-0.5">
+            <span class="text-warning">Decisions are not being stored.</span>
+            <span class="text-muted"> {{ compliance.data.value.policy.message }}</span>
+          </p>
         </div>
         <UButton size="xs" color="neutral" variant="subtle" :loading="verifying" @click="verify">
           Verify the chain
@@ -344,5 +349,10 @@ const truncated = computed(() => {
       edited afterwards no longer hashes to the hash stored beside it. What this cannot catch on its own is a tail
       rewritten whole — the anchor above is what bounds that.
     </p>
+
+    <!-- The decision register lives on the audit screen because it answers to
+         the same standard: every verdict is a stored record, and a stored
+         record is one that can be checked. -->
+    <DecisionsPanel />
   </div>
 </template>

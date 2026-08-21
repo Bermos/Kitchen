@@ -169,6 +169,7 @@ give.
 | `kitchen builds` | The project's builds, newest first | `GET /projects/{name}/builds` |
 | `kitchen attestations` | The signed evidence attached to a build's artifact | `GET /builds/{name}/attestations` |
 | `kitchen gates list/submit` | What ran over an artifact, and submitting a result from elsewhere | `GET /builds/{name}`, `POST /builds/{name}/gates` |
+| `kitchen decisions list/show/replay` | The stored policy decisions, and re-running one from its stored inputs | `GET /decisions`, `GET /decisions/{id}`, `POST /decisions/{id}/replay` |
 | `kitchen releases` | The project's releases — what there is to roll back to | `GET /projects/{name}/releases` |
 | `kitchen environments` | The project's environments and where they answer | `GET /projects/{name}/environments` |
 | `kitchen api` | Any endpoint of the API, authenticated | anything |
@@ -351,6 +352,21 @@ trivy image --format json shop:latest | kitchen gates submit shop-bld-7 --gate t
 and nothing is known either way. Neither says whether the findings were
 acceptable — that is decided at promotion, against the environment being
 deployed to.
+
+### Policy decisions
+
+```sh
+kitchen decisions list --verdict blocked
+kitchen decisions show 0d9a1f7e-…
+kitchen decisions replay 0d9a1f7e-…
+```
+
+Every verdict the platform reaches is a stored decision citing the policy
+bundle and the input it was computed from, both by digest. `replay` re-runs a
+historical decision from those stored bytes and reports whether the verdict
+reproduces — the command succeeds either way; `match` in the answer is the
+finding. Replaying writes a decision of kind `replay`, so it needs developer
+on the decision's project.
 
 `submit` is for a scanner the pipeline already ran. The findings are sent as the
 exact bytes the tool wrote, and the result is recorded as reported by the

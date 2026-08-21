@@ -358,6 +358,14 @@ type stubLogs struct {
 	k8sEvents     []clickhouse.K8sEvent
 	lastK8sEvents clickhouse.K8sEventQuery
 
+	// The decision register. decisions answers the list and the get; inserts
+	// are appended so a test can read back what a replay stored.
+	decisions         []clickhouse.Decision
+	lastDecisions     clickhouse.DecisionQuery
+	insertedDecisions []clickhouse.Decision
+	decisionErr       error
+	bundles           map[string]string
+
 	nodeUsage       []clickhouse.NodeUsage
 	lastNodeUsage   clickhouse.NodeUsageQuery
 	nodeUsageErr    error
@@ -631,6 +639,45 @@ func (s *stubLogs) ScanAuditRecords(_ context.Context, from int64, limit int) ([
 	return run, nil
 }
 
+func (s *stubLogs) QueryDecisions(
+	_ context.Context,
+	query clickhouse.DecisionQuery,
+) ([]clickhouse.Decision, error) {
+	s.lastDecisions = query
+	if s.decisionErr != nil {
+		return nil, s.decisionErr
+	}
+	return s.decisions, nil
+}
+
+func (s *stubLogs) Decision(_ context.Context, id string) (clickhouse.Decision, bool, error) {
+	if s.decisionErr != nil {
+		return clickhouse.Decision{}, false, s.decisionErr
+	}
+	for _, decision := range s.decisions {
+		if decision.ID == id {
+			return decision, true, nil
+		}
+	}
+	return clickhouse.Decision{}, false, nil
+}
+
+func (s *stubLogs) InsertDecision(_ context.Context, decision clickhouse.Decision) error {
+	if s.decisionErr != nil {
+		return s.decisionErr
+	}
+	s.insertedDecisions = append(s.insertedDecisions, decision)
+	return nil
+}
+
+func (s *stubLogs) PolicyBundle(_ context.Context, digest string) (string, bool, error) {
+	if s.decisionErr != nil {
+		return "", false, s.decisionErr
+	}
+	content, found := s.bundles[digest]
+	return content, found, nil
+}
+
 func (s *stubLogs) VolumeUsage(
 	_ context.Context,
 	query clickhouse.VolumeUsageQuery,
@@ -770,6 +817,7 @@ func routes() []struct{ method, path string } {
 		pattern = strings.ReplaceAll(pattern, "{name}", "x")
 		pattern = strings.ReplaceAll(pattern, "{traceId}", "x")
 		pattern = strings.ReplaceAll(pattern, "{key}", "x")
+		pattern = strings.ReplaceAll(pattern, "{id}", "x")
 		out = append(out, struct{ method, path string }{method, pattern})
 	}
 	return out

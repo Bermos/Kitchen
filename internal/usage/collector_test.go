@@ -420,7 +420,7 @@ func attributesOf(t *testing.T, sweep Sweep, pod, container string) map[string]s
 	t.Helper()
 	out := map[string]string{}
 	for _, attribute := range batchFor(t, sweep, pod, container).Resource.Attributes() {
-		out[string(attribute.Key)] = attribute.Value.Emit()
+		out[string(attribute.Key)] = attribute.Value.String()
 	}
 	return out
 }
@@ -432,7 +432,7 @@ func batchFor(t *testing.T, sweep Sweep, pod, container string) *metricdata.Reso
 	for _, batch := range sweep.ResourceMetrics() {
 		found := map[string]string{}
 		for _, attribute := range batch.Resource.Attributes() {
-			found[string(attribute.Key)] = attribute.Value.Emit()
+			found[string(attribute.Key)] = attribute.Value.String()
 		}
 		if found[attrPod] == pod && found[attrContainer] == container {
 			return batch

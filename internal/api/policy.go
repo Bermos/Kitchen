@@ -314,6 +314,22 @@ func (s *Server) routes() []route {
 		{"DELETE /api/v1/logs/saved/{name}", s.deleteSavedQuery, acrossProjects()},
 
 		{"GET /api/v1/events", s.listEvents, acrossProjects()},
+
+		// The decision register. Decisions live in the store rather than the
+		// cluster, so the table's project resolvers cannot reach them: the
+		// rows admit anyone and hand the handler the caller's scope, and the
+		// handlers apply the same rules the guard would — the list filters to
+		// visible projects like the audit log, the single reads answer an
+		// invisible decision with the not-found a missing one gets, and the
+		// replay additionally wants developer on the decision's project,
+		// because it writes a decision of its own. The bundle listing is the
+		// one governance read here: which bundles exist to require is a fact
+		// about the platform, like its settings.
+		{"GET /api/v1/decisions", s.listDecisions, acrossProjects()},
+		{"GET /api/v1/decisions/{id}", s.getDecision, acrossProjects()},
+		{"POST /api/v1/decisions/{id}/replay", s.replayDecision, acrossProjects()},
+		{"GET /api/v1/policy/bundles", s.listPolicyBundles,
+			operatorOnly("listing the platform's policy bundles")},
 		// Compliance describes the platform, not a project: whether the audit
 		// log is recording, how long it is kept, and the key evidence is
 		// signed under. That is the same shape as GET /settings, and it is

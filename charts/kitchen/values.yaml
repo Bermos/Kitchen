@@ -370,6 +370,14 @@ kitchen:
     #   - release-please[bot]
     # ```
     machineIdentities: []
+    # Policy bundles are deliberately not a value here. The operator ships a
+    # built-in bundle, and an institution distributes its own as ConfigMaps in
+    # kitchen-system labelled `kitchen.bermos.dev/policy-bundle: "true"` (each
+    # key a file: .rego modules, optionally one data.json) — through GitOps,
+    # an extra chart, or kubectl at bootstrap. An environment's requirements
+    # pin a bundle by digest (see `GET /api/v1/policy/bundles` and
+    # docs/api/decisions.md), so editing a ConfigMap in place never moves an
+    # environment that pinned the old content.
   observability:
     clickhouse:
       # -- Days to retain logs, metrics, traces and flow data.

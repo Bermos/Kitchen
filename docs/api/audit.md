@@ -78,7 +78,8 @@ ends below the anchor is a log cut short from the end.
     "signing": true,
     "keyID": "9f2c…",
     "publicKey": "-----BEGIN PUBLIC KEY-----\n…"
-  }
+  },
+  "policy": {"storing": true}
 }
 ```
 
@@ -86,3 +87,9 @@ The public key is handed out deliberately. It is not a credential — evidence
 signed under a key nobody can obtain is evidence nobody can check — and it is
 what lets an auditor run `cosign verify-attestation --key` against the
 registry with Kitchen out of the loop.
+
+`policy` is the [decision register](decisions.md)'s posture, mirroring the
+audit log's: the policy engine always evaluates — a bundle and an input in
+hand need nothing else — but keeping a replayable record needs the store, and
+`storing: false` with its message is the platform owning up to decisions that
+stand without one.
