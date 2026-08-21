@@ -73,6 +73,38 @@ func gitRoot(dir string) (string, error) {
 	return git(context.Background(), dir, "rev-parse", "--show-toplevel")
 }
 
+// originRepo is the "owner/name" this checkout was cloned from, or empty when
+// there is no origin, no git, or a URL that is not a provider's.
+//
+// It is a default for `kitchen projects create --repo`, not a source of truth:
+// which repository the platform builds is the project's, and the project's
+// Connection decides which host that is on — so only the two path segments are
+// taken, and a URL that does not have two is simply not an answer.
+func originRepo(ctx context.Context, dir string) string {
+	url, err := git(ctx, dir, "remote", "get-url", "origin")
+	if err != nil {
+		return ""
+	}
+	url = strings.TrimSuffix(url, ".git")
+	// scp-style (git@host:owner/name) has no scheme, so cut at the colon;
+	// everything else is a URL and the path is what follows the host.
+	if at := strings.LastIndex(url, "@"); at != -1 && !strings.Contains(url, "://") {
+		url = url[at+1:]
+	}
+	if colon := strings.Index(url, ":"); colon != -1 && !strings.Contains(url, "://") {
+		url = url[colon+1:]
+	}
+	segments := strings.Split(strings.Trim(url, "/"), "/")
+	if len(segments) < 2 {
+		return ""
+	}
+	owner, name := segments[len(segments)-2], segments[len(segments)-1]
+	if owner == "" || name == "" || strings.Contains(owner, "://") {
+		return ""
+	}
+	return owner + "/" + name
+}
+
 // describeRevision answers what git knows about the current commit. A
 // directory that is not a checkout, or a machine with no git at all, is not an
 // error here: it answers an empty revision, and the caller — which is only

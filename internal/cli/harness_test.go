@@ -70,6 +70,12 @@ type platform struct {
 	backup         []byte
 	backupFilename string
 
+	// connections is what GET /connections answers, and detected what the
+	// preflight makes of a repository. A nil detection is a platform whose
+	// preflight is unavailable, which the create command carries on from.
+	connections []connection
+	detected    *detection
+
 	// refuse answers every API call with this status and message when set.
 	refuseStatus  int
 	refuseMessage string
@@ -133,6 +139,16 @@ func (p *platform) serve(w http.ResponseWriter, req *http.Request) {
 		writeAnswer(w, http.StatusOK, p.me)
 	case path == "/projects" && req.Method == http.MethodGet:
 		writeAnswer(w, http.StatusOK, list[project]{Items: p.projects})
+	case path == "/projects" && req.Method == http.MethodPost:
+		p.createProject(w, body)
+	case path == "/connections" && req.Method == http.MethodGet:
+		writeAnswer(w, http.StatusOK, list[connection]{Items: p.connections})
+	case strings.HasSuffix(path, "/detect") && req.Method == http.MethodPost:
+		if p.detected == nil {
+			writeAnswer(w, http.StatusBadGateway, errorBody{Error: "the provider is unreachable"})
+			return
+		}
+		writeAnswer(w, http.StatusOK, p.detected)
 	case strings.HasSuffix(path, "/builds") && req.Method == http.MethodPost:
 		p.startBuild(w, body)
 	case strings.HasSuffix(path, "/builds"):
@@ -173,6 +189,24 @@ func (p *platform) answerBackup(w http.ResponseWriter) {
 	w.Header().Set("Content-Disposition", `attachment; filename="`+p.backupFilename+`"`)
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(p.backup)
+}
+
+// createProject answers POST /projects the way the API does: the project as
+// the platform now holds it, with the caller as its admin.
+func (p *platform) createProject(w http.ResponseWriter, body []byte) {
+	asked := newProject{}
+	_ = json.Unmarshal(body, &asked)
+	branch := asked.ProductionBranch
+	if branch == "" {
+		branch = "main"
+	}
+	created := project{
+		Name: asked.Name, Repo: asked.Repo, ProductionBranch: branch, Role: "admin",
+	}
+	p.mutex.Lock()
+	p.projects = append(p.projects, created)
+	p.mutex.Unlock()
+	writeAnswer(w, http.StatusCreated, created)
 }
 
 func (p *platform) startBuild(w http.ResponseWriter, body []byte) {

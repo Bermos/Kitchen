@@ -363,8 +363,12 @@ var publishedShapes = map[string]struct {
 	"project":       {"A project, with the calling account's role on it", project{}},
 	"projectList":   {"A list of projects", list[project]{}},
 	"projectStatus": {"A project with its environments and recent builds", projectStatus{}},
-	"build":         {"One build. Phase is Queued, Running, Succeeded, Failed or Cancelled", build{}},
-	"buildList":     {"A list of builds, newest first", list[build]{}},
+	"projectCreated": {"A project that was just created, what the preflight made of its " +
+		"repository, and where the link was written", projectCreated{}},
+	"detection": {"What the platform makes of a repository before a project exists. " +
+		"`detected` false is advice, not a refusal", detection{}},
+	"build":     {"One build. Phase is Queued, Running, Succeeded, Failed or Cancelled", build{}},
+	"buildList": {"A list of builds, newest first", list[build]{}},
 	"gateList": {"The quality gates that ran over an artifact. Completed means the gate ran, " +
 		"whatever it found; Failed means it did not run", list[gate]{}},
 	"gateAccepted": {"Where a submitted gate result was attached, and whose word it is recorded as",
