@@ -29,6 +29,10 @@ import (
 	"sync"
 )
 
+// NeonRegion is where the fake claims to place every project — what
+// Provision reports as the instance's Region.
+const NeonRegion = "aws-eu-central-1"
+
 // NeonProject is one fake Neon project with its branches, keyed by branch ID.
 type NeonProject struct {
 	ID       string
@@ -154,7 +158,9 @@ func (s *NeonServer) listProjects(w http.ResponseWriter, _ *http.Request) {
 	defer s.mu.Unlock()
 	projects := []map[string]string{}
 	for _, project := range s.projects {
-		projects = append(projects, map[string]string{"id": project.ID, "name": project.Name})
+		projects = append(projects, map[string]string{
+			"id": project.ID, "name": project.Name, "region_id": NeonRegion,
+		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"projects": projects})
 }
@@ -184,7 +190,7 @@ func (s *NeonServer) createProject(w http.ResponseWriter, req *http.Request) {
 	s.projects[project.ID] = project
 
 	writeJSON(w, http.StatusCreated, map[string]any{
-		"project": map[string]string{"id": project.ID, "name": project.Name},
+		"project": map[string]string{"id": project.ID, "name": project.Name, "region_id": NeonRegion},
 		"branch":  map[string]any{"id": main.ID, "name": main.Name, "default": true},
 	})
 }

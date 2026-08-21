@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -34,9 +35,22 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/attestation"
+	"github.com/Bermos/Kitchen/internal/clickhouse"
 	"github.com/Bermos/Kitchen/internal/provider/database"
 	"github.com/Bermos/Kitchen/internal/provider/database/databasetest"
 )
+
+// recordingSignedStore captures the declaration envelopes the reconciler
+// would keep, in place of a ClickHouse.
+type recordingSignedStore struct {
+	records []clickhouse.SignedRecord
+}
+
+func (s *recordingSignedStore) InsertSignedRecord(_ context.Context, record clickhouse.SignedRecord) error {
+	s.records = append(s.records, record)
+	return nil
+}
 
 var _ = Describe("ResourceClaim Controller", func() {
 	const (
@@ -196,6 +210,13 @@ var _ = Describe("ResourceClaim Controller", func() {
 		project := fake.ProjectNamed("kitchen-" + claimName)
 		Expect(project).NotTo(BeNil(), "no instance was provisioned at the provider")
 
+		// The provider's declaration reaches the status: what the data derives
+		// from, and where the provider actually put it.
+		Expect(claim.Status.DataProvenance).To(Equal("production"),
+			"a Neon project IS the production database, and the claim must say so")
+		Expect(claim.Status.Residency).To(Equal(databasetest.NeonRegion),
+			"the provider's reported placement is the placement of record")
+
 		secret := &corev1.Secret{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: appNS, Name: claim.Status.SecretName}, secret)).To(Succeed())
 		Expect(secret.Labels).To(HaveKeyWithValue(labelManagedByKey, labelManagedByValue))
@@ -208,6 +229,82 @@ var _ = Describe("ResourceClaim Controller", func() {
 		Expect(string(secret.Data["database"])).To(Equal("neondb"))
 		Expect(string(secret.Data["port"])).To(Equal("5432"))
 		Expect(string(secret.Data["url"])).To(ContainSubstring(branch.Host()))
+	})
+
+	It("signs and stores the provider's data-class declaration on bind", func() {
+		// The platform side of the declaration: a Kitchen with a store and a
+		// signing key, and a fake record store capturing what would be kept.
+		kitchen := &kitchenv1alpha1.Kitchen{
+			ObjectMeta: metav1.ObjectMeta{Name: KitchenSingletonName},
+			Spec: kitchenv1alpha1.KitchenSpec{
+				BaseDomain: "apps.example.com",
+				TLS:        acmeTLS(),
+				Compliance: kitchenv1alpha1.ComplianceSpec{
+					Attestation: kitchenv1alpha1.AttestationSpec{Enabled: true},
+				},
+				Observability: kitchenv1alpha1.ObservabilitySpec{
+					ClickHouse: kitchenv1alpha1.ClickHouseSpec{
+						SecretRef: &kitchenv1alpha1.LocalObjectReference{Name: "clickhouse-conn"},
+					},
+				},
+			},
+		}
+		Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, kitchen))).To(Succeed())
+		// The platform's own pieces live in the platform namespace: the store
+		// secret and the signing key are read from there, not from wherever
+		// the claim happens to be.
+		platformNS := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: PlatformNamespace}}
+		Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, platformNS))).To(Succeed())
+		storeSecret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: "clickhouse-conn", Namespace: PlatformNamespace},
+			StringData: map[string]string{
+				"host": "clickhouse", "httpPort": "8123", "database": "kitchen", "username": "kitchen",
+			},
+		}
+		Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, storeSecret))).To(Succeed())
+		DeferCleanup(func() {
+			Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, storeSecret))).To(Succeed())
+		})
+		key, err := EnsureSigningKey(ctx, k8sClient, PlatformNamespace, SigningKeySecretName, true)
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() {
+			Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: SigningKeySecretName, Namespace: PlatformNamespace},
+			}))).To(Succeed())
+		})
+		store := &recordingSignedStore{}
+		reconciler.Records = func(clickhouse.Config) SignedRecordStore { return store }
+
+		createClaim(nil)
+		reconcileOnce()
+		Expect(getClaim().Status.Phase).To(Equal(kitchenv1alpha1.ClaimBound))
+
+		Expect(store.records).To(HaveLen(1), "one binding, one declaration record")
+		record := store.records[0]
+		Expect(record.Type).To(Equal(attestation.PredicateDataClass))
+		Expect(record.Project).To(Equal(projectName))
+		Expect(record.Subject).To(Equal(ClaimIdentityDigest(getClaim())),
+			"the subject is the claim's identity digest — a claim has no OCI repository")
+
+		// The envelope verifies under the platform's key and carries the
+		// declaration whole: what, who said so, and when.
+		envelope := attestation.Envelope{}
+		Expect(json.Unmarshal([]byte(record.Envelope), &envelope)).To(Succeed())
+		statement, err := envelope.Verify(key)
+		Expect(err).NotTo(HaveOccurred(), "the stored envelope must verify under the platform's key")
+		Expect(statement.PredicateType).To(Equal(attestation.PredicateDataClass))
+		Expect(statement.Describes(record.Subject)).To(BeTrue())
+		predicate := map[string]any{}
+		Expect(json.Unmarshal(statement.Predicate, &predicate)).To(Succeed())
+		Expect(predicate["provenance"]).To(Equal("production"))
+		Expect(predicate["provider"]).To(Equal("neon"))
+		Expect(predicate["claim"]).To(Equal(claimName))
+		Expect(predicate["declaredAt"]).NotTo(BeEmpty())
+
+		// A second reconcile of a bound claim mints nothing new: the record
+		// belongs to the binding, not to the loop.
+		reconcileOnce()
+		Expect(store.records).To(HaveLen(1))
 	})
 
 	It("fails the claim with the provider's error, and recovers when the provider does", func() {
@@ -319,6 +416,8 @@ var _ = Describe("ResourceClaim Controller", func() {
 			branch := fake.BranchNamed("kitchen-"+claimName, previewEnvName)
 			Expect(branch).NotTo(BeNil(), "no branch was created at the provider")
 			Expect(entry.ID).To(Equal(branch.ID))
+			Expect(entry.Provenance).To(Equal("production"),
+				"a branch of a production database is production-derived, and the branch record must say so")
 
 			secret := &corev1.Secret{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: appNS, Name: entry.SecretName}, secret)).To(Succeed())

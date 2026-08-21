@@ -53,6 +53,32 @@ import (
 // implementation yet.
 var ErrUnsupportedProvider = errors.New("unsupported database provider")
 
+// DataProvenance is a provisioner's declaration of what the data in a
+// provisioned resource derives from. It is the provider contract's compliance
+// half: production-derived data in a preview environment is the finding an
+// auditor reaches first, and the way to make it a state the system cannot
+// reach is for the *provider* to say what it handed over — the platform
+// records the declaration, attests it, and the policy engine enforces it.
+//
+// The zero value is deliberate: a provisioner that cannot declare returns ""
+// (undeclared), and undeclared data is usable only where policy would accept
+// production data — the unknown is treated as the worst case, never as clean.
+type DataProvenance string
+
+const (
+	// ProvenanceProduction: the data IS production data, or derives from it —
+	// a fresh production database, and equally a branch or clone of one. A
+	// copy-on-write branch of a production database is production-derived,
+	// however cheap the copy was.
+	ProvenanceProduction DataProvenance = "production"
+	// ProvenanceMasked: derived from production data through a masking or
+	// anonymization step the provider vouches for.
+	ProvenanceMasked DataProvenance = "masked"
+	// ProvenanceSynthetic: generated data that never derived from production —
+	// a fresh empty database included.
+	ProvenanceSynthetic DataProvenance = "synthetic"
+)
+
 // Binding is everything an application needs to reach a provisioned database.
 // The fields become the keys of the claim's binding Secret verbatim: url,
 // host, port, user, password, database.
@@ -75,6 +101,15 @@ type Instance struct {
 	ID string
 	// Binding reaches the instance's primary branch.
 	Binding Binding
+	// Provenance declares what the instance's data derives from. Empty means
+	// the provider cannot say (undeclared) — see DataProvenance for what that
+	// costs the claim at policy time.
+	Provenance DataProvenance
+	// Region is where the provider actually placed the instance, in the
+	// provider's own vocabulary (a Neon region id). Empty when the provider
+	// reports no placement. It is recorded on the claim's status as the
+	// placement of record — reported, not declared.
+	Region string
 }
 
 // Branch is a copy of an instance's data under its own address, cheap where
@@ -84,6 +119,12 @@ type Branch struct {
 	ID string
 	// Binding reaches the branch instead of the primary.
 	Binding Binding
+	// Provenance declares what the branch's data derives from — for a branch
+	// of a production database, production, because a branch is the parent's
+	// data under a new address. A provisioner that masks or synthesizes while
+	// branching declares masked or synthetic instead; empty means it cannot
+	// say.
+	Provenance DataProvenance
 }
 
 // Provisioner is a database provider bound to one Connection.
@@ -92,6 +133,16 @@ type Branch struct {
 // CreateBranch return the existing instance or branch when one under that
 // name is already there (a reconcile may run twice), and the two Delete
 // operations treat already-absent as success.
+//
+// The results carry the data-class half of the contract. Provision and
+// CreateBranch declare, on the Instance or Branch they return, what the data
+// derives from (Provenance) and — when the provider knows — where it actually
+// is (Region). Both are optional in the weakest sense only: a provisioner
+// that returns them empty has declared nothing, and its claims are then
+// usable only in environments whose policy would accept production data. A
+// third-party provisioner that masks or synthesizes is implemented by
+// returning masked or synthetic here; nothing else in the platform needs to
+// know it exists. See docs/CRDS.md, "The provider contract".
 type Provisioner interface {
 	// Provision creates (or finds) the database instance of the given name
 	// and returns its binding.

@@ -84,6 +84,10 @@ type ResourceClaimReconciler struct {
 	// log. Unlike Activity it is waited on: a transition it refuses is a
 	// transition this reconciler does not make. May be nil.
 	Audit *audit.Recorder
+	// Records builds the signed-record store a data-class declaration's
+	// envelope is kept in. Nil resolves the real ClickHouse from the
+	// singleton's secret; tests inject.
+	Records SignedRecordStoreFactory
 }
 
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=resourceclaims,verbs=get;list;watch;create;update;patch;delete
@@ -163,13 +167,19 @@ func (r *ResourceClaimReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return result, err
 	}
 
-	branchErr := r.reconcileBranches(ctx, claim, project.Name, provisioner, appNS)
+	branchErr := r.reconcileBranches(ctx, claim, project.Name, provisioner, appNS, conn.Spec.Provider)
 
+	// The declaration travels in the bind's audit record: what the data
+	// derives from and where the provider put it are the two facts the
+	// binding is answerable for. "" reads as undeclared/unreported — the
+	// record states the absence rather than omitting it.
 	reason := fmt.Sprintf("claim %s bound: %s via %s", claim.Name, claim.Spec.Type, conn.Name)
-	if err := r.bind(ctx, claim, reason, map[string]any{
-		"type":       claim.Spec.Type,
-		"connection": conn.Name,
-		"secret":     claim.Status.SecretName,
+	if err := r.bind(ctx, claim, conn.Spec.Provider, reason, map[string]any{
+		"type":           claim.Spec.Type,
+		"connection":     conn.Name,
+		"secret":         claim.Status.SecretName,
+		"dataProvenance": claim.Status.DataProvenance,
+		"residency":      claim.Status.Residency,
 	}); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -186,9 +196,14 @@ func (r *ResourceClaimReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 // the log refuses is a transition this reconciler does not make — then the
 // status, then the activity feed. Both claim types come through here, so the
 // two of them cannot drift into recording their bindings differently.
+//
+// `provider` names who declared the claim's data provenance — the
+// Connection's provider kind, or "kitchen" for the platform's own identity
+// provider — and rides into the signed declaration record a first bind mints.
 func (r *ResourceClaimReconciler) bind(
 	ctx context.Context,
 	claim *kitchenv1alpha1.ResourceClaim,
+	provider string,
 	reason string,
 	details map[string]any,
 ) error {
@@ -220,6 +235,11 @@ func (r *ResourceClaimReconciler) bind(
 			Claim:   claim.Name,
 			Message: reason,
 		})
+		// The signed record, once per binding: the provider's declaration,
+		// attested under the platform's key and kept in the store. A claim
+		// whose provider declared nothing mints nothing — the absence is on
+		// the status and in the inventory.
+		r.recordDataClassDeclaration(ctx, claim, "", claim.Status.DataProvenance, provider)
 	}
 	return nil
 }
@@ -257,6 +277,12 @@ func (r *ResourceClaimReconciler) provision(
 	}
 	claim.Status.InstanceID = instance.ID
 	claim.Status.SecretName = secretName
+	// The provider's own account of what it handed over, and where it put
+	// it. Both may be empty — an undeclared provenance and an unreported
+	// placement are states the status carries as absences, and the policy
+	// engine and the inventory read them as such rather than guessing.
+	claim.Status.DataProvenance = string(instance.Provenance)
+	claim.Status.Residency = instance.Region
 	setClaimCondition(claim, condProvisioned, metav1.ConditionTrue, "Provisioned",
 		fmt.Sprintf("%s provisioned as %s", claim.Spec.Type, instance.ID))
 	return ctrl.Result{}, false, nil
@@ -274,6 +300,7 @@ func (r *ResourceClaimReconciler) reconcileBranches(
 	projectName string,
 	provisioner database.Provisioner,
 	appNS string,
+	provider string,
 ) error {
 	branching := claim.PreviewBranching()
 
@@ -319,6 +346,7 @@ func (r *ResourceClaimReconciler) reconcileBranches(
 				return r.branchesNotReady(claim, "BranchFailed", err)
 			}
 		}
+		_, existed := previous[env.Name]
 		branch, err := r.ensureBranch(ctx, claim, provisioner, appNS, env.Name, previous)
 		if err != nil {
 			claim.Status.Branches = kept
@@ -326,6 +354,13 @@ func (r *ResourceClaimReconciler) reconcileBranches(
 		}
 		kept = append(kept, branch)
 		delete(previous, env.Name)
+		if !existed {
+			// A branch this claim did not have before: sign and keep the
+			// provider's declaration for it, naming the preview — the branch
+			// is what that environment's workload reads, so the branch's
+			// provenance is the one its policy is judged on.
+			r.recordDataClassDeclaration(ctx, claim, env.Name, branch.Provenance, provider)
+		}
 	}
 
 	// Whatever is left over belongs to Environments that no longer exist.
@@ -377,7 +412,12 @@ func (r *ResourceClaimReconciler) ensureBranch(
 	if err := r.writeBindingSecret(ctx, claim, appNS, secretName, branch.Binding); err != nil {
 		return kitchenv1alpha1.ClaimBranch{}, err
 	}
-	return kitchenv1alpha1.ClaimBranch{Environment: envName, ID: branch.ID, SecretName: secretName}, nil
+	return kitchenv1alpha1.ClaimBranch{
+		Environment: envName,
+		ID:          branch.ID,
+		SecretName:  secretName,
+		Provenance:  string(branch.Provenance),
+	}, nil
 }
 
 // deleteBranch removes one branch at the provider and its binding Secret. A

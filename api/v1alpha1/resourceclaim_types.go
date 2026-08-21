@@ -211,6 +211,16 @@ type ClaimBranch struct {
 	// SecretName is the per-environment binding Secret in the project
 	// namespace.
 	SecretName string `json:"secretName"`
+
+	// Provenance is the provider's declaration of what this branch's data
+	// derives from — production for a branch of a production database,
+	// however cheap the copy. Empty means the provider declared nothing.
+	// It is per-branch because it is the branch, not the primary, that a
+	// preview's workload reads, and the policy engine judges the preview on
+	// exactly this value.
+	// +kubebuilder:validation:Enum=production;masked;synthetic
+	// +optional
+	Provenance string `json:"provenance,omitempty"`
 }
 
 // ResourceClaimStatus defines the observed state of a ResourceClaim.
@@ -233,6 +243,17 @@ type ResourceClaimStatus struct {
 	// Environments, torn down with them.
 	// +optional
 	Branches []ClaimBranch `json:"branches,omitempty"`
+
+	// DataProvenance is the provider's declaration of what the provisioned
+	// data derives from: production, masked or synthetic. Empty means the
+	// provider declared nothing (undeclared) — surfaced as such, and treated
+	// by policy as the worst case rather than as clean. It is a declaration
+	// the platform records and attests (a signed
+	// kitchen.bermos.dev DataClass/v1 statement), never something it
+	// inspects the data to establish.
+	// +kubebuilder:validation:Enum=production;masked;synthetic
+	// +optional
+	DataProvenance string `json:"dataProvenance,omitempty"`
 
 	// Residency is where the provisioned resource actually is, as the
 	// provider reported it — a Neon region id, for the provider that ships.

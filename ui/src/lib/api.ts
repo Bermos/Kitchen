@@ -892,6 +892,14 @@ export interface Claim {
   /** The claim's declared sensitivity class — never above its project's,
    * which the create refuses. Absent means unclassified. */
   dataClass?: string;
+  /** The provider's declaration of what the provisioned data derives from:
+   * "production", "masked" or "synthetic". Absent means the provider
+   * declared nothing — shown as undeclared, treated by policy as the worst
+   * case. A branch of a production database is production. */
+  dataProvenance?: string;
+  /** Where the provider reported the resource actually is (a Neon region
+   * id). Reported, not declared; absent means it reported nothing. */
+  residency?: string;
   /** Empty for an oidcClient claim: the platform's own identity provider
    * registers the client, and there is no Connection in front of it. */
   connection: string;

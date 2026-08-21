@@ -170,8 +170,9 @@ func orWord(value, absent string) string {
 	return value
 }
 
-// claimProvenance is the claim's declared data provenance, empty until a
-// provider declares one (#138 records it on the claim's status).
-func claimProvenance(_ *kitchenv1alpha1.ResourceClaim) string {
-	return ""
+// claimProvenance is the claim's declared data provenance — the provider's
+// statement, recorded on the status at bind (#138). Empty means the provider
+// declared nothing, which the caller words as "undeclared".
+func claimProvenance(claim *kitchenv1alpha1.ResourceClaim) string {
+	return claim.Status.DataProvenance
 }

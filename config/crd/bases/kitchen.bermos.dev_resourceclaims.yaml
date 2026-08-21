@@ -159,6 +159,19 @@ spec:
                     id:
                       description: ID is the provider-side branch identifier.
                       type: string
+                    provenance:
+                      description: |-
+                        Provenance is the provider's declaration of what this branch's data
+                        derives from — production for a branch of a production database,
+                        however cheap the copy. Empty means the provider declared nothing.
+                        It is per-branch because it is the branch, not the primary, that a
+                        preview's workload reads, and the policy engine judges the preview on
+                        exactly this value.
+                      enum:
+                      - production
+                      - masked
+                      - synthetic
+                      type: string
                     secretName:
                       description: |-
                         SecretName is the per-environment binding Secret in the project
@@ -226,6 +239,20 @@ spec:
                   - type
                   type: object
                 type: array
+              dataProvenance:
+                description: |-
+                  DataProvenance is the provider's declaration of what the provisioned
+                  data derives from: production, masked or synthetic. Empty means the
+                  provider declared nothing (undeclared) — surfaced as such, and treated
+                  by policy as the worst case rather than as clean. It is a declaration
+                  the platform records and attests (a signed
+                  kitchen.bermos.dev DataClass/v1 statement), never something it
+                  inspects the data to establish.
+                enum:
+                - production
+                - masked
+                - synthetic
+                type: string
               instanceID:
                 description: |-
                   InstanceID is the provider-side identifier of the provisioned resource,

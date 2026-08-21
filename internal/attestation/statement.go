@@ -83,6 +83,17 @@ const (
 	// replay it. Reserved by the policy engine (issue #132); named here so
 	// that the URI space has one owner.
 	PredicatePromotionDecision = "https://kitchen.bermos.dev/attestation/promotion-decision/v1"
+
+	// PredicateDataClass records a provider's declaration of what a
+	// provisioned resource's data derives from — production, masked or
+	// synthetic — at the moment the claim (or one of its preview branches)
+	// was bound. Its subject is a claim identity digest rather than an OCI
+	// digest: a database claim has no image repository, so the statement's
+	// subject is sha256 over the claim's namespace, name and UID — a stable
+	// identity the record can be matched back to. The envelope is kept in
+	// the store's signed_records table rather than in any registry, for the
+	// same reason.
+	PredicateDataClass = "https://kitchen.bermos.dev/attestation/data-class/v1"
 )
 
 // predicateTypePrefix is the namespace Kitchen's own predicate types live

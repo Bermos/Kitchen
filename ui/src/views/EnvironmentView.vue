@@ -1,7 +1,15 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { api, type LogLine, type LogQuery, type MaterializedObject, type Release, type WorkloadPod } from "../lib/api";
+import {
+  api,
+  type Claim,
+  type LogLine,
+  type LogQuery,
+  type MaterializedObject,
+  type Release,
+  type WorkloadPod,
+} from "../lib/api";
 import { shortImage, timeAgo, uptime } from "../lib/format";
 import { callerFor } from "../lib/me";
 import { operatorMode } from "../lib/mode";
@@ -31,12 +39,13 @@ const { data, error, loading, refresh } = useAsync(async () => {
   // role of its own — the API resolves which project a request is about from
   // the object it names — so the one place the caller's role is written down
   // is the project's own payload, and this screen's controls are keyed to it.
-  const [releases, project, promotions] = await Promise.all([
+  const [releases, project, promotions, claims] = await Promise.all([
     api.projectReleases(environment.project),
     api.project(environment.project),
     api.projectPromotions(environment.project, { environment: environment.name }),
+    api.claims({ project: environment.project }),
   ]);
-  return { environment, releases, project, promotions };
+  return { environment, releases, project, promotions, claims };
 });
 watch(name, () => void refresh());
 
@@ -48,6 +57,19 @@ const environment = computed(() => data.value?.environment);
 const blockedPromotion = computed(() =>
   blockedPromotionFor(data.value?.promotions ?? [], data.value?.environment.name ?? ""),
 );
+
+// The claims whose data derives from production — on a preview, the finding
+// worth an alert rather than a table cell. The provenance shown is the
+// provider's declaration for the claim; a preview's own branch carries the
+// same declaration for the provider that ships (a Neon branch of production
+// is production-derived).
+const productionDerivedClaims = computed(() =>
+  (data.value?.claims ?? []).filter((claim) => claim.dataProvenance === "production"),
+);
+
+function claimProvenanceFor(claim: Claim): string {
+  return claim.dataProvenance ?? "";
+}
 
 // Redeploying and deleting are the project developer's; the materialized
 // objects are the operator's and stay behind the mode toggle, which only an
@@ -428,6 +450,51 @@ function historyBy(entry: { reason: string; by?: string }): string {
            the environment's owners' (or an operator's), which the panel
            decides from the same owners list the API enforces. -->
       <RequirementsPanel :environment="environment" :role="data?.project.role" @changed="refresh" />
+
+      <!-- The data behind this environment: the project's claims, each with
+           its class and what the provider says the data derives from. A
+           preview running on production-derived data is the finding an
+           auditor reaches first, so it is the one thing this section says
+           loudly rather than politely. -->
+      <div v-if="data?.claims.length" class="space-y-2">
+        <h2 class="text-sm font-medium text-highlighted">Data</h2>
+        <UAlert
+          v-if="environment.type === 'preview' && productionDerivedClaims.length"
+          color="warning"
+          variant="soft"
+          icon="i-lucide-database-zap"
+          title="Production-derived data in this preview"
+          :description="`${productionDerivedClaims.map((claim) => claim.name).join(', ')}: a branch of a production database is production-derived. The default policy refuses this where the environment declares requirements.`"
+        />
+        <div class="rounded-md border border-default overflow-x-auto">
+          <table class="w-full text-xs">
+            <tbody>
+              <tr v-for="claim in data.claims" :key="claim.name" class="border-b border-default/50 last:border-0">
+                <td class="px-3 py-2 font-mono text-highlighted">{{ claim.name }}</td>
+                <td class="px-3 py-2 text-dimmed">{{ claim.type }}</td>
+                <td class="px-3 py-2" :class="claim.dataClass ? 'text-toned' : 'text-dimmed'">
+                  {{ claim.dataClass || "unclassified" }}
+                </td>
+                <td class="px-3 py-2">
+                  <UBadge
+                    v-if="claimProvenanceFor(claim) === 'production'"
+                    :color="environment.type === 'preview' ? 'warning' : 'neutral'"
+                    variant="subtle"
+                    size="sm"
+                  >
+                    production-derived
+                  </UBadge>
+                  <span v-else-if="claimProvenanceFor(claim)" class="text-toned">
+                    {{ claimProvenanceFor(claim) }}
+                  </span>
+                  <span v-else class="text-dimmed">undeclared</span>
+                </td>
+                <td class="px-3 py-2 text-dimmed">{{ claim.residency || "unknown location" }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
 
       <DomainsPanel :environment="environment.name" :role="data?.project.role" />
 

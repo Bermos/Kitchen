@@ -177,9 +177,23 @@ func (r *KitchenReconciler) reconcilePolicyStore(
 	if retention < 1 {
 		retention = defaultAuditRetentionDays
 	}
-	if err := clickhouse.New(cfg).EnsurePolicySchema(ctx, retention); err != nil {
+	store := clickhouse.New(cfg)
+	if err := store.EnsurePolicySchema(ctx, retention); err != nil {
 		return &kitchenv1alpha1.PolicyStatus{
 			Message: "policy decisions are evaluated but not stored: " + err.Error(),
+		}
+	}
+	// The signed-records table rides along: it holds the envelopes that have
+	// no registry to live in (a claim's data-class declaration, #139's
+	// recertification artefacts), and it answers to the same posture — the
+	// declarations are made and attested either way, keeping them needs the
+	// store.
+	if err := store.EnsureRecordsSchema(ctx); err != nil {
+		// Decisions are storing; the honest message is about the half that is
+		// not, rather than claiming the whole store is down.
+		return &kitchenv1alpha1.PolicyStatus{
+			Storing: true,
+			Message: "policy decisions are stored, but signed records are not: " + err.Error(),
 		}
 	}
 	return &kitchenv1alpha1.PolicyStatus{Storing: true}

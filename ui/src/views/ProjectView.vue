@@ -738,6 +738,26 @@ function host(url?: string): string {
                     branch per preview
                   </UBadge>
                 </td>
+                <td class="px-4 py-3 text-xs whitespace-nowrap">
+                  <!-- The two data facts, absences said out loud: the class the
+                       claim was filed under, and what the provider says the
+                       data derives from. -->
+                  <span :class="claim.dataClass ? 'text-toned' : 'text-dimmed'">
+                    {{ claim.dataClass || "unclassified" }}
+                  </span>
+                  <span class="text-dimmed"> · </span>
+                  <span
+                    :class="
+                      claim.dataProvenance === 'production'
+                        ? 'text-warning'
+                        : claim.dataProvenance
+                          ? 'text-toned'
+                          : 'text-dimmed'
+                    "
+                  >
+                    {{ claim.dataProvenance || "undeclared" }}
+                  </span>
+                </td>
                 <td class="px-4 py-3 font-mono text-xs text-toned">
                   <template v-if="claim.connection">via {{ claim.connection }}</template>
                   <template v-else-if="claim.redirectURIs?.length">
