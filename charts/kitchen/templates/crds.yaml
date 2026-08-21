@@ -2835,6 +2835,24 @@ spec:
                   - type
                   type: object
                 type: array
+              initialBuildRef:
+                description: |-
+                  InitialBuildRef is the Build the platform created for the project
+                  itself rather than for a push: the production branch as it stood when
+                  the project was created, so that connecting a repository deploys it
+                  instead of waiting for somebody to commit something.
+
+                  It records that the seeding happened, not that the Build still exists.
+                  A first build somebody deleted stays deleted and the next push is what
+                  builds the project after that — the same reading as the platform's
+                  seeded registry Connection.
+                properties:
+                  name:
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
               latestBuildRef:
                 description: Most recently created Build.
                 properties:

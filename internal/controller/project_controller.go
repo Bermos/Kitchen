@@ -47,6 +47,12 @@ const (
 	condSourceConnected   = "SourceConnected"
 	condRegistryConnected = "RegistryConnected"
 	condWebhookRegistered = "WebhookRegistered"
+	condInitialBuild      = "InitialBuild"
+
+	// initialBuildAnnotation says a Build was the platform's own idea rather
+	// than a push or a request, which is the difference between "nobody has
+	// deployed this yet" and "this is what connecting the repository did".
+	initialBuildAnnotation = "kitchen.bermos.dev/initial-build"
 
 	// gitCredentialsTokenKey is the key in a git Connection's credentials
 	// secret holding the API token.
@@ -74,7 +80,8 @@ type ProjectReconciler struct {
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=projects/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=projects/finalizers,verbs=update
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=connections;kitchens,verbs=get;list;watch
-// +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=builds;releases;environments;domains;resourceclaims,verbs=get;list;watch;delete
+// +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=builds,verbs=get;list;watch;create;delete
+// +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=releases;environments;domains;resourceclaims,verbs=get;list;watch;delete
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;create;delete
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch
 
@@ -136,6 +143,14 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		r.ensureWebhook(ctx, project, sourceConn, setCond)
 	}
 
+	// The first build waits for both connections: a build with nowhere to
+	// push its image is a failed build, and the project is about to be
+	// requeued anyway.
+	retryInitialBuild := false
+	if sourceOK && registryOK {
+		retryInitialBuild = r.ensureInitialBuild(ctx, project, sourceConn, setCond)
+	}
+
 	r.updateReferences(ctx, project)
 
 	if sourceOK && registryOK {
@@ -147,7 +162,7 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if err := r.Status().Update(ctx, project); err != nil {
 		return ctrl.Result{}, err
 	}
-	if !sourceOK || !registryOK {
+	if !sourceOK || !registryOK || retryInitialBuild {
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 	log.Info("reconciled project", "project", project.Name)

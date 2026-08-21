@@ -253,15 +253,11 @@ func (r *GitWebhookReceiver) createBuild(
 	sha, branch, message, author string,
 	pullRequest *int32,
 ) ([]string, error) {
-	short := sha
-	if len(short) > 12 {
-		short = short[:12]
-	}
 	build := &kitchenv1alpha1.Build{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      fmt.Sprintf("%s-bld-%s", project.Name, short),
+			Name:      kitchenv1alpha1.BuildNameFor(project.Name, sha),
 			Namespace: project.Namespace,
-			Labels:    map[string]string{"kitchen.bermos.dev/project": project.Name},
+			Labels:    map[string]string{kitchenv1alpha1.ProjectLabel: project.Name},
 		},
 		Spec: kitchenv1alpha1.BuildSpec{
 			ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: project.Name},

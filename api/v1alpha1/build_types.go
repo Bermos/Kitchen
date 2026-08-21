@@ -17,8 +17,31 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"fmt"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
+
+// ProjectLabel names the Project a Build, Environment or Release belongs to,
+// which is how everything owned by a project is found without walking owner
+// references.
+const ProjectLabel = "kitchen.bermos.dev/project"
+
+// BuildNameFor is the name of the Build for a commit the platform was told
+// about, rather than one somebody asked to be rebuilt.
+//
+// It is derived from the commit so that two things learning about the same
+// commit produce one Build: a webhook redelivery, and a project's first build
+// racing the push that happened while it was being created, both land on an
+// AlreadyExists that means "already building" rather than on a second run of
+// the same commit. A rebuild somebody asked for is a different question and
+// uses this only as a GenerateName prefix.
+func BuildNameFor(project, sha string) string {
+	if len(sha) > 12 {
+		sha = sha[:12]
+	}
+	return fmt.Sprintf("%s-bld-%s", project, sha)
+}
 
 // GitRevision identifies the commit a Build builds.
 type GitRevision struct {
