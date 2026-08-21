@@ -172,3 +172,44 @@ still references the connection, naming what does. The stored credential is
 deleted with it — but only when the platform wrote the Secret; a credential
 something else manages (an Infisical sync, a hand-written manifest) is left
 in place. Answers `204`.
+
+### What a connection can see
+
+```sh
+curl -sS -H "authorization: Bearer $TOKEN" \
+  https://kitchen.apps.example.com/api/v1/connections/gh/repositories
+{"provider": "github", "supported": true,
+ "items": [{"fullName": "acme/shop", "defaultBranch": "main", "private": true,
+            "description": "the shop"}]}
+```
+
+The repository field of the create-a-project form, answered from what the
+connection's stored credential can already see — so a repository is chosen
+from a list rather than spelled correctly from memory, and the project's
+production branch starts as the one the provider calls default.
+
+It is the **second route under `/connections` that is not the operator's**,
+and for the same reason the list is not: creating a project is self-service,
+and this is the field after the connection. It reads no credential back — the
+token is used to ask the provider a question and never leaves the operator —
+and it writes nothing.
+
+Three things can happen instead of a listing, and all three answer `200`,
+because none of them is a failure of the platform and each ends with somebody
+who still has a repository to name:
+
+| Answer | What it means |
+|---|---|
+| `"supported": false` | The provider has no listing behind it — a `dockerRegistry` or `neon` connection, or a `gitlab`/`gitea` one the platform does not implement yet. `message` says which |
+| `"truncated": true` | The credential can see more than the listing carries. It stops at 500, most recently pushed first |
+| `502` | The provider refused or could not be reached; the body carries its own words — a token that has expired says so here |
+
+A missing repository must never be indistinguishable from one that does not
+exist, which is what `truncated` is for and why the dashboard's field still
+takes a typed `owner/name` in every one of these cases.
+
+The listing is what the token can reach — owned, shared, and through an
+organisation it belongs to — which for a fine-grained token is exactly the
+repositories it was granted. There is no CLI command for it: `kitchen api GET
+/connections/gh/repositories` reaches it authenticated, and the CLI has no
+create-a-project command for it to be a field of.

@@ -432,7 +432,9 @@ func TestAMemberPicksAConnectionWithoutSeeingOne(t *testing.T) {
 		t.Fatalf("want the capability that decides whether it can be chosen, got %v", got)
 	}
 
-	// And the picker is all it is: nothing under /connections/ answers them.
+	// And the picker is all it is: nothing else under /connections/ answers
+	// them, bar the repository listing that fills in the same form's next
+	// field (TestListingWhatAConnectionCanSee).
 	for _, refused := range []struct{ method, path, body string }{
 		{http.MethodGet, "/api/v1/connections/gh", ""},
 		{http.MethodPost, "/api/v1/connections", `{"name": "x", "provider": "github", "credential": {"token": "t"}}`},

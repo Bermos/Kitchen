@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -36,6 +37,7 @@ import (
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/audit"
 	"github.com/Bermos/Kitchen/internal/clickhouse"
+	"github.com/Bermos/Kitchen/internal/gitprovider"
 	"github.com/Bermos/Kitchen/internal/provider"
 )
 
@@ -585,4 +587,143 @@ func (s *Server) deleteConnection(w http.ResponseWriter, req *http.Request) {
 	s.log().Info("connection deleted through the api",
 		"connection", connection.Name, "caller", callerName(caller))
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// repositoryListTimeout bounds one repository listing. The walk is several
+// sequential requests to the provider and somebody is watching a dropdown
+// spin: a provider that has not finished by then is an answer of its own, and
+// the field falls back to being typed into.
+const repositoryListTimeout = 20 * time.Second
+
+// repositoryView is one repository the picker offers. It carries what the
+// create-a-project form fills in from it — the name, and the branch the
+// project's production branch should default to — plus enough to tell two
+// similarly-named repositories apart.
+type repositoryView struct {
+	FullName      string `json:"fullName"`
+	DefaultBranch string `json:"defaultBranch,omitempty"`
+	Private       bool   `json:"private,omitempty"`
+	Description   string `json:"description,omitempty"`
+}
+
+// connectionRepositoriesView is what one connection's credential can see.
+//
+// Supported is the field that matters: a provider the platform cannot
+// enumerate is not a failure, it is a form field that has to be typed into
+// instead, and answering 200 with `supported: false` is the same shape
+// testConnection uses to say a provider has no implementation yet. Truncated
+// says the listing was cut short, because a repository missing from a picker
+// is otherwise indistinguishable from one that does not exist.
+type connectionRepositoriesView struct {
+	Provider  string           `json:"provider"`
+	Supported bool             `json:"supported"`
+	Items     []repositoryView `json:"items"`
+	Truncated bool             `json:"truncated,omitempty"`
+	// Message is why there is no listing, in words a form can show. Empty
+	// when there is one.
+	Message string `json:"message,omitempty"`
+}
+
+// unsupportedRepositories is the "type the name instead" answer.
+func unsupportedRepositories(w http.ResponseWriter, providerName, message string) {
+	writeJSON(w, http.StatusOK, connectionRepositoriesView{
+		Provider: providerName,
+		Items:    []repositoryView{},
+		Message:  message,
+	})
+}
+
+// listConnectionRepositories answers what a connection's stored credential
+// can see, so that naming a repository is a choice from a list rather than a
+// string somebody has to spell correctly.
+//
+// It is the one route under /connections/ that is not the operator's alone,
+// for the same reason the list next to it is not: creating a project is
+// self-service, and its second field is the repository. It reads no
+// credential back — the token is used to ask the provider a question and
+// never leaves the operator — and it writes nothing at all.
+func (s *Server) listConnectionRepositories(w http.ResponseWriter, req *http.Request) {
+	ctx := req.Context()
+
+	connection := &kitchenv1alpha1.Connection{}
+	if err := s.get(ctx, req.PathValue("name"), connection); err != nil {
+		s.writeError(w, err)
+		return
+	}
+	providerName := connection.Spec.Provider
+
+	// Whether there is anything to list is a fact about the provider, so it
+	// is settled before the credential is read: matched on the capability the
+	// platform would use the connection for, never on the provider's name —
+	// which is also what keeps a registry connection from being asked for a
+	// token it does not have.
+	if !slices.Contains(provider.Capabilities(providerName), kitchenv1alpha1.CapabilityGitSource) {
+		unsupportedRepositories(w, providerName, fmt.Sprintf(
+			"the platform cannot list repositories for a %s connection: type the repository as owner/name", providerName))
+		return
+	}
+
+	creds := &corev1.Secret{}
+	key := types.NamespacedName{Namespace: s.Namespace, Name: connection.Spec.CredentialsSecretRef.Name}
+	if err := s.Client.Get(ctx, key, creds); err != nil {
+		s.writeError(w, err)
+		return
+	}
+	token := string(creds.Data[gitTokenKey])
+	if token == "" {
+		writeJSON(w, http.StatusBadGateway, errorBody{Error: fmt.Sprintf(
+			"the credential stored for connection %q has no %q key, so the provider cannot be asked what it can see",
+			connection.Name, gitTokenKey)})
+		return
+	}
+
+	factory := s.GitProviders
+	if factory == nil {
+		factory = gitprovider.Default
+	}
+	git, err := factory(connection, token)
+	if errors.Is(err, gitprovider.ErrUnsupportedProvider) {
+		unsupportedRepositories(w, providerName, fmt.Sprintf(
+			"the platform has no %s implementation yet: type the repository as owner/name", providerName))
+		return
+	}
+	if err != nil {
+		badRequest(w, "%s", err.Error())
+		return
+	}
+	lister, ok := gitprovider.Repositories(git)
+	if !ok {
+		unsupportedRepositories(w, providerName, fmt.Sprintf(
+			"the platform's %s support cannot enumerate repositories: type the repository as owner/name", providerName))
+		return
+	}
+
+	listCtx, cancel := context.WithTimeout(ctx, repositoryListTimeout)
+	defer cancel()
+	listing, err := lister.ListRepositories(listCtx)
+	if err != nil {
+		// The provider's own words, which is where a rejected or
+		// under-scoped token says so. A dropdown that cannot be filled is not
+		// the platform failing, so it reads as a bad gateway rather than a
+		// 500, and the form still takes a typed name.
+		writeJSON(w, http.StatusBadGateway, errorBody{Error: fmt.Sprintf(
+			"connection %q could not list repositories: %s", connection.Name, err.Error())})
+		return
+	}
+
+	items := make([]repositoryView, 0, len(listing.Repositories))
+	for _, repo := range listing.Repositories {
+		items = append(items, repositoryView{
+			FullName:      repo.FullName,
+			DefaultBranch: repo.DefaultBranch,
+			Private:       repo.Private,
+			Description:   repo.Description,
+		})
+	}
+	writeJSON(w, http.StatusOK, connectionRepositoriesView{
+		Provider:  providerName,
+		Supported: true,
+		Items:     items,
+		Truncated: listing.Truncated,
+	})
 }

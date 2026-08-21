@@ -1,4 +1,4 @@
-import type { Connection } from "./api";
+import type { Connection, ConnectionRepositories } from "./api";
 
 /**
  * Turning the connections a caller can see into the entries of a picker.
@@ -94,4 +94,72 @@ export function selectableChoices(choices: ConnectionChoice[]): ConnectionChoice
 export function noteFor(choices: ConnectionChoice[], value: string | undefined): string {
   if (!value) return "";
   return choices.find((choice) => choice.value === value)?.note ?? "";
+}
+
+/**
+ * The other half of the same form: which repository, out of the ones the
+ * chosen connection's credential can see.
+ *
+ * `GET /connections/{name}/repositories` answers three different situations
+ * with a 200, and the field has to render all three: a listing, a provider
+ * the platform cannot enumerate, and a listing that was cut short. The first
+ * is a dropdown; the other two are a dropdown that still has to accept a
+ * typed name, which is why nothing here ever *replaces* the text field — it
+ * decides what the field can offer.
+ */
+
+/** One entry of the repository picker, as `USelectMenu` takes it. */
+export interface RepositoryChoice {
+  /** The repository as it is addressed: owner/name. */
+  label: string;
+  value: string;
+  /** The provider's own description, or what else distinguishes it. Shown
+   * under the name in the list. */
+  description?: string;
+}
+
+/** The picker's entries, in the order the provider answered — most recently
+ * pushed to first, so the top of a cut-short listing is the part somebody is
+ * most likely to be looking for. */
+export function repositoryChoices(listing: ConnectionRepositories | undefined): RepositoryChoice[] {
+  if (!listing?.supported) return [];
+  return listing.items.map((repo) => ({
+    label: repo.fullName,
+    value: repo.fullName,
+    description: repo.description || (repo.private ? "private" : undefined),
+  }));
+}
+
+/**
+ * The line under the repository field: what the listing could not do, in the
+ * words somebody needs to carry on regardless.
+ *
+ * An empty string is the case where there is nothing to say — the listing is
+ * complete, and the entry chosen from it is the whole answer.
+ */
+export function repositoryNote(listing: ConnectionRepositories | undefined, failed?: string): string {
+  if (failed) return `${failed} — type the repository as owner/name.`;
+  if (!listing) return "owner/name on the provider the git connection points at.";
+  if (!listing.supported) {
+    return listing.message || "this connection cannot be asked what it can see — type the repository as owner/name.";
+  }
+  if (listing.truncated) {
+    return `The first ${listing.items.length} repositories, most recently pushed first — type the name if yours is not among them.`;
+  }
+  if (!listing.items.length) {
+    return "This connection's credential can see no repositories — type the name, or check the token's access.";
+  }
+  return "owner/name on the provider the git connection points at.";
+}
+
+/** What a chosen repository says its production branch should be. Undefined
+ * for a repository that was typed rather than chosen, or one the provider
+ * reported no default branch for — in both cases the field keeps whatever it
+ * already had rather than being emptied. */
+export function defaultBranchFor(
+  listing: ConnectionRepositories | undefined,
+  fullName: string | undefined,
+): string | undefined {
+  if (!listing?.supported || !fullName) return undefined;
+  return listing.items.find((repo) => repo.fullName === fullName)?.defaultBranch || undefined;
 }
