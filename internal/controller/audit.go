@@ -24,6 +24,7 @@ const (
 	actorConnectionController     = "connection"
 	actorDomainController         = "domain"
 	actorEnvironmentController    = "environment"
+	actorExceptionController      = "exception"
 	actorPlatformUpdateController = "platformupdate"
 	// actorPolicyEngine attributes policy decisions the platform evaluated on
 	// its own initiative — a promotion applied automatically, a scheduled

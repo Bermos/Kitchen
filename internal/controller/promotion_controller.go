@@ -21,6 +21,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -100,10 +101,28 @@ type PromotionReconciler struct {
 	// project's own credential.
 	EvidenceReaders EvidenceSetReaderFactory
 	// Exceptions lists the active break-glass grants in scope for a
-	// promotion. It is nil until issue #136 ships the Exception kind — the
-	// engine's waiving (policy.ApplyExceptions) is already wired, so #136
-	// plugs its listing in here without touching the evaluation.
+	// promotion. Nil means the real listing — ActiveExceptionsFor over the
+	// Exception objects in the platform namespace. Tests inject.
 	Exceptions func(ctx context.Context, promotion *kitchenv1alpha1.Promotion) ([]policy.Exception, error)
+}
+
+// activeExceptions is the Exceptions seam with its default behind it: the
+// one shared listing (ActiveExceptionsFor), scoped to the promotion's own
+// triple, judged at `at` — the same clock the engine's input carries, so
+// what is listed is exactly what ApplyExceptions will honour.
+func (r *PromotionReconciler) activeExceptions(
+	ctx context.Context, promotion *kitchenv1alpha1.Promotion, at time.Time,
+) ([]policy.Exception, error) {
+	if r.Exceptions != nil {
+		return r.Exceptions(ctx, promotion)
+	}
+	active, err := ActiveExceptionsFor(ctx, r.Client, promotion.Namespace,
+		promotion.Spec.ProjectRef.Name, promotion.Spec.EnvironmentRef.Name,
+		promotion.Spec.ReleaseRef.Name, at)
+	if err != nil {
+		return nil, err
+	}
+	return PolicyExceptions(active), nil
 }
 
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=promotions,verbs=get;list;watch;create;update;patch;delete
@@ -111,6 +130,7 @@ type PromotionReconciler struct {
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=promotions/finalizers,verbs=update
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=projects;releases;builds;connections;kitchens;resourceclaims,verbs=get;list;watch
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=environments,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=exceptions,verbs=get;list;watch
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=environments/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups="",resources=secrets;configmaps,verbs=get;list;watch
 
@@ -180,6 +200,17 @@ func (r *PromotionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	decisionID, err := recorder.Record(ctx, kitchen, promotion, input, result, bundle)
 	if err != nil {
 		return ctrl.Result{}, err
+	}
+
+	// An emergency deployment is loud before it moves: the exceptions it
+	// stands on record the reliance (usedBy), the audit log gets a privileged
+	// record, and the artifact gets the break-glass attestation — all before
+	// the phase says the platform will act. Idempotent per exception, so a
+	// requeue does not double the trail.
+	if result.Verdict == policy.VerdictAllowedWithException {
+		if err := r.recordBreakGlass(ctx, kitchen, promotion, project, env, release, result); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
 	promotion.Status.Verdict = result.Verdict
@@ -308,14 +339,13 @@ func (r *PromotionReconciler) evaluate(
 		return none, policy.Result{}, nil, "", "", err
 	}
 
-	var exceptions []policy.Exception
-	if r.Exceptions != nil {
-		if exceptions, err = r.Exceptions(ctx, promotion); err != nil {
-			return none, policy.Result{}, nil, "", "", err
-		}
+	at := time.Now().UTC()
+	exceptions, err := r.activeExceptions(ctx, promotion, at)
+	if err != nil {
+		return none, policy.Result{}, nil, "", "", err
 	}
 
-	input := policy.MaterializeInput(policy.KindPromotion, time.Now().UTC(), project, env, release, build, evidence, claims)
+	input := policy.MaterializeInput(policy.KindPromotion, at, project, env, release, build, evidence, claims)
 	input.Exceptions = exceptions
 	result, err := policy.Evaluate(ctx, info.Bundle, input)
 	if err != nil {
@@ -334,8 +364,52 @@ func (r *PromotionReconciler) evaluate(
 			requirements.BundleDigest)
 	default:
 		message = fmt.Sprintf("blocked by bundle %s: %s", requirements.BundleDigest, firedSentence(result))
+		// When an expired, unresolved exception would have waived what fired,
+		// the refusal says so: the reader's next move is to resolve or renew
+		// it, and a message that hid the connection would send them hunting.
+		if note := r.expiredExceptionNote(ctx, promotion, result, at); note != "" {
+			message += "; " + note
+		}
 	}
 	return input, result, info.Bundle, message, "", nil
+}
+
+// expiredExceptionNote words the blocked-by-expired case: an exception that
+// covers this pair, names a rule that fired unwaived, and has run out without
+// being resolved. Best-effort — a listing failure loses the note, never the
+// verdict.
+func (r *PromotionReconciler) expiredExceptionNote(
+	ctx context.Context, promotion *kitchenv1alpha1.Promotion, result policy.Result, at time.Time,
+) string {
+	list := &kitchenv1alpha1.ExceptionList{}
+	if err := r.List(ctx, list, client.InNamespace(promotion.Namespace)); err != nil {
+		return ""
+	}
+	notes := []string{}
+	for i := range list.Items {
+		exception := &list.Items[i]
+		if !exception.Covers(promotion.Spec.ProjectRef.Name,
+			promotion.Spec.EnvironmentRef.Name, promotion.Spec.ReleaseRef.Name) {
+			continue
+		}
+		if exception.EffectivePhase(at) != kitchenv1alpha1.ExceptionExpired {
+			continue
+		}
+		covered := []string{}
+		for _, rule := range result.Fired {
+			if !rule.Waived && exception.WaivesRule(rule.Rule) {
+				covered = append(covered, rule.Rule)
+			}
+		}
+		if len(covered) == 0 {
+			continue
+		}
+		notes = append(notes, fmt.Sprintf(
+			"exception %s expired %s and no longer waives %s — resolve it or grant a new one",
+			exception.Name, exception.Spec.ExpiresAt.UTC().Format(time.RFC3339),
+			strings.Join(covered, ", ")))
+	}
+	return strings.Join(notes, "; ")
 }
 
 // claimFacts materializes the project's resource claims for the target
@@ -545,6 +619,165 @@ func (r *PromotionReconciler) attestDeployment(
 			"appliedAt":   time.Now().UTC().Format(time.RFC3339),
 			"platform":    map[string]any{"name": "kitchen", "version": version.Version},
 		})
+	if err != nil {
+		return err
+	}
+	envelope, err := attestation.Sign(ctx, statement, signer)
+	if err != nil {
+		return err
+	}
+	_, err = attester.Attach(ctx, repository+"@"+digest, envelope, statement.PredicateType)
+	return err
+}
+
+// recordBreakGlass makes an allowed-with-exception promotion loud: for every
+// exception the verdict stands on — each named on a waived fired rule — it
+// appends a privileged audit record, adds the promotion to the exception's
+// usedBy, and mints the break-glass attestation on the artifact. The audit
+// record is fail-closed and comes first; the attestation is best-effort like
+// every attach, because the registry being briefly unreachable must not park
+// an emergency deployment behind the record of itself.
+//
+// Idempotence rides on usedBy: an exception that already names this
+// promotion was recorded on an earlier pass and is skipped whole.
+func (r *PromotionReconciler) recordBreakGlass(
+	ctx context.Context,
+	kitchen *kitchenv1alpha1.Kitchen,
+	promotion *kitchenv1alpha1.Promotion,
+	project *kitchenv1alpha1.Project,
+	env *kitchenv1alpha1.Environment,
+	release *kitchenv1alpha1.Release,
+	result policy.Result,
+) error {
+	log := logf.FromContext(ctx)
+
+	waivedBy := map[string][]string{}
+	for _, rule := range result.Fired {
+		if rule.Waived && rule.Exception != "" {
+			waivedBy[rule.Exception] = append(waivedBy[rule.Exception], rule.Rule)
+		}
+	}
+	names := make([]string, 0, len(waivedBy))
+	for name := range waivedBy {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		exception := &kitchenv1alpha1.Exception{}
+		if err := r.Get(ctx, types.NamespacedName{Namespace: promotion.Namespace, Name: name}, exception); err != nil {
+			if apierrors.IsNotFound(err) {
+				// A test-injected exception with no object behind it, or one
+				// deleted mid-flight: the decision and its waiving are already
+				// recorded; there is no register row to mark.
+				log.Info("a waiving exception has no object to record use on", "exception", name)
+				continue
+			}
+			return err
+		}
+		already := false
+		for _, user := range exception.Status.UsedBy {
+			if user == promotion.Name {
+				already = true
+				break
+			}
+		}
+		if already {
+			continue
+		}
+		if err := r.Audit.Record(ctx, breakGlassTransition(promotion, exception, waivedBy[name])); err != nil {
+			return err
+		}
+		if err := appendUsedBy(ctx, r.Client, exception, promotion.Name); err != nil {
+			return err
+		}
+		if err := r.attestBreakGlass(ctx, kitchen, promotion, project, env, release, exception, waivedBy[name]); err != nil {
+			log.Error(err, "the break-glass use could not be attested on the artifact",
+				"exception", name, "promotion", promotion.Name, "artifact", release.Spec.Image)
+		}
+	}
+	return nil
+}
+
+// breakGlassTransition is the privileged audit record a break-glass use
+// appends before anything moves — built apart from the recording so a test
+// can hold it up to the light without a store.
+func breakGlassTransition(
+	promotion *kitchenv1alpha1.Promotion,
+	exception *kitchenv1alpha1.Exception,
+	waivedRules []string,
+) audit.Transition {
+	details := map[string]any{
+		"privileged":  true,
+		"exception":   exception.Name,
+		"waivedRules": waivedRules,
+		"environment": promotion.Spec.EnvironmentRef.Name,
+		"release":     promotion.Spec.ReleaseRef.Name,
+		"requestedBy": exception.Spec.RequestedBy,
+		"approvedBy":  exception.Spec.ApprovedBy,
+		"reason":      exception.Spec.Reason,
+		"expiresAt":   exception.Spec.ExpiresAt.UTC().Format(time.RFC3339),
+	}
+	if exception.Spec.IncidentRef != "" {
+		details["incidentRef"] = exception.Spec.IncidentRef
+	}
+	return audit.Transition{
+		Object:      promotion,
+		Kind:        audit.KindPromotion,
+		Controller:  actorPromotionController,
+		Correlation: exception.Name,
+		To:          string(kitchenv1alpha1.PromotionAllowedWithException),
+		Project:     promotion.Spec.ProjectRef.Name,
+		Reason: fmt.Sprintf(
+			"break-glass: promotion %s proceeds with %s waived by exception %s, approved by %s, expiring %s",
+			promotion.Name, strings.Join(waivedRules, ", "), exception.Name,
+			exception.Spec.ApprovedBy, exception.Spec.ExpiresAt.UTC().Format(time.RFC3339)),
+		Details: details,
+	}
+}
+
+// attestBreakGlass mints the break-glass/v1 attestation on the artifact: the
+// fact that an exception carried this artifact travels with it, while the
+// authoritative record stays on the Exception bound to the pair.
+func (r *PromotionReconciler) attestBreakGlass(
+	ctx context.Context,
+	kitchen *kitchenv1alpha1.Kitchen,
+	promotion *kitchenv1alpha1.Promotion,
+	project *kitchenv1alpha1.Project,
+	env *kitchenv1alpha1.Environment,
+	release *kitchenv1alpha1.Release,
+	exception *kitchenv1alpha1.Exception,
+	waivedRules []string,
+) error {
+	repository, digest, byDigest := strings.Cut(release.Spec.Image, "@")
+	if !byDigest || digest == "" {
+		return nil
+	}
+	signer, err := SigningKeyFor(ctx, r.Client, kitchen)
+	if err != nil {
+		return err
+	}
+	if signer == nil {
+		return nil
+	}
+	attester, err := r.recorder().registryAttester(ctx, project.Name)
+	if err != nil {
+		return err
+	}
+	predicate := map[string]any{
+		"exception":   exception.Name,
+		"ruleIDs":     waivedRules,
+		"reason":      exception.Spec.Reason,
+		"requestedBy": exception.Spec.RequestedBy,
+		"approvedBy":  exception.Spec.ApprovedBy,
+		"expiresAt":   exception.Spec.ExpiresAt.UTC().Format(time.RFC3339),
+		"environment": env.Name,
+		"promotion":   promotion.Name,
+	}
+	if exception.Spec.IncidentRef != "" {
+		predicate["incidentRef"] = exception.Spec.IncidentRef
+	}
+	statement, err := attestation.NewStatement(repository, digest, attestation.PredicateBreakGlass, predicate)
 	if err != nil {
 		return err
 	}

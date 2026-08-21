@@ -377,6 +377,23 @@ kitchen:
     #   - release-please[bot]
     # ```
     machineIdentities: []
+    exceptions:
+      # -- The break-glass escalation ladder: who may approve an exception,
+      # rising with how long it is asked for. Each rung is
+      # `{maxDuration, role}` where role is `developer` or `admin` (held on
+      # the project) or `operator` (held on the platform); a requested
+      # duration beyond every rung always needs an operator. Empty uses the
+      # compiled-in default — up to 24h needs developer, up to 720h (30 days)
+      # needs admin, longer needs an operator.
+      #
+      # ```yaml
+      # ladder:
+      #   - maxDuration: 24h
+      #     role: developer
+      #   - maxDuration: 720h
+      #     role: admin
+      # ```
+      ladder: []
     # Policy bundles are deliberately not a value here. The operator ships a
     # built-in bundle, and an institution distributes its own as ConfigMaps in
     # kitchen-system labelled `kitchen.bermos.dev/policy-bundle: "true"` (each

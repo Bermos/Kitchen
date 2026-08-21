@@ -267,6 +267,20 @@ func (s *Server) routes() []route {
 		{"GET /api/v1/promotions/{name}", s.getPromotion,
 			onProject(access.ProjectViewer, ofPromotion, "reading a promotion")},
 
+		// Break-glass exceptions. Requesting one is a developer's write — the
+		// on-call engineer at 3am — and the escalation ladder is what demands
+		// a senior approver, in the handler, because the bar rises with the
+		// requested duration rather than with the route. The register is a
+		// cross-project read like the decision register; resolving is admin's,
+		// since ending a waiver only narrows what is allowed.
+		{"POST /api/v1/projects/{name}/exceptions", s.createException,
+			onProject(access.ProjectDeveloper, ofProject, "requesting a break-glass exception")},
+		{"GET /api/v1/exceptions", s.listExceptions, acrossProjects()},
+		{"GET /api/v1/exceptions/{name}", s.getException,
+			onProject(access.ProjectViewer, ofException, "reading an exception")},
+		{"PATCH /api/v1/exceptions/{name}", s.resolveException,
+			onProject(access.ProjectAdmin, ofException, "resolving an exception")},
+
 		// Environments. Moving one to another release is the whole of
 		// promotion and rollback, which is what "redeploying" names.
 		{"GET /api/v1/environments", s.listEnvironments, acrossProjects()},
@@ -493,6 +507,8 @@ var (
 		func(obj client.Object) string { return obj.(*kitchenv1alpha1.ResourceClaim).Spec.ProjectRef.Name })
 	ofPromotion = objectResolver("promotions", func() client.Object { return &kitchenv1alpha1.Promotion{} },
 		func(obj client.Object) string { return obj.(*kitchenv1alpha1.Promotion).Spec.ProjectRef.Name })
+	ofException = objectResolver("exceptions", func() client.Object { return &kitchenv1alpha1.Exception{} },
+		func(obj client.Object) string { return obj.(*kitchenv1alpha1.Exception).Spec.ProjectRef.Name })
 )
 
 // ofDomain is the one path-addressed object that does not name a project. A

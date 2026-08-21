@@ -105,6 +105,14 @@ type Kind struct {
 // is already in it: `Environment.spec.releaseRef`. The decisions themselves
 // live in the decision store and the audit log, which is where the history
 // belongs.
+//
+// Exception IS carried, unlike Promotion, because it is a record rather than
+// a request: a break-glass grant is part of the compliance register and must
+// survive the cluster it was granted on. One caveat travels with that: phase
+// is status, and status does not restore — an expired grant re-expires on the
+// spot (expiry lives in spec), but a *resolved*, still-unexpired one comes
+// back Active until somebody resolves it again. The resolution itself is in
+// the audit log, which is the authoritative history either way.
 var Kinds = []Kind{
 	{Kind: "Kitchen", Plural: "kitchens", ClusterScoped: true},
 	{Kind: "Connection", Plural: "connections"},
@@ -114,6 +122,7 @@ var Kinds = []Kind{
 	{Kind: "Environment", Plural: "environments"},
 	{Kind: "Domain", Plural: "domains"},
 	{Kind: "ResourceClaim", Plural: "resourceclaims"},
+	{Kind: "Exception", Plural: "exceptions"},
 	{Kind: "SavedQuery", Plural: "savedqueries"},
 }
 

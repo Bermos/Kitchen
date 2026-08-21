@@ -81,7 +81,7 @@ type ProjectReconciler struct {
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=projects/finalizers,verbs=update
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=connections;kitchens,verbs=get;list;watch
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=builds,verbs=get;list;watch;create;delete
-// +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=releases;environments;domains;resourceclaims;promotions,verbs=get;list;watch;delete
+// +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=releases;environments;domains;resourceclaims;promotions;exceptions,verbs=get;list;watch;delete
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;create;delete
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch
 
@@ -298,6 +298,19 @@ func (r *ProjectReconciler) deleteDependents(ctx context.Context, project *kitch
 	for i := range promotions.Items {
 		if promotions.Items[i].Spec.ProjectRef.Name == project.Name {
 			doomed = append(doomed, &promotions.Items[i])
+		}
+	}
+
+	// Exceptions are retained through their whole lifecycle — the register is
+	// queryable historically — so project deletion is the one thing that
+	// garbage-collects them.
+	exceptions := &kitchenv1alpha1.ExceptionList{}
+	if err := r.List(ctx, exceptions, inNamespace); err != nil {
+		return 0, err
+	}
+	for i := range exceptions.Items {
+		if exceptions.Items[i].Spec.ProjectRef.Name == project.Name {
+			doomed = append(doomed, &exceptions.Items[i])
 		}
 	}
 

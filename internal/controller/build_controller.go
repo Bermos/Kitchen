@@ -201,6 +201,7 @@ func (r *BuildReconciler) git() gitReporting {
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=projects;connections;kitchens,verbs=get;list;watch
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=releases;environments,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=promotions,verbs=get;list;watch;create
+// +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=exceptions,verbs=get;list;watch
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch

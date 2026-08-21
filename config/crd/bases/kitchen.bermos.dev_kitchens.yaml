@@ -431,6 +431,46 @@ spec:
                         minimum: 90
                         type: integer
                     type: object
+                  exceptions:
+                    default: {}
+                    description: |-
+                      Exceptions configures break-glass exceptions: the escalation ladder
+                      deciding who may approve a waiver of a given duration. The default
+                      `{}` keeps an upgraded singleton reading the same as a fresh one; the
+                      compiled-in ladder applies while nothing is configured.
+                    properties:
+                      ladder:
+                        description: |-
+                          Ladder maps requested duration to the approver role it takes,
+                          evaluated shortest rung first. A duration beyond every rung always
+                          needs a platform operator. Empty uses the compiled-in default:
+                          up to 24h needs developer, up to 720h (30 days) needs admin, and
+                          anything longer needs an operator.
+                        items:
+                          description: |-
+                            ExceptionTier is one rung of the escalation ladder: grants up to
+                            MaxDuration need an approver holding at least Role.
+                          properties:
+                            maxDuration:
+                              description: MaxDuration is the longest grant this rung
+                                covers, e.g. "24h".
+                              type: string
+                            role:
+                              description: |-
+                                Role is the least role the approver must hold: developer or admin on
+                                the project, or operator on the platform.
+                              enum:
+                              - developer
+                              - admin
+                              - operator
+                              type: string
+                          required:
+                          - maxDuration
+                          - role
+                          type: object
+                        type: array
+                        x-kubernetes-list-type: atomic
+                    type: object
                   gates:
                     description: |-
                       Gates are the quality gates run over every artifact the platform

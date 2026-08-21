@@ -668,12 +668,19 @@ Connection that cannot answer is told apart from one that answers "no pull
 request". GitLab's `CommitProvenance` is a method on a type that does not exist
 yet.
 
-**Break-glass.** A direct push during an incident is refused today where the
-project requires review. Issue #136 is the object that makes it *allowed and
-loudly recorded* instead, which is the behaviour the suite's design rules
-demand; until it lands, the honest description is that the requirement is a
-block and an installation that needs to deploy by hand during an incident should
-know that turning it off is the escape hatch.
+**Break-glass now exists** (#136). A direct push during an incident used to be
+a hard refusal where the project requires review; it is now *allowed and loudly
+recorded* when an active Exception covers it, which is what the suite's design
+rules demand — a blocked hotfix gets deployed around the platform and leaves no
+record at all. The Exception is a bounded, two-person, per-rule grant
+([docs/api/exceptions.md](api/exceptions.md)): the rule id for this requirement
+is **`require-pull-request`**, and an active exception naming it, scoped to the
+project's production environment with no release narrowing, converts the
+refusal into a build that proceeds with a privileged audit record, the
+exception's name on `status.source`, and `exception`/`exempt` fields on the
+signed pull-request-approval attestation — the same shape as the
+machine-identity exemption. Everything else about the requirement is unchanged:
+no exception, no review, no build.
 
 ---
 
@@ -717,7 +724,7 @@ attesting to nothing.
 | **1 — Foundations** | audit log (#126), artifact identity (#127) — **built** |
 | **2 — Evidence production** | provenance + SBOM (#128), PR verification (#129), quality gates (#130) — **built** |
 | **3 — Policy** | environment ownership (#131), OPA engine (#132), staged promotion (#133) — **built** |
-| **4 — Continuous compliance** | rescan (#134), OpenVEX (#135), exceptions (#136) |
+| **4 — Continuous compliance** | rescan (#134), OpenVEX (#135), exceptions (#136 — **built**) |
 | **5 — Institutional surface** | data class (#137) — **built**, resource contract (#138) — **built**, access (#139), retention (#140), criticality (#141), export (#142) |
 | **6 — The mapping doc** | #143, kept current |
 

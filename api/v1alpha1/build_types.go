@@ -263,6 +263,14 @@ type SourceProvenanceStatus struct {
 	// +optional
 	MachineIdentity string `json:"machineIdentity,omitempty"`
 
+	// Exception names the break-glass Exception that waived the pull request
+	// requirement for this build, when one did — the rule id it waives is
+	// `require-pull-request`. Like MachineIdentity, empty means the waiver
+	// was not used, not that none exists; every use is a privileged audit
+	// record and a field on the signed source attestation.
+	// +optional
+	Exception string `json:"exception,omitempty"`
+
 	// Required says whether the project demanded pull request provenance for
 	// this commit, so that a build carrying none is readable as "not asked
 	// for" rather than as "asked for and missing".

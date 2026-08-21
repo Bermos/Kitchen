@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -223,6 +224,8 @@ var _ = Describe("Promotion Controller", func() {
 			&kitchenv1alpha1.Promotion{ObjectMeta: metav1.ObjectMeta{Name: "promo-staging", Namespace: namespace}},
 			&kitchenv1alpha1.Promotion{ObjectMeta: metav1.ObjectMeta{
 				Name: automaticPromotionName(projectName, releaseA, prodEnv), Namespace: namespace}},
+			&kitchenv1alpha1.Exception{ObjectMeta: metav1.ObjectMeta{Name: "promo-exc-live", Namespace: namespace}},
+			&kitchenv1alpha1.Exception{ObjectMeta: metav1.ObjectMeta{Name: "promo-exc-lapsed", Namespace: namespace}},
 			&kitchenv1alpha1.Environment{ObjectMeta: metav1.ObjectMeta{Name: stagingEnv, Namespace: namespace}},
 			&kitchenv1alpha1.Environment{ObjectMeta: metav1.ObjectMeta{Name: prodEnv, Namespace: namespace}},
 			&kitchenv1alpha1.Environment{ObjectMeta: metav1.ObjectMeta{Name: "stranger-env", Namespace: namespace}},
@@ -313,6 +316,93 @@ var _ = Describe("Promotion Controller", func() {
 		// nothing and decides nothing new.
 		reconcileOnce("promo-blocked")
 		Expect(decisions.decisions).To(HaveLen(1))
+	})
+
+	newException := func(name string, expiresIn time.Duration, rules ...string) *kitchenv1alpha1.Exception {
+		return &kitchenv1alpha1.Exception{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+			Spec: kitchenv1alpha1.ExceptionSpec{
+				ProjectRef:     kitchenv1alpha1.LocalObjectReference{Name: projectName},
+				EnvironmentRef: kitchenv1alpha1.LocalObjectReference{Name: prodEnv},
+				RuleIDs:        rules,
+				Reason:         "hotfix for the checkout outage",
+				RequestedBy:    "grace@example.com",
+				ApprovedBy:     "heidi@example.com",
+				IncidentRef:    "INC-421",
+				ExpiresAt:      metav1.NewTime(time.Now().Add(expiresIn).Truncate(time.Second)),
+			},
+		}
+	}
+
+	It("never blocks an emergency: an active exception carries the promotion through, loudly", func() {
+		bundle := policy.DefaultBundle()
+		Expect(k8sClient.Create(ctx, environmentWith(prodEnv, &kitchenv1alpha1.EnvironmentRequirements{
+			BundleDigest: policy.Digest(bundle),
+			Parameters:   map[string]string{"require-provenance": "true"},
+		}))).To(Succeed())
+		evidence.set = attestation.EvidenceSet{Attestations: []attestation.Evidence{}}
+		Expect(k8sClient.Create(ctx, newException("promo-exc-live", time.Hour, "require-provenance"))).To(Succeed())
+		Expect(k8sClient.Create(ctx, newPromotion("promo-allowed", prodEnv))).To(Succeed())
+
+		reconcileOnce("promo-allowed")
+
+		promotion := &kitchenv1alpha1.Promotion{}
+		Expect(k8sClient.Get(ctx, key("promo-allowed"), promotion)).To(Succeed())
+		Expect(promotion.Status.Phase).To(Equal(kitchenv1alpha1.PromotionApplied))
+		Expect(promotion.Status.Verdict).To(Equal(policy.VerdictAllowedWithException))
+		Expect(promotion.Status.UnmetRules).To(BeEmpty(), "every fired rule is waived, none unmet")
+
+		// The environment moved: the emergency deployment happened.
+		env := &kitchenv1alpha1.Environment{}
+		Expect(k8sClient.Get(ctx, key(prodEnv), env)).To(Succeed())
+		Expect(env.Spec.ReleaseRef.Name).To(Equal(releaseA))
+
+		// Loud, part one: the rule still fired and still reports — waived,
+		// naming its exception — in the stored decision.
+		Expect(decisions.decisions).To(HaveLen(1))
+		Expect(decisions.decisions[0].Verdict).To(Equal(policy.VerdictAllowedWithException))
+		Expect(decisions.decisions[0].RulesFired).To(ContainSubstring(`"rule":"require-provenance"`))
+		Expect(decisions.decisions[0].RulesFired).To(ContainSubstring(`"waived":true`))
+		Expect(decisions.decisions[0].RulesFired).To(ContainSubstring("promo-exc-live"))
+
+		// Loud, part two: the register records the reliance.
+		exception := &kitchenv1alpha1.Exception{}
+		Expect(k8sClient.Get(ctx, key("promo-exc-live"), exception)).To(Succeed())
+		Expect(exception.Status.UsedBy).To(ContainElement("promo-allowed"))
+
+		// Loud, part three: the fact travels with the artifact.
+		Expect(registry.predicates).To(ContainElement(attestation.PredicateBreakGlass))
+		Expect(registry.predicates).To(ContainElement(attestation.PredicatePromotionDecision))
+		Expect(registry.predicates).To(ContainElement(attestation.PredicateDeployment))
+	})
+
+	It("blocks once the exception has expired, and says which grant lapsed", func() {
+		bundle := policy.DefaultBundle()
+		Expect(k8sClient.Create(ctx, environmentWith(prodEnv, &kitchenv1alpha1.EnvironmentRequirements{
+			BundleDigest: policy.Digest(bundle),
+			Parameters:   map[string]string{"require-provenance": "true"},
+		}))).To(Succeed())
+		evidence.set = attestation.EvidenceSet{Attestations: []attestation.Evidence{}}
+		Expect(k8sClient.Create(ctx, newException("promo-exc-lapsed", -time.Minute, "require-provenance"))).To(Succeed())
+		Expect(k8sClient.Create(ctx, newPromotion("promo-blocked", prodEnv))).To(Succeed())
+
+		reconcileOnce("promo-blocked")
+
+		promotion := &kitchenv1alpha1.Promotion{}
+		Expect(k8sClient.Get(ctx, key("promo-blocked"), promotion)).To(Succeed())
+		Expect(promotion.Status.Phase).To(Equal(kitchenv1alpha1.PromotionBlocked))
+		Expect(promotion.Status.UnmetRules).To(Equal([]string{"require-provenance"}),
+			"an expired grant waives nothing; the rules fire unwaived")
+		Expect(promotion.Status.Message).To(ContainSubstring("promo-exc-lapsed"))
+		Expect(promotion.Status.Message).To(ContainSubstring("expired"))
+
+		env := &kitchenv1alpha1.Environment{}
+		Expect(k8sClient.Get(ctx, key(prodEnv), env)).To(Succeed())
+		Expect(env.Spec.ReleaseRef.Name).To(Equal(projectName+"-rel-old"), "nothing moved")
+
+		exception := &kitchenv1alpha1.Exception{}
+		Expect(k8sClient.Get(ctx, key("promo-exc-lapsed"), exception)).To(Succeed())
+		Expect(exception.Status.UsedBy).To(BeEmpty(), "a refusal relied on nothing")
 	})
 
 	It("fails a promotion whose references do not tell one story", func() {

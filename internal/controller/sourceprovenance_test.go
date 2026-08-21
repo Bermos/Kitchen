@@ -21,6 +21,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -347,5 +348,123 @@ func TestADirectPushSaysSoRatherThanOmittingTheField(t *testing.T) {
 	}
 	if _, present := record["pullRequest"]; !present {
 		t.Error("the absence of a pull request is left to be inferred")
+	}
+}
+
+// breakGlassGrant is the exception name the break-glass tests grant and then
+// look for on the record.
+const breakGlassGrant = "shop-exc-1"
+
+// breakGlassException is an active Exception naming require-pull-request for
+// shop's production environment — the shape the build-time break-glass reads.
+func breakGlassException(name string, expiresIn time.Duration) *kitchenv1alpha1.Exception {
+	return &kitchenv1alpha1.Exception{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: PlatformNamespace},
+		Spec: kitchenv1alpha1.ExceptionSpec{
+			ProjectRef:     kitchenv1alpha1.LocalObjectReference{Name: "shop"},
+			EnvironmentRef: kitchenv1alpha1.LocalObjectReference{Name: "shop-production"},
+			RuleIDs:        []string{RulePullRequest},
+			Reason:         "hotfix for the checkout outage",
+			RequestedBy:    "grace@example.com",
+			ApprovedBy:     "heidi@example.com",
+			ExpiresAt:      metav1.NewTime(time.Now().Add(expiresIn)),
+		},
+	}
+}
+
+func TestADirectPushUnderABreakGlassExceptionIsAllowedAndLoudlyRecorded(t *testing.T) {
+	reconciler, build, project := sourceFixtures(t, &changeProvider{
+		provenance: gitprovider.ChangeProvenance{Provider: "github", PullRequest: 0},
+	}, nil)
+	exception := breakGlassException(breakGlassGrant, time.Hour)
+	if err := reconciler.Client.Create(context.Background(), exception); err != nil {
+		t.Fatal(err)
+	}
+
+	status, refusal := reconciler.resolveSourceProvenance(context.Background(), build, project)
+	if refusal != nil {
+		t.Fatalf("an emergency deployment must never be hard-blocked: %v", refusal)
+	}
+	if status.Exception != breakGlassGrant {
+		t.Fatalf("the waiver must be named on the status, got %q", status.Exception)
+	}
+	if !strings.Contains(status.Message, breakGlassGrant) || !strings.Contains(status.Message, "heidi@example.com") {
+		t.Fatalf("the message must say who let it through: %q", status.Message)
+	}
+
+	// The attestation carries the exemption fields, machine-identity style.
+	record := sourceRecord(build, project, status)
+	if record["exception"] != breakGlassGrant || record["exempt"] != true {
+		t.Fatalf("the signed record must carry the waiver: %+v", record)
+	}
+	if record["directPush"] != true {
+		t.Fatalf("the direct push is still stated — the exception changes the verdict, not the facts: %+v", record)
+	}
+}
+
+func TestAnExpiredExceptionNoLongerBreaksTheGlass(t *testing.T) {
+	reconciler, build, project := sourceFixtures(t, &changeProvider{
+		provenance: gitprovider.ChangeProvenance{Provider: "github", PullRequest: 0},
+	}, nil)
+	if err := reconciler.Client.Create(context.Background(), breakGlassException("shop-exc-old", -time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
+	_, refusal := reconciler.resolveSourceProvenance(context.Background(), build, project)
+	if refusal == nil {
+		t.Fatal("an expired grant waives nothing; the refusal must stand")
+	}
+}
+
+func TestAReleaseScopedExceptionDoesNotCoverABuild(t *testing.T) {
+	reconciler, build, project := sourceFixtures(t, &changeProvider{
+		provenance: gitprovider.ChangeProvenance{Provider: "github", PullRequest: 0},
+	}, nil)
+	scoped := breakGlassException("shop-exc-scoped", time.Hour)
+	scoped.Spec.ReleaseRef = &kitchenv1alpha1.LocalObjectReference{Name: "shop-rel-9"}
+	if err := reconciler.Client.Create(context.Background(), scoped); err != nil {
+		t.Fatal(err)
+	}
+
+	_, refusal := reconciler.resolveSourceProvenance(context.Background(), build, project)
+	if refusal == nil {
+		t.Fatal("a build has no release yet, so a release-scoped grant cannot cover it")
+	}
+}
+
+func TestAnExceptionForAnotherRuleDoesNotCoverThePullRequestRequirement(t *testing.T) {
+	reconciler, build, project := sourceFixtures(t, &changeProvider{
+		provenance: gitprovider.ChangeProvenance{Provider: "github", PullRequest: 0},
+	}, nil)
+	other := breakGlassException("shop-exc-other", time.Hour)
+	other.Spec.RuleIDs = []string{"max-severity"}
+	if err := reconciler.Client.Create(context.Background(), other); err != nil {
+		t.Fatal(err)
+	}
+
+	_, refusal := reconciler.resolveSourceProvenance(context.Background(), build, project)
+	if refusal == nil {
+		t.Fatal("a waiver is per-rule; one for max-severity says nothing about review")
+	}
+}
+
+func TestTheBreakGlassTransitionSaysEverythingAnAuditorAsks(t *testing.T) {
+	reconciler, build, project := sourceFixtures(t, &changeProvider{}, nil)
+	_ = reconciler
+	exception := breakGlassException(breakGlassGrant, time.Hour)
+	transition := sourceBreakGlassTransition(build, project, exception)
+	if transition.Kind != "Build" || transition.Project != "shop" {
+		t.Fatalf("unexpected transition: %+v", transition)
+	}
+	if transition.Details["privileged"] != true {
+		t.Fatalf("a break-glass use is a privileged record: %+v", transition.Details)
+	}
+	if transition.Details["rule"] != RulePullRequest || transition.Details["exception"] != breakGlassGrant {
+		t.Fatalf("the record names the rule and the grant: %+v", transition.Details)
+	}
+	for _, key := range []string{"commit", "branch", "requestedBy", "approvedBy", "reason", "expiresAt"} {
+		if _, ok := transition.Details[key]; !ok {
+			t.Fatalf("the record must carry %q: %+v", key, transition.Details)
+		}
 	}
 }

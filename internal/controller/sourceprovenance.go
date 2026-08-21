@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -86,6 +87,16 @@ import (
 // differently-shaped member is a URI space somebody will get wrong.
 const PredicateSourceProvenance = "https://kitchen.bermos.dev/attestation/pull-request-approval/v1"
 
+// RulePullRequest is the stable rule id an Exception names to break the glass
+// on a project's pull request requirement. It is deliberately its own id
+// rather than the engine's require-independent-review: that rule judges the
+// artifact's attestation at promotion time and is waived through the engine's
+// own exception path, while this one is the *build-time* refusal — a direct
+// push to the production branch — which never reaches the engine at all. One
+// id, documented in docs/api/exceptions.md and docs/COMPLIANCE.md §8.8;
+// renaming it silently disconnects every standing grant.
+const RulePullRequest = "require-pull-request"
+
 // resolveSourceProvenance asks the provider how the commit arrived and decides
 // whether the build may proceed.
 //
@@ -110,6 +121,9 @@ func (r *BuildReconciler) resolveSourceProvenance(
 		status.Message = "this project's git connection cannot say how a commit reached the branch, " +
 			"so nothing was established about its review"
 		if required {
+			if waived, err := r.breakGlass(ctx, build, project, status); err != nil || waived {
+				return status, err
+			}
 			return status, fmt.Errorf(
 				"this project requires commits to arrive through a reviewed pull request, and its git " +
 					"connection cannot report whether this one did")
@@ -155,16 +169,103 @@ func (r *BuildReconciler) resolveSourceProvenance(
 		return status, nil
 	}
 
+	var refusal error
 	switch {
 	case provenance.PullRequest == 0:
-		return status, fmt.Errorf(
+		refusal = fmt.Errorf(
 			"this project requires commits to arrive through a reviewed pull request, and %s says this "+
 				"one did not", provenance.Provider)
 	case !provenance.Independent():
-		return status, fmt.Errorf("this project requires an independent review, and the only approval " +
+		refusal = fmt.Errorf("this project requires an independent review, and the only approval " +
 			"on this change is its own author's")
 	}
-	return status, nil
+	if refusal != nil {
+		// The break-glass path (#136): an active Exception naming
+		// require-pull-request converts the refusal into an allowed,
+		// privileged-audit-recorded build — never blocking the emergency
+		// deployment is the design rule this whole suite stands on. The
+		// exception is a specific, expiring, two-person grant; nothing else
+		// gets through here.
+		if waived, err := r.breakGlass(ctx, build, project, status); err != nil || waived {
+			return status, err
+		}
+	}
+	return status, refusal
+}
+
+// breakGlass consults the active break-glass exceptions for this project's
+// production environment — a build-time waiver has no release yet, so only an
+// environment-wide grant (no releaseRef) naming RulePullRequest applies. On a
+// match the requirement is waived and loudly recorded: a privileged audit
+// record first (its failure fails the build — fail-closed on the record, not
+// the check, like the machine-identity exemption), then the exception's name
+// on status so the signed source attestation carries it.
+func (r *BuildReconciler) breakGlass(
+	ctx context.Context,
+	build *kitchenv1alpha1.Build,
+	project *kitchenv1alpha1.Project,
+	status *kitchenv1alpha1.SourceProvenanceStatus,
+) (bool, error) {
+	productionEnv := project.Name + "-production"
+	active, err := ActiveExceptionsFor(ctx, r.Client, build.Namespace,
+		project.Name, productionEnv, "", time.Now())
+	if err != nil {
+		// The listing failing is a platform fault, not a finding about the
+		// commit — but unlike a provider outage it guards a refusal that is
+		// about to happen, so it retries rather than deciding either way.
+		return false, err
+	}
+	for i := range active {
+		exception := &active[i]
+		if !exception.WaivesRule(RulePullRequest) {
+			continue
+		}
+		if err := r.Audit.Record(ctx, sourceBreakGlassTransition(build, project, exception)); err != nil {
+			return false, err
+		}
+		status.Exception = exception.Name
+		status.Message = fmt.Sprintf(
+			"the pull request requirement was waived by break-glass exception %s, approved by %s, expiring %s: %s",
+			exception.Name, exception.Spec.ApprovedBy,
+			exception.Spec.ExpiresAt.UTC().Format(time.RFC3339), exception.Spec.Reason)
+		logf.FromContext(ctx).Info("pull request requirement waived by break-glass exception",
+			"build", build.Name, "exception", exception.Name, "approvedBy", exception.Spec.ApprovedBy)
+		return true, nil
+	}
+	return false, nil
+}
+
+// sourceBreakGlassTransition is the privileged audit record a build-time
+// break-glass appends before the build proceeds — built apart from the
+// recording so a test can hold it up to the light without a store.
+func sourceBreakGlassTransition(
+	build *kitchenv1alpha1.Build,
+	project *kitchenv1alpha1.Project,
+	exception *kitchenv1alpha1.Exception,
+) audit.Transition {
+	return audit.Transition{
+		Object:      build,
+		Kind:        audit.KindBuild,
+		Controller:  actorBuildController,
+		Correlation: correlationFor(build),
+		Project:     project.Name,
+		Reason: fmt.Sprintf(
+			"break-glass: the pull request requirement was waived for commit %s by exception %s, "+
+				"requested by %s, approved by %s",
+			build.Spec.Git.SHA, exception.Name, exception.Spec.RequestedBy, exception.Spec.ApprovedBy),
+		Details: map[string]any{
+			"privileged":  true,
+			"exception":   exception.Name,
+			"rule":        RulePullRequest,
+			"commit":      build.Spec.Git.SHA,
+			"branch":      build.Spec.Git.Branch,
+			"requirement": "pullRequest",
+			"requestedBy": exception.Spec.RequestedBy,
+			"approvedBy":  exception.Spec.ApprovedBy,
+			"reason":      exception.Spec.Reason,
+			"expiresAt":   exception.Spec.ExpiresAt.UTC().Format(time.RFC3339),
+		},
+	}
 }
 
 // requiresPullRequest reports whether this particular build has to prove it was
@@ -327,6 +428,13 @@ func sourceRecord(
 	}
 	if source.MachineIdentity != "" {
 		record["machineIdentity"] = source.MachineIdentity
+		record["exempt"] = true
+	}
+	if source.Exception != "" {
+		// The break-glass shape mirrors the machine exemption: the waiver is
+		// named, and `exempt` says the requirement was not met but was waived
+		// — a verifier reading only this attestation still sees both facts.
+		record["exception"] = source.Exception
 		record["exempt"] = true
 	}
 	if source.Message != "" {

@@ -78,7 +78,9 @@ type platform struct {
 
 	// The decision register: what /decisions answers, and what a replay says.
 	decisions []decision
-	replay    *decisionReplay
+	// The exception register: what /exceptions answers.
+	exceptions []exception
+	replay     *decisionReplay
 
 	// The pipeline: what the project's promotions list answers, and — when
 	// set — the promotion an environment move becomes (the 202 an
@@ -185,13 +187,8 @@ func (p *platform) serve(w http.ResponseWriter, req *http.Request) {
 		p.moveEnvironment(w, body)
 	case path == "/platform/backup" && req.Method == http.MethodPost:
 		p.answerBackup(w)
-	case path == "/decisions":
-		writeAnswer(w, http.StatusOK, list[decision]{Items: p.decisions})
-	case strings.HasPrefix(path, "/decisions/") && strings.HasSuffix(path, "/replay") &&
-		req.Method == http.MethodPost:
-		p.answerReplay(w)
-	case strings.HasPrefix(path, "/decisions/"):
-		p.answerDecision(w, strings.TrimPrefix(path, "/decisions/"))
+	case strings.HasPrefix(path, "/decisions") || strings.HasPrefix(path, "/exceptions"):
+		p.answerRegisters(w, req, path)
 	case strings.HasPrefix(path, "/environments/"):
 		p.answerEnvironment(w, strings.TrimPrefix(path, "/environments/"))
 	default:
@@ -240,6 +237,33 @@ func (p *platform) answerDecision(w http.ResponseWriter, id string) {
 		}
 	}
 	writeAnswer(w, http.StatusNotFound, errorBody{Error: "decisions.kitchen.bermos.dev \"" + id + "\" not found"})
+}
+
+// answerRegisters routes the decision and exception registers, split out of
+// serve to keep its complexity within the linter's patience.
+func (p *platform) answerRegisters(w http.ResponseWriter, req *http.Request, path string) {
+	switch {
+	case path == "/decisions":
+		writeAnswer(w, http.StatusOK, list[decision]{Items: p.decisions})
+	case strings.HasSuffix(path, "/replay") && req.Method == http.MethodPost:
+		p.answerReplay(w)
+	case strings.HasPrefix(path, "/decisions/"):
+		p.answerDecision(w, strings.TrimPrefix(path, "/decisions/"))
+	case path == "/exceptions":
+		writeAnswer(w, http.StatusOK, list[exception]{Items: p.exceptions})
+	default:
+		p.answerException(w, strings.TrimPrefix(path, "/exceptions/"))
+	}
+}
+
+func (p *platform) answerException(w http.ResponseWriter, name string) {
+	for _, e := range p.exceptions {
+		if e.Name == name {
+			writeAnswer(w, http.StatusOK, e)
+			return
+		}
+	}
+	writeAnswer(w, http.StatusNotFound, errorBody{Error: "exceptions.kitchen.bermos.dev \"" + name + "\" not found"})
 }
 
 func (p *platform) answerReplay(w http.ResponseWriter) {

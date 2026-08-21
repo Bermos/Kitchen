@@ -181,6 +181,10 @@ name against `internal/api/policy.go`, so a route that moves fails them too.
 | GET | `/projects/{name}/promotions` | That project's promotions, newest first. `?environment=`, `?release=`, `?phase=` | `viewer` |
 | POST | `/projects/{name}/promotions` | Ask for a release to land on an environment; the policy decides | `developer` |
 | GET | `/promotions/{name}` | One promotion: the phase, the verdict, and the unmet rules by id | `viewer` |
+| POST | `/projects/{name}/exceptions` | Request a break-glass exception; the escalation ladder decides who must approve | `developer` |
+| GET | `/exceptions` | The exception register, soonest to expire first. `?project=`, `?environment=`, `?historical=true` | any account — filtered |
+| GET | `/exceptions/{name}` | One exception whole: the grant, and every promotion that relied on it | `viewer` |
+| PATCH | `/exceptions/{name}` | Resolve it, with a reason on the record | `admin` |
 | GET | `/environments` | Every environment. `?project=` filters | any account — filtered |
 | GET | `/environments/{name}` | One environment | `viewer` |
 | PATCH | `/environments/{name}` | Move it to another release — promotion and rollback. An environment with requirements answers `202` with the Promotion the move became | `developer` |
@@ -272,6 +276,7 @@ such changes two changes to two different files.
 - [The activity feed and the audit log](api/audit.md) — what the platform did, best-effort and tamper-evident
 - [Policy decisions](api/decisions.md) — every verdict the policy engine reached, the bundles it evaluates, and replaying a decision
 - [Promotions](api/promotions.md) — the staged pipeline: asking for a release to land, and what the policy decided
+- [Exceptions](api/exceptions.md) — break-glass: bounded, two-person, per-rule waivers, and the register of every one
 - [Platform status and the operator's screens](api/platform.md) — whether the platform is healthy, and everything behind /platform
 - [Settings and updates](api/settings.md) — the installation's own configuration, and moving it to a new version
 
