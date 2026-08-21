@@ -120,7 +120,23 @@ const decisionColumns = `
 // InsertDecision appends one decision. Like the audit insert and unlike every
 // telemetry write, it is waited on: a decision the store refused is a
 // decision the platform knows it could not keep, and says so.
+//
+// It is idempotent on the id, like the bundle insert is on its digest: the
+// promotion path derives a deterministic id from the promotion, so a requeue
+// that re-records the same decision finds its row already present and adds
+// nothing — the table is a plain MergeTree, and a second row under the same
+// id would read back as two decisions.
 func (c *Client) InsertDecision(ctx context.Context, decision Decision) error {
+	existing, err := c.QueryWithParams(ctx, fmt.Sprintf(
+		"SELECT 1 FROM %s.%s WHERE id = {id:String} LIMIT 1",
+		quoteIdentifier(c.cfg.Database), quoteIdentifier(PromotionDecisionsTable)),
+		map[string]string{"id": decision.ID})
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(existing) != "" {
+		return nil
+	}
 	timestamp := decision.Timestamp
 	if timestamp.IsZero() {
 		timestamp = time.Now()

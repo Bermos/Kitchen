@@ -39,10 +39,12 @@ import (
 // build is gone is judged on nothing, honestly, rather than refused a
 // judgement, and a project that could not be read is judged unclassified.
 //
-// Exceptions are deliberately absent here: until #136 lands there are no
-// Exception objects to list, and the callers pass none. When it lands, the
-// listing joins this one materializer so every kind of evaluation waives the
-// same grants the same way.
+// Exceptions are deliberately absent here: which grants are in scope is a
+// listing (controller.ActiveExceptionsFor — the one implementation), not a
+// materialization, and the callers that evaluate for real set them on the
+// input after materializing — the promotion reconciler and the eligibility
+// preview both do — so every kind of evaluation waives the same grants the
+// same way.
 func MaterializeInput(
 	kind string,
 	at time.Time,

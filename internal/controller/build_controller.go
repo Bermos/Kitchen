@@ -781,10 +781,11 @@ func (r *BuildReconciler) succeed(
 		}
 	case build.Spec.Git.Branch == project.Spec.Source.ProductionBranch:
 		// The build's target is stage one of the project's pipeline when it
-		// has one, and the production environment when it does not — and the
-		// release reaches it directly or through a Promotion, depending on
-		// whether the target sets a bar.
-		envName := project.Name + "-production"
+		// has one, and the production target when it does not (with no stages
+		// the entry point and the production target are the same environment)
+		// — and the release reaches it directly or through a Promotion,
+		// depending on whether the target sets a bar.
+		envName := ProductionTargetEnvironmentName(project)
 		if stages := project.Spec.Promotion; stages != nil && len(stages.Stages) > 0 {
 			envName = stages.Stages[0].Environment
 		}
@@ -870,6 +871,13 @@ func (r *BuildReconciler) promoteOrFlip(
 			envName, env.Spec.ProjectRef.Name, project.Name)
 	}
 	if env.Spec.Requirements == nil {
+		// The hard check behind issue #137: the fast path refuses to land a
+		// classified project's release on an environment rated below it.
+		// Auto-created environments inherit the project's class and never
+		// trip this; only one somebody narrowed does — which is the point.
+		if refusal := DataClassRefusal(project, env); refusal != "" {
+			return r.refuseFlipOnDataClass(ctx, build, project, env, releaseName, refusal)
+		}
 		return r.ensureEnvironment(ctx, namespace, project, envName,
 			kitchenv1alpha1.EnvironmentProduction, nil, releaseName, build)
 	}
@@ -877,6 +885,64 @@ func (r *BuildReconciler) promoteOrFlip(
 		correlationFor(build), namespace, project, envName, releaseName,
 		audit.ControllerActor(actorBuildController),
 		fmt.Sprintf("build %s succeeded", build.Name))
+}
+
+// condPromoted is the Build condition that says what happened to a
+// successful build's release after the build itself: absent for a build
+// nothing promotes (a preview, a side branch), and False with the refusal
+// when the fast path would not land the release. The build itself still
+// succeeds — the artifact exists and is evidenced — so the refusal cannot
+// live on the Ready condition.
+const condPromoted = "Promoted"
+
+// refuseFlipOnDataClass is the fast path saying no, loudly and terminally:
+// the audit record first (fail-closed — a refusal the log cannot record is a
+// requeue), then the refusal on the Build's Promoted condition, naming both
+// classes and the fix. It returns nil error on the recorded refusal because
+// the mismatch is a configuration to correct, not a fault to requeue against;
+// the next production build meets the corrected classes.
+func (r *BuildReconciler) refuseFlipOnDataClass(
+	ctx context.Context,
+	build *kitchenv1alpha1.Build,
+	project *kitchenv1alpha1.Project,
+	env *kitchenv1alpha1.Environment,
+	releaseName, refusal string,
+) error {
+	if err := r.Audit.Record(ctx, dataClassFlipRefusalTransition(build, project, env, releaseName, refusal)); err != nil {
+		return err
+	}
+	meta.SetStatusCondition(&build.Status.Conditions, metav1.Condition{
+		Type: condPromoted, Status: metav1.ConditionFalse, Reason: "DataClassExceedsEnvironment",
+		Message: refusal, ObservedGeneration: build.Generation,
+	})
+	logf.FromContext(ctx).Info("a release was refused its environment over data classification",
+		"build", build.Name, "environment", env.Name, "release", releaseName,
+		"projectDataClass", string(project.Spec.DataClass), "environmentDataClass", string(env.Spec.DataClass))
+	return nil
+}
+
+// dataClassFlipRefusalTransition is the refusal's audit record, built apart
+// from the recording so a test can hold it up to the light without a store.
+func dataClassFlipRefusalTransition(
+	build *kitchenv1alpha1.Build,
+	project *kitchenv1alpha1.Project,
+	env *kitchenv1alpha1.Environment,
+	releaseName, refusal string,
+) audit.Transition {
+	return audit.Transition{
+		Object:      env,
+		Kind:        audit.KindEnvironment,
+		Controller:  actorBuildController,
+		Correlation: correlationFor(build),
+		Project:     project.Name,
+		Reason:      fmt.Sprintf("release %s was not promoted to %s: %s", releaseName, env.Name, refusal),
+		Details: map[string]any{
+			"release":              releaseName,
+			"build":                build.Name,
+			"projectDataClass":     string(project.Spec.DataClass),
+			"environmentDataClass": string(env.Spec.DataClass),
+		},
+	}
 }
 
 // ensureEnvironment points the named Environment at the Release, creating it
@@ -905,9 +971,19 @@ func (r *BuildReconciler) ensureEnvironment(
 			Spec: kitchenv1alpha1.EnvironmentSpec{
 				ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: project.Name},
 				Type:       envType,
+				// Issue #137's inheritance: an environment the platform
+				// creates takes the project's class at creation, so a
+				// classified project's own environments can hold its data by
+				// construction. Owners may narrow it later; existing
+				// environments are never touched.
+				DataClass:  project.Spec.DataClass,
 				Preview:    preview,
 				ReleaseRef: kitchenv1alpha1.LocalObjectReference{Name: releaseName},
 			},
+		}
+		details := map[string]any{"type": string(envType), "release": releaseName, "build": buildName}
+		if project.Spec.DataClass.Classified() {
+			details["dataClass"] = string(project.Spec.DataClass)
 		}
 		if err := r.Audit.Record(ctx, audit.Transition{
 			Object:      env,
@@ -918,7 +994,7 @@ func (r *BuildReconciler) ensureEnvironment(
 			To:          releaseName,
 			Project:     project.Name,
 			Reason:      fmt.Sprintf("build %s created environment %s", buildName, envName),
-			Details:     map[string]any{"type": string(envType), "release": releaseName, "build": buildName},
+			Details:     details,
 		}); err != nil {
 			return err
 		}

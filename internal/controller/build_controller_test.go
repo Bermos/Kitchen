@@ -725,6 +725,68 @@ var _ = Describe("Build Controller", func() {
 			Expect(err).To(HaveOccurred(), "a staged build must not touch production directly")
 		})
 
+		It("gives an environment it creates the project's data class", func() {
+			project := &kitchenv1alpha1.Project{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: projectName, Namespace: namespace}, project)).To(Succeed())
+			project.Spec.DataClass = kitchenv1alpha1.DataClassConfidential
+			Expect(k8sClient.Update(ctx, project)).To(Succeed())
+
+			reconcileOnce()
+			completeJob()
+			createBuildPod(`{"containerimage.digest":"sha256:feedface"}`)
+			reconcileOnce()
+
+			env := &kitchenv1alpha1.Environment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: projectName + "-production", Namespace: namespace}, env)).To(Succeed())
+			Expect(env.Spec.DataClass).To(Equal(kitchenv1alpha1.DataClassConfidential),
+				"issue #137's inheritance: an auto-created environment takes the project's class at creation")
+			Expect(env.Spec.ReleaseRef.Name).To(Equal(releaseName(projectName, sha)),
+				"an environment that inherits is never refused by construction")
+		})
+
+		It("refuses the fast path when the project's class exceeds the environment's rating", func() {
+			project := &kitchenv1alpha1.Project{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: projectName, Namespace: namespace}, project)).To(Succeed())
+			project.Spec.DataClass = kitchenv1alpha1.DataClassConfidential
+			Expect(k8sClient.Update(ctx, project)).To(Succeed())
+
+			// The environment was narrowed below the project's class, and it
+			// declares no requirements: only the hard check stands in the way.
+			env := &kitchenv1alpha1.Environment{
+				ObjectMeta: metav1.ObjectMeta{Name: projectName + "-production", Namespace: namespace},
+				Spec: kitchenv1alpha1.EnvironmentSpec{
+					ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: projectName},
+					Type:       kitchenv1alpha1.EnvironmentProduction,
+					DataClass:  kitchenv1alpha1.DataClassInternal,
+					ReleaseRef: kitchenv1alpha1.LocalObjectReference{Name: projectName + "-rel-previous"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, env)).To(Succeed())
+
+			reconcileOnce()
+			completeJob()
+			createBuildPod(`{"containerimage.digest":"sha256:feedface"}`)
+			reconcileOnce()
+
+			// The environment keeps what it ran; the build still succeeds — the
+			// artifact exists and is evidenced — and the Promoted condition says
+			// why the release did not land, naming both classes and the fix.
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: projectName + "-production", Namespace: namespace}, env)).To(Succeed())
+			Expect(env.Spec.ReleaseRef.Name).To(Equal(projectName+"-rel-previous"),
+				"a classified release must not land on an environment rated below it")
+
+			build := &kitchenv1alpha1.Build{}
+			Expect(k8sClient.Get(ctx, buildKey, build)).To(Succeed())
+			Expect(build.Status.Phase).To(Equal(kitchenv1alpha1.BuildSucceeded))
+			promoted := meta.FindStatusCondition(build.Status.Conditions, condPromoted)
+			Expect(promoted).NotTo(BeNil())
+			Expect(promoted.Status).To(Equal(metav1.ConditionFalse))
+			Expect(promoted.Reason).To(Equal("DataClassExceedsEnvironment"))
+			Expect(promoted.Message).To(ContainSubstring("confidential"))
+			Expect(promoted.Message).To(ContainSubstring("internal"))
+			Expect(promoted.Message).To(ContainSubstring("classify the environment"))
+		})
+
 		It("creates a preview environment for pull request builds", func() {
 			build := &kitchenv1alpha1.Build{}
 			Expect(k8sClient.Get(ctx, buildKey, build)).To(Succeed())

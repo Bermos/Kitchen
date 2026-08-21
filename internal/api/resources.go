@@ -1255,6 +1255,19 @@ func (s *Server) patchEnvironment(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// The hard check behind issue #137 guards the direct path the same way it
+	// guards the build controller's: a classified project's release does not
+	// land — by promotion or by rollback — on an environment rated below it.
+	// A gated environment took the promotion branch above, where the pinned
+	// bundle's dataclass-le-environment rule makes the same comparison.
+	project := &kitchenv1alpha1.Project{}
+	if err := s.get(ctx, env.Spec.ProjectRef.Name, project); err == nil {
+		if refusal := controller.DataClassRefusal(project, env); refusal != "" {
+			badRequest(w, "%s", refusal)
+			return
+		}
+	}
+
 	// Moving to an older release is a rollback; anything else superseded the
 	// one running. Releases are immutable, so creation time is the order they
 	// were cut in. A deleted outgoing release cannot be compared any more and

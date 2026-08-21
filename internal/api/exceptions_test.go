@@ -169,6 +169,81 @@ func TestTheLadderIsConfigurable(t *testing.T) {
 	}
 }
 
+func TestAnExceptionMayCoverTheProductionTargetBeforeItExists(t *testing.T) {
+	// Pre-first-build there is no production environment yet, and the
+	// build-time break-glass is scoped to exactly its name — so the grant
+	// must be possible before the build that needs it, or the refusal it
+	// exists to waive could never be waived.
+	h := asMember(t, kitchenv1alpha1.AccessRoleDeveloper)
+	h.grantTo(t, approverSubject, approverSubject, kitchenv1alpha1.AccessRoleDeveloper)
+	env := &kitchenv1alpha1.Environment{
+		ObjectMeta: metav1.ObjectMeta{Name: testEnvironment, Namespace: testNamespace},
+	}
+	if err := h.server.Client.Delete(context.Background(), env); err != nil {
+		t.Fatal(err)
+	}
+
+	recorder := h.do(t, http.MethodPost, "/api/v1/projects/"+feedProject+"/exceptions",
+		exceptionBody(2*time.Hour, approverSubject))
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	view := decode[exceptionView](t, recorder)
+	if view.Environment != testEnvironment {
+		t.Fatalf("the grant is scoped to the production target, got %q", view.Environment)
+	}
+}
+
+func TestAStagedProjectsGrantableTargetIsItsLastStage(t *testing.T) {
+	// Under a staged pipeline the production target is the LAST stage's
+	// environment — the name the build-time break-glass reads — and it may
+	// be granted against before its first build creates it.
+	h := asMember(t, kitchenv1alpha1.AccessRoleDeveloper)
+	h.grantTo(t, approverSubject, approverSubject, kitchenv1alpha1.AccessRoleDeveloper)
+	project := &kitchenv1alpha1.Project{}
+	if err := h.server.Client.Get(context.Background(),
+		client.ObjectKey{Namespace: testNamespace, Name: feedProject}, project); err != nil {
+		t.Fatal(err)
+	}
+	project.Spec.Promotion = &kitchenv1alpha1.PromotionPolicySpec{Stages: []kitchenv1alpha1.PromotionStage{
+		{Name: "staging", Environment: "shop-staging"},
+		{Name: "live", Environment: "shop-live"},
+	}}
+	if err := h.server.Client.Update(context.Background(), project); err != nil {
+		t.Fatal(err)
+	}
+
+	body := fmt.Sprintf(`{"environment":"shop-live","ruleIDs":["require-pull-request"],`+
+		`"reason":"hotfix for INC-421","approvedBy":%q,"expiresAt":%q}`,
+		approverSubject, time.Now().Add(2*time.Hour).UTC().Format(time.RFC3339))
+	recorder := h.do(t, http.MethodPost, "/api/v1/projects/"+feedProject+"/exceptions", body)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if view := decode[exceptionView](t, recorder); view.Environment != "shop-live" {
+		t.Fatalf("the grant is scoped to the last stage, got %q", view.Environment)
+	}
+}
+
+func TestAnUnknownEnvironmentThatIsNotTheTargetIsRefusedWithBothOptions(t *testing.T) {
+	h := asMember(t, kitchenv1alpha1.AccessRoleDeveloper)
+	h.grantTo(t, approverSubject, approverSubject, kitchenv1alpha1.AccessRoleDeveloper)
+
+	body := fmt.Sprintf(`{"environment":"shop-qa","ruleIDs":["max-severity"],`+
+		`"reason":"hotfix","approvedBy":%q,"expiresAt":%q}`,
+		approverSubject, time.Now().Add(2*time.Hour).UTC().Format(time.RFC3339))
+	recorder := h.do(t, http.MethodPost, "/api/v1/projects/"+feedProject+"/exceptions", body)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	got := errorOf(t, recorder.Body.String())
+	if !strings.Contains(got, "does not exist") || !strings.Contains(got, "production target") ||
+		!strings.Contains(got, testEnvironment) {
+		t.Fatalf("the refusal explains both options — an existing environment, or the production target %q — got %q",
+			testEnvironment, got)
+	}
+}
+
 func TestAnExceptionTakesTwoPeople(t *testing.T) {
 	h := asMember(t, kitchenv1alpha1.AccessRoleDeveloper)
 

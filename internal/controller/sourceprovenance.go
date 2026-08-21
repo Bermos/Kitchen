@@ -194,19 +194,21 @@ func (r *BuildReconciler) resolveSourceProvenance(
 }
 
 // breakGlass consults the active break-glass exceptions for this project's
-// production environment — a build-time waiver has no release yet, so only an
-// environment-wide grant (no releaseRef) naming RulePullRequest applies. On a
-// match the requirement is waived and loudly recorded: a privileged audit
-// record first (its failure fails the build — fail-closed on the record, not
-// the check, like the machine-identity exemption), then the exception's name
-// on status so the signed source attestation carries it.
+// production target — `<project>-production`, or the last stage's environment
+// when the project stages its pipeline (ProductionTargetEnvironmentName is
+// the one spelling of that) — since a build-time waiver has no release yet,
+// so only an environment-wide grant (no releaseRef) naming RulePullRequest
+// applies. On a match the requirement is waived and loudly recorded: a
+// privileged audit record first (its failure fails the build — fail-closed on
+// the record, not the check, like the machine-identity exemption), then the
+// exception's name on status so the signed source attestation carries it.
 func (r *BuildReconciler) breakGlass(
 	ctx context.Context,
 	build *kitchenv1alpha1.Build,
 	project *kitchenv1alpha1.Project,
 	status *kitchenv1alpha1.SourceProvenanceStatus,
 ) (bool, error) {
-	productionEnv := project.Name + "-production"
+	productionEnv := ProductionTargetEnvironmentName(project)
 	active, err := ActiveExceptionsFor(ctx, r.Client, build.Namespace,
 		project.Name, productionEnv, "", time.Now())
 	if err != nil {

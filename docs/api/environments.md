@@ -82,11 +82,19 @@ and recorded the same way:
 
 - `dataClass` rates the environment: the highest sensitivity class it may
   hold, one of `public`, `internal`, `confidential`, `strictlyConfidential`
-  in ascending order, or `""` to remove the rating. At promotion the policy
-  rule `dataclass-le-environment` refuses a project classified above the
-  rating — including a classified project landing on an environment nobody
-  has rated. Absent means unrated, shown as `unclassified` everywhere and
-  never defaulted.
+  in ascending order, or `""` to remove the rating. An environment the
+  platform creates — the first production build's, a preview's — **inherits
+  the project's class at creation** and may be narrowed here afterwards;
+  existing environments are never reclassified behind their owners' backs. A
+  release flip that would land a project classified above the environment's
+  rating — an unrated environment included — is **refused everywhere**: the
+  build controller's fast path refuses it (audit-recorded, with the refusal
+  on the build's `Promoted` condition), a direct move or rollback on this
+  API answers `400` with the same words, and an environment that pins a
+  policy bundle is judged by the engine instead, where
+  `dataclass-le-environment` reports the same comparison as a named rule.
+  Absent means unrated, shown as `unclassified` everywhere and never
+  defaulted.
 - `residency` declares where this environment's data is located, in the
   operator's own vocabulary (`"CH"`, `"eu-central-1"`). Declared, not
   observed: the platform records the answer the institution is accountable

@@ -72,7 +72,7 @@ type Input struct {
 	// back from the registry, with their verification state.
 	Evidence []Evidence `json:"evidence,omitempty"`
 	// Claims are the environment's provisioned resources, with the data
-	// facts issues #137/#138 record about them. Empty until those land.
+	// facts issues #137/#138 record about them: class, provenance, residency.
 	Claims []Claim `json:"claims,omitempty"`
 	// Exceptions are the active break-glass grants in scope for this pair
 	// (#136). They do not stop rules firing — they waive fired rules, and the
@@ -90,8 +90,9 @@ type Input struct {
 // ProjectFacts is what the engine knows about the project.
 type ProjectFacts struct {
 	Name string `json:"name"`
-	// DataClass and Criticality are empty until #137/#141 classify them;
-	// rules treat absence as unclassified, never as a default.
+	// DataClass is the project's declared classification (#137); Criticality
+	// stays empty until #141 lands. Rules treat absence as unclassified,
+	// never as a default.
 	DataClass   string `json:"dataClass,omitempty"`
 	Criticality string `json:"criticality,omitempty"`
 }

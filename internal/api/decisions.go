@@ -249,22 +249,31 @@ func (s *Server) replayDecision(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	bundle, err := s.storedBundle(w, req, decision.BundleDigest)
-	if bundle == nil {
+	// An ungated promotion — its environment declared no requirements —
+	// stored its decision with an empty bundle: nothing was evaluated then,
+	// and the replay reproduces the same trivial allow rather than asking the
+	// engine to evaluate nothing and refusing over it. The empty bundle's
+	// digest is as content-addressed as any other, so matching on it is
+	// matching on what was (not) evaluated.
+	result := policy.Result{Verdict: policy.VerdictAllowed, Fired: []policy.FiredRule{}}
+	if decision.BundleDigest != policy.Digest(nil) {
+		bundle, err := s.storedBundle(w, req, decision.BundleDigest)
+		if bundle == nil {
+			if err != nil {
+				writeJSON(w, http.StatusConflict, errorBody{
+					Error: "decision " + decision.ID + " cannot be replayed: " + err.Error(),
+				})
+			}
+			return
+		}
+
+		result, err = policy.Evaluate(ctx, bundle, input)
 		if err != nil {
 			writeJSON(w, http.StatusConflict, errorBody{
-				Error: "decision " + decision.ID + " cannot be replayed: " + err.Error(),
+				Error: "decision " + decision.ID + " could not be re-evaluated: " + err.Error(),
 			})
+			return
 		}
-		return
-	}
-
-	result, err := policy.Evaluate(ctx, bundle, input)
-	if err != nil {
-		writeJSON(w, http.StatusConflict, errorBody{
-			Error: "decision " + decision.ID + " could not be re-evaluated: " + err.Error(),
-		})
-		return
 	}
 	rulesFired, err := json.Marshal(result.Fired)
 	if err != nil {
