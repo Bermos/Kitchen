@@ -29,6 +29,11 @@ their defaults:
 repository the way a build would, and a build context it showed to be wrong is
 corrected on the form rather than after the first build has failed.
 
+From a terminal this is [`kitchen projects create`](../CLI.md#creating-a-project),
+which runs the preflight, creates the project and links the directory to it in
+one command — and takes the repository and the name from the checkout it is run
+in.
+
 The name has to work as a DNS label of at most 46 characters, because
 everything the platform derives from it — the application namespace, release
 names, generated hostnames — has to fit Kubernetes' 63-character limit.
