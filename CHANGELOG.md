@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.11.0](https://github.com/Bermos/Kitchen/compare/v0.10.0...v0.11.0) (2026-08-21)
+
+
+### Features
+
+* **api:** detect a repository's layout before the project exists ([878bf47](https://github.com/Bermos/Kitchen/commit/878bf4732d6d8f6565e89498e9f4dd6ceca94ca5))
+* **cli:** create a project from the command line ([d255777](https://github.com/Bermos/Kitchen/commit/d255777d9554c36167b85f5fbbe6c6ccd69df627))
+* **operator:** build the production branch when a project is created ([c1e811a](https://github.com/Bermos/Kitchen/commit/c1e811a2158935eab766a32138bdcf164acdc8e3))
+* **ui:** show the detected layout while creating a project ([ca9c37f](https://github.com/Bermos/Kitchen/commit/ca9c37fee87a717d22b0fbef196813bbc3ff4b96))
+
+
+### Documentation
+
+* **cli:** document creating a project from the command line ([8b0c71b](https://github.com/Bermos/Kitchen/commit/8b0c71ba709760bb5bb185f76d63389af24a4663))
+
 ## [0.10.0](https://github.com/Bermos/Kitchen/compare/v0.9.0...v0.10.0) (2026-08-21)
 
 
