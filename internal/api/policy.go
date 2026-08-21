@@ -254,6 +254,19 @@ func (s *Server) routes() []route {
 		{"GET /api/v1/releases", s.listReleases, acrossProjects()},
 		{"GET /api/v1/releases/{name}", s.getRelease, onProject(access.ProjectViewer, ofRelease, "reading a release")},
 
+		// Promotions. Asking for a release to land on an environment is a
+		// developer's write, the same bar as redeploying — the environment's
+		// own requirements are what may still refuse it, through the policy
+		// engine rather than through a role. The object that comes back is
+		// the record of what was asked and what was decided, which is a
+		// viewer's read like every other record.
+		{"GET /api/v1/projects/{name}/promotions", s.listProjectPromotions,
+			onProject(access.ProjectViewer, ofProject, "reading a project's promotions")},
+		{"POST /api/v1/projects/{name}/promotions", s.createPromotion,
+			onProject(access.ProjectDeveloper, ofProject, "promoting a release")},
+		{"GET /api/v1/promotions/{name}", s.getPromotion,
+			onProject(access.ProjectViewer, ofPromotion, "reading a promotion")},
+
 		// Environments. Moving one to another release is the whole of
 		// promotion and rollback, which is what "redeploying" names.
 		{"GET /api/v1/environments", s.listEnvironments, acrossProjects()},
@@ -473,6 +486,8 @@ var (
 		func(obj client.Object) string { return obj.(*kitchenv1alpha1.Environment).Spec.ProjectRef.Name })
 	ofClaim = objectResolver("resourceclaims", func() client.Object { return &kitchenv1alpha1.ResourceClaim{} },
 		func(obj client.Object) string { return obj.(*kitchenv1alpha1.ResourceClaim).Spec.ProjectRef.Name })
+	ofPromotion = objectResolver("promotions", func() client.Object { return &kitchenv1alpha1.Promotion{} },
+		func(obj client.Object) string { return obj.(*kitchenv1alpha1.Promotion).Spec.ProjectRef.Name })
 )
 
 // ofDomain is the one path-addressed object that does not name a project. A

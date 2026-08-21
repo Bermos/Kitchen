@@ -6,6 +6,7 @@ import { shortImage, timeAgo, uptime } from "../lib/format";
 import { callerFor } from "../lib/me";
 import { operatorMode } from "../lib/mode";
 import { may } from "../lib/policy";
+import { blockedPromotionFor } from "../lib/promotions";
 import type { Tone } from "../lib/status";
 import { useAsync, usePoll } from "../lib/useAsync";
 import ConditionsTable from "../components/ConditionsTable.vue";
@@ -30,15 +31,23 @@ const { data, error, loading, refresh } = useAsync(async () => {
   // role of its own — the API resolves which project a request is about from
   // the object it names — so the one place the caller's role is written down
   // is the project's own payload, and this screen's controls are keyed to it.
-  const [releases, project] = await Promise.all([
+  const [releases, project, promotions] = await Promise.all([
     api.projectReleases(environment.project),
     api.project(environment.project),
+    api.projectPromotions(environment.project, { environment: environment.name }),
   ]);
-  return { environment, releases, project };
+  return { environment, releases, project, promotions };
 });
 watch(name, () => void refresh());
 
 const environment = computed(() => data.value?.environment);
+// A promotion into this environment that stands blocked is the one thing the
+// screen must not bury: the release everybody expects here is not here, and
+// the unmet rules say why. Only the *newest* promotion counts — a blocked one
+// a later promotion superseded is history.
+const blockedPromotion = computed(() =>
+  blockedPromotionFor(data.value?.promotions ?? [], data.value?.environment.name ?? ""),
+);
 
 // Redeploying and deleting are the project developer's; the materialized
 // objects are the operator's and stay behind the mode toggle, which only an
@@ -123,8 +132,19 @@ async function move() {
   if (!target.value || !environment.value) return;
   movingRelease.value = true;
   try {
-    await api.moveEnvironment(environment.value.name, target.value.name);
-    toast.add({ title: `${environment.value.name} moved to ${target.value.name}`, color: "success", icon: "i-lucide-undo-2" });
+    const outcome = await api.moveEnvironment(environment.value.name, target.value.name);
+    // An environment with requirements answers with the promotion the move
+    // became — nothing has moved yet, and the phase says what happens next.
+    if ("trigger" in outcome) {
+      toast.add({
+        title: `Promotion ${outcome.name} requested`,
+        description: `This environment declares requirements; the policy decides whether the release lands.`,
+        color: "info",
+        icon: "i-lucide-scale",
+      });
+    } else {
+      toast.add({ title: `${environment.value.name} moved to ${target.value.name}`, color: "success", icon: "i-lucide-undo-2" });
+    }
     target.value = null;
     await refresh();
   } catch (err) {
@@ -177,6 +197,20 @@ function historyBy(entry: { reason: string; by?: string }): string {
   <div class="space-y-6">
     <UAlert v-if="error" color="error" variant="soft" icon="i-lucide-triangle-alert" :title="error" />
     <template v-else-if="environment">
+      <!-- The newest promotion into this environment stands blocked: the
+           release somebody expects here is not here, and these rules are
+           why. -->
+      <UAlert
+        v-if="blockedPromotion"
+        color="error"
+        variant="soft"
+        icon="i-lucide-shield-x"
+        :title="`Promotion of ${blockedPromotion.release} is blocked`"
+        :description="
+          (blockedPromotion.unmetRules?.length ? `Unmet rules: ${blockedPromotion.unmetRules.join(', ')}. ` : '') +
+          (blockedPromotion.message ?? '')
+        "
+      />
       <div class="flex items-start justify-between gap-4 flex-wrap">
         <div>
           <div class="flex items-center gap-2 text-xs text-muted mb-1">

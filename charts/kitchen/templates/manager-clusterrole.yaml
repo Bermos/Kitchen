@@ -147,6 +147,7 @@ rules:
   - kitchens
   - platformupdates
   - projects
+  - promotions
   - releases
   - resourceclaims
   - savedqueries
@@ -168,6 +169,7 @@ rules:
   - kitchens/finalizers
   - platformupdates/finalizers
   - projects/finalizers
+  - promotions/finalizers
   - releases/finalizers
   - resourceclaims/finalizers
   verbs:
@@ -182,6 +184,7 @@ rules:
   - kitchens/status
   - platformupdates/status
   - projects/status
+  - promotions/status
   - releases/status
   - resourceclaims/status
   verbs:

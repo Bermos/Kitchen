@@ -35,6 +35,7 @@ const (
 	KindKitchen        = "Kitchen"
 	KindPlatformUpdate = "PlatformUpdate"
 	KindProject        = "Project"
+	KindPromotion      = "Promotion"
 	KindRelease        = "Release"
 	KindResourceClaim  = "ResourceClaim"
 

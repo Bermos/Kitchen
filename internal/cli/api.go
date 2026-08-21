@@ -348,6 +348,28 @@ func (b build) terminal() bool {
 	}
 }
 
+// promotion is one request to move a release into an environment, with what
+// became of it. Phase is Pending, Evaluating, Allowed, AllowedWithException,
+// Blocked, Applied or Failed; a Blocked one names the unmet rules by their
+// stable ids, and decisionID leads to the stored decision behind the verdict.
+type promotion struct {
+	Name        string     `json:"name"`
+	Project     string     `json:"project"`
+	Environment string     `json:"environment"`
+	Release     string     `json:"release"`
+	RequestedBy string     `json:"requestedBy"`
+	Trigger     string     `json:"trigger"`
+	Reason      string     `json:"reason,omitempty"`
+	Phase       string     `json:"phase"`
+	Verdict     string     `json:"verdict,omitempty"`
+	DecisionID  string     `json:"decisionID,omitempty"`
+	UnmetRules  []string   `json:"unmetRules,omitempty"`
+	Message     string     `json:"message,omitempty"`
+	EvaluatedAt *time.Time `json:"evaluatedAt,omitempty"`
+	AppliedAt   *time.Time `json:"appliedAt,omitempty"`
+	CreatedAt   time.Time  `json:"createdAt"`
+}
+
 // release is `GET /releases/{name}`: an immutable snapshot of an image and the
 // configuration it runs with, which is what makes a rollback a pointer move.
 type release struct {
@@ -613,13 +635,63 @@ func (c *client) environment(ctx context.Context, name string) (*environment, er
 		http.MethodGet, "/environments/"+name, nil, nil, answer)
 }
 
+// moveOutcome is what moving an environment came to: the environment when the
+// move was made outright, or the promotion the move became when the
+// environment declares requirements — the platform answers 202 with the
+// promotion, and the policy engine decides from there. Exactly one is set.
+type moveOutcome struct {
+	Environment *environment
+	Promotion   *promotion
+}
+
 // moveEnvironment points an environment at another release. Promotion and
 // rollback are the same call; which one it is depends only on which way the
-// release is.
-func (c *client) moveEnvironment(ctx context.Context, name, to string) (*environment, error) {
-	answer := &environment{}
-	return answer, c.do(ctx, "moving "+name+" to "+to,
-		http.MethodPatch, "/environments/"+name, nil, map[string]string{"release": to}, answer)
+// release is — and whether it happens now or through a Promotion depends on
+// whether the environment sets a bar.
+func (c *client) moveEnvironment(ctx context.Context, name, to string) (*moveOutcome, error) {
+	raw := json.RawMessage{}
+	if err := c.do(ctx, "moving "+name+" to "+to,
+		http.MethodPatch, "/environments/"+name, nil, map[string]string{"release": to}, &raw); err != nil {
+		return nil, err
+	}
+	// The two answers are told apart by a field only one of them has:
+	// a promotion carries its trigger, an environment never does.
+	probe := struct {
+		Trigger string `json:"trigger"`
+	}{}
+	_ = json.Unmarshal(raw, &probe)
+	out := &moveOutcome{}
+	if probe.Trigger != "" {
+		out.Promotion = &promotion{}
+		return out, decodeJSON(raw, out.Promotion)
+	}
+	out.Environment = &environment{}
+	return out, decodeJSON(raw, out.Environment)
+}
+
+// promote asks for a release to land on an environment: the platform creates
+// a Promotion, phase Pending, and the policy engine takes it from there.
+func (c *client) promote(ctx context.Context, project, environment, release, reason string) (*promotion, error) {
+	body := map[string]string{"environment": environment, "release": release}
+	if reason != "" {
+		body["reason"] = reason
+	}
+	answer := &promotion{}
+	return answer, c.do(ctx, "promoting "+release+" to "+environment,
+		http.MethodPost, "/projects/"+project+"/promotions", nil, body, answer)
+}
+
+func (c *client) projectPromotions(ctx context.Context, project string, query url.Values) ([]promotion, error) {
+	answer := &list[promotion]{}
+	err := c.do(ctx, "listing "+project+"'s promotions",
+		http.MethodGet, "/projects/"+project+"/promotions", query, nil, answer)
+	return answer.Items, err
+}
+
+func (c *client) promotion(ctx context.Context, name string) (*promotion, error) {
+	answer := &promotion{}
+	return answer, c.do(ctx, "reading the promotion "+name,
+		http.MethodGet, "/promotions/"+name, nil, nil, answer)
 }
 
 // logsPage reads a bounded page of logs, oldest first.

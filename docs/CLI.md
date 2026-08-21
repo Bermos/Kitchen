@@ -165,6 +165,8 @@ give.
 | `kitchen logs` | An environment's or a build's logs, `--follow` to tail | `GET /environments/{name}/logs`, `GET /builds/{name}/logs` |
 | `kitchen env list/set/rm` | The project's environment variables | `PATCH /projects/{name}/env` |
 | `kitchen rollback` | Put an environment back on an earlier release | `PATCH /environments/{name}` |
+| `kitchen promote` | Ask for a release to land on an environment; the policy decides | `POST /projects/{name}/promotions` |
+| `kitchen promotions` | What promotions were asked for and what became of them | `GET /projects/{name}/promotions`, `GET /promotions/{name}` |
 | `kitchen projects` | The projects this account can see, with its role on each | `GET /projects` |
 | `kitchen builds` | The project's builds, newest first | `GET /projects/{name}/builds` |
 | `kitchen attestations` | The signed evidence attached to a build's artifact | `GET /builds/{name}/attestations` |
@@ -317,6 +319,27 @@ kitchen releases              # what there is to move to
 kitchen rollback              # back one, from the environment's own history
 kitchen rollback shop-rel-41  # or to a named release — a promotion is the same call
 ```
+
+Against an environment that declares requirements the move is not made on the
+spot: the platform answers with the promotion it became, phase `Pending`, and
+the policy engine decides whether the release lands. That is still a rollback
+without a rebuild — a `Release` is immutable, so re-promoting an old one puts
+back exactly what ran.
+
+### Promoting
+
+```sh
+kitchen promote shop-rel-41 --environment shop-staging
+kitchen promotions --phase Blocked      # what is stuck, and which rules block it
+kitchen promotions shop-promo-4kd92     # one promotion whole
+```
+
+A promotion is a request: the platform evaluates the target environment's
+requirements against the artifact's stored evidence, records the decision, and
+applies the move only if the policy allows. A blocked one names the unmet
+rules by id, and its `decisionID` leads to `kitchen decisions show` for the
+full fired list and the replayable input. `--reason` puts your own words into
+the audit record — an emergency move should have one.
 
 ### Evidence
 

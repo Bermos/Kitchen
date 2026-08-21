@@ -70,6 +70,46 @@ export interface Project {
   latestBuild?: string;
   createdAt: string;
   conditions?: Condition[];
+  /** The project's staged pipeline, in promotion order. Absent for the
+   * default build-straight-to-production flow. Stages are topology — what
+   * each environment demands lives on the Environment's requirements. */
+  promotionStages?: PromotionStage[];
+}
+
+/** One rung of a project's promotion ladder. */
+export interface PromotionStage {
+  name: string;
+  environment: string;
+  /** Whether the platform creates the next promotion into this stage by
+   * itself when the stage before it applies. */
+  autoPromote: boolean;
+}
+
+/** One request to move a release into an environment, with what the policy
+ * decided about it. The spec is immutable: retrying a blocked promotion is a
+ * new one, and an old one stays as the record of what was refused and why. */
+export interface Promotion {
+  name: string;
+  project: string;
+  environment: string;
+  release: string;
+  requestedBy: string;
+  trigger: string;
+  reason?: string;
+  /** Pending, Evaluating, Allowed, AllowedWithException, Blocked, Applied or
+   * Failed. Blocked and Failed are terminal, like Applied. */
+  phase: string;
+  verdict?: string;
+  /** The stored decision behind the verdict — the decision register holds
+   * its fired rules and the replayable input. */
+  decisionID?: string;
+  /** The rules that fired unwaived, by their stable ids. */
+  unmetRules?: string[];
+  message?: string;
+  evaluatedAt?: string;
+  appliedAt?: string;
+  createdAt: string;
+  conditions?: Condition[];
 }
 
 /**
@@ -2137,10 +2177,28 @@ export const api = {
 
   releases: list<Release>("/releases"),
 
+  // Promotions: asking for a release to land on an environment, and reading
+  // what became of the asking. The POST answers 201 with the promotion,
+  // phase Pending — the policy engine decides from there.
+  projectPromotions: (name: string, query: { environment?: string; release?: string; phase?: string } = {}) => {
+    const params = new URLSearchParams();
+    if (query.environment) params.set("environment", query.environment);
+    if (query.release) params.set("release", query.release);
+    if (query.phase) params.set("phase", query.phase);
+    const suffix = params.size ? `?${params.toString()}` : "";
+    return request<{ items: Promotion[] }>("GET", `/projects/${name}/promotions${suffix}`).then((b) => b.items);
+  },
+  promote: (project: string, body: { environment: string; release: string; reason?: string }) =>
+    request<Promotion>("POST", `/projects/${project}/promotions`, body),
+  promotion: (name: string) => request<Promotion>("GET", `/promotions/${name}`),
+
   environments: list<Environment>("/environments"),
   environment: (name: string) => request<Environment>("GET", `/environments/${name}`),
+  // The answer is the environment after the move — or, when the environment
+  // declares requirements, the promotion the move became (202): the policy
+  // engine decides, and the promotions list is where the verdict lands.
   moveEnvironment: (name: string, release: string) =>
-    request<Environment>("PATCH", `/environments/${name}`, { release }),
+    request<Environment | Promotion>("PATCH", `/environments/${name}`, { release }),
   deleteEnvironment: (name: string) => request<Environment>("DELETE", `/environments/${name}`),
   // The requirements write is the environment's owners' (or an operator's):
   // the API enforces it in the handler, so `may()` alone cannot decide this

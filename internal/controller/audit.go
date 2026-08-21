@@ -31,6 +31,7 @@ const (
 	// carries the caller instead, like every API write.
 	actorPolicyEngine            = "policy"
 	actorProjectController       = "project"
+	actorPromotionController     = "promotion"
 	actorReleaseController       = "release"
 	actorResourceClaimController = "resourceclaim"
 )

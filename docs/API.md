@@ -178,9 +178,12 @@ name against `internal/api/policy.go`, so a route that moves fails them too.
 | POST | `/builds/{name}/gates` | Submit a quality gate result produced elsewhere | `developer` |
 | GET | `/releases` | Every release. `?project=` filters | any account — filtered |
 | GET | `/releases/{name}` | One release | `viewer` |
+| GET | `/projects/{name}/promotions` | That project's promotions, newest first. `?environment=`, `?release=`, `?phase=` | `viewer` |
+| POST | `/projects/{name}/promotions` | Ask for a release to land on an environment; the policy decides | `developer` |
+| GET | `/promotions/{name}` | One promotion: the phase, the verdict, and the unmet rules by id | `viewer` |
 | GET | `/environments` | Every environment. `?project=` filters | any account — filtered |
 | GET | `/environments/{name}` | One environment | `viewer` |
-| PATCH | `/environments/{name}` | Move it to another release — promotion and rollback | `developer` |
+| PATCH | `/environments/{name}` | Move it to another release — promotion and rollback. An environment with requirements answers `202` with the Promotion the move became | `developer` |
 | DELETE | `/environments/{name}` | Tear down a stuck preview. Previews only | `developer` |
 | GET | `/environments/{name}/logs` | That environment's runtime logs | `viewer` |
 | GET | `/environments/{name}/workload` | What it is running: replicas, restarts, uptime, resources, pods | `viewer` |
@@ -267,6 +270,7 @@ such changes two changes to two different files.
 - [Metrics, traffic and traces](api/telemetry.md) — the golden signals, the request rows behind them, and the spans
 - [The activity feed and the audit log](api/audit.md) — what the platform did, best-effort and tamper-evident
 - [Policy decisions](api/decisions.md) — every verdict the policy engine reached, the bundles it evaluates, and replaying a decision
+- [Promotions](api/promotions.md) — the staged pipeline: asking for a release to land, and what the policy decided
 - [Platform status and the operator's screens](api/platform.md) — whether the platform is healthy, and everything behind /platform
 - [Settings and updates](api/settings.md) — the installation's own configuration, and moving it to a new version
 

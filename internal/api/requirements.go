@@ -337,45 +337,17 @@ func (s *Server) evaluateRequirements(
 }
 
 // eligibilityInput materializes the engine's input for the read-only
-// eligibility question. It is the promotion input's shape with kind
-// "eligibility", which is what keeps the preview and the decision the same
-// evaluation — same bundle, same evidence, same answer.
+// eligibility question, through the one materializer every evaluation uses
+// (policy.MaterializeInput) — which is what keeps the preview and the
+// promotion decision the same evaluation: same bundle, same evidence, same
+// answer.
 func eligibilityInput(
 	env *kitchenv1alpha1.Environment,
 	release *kitchenv1alpha1.Release,
 	build *kitchenv1alpha1.Build,
 	evidence []policy.Evidence,
 ) policy.Input {
-	input := policy.Input{
-		Kind: policy.KindEligibility,
-		At:   time.Now().UTC(),
-		Project: policy.ProjectFacts{
-			Name: env.Spec.ProjectRef.Name,
-		},
-		Environment: policy.EnvironmentFacts{
-			Name: env.Name,
-			Type: string(env.Spec.Type),
-		},
-		Release: policy.ReleaseFacts{
-			Name:  release.Name,
-			Image: release.Spec.Image,
-		},
-		Evidence: evidence,
-	}
-	if requirements := env.Spec.Requirements; requirements != nil {
-		input.Parameters = requirements.Parameters
-	}
-	if _, digest, found := strings.Cut(release.Spec.Image, "@"); found {
-		input.Release.Digest = digest
-	}
-	if build != nil {
-		input.Release.Build = policy.BuildFacts{
-			Name:   build.Name,
-			Commit: build.Spec.Git.SHA,
-			Branch: build.Spec.Git.Branch,
-		}
-	}
-	return input
+	return policy.MaterializeInput(policy.KindEligibility, time.Now().UTC(), env, release, build, evidence)
 }
 
 // environmentEligibility answers how a release measures up against an
@@ -479,25 +451,19 @@ func (s *Server) materializeEvidence(
 		out.caveat = "The release's build recorded no artifact digest, so nothing carries evidence"
 		return out
 	}
-	sources := map[string]string{}
+	sources := policy.EvidenceSources(build)
 	for _, entry := range artifact.Evidence {
 		out.views = append(out.views, eligibilityEvidenceView{
 			PredicateType: entry.PredicateType,
 			Source:        entry.Source,
 		})
-		sources[entry.PredicateType] = entry.Source
 	}
 
 	set, err := s.artifactEvidence(ctx, build, artifact)
 	if err != nil {
 		// The index without the registry: types and sources, no predicates,
 		// nothing verified.
-		for _, view := range out.views {
-			out.input = append(out.input, policy.Evidence{
-				PredicateType: view.PredicateType,
-				Source:        view.Source,
-			})
-		}
+		out.input = policy.IndexedEvidence(build)
 		out.caveat = "The registry could not be asked to verify the evidence, so it is listed unverified: " +
 			err.Error()
 		return out

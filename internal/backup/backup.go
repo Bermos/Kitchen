@@ -95,6 +95,16 @@ type Kind struct {
 // PlatformUpdate is deliberately absent. It is the upgrade history of a
 // cluster that no longer exists by the time anyone is restoring, and every
 // record in it names a Job that was reaped long ago.
+//
+// Promotion is deliberately absent too, and for a sharper reason: a
+// promotion is a *request* to move an environment, and its status — the
+// evaluated verdict — does not travel through a restore. Restored requests
+// would arrive statusless, be re-evaluated, and re-apply themselves in
+// whatever order the reconciler met them, racing each other to point every
+// environment somewhere it pointed once. The outcome a restore should carry
+// is already in it: `Environment.spec.releaseRef`. The decisions themselves
+// live in the decision store and the audit log, which is where the history
+// belongs.
 var Kinds = []Kind{
 	{Kind: "Kitchen", Plural: "kitchens", ClusterScoped: true},
 	{Kind: "Connection", Plural: "connections"},

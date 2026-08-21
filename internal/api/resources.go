@@ -374,6 +374,66 @@ type patchProjectRequest struct {
 	Replicas *int32           `json:"replicas,omitempty"`
 	CPU      *string          `json:"cpu,omitempty"`
 	Memory   *string          `json:"memory,omitempty"`
+	// PromotionStages replaces the project's staged pipeline wholesale, in
+	// promotion order; an empty list removes it, restoring the default
+	// build-straight-to-production flow. The stages are topology — what each
+	// environment demands stays on the Environment, owned by its owners —
+	// which is why arranging them is the project admin's.
+	PromotionStages *[]promotionStageRequest `json:"promotionStages,omitempty"`
+}
+
+// promotionStageRequest is one rung of the pipeline as a PATCH names it.
+type promotionStageRequest struct {
+	Name        string `json:"name"`
+	Environment string `json:"environment"`
+	AutoPromote bool   `json:"autoPromote,omitempty"`
+}
+
+// promotionStagesFromRequest validates and converts a replacement pipeline.
+// An environment a stage names either does not exist yet — the first build
+// for the stage creates it — or must belong to this project: a stage naming a
+// stranger's environment would point the project's builds at it.
+func (s *Server) promotionStagesFromRequest(
+	ctx context.Context, project *kitchenv1alpha1.Project, stages []promotionStageRequest,
+) (*kitchenv1alpha1.PromotionPolicySpec, error) {
+	if len(stages) == 0 {
+		return nil, nil
+	}
+	spec := &kitchenv1alpha1.PromotionPolicySpec{}
+	names, environments := map[string]bool{}, map[string]bool{}
+	for _, stage := range stages {
+		name := strings.TrimSpace(stage.Name)
+		environment := strings.TrimSpace(stage.Environment)
+		if errs := validation.IsDNS1123Label(name); len(errs) > 0 {
+			return nil, fmt.Errorf("stage name %q is not a DNS label: lower-case letters, digits and dashes", stage.Name)
+		}
+		if environment == "" {
+			return nil, fmt.Errorf("stage %q names no environment", name)
+		}
+		if names[name] {
+			return nil, fmt.Errorf("stage %q appears twice", name)
+		}
+		if environments[environment] {
+			return nil, fmt.Errorf("environment %q appears in two stages", environment)
+		}
+		names[name], environments[environment] = true, true
+
+		env := &kitchenv1alpha1.Environment{}
+		if err := s.get(ctx, environment, env); err == nil {
+			if env.Spec.ProjectRef.Name != project.Name {
+				return nil, fmt.Errorf("environment %q belongs to project %q, not %q",
+					environment, env.Spec.ProjectRef.Name, project.Name)
+			}
+		} else if !apierrors.IsNotFound(err) {
+			return nil, err
+		}
+		spec.Stages = append(spec.Stages, kitchenv1alpha1.PromotionStage{
+			Name:        name,
+			Environment: environment,
+			AutoPromote: stage.AutoPromote,
+		})
+	}
+	return spec, nil
 }
 
 // patchProjectEnvRequest is the whole of the environment-variable write: the
@@ -580,6 +640,14 @@ func (s *Server) patchProject(w http.ResponseWriter, req *http.Request) {
 			badRequest(w, "%s", err.Error())
 			return
 		}
+	}
+	if body.PromotionStages != nil {
+		stages, err := s.promotionStagesFromRequest(ctx, project, *body.PromotionStages)
+		if err != nil {
+			badRequest(w, "%s", err.Error())
+			return
+		}
+		project.Spec.Promotion = stages
 	}
 
 	if !s.recorded(w, req, audit.Transition{
@@ -1072,8 +1140,18 @@ func (s *Server) getEnvironment(w http.ResponseWriter, req *http.Request) {
 // field is the whole of promotion and rollback: Releases are immutable
 // snapshots of an image and its configuration, so pointing an Environment at
 // an older one puts back exactly what was running.
+//
+// An environment that declares requirements is not moved from here at all:
+// the request becomes a Promotion — answered 202 with the promotion, phase
+// Pending — and the promotion reconciler evaluates the bar, records the
+// decision and applies or refuses it. One door into a gated environment,
+// whichever route knocks.
 type patchEnvironmentRequest struct {
 	Release string `json:"release"`
+	// Reason is carried onto the Promotion when the environment's
+	// requirements route this move through one. Optional; ignored on the
+	// direct path, where the audit record already says who and what.
+	Reason string `json:"reason,omitempty"`
 }
 
 func (s *Server) patchEnvironment(w http.ResponseWriter, req *http.Request) {
@@ -1111,6 +1189,28 @@ func (s *Server) patchEnvironment(w http.ResponseWriter, req *http.Request) {
 
 	if env.Spec.ReleaseRef.Name == release.Name {
 		writeJSON(w, http.StatusOK, newEnvironmentView(env))
+		return
+	}
+
+	// An environment with requirements takes releases only through a
+	// Promotion: the policy engine decides, the decision is stored, and the
+	// promotion reconciler makes the move. The 202 says exactly that — the
+	// move is accepted for evaluation, not made.
+	if env.Spec.Requirements != nil {
+		caller, _ := CallerFrom(ctx)
+		promotion := s.manualPromotion(caller, env.Spec.ProjectRef.Name, env, release,
+			strings.TrimSpace(body.Reason))
+		if !s.recorded(w, req, promotionTransition(promotion)) {
+			return
+		}
+		if err := s.Client.Create(ctx, promotion); err != nil {
+			s.writeError(w, err)
+			return
+		}
+		s.log().Info("environment move routed through a promotion",
+			"environment", env.Name, "release", release.Name,
+			"promotion", promotion.Name, "caller", callerName(caller))
+		writeJSON(w, http.StatusAccepted, newPromotionView(promotion))
 		return
 	}
 
@@ -1435,6 +1535,7 @@ func changedProjectFields(body patchProjectRequest) []string {
 		{"replicas", body.Replicas != nil},
 		{"cpu", body.CPU != nil},
 		{"memory", body.Memory != nil},
+		{"promotionStages", body.PromotionStages != nil},
 	} {
 		if field.changed {
 			fields = append(fields, field.name)

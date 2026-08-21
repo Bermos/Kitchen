@@ -22,6 +22,12 @@ curl -sS -X PATCH -H "authorization: Bearer $TOKEN" \
 The release has to belong to the same project as the environment; anything else
 is a `400`. Promotion is the same call with a newer release.
 
+Against an environment that declares [requirements](#the-bar-an-environment-sets)
+the move is not made on the spot: the call answers `202` with the
+[Promotion](promotions.md) it became, phase `Pending`, and the policy engine
+decides whether the release lands. The optional `reason` in the body travels
+onto that promotion and into the audit record.
+
 Each move is remembered. The environment's `history` lists the releases that
 stopped being current, newest first: which release, when it was current
 (`from`/`to`), how it stopped (`reason`) and who moved the environment off it

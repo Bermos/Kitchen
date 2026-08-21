@@ -654,6 +654,77 @@ var _ = Describe("Build Controller", func() {
 			Expect(entry.To.Time).NotTo(BeZero())
 		})
 
+		It("routes a production build through a promotion when the target declares requirements", func() {
+			// Production has set a bar: the build must not move it directly.
+			env := &kitchenv1alpha1.Environment{
+				ObjectMeta: metav1.ObjectMeta{Name: projectName + "-production", Namespace: namespace},
+				Spec: kitchenv1alpha1.EnvironmentSpec{
+					ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: projectName},
+					Type:       kitchenv1alpha1.EnvironmentProduction,
+					ReleaseRef: kitchenv1alpha1.LocalObjectReference{Name: projectName + "-rel-previous"},
+					Requirements: &kitchenv1alpha1.EnvironmentRequirements{
+						BundleDigest: "sha256:" + strings.Repeat("ab", 32),
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, env)).To(Succeed())
+			wantPromotion := automaticPromotionName(projectName, releaseName(projectName, sha), projectName+"-production")
+			DeferCleanup(func() {
+				promotion := &kitchenv1alpha1.Promotion{
+					ObjectMeta: metav1.ObjectMeta{Name: wantPromotion, Namespace: namespace},
+				}
+				Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, promotion))).To(Succeed())
+			})
+
+			reconcileOnce()
+			completeJob()
+			createBuildPod(`{"containerimage.digest":"sha256:feedface"}`)
+			reconcileOnce()
+
+			// The environment still runs what it ran: the promotion reconciler
+			// is the only thing that may move a gated environment.
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: projectName + "-production", Namespace: namespace}, env)).To(Succeed())
+			Expect(env.Spec.ReleaseRef.Name).To(Equal(projectName+"-rel-previous"),
+				"a gated environment must not be flipped by the build controller")
+
+			promotion := &kitchenv1alpha1.Promotion{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: wantPromotion, Namespace: namespace}, promotion)).To(Succeed())
+			Expect(promotion.Spec.Trigger).To(Equal(kitchenv1alpha1.PromotionAutomatic))
+			Expect(promotion.Spec.ReleaseRef.Name).To(Equal(releaseName(projectName, sha)))
+			Expect(promotion.Spec.RequestedBy).To(Equal("system:controller/build"))
+			Expect(promotion.Spec.Reason).To(ContainSubstring(buildName))
+		})
+
+		It("targets stage one when the project declares a pipeline", func() {
+			project := &kitchenv1alpha1.Project{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: projectName, Namespace: namespace}, project)).To(Succeed())
+			project.Spec.Promotion = &kitchenv1alpha1.PromotionPolicySpec{Stages: []kitchenv1alpha1.PromotionStage{
+				{Name: "staging", Environment: projectName + "-staging"},
+				{Name: "production", Environment: projectName + "-production", AutoPromote: true},
+			}}
+			Expect(k8sClient.Update(ctx, project)).To(Succeed())
+			DeferCleanup(func() {
+				staging := &kitchenv1alpha1.Environment{
+					ObjectMeta: metav1.ObjectMeta{Name: projectName + "-staging", Namespace: namespace},
+				}
+				Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, staging))).To(Succeed())
+			})
+
+			reconcileOnce()
+			completeJob()
+			createBuildPod(`{"containerimage.digest":"sha256:feedface"}`)
+			reconcileOnce()
+
+			// The release landed on stage one — created on first use, with no
+			// requirements yet, so the fast path applies — and production was
+			// never touched: the artifact reaches it stage by stage.
+			staging := &kitchenv1alpha1.Environment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: projectName + "-staging", Namespace: namespace}, staging)).To(Succeed())
+			Expect(staging.Spec.ReleaseRef.Name).To(Equal(releaseName(projectName, sha)))
+			err := k8sClient.Get(ctx, types.NamespacedName{Name: projectName + "-production", Namespace: namespace}, &kitchenv1alpha1.Environment{})
+			Expect(err).To(HaveOccurred(), "a staged build must not touch production directly")
+		})
+
 		It("creates a preview environment for pull request builds", func() {
 			build := &kitchenv1alpha1.Build{}
 			Expect(k8sClient.Get(ctx, buildKey, build)).To(Succeed())

@@ -632,6 +632,46 @@ more were built still has release 3 to roll back to. The image the pruned Releas
 is left in the registry: reclaiming that needs a per-provider delete API and a count of
 what else shares the digest.
 
+## `Promotion` (namespaced: kitchen-system)
+
+One request to move one Release into one Environment, with the evaluated decision on
+its status. It is how an artifact travels a project's staged pipeline
+(`Project.spec.promotion.stages`): the same image digest at every stage, never rebuilt,
+judged at each boundary by that environment's `spec.requirements` through the policy
+engine. Rollback is the same request at an older Release.
+
+```yaml
+apiVersion: kitchen.bermos.dev/v1alpha1
+kind: Promotion
+metadata:
+  name: my-shop-promo-1a2b3c4d5e
+spec:                                   # fully immutable (CEL rule, like Release)
+  projectRef: { name: my-shop }
+  environmentRef: { name: my-shop-production }
+  releaseRef: { name: my-shop-rel-000042 }
+  requestedBy: anna@example.com         # or system:controller/build, system:controller/promotion
+  trigger: manual                       # manual | automatic
+  reason: ship 1.4                      # optional; lands in the audit record
+status:
+  phase: Blocked                        # Pending|Evaluating|Allowed|AllowedWithException|Blocked|Applied|Failed
+  verdict: blocked                      # allowed | allowed-with-exception | blocked — exactly three
+  decisionID: 0d9a1f7e-…                # the stored decision: fired rules, replayable input
+  unmetRules: [require-sbom]            # the fired, unwaived rules by stable id
+  message: "blocked by bundle sha256:…: require-sbom (the artifact carries no…)"
+```
+
+The reconciler resolves the three references (they must tell one story — a mismatch is
+`Failed`), materializes the policy input from the artifact's stored evidence, evaluates
+through `internal/policy`, records the decision — audit record fail-closed, decision
+store, `promotion-decision` attestation on the artifact — and only when allowed flips
+`Environment.spec.releaseRef`, mints the `deployment/v1` attestation, and chains the
+next stage's Promotion where `autoPromote` says so. `Blocked` and `Failed` are terminal
+because the spec is immutable: a retry is a new Promotion, and the old one stays as the
+record of what was refused and why. An environment with no `requirements` accepts
+anything — the build controller then skips the Promotion entirely and flips the
+Environment directly, exactly the pre-pipeline behaviour; previews are never routed
+through a Promotion at all (the preview is the review vehicle).
+
 ## `Environment` (namespaced: kitchen-system)
 
 A running instance of a Release with a URL. Exactly one `production` per Project;

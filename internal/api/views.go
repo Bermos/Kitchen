@@ -131,6 +131,9 @@ type projectView struct {
 	LatestBuild           string          `json:"latestBuild,omitempty"`
 	CreatedAt             time.Time       `json:"createdAt"`
 	Conditions            []conditionView `json:"conditions,omitempty"`
+	// PromotionStages is the project's staged pipeline, in promotion order.
+	// Absent for the default build-straight-to-production flow.
+	PromotionStages []promotionStageView `json:"promotionStages,omitempty"`
 }
 
 func newProjectView(project *kitchenv1alpha1.Project, role access.ProjectRole) projectView {
@@ -164,6 +167,78 @@ func newProjectView(project *kitchenv1alpha1.Project, role access.ProjectRole) p
 	}
 	if ref := project.Status.LatestBuildRef; ref != nil {
 		view.LatestBuild = ref.Name
+	}
+	if promotion := project.Spec.Promotion; promotion != nil {
+		for _, stage := range promotion.Stages {
+			view.PromotionStages = append(view.PromotionStages, promotionStageView{
+				Name:        stage.Name,
+				Environment: stage.Environment,
+				AutoPromote: stage.AutoPromote,
+			})
+		}
+	}
+	return view
+}
+
+// promotionStageView is one rung of a project's promotion ladder.
+type promotionStageView struct {
+	Name        string `json:"name"`
+	Environment string `json:"environment"`
+	AutoPromote bool   `json:"autoPromote"`
+}
+
+// promotionView is one Promotion: what was asked — which release, into which
+// environment, by whom — and what became of it. A blocked one names the
+// unmet rules by their stable ids; the decision id leads to the stored
+// decision with the fired rules' messages and the replayable input.
+type promotionView struct {
+	Name        string `json:"name"`
+	Project     string `json:"project"`
+	Environment string `json:"environment"`
+	Release     string `json:"release"`
+	RequestedBy string `json:"requestedBy"`
+	Trigger     string `json:"trigger"`
+	Reason      string `json:"reason,omitempty"`
+
+	Phase       string     `json:"phase"`
+	Verdict     string     `json:"verdict,omitempty"`
+	DecisionID  string     `json:"decisionID,omitempty"`
+	UnmetRules  []string   `json:"unmetRules,omitempty"`
+	Message     string     `json:"message,omitempty"`
+	EvaluatedAt *time.Time `json:"evaluatedAt,omitempty"`
+	AppliedAt   *time.Time `json:"appliedAt,omitempty"`
+
+	CreatedAt  time.Time       `json:"createdAt"`
+	Conditions []conditionView `json:"conditions,omitempty"`
+}
+
+func newPromotionView(promotion *kitchenv1alpha1.Promotion) promotionView {
+	view := promotionView{
+		Name:        promotion.Name,
+		Project:     promotion.Spec.ProjectRef.Name,
+		Environment: promotion.Spec.EnvironmentRef.Name,
+		Release:     promotion.Spec.ReleaseRef.Name,
+		RequestedBy: promotion.Spec.RequestedBy,
+		Trigger:     string(promotion.Spec.Trigger),
+		Reason:      promotion.Spec.Reason,
+		Phase:       string(promotion.Status.Phase),
+		Verdict:     promotion.Status.Verdict,
+		DecisionID:  promotion.Status.DecisionID,
+		UnmetRules:  promotion.Status.UnmetRules,
+		Message:     promotion.Status.Message,
+		CreatedAt:   promotion.CreationTimestamp.Time,
+		Conditions:  conditionViews(promotion.Status.Conditions),
+	}
+	if view.Phase == "" {
+		// Created and not yet picked up: the phase the reconciler will stamp,
+		// answered now so a 201 does not read as an empty state.
+		view.Phase = string(kitchenv1alpha1.PromotionPending)
+	}
+	if at := promotion.Status.EvaluatedAt; at != nil {
+		view.EvaluatedAt = &at.Time
+	}
+	if at := promotion.Status.AppliedAt; at != nil {
+		view.AppliedAt = &at.Time
 	}
 	return view
 }

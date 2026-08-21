@@ -80,8 +80,10 @@ lists what there is to move to.`),
 			"GET /api/v1/environments/{name}",
 			"PATCH /api/v1/environments/{name}",
 		},
-		Output: output{Mode: outputDocument, Kind: "environment", Note: "the environment as it is after the move"},
-		Needs:  needs{Auth: true, Project: true},
+		Output: output{Mode: outputDocument, Kind: "environment",
+			Note: "the environment as it is after the move — or, when the environment declares " +
+				"requirements, the promotion the move became (shape `promotion`, answered 202)"},
+		Needs: needs{Auth: true, Project: true},
 		Examples: []example{
 			{"Roll production back one release", "kitchen rollback --yes --json"},
 			{"Move an environment to a named release", "kitchen rollback shop-rel-41 --yes --json"},
@@ -134,10 +136,23 @@ func rollback(parent context.Context, r *Runtime, environmentName, to string, ye
 		return err
 	}
 
-	moved, err := client.moveEnvironment(ctx, environmentName, to)
+	outcome, err := client.moveEnvironment(ctx, environmentName, to)
 	if err != nil {
 		return err
 	}
+	// An environment that declares requirements answers with the promotion
+	// the move became rather than the move itself: the policy engine decides,
+	// and `kitchen promotions` is where the verdict lands.
+	if outcome.Promotion != nil {
+		accepted := outcome.Promotion
+		return r.printer().document(accepted, func(s tui.Styles) string {
+			return fmt.Sprintf("%s %s: %s → %s awaits the environment's requirements "+
+				"(`kitchen promotions %s` follows it)\n",
+				s.OK.Render("Promotion"), s.Title.Render(accepted.Name),
+				s.Accent.Render(accepted.Release), accepted.Environment, accepted.Name)
+		})
+	}
+	moved := outcome.Environment
 	return r.printer().document(moved, func(s tui.Styles) string {
 		return fmt.Sprintf("%s %s → %s %s\n",
 			s.OK.Render("Moved"), s.Title.Render(moved.Name), s.Accent.Render(moved.Release),
