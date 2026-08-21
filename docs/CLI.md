@@ -158,6 +158,7 @@ give.
 | `kitchen logout` | Forget a stored credential. Does not revoke it | — |
 | `kitchen whoami` | Who the credential is, and its platform role | `GET /me` |
 | `kitchen link` | Associate this directory with a project | `GET /projects`, `GET /projects/{name}` |
+| `kitchen projects create` | Create a project from this repository, checking its layout first | `GET /connections`, `POST /connections/{name}/detect`, `POST /projects` |
 | `kitchen status` | The project: environments, phases, URLs, recent builds | three reads, joined |
 | `kitchen deploy` | Build this commit and follow the deploy | `POST /projects/{name}/builds` and the follow |
 | `kitchen cancel` | Stop a build that is still running | `POST /builds/{name}/cancel` |
@@ -173,6 +174,57 @@ give.
 | `kitchen api` | Any endpoint of the API, authenticated | anything |
 | `kitchen schema` | The whole CLI as JSON | — |
 | `kitchen backup` | Take a backup of the platform and write it to a file | `POST /platform/backup` |
+
+### Creating a project
+
+```sh
+kitchen projects create
+```
+
+is the whole of it in a checkout: the repository comes from `origin`, the name
+from the repository, and the two connections from the platform when it offers
+only one that can do each job. It ends by writing the same
+`.kitchen/project.json` `kitchen link` writes, so the directory is linked to the
+project it just made.
+
+Before the project is written, the repository is read through the same
+preflight the dashboard's new-project dialog runs — `POST
+/connections/{name}/detect` — and what it found is printed and carried in the
+answer:
+
+```json
+{"project": {"name": "shop", "repo": "acme/shop", "productionBranch": "main", "role": "admin"},
+ "detection": {"detected": true, "framework": "next", "strategy": "buildpacks", "port": 3000},
+ "path": "/home/anna/shop/.kitchen/project.json"}
+```
+
+That is the point of the command rather than a `kitchen api POST /projects`.
+**Creating a project starts a build of its production branch immediately**, so
+`--root-directory` and `--dockerfile` are sent with the project rather than
+patched onto it: a monorepo whose application is in `apps/shop` would otherwise
+fail one build before anybody realised what to correct.
+
+A repository the platform recognised nothing in — and that has no Dockerfile
+either — is a question rather than a refusal, since the detector reads one
+commit and the person is looking at the whole repository. Like every other
+question here it has a flag that answers it, so `--yes` creates the project and
+nothing ever waits:
+
+```sh
+kitchen projects create shop --repo acme/mono --root-directory apps/shop \
+  --connection github --registry kitchen --yes --json
+```
+
+The preflight is advice, so a platform that cannot reach the provider to give
+any is reported on stderr and the project is still created. The flags are
+`--repo`, `--connection`, `--registry`, `--production-branch`, `--previews`,
+`--root-directory`, `--dockerfile`, `--link` (on by default) and `--yes`;
+leaving `--previews` off leaves the platform's default alone rather than
+turning previews off.
+
+There is no repository picker. The command takes `owner/name` from the checkout
+or from `--repo`, which is why `GET /connections/{name}/repositories` has no
+command of its own.
 
 ### Deploying
 

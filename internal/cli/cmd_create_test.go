@@ -51,7 +51,7 @@ func TestCreateProjectRunsThePreflightFirst(t *testing.T) {
 		Detected: true, Framework: "Next.js", Strategy: "buildpacks", Port: 3000, Ref: "main",
 	}
 
-	if code := h.run("projects", "create", "shop", "--repo", "acme/shop",
+	if code := h.run("projects", "create", testProject, "--repo", "acme/shop",
 		"--connection", gitConnection, "--registry", registryConnection, "--json"); code != 0 {
 		t.Fatalf("exit %d: %s", code, h.stderr.String())
 	}
@@ -70,7 +70,7 @@ func TestCreateProjectRunsThePreflightFirst(t *testing.T) {
 
 	answer := projectCreated{}
 	h.answer(&answer)
-	if answer.Project.Name != "shop" {
+	if answer.Project.Name != testProject {
 		t.Errorf("created %q", answer.Project.Name)
 	}
 	if answer.Detection == nil || answer.Detection.Framework != "Next.js" {
@@ -79,7 +79,7 @@ func TestCreateProjectRunsThePreflightFirst(t *testing.T) {
 	if answer.Path == "" {
 		t.Error("nothing was linked")
 	}
-	if link, _, err := findLink(h.work); err != nil || link == nil || link.Project != "shop" {
+	if link, _, err := findLink(h.work); err != nil || link == nil || link.Project != testProject {
 		t.Errorf("the working directory is not linked: %+v %v", link, err)
 	}
 }
@@ -89,7 +89,7 @@ func TestCreateProjectSendsTheBuildContext(t *testing.T) {
 	h.platform.connections = twoConnections()
 	h.platform.detected = &detection{Detected: true, Framework: "Go", Strategy: "buildpacks"}
 
-	if code := h.run("projects", "create", "shop", "--repo", "acme/mono",
+	if code := h.run("projects", "create", testProject, "--repo", "acme/mono",
 		"--root-directory", "apps/shop", "--dockerfile", "Dockerfile.web",
 		"--production-branch", "trunk", "--previews",
 		"--connection", gitConnection, "--registry", registryConnection, "--json"); code != 0 {
@@ -122,7 +122,7 @@ func TestCreateProjectLeavesPreviewsToThePlatform(t *testing.T) {
 	h.platform.connections = twoConnections()
 	h.platform.detected = &detection{Detected: true, Framework: "Go"}
 
-	if code := h.run("projects", "create", "shop", "--repo", "acme/shop",
+	if code := h.run("projects", "create", testProject, "--repo", "acme/shop",
 		"--connection", gitConnection, "--registry", registryConnection, "--json"); code != 0 {
 		t.Fatalf("exit %d: %s", code, h.stderr.String())
 	}
@@ -138,7 +138,7 @@ func TestCreateProjectRefusesAnUnrecognisedRepositoryWithoutYes(t *testing.T) {
 	h.platform.connections = twoConnections()
 	h.platform.detected = &detection{Detected: false, Message: "no framework recognised"}
 
-	if code := h.run("projects", "create", "shop", "--repo", "acme/shop",
+	if code := h.run("projects", "create", testProject, "--repo", "acme/shop",
 		"--connection", gitConnection, "--registry", registryConnection, "--json"); code == 0 {
 		t.Fatal("created a project nothing was recognised in without being asked")
 	}
@@ -155,7 +155,7 @@ func TestCreateProjectAcceptsAnUnrecognisedRepositoryWithYes(t *testing.T) {
 	h.platform.connections = twoConnections()
 	h.platform.detected = &detection{Detected: false}
 
-	if code := h.run("projects", "create", "shop", "--repo", "acme/shop", "--yes",
+	if code := h.run("projects", "create", testProject, "--repo", "acme/shop", "--yes",
 		"--connection", gitConnection, "--registry", registryConnection, "--json"); code != 0 {
 		t.Fatalf("exit %d: %s", code, h.stderr.String())
 	}
@@ -171,7 +171,7 @@ func TestCreateProjectDoesNotAskAboutADockerfile(t *testing.T) {
 	h.platform.connections = twoConnections()
 	h.platform.detected = &detection{Detected: false, Dockerfile: true}
 
-	if code := h.run("projects", "create", "shop", "--repo", "acme/shop",
+	if code := h.run("projects", "create", testProject, "--repo", "acme/shop",
 		"--connection", gitConnection, "--registry", registryConnection, "--json"); code != 0 {
 		t.Fatalf("exit %d: %s", code, h.stderr.String())
 	}
@@ -184,7 +184,7 @@ func TestCreateProjectSurvivesAnUnavailablePreflight(t *testing.T) {
 	h.platform.connections = twoConnections()
 	h.platform.detected = nil
 
-	if code := h.run("projects", "create", "shop", "--repo", "acme/shop",
+	if code := h.run("projects", "create", testProject, "--repo", "acme/shop",
 		"--connection", gitConnection, "--registry", registryConnection, "--json"); code != 0 {
 		t.Fatalf("exit %d: %s", code, h.stderr.String())
 	}
@@ -193,7 +193,7 @@ func TestCreateProjectSurvivesAnUnavailablePreflight(t *testing.T) {
 	if answer.Detection != nil {
 		t.Errorf("a verdict was reported that was never given: %+v", answer.Detection)
 	}
-	if answer.Project.Name != "shop" {
+	if answer.Project.Name != testProject {
 		t.Errorf("created %q", answer.Project.Name)
 	}
 }
@@ -206,7 +206,7 @@ func TestCreateProjectNamesTheConnectionsItWouldHaveOffered(t *testing.T) {
 		connection{Name: "gitlab", Capabilities: []string{capabilityGitSource}, Ready: true})
 	h.platform.detected = &detection{Detected: true}
 
-	if code := h.run("projects", "create", "shop", "--repo", "acme/shop",
+	if code := h.run("projects", "create", testProject, "--repo", "acme/shop",
 		"--registry", registryConnection, "--json"); code == 0 {
 		t.Fatal("chose a connection with nobody to ask")
 	}
@@ -222,7 +222,7 @@ func TestCreateProjectTakesTheOnlyConnectionThatCanDoTheJob(t *testing.T) {
 	h.platform.connections = twoConnections()
 	h.platform.detected = &detection{Detected: true}
 
-	if code := h.run("projects", "create", "shop", "--repo", "acme/shop", "--json"); code != 0 {
+	if code := h.run("projects", "create", testProject, "--repo", "acme/shop", "--json"); code != 0 {
 		t.Fatalf("exit %d: %s", code, h.stderr.String())
 	}
 	if detects := h.platform.sent("POST", "/connections/"+gitConnection+"/detect"); len(detects) != 1 {
@@ -241,7 +241,7 @@ func TestCreateProjectWithNoRepositoryAnywhereSaysSo(t *testing.T) {
 	h := newHarness(t)
 	h.platform.connections = twoConnections()
 
-	if code := h.run("projects", "create", "shop", "--json"); code == 0 {
+	if code := h.run("projects", "create", testProject, "--json"); code == 0 {
 		t.Fatal("created a project of no repository")
 	}
 	if hint := h.failure().Hint; !strings.Contains(hint, "--repo") {
@@ -264,7 +264,7 @@ func TestCreateProjectTakesTheRepositoryFromTheCheckout(t *testing.T) {
 	if err := json.Unmarshal([]byte(h.platform.sent("POST", "/projects")[0].Body), &sent); err != nil {
 		t.Fatalf("create body: %v", err)
 	}
-	if sent.Repo != "acme/shop" || sent.Name != "shop" {
+	if sent.Repo != "acme/shop" || sent.Name != testProject {
 		t.Errorf("took %q and %q from the checkout", sent.Repo, sent.Name)
 	}
 }
@@ -274,7 +274,7 @@ func TestCreateProjectCanBeToldNotToLink(t *testing.T) {
 	h.platform.connections = twoConnections()
 	h.platform.detected = &detection{Detected: true}
 
-	if code := h.run("projects", "create", "shop", "--repo", "acme/shop", "--link=false",
+	if code := h.run("projects", "create", testProject, "--repo", "acme/shop", "--link=false",
 		"--connection", gitConnection, "--registry", registryConnection, "--json"); code != 0 {
 		t.Fatalf("exit %d: %s", code, h.stderr.String())
 	}

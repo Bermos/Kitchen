@@ -211,8 +211,9 @@ takes a typed `owner/name` in every one of these cases.
 The listing is what the token can reach — owned, shared, and through an
 organisation it belongs to — which for a fine-grained token is exactly the
 repositories it was granted. There is no CLI command for it: `kitchen api GET
-/connections/gh/repositories` reaches it authenticated, and the CLI has no
-create-a-project command for it to be a field of.
+/connections/gh/repositories` reaches it authenticated, and `kitchen projects
+create` needs no picker — it takes the repository from the checkout it is run
+in, or from `--repo`.
 
 ### What the platform makes of a repository
 
@@ -251,8 +252,9 @@ wants:
 
 `detected: false` is not an error and does not stop a project being created:
 the build strategy can be set afterwards, and the build is still what decides.
-There is no CLI command for it, for the same reason the repository listing has
-none; `kitchen api POST /connections/gh/detect` reaches it authenticated.
+`kitchen projects create` runs it before every create for that reason, and a
+bare verdict is a question it asks rather than a refusal — `--yes` answers it,
+and `kitchen api POST /connections/gh/detect` asks it on its own.
 
 Both fields it exists to correct — `rootDirectory` and `dockerfilePath` — are
 accepted by `POST /projects`, so a form that showed a wrong verdict can create
