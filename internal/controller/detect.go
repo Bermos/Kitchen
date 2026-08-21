@@ -29,14 +29,12 @@ import (
 	"github.com/Bermos/Kitchen/internal/gitprovider"
 )
 
-// The two ways detection does not produce an answer. They live in
-// internal/detect, which is where the reading of a repository moved when the
-// API grew a preflight over the same question; these are the names the build
-// reconciler already told them apart by.
-var (
-	errSourceUnreadable    = detect.ErrSourceUnreadable
-	errNoFrameworkDetected = detect.ErrNotRecognised
-)
+// errSourceUnreadable is the repository not being readable right now, which
+// is the one detection failure the build reconciler tells apart: it keeps a
+// Build queued rather than failing a commit for something the commit did not
+// do. It lives in internal/detect, which is where the reading of a repository
+// moved when the API grew a preflight over the same question.
+var errSourceUnreadable = detect.ErrSourceUnreadable
 
 // detectFramework is what `strategy: auto` means: read the repository at the
 // commit under build, and decide what it is before anything is created.

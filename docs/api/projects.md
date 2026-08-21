@@ -24,6 +24,11 @@ their defaults:
 {"productionBranch": "main", "previews": true}
 ```
 
+`rootDirectory` and `dockerfilePath` may be set here too, which is what
+`POST /connections/{name}/detect` exists to get right: the preflight reads the
+repository the way a build would, and a build context it showed to be wrong is
+corrected on the form rather than after the first build has failed.
+
 The name has to work as a DNS label of at most 46 characters, because
 everything the platform derives from it — the application namespace, release
 names, generated hostnames — has to fit Kubernetes' 63-character limit.
@@ -44,6 +49,17 @@ rather than being handed the API server's account of an object in a namespace:
 Answers `201` with the new project. The operator takes it from there:
 namespace, webhook, and — once the first build of the production branch
 lands — the production environment.
+
+**That first build is created by the platform, not by the next push.** As soon
+as the project's source and registry connections are usable, the
+`ProjectReconciler` resolves the production branch's current tip and creates
+one Build of it, recording the fact in `status.initialBuildRef` so it happens
+exactly once. Without it, a project created from a repository nobody was about
+to commit to would sit at "no builds yet" until somebody pushed an empty
+commit to wake it up. The Build carries the same deterministic name the
+webhook receiver would give it — `<project>-bld-<sha[:12]>` — so a push that
+arrives at the same moment is the same object rather than a second build of
+one commit.
 
 **Creating a project is self-service, and the account that creates one becomes
 its `admin`** — written into `spec.access` on the new Project, not implied, so

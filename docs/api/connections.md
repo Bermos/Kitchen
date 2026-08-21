@@ -213,3 +213,47 @@ organisation it belongs to — which for a fine-grained token is exactly the
 repositories it was granted. There is no CLI command for it: `kitchen api GET
 /connections/gh/repositories` reaches it authenticated, and the CLI has no
 create-a-project command for it to be a field of.
+
+### What the platform makes of a repository
+
+```sh
+curl -sS -X POST -H "authorization: Bearer $TOKEN" \
+  -d '{"repo": "acme/shop", "ref": "main", "rootDirectory": "apps/shop"}' \
+  https://kitchen.apps.example.com/api/v1/connections/gh/detect
+{"detected": true, "framework": "vite", "strategy": "buildpacks", "port": 8080,
+ "ref": "main", "rootDirectory": "apps/shop", "dockerfile": false,
+ "files": ["package.json", "vite.config.ts"]}
+```
+
+The field after the repository, and the one worth being wrong about early: it
+reads the repository exactly as a build with `strategy: auto` would — the same
+`internal/detect` code the `BuildReconciler` calls, so the preflight cannot
+disagree with the build — and says what the platform makes of it while the
+build context is still a form field. Without it, a root directory one level
+off is a build that fails several minutes after the project was created and
+reads like the platform is broken.
+
+Every field of the request is the value the form currently holds, and asking
+again with a corrected `rootDirectory` or `dockerfilePath` is the whole of
+fixing it. `ref` may be left out, in which case the repository's default
+branch is resolved and answered back in `ref`. It writes nothing, reaches no
+credential back, and any account may ask it — creating a project is
+self-service.
+
+Everything the caller can act on answers `200`, including the answers nobody
+wants:
+
+| Answer | What it means |
+|---|---|
+| `"detected": false` with `message` | The directory was read and not recognised, the root directory is not there, or the connection is not a source of repositories. `files` says what the verdict was reached from |
+| `400` | No `repo`, or no `ref` and no default branch to fall back on |
+| `502` | The provider refused or could not be reached |
+
+`detected: false` is not an error and does not stop a project being created:
+the build strategy can be set afterwards, and the build is still what decides.
+There is no CLI command for it, for the same reason the repository listing has
+none; `kitchen api POST /connections/gh/detect` reaches it authenticated.
+
+Both fields it exists to correct — `rootDirectory` and `dockerfilePath` — are
+accepted by `POST /projects`, so a form that showed a wrong verdict can create
+the project with the right build context rather than fixing it afterwards.
