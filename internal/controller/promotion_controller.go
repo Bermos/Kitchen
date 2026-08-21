@@ -313,6 +313,14 @@ func (r *PromotionReconciler) evaluate(
 
 	requirements := env.Spec.Requirements
 	if requirements == nil {
+		// The hard check behind issue #137 guards this ungated door too: a
+		// classified project's release does not land on an environment rated
+		// below it, and with no bundle pinned there is no engine to say so —
+		// the refusal is this reconciler's own, permanent for this promotion,
+		// naming both classes and the fix.
+		if refusal := DataClassRefusal(project, env); refusal != "" {
+			return none, policy.Result{}, nil, "", refusal, nil
+		}
 		// An environment that declares no bar accepts anything — exactly
 		// today's behaviour, stated rather than implied: the decision is
 		// still recorded, with an empty bundle and no rules evaluated.
@@ -894,6 +902,18 @@ func createAutomaticPromotion(
 			Trigger:        kitchenv1alpha1.PromotionAutomatic,
 			Reason:         reason,
 		},
+	}
+	// A retry that finds its own work done records nothing: the promotion
+	// and the CREATE record both exist from the pass that made them, and a
+	// second record would be a creation that never happened. The record still
+	// comes before the write on the pass that writes.
+	err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: promotion.Name},
+		&kitchenv1alpha1.Promotion{})
+	if err == nil {
+		return nil
+	}
+	if !apierrors.IsNotFound(err) {
+		return err
 	}
 	if err := auditor.Record(ctx, audit.Transition{
 		Object:      promotion,

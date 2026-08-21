@@ -742,10 +742,14 @@ enforce: `dataClass` on Project, Environment and ResourceClaim (ordered
 unclassified and shown as such, never defaulted), `residency` declared on the
 Environment and the Kitchen singleton and *recorded* from the provider's
 actual placement on a claim's status. Classification is inherited and
-narrowable, never wideable — the API refuses a claim classified above its
-project, and the default policy bundle's `dataclass-le-environment` rule
-refuses a promotion of a classified project into an environment rated below
-it (or not rated at all). Every classification change is a privileged audit
+narrowable, never wideable — an environment the platform creates inherits its
+project's class at creation, the API refuses a claim classified above its
+project, and a release flip that would land a classified project on an
+environment rated below it (or not rated at all) is refused on every path:
+outright on ungated environments — the build controller's fast path and the
+API's direct moves and rollbacks alike, audit-recorded — and as the default
+policy bundle's named `dataclass-le-environment` rule wherever a bundle is
+pinned. Every classification change is a privileged audit
 record carrying the previous value, and `GET /compliance/inventory` answers
 the whole install's classes and locations in one exportable request.
 

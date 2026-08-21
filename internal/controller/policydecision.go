@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -102,7 +103,7 @@ func (r *DecisionRecorder) Record(
 	result policy.Result,
 	bundle policy.Bundle,
 ) (string, error) {
-	decisionID := string(uuid.NewUUID())
+	decisionID := decisionIDFor(about, input.Kind)
 
 	canonical, err := input.Canonical()
 	if err != nil {
@@ -172,6 +173,26 @@ func (r *DecisionRecorder) Record(
 		}
 	}
 	return decisionID, nil
+}
+
+// decisionIDFor mints a decision's id. A promotion is decided exactly once —
+// its spec is immutable and its phases terminal — so its decision id is a
+// deterministic UUID derived from the promotion's UID: a requeue that
+// re-records the decision (a status update failed after storage) produces
+// the same id, and the store's insert recognises its own earlier row instead
+// of keeping two. Every other kind is a fresh question each time it is asked
+// — a rescan of the same release next week is a new decision — and gets a
+// random id, as does anything without a UID to derive from.
+func decisionIDFor(about client.Object, kind string) string {
+	if kind != policy.KindPromotion || about == nil || about.GetUID() == "" {
+		return string(uuid.NewUUID())
+	}
+	sum := sha256.Sum256([]byte("kitchen-promotion-decision\x00" + string(about.GetUID())))
+	var id [16]byte
+	copy(id[:], sum[:16])
+	id[6] = (id[6] & 0x0f) | 0x50 // version 5: name-based
+	id[8] = (id[8] & 0x3f) | 0x80 // RFC 4122 variant
+	return fmt.Sprintf("%x-%x-%x-%x-%x", id[0:4], id[4:6], id[6:8], id[8:10], id[10:16])
 }
 
 // decisionTransition is the audit record a decision appends before anything

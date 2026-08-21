@@ -221,6 +221,58 @@ func TestReplayNoticesAVerdictThatDoesNotReproduce(t *testing.T) {
 	}
 }
 
+func TestReplayOfAnUngatedPromotionsDecisionReproducesTheTrivialAllow(t *testing.T) {
+	// An environment that declares no requirements still gets its promotion
+	// decision recorded — with an empty bundle, because nothing was
+	// evaluated. Replaying that decision reproduces the same trivial allow
+	// instead of refusing to evaluate nothing.
+	h := asMember(t, kitchenv1alpha1.AccessRoleDeveloper)
+	input := policy.Input{
+		Kind:        policy.KindPromotion,
+		At:          time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC),
+		Project:     policy.ProjectFacts{Name: feedProject},
+		Environment: policy.EnvironmentFacts{Name: testEnvironment, Type: "production"},
+		Release:     policy.ReleaseFacts{Name: testRelease},
+	}
+	canonical, err := input.Canonical()
+	if err != nil {
+		t.Fatal(err)
+	}
+	inputDigest, err := input.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored := clickhouse.Decision{
+		ID: "d-ungated", Timestamp: input.At, Kind: policy.KindPromotion,
+		Project: feedProject, Environment: testEnvironment, Release: testRelease,
+		BundleDigest: policy.Digest(nil), InputDigest: inputDigest,
+		Verdict:    policy.VerdictAllowed,
+		RulesFired: `[]`,
+		Input:      string(canonical),
+		DecidedBy:  "system:controller/policy",
+	}
+	// Deliberately no bundle row: an empty bundle was never persisted, and
+	// the replay must not go looking for one.
+	h.logs.decisions = append(h.logs.decisions, stored)
+
+	recorder := h.do(t, http.MethodPost, "/api/v1/decisions/"+stored.ID+"/replay", "")
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	body := decode[replayBody](t, recorder)
+	if !body.Match || body.Original.Verdict != policy.VerdictAllowed ||
+		body.Replay.Verdict != policy.VerdictAllowed {
+		t.Fatalf("the trivial allow must reproduce, got %+v", body)
+	}
+	if len(h.logs.insertedDecisions) != 1 {
+		t.Fatalf("the check itself has a record, got %d", len(h.logs.insertedDecisions))
+	}
+	replay := h.logs.insertedDecisions[0]
+	if replay.Kind != policy.KindReplay || replay.BundleDigest != stored.BundleDigest {
+		t.Fatalf("the replay cites the empty bundle it re-ran nothing from, got %+v", replay)
+	}
+}
+
 func TestReplayIsADevelopersWrite(t *testing.T) {
 	h := asMember(t, kitchenv1alpha1.AccessRoleViewer)
 	stored := replayFixture(t, h)

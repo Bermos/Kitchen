@@ -412,7 +412,20 @@ func (s *Server) eligibilityInput(
 	if err := s.Client.List(ctx, list, client.InNamespace(s.Namespace)); err == nil {
 		claims = policy.ClaimFacts(env, list.Items)
 	}
-	return policy.MaterializeInput(policy.KindEligibility, time.Now().UTC(), project, env, release, build, evidence, claims)
+	at := time.Now().UTC()
+	input := policy.MaterializeInput(policy.KindEligibility, at, project, env, release, build, evidence, claims)
+	// Active exceptions join the input through the one listing the promotion
+	// reconciler consults (ActiveExceptionsFor), judged at the same clock the
+	// input carries — which is what keeps the preview's verdict the verdict a
+	// promotion would act on: a pair waived into allowed-with-exception must
+	// not read as blocked on the screen. A listing that fails degrades like
+	// the project and the claims do — judged absent, which can only make the
+	// preview stricter than the promotion, never looser.
+	if active, err := controller.ActiveExceptionsFor(ctx, s.Client, s.Namespace,
+		env.Spec.ProjectRef.Name, env.Name, release.Name, at); err == nil {
+		input.Exceptions = controller.PolicyExceptions(active)
+	}
+	return input
 }
 
 // environmentEligibility answers how a release measures up against an

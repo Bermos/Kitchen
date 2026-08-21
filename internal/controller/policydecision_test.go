@@ -241,6 +241,64 @@ func TestRecordStoresTheDecisionAndAttestsAPromotion(t *testing.T) {
 	}
 }
 
+func TestAPromotionsDecisionIDIsStableAcrossARequeue(t *testing.T) {
+	// A status update failing after the decision was stored re-enters Record
+	// with a fresh evaluation — a later At, so a different input digest — and
+	// the retry must not mint a second identity for the one decision this
+	// promotion gets: the id derives from the promotion's UID, and the
+	// store's insert recognises its own earlier row by it.
+	recorder, decisions, _, kitchen := decisionFixtures(t)
+	about := &kitchenv1alpha1.Promotion{ObjectMeta: metav1.ObjectMeta{
+		Name: "shop-promo-1", Namespace: PlatformNamespace, UID: "11111111-aaaa-bbbb-cccc-222222222222",
+	}}
+	result := policy.Result{Verdict: policy.VerdictAllowed, Fired: []policy.FiredRule{}}
+
+	first, err := recorder.Record(context.Background(), kitchen, about, promotionInput(), result, policy.DefaultBundle())
+	if err != nil {
+		t.Fatal(err)
+	}
+	requeued := promotionInput()
+	requeued.At = requeued.At.Add(time.Minute)
+	second, err := recorder.Record(context.Background(), kitchen, about, requeued, result, policy.DefaultBundle())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != second {
+		t.Fatalf("one promotion, one decision id: got %q then %q", first, second)
+	}
+	if len(decisions.decisions) != 2 || decisions.decisions[0].ID != decisions.decisions[1].ID {
+		t.Fatalf("both store attempts must carry the one id — the store's insert dedupes on it — got %+v",
+			decisions.decisions)
+	}
+
+	// Another promotion decides under an id of its own.
+	other := &kitchenv1alpha1.Promotion{ObjectMeta: metav1.ObjectMeta{
+		Name: "shop-promo-2", Namespace: PlatformNamespace, UID: "33333333-aaaa-bbbb-cccc-444444444444",
+	}}
+	third, err := recorder.Record(context.Background(), kitchen, other, promotionInput(), result, policy.DefaultBundle())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if third == first {
+		t.Fatalf("two promotions must not share a decision id, both got %q", first)
+	}
+
+	// A rescan is a fresh question each time it is asked and keeps random ids.
+	rescan := promotionInput()
+	rescan.Kind = policy.KindRescan
+	fourth, err := recorder.Record(context.Background(), kitchen, about, rescan, result, policy.DefaultBundle())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fifth, err := recorder.Record(context.Background(), kitchen, about, rescan, result, policy.DefaultBundle())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fourth == fifth {
+		t.Fatalf("a rescan re-asked is a new decision, both got %q", fourth)
+	}
+}
+
 func TestARescanDecisionIsStoredAndNotAttested(t *testing.T) {
 	recorder, decisions, registry, kitchen := decisionFixtures(t)
 	input := promotionInput()

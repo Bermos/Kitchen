@@ -82,6 +82,26 @@ func TestInsertDecisionWritesEveryColumn(t *testing.T) {
 	}
 }
 
+func TestInsertDecisionIsInsertIfAbsent(t *testing.T) {
+	// The promotion path derives a deterministic decision id, so a requeue
+	// re-stores the same decision under the same id — and the insert, like
+	// the bundle insert, recognises its own earlier row instead of keeping
+	// two on a plain MergeTree.
+	present := newFakeLogStore(t)
+	present.rows = "1"
+	if err := present.client(t).InsertDecision(context.Background(), Decision{
+		ID: "0d9a1f7e-1111-2222-3333-444444444444", Kind: "promotion", Verdict: "allowed",
+	}); err != nil {
+		t.Fatalf("InsertDecision: %v", err)
+	}
+	if present.sawQuery("INSERT INTO") {
+		t.Fatalf("a present decision must not be re-inserted:\n%s", present.transcript())
+	}
+	if !present.sawQuery("id = {id:String}") {
+		t.Fatalf("the probe must ask by id:\n%s", present.transcript())
+	}
+}
+
 func TestQueryDecisionsFiltersAndReadsBack(t *testing.T) {
 	store := newFakeLogStore(t)
 	store.rows = `{"id":"d-1","ts":"2026-08-20T12:00:00.000Z","kind":"promotion",` +

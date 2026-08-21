@@ -30,6 +30,7 @@ import (
 	"github.com/Bermos/Kitchen/internal/access"
 	"github.com/Bermos/Kitchen/internal/audit"
 	"github.com/Bermos/Kitchen/internal/clickhouse"
+	"github.com/Bermos/Kitchen/internal/controller"
 )
 
 // The break-glass surface: requesting an exception, reading the register, and
@@ -181,12 +182,24 @@ func (s *Server) createException(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// One environment may be named before it exists: the project's production
+	// target — `<project>-production`, or the last stage's environment when
+	// the project stages its pipeline. The build-time break-glass looks for
+	// its grant on exactly that name, and before the first production build
+	// creates the environment there would otherwise be no grantable exception
+	// covering the refusal — a hard-blocked emergency deployment, which is
+	// the one thing this object exists to prevent.
+	environmentName := body.Environment
 	env := &kitchenv1alpha1.Environment{}
 	if err := s.get(ctx, body.Environment, env); err != nil {
-		badRequest(w, "environment %q does not exist", body.Environment)
-		return
-	}
-	if env.Spec.ProjectRef.Name != project.Name {
+		target := controller.ProductionTargetEnvironmentName(project)
+		if body.Environment != target {
+			badRequest(w, "environment %q does not exist: name an existing environment of project %s, "+
+				"or its production target %q — the one environment an exception may cover before its "+
+				"first build creates it", body.Environment, project.Name, target)
+			return
+		}
+	} else if env.Spec.ProjectRef.Name != project.Name {
 		badRequest(w, "environment %q belongs to project %q, not %q",
 			env.Name, env.Spec.ProjectRef.Name, project.Name)
 		return
@@ -240,7 +253,7 @@ func (s *Server) createException(w http.ResponseWriter, req *http.Request) {
 		},
 		Spec: kitchenv1alpha1.ExceptionSpec{
 			ProjectRef:     kitchenv1alpha1.LocalObjectReference{Name: project.Name},
-			EnvironmentRef: kitchenv1alpha1.LocalObjectReference{Name: env.Name},
+			EnvironmentRef: kitchenv1alpha1.LocalObjectReference{Name: environmentName},
 			ReleaseRef:     releaseRef,
 			RuleIDs:        rules,
 			Reason:         body.Reason,
@@ -260,12 +273,12 @@ func (s *Server) createException(w http.ResponseWriter, req *http.Request) {
 	}
 
 	s.log().Info("break-glass exception granted through the api", "exception", exception.Name,
-		"project", project.Name, "environment", env.Name, "rules", rules,
+		"project", project.Name, "environment", environmentName, "rules", rules,
 		"approvedBy", body.ApprovedBy, "caller", callerName(caller))
 	s.Activity.Record(ctx, clickhouse.Event{
 		Type:        clickhouse.EventExceptionGranted,
 		Project:     project.Name,
-		Environment: env.Name,
+		Environment: environmentName,
 		Message: fmt.Sprintf("break-glass exception %s waives %s until %s",
 			exception.Name, strings.Join(rules, ", "), exception.Spec.ExpiresAt.UTC().Format(time.RFC3339)),
 		Actor: callerName(caller),

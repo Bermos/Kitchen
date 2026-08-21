@@ -93,8 +93,10 @@ different project.
 `confidential` or `strictlyConfidential`, in ascending order; `""` removes
 the classification, and absent means unclassified, shown as such and never
 defaulted. It is the top of the classification hierarchy: a
-[claim](connections.md)'s class may not exceed it, and at promotion the
-policy engine refuses an environment rated below it. Reclassifying is always
+[claim](connections.md)'s class may not exceed it, environments the platform
+creates inherit it, and a release flip onto an environment rated below it is
+refused — outright on environments without requirements, and as the named
+`dataclass-le-environment` rule where a policy bundle is pinned. Reclassifying is always
 allowed — environments that now sit below the class read as non-compliant in
 the [inventory](audit.md#the-classification-inventory) rather than the
 correction being refused — and every change is audit-logged privileged, with

@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -415,6 +416,142 @@ func TestEligibilityEvaluatesForRealWhenTheBundleResolves(t *testing.T) {
 	}
 	if len(body.UnmetRules) != 0 {
 		t.Fatalf("nothing should fire, got %v", body.UnmetRules)
+	}
+}
+
+func TestEligibilityHonorsAnActiveExceptionTheWayAPromotionWould(t *testing.T) {
+	// The preview's verdict is the promotion's: an active grant that would
+	// waive the fired rules at promotion (allowed-with-exception) must answer
+	// eligible here too, or the screen predicts a block the pipeline would
+	// let through.
+	h, registry, digest := gateHarness(t)
+	bundleDigest := policy.Digest(policy.DefaultBundle())
+	h.updateEnvironment(t, func(env *kitchenv1alpha1.Environment) {
+		env.Spec.Requirements = &kitchenv1alpha1.EnvironmentRequirements{
+			BundleDigest: bundleDigest,
+			Parameters: map[string]string{
+				"require-provenance": "true",
+				"requiredGates":      "trivy",
+			},
+		}
+	})
+	release := &kitchenv1alpha1.Release{
+		ObjectMeta: metav1.ObjectMeta{Name: "shop-rel-9", Namespace: testNamespace},
+		Spec: kitchenv1alpha1.ReleaseSpec{
+			ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: feedProject},
+			BuildRef:   kitchenv1alpha1.LocalObjectReference{Name: "shop-bld-9"},
+			Image:      "registry.example.com/kitchen/shop@" + digest,
+		},
+	}
+	if err := h.server.Client.Create(context.Background(), release); err != nil {
+		t.Fatal(err)
+	}
+	// Provenance the artifact carries; the trivy gate it does not — so
+	// require-gate fires, and only the exception stands between the pair and
+	// a blocked verdict.
+	registry.set = attestation.EvidenceSet{
+		Subject:  "registry.example.com/kitchen/shop@" + digest,
+		Verified: true,
+		Attestations: []attestation.Evidence{
+			{PredicateType: attestation.PredicateSLSAProvenanceV1, Verified: true},
+		},
+	}
+	exception := &kitchenv1alpha1.Exception{
+		ObjectMeta: metav1.ObjectMeta{Name: "shop-exc-gate", Namespace: testNamespace},
+		Spec: kitchenv1alpha1.ExceptionSpec{
+			ProjectRef:     kitchenv1alpha1.LocalObjectReference{Name: feedProject},
+			EnvironmentRef: kitchenv1alpha1.LocalObjectReference{Name: testEnvironment},
+			RuleIDs:        []string{"require-gate"},
+			Reason:         "the scanner is down; INC-7",
+			RequestedBy:    "grace@example.com",
+			ApprovedBy:     approverSubject,
+			ExpiresAt:      metav1.NewTime(time.Now().Add(time.Hour).UTC()),
+		},
+	}
+	if err := h.server.Client.Create(context.Background(), exception); err != nil {
+		t.Fatal(err)
+	}
+
+	recorder := h.do(t, http.MethodGet,
+		"/api/v1/environments/"+testEnvironment+"/eligibility?release=shop-rel-9", "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	body := decode[eligibilityBody](t, recorder)
+	if body.Eligible == nil || !*body.Eligible || !body.Evaluated {
+		t.Fatalf("a waived pair answers eligible, got %s", recorder.Body.String())
+	}
+	if len(body.UnmetRules) != 0 {
+		t.Fatalf("a waived rule is not unmet, got %v", body.UnmetRules)
+	}
+	if !strings.Contains(body.Message, "waived by an exception") {
+		t.Fatalf("the answer says the pass rides a waiver, got %q", body.Message)
+	}
+	if len(h.logs.insertedDecisions) != 0 {
+		t.Fatalf("an eligibility read must store no decision, got %+v", h.logs.insertedDecisions)
+	}
+
+	// An expired grant waives nothing, on the preview exactly as at
+	// promotion.
+	exception.Spec.ExpiresAt = metav1.NewTime(time.Now().Add(-time.Minute).UTC())
+	if err := h.server.Client.Update(context.Background(), exception); err != nil {
+		t.Fatal(err)
+	}
+	recorder = h.do(t, http.MethodGet,
+		"/api/v1/environments/"+testEnvironment+"/eligibility?release=shop-rel-9", "")
+	body = decode[eligibilityBody](t, recorder)
+	if body.Eligible == nil || *body.Eligible {
+		t.Fatalf("an expired grant waives nothing, got %s", recorder.Body.String())
+	}
+	if len(body.UnmetRules) != 1 || body.UnmetRules[0] != "require-gate" {
+		t.Fatalf("the fired rule stands unmet again, got %v", body.UnmetRules)
+	}
+}
+
+func TestAClassifiedProjectIsRefusedADirectMoveOntoALowerRatedEnvironment(t *testing.T) {
+	// The hard check behind issue #137, on the API's direct path: an
+	// environment somebody narrowed below its project's class takes no
+	// release of it, rollback included, and the refusal names both classes
+	// and the fix.
+	h := newHarness(t, nil, fixtures()...)
+	project := &kitchenv1alpha1.Project{}
+	if err := h.server.Client.Get(context.Background(),
+		types.NamespacedName{Namespace: testNamespace, Name: feedProject}, project); err != nil {
+		t.Fatal(err)
+	}
+	project.Spec.DataClass = kitchenv1alpha1.DataClassConfidential
+	if err := h.server.Client.Update(context.Background(), project); err != nil {
+		t.Fatal(err)
+	}
+	h.updateEnvironment(t, func(env *kitchenv1alpha1.Environment) {
+		env.Spec.DataClass = kitchenv1alpha1.DataClassInternal
+	})
+
+	recorder := h.do(t, http.MethodPatch, "/api/v1/environments/"+testEnvironment,
+		`{"release":"`+testPreviousRelease+`"}`)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	got := errorOf(t, recorder.Body.String())
+	for _, want := range []string{"confidential", "internal", "classify the environment"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("the refusal must carry %q, got %q", want, got)
+		}
+	}
+	if env := h.environment(t); env.Spec.ReleaseRef.Name != testRelease {
+		t.Fatalf("a refused move must move nothing, got %q", env.Spec.ReleaseRef.Name)
+	}
+
+	// An unclassified install is untouched: remove the classification and the
+	// same move goes through.
+	project.Spec.DataClass = ""
+	if err := h.server.Client.Update(context.Background(), project); err != nil {
+		t.Fatal(err)
+	}
+	recorder = h.do(t, http.MethodPatch, "/api/v1/environments/"+testEnvironment,
+		`{"release":"`+testPreviousRelease+`"}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("an unclassified project moves freely, got %d: %s", recorder.Code, recorder.Body.String())
 	}
 }
 

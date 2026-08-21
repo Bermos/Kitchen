@@ -278,6 +278,35 @@ var _ = Describe("Promotion Controller", func() {
 		Expect(registry.predicates).To(ContainElement(attestation.PredicateDeployment))
 	})
 
+	It("fails an ungated promotion whose project's class exceeds the environment's", func() {
+		// No bundle is pinned, so no engine will say it: the reconciler's own
+		// hard check (#137) refuses the flip, permanently for this promotion,
+		// naming both classes and the fix.
+		project := &kitchenv1alpha1.Project{}
+		Expect(k8sClient.Get(ctx, key(projectName), project)).To(Succeed())
+		project.Spec.DataClass = kitchenv1alpha1.DataClassConfidential
+		Expect(k8sClient.Update(ctx, project)).To(Succeed())
+
+		env := environmentWith(prodEnv, nil)
+		env.Spec.DataClass = kitchenv1alpha1.DataClassInternal
+		Expect(k8sClient.Create(ctx, env)).To(Succeed())
+		Expect(k8sClient.Create(ctx, newPromotion("promo-blocked", prodEnv))).To(Succeed())
+
+		reconcileOnce("promo-blocked")
+
+		promotion := &kitchenv1alpha1.Promotion{}
+		Expect(k8sClient.Get(ctx, key("promo-blocked"), promotion)).To(Succeed())
+		Expect(promotion.Status.Phase).To(Equal(kitchenv1alpha1.PromotionFailed))
+		Expect(promotion.Status.Message).To(ContainSubstring("confidential"))
+		Expect(promotion.Status.Message).To(ContainSubstring("classify the environment"))
+
+		// The environment was never touched, and nothing was decided — no
+		// rules were evaluated, so no decision pretends they were.
+		Expect(k8sClient.Get(ctx, key(prodEnv), env)).To(Succeed())
+		Expect(env.Spec.ReleaseRef.Name).To(Equal(projectName + "-rel-old"))
+		Expect(decisions.decisions).To(BeEmpty())
+	})
+
 	It("blocks a promotion whose artifact lacks the required evidence, naming the rules", func() {
 		bundle := policy.DefaultBundle()
 		Expect(k8sClient.Create(ctx, environmentWith(prodEnv, &kitchenv1alpha1.EnvironmentRequirements{

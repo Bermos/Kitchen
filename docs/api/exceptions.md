@@ -49,7 +49,14 @@ what this endpoint does.
 
 Refusals: `400` for a missing reason, no `ruleIDs`, an `expiresAt` not in the
 future, an approver who is the caller, or an approver without the ladder's
-role — each says which and how to fix it.
+role — each says which and how to fix it. The environment must exist, with
+one deliberate exception: the project's **production target** —
+`<project>-production`, or the last stage's environment when the project
+declares a pipeline — may be named before its first build creates it. The
+build-time break-glass is scoped to exactly that name, and an emergency
+waiver has to be grantable before the first production build, or the refusal
+it exists to waive could never be waived. Any other unknown environment is a
+`400` naming both options.
 
 ## The register
 
@@ -104,15 +111,21 @@ the authoritative record stays on the Exception.
 One rule id lives outside the policy engine: **`require-pull-request`**. A
 project's `requirePullRequest` setting refuses a direct push to the
 production branch at *build* time, before any promotion exists. An active
-exception for the project's production environment (with no `release`
-narrowing) whose `ruleIDs` include `require-pull-request` converts that
-refusal into an allowed, loudly recorded build: privileged audit record, the
-exception's name on the build's source status, and an `exception`/`exempt`
-field on the signed pull-request-approval attestation.
+exception for the project's production target — `<project>-production`, or
+the last stage's environment when the project declares a pipeline — with no
+`release` narrowing, whose `ruleIDs` include `require-pull-request`, converts
+that refusal into an allowed, loudly recorded build: privileged audit record,
+the exception's name on the build's source status, and an
+`exception`/`exempt` field on the signed pull-request-approval attestation.
 
-**Expiry** is enforced by the platform, not by good intentions: an expired,
-unresolved exception waives nothing — further promotions that needed it are
-`Blocked`, naming the expired exception in their message — and the deployed
-release goes non-compliant on the next re-evaluation pass. `autoRollback` is
-available for installations that want the environment rolled back on expiry,
-and off by default.
+**Expiry** is enforced by the platform, not by good intentions: the exception
+controller flips the phase to `Expired` at the deadline, with a privileged
+audit record, and an expired, unresolved exception waives nothing — further
+promotions that relied on it are `Blocked`, naming the expired exception in
+their message. What expiry does **not** yet do: nothing re-evaluates what is
+already running, so a release deployed under the grant keeps running and its
+stored decision stands until something asks again. The scheduled
+re-evaluation pass that turns an expiry into a visible non-compliance — and
+the machinery that can act on `autoRollback` — arrive with the rescan
+controller (#134); until then `autoRollback` is carried on the object and
+changes nothing.

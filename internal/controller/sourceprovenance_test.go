@@ -402,6 +402,53 @@ func TestADirectPushUnderABreakGlassExceptionIsAllowedAndLoudlyRecorded(t *testi
 	}
 }
 
+func TestAStagedProjectsBreakGlassIsScopedToItsLastStage(t *testing.T) {
+	// Under a staged pipeline (#133) the production target is the LAST
+	// stage's environment, and that is where the build-time break-glass
+	// looks: a grant scoped to the name the register actually shows must
+	// break the glass.
+	reconciler, build, project := sourceFixtures(t, &changeProvider{
+		provenance: gitprovider.ChangeProvenance{Provider: "github", PullRequest: 0},
+	}, nil)
+	project.Spec.Promotion = &kitchenv1alpha1.PromotionPolicySpec{Stages: []kitchenv1alpha1.PromotionStage{
+		{Name: "staging", Environment: "shop-staging"},
+		{Name: "live", Environment: "shop-live"},
+	}}
+	exception := breakGlassException(breakGlassGrant, time.Hour)
+	exception.Spec.EnvironmentRef = kitchenv1alpha1.LocalObjectReference{Name: "shop-live"}
+	if err := reconciler.Client.Create(context.Background(), exception); err != nil {
+		t.Fatal(err)
+	}
+
+	status, refusal := reconciler.resolveSourceProvenance(context.Background(), build, project)
+	if refusal != nil {
+		t.Fatalf("an exception scoped to the pipeline's last stage must break the glass: %v", refusal)
+	}
+	if status.Exception != breakGlassGrant {
+		t.Fatalf("the waiver must be named on the status, got %q", status.Exception)
+	}
+}
+
+func TestAStagedProjectIgnoresAGrantOnTheDefaultProductionName(t *testing.T) {
+	// The other half of the scoping: with a pipeline declared,
+	// `<project>-production` is not the production target unless a stage
+	// names it, so a grant there covers nothing.
+	reconciler, build, project := sourceFixtures(t, &changeProvider{
+		provenance: gitprovider.ChangeProvenance{Provider: "github", PullRequest: 0},
+	}, nil)
+	project.Spec.Promotion = &kitchenv1alpha1.PromotionPolicySpec{Stages: []kitchenv1alpha1.PromotionStage{
+		{Name: "live", Environment: "shop-live"},
+	}}
+	if err := reconciler.Client.Create(context.Background(),
+		breakGlassException("shop-exc-misplaced", time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, refusal := reconciler.resolveSourceProvenance(context.Background(), build, project); refusal == nil {
+		t.Fatal("a grant on an environment that is not the staged project's production target waives nothing")
+	}
+}
+
 func TestAnExpiredExceptionNoLongerBreaksTheGlass(t *testing.T) {
 	reconciler, build, project := sourceFixtures(t, &changeProvider{
 		provenance: gitprovider.ChangeProvenance{Provider: "github", PullRequest: 0},
