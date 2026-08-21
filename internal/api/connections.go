@@ -22,7 +22,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"slices"
 	"strings"
 	"time"
 
@@ -652,43 +651,13 @@ func (s *Server) listConnectionRepositories(w http.ResponseWriter, req *http.Req
 	}
 	providerName := connection.Spec.Provider
 
-	// Whether there is anything to list is a fact about the provider, so it
-	// is settled before the credential is read: matched on the capability the
-	// platform would use the connection for, never on the provider's name —
-	// which is also what keeps a registry connection from being asked for a
-	// token it does not have.
-	if !slices.Contains(provider.Capabilities(providerName), kitchenv1alpha1.CapabilityGitSource) {
-		unsupportedRepositories(w, providerName, fmt.Sprintf(
-			"the platform cannot list repositories for a %s connection: type the repository as owner/name", providerName))
-		return
-	}
-
-	creds := &corev1.Secret{}
-	key := types.NamespacedName{Namespace: s.Namespace, Name: connection.Spec.CredentialsSecretRef.Name}
-	if err := s.Client.Get(ctx, key, creds); err != nil {
-		s.writeError(w, err)
-		return
-	}
-	token := string(creds.Data[gitTokenKey])
-	if token == "" {
-		writeJSON(w, http.StatusBadGateway, errorBody{Error: fmt.Sprintf(
-			"the credential stored for connection %q has no %q key, so the provider cannot be asked what it can see",
-			connection.Name, gitTokenKey)})
-		return
-	}
-
-	factory := s.GitProviders
-	if factory == nil {
-		factory = gitprovider.Default
-	}
-	git, err := factory(connection, token)
-	if errors.Is(err, gitprovider.ErrUnsupportedProvider) {
-		unsupportedRepositories(w, providerName, fmt.Sprintf(
-			"the platform has no %s implementation yet: type the repository as owner/name", providerName))
+	git, unsupported, err := s.gitProviderFor(ctx, connection)
+	if unsupported != "" {
+		unsupportedRepositories(w, providerName, unsupported+": type the repository as owner/name")
 		return
 	}
 	if err != nil {
-		badRequest(w, "%s", err.Error())
+		s.writeProviderError(w, connection, err)
 		return
 	}
 	lister, ok := gitprovider.Repositories(git)
