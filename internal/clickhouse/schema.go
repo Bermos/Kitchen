@@ -338,6 +338,29 @@ func (c *Client) EnsureAuditSchema(ctx context.Context, retentionDays int32) err
 	return c.ensureTable(ctx, AuditTable, createAuditTable(c.cfg.Database, retentionDays), retentionDays)
 }
 
+// EnsurePolicySchema creates the policy engine's two tables — the decisions
+// and the bundles they cite — and keeps the decisions' TTL in step with the
+// same retention the audit log gets.
+//
+// It sits beside EnsureAuditSchema and not inside EnsureTelemetrySchema for
+// the same reason the audit log does: a stored decision is the evidence a
+// promotion is reconstructed from, and turning telemetry down must not
+// shorten it. Sharing the *audit* retention is deliberate — a decision and
+// the audit record that gated it substantiate each other, and aging them out
+// separately would leave whichever survives pointing at nothing.
+//
+// The bundles table carries no TTL at all: a decision is only replayable
+// while the bundle it cites can still be read, so bundle bytes live as long
+// as anything might cite them. The table is a handful of small rows — bundles
+// are written once per digest, not per decision.
+func (c *Client) EnsurePolicySchema(ctx context.Context, retentionDays int32) error {
+	if err := c.ensureTable(ctx, PromotionDecisionsTable,
+		createPromotionDecisionsTable(c.cfg.Database, retentionDays), retentionDays); err != nil {
+		return err
+	}
+	return c.Exec(ctx, createPolicyBundlesTable(c.cfg.Database))
+}
+
 // EnsureK8sEventsSchema creates the cluster's Warning-event history.
 func (c *Client) EnsureK8sEventsSchema(ctx context.Context, retentionDays int32) error {
 	return c.ensureTable(ctx, K8sEventsTable, createK8sEventsTable(c.cfg.Database, retentionDays), retentionDays)
@@ -1076,6 +1099,56 @@ ENGINE = MergeTree
 PARTITION BY toYYYYMM(timestamp)
 ORDER BY (sequence)
 TTL %s`, quoteIdentifier(database), quoteIdentifier(AuditTable), ttlExpression(retentionDays))
+}
+
+// createPromotionDecisionsTable is the decision log's schema: one row per
+// policy evaluation the platform stored, carrying its own reproduction
+// inputs — the bundle digest, the input digest and the full canonical input.
+//
+// The ordering key serves the reads the screens make — a pair's history,
+// newest first — and the id is looked up through a tight bloom filter
+// instead, because a get-by-id is how replay starts and a scan would make it
+// cost the whole retention. Nothing is nullable and nothing defaults, for the
+// audit table's reason: a column the writer forgot must not read back as a
+// plausible empty string.
+func createPromotionDecisionsTable(database string, retentionDays int32) string {
+	return fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.%s
+(
+    id            String,
+    timestamp     DateTime64(3, 'UTC'),
+    kind          LowCardinality(String),
+    project       LowCardinality(String),
+    environment   LowCardinality(String),
+    release       String,
+    artifact      String,
+    bundle_digest String,
+    input_digest  String,
+    data_snapshot String,
+    verdict       LowCardinality(String),
+    rules_fired   String,
+    input         String,
+    decided_by    String,
+    INDEX idx_id id TYPE bloom_filter(0.001) GRANULARITY 1,
+    INDEX idx_release release TYPE bloom_filter(0.01) GRANULARITY 1,
+    INDEX idx_verdict verdict TYPE bloom_filter(0.01) GRANULARITY 1
+)
+ENGINE = MergeTree
+PARTITION BY toYYYYMM(timestamp)
+ORDER BY (project, environment, timestamp)
+TTL %s`, quoteIdentifier(database), quoteIdentifier(PromotionDecisionsTable), ttlExpression(retentionDays))
+}
+
+// createPolicyBundlesTable holds the bundles decisions cite, by digest. See
+// EnsurePolicySchema for why it has no TTL.
+func createPolicyBundlesTable(database string) string {
+	return fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.%s
+(
+    digest     String,
+    content    String,
+    first_seen DateTime64(3, 'UTC')
+)
+ENGINE = MergeTree
+ORDER BY (digest)`, quoteIdentifier(database), quoteIdentifier(PolicyBundlesTable))
 }
 
 // createK8sEventsTable is the cluster's Warning events as a history.

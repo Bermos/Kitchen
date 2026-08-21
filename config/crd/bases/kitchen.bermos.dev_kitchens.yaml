@@ -940,6 +940,26 @@ spec:
                     required:
                     - recording
                     type: object
+                  policy:
+                    description: |-
+                      PolicyStatus reports whether policy decisions are being stored, which —
+                      like AuditStatus — is a different question from whether they are being
+                      made. The engine is a pure function and always answers; what needs the
+                      telemetry store is keeping the answer, with the inputs that make it
+                      reproducible. An installation without one still gets decisions, and this
+                      is where it is told they leave no replayable record behind.
+                    properties:
+                      message:
+                        description: Message explains decisions that are not being
+                          stored.
+                        type: string
+                      storing:
+                        description: Storing is true when the operator has a store
+                          to keep decisions in.
+                        type: boolean
+                    required:
+                    - storing
+                    type: object
                 type: object
               components:
                 description: |-

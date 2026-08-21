@@ -25,7 +25,12 @@ const (
 	actorDomainController         = "domain"
 	actorEnvironmentController    = "environment"
 	actorPlatformUpdateController = "platformupdate"
-	actorProjectController        = "project"
-	actorReleaseController        = "release"
-	actorResourceClaimController  = "resourceclaim"
+	// actorPolicyEngine attributes policy decisions the platform evaluated on
+	// its own initiative — a promotion applied automatically, a scheduled
+	// rescan. A decision a person asked for (a replay through the API)
+	// carries the caller instead, like every API write.
+	actorPolicyEngine            = "policy"
+	actorProjectController       = "project"
+	actorReleaseController       = "release"
+	actorResourceClaimController = "resourceclaim"
 )

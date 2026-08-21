@@ -37,4 +37,11 @@ const (
 	KindProject        = "Project"
 	KindRelease        = "Release"
 	KindResourceClaim  = "ResourceClaim"
+
+	// KindPromotionDecision is the one kind here that is not a Kubernetes
+	// kind: a policy decision lives in the decision store, not in the
+	// cluster, and the record's name carries the object the decision was
+	// about while its correlation carries the decision id — which is the
+	// translation table back to the stored row.
+	KindPromotionDecision = "PromotionDecision"
 )

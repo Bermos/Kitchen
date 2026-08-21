@@ -91,17 +91,22 @@ pipeline is what will act on the comparison.
  "evidence": [
    {"predicateType": "https://slsa.dev/provenance/v1", "source": "builder", "verified": true},
    {"predicateType": "https://spdx.dev/Document", "source": "builder", "verified": true}],
- "eligible": null, "evaluated": false, "unmetRules": [],
- "message": "requirements are declared but not evaluated: policy engine evaluation lands with the promotion pipeline"}
+ "eligible": true, "evaluated": true, "unmetRules": [],
+ "message": "the release clears bundle sha256:4f6c…"}
 ```
+
+The evaluation is the policy engine's — the same code path a promotion
+decision comes from (see [decisions](decisions.md)): the environment's pinned
+bundle over the materialized evidence, with `unmetRules` naming the specific
+rules that fired as stable rule ids. A release is never refused with a
+generic failure.
 
 `eligible` is three-valued on purpose. An environment that declares no
 requirements answers `true` — a bar of height zero, and the message says so.
-An environment that declares any answers `null` with `evaluated: false` until
-the policy engine ships: "not judged" and "passed" are different claims, and
-this endpoint will not blur them. When evaluation lands, `unmetRules` names
-the specific rules that fired, as stable rule ids — a release is never refused
-with a generic failure.
+An environment whose pinned `bundleDigest` cannot be resolved — the ConfigMap
+is gone, the digest was mistyped — answers `null` with `evaluated: false`:
+"not judged" and "passed" are different claims, and this endpoint will not
+blur them.
 
 The `evidence` list is the screen's half meanwhile: what the artifact carries
 (by predicate type), whose claim each piece is (`platform`, `builder`, or

@@ -76,6 +76,10 @@ type platform struct {
 	connections []connection
 	detected    *detection
 
+	// The decision register: what /decisions answers, and what a replay says.
+	decisions []decision
+	replay    *decisionReplay
+
 	// refuse answers every API call with this status and message when set.
 	refuseStatus  int
 	refuseMessage string
@@ -169,6 +173,13 @@ func (p *platform) serve(w http.ResponseWriter, req *http.Request) {
 		p.moveEnvironment(w, body)
 	case path == "/platform/backup" && req.Method == http.MethodPost:
 		p.answerBackup(w)
+	case path == "/decisions":
+		writeAnswer(w, http.StatusOK, list[decision]{Items: p.decisions})
+	case strings.HasPrefix(path, "/decisions/") && strings.HasSuffix(path, "/replay") &&
+		req.Method == http.MethodPost:
+		p.answerReplay(w)
+	case strings.HasPrefix(path, "/decisions/"):
+		p.answerDecision(w, strings.TrimPrefix(path, "/decisions/"))
 	case strings.HasPrefix(path, "/environments/"):
 		p.answerEnvironment(w, strings.TrimPrefix(path, "/environments/"))
 	default:
@@ -207,6 +218,24 @@ func (p *platform) createProject(w http.ResponseWriter, body []byte) {
 	p.projects = append(p.projects, created)
 	p.mutex.Unlock()
 	writeAnswer(w, http.StatusCreated, created)
+}
+
+func (p *platform) answerDecision(w http.ResponseWriter, id string) {
+	for _, d := range p.decisions {
+		if d.ID == id {
+			writeAnswer(w, http.StatusOK, d)
+			return
+		}
+	}
+	writeAnswer(w, http.StatusNotFound, errorBody{Error: "decisions.kitchen.bermos.dev \"" + id + "\" not found"})
+}
+
+func (p *platform) answerReplay(w http.ResponseWriter) {
+	if p.replay == nil {
+		writeAnswer(w, http.StatusNotFound, errorBody{Error: "no such decision"})
+		return
+	}
+	writeAnswer(w, http.StatusCreated, p.replay)
 }
 
 func (p *platform) startBuild(w http.ResponseWriter, body []byte) {

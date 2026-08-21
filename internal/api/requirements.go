@@ -23,6 +23,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
@@ -34,6 +35,7 @@ import (
 	"github.com/Bermos/Kitchen/internal/audit"
 	"github.com/Bermos/Kitchen/internal/clickhouse"
 	"github.com/Bermos/Kitchen/internal/controller"
+	"github.com/Bermos/Kitchen/internal/policy"
 )
 
 // An environment's requirements: who may set the bar, and how a release
@@ -273,26 +275,107 @@ type eligibilityBody struct {
 	Message    string   `json:"message,omitempty"`
 }
 
-// evaluateRequirements is the evaluation seam the policy engine (#132) fills
-// in. Until it exists there are exactly two honest answers: an environment
-// that declares no requirements is a bar of height zero, cleared by
-// everything; one that declares any is not evaluated yet, and saying
-// "eligible: null, evaluated: false" is the difference between "not judged"
-// and "passed" that a promotion pipeline will stand on.
+// evaluateRequirements answers how a release measures up, through the same
+// engine every stored decision comes from (internal/policy). It is a pure
+// function of the environment's declared requirements and the materialized
+// evidence handed to it — no live checks, no network; the engine's compile
+// step enforces that rather than trusting it — and it is a read: the input's
+// kind is "eligibility" and no decision is stored, because nothing was
+// decided.
 //
-// Whatever replaces this stays a pure function of the environment's declared
-// requirements and the stored evidence handed to it — no live checks, no
-// network, so a decision can be replayed from what was recorded.
-func evaluateRequirements(
-	requirements *kitchenv1alpha1.EnvironmentRequirements,
+// Three honest answers remain. No requirements is a bar of height zero,
+// cleared by everything. A bundle that resolves is evaluated for real, and
+// eligible says what a promotion's verdict would say. A bundle that cannot be
+// resolved is *not evaluated*, eligible null — the difference between "not
+// judged" and "passed" that a promotion pipeline stands on.
+func (s *Server) evaluateRequirements(
+	ctx context.Context,
+	env *kitchenv1alpha1.Environment,
+	release *kitchenv1alpha1.Release,
+	build *kitchenv1alpha1.Build,
+	evidence []policy.Evidence,
 ) (eligible *bool, evaluated bool, unmetRules []string, message string) {
+	requirements := env.Spec.Requirements
 	if requirements == nil {
 		yes := true
 		return &yes, true, []string{},
 			"this environment declares no requirements, so every release is eligible"
 	}
-	return nil, false, []string{},
-		"requirements are declared but not evaluated: policy engine evaluation lands with the promotion pipeline"
+
+	resolver := &policy.Resolver{Client: s.Client, Namespace: s.Namespace}
+	info, err := resolver.Resolve(ctx, requirements.BundleDigest)
+	if err != nil {
+		return nil, false, []string{},
+			"requirements are declared but not evaluated: " + err.Error()
+	}
+
+	input := eligibilityInput(env, release, build, evidence)
+	result, err := policy.Evaluate(ctx, info.Bundle, input)
+	if err != nil {
+		return nil, false, []string{},
+			"requirements are declared but not evaluated: " + err.Error()
+	}
+
+	unmetRules = []string{}
+	for _, rule := range result.Fired {
+		if !rule.Waived {
+			unmetRules = append(unmetRules, rule.Rule)
+		}
+	}
+	allowed := result.Verdict != policy.VerdictBlocked
+	switch result.Verdict {
+	case policy.VerdictAllowed:
+		message = fmt.Sprintf("the release clears bundle %s", requirements.BundleDigest)
+	case policy.VerdictAllowedWithException:
+		message = fmt.Sprintf("the release clears bundle %s, with every fired rule waived by an exception",
+			requirements.BundleDigest)
+	default:
+		message = fmt.Sprintf("the release does not clear bundle %s: %d rule(s) fired",
+			requirements.BundleDigest, len(unmetRules))
+	}
+	return &allowed, true, unmetRules, message
+}
+
+// eligibilityInput materializes the engine's input for the read-only
+// eligibility question. It is the promotion input's shape with kind
+// "eligibility", which is what keeps the preview and the decision the same
+// evaluation — same bundle, same evidence, same answer.
+func eligibilityInput(
+	env *kitchenv1alpha1.Environment,
+	release *kitchenv1alpha1.Release,
+	build *kitchenv1alpha1.Build,
+	evidence []policy.Evidence,
+) policy.Input {
+	input := policy.Input{
+		Kind: policy.KindEligibility,
+		At:   time.Now().UTC(),
+		Project: policy.ProjectFacts{
+			Name: env.Spec.ProjectRef.Name,
+		},
+		Environment: policy.EnvironmentFacts{
+			Name: env.Name,
+			Type: string(env.Spec.Type),
+		},
+		Release: policy.ReleaseFacts{
+			Name:  release.Name,
+			Image: release.Spec.Image,
+		},
+		Evidence: evidence,
+	}
+	if requirements := env.Spec.Requirements; requirements != nil {
+		input.Parameters = requirements.Parameters
+	}
+	if _, digest, found := strings.Cut(release.Spec.Image, "@"); found {
+		input.Release.Digest = digest
+	}
+	if build != nil {
+		input.Release.Build = policy.BuildFacts{
+			Name:   build.Name,
+			Commit: build.Spec.Git.SHA,
+			Branch: build.Spec.Git.Branch,
+		}
+	}
+	return input
 }
 
 // environmentEligibility answers how a release measures up against an
@@ -338,20 +421,36 @@ func (s *Server) environmentEligibility(w http.ResponseWriter, req *http.Request
 		Requirements: newRequirementsView(env.Spec.Requirements),
 		Evidence:     []eligibilityEvidenceView{},
 	}
-	var verdict string
-	body.Eligible, body.Evaluated, body.UnmetRules, verdict = evaluateRequirements(env.Spec.Requirements)
 
-	evidence, caveat := s.materializeEvidence(ctx, release)
-	body.Evidence = evidence
+	materialized := s.materializeEvidence(ctx, release)
+	body.Evidence = materialized.views
+
+	var verdict string
+	body.Eligible, body.Evaluated, body.UnmetRules, verdict =
+		s.evaluateRequirements(ctx, env, release, materialized.build, materialized.input)
 	body.Message = verdict
-	if caveat != "" {
-		body.Message = verdict + ". " + caveat
+	if materialized.caveat != "" {
+		body.Message = verdict + ". " + materialized.caveat
 	}
 	writeJSON(w, http.StatusOK, body)
 }
 
-// materializeEvidence is the evidence half of an eligibility answer: what the
-// release's artifact carries, summarized to what a bar is judged against.
+// materializedEvidence is the evidence half of an eligibility answer, in both
+// of its shapes: the summary the screen renders, and the engine's input.
+type materializedEvidence struct {
+	views []eligibilityEvidenceView
+	// input is the same evidence materialized for the policy engine, with
+	// predicates verbatim. When the registry could not be asked it degrades
+	// to the index — predicate types without predicates, unverified — and the
+	// caveat says so; an evaluation over it is honest about what it saw.
+	input []policy.Evidence
+	// build is the release's build, when it still exists.
+	build  *kitchenv1alpha1.Build
+	caveat string
+}
+
+// materializeEvidence gathers what the release's artifact carries, summarized
+// for the screen and materialized for the engine.
 //
 // The index on the Build says what was attached and by whom; the registry is
 // the source of truth and the only place a signature can be checked. So the
@@ -362,36 +461,53 @@ func (s *Server) environmentEligibility(w http.ResponseWriter, req *http.Request
 func (s *Server) materializeEvidence(
 	ctx context.Context,
 	release *kitchenv1alpha1.Release,
-) ([]eligibilityEvidenceView, string) {
-	views := []eligibilityEvidenceView{}
+) materializedEvidence {
+	out := materializedEvidence{views: []eligibilityEvidenceView{}, input: []policy.Evidence{}}
 
 	build := &kitchenv1alpha1.Build{}
 	if err := s.get(ctx, release.Spec.BuildRef.Name, build); err != nil {
 		if apierrors.IsNotFound(err) {
-			return views, "The release's build is gone, so no evidence index remains to read"
+			out.caveat = "The release's build is gone, so no evidence index remains to read"
+			return out
 		}
-		return views, "The release's build could not be read: " + err.Error()
+		out.caveat = "The release's build could not be read: " + err.Error()
+		return out
 	}
+	out.build = build
 	artifact := build.Status.Artifact
 	if artifact == nil || artifact.Digest == "" {
-		return views, "The release's build recorded no artifact digest, so nothing carries evidence"
+		out.caveat = "The release's build recorded no artifact digest, so nothing carries evidence"
+		return out
 	}
+	sources := map[string]string{}
 	for _, entry := range artifact.Evidence {
-		views = append(views, eligibilityEvidenceView{
+		out.views = append(out.views, eligibilityEvidenceView{
 			PredicateType: entry.PredicateType,
 			Source:        entry.Source,
 		})
+		sources[entry.PredicateType] = entry.Source
 	}
 
 	set, err := s.artifactEvidence(ctx, build, artifact)
 	if err != nil {
-		return views, "The registry could not be asked to verify the evidence, so it is listed unverified: " +
+		// The index without the registry: types and sources, no predicates,
+		// nothing verified.
+		for _, view := range out.views {
+			out.input = append(out.input, policy.Evidence{
+				PredicateType: view.PredicateType,
+				Source:        view.Source,
+			})
+		}
+		out.caveat = "The registry could not be asked to verify the evidence, so it is listed unverified: " +
 			err.Error()
+		return out
 	}
+	out.input = policy.EvidenceFrom(set, sources)
+
 	verified := map[string]bool{}
 	indexed := map[string]bool{}
-	for i := range views {
-		indexed[views[i].PredicateType] = true
+	for i := range out.views {
+		indexed[out.views[i].PredicateType] = true
 	}
 	for _, evidence := range set.Attestations {
 		if evidence.Verified {
@@ -402,21 +518,21 @@ func (s *Server) materializeEvidence(
 		// carries, listed with no source claimed for it.
 		if !indexed[evidence.PredicateType] {
 			indexed[evidence.PredicateType] = true
-			views = append(views, eligibilityEvidenceView{
+			out.views = append(out.views, eligibilityEvidenceView{
 				PredicateType: evidence.PredicateType,
 				Verified:      evidence.Verified,
 			})
 		}
 	}
-	for i := range views {
-		if verified[views[i].PredicateType] {
-			views[i].Verified = true
+	for i := range out.views {
+		if verified[out.views[i].PredicateType] {
+			out.views[i].Verified = true
 		}
 	}
 	if !set.Verified {
-		return views, "The platform holds no signing key, so the evidence is listed without verification"
+		out.caveat = "The platform holds no signing key, so the evidence is listed without verification"
 	}
-	return views, ""
+	return out
 }
 
 // artifactEvidence reads what is attached to a build's artifact, verified

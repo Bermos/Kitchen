@@ -28,6 +28,7 @@ import (
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/attestation"
+	"github.com/Bermos/Kitchen/internal/policy"
 )
 
 // Environment ownership is segregation of duties written as a schema: the
@@ -252,7 +253,11 @@ func TestEligibilityWithoutRequirementsSaysEveryReleaseIsEligible(t *testing.T) 
 	}
 }
 
-func TestEligibilityWithRequirementsShowsTheBarAndTheEvidenceUnevaluated(t *testing.T) {
+func TestEligibilityWithAnUnresolvableBundleStaysUnevaluated(t *testing.T) {
+	// The pinned digest resolves to nothing — no such bundle exists. The
+	// answer stays three-valued: eligible null, evaluated false, and the
+	// message says which bundle could not be found rather than guessing in
+	// either direction.
 	h, registry, digest := gateHarness(t)
 	h.updateEnvironment(t, func(env *kitchenv1alpha1.Environment) {
 		env.Spec.Requirements = &kitchenv1alpha1.EnvironmentRequirements{
@@ -310,13 +315,13 @@ func TestEligibilityWithRequirementsShowsTheBarAndTheEvidenceUnevaluated(t *test
 		t.Fatalf("the requirements must be echoed, got %+v", body.Requirements)
 	}
 	if body.Eligible != nil || body.Evaluated {
-		t.Fatalf("nothing has evaluated yet, got %s", recorder.Body.String())
+		t.Fatalf("nothing has evaluated, got %s", recorder.Body.String())
 	}
 	if body.UnmetRules == nil || len(body.UnmetRules) != 0 {
 		t.Fatalf("unmetRules must be an empty list until rules fire, got %s", recorder.Body.String())
 	}
-	if !strings.Contains(body.Message, "promotion pipeline") {
-		t.Fatalf("the answer must say when evaluation lands, got %q", body.Message)
+	if !strings.Contains(body.Message, "no policy bundle") {
+		t.Fatalf("the answer must say the bundle is unavailable, got %q", body.Message)
 	}
 
 	// The evidence summary is the screen's half: what the artifact carries,
@@ -333,6 +338,78 @@ func TestEligibilityWithRequirementsShowsTheBarAndTheEvidenceUnevaluated(t *test
 	if source[attestation.PredicateBuildRecord] != "platform" ||
 		source[attestation.PredicateSLSAProvenanceV1] != "builder" {
 		t.Fatalf("the sources must come from the build's index, got %s", recorder.Body.String())
+	}
+}
+
+func TestEligibilityEvaluatesForRealWhenTheBundleResolves(t *testing.T) {
+	// The built-in bundle, pinned by its real digest, with two rules turned
+	// on: provenance the artifact carries, a gate it does not. The answer is
+	// an actual evaluation — the same engine a promotion decision will come
+	// from — naming exactly the rule that fired. It stores nothing: it is a
+	// read, and the decision register stays empty.
+	h, registry, digest := gateHarness(t)
+	bundleDigest := policy.Digest(policy.DefaultBundle())
+	h.updateEnvironment(t, func(env *kitchenv1alpha1.Environment) {
+		env.Spec.Requirements = &kitchenv1alpha1.EnvironmentRequirements{
+			BundleDigest: bundleDigest,
+			Parameters: map[string]string{
+				"require-provenance": "true",
+				"requiredGates":      "trivy",
+			},
+		}
+	})
+
+	release := &kitchenv1alpha1.Release{
+		ObjectMeta: metav1.ObjectMeta{Name: "shop-rel-9", Namespace: testNamespace},
+		Spec: kitchenv1alpha1.ReleaseSpec{
+			ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: feedProject},
+			BuildRef:   kitchenv1alpha1.LocalObjectReference{Name: "shop-bld-9"},
+			Image:      "registry.example.com/kitchen/shop@" + digest,
+		},
+	}
+	if err := h.server.Client.Create(context.Background(), release); err != nil {
+		t.Fatal(err)
+	}
+	registry.set = attestation.EvidenceSet{
+		Subject:  "registry.example.com/kitchen/shop@" + digest,
+		Verified: true,
+		Attestations: []attestation.Evidence{
+			{PredicateType: attestation.PredicateSLSAProvenanceV1, Verified: true},
+		},
+	}
+
+	recorder := h.do(t, http.MethodGet,
+		"/api/v1/environments/"+testEnvironment+"/eligibility?release=shop-rel-9", "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	body := decode[eligibilityBody](t, recorder)
+	if body.Eligible == nil || *body.Eligible || !body.Evaluated {
+		t.Fatalf("a real evaluation with a missing gate answers eligible=false, got %s", recorder.Body.String())
+	}
+	if len(body.UnmetRules) != 1 || body.UnmetRules[0] != "require-gate" {
+		t.Fatalf("the unmet rules name what fired, got %v", body.UnmetRules)
+	}
+	if len(h.logs.insertedDecisions) != 0 {
+		t.Fatalf("an eligibility read must store no decision, got %+v", h.logs.insertedDecisions)
+	}
+
+	// With the gate's evidence attached, the same bar clears.
+	registry.set.Attestations = append(registry.set.Attestations, attestation.Evidence{
+		PredicateType: attestation.PredicateQualityGate,
+		Verified:      true,
+		Statement: attestation.Statement{
+			Predicate: json.RawMessage(`{"gate":"trivy","findings":[]}`),
+		},
+	})
+	recorder = h.do(t, http.MethodGet,
+		"/api/v1/environments/"+testEnvironment+"/eligibility?release=shop-rel-9", "")
+	body = decode[eligibilityBody](t, recorder)
+	if body.Eligible == nil || !*body.Eligible || !body.Evaluated {
+		t.Fatalf("with the evidence in place the release is eligible, got %s", recorder.Body.String())
+	}
+	if len(body.UnmetRules) != 0 {
+		t.Fatalf("nothing should fire, got %v", body.UnmetRules)
 	}
 }
 

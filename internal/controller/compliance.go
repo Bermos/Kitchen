@@ -68,6 +68,7 @@ func (r *KitchenReconciler) reconcileCompliance(
 
 	signing := r.reconcileSigningKey(ctx, kitchen)
 	status.Attestation = signing
+	status.Policy = r.reconcilePolicyStore(ctx, kitchen)
 
 	if !kitchen.Spec.Compliance.Audit.Enabled {
 		status.Audit = &kitchenv1alpha1.AuditStatus{
@@ -134,6 +135,54 @@ func (r *KitchenReconciler) reconcileCompliance(
 	setCond(condComplianceReady, metav1.ConditionTrue, "ComplianceReady",
 		message+"; artifacts are signed under key "+signing.KeyID)
 	return true
+}
+
+// reconcilePolicyStore creates the policy engine's tables — decisions and the
+// bundles they cite — and reports whether decisions are being stored at all.
+//
+// It mirrors the audit posture exactly, because the two substantiate each
+// other: the engine evaluates whether or not a store exists (a bundle and an
+// input in hand need nothing else), but a decision that leaves no replayable
+// row behind is one this status has to own up to rather than leave to an
+// auditor to discover. There is no enabled knob — the engine has no off
+// switch — so unlike the audit block this never contributes a condition; it
+// says what is true and the decision-making paths stay honest either way.
+//
+// Retention is the audit knob, not the telemetry one: see EnsurePolicySchema.
+func (r *KitchenReconciler) reconcilePolicyStore(
+	ctx context.Context,
+	kitchen *kitchenv1alpha1.Kitchen,
+) *kitchenv1alpha1.PolicyStatus {
+	ref := kitchen.Spec.Observability.ClickHouse.SecretRef
+	if ref == nil {
+		return &kitchenv1alpha1.PolicyStatus{
+			Message: "policy decisions are evaluated but not stored: this installation has no telemetry store " +
+				"to keep them in, so no decision can be replayed later. Set spec.observability.clickhouse.secretRef",
+		}
+	}
+	secret := &corev1.Secret{}
+	key := types.NamespacedName{Namespace: PlatformNamespace, Name: ref.Name}
+	if err := r.Get(ctx, key, secret); err != nil {
+		return &kitchenv1alpha1.PolicyStatus{
+			Message: "policy decisions are evaluated but not stored: " + err.Error(),
+		}
+	}
+	cfg, err := clickhouse.ConfigFromSecret(secret)
+	if err != nil {
+		return &kitchenv1alpha1.PolicyStatus{
+			Message: "policy decisions are evaluated but not stored: " + err.Error(),
+		}
+	}
+	retention := kitchen.Spec.Compliance.Audit.RetentionDays
+	if retention < 1 {
+		retention = defaultAuditRetentionDays
+	}
+	if err := clickhouse.New(cfg).EnsurePolicySchema(ctx, retention); err != nil {
+		return &kitchenv1alpha1.PolicyStatus{
+			Message: "policy decisions are evaluated but not stored: " + err.Error(),
+		}
+	}
+	return &kitchenv1alpha1.PolicyStatus{Storing: true}
 }
 
 // SigningKeySecretName is where the attestation key lives when the platform

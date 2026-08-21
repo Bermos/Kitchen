@@ -293,6 +293,69 @@ export interface Compliance {
     publicKey?: string;
     message?: string;
   };
+  /** Whether policy decisions are being stored. The engine always evaluates;
+   *  without a store the decisions stand but cannot be replayed later, and
+   *  this is where the platform says so. */
+  policy: {
+    storing: boolean;
+    message?: string;
+  };
+}
+
+/** One rule a policy decision fired. A waived rule fired all the same — the
+ *  exception changed the verdict, never the facts. */
+export interface FiredRule {
+  rule: string;
+  message?: string;
+  waived?: boolean;
+  exception?: string;
+}
+
+/** One stored policy decision: what was asked, what was answered, and the
+ *  digests it can be reproduced from. `input` is present only on the
+ *  single-decision read. */
+export interface Decision {
+  id: string;
+  timestamp: string;
+  kind: string;
+  project?: string;
+  environment?: string;
+  release?: string;
+  artifact?: string;
+  bundleDigest: string;
+  inputDigest: string;
+  dataSnapshot?: string;
+  verdict: string;
+  rulesFired?: FiredRule[];
+  input?: unknown;
+  decidedBy?: string;
+}
+
+export interface DecisionQuery {
+  project?: string;
+  environment?: string;
+  release?: string;
+  verdict?: string;
+  kind?: string;
+  since?: string;
+  until?: string;
+  limit?: number;
+}
+
+/** A stored decision re-evaluated from its stored inputs: both verdicts, and
+ *  whether they match — the bit the endpoint exists for. */
+export interface DecisionReplay {
+  original: { verdict: string };
+  replay: { verdict: string; fired?: FiredRule[] };
+  match: boolean;
+  decision: string;
+}
+
+/** One policy bundle available to require: what an environment owner pins. */
+export interface PolicyBundle {
+  digest: string;
+  source: string;
+  rules: string[];
 }
 
 /** One attestation attached to an artifact's digest. */
@@ -2329,6 +2392,16 @@ export const api = {
     return list<AuditRecord>("/audit")(params);
   },
   verifyAudit: (from = 1) => request<AuditVerification>("GET", `/audit/verify?from=${from}`),
+  decisions: (query: DecisionQuery = {}) => {
+    const params: Record<string, string> = {};
+    for (const [key, value] of Object.entries(query)) {
+      if (value !== undefined && value !== "") params[key] = String(value);
+    }
+    return list<Decision>("/decisions")(params);
+  },
+  decision: (id: string) => request<Decision>("GET", `/decisions/${encodeURIComponent(id)}`),
+  replayDecision: (id: string) => request<DecisionReplay>("POST", `/decisions/${encodeURIComponent(id)}/replay`),
+  policyBundles: () => list<PolicyBundle>("/policy/bundles")(),
   attestations: (build: string) => request<EvidenceSet>("GET", `/builds/${encodeURIComponent(build)}/attestations`),
 
   settings: () => request<Settings>("GET", "/settings"),

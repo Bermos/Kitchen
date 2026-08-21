@@ -204,7 +204,11 @@ name against `internal/api/policy.go`, so a route that moves fails them too.
 | GET | `/events` | The platform's recent activity, newest first. `?project=` and `?limit=` filter | any account — filtered |
 | GET | `/audit` | The tamper-evident log of state transitions. `?kind=`, `?name=`, `?project=`, `?actor=`, `?since=`, `?until=`, `?limit=` | any account — filtered |
 | GET | `/audit/verify` | Re-derive the chain's hashes over a run and report every break. `?from=`, `?limit=` | `operator` |
-| GET | `/compliance` | What the platform is producing: whether the audit log is recording, and the key artifacts are signed under | `operator` |
+| GET | `/compliance` | What the platform is producing: whether the audit log is recording, decisions are stored, and the key artifacts are signed under | `operator` |
+| GET | `/decisions` | Stored policy decisions, newest first. `?project=`, `?environment=`, `?release=`, `?verdict=`, `?kind=`, `?since=`, `?until=`, `?limit=` | any account — filtered |
+| GET | `/decisions/{id}` | One decision whole, with the full input it can be replayed from | any account — filtered |
+| POST | `/decisions/{id}/replay` | Re-evaluate it from its stored inputs and compare the verdicts | `developer` on the decision's project, enforced by the handler |
+| GET | `/policy/bundles` | The policy bundles available to require: digest, source, rule ids | `operator` |
 | GET | `/metrics/overview` | The dashboard's numbers, pre-aggregated. `?project=` narrows | any account — filtered |
 | GET | `/traffic` | The service map: aggregated flow edges. `?project=`, `?since=`, `?until=` | any account — filtered |
 | GET | `/traces` | Traces in a window. `?project=`, `?environment=`, `?service=`, `?errors=1`, `?minDuration=` | any account — filtered |
@@ -262,6 +266,7 @@ such changes two changes to two different files.
 - [Logs and queries](api/logs.md) — reading them, following them live, querying them, and saving a query
 - [Metrics, traffic and traces](api/telemetry.md) — the golden signals, the request rows behind them, and the spans
 - [The activity feed and the audit log](api/audit.md) — what the platform did, best-effort and tamper-evident
+- [Policy decisions](api/decisions.md) — every verdict the policy engine reached, the bundles it evaluates, and replaying a decision
 - [Platform status and the operator's screens](api/platform.md) — whether the platform is healthy, and everything behind /platform
 - [Settings and updates](api/settings.md) — the installation's own configuration, and moving it to a new version
 

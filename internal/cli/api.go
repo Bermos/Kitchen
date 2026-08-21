@@ -289,6 +289,55 @@ type gate struct {
 	Message       string     `json:"message,omitempty"`
 }
 
+// firedRule is one policy rule that fired on a decision. A waived rule fired
+// all the same — the exception changed the verdict, not the facts.
+type firedRule struct {
+	Rule      string `json:"rule"`
+	Message   string `json:"message,omitempty"`
+	Waived    bool   `json:"waived,omitempty"`
+	Exception string `json:"exception,omitempty"`
+}
+
+// decision is one stored policy decision: `GET /decisions` summarizes it, and
+// `GET /decisions/{id}` adds the full input it can be replayed from.
+type decision struct {
+	ID           string         `json:"id"`
+	Timestamp    time.Time      `json:"timestamp"`
+	Kind         string         `json:"kind"`
+	Project      string         `json:"project,omitempty"`
+	Environment  string         `json:"environment,omitempty"`
+	Release      string         `json:"release,omitempty"`
+	Artifact     string         `json:"artifact,omitempty"`
+	BundleDigest string         `json:"bundleDigest"`
+	InputDigest  string         `json:"inputDigest"`
+	DataSnapshot string         `json:"dataSnapshot,omitempty"`
+	Verdict      string         `json:"verdict"`
+	RulesFired   []firedRule    `json:"rulesFired,omitempty"`
+	Input        map[string]any `json:"input,omitempty"`
+	DecidedBy    string         `json:"decidedBy,omitempty"`
+}
+
+// replayVerdict is the original decision's half of a replay answer.
+type replayVerdict struct {
+	Verdict string `json:"verdict"`
+}
+
+// replayOutcome is the re-evaluation's half: what the same bundle said about
+// the same input this time, and what fired.
+type replayOutcome struct {
+	Verdict string      `json:"verdict"`
+	Fired   []firedRule `json:"fired,omitempty"`
+}
+
+// decisionReplay is `POST /decisions/{id}/replay`: both verdicts side by
+// side, and the one bit the endpoint exists for.
+type decisionReplay struct {
+	Original replayVerdict `json:"original"`
+	Replay   replayOutcome `json:"replay"`
+	Match    bool          `json:"match"`
+	Decision string        `json:"decision"`
+}
+
 // terminal reports whether a build has stopped moving, whichever way it went.
 func (b build) terminal() bool {
 	switch b.Phase {
@@ -526,6 +575,25 @@ func (c *client) submitGate(ctx context.Context, name string, body gateSubmissio
 	err := c.do(ctx, "submitting a gate result for "+name,
 		http.MethodPost, "/builds/"+name+"/gates", nil, body, answer)
 	return answer, err
+}
+
+func (c *client) decisions(ctx context.Context, query url.Values) ([]decision, error) {
+	answer := &list[decision]{}
+	err := c.do(ctx, "listing decisions", http.MethodGet, "/decisions", query, nil, answer)
+	return answer.Items, err
+}
+
+func (c *client) decision(ctx context.Context, id string) (*decision, error) {
+	answer := &decision{}
+	return answer, c.do(ctx, "reading the decision "+id, http.MethodGet, "/decisions/"+id, nil, nil, answer)
+}
+
+// replayDecision re-evaluates a stored decision from its stored inputs, which
+// stores a decision of kind replay in its own right.
+func (c *client) replayDecision(ctx context.Context, id string) (*decisionReplay, error) {
+	answer := &decisionReplay{}
+	return answer, c.do(ctx, "replaying the decision "+id,
+		http.MethodPost, "/decisions/"+id+"/replay", nil, nil, answer)
 }
 
 func (c *client) build(ctx context.Context, name string) (*build, error) {
