@@ -204,9 +204,11 @@ vex_not_affected(identifier) if {
 
 # --- dataclass-le-environment -----------------------------------------------
 # Demands: the project's data class does not exceed the environment's — data
-# never flows somewhere rated below it. Inert until both sides are classified
-# (issue #137 fills the fields); no parameter tunes it, because the classes
-# themselves are the configuration.
+# never flows somewhere rated below it. A classified project landing on an
+# environment nobody has rated fires too: classified data has no business in
+# a container without a rating. Inert only while the project is unclassified
+# — an unclassified project asserts nothing to exceed with. No parameter
+# tunes it, because the classes themselves are the configuration.
 class_rank := {
 	"public": 0,
 	"internal": 1,
@@ -225,6 +227,17 @@ deny contains {"rule": "dataclass-le-environment", "message": message} if {
 	message := sprintf(
 		"the project's data class %q exceeds the environment's %q",
 		[project_class, environment_class],
+	)
+}
+
+deny contains {"rule": "dataclass-le-environment", "message": message} if {
+	project_class := object.get(object.get(input, "project", {}), "dataClass", "")
+	environment_class := object.get(object.get(input, "environment", {}), "dataClass", "")
+	object.get(class_rank, project_class, -1) >= 0
+	object.get(class_rank, environment_class, -1) == -1
+	message := sprintf(
+		"the project is classified %q but the environment is unclassified: rate the environment before promoting into it",
+		[project_class],
 	)
 }
 

@@ -35,8 +35,9 @@ import (
 // kind, which is why both stay parameters.
 
 // MaterializeInput builds the engine's input from the typed objects. The
-// build and evidence may be nil/empty — a release whose build is gone is
-// judged on nothing, honestly, rather than refused a judgement.
+// project, build, evidence and claims may be nil/empty — a release whose
+// build is gone is judged on nothing, honestly, rather than refused a
+// judgement, and a project that could not be read is judged unclassified.
 //
 // Exceptions are deliberately absent here: until #136 lands there are no
 // Exception objects to list, and the callers pass none. When it lands, the
@@ -45,10 +46,12 @@ import (
 func MaterializeInput(
 	kind string,
 	at time.Time,
+	project *kitchenv1alpha1.Project,
 	env *kitchenv1alpha1.Environment,
 	release *kitchenv1alpha1.Release,
 	build *kitchenv1alpha1.Build,
 	evidence []Evidence,
+	claims []Claim,
 ) Input {
 	input := Input{
 		Kind: kind,
@@ -57,14 +60,20 @@ func MaterializeInput(
 			Name: env.Spec.ProjectRef.Name,
 		},
 		Environment: EnvironmentFacts{
-			Name: env.Name,
-			Type: string(env.Spec.Type),
+			Name:      env.Name,
+			Type:      string(env.Spec.Type),
+			DataClass: string(env.Spec.DataClass),
+			Residency: env.Spec.Residency,
 		},
 		Release: ReleaseFacts{
 			Name:  release.Name,
 			Image: release.Spec.Image,
 		},
 		Evidence: evidence,
+		Claims:   claims,
+	}
+	if project != nil {
+		input.Project.DataClass = string(project.Spec.DataClass)
 	}
 	if requirements := env.Spec.Requirements; requirements != nil {
 		input.Parameters = requirements.Parameters
@@ -80,6 +89,28 @@ func MaterializeInput(
 		}
 	}
 	return input
+}
+
+// ClaimFacts materializes a project's resource claims for one environment:
+// the data facts issues #137/#138 record about each — its class, what its
+// data derives from, and where the provider actually put it. Claims of other
+// projects are skipped, so callers can hand the whole namespace's list over.
+func ClaimFacts(env *kitchenv1alpha1.Environment, claims []kitchenv1alpha1.ResourceClaim) []Claim {
+	out := []Claim{}
+	for i := range claims {
+		claim := &claims[i]
+		if claim.Spec.ProjectRef.Name != env.Spec.ProjectRef.Name {
+			continue
+		}
+		fact := Claim{
+			Name:      claim.Name,
+			Type:      claim.Spec.Type,
+			DataClass: string(claim.Spec.DataClass),
+			Residency: claim.Status.Residency,
+		}
+		out = append(out, fact)
+	}
+	return out
 }
 
 // EvidenceSources indexes whose claim each attached predicate type was,

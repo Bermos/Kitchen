@@ -26,6 +26,14 @@ branch. `deletionPolicy` (`Retain`, the default, or `Delete`) decides what
 deleting the claim later does to the provisioned database — `Retain` is the
 default because destroying data has to be asked for, never implied.
 
+Either type takes an optional `dataClass` — `public`, `internal`,
+`confidential` or `strictlyConfidential` — classifying the data the resource
+will hold. It may not exceed the [project](projects.md)'s own class
+(classification narrows going down, never widens), and a classified claim in
+an unclassified project is refused the same way: classify the project first.
+Absent means unclassified, shown as such in the
+[inventory](audit.md#the-classification-inventory) rather than defaulted.
+
 **`oidcClient`** asks the platform's own identity provider for an OAuth
 client, so that the application signs its users in with the same accounts as
 the dashboard:

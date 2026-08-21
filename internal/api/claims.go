@@ -57,6 +57,14 @@ type createClaimRequest struct {
 	PreviewBranching bool   `json:"previewBranching,omitempty"`
 	DeletionPolicy   string `json:"deletionPolicy,omitempty"`
 
+	// DataClass classifies the data the resource will hold: public,
+	// internal, confidential or strictlyConfidential. It may not exceed the
+	// project's own class — a classification narrows going down, never
+	// widens — and classifying a claim in an unclassified project is
+	// refused the same way: classify the project first. Absent means
+	// unclassified, surfaced as such.
+	DataClass string `json:"dataClass,omitempty"`
+
 	// CallbackPaths are appended to every environment URL of the project to
 	// build the client's redirect list; empty takes the platform's defaults.
 	CallbackPaths []string `json:"callbackPaths,omitempty"`
@@ -118,6 +126,25 @@ func (s *Server) createClaim(w http.ResponseWriter, req *http.Request) {
 		badRequest(w, "deletionPolicy must be Retain or Delete (got %q)", body.DeletionPolicy)
 		return
 	}
+	dataClass, err := dataClassFromRequest(body.DataClass)
+	if err != nil {
+		badRequest(w, "%s", err.Error())
+		return
+	}
+	// Narrowable, never wideable: a claim's class must fit within its
+	// project's. That includes a classified claim in an unclassified project
+	// — there is no ceiling to fit under until somebody declares one.
+	if dataClass.Exceeds(project.Spec.DataClass) {
+		if !project.Spec.DataClass.Classified() {
+			badRequest(w, "claim %q is classified %s but project %q is unclassified: classify the project first "+
+				"(PATCH /projects/%s with dataClass), because a claim narrows its project's class and cannot "+
+				"exceed it", body.Name, dataClass, project.Name, project.Name)
+			return
+		}
+		badRequest(w, "claim %q may not be classified %s: project %q is classified %s, and a claim's class "+
+			"narrows its project's, never exceeds it", body.Name, dataClass, project.Name, project.Spec.DataClass)
+		return
+	}
 
 	config, ref, ok := s.claimShape(ctx, w, &body)
 	if !ok {
@@ -137,6 +164,7 @@ func (s *Server) createClaim(w http.ResponseWriter, req *http.Request) {
 			Type:           body.Type,
 			DeletionPolicy: policy,
 			Config:         config,
+			DataClass:      dataClass,
 		},
 	}
 	reason := fmt.Sprintf("claim %s created: %s", claim.Name, body.Type)
@@ -154,6 +182,7 @@ func (s *Server) createClaim(w http.ResponseWriter, req *http.Request) {
 			"type":           body.Type,
 			"connection":     body.Connection,
 			"deletionPolicy": string(policy),
+			"dataClass":      string(dataClass),
 		},
 	}) {
 		return

@@ -208,6 +208,7 @@ name against `internal/api/policy.go`, so a route that moves fails them too.
 | GET | `/audit` | The tamper-evident log of state transitions. `?kind=`, `?name=`, `?project=`, `?actor=`, `?since=`, `?until=`, `?limit=` | any account — filtered |
 | GET | `/audit/verify` | Re-derive the chain's hashes over a run and report every break. `?from=`, `?limit=` | `operator` |
 | GET | `/compliance` | What the platform is producing: whether the audit log is recording, decisions are stored, and the key artifacts are signed under | `operator` |
+| GET | `/compliance/inventory` | Every environment and claim with its data class, provenance and residency — the classification inventory, exportable in one request | any account — filtered |
 | GET | `/decisions` | Stored policy decisions, newest first. `?project=`, `?environment=`, `?release=`, `?verdict=`, `?kind=`, `?since=`, `?until=`, `?limit=` | any account — filtered |
 | GET | `/decisions/{id}` | One decision whole, with the full input it can be replayed from | any account — filtered |
 | POST | `/decisions/{id}/replay` | Re-evaluate it from its stored inputs and compare the verdicts | `developer` on the decision's project, enforced by the handler |

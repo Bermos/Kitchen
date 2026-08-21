@@ -195,7 +195,8 @@ func TestTheRequirementsTransitionCarriesTheChangeByNameAndNotByValue(t *testing
 		map[string]string{"maxSeverity": "high", "gate": "trivy", "vexMaxAgeDays": "30"},
 	)
 
-	transition := requirementsTransition(env, previous, testBundleDigest, changed, &owners)
+	transition := requirementsTransition(env, previous, testBundleDigest, changed, &owners,
+		&dataClassChange{previous: "", next: inventoryClassConfidential}, nil)
 	if transition.From != previous || transition.To != testBundleDigest {
 		t.Fatalf("the transition must run from the previous digest to the next: %q -> %q",
 			transition.From, transition.To)
@@ -216,6 +217,10 @@ func TestTheRequirementsTransitionCarriesTheChangeByNameAndNotByValue(t *testing
 	}
 	if got, want := strings.Join(names, ","), "maxSeverity,vexMaxAgeDays"; got != want {
 		t.Fatalf("want the changed names %q, got %q", want, got)
+	}
+	if transition.Details["previousDataClass"] != "" || transition.Details["dataClass"] != inventoryClassConfidential {
+		t.Fatalf("a class change must carry its previous value, got %v -> %v",
+			transition.Details["previousDataClass"], transition.Details["dataClass"])
 	}
 
 	// Names, never values: the whole record must not carry what any parameter

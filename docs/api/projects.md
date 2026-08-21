@@ -89,6 +89,17 @@ an empty string clears one. The repository and the two connections are
 deliberately not editable: rebinding a project to another repository is a
 different project.
 
+`dataClass` classifies the data the project handles — `public`, `internal`,
+`confidential` or `strictlyConfidential`, in ascending order; `""` removes
+the classification, and absent means unclassified, shown as such and never
+defaulted. It is the top of the classification hierarchy: a
+[claim](connections.md)'s class may not exceed it, and at promotion the
+policy engine refuses an environment rated below it. Reclassifying is always
+allowed — environments that now sit below the class read as non-compliant in
+the [inventory](audit.md#the-classification-inventory) rather than the
+correction being refused — and every change is audit-logged privileged, with
+the previous value.
+
 **Environment variables are not on this route.** They are the developer's day
 job where the project's own settings are the admin's, and a whole route is the
 unit of authorization here — so they have one of their own, below. A body that

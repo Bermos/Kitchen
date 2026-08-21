@@ -226,6 +226,17 @@ function historyBy(entry: { reason: string; by?: string }): string {
             <h1 class="text-xl font-semibold text-highlighted">{{ environment.name }}</h1>
             <UBadge color="neutral" variant="subtle" size="sm">{{ environment.type }}</UBadge>
             <PhaseBadge :phase="environment.phase" />
+            <!-- The rating is the owners' declaration; its absence is a state
+                 of its own and is said out loud, never left blank. -->
+            <UBadge v-if="environment.dataClass" color="warning" variant="subtle" size="sm" icon="i-lucide-shield">
+              {{ environment.dataClass }}
+            </UBadge>
+            <UBadge v-else color="neutral" variant="outline" size="sm" icon="i-lucide-shield-question">
+              unclassified
+            </UBadge>
+            <UBadge v-if="environment.residency" color="neutral" variant="subtle" size="sm" icon="i-lucide-globe">
+              {{ environment.residency }}
+            </UBadge>
           </div>
           <div class="flex items-center gap-3 mt-1 text-xs text-muted flex-wrap">
             <span v-if="environment.preview" class="font-mono">

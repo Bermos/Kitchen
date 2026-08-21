@@ -74,7 +74,15 @@ export interface Project {
    * default build-straight-to-production flow. Stages are topology — what
    * each environment demands lives on the Environment's requirements. */
   promotionStages?: PromotionStage[];
+  /** The sensitivity classification of the data this project handles:
+   * public, internal, confidential or strictlyConfidential. Absent means
+   * unclassified — shown as such, never defaulted. */
+  dataClass?: string;
 }
+
+/** The classification vocabulary, in ascending sensitivity — the order the
+ * platform compares classes in. */
+export const DATA_CLASSES = ["public", "internal", "confidential", "strictlyConfidential"] as const;
 
 /** One rung of a project's promotion ladder. */
 export interface PromotionStage {
@@ -134,6 +142,11 @@ export interface ProjectSettings {
   replicas?: number;
   cpu?: string;
   memory?: string;
+  /** Reclassify the project's data; "" removes the classification. Always
+   * allowed — environments rated below the new class read as non-compliant
+   * in the inventory and at promotion, rather than the correction being
+   * refused. Audit-logged with the previous value. */
+  dataClass?: string;
 }
 
 export interface NewProject {
@@ -342,6 +355,31 @@ export interface Compliance {
   };
 }
 
+/** One row of the classification inventory: an environment or a claim with
+ *  its data class, its data's provenance and its location. The absences are
+ *  words, not blanks — "unclassified", "undeclared", "unknown" — so an export
+ *  cannot leave an empty cell open to a generous reading. */
+export interface InventoryItem {
+  kind: "environment" | "claim";
+  project: string;
+  name: string;
+  type: string;
+  dataClass: string;
+  /** Claims only: what the provisioned data derives from — production,
+   *  masked, synthetic, or "undeclared" when the provider said nothing. */
+  provenance?: string;
+  residency: string;
+}
+
+/** The whole classification inventory in one request, exportable as it is.
+ *  Filtered to the caller's projects; an operator reads the whole install. */
+export interface ComplianceInventory {
+  generatedAt: string;
+  /** The platform's declared default residency — declared, not observed. */
+  defaultResidency?: string;
+  items: InventoryItem[];
+}
+
 /** One rule a policy decision fired. A waived rule fired all the same — the
  *  exception changed the verdict, never the facts. */
 export interface FiredRule {
@@ -469,6 +507,12 @@ export interface Environment {
    * may; an empty or absent list leaves the bar to the operators alone. */
   owners?: string[];
   requirements?: EnvironmentRequirements;
+  /** The highest sensitivity class this environment is rated to hold,
+   * declared by its owners; absent means unrated. */
+  dataClass?: string;
+  /** Where this environment's data is declared to be — declared, not
+   * observed. Absent falls back to the platform's declared residency. */
+  residency?: string;
   history?: ReleaseHistoryEntry[];
   createdAt: string;
   conditions?: Condition[];
@@ -845,6 +889,9 @@ export interface NewDomain {
 export interface Claim {
   name: string;
   project: string;
+  /** The claim's declared sensitivity class — never above its project's,
+   * which the create refuses. Absent means unclassified. */
+  dataClass?: string;
   /** Empty for an oidcClient claim: the platform's own identity provider
    * registers the client, and there is no Connection in front of it. */
   connection: string;
@@ -873,6 +920,9 @@ export interface NewClaim {
   type: string;
   previewBranching?: boolean;
   deletionPolicy?: string;
+  /** Classify the data the resource will hold. May not exceed the project's
+   * class; refused in an unclassified project (classify the project first). */
+  dataClass?: string;
   /** oidcClient only: appended to every environment URL of the project. */
   callbackPaths?: string[];
   /** oidcClient only: registered verbatim, for addresses the platform does
@@ -2205,7 +2255,13 @@ export const api = {
   // control — the screen also checks the owners list against the caller.
   patchEnvironmentRequirements: (
     name: string,
-    body: { bundleDigest?: string; parameters?: Record<string, string>; owners?: string[] },
+    body: {
+      bundleDigest?: string;
+      parameters?: Record<string, string>;
+      owners?: string[];
+      dataClass?: string;
+      residency?: string;
+    },
   ) => request<Environment>("PATCH", `/environments/${name}/requirements`, body),
   environmentEligibility: (name: string, release?: string) =>
     request<EnvironmentEligibility>(
@@ -2442,6 +2498,7 @@ export const api = {
   backup: () => request<Backup>("GET", "/platform/backup"),
 
   compliance: () => request<Compliance>("GET", "/compliance"),
+  complianceInventory: () => request<ComplianceInventory>("GET", "/compliance/inventory"),
   audit: (query: AuditQuery = {}) => {
     const params: Record<string, string> = {};
     for (const [key, value] of Object.entries(query)) {

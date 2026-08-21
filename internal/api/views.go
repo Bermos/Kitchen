@@ -134,6 +134,10 @@ type projectView struct {
 	// PromotionStages is the project's staged pipeline, in promotion order.
 	// Absent for the default build-straight-to-production flow.
 	PromotionStages []promotionStageView `json:"promotionStages,omitempty"`
+	// DataClass is the sensitivity classification of the data this project
+	// handles. Absent means unclassified — a state the screens show as such,
+	// never a default.
+	DataClass string `json:"dataClass,omitempty"`
 }
 
 func newProjectView(project *kitchenv1alpha1.Project, role access.ProjectRole) projectView {
@@ -177,6 +181,7 @@ func newProjectView(project *kitchenv1alpha1.Project, role access.ProjectRole) p
 			})
 		}
 	}
+	view.DataClass = string(project.Spec.DataClass)
 	return view
 }
 
@@ -555,19 +560,24 @@ type eligibilityEvidenceView struct {
 }
 
 type environmentView struct {
-	Name            string               `json:"name"`
-	Project         string               `json:"project"`
-	Type            string               `json:"type"`
-	Release         string               `json:"release"`
-	ObservedRelease string               `json:"observedRelease,omitempty"`
-	Phase           string               `json:"phase,omitempty"`
-	URL             string               `json:"url,omitempty"`
-	Preview         *previewView         `json:"preview,omitempty"`
-	Owners          []string             `json:"owners,omitempty"`
-	Requirements    *requirementsView    `json:"requirements,omitempty"`
-	History         []releaseHistoryView `json:"history,omitempty"`
-	CreatedAt       time.Time            `json:"createdAt"`
-	Conditions      []conditionView      `json:"conditions,omitempty"`
+	Name            string            `json:"name"`
+	Project         string            `json:"project"`
+	Type            string            `json:"type"`
+	Release         string            `json:"release"`
+	ObservedRelease string            `json:"observedRelease,omitempty"`
+	Phase           string            `json:"phase,omitempty"`
+	URL             string            `json:"url,omitempty"`
+	Preview         *previewView      `json:"preview,omitempty"`
+	Owners          []string          `json:"owners,omitempty"`
+	Requirements    *requirementsView `json:"requirements,omitempty"`
+	// DataClass is the highest sensitivity class this environment is rated
+	// to hold, declared by its owners; absent means unrated. Residency is
+	// where its data is declared to be — declared, not observed.
+	DataClass  string               `json:"dataClass,omitempty"`
+	Residency  string               `json:"residency,omitempty"`
+	History    []releaseHistoryView `json:"history,omitempty"`
+	CreatedAt  time.Time            `json:"createdAt"`
+	Conditions []conditionView      `json:"conditions,omitempty"`
 }
 
 func newEnvironmentView(env *kitchenv1alpha1.Environment) environmentView {
@@ -581,6 +591,8 @@ func newEnvironmentView(env *kitchenv1alpha1.Environment) environmentView {
 		URL:             env.Status.URL,
 		Owners:          env.Spec.Owners,
 		Requirements:    newRequirementsView(env.Spec.Requirements),
+		DataClass:       string(env.Spec.DataClass),
+		Residency:       env.Spec.Residency,
 		CreatedAt:       env.CreationTimestamp.Time,
 		Conditions:      conditionViews(env.Status.Conditions),
 	}
@@ -889,16 +901,19 @@ func newDomainView(domain *kitchenv1alpha1.Domain) domainView {
 }
 
 type claimView struct {
-	Name             string          `json:"name"`
-	Project          string          `json:"project"`
-	Connection       string          `json:"connection"`
-	Type             string          `json:"type"`
-	Phase            string          `json:"phase,omitempty"`
-	Secret           string          `json:"secret,omitempty"`
-	DeletionPolicy   string          `json:"deletionPolicy,omitempty"`
-	PreviewBranching bool            `json:"previewBranching"`
-	CreatedAt        time.Time       `json:"createdAt"`
-	Conditions       []conditionView `json:"conditions,omitempty"`
+	Name             string `json:"name"`
+	Project          string `json:"project"`
+	Connection       string `json:"connection"`
+	Type             string `json:"type"`
+	Phase            string `json:"phase,omitempty"`
+	Secret           string `json:"secret,omitempty"`
+	DeletionPolicy   string `json:"deletionPolicy,omitempty"`
+	PreviewBranching bool   `json:"previewBranching"`
+	// DataClass is the claim's declared sensitivity class — never above its
+	// project's, which the create refuses. Absent means unclassified.
+	DataClass  string          `json:"dataClass,omitempty"`
+	CreatedAt  time.Time       `json:"createdAt"`
+	Conditions []conditionView `json:"conditions,omitempty"`
 
 	// RedirectURIs is what an oidcClient claim's client currently accepts as
 	// a callback — the list the operator keeps in step with the project's
@@ -923,6 +938,7 @@ func newClaimView(claim *kitchenv1alpha1.ResourceClaim) claimView {
 		Secret:           claim.Status.SecretName,
 		DeletionPolicy:   string(claim.Spec.DeletionPolicy),
 		PreviewBranching: claim.PreviewBranching(),
+		DataClass:        string(claim.Spec.DataClass),
 		CreatedAt:        claim.CreationTimestamp.Time,
 		Conditions:       conditionViews(claim.Status.Conditions),
 		RedirectURIs:     claim.Status.RedirectURIs,

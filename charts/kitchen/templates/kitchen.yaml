@@ -31,6 +31,9 @@ spec:
   {{- with .Values.kitchen.clusterName }}
   clusterName: {{ . | quote }}
   {{- end }}
+  {{- with .Values.kitchen.residency }}
+  residency: {{ . | quote }}
+  {{- end }}
   {{- with include "kitchen.accessBlock" . }}
   # Who owns the platform. Absent means nobody has ever said, which is what
   # the operator seeds from — so on an upgrade that re-applies this object,

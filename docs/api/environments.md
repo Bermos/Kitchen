@@ -76,10 +76,28 @@ environment naming no owners is locked, not open**: only operators may set its
 requirements, which makes "nobody has owned this yet" the safe state rather
 than the writable one.
 
+The same endpoint carries the environment's two data declarations, because
+they are the same kind of statement as the bundle — the owners' bar, guarded
+and recorded the same way:
+
+- `dataClass` rates the environment: the highest sensitivity class it may
+  hold, one of `public`, `internal`, `confidential`, `strictlyConfidential`
+  in ascending order, or `""` to remove the rating. At promotion the policy
+  rule `dataclass-le-environment` refuses a project classified above the
+  rating — including a classified project landing on an environment nobody
+  has rated. Absent means unrated, shown as `unclassified` everywhere and
+  never defaulted.
+- `residency` declares where this environment's data is located, in the
+  operator's own vocabulary (`"CH"`, `"eu-central-1"`). Declared, not
+  observed: the platform records the answer the institution is accountable
+  for. Absent inherits the platform's declared residency in the
+  [inventory](audit.md#the-classification-inventory).
+
 Every change is recorded in the audit log before it is made, marked
 privileged, with the previous bundle digest and the *names* of the parameters
-that moved — so the log alone says what the bar was at any moment, and a
-change can be walked back on paper.
+that moved — and, for the data declarations, the previous value itself (a
+classification is a label, not a secret) — so the log alone says what the bar
+was at any moment, and a change can be walked back on paper.
 
 ## Whether a release clears it
 

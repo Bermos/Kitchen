@@ -184,17 +184,38 @@ func TestAnUnknownMaxSeverityIsAFiringNotAnError(t *testing.T) {
 	}
 }
 
+// classConfidential keeps goconst quiet where the vocabulary is the point.
+const classConfidential = "confidential"
+
 func TestDataClassMustNotExceedTheEnvironments(t *testing.T) {
 	input := minimalInput(KindPromotion)
 
-	// Inert while either side is unclassified — #137 fills the fields.
-	input.Project.DataClass = "confidential"
+	// Both sides unclassified: nothing asserted, nothing to exceed — inert.
 	if result := evaluate(t, input); len(result.Fired) != 0 {
-		t.Fatalf("one classified side alone must stay inert, got %+v", result.Fired)
+		t.Fatalf("two unclassified sides must stay inert, got %+v", result.Fired)
 	}
 
-	input.Environment.DataClass = "internal"
+	// A classified project into an unclassified environment fires: the data
+	// has a class and the target has no rating.
+	input.Project.DataClass = classConfidential
 	result := evaluate(t, input)
+	if result.Verdict != VerdictBlocked || result.Fired[0].Rule != "dataclass-le-environment" {
+		t.Fatalf("classified into unclassified must block, got %+v", result)
+	}
+	if !strings.Contains(result.Fired[0].Message, "unclassified") {
+		t.Fatalf("the firing must say the environment is unclassified, got %q", result.Fired[0].Message)
+	}
+
+	// The other way round is narrowing's degenerate case: an unclassified
+	// project asserts nothing to exceed with.
+	input.Project.DataClass = ""
+	input.Environment.DataClass = "internal"
+	if result := evaluate(t, input); len(result.Fired) != 0 {
+		t.Fatalf("an unclassified project must stay inert, got %+v", result.Fired)
+	}
+
+	input.Project.DataClass = classConfidential
+	result = evaluate(t, input)
 	if result.Verdict != VerdictBlocked || result.Fired[0].Rule != "dataclass-le-environment" {
 		t.Fatalf("confidential into internal must block, got %+v", result)
 	}

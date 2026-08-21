@@ -348,6 +348,11 @@ func (s *Server) routes() []route {
 		// signed under. That is the same shape as GET /settings, and it is
 		// the operator's for the same reason.
 		{"GET /api/v1/compliance", s.getCompliance, operatorOnly("reading the platform's compliance posture")},
+		// The classification inventory is project data, not platform data:
+		// which classes and locations *your* environments and claims carry.
+		// It filters to the caller's projects like every cross-project read,
+		// and an operator's answer is the whole install in one request.
+		{"GET /api/v1/compliance/inventory", s.complianceInventory, acrossProjects()},
 		{"GET /api/v1/audit", s.listAuditRecords, acrossProjects()},
 		// Verifying the chain is a statement about the whole log, including
 		// the records of platform changes a member never sees.

@@ -57,6 +57,22 @@ spec:
               EnvironmentSpec defines a running instance of a Release with a URL.
               Rollback is changing ReleaseRef to an older Release.
             properties:
+              dataClass:
+                description: |-
+                  DataClass is the highest sensitivity class of data this environment is
+                  rated to hold — its ceiling, not a label on its contents. At promotion
+                  the policy engine refuses a project whose class exceeds it (rule
+                  dataclass-le-environment), which includes a classified project landing
+                  on an environment nobody has rated. Absent means unclassified,
+                  surfaced as such and never defaulted. Like requirements, it is the
+                  owners' declaration rather than the deploying team's, and it is
+                  written through the same owner-gated endpoint.
+                enum:
+                - public
+                - internal
+                - confidential
+                - strictlyConfidential
+                type: string
               owners:
                 description: |-
                   Owners name who may change this environment's Requirements. Entries
@@ -135,6 +151,17 @@ spec:
                 required:
                 - bundleDigest
                 type: object
+              residency:
+                description: |-
+                  Residency declares where this environment's data is located — a
+                  region or jurisdiction in the operator's own vocabulary ("CH",
+                  "eu-central-1"). It is declared, not observed: the platform runs in
+                  the one cluster it is installed into and cannot see past it, so this
+                  records the answer the institution is accountable for. Absent falls
+                  back to the platform default on the Kitchen object, and reads as
+                  "unknown" in the inventory when neither is set. Provisioned resources
+                  record their *actual* placement separately, on the claim's status.
+                type: string
               type:
                 default: production
                 description: |-

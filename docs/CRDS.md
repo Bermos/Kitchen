@@ -44,6 +44,8 @@ spec:
   baseDomain: apps.example.com          # generated URLs: <slug>.apps.example.com
   clusterName: chef                     # what the dashboard's status bar calls this cluster;
                                         # defaults to the first label of baseDomain
+  residency: CH                         # where this installation's data is — declared, not observed;
+                                        # the compliance inventory's default for environments
   api:
     externalURL: https://kitchen.apps.example.com   # operator API + webhook receiver; defaults to kitchen.<baseDomain>
   ingress:
@@ -326,6 +328,9 @@ spec:
     enabled: true
     protected: true                     # gate preview URLs behind platform login (default)
     ttlAfterClosed: 1h                  # grace period before teardown
+  dataClass: confidential               # public | internal | confidential | strictlyConfidential;
+                                        # absent = unclassified, shown as such and never defaulted.
+                                        # Claims narrow it, environments must be rated at least it
   scaleToZero:                          # only does anything where the platform allows it
     mode: previews                      # previews (default) | always | never
     idleAfter: 5m                       # quiet for this long, then no pods at all
@@ -690,6 +695,10 @@ spec:
   preview:
     pullRequest: 42
     branch: feat/checkout
+  dataClass: internal                   # ceiling this environment is rated to hold — the promotion
+                                        # rule refuses a project classified above it; absent = unrated
+  residency: CH                         # declared location of its data; absent inherits
+                                        # Kitchen.spec.residency in the compliance inventory
 status:
   phase: Live                           # Pending | Deploying | Live | Degraded | Terminating
   url: https://my-shop-pr-42.apps.example.com

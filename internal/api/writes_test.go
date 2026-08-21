@@ -928,6 +928,108 @@ func TestCreatingAClaimWithDeletionPolicyDelete(t *testing.T) {
 	}
 }
 
+// A claim's class narrows its project's, never widens it — and the check is
+// the API's, because by the time a promotion could notice, the production
+// data would already be in the wider claim.
+func TestAClaimsClassMayNotExceedItsProjects(t *testing.T) {
+	h := newHarness(t, nil, append(fixtures(), neonConnection())...)
+
+	// The shop project is unclassified: a classified claim has no ceiling to
+	// narrow, and the refusal says to classify the project first.
+	recorder := h.do(t, http.MethodPost, "/api/v1/claims",
+		`{"name": "orders-db", "project": "shop", "connection": "neon", "type": "postgres",
+			"dataClass": "internal"}`)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if got := errorOf(t, recorder.Body.String()); !strings.Contains(got, "classify the project first") {
+		t.Fatalf("the refusal must say what to do, got %q", got)
+	}
+
+	// Classify the project confidential; a strictlyConfidential claim still
+	// exceeds it, a confidential one narrows into it exactly.
+	project := &kitchenv1alpha1.Project{}
+	if err := h.server.get(context.Background(), "shop", project); err != nil {
+		t.Fatal(err)
+	}
+	project.Spec.DataClass = kitchenv1alpha1.DataClassConfidential
+	if err := h.server.Client.Update(context.Background(), project); err != nil {
+		t.Fatal(err)
+	}
+
+	recorder = h.do(t, http.MethodPost, "/api/v1/claims",
+		`{"name": "orders-db", "project": "shop", "connection": "neon", "type": "postgres",
+			"dataClass": "strictlyConfidential"}`)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if got := errorOf(t, recorder.Body.String()); !strings.Contains(got, "never exceeds") {
+		t.Fatalf("the refusal must explain the rule, got %q", got)
+	}
+
+	recorder = h.do(t, http.MethodPost, "/api/v1/claims",
+		`{"name": "orders-db", "project": "shop", "connection": "neon", "type": "postgres",
+			"dataClass": "confidential"}`)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if view := decode[claimView](t, recorder); view.DataClass != inventoryClassConfidential {
+		t.Fatalf("the class must come back on the view, got %+v", view)
+	}
+
+	// A class nobody defined is refused with the vocabulary.
+	recorder = h.do(t, http.MethodPost, "/api/v1/claims",
+		`{"name": "cache-db", "project": "shop", "connection": "neon", "type": "postgres",
+			"dataClass": "secret"}`)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if got := errorOf(t, recorder.Body.String()); !strings.Contains(got, "strictlyConfidential") {
+		t.Fatalf("the refusal must name the vocabulary, got %q", got)
+	}
+}
+
+// Reclassifying a project is always possible — the correction must never be
+// refused because environments lag behind — and it is a privileged audit
+// record carrying the previous value, because the class decides what the
+// policy engine refuses.
+func TestReclassifyingAProjectIsRecordedWithThePreviousValue(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+
+	recorder := h.do(t, http.MethodPatch, "/api/v1/projects/shop", `{"dataClass": "`+inventoryClassConfidential+`"}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if view := decode[projectView](t, recorder); view.DataClass != inventoryClassConfidential {
+		t.Fatalf("the class must come back, got %+v", view)
+	}
+
+	recorder = h.do(t, http.MethodPatch, "/api/v1/projects/shop", `{"dataClass": "internal"}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	stored := &kitchenv1alpha1.Project{}
+	if err := h.server.get(context.Background(), "shop", stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored.Spec.DataClass != kitchenv1alpha1.DataClassInternal {
+		t.Fatalf("the reclassification must stick, got %q", stored.Spec.DataClass)
+	}
+
+	// The record's details, held up to the light apart from the store: a
+	// class change is privileged and carries the previous value.
+	next := kitchenv1alpha1.DataClassInternal
+	before := &kitchenv1alpha1.Project{
+		Spec: kitchenv1alpha1.ProjectSpec{DataClass: kitchenv1alpha1.DataClassConfidential},
+	}
+	class := "internal"
+	details := projectSettingsDetails(before, patchProjectRequest{DataClass: &class}, &next)
+	if details["privileged"] != true ||
+		details["previousDataClass"] != inventoryClassConfidential || details["dataClass"] != "internal" {
+		t.Fatalf("the record must carry the previous value, privileged: %v", details)
+	}
+}
+
 func TestCreatingAClaimRejectsUnusableRequests(t *testing.T) {
 	h := newHarness(t, nil, append(fixtures(), neonConnection())...)
 
