@@ -380,6 +380,34 @@ type patchProjectRequest struct {
 	// environment demands stays on the Environment, owned by its owners —
 	// which is why arranging them is the project admin's.
 	PromotionStages *[]promotionStageRequest `json:"promotionStages,omitempty"`
+	// DataClass classifies the data this project handles: public, internal,
+	// confidential or strictlyConfidential; an empty string removes the
+	// classification. The change is always allowed — including one that
+	// leaves environments rated below the new class, which the promotion
+	// rule and the compliance inventory surface as non-compliance rather
+	// than the API refusing the correction — and it is audit-logged with
+	// the previous value, as a privileged record.
+	DataClass *string `json:"dataClass,omitempty"`
+}
+
+// dataClassFromRequest validates one dataClass value, empty meaning
+// unclassify. The refusal names the vocabulary, in order.
+func dataClassFromRequest(value string) (kitchenv1alpha1.DataClass, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", nil
+	}
+	class := kitchenv1alpha1.DataClass(value)
+	if !class.Classified() {
+		classes := kitchenv1alpha1.DataClasses()
+		names := make([]string, 0, len(classes))
+		for _, c := range classes {
+			names = append(names, string(c))
+		}
+		return "", fmt.Errorf("dataClass must be one of %s, in ascending sensitivity, or empty to unclassify (got %q)",
+			strings.Join(names, ", "), value)
+	}
+	return class, nil
 }
 
 // promotionStageRequest is one rung of the pipeline as a PATCH names it.
@@ -649,6 +677,19 @@ func (s *Server) patchProject(w http.ResponseWriter, req *http.Request) {
 		}
 		project.Spec.Promotion = stages
 	}
+	var nextClass *kitchenv1alpha1.DataClass
+	if body.DataClass != nil {
+		class, err := dataClassFromRequest(*body.DataClass)
+		if err != nil {
+			badRequest(w, "%s", err.Error())
+			return
+		}
+		nextClass = &class
+	}
+	details := projectSettingsDetails(project, body, nextClass)
+	if nextClass != nil {
+		project.Spec.DataClass = *nextClass
+	}
 
 	if !s.recorded(w, req, audit.Transition{
 		Object:    project,
@@ -656,7 +697,7 @@ func (s *Server) patchProject(w http.ResponseWriter, req *http.Request) {
 		Operation: clickhouse.AuditUpdate,
 		Project:   project.Name,
 		Reason:    fmt.Sprintf("project %s settings changed", project.Name),
-		Details:   map[string]any{"fields": changedProjectFields(body)},
+		Details:   details,
 	}) {
 		return
 	}
@@ -1511,6 +1552,27 @@ func (s *Server) getClaim(w http.ResponseWriter, req *http.Request) {
 	writeJSON(w, http.StatusOK, newClaimView(claim))
 }
 
+// projectSettingsDetails is the audit detail of a settings PATCH, built apart
+// from the recording so a test can hold it up to the light without a store.
+// Field names, never values — with one deliberate exception: a dataClass
+// change carries the previous class and the next, and is marked privileged,
+// because the class decides what promotions the policy engine will refuse and
+// the trail has to show what the bar was before. A classification is a label,
+// not a secret.
+func projectSettingsDetails(
+	project *kitchenv1alpha1.Project,
+	body patchProjectRequest,
+	nextClass *kitchenv1alpha1.DataClass,
+) map[string]any {
+	details := map[string]any{"fields": changedProjectFields(body)}
+	if nextClass != nil {
+		details["privileged"] = true
+		details["previousDataClass"] = string(project.Spec.DataClass)
+		details["dataClass"] = string(*nextClass)
+	}
+	return details
+}
+
 // changedProjectFields names the settings a PATCH actually carried, for the
 // audit record's details.
 //
@@ -1536,6 +1598,7 @@ func changedProjectFields(body patchProjectRequest) []string {
 		{"cpu", body.CPU != nil},
 		{"memory", body.Memory != nil},
 		{"promotionStages", body.PromotionStages != nil},
+		{"dataClass", body.DataClass != nil},
 	} {
 		if field.changed {
 			fields = append(fields, field.name)

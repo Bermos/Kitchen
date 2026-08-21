@@ -91,6 +91,14 @@ type ResourceClaimSpec struct {
 	// +kubebuilder:pruning:PreserveUnknownFields
 	// +optional
 	Config *runtime.RawExtension `json:"config,omitempty"`
+
+	// DataClass is the sensitivity classification of the data this claim's
+	// resource holds. It may not exceed the project's own class — children
+	// narrow a classification, never widen it — which the API enforces when
+	// the claim is created. Absent means unclassified, surfaced as such and
+	// never defaulted.
+	// +optional
+	DataClass DataClass `json:"dataClass,omitempty"`
 }
 
 // claimConfig is the provider-agnostic slice of spec.config the platform
@@ -225,6 +233,17 @@ type ResourceClaimStatus struct {
 	// Environments, torn down with them.
 	// +optional
 	Branches []ClaimBranch `json:"branches,omitempty"`
+
+	// Residency is where the provisioned resource actually is, as the
+	// provider reported it — a Neon region id, for the provider that ships.
+	// It is recorded from the provider's answer rather than from anything
+	// declared, which is what makes it the placement of record: an
+	// environment's residency says where data is meant to be, this says
+	// where this resource's data is. Empty when the provider reports no
+	// placement, and read as "unknown" by the inventory rather than
+	// defaulted.
+	// +optional
+	Residency string `json:"residency,omitempty"`
 
 	// RedirectURIs is the redirect list an oidcClient claim's client is
 	// registered with, as the operator last wrote it. It is what a reconcile

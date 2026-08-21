@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { api, type Claim, type Project, type Release } from "../lib/api";
+import { api, DATA_CLASSES, type Claim, type Project, type Release } from "../lib/api";
 import { duration, shortImage, shortSHA, timeAgo } from "../lib/format";
 import { callerFor } from "../lib/me";
 import { operatorMode } from "../lib/mode";
@@ -227,6 +227,8 @@ const settings = reactive({
   replicas: 1,
   cpu: "",
   memory: "",
+  // "" is unclassified — a state shown as such, never a default.
+  dataClass: "",
 });
 // An empty port field is not an unconfigured one: it is the framework's,
 // decided per build, so the field shows nothing and says where the number
@@ -250,6 +252,11 @@ const strategyOptions = [
   { label: "dockerfile", value: "dockerfile" },
   { label: "buildpacks", value: "buildpacks" },
 ];
+
+const dataClassOptions = [
+  { label: "unclassified", value: "" },
+  ...DATA_CLASSES.map((value) => ({ label: value, value: value as string })),
+];
 function loadSettings(from: Project) {
   settings.loadedFor = from.name;
   settings.productionBranch = from.productionBranch;
@@ -263,6 +270,7 @@ function loadSettings(from: Project) {
   settings.replicas = from.replicas ?? 1;
   settings.cpu = from.cpu ?? "";
   settings.memory = from.memory ?? "";
+  settings.dataClass = from.dataClass ?? "";
 }
 watch(project, (value) => {
   if (value && value.name !== settings.loadedFor) loadSettings(value);
@@ -284,6 +292,7 @@ async function saveSettings() {
       replicas: settings.replicas,
       cpu: settings.cpu,
       memory: settings.memory,
+      dataClass: settings.dataClass,
     });
     loadSettings(saved);
     toast.add({
@@ -824,6 +833,16 @@ function host(url?: string): string {
                 <UInput v-model="settings.rootDirectory" placeholder="." class="w-full font-mono" />
               </UFormField>
             </div>
+          </div>
+
+          <div class="rounded-md border border-default bg-muted p-5 space-y-4">
+            <h2 class="text-sm font-semibold text-highlighted">Data</h2>
+            <UFormField
+              label="Data classification"
+              help="What class of data this project handles. Claims narrow it and never exceed it; a promotion into an environment rated below it is refused by policy. Changes are audit-logged with the previous value."
+            >
+              <USelect v-model="settings.dataClass" :items="dataClassOptions" class="w-full max-w-60" />
+            </UFormField>
           </div>
 
           <div class="rounded-md border border-default bg-muted p-5 space-y-4">

@@ -64,6 +64,20 @@ function selection() {
 
 const records = useAsync(() => api.audit(selection()));
 const compliance = useAsync(() => api.compliance());
+// The classification inventory: one request, exportable as it is.
+const inventory = useAsync(() => api.complianceInventory());
+
+function exportInventory() {
+  const data = inventory.data.value;
+  if (!data) return;
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = `kitchen-inventory-${data.generatedAt.slice(0, 10)}.json`;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
 // The URL is the selection, so a changed URL is a changed question — but only
 // while this is still the screen being looked at.
 watch(
@@ -354,5 +368,81 @@ const truncated = computed(() => {
          the same standard: every verdict is a stored record, and a stored
          record is one that can be checked. -->
     <DecisionsPanel />
+
+    <!-- The classification inventory: every environment and claim with its
+         class, its data's provenance and its location, in one request. The
+         absences are words — unclassified, undeclared, unknown — because a
+         blank cell in an export invites a generous reading. -->
+    <div class="space-y-2">
+      <div class="flex items-start justify-between gap-4 flex-wrap">
+        <div>
+          <h2 class="text-sm font-semibold text-highlighted">Data classification inventory</h2>
+          <p class="text-xs text-muted mt-0.5">
+            Where every environment's and claim's data stands: class, provenance, location.
+            <template v-if="inventory.data.value?.defaultResidency">
+              Platform residency (declared): {{ inventory.data.value.defaultResidency }}.
+            </template>
+          </p>
+        </div>
+        <UButton
+          size="xs"
+          color="neutral"
+          variant="subtle"
+          icon="i-lucide-download"
+          :disabled="!inventory.data.value"
+          @click="exportInventory"
+        >
+          Export JSON
+        </UButton>
+      </div>
+      <UAlert
+        v-if="inventory.error.value"
+        color="error"
+        variant="soft"
+        icon="i-lucide-triangle-alert"
+        :title="inventory.error.value"
+      />
+      <div v-else class="rounded-md border border-default overflow-x-auto">
+        <table class="w-full text-xs">
+          <thead>
+            <tr class="border-b border-default text-left text-dimmed">
+              <th class="px-3 py-2 font-medium">Project</th>
+              <th class="px-3 py-2 font-medium">Name</th>
+              <th class="px-3 py-2 font-medium">Kind</th>
+              <th class="px-3 py-2 font-medium">Class</th>
+              <th class="px-3 py-2 font-medium">Provenance</th>
+              <th class="px-3 py-2 font-medium">Residency</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="item in inventory.data.value?.items ?? []"
+              :key="`${item.kind}/${item.name}`"
+              class="border-b border-default/50"
+            >
+              <td class="px-3 py-1.5 font-mono text-toned">{{ item.project }}</td>
+              <td class="px-3 py-1.5 font-mono text-highlighted">{{ item.name }}</td>
+              <td class="px-3 py-1.5 text-dimmed">{{ item.kind }} · {{ item.type }}</td>
+              <td class="px-3 py-1.5" :class="item.dataClass === 'unclassified' ? 'text-dimmed' : 'text-toned'">
+                {{ item.dataClass }}
+              </td>
+              <td class="px-3 py-1.5">
+                <span v-if="!item.provenance" class="text-dimmed">—</span>
+                <span v-else-if="item.provenance === 'production'" class="text-warning">production</span>
+                <span v-else :class="item.provenance === 'undeclared' ? 'text-dimmed' : 'text-toned'">
+                  {{ item.provenance }}
+                </span>
+              </td>
+              <td class="px-3 py-1.5" :class="item.residency === 'unknown' ? 'text-dimmed' : 'text-toned'">
+                {{ item.residency }}
+              </td>
+            </tr>
+            <tr v-if="inventory.data.value && inventory.data.value.items.length === 0">
+              <td colspan="6" class="px-3 py-3 text-center text-dimmed">Nothing to classify yet.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
   </div>
 </template>

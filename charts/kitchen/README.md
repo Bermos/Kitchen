@@ -1329,6 +1329,7 @@ kubectl delete namespace kitchen-system
 | `kitchen.access.operators` | `[]` | Who owns the platform, named at install time: email addresses, `sub`s, or maps of `subject` and `email`. Empty leaves it to be seeded from the accounts the bundled identity provider holds — **an installation on a federated issuer has to set this**, or nobody ever holds the operator role. See [Who owns the platform](#who-owns-the-platform). |
 | `kitchen.baseDomain` | `""` | Generated URLs are `<slug>.<baseDomain>`. |
 | `kitchen.clusterName` | `""` | What the dashboard's status bar calls this cluster. Defaults to the first label of `baseDomain`. |
+| `kitchen.residency` | `""` | Where this installation's data is located — a region or jurisdiction in your own vocabulary. Declared, not observed; the compliance inventory's default for environments that declare none, reading `"unknown"` when empty. |
 | `kitchen.api.externalURL` | `""` | Defaults to `kitchen.<baseDomain>`, under the scheme `kitchen.tls.mode` serves. |
 | `kitchen.ingress.gatewayClassName` | `cilium` | GatewayClass for the shared Gateway. |
 | `kitchen.ingress.cloudflared.enabled` | `false` | Run a cloudflared tunnel as the edge. |

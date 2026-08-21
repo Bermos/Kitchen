@@ -109,7 +109,7 @@ type PromotionReconciler struct {
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=promotions,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=promotions/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=promotions/finalizers,verbs=update
-// +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=projects;releases;builds;connections;kitchens,verbs=get;list;watch
+// +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=projects;releases;builds;connections;kitchens;resourceclaims,verbs=get;list;watch
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=environments,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=environments/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups="",resources=secrets;configmaps,verbs=get;list;watch
@@ -275,12 +275,17 @@ func (r *PromotionReconciler) evaluate(
 		build = nil
 	}
 
+	claims, err := r.claimFacts(ctx, env)
+	if err != nil {
+		return none, policy.Result{}, nil, "", "", err
+	}
+
 	requirements := env.Spec.Requirements
 	if requirements == nil {
 		// An environment that declares no bar accepts anything — exactly
 		// today's behaviour, stated rather than implied: the decision is
 		// still recorded, with an empty bundle and no rules evaluated.
-		input := policy.MaterializeInput(policy.KindPromotion, time.Now().UTC(), env, release, build, nil)
+		input := policy.MaterializeInput(policy.KindPromotion, time.Now().UTC(), project, env, release, build, nil, claims)
 		message := fmt.Sprintf(
 			"environment %s declares no requirements, so no rules were evaluated and the release is allowed",
 			env.Name)
@@ -310,7 +315,7 @@ func (r *PromotionReconciler) evaluate(
 		}
 	}
 
-	input := policy.MaterializeInput(policy.KindPromotion, time.Now().UTC(), env, release, build, evidence)
+	input := policy.MaterializeInput(policy.KindPromotion, time.Now().UTC(), project, env, release, build, evidence, claims)
 	input.Exceptions = exceptions
 	result, err := policy.Evaluate(ctx, info.Bundle, input)
 	if err != nil {
@@ -331,6 +336,20 @@ func (r *PromotionReconciler) evaluate(
 		message = fmt.Sprintf("blocked by bundle %s: %s", requirements.BundleDigest, firedSentence(result))
 	}
 	return input, result, info.Bundle, message, "", nil
+}
+
+// claimFacts materializes the project's resource claims for the target
+// environment — the data facts the dataclass and provenance rules judge.
+// Listing them here keeps the promotion's input the same input the
+// eligibility preview assembles: same claims, same facts, same answer.
+func (r *PromotionReconciler) claimFacts(
+	ctx context.Context, env *kitchenv1alpha1.Environment,
+) ([]policy.Claim, error) {
+	list := &kitchenv1alpha1.ResourceClaimList{}
+	if err := r.List(ctx, list, client.InNamespace(env.Namespace)); err != nil {
+		return nil, err
+	}
+	return policy.ClaimFacts(env, list.Items), nil
 }
 
 // materializeEvidence reads what the release's artifact carries, verified

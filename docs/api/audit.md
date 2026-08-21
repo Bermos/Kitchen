@@ -93,3 +93,38 @@ audit log's: the policy engine always evaluates — a bundle and an input in
 hand need nothing else — but keeping a replayable record needs the store, and
 `storing: false` with its message is the platform owning up to decisions that
 stand without one.
+
+## The classification inventory
+
+`GET /compliance/inventory` answers where every environment's and resource
+claim's data stands — its class, its provenance and its location — in one
+request, exportable as it is. It is filtered like every cross-project read:
+a member gets their projects' rows, an operator gets the whole install.
+
+```json
+{
+  "generatedAt": "2026-08-21T09:00:00Z",
+  "defaultResidency": "CH",
+  "items": [
+    {"kind": "environment", "project": "shop", "name": "shop-production",
+     "type": "production", "dataClass": "confidential", "residency": "CH"},
+    {"kind": "claim", "project": "shop", "name": "shop-db", "type": "postgres",
+     "dataClass": "confidential", "provenance": "production", "residency": "aws-eu-central-1"}
+  ]
+}
+```
+
+The absences are words, never blanks, because an export an auditor reads must
+not leave an empty cell open to a generous reading: `dataClass` is
+`unclassified` when nobody declared one, `provenance` (claims only) is
+`undeclared` when the provider made no statement about what the provisioned
+data derives from, and `residency` is `unknown` when nothing is declared or
+reported. An environment without a residency of its own inherits
+`defaultResidency` — the platform-wide declaration on the Kitchen object,
+declared rather than observed — while a claim's residency is the provider's
+*reported* placement and deliberately inherits nothing: it is the placement
+of record, not a declaration.
+
+Rows are sorted by project, kind and name, so two exports diff cleanly. There
+is no dedicated CLI command — `kitchen api GET /compliance/inventory` is the
+terminal's route to the same document.

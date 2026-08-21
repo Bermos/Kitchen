@@ -718,7 +718,7 @@ attesting to nothing.
 | **2 — Evidence production** | provenance + SBOM (#128), PR verification (#129), quality gates (#130) — **built** |
 | **3 — Policy** | environment ownership (#131), OPA engine (#132), staged promotion (#133) — **built** |
 | **4 — Continuous compliance** | rescan (#134), OpenVEX (#135), exceptions (#136) |
-| **5 — Institutional surface** | data class (#137), resource contract (#138), access (#139), retention (#140), criticality (#141), export (#142) |
+| **5 — Institutional surface** | data class (#137) — **built**, resource contract (#138), access (#139), retention (#140), criticality (#141), export (#142) |
 | **6 — The mapping doc** | #143, kept current |
 
 Phase 2 attaches to §5 exactly as expected: every attestation it produces is
@@ -727,6 +727,20 @@ without changing. Phase 3 attaches to §5.4: an environment that requires
 evidence reads the evidence set and refuses an artifact that does not carry it.
 Phase 4 attaches to §4: a re-evaluation is a decision, and a decision is an
 audit record.
+
+Phase 5's data classification (#137) makes the classification a schema field
+rather than documentation, because a schema field is what the platform can
+enforce: `dataClass` on Project, Environment and ResourceClaim (ordered
+`public < internal < confidential < strictlyConfidential`, absent =
+unclassified and shown as such, never defaulted), `residency` declared on the
+Environment and the Kitchen singleton and *recorded* from the provider's
+actual placement on a claim's status. Classification is inherited and
+narrowable, never wideable — the API refuses a claim classified above its
+project, and the default policy bundle's `dataclass-le-environment` rule
+refuses a promotion of a classified project into an environment rated below
+it (or not rated at all). Every classification change is a privileged audit
+record carrying the previous value, and `GET /compliance/inventory` answers
+the whole install's classes and locations in one exportable request.
 
 ---
 

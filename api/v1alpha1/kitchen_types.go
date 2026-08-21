@@ -596,6 +596,21 @@ type KitchenSpec struct {
 	// operation: the audit log and the attestations attached to artifacts.
 	// +optional
 	Compliance ComplianceSpec `json:"compliance,omitempty"`
+
+	// Residency declares where this installation's data is located — the
+	// region or jurisdiction of the cluster itself, in the operator's own
+	// vocabulary ("CH", "eu-central-1"). It is the platform-wide default an
+	// Environment without a residency of its own inherits in the compliance
+	// inventory.
+	//
+	// It is declared, not observed: Kitchen runs inside the cluster and has
+	// no vantage point to verify where the metal is, so this field records
+	// the answer the institution is accountable for rather than pretending
+	// to measure one. Provisioned resources are the exception — a provider
+	// that reports its actual placement gets that recorded on the claim's
+	// status, which takes precedence over any declaration.
+	// +optional
+	Residency string `json:"residency,omitempty"`
 }
 
 // ComponentStatus reports the runtime health of one platform workload.

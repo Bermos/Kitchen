@@ -174,6 +174,13 @@ kitchen:
   # running a staging platform and a production one tells which is on screen.
   # Defaults to the first label of `kitchen.baseDomain`.
   clusterName: ""
+  # -- Where this installation's data is located — the cluster's region or
+  # jurisdiction in your own vocabulary ("CH", "eu-central-1"). Declared, not
+  # observed: Kitchen runs inside the cluster and records the answer the
+  # institution is accountable for. It is the default an Environment without a
+  # residency of its own inherits in the compliance inventory; empty reads as
+  # "unknown" there rather than being guessed.
+  residency: ""
   # Who owns the platform. An account named here is an operator — everything,
   # everywhere, plus `admin` on every project, present and future — and every
   # other account is an ordinary member.

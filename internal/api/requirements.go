@@ -70,6 +70,17 @@ type patchEnvironmentRequirementsRequest struct {
 	// Owners replaces the owners list. An empty list is a lock, not an open
 	// door: it leaves requirement changes to the platform's operators alone.
 	Owners *[]string `json:"owners,omitempty"`
+	// DataClass rates the environment: the highest sensitivity class it may
+	// hold, which the promotion rule dataclass-le-environment compares the
+	// project's class against. Empty removes the rating. It travels on this
+	// endpoint because it is the same kind of declaration as the bundle —
+	// the owners' bar, not the deploying team's — and it is guarded and
+	// audit-logged the same way.
+	DataClass *string `json:"dataClass,omitempty"`
+	// Residency declares where this environment's data is located. Empty
+	// falls back to the platform default; the value is declared, not
+	// observed.
+	Residency *string `json:"residency,omitempty"`
 }
 
 // environmentOwner reports whether the caller is named in the environment's
@@ -96,6 +107,13 @@ func requirementsRefusal(env *kitchenv1alpha1.Environment) string {
 		"deploying into an environment does not grant a say in what it demands",
 		env.Name, strings.Join(env.Spec.Owners, ", "))
 }
+
+// dataClassChange and residencyChange carry a declaration's before and after
+// for the audit record — a classification change without its previous value
+// is a record nobody can reverse on paper.
+type dataClassChange struct{ previous, next string }
+
+type residencyChange struct{ previous, next string }
 
 // changedParameterNames is which parameters a replacement list touches —
 // added, removed or changed — by name and never by value. Values are the
@@ -132,6 +150,8 @@ func requirementsTransition(
 	previousDigest, nextDigest string,
 	changedParameters []string,
 	owners *[]string,
+	dataClass *dataClassChange,
+	residency *residencyChange,
 ) audit.Transition {
 	details := map[string]any{
 		"privileged":           true,
@@ -143,6 +163,14 @@ func requirementsTransition(
 	}
 	if owners != nil {
 		details["owners"] = *owners
+	}
+	if dataClass != nil {
+		details["previousDataClass"] = dataClass.previous
+		details["dataClass"] = dataClass.next
+	}
+	if residency != nil {
+		details["previousResidency"] = residency.previous
+		details["residency"] = residency.next
 	}
 	return audit.Transition{
 		Object:    env,
@@ -180,8 +208,9 @@ func (s *Server) patchEnvironmentRequirements(w http.ResponseWriter, req *http.R
 		badRequest(w, "%s", err.Error())
 		return
 	}
-	if body.BundleDigest == nil && body.Parameters == nil && body.Owners == nil {
-		badRequest(w, "nothing to change: send bundleDigest, parameters or owners")
+	if body.BundleDigest == nil && body.Parameters == nil && body.Owners == nil &&
+		body.DataClass == nil && body.Residency == nil {
+		badRequest(w, "nothing to change: send bundleDigest, parameters, owners, dataClass or residency")
 		return
 	}
 	if body.Owners != nil {
@@ -226,14 +255,35 @@ func (s *Server) patchEnvironmentRequirements(w http.ResponseWriter, req *http.R
 		nextParameters = nil
 	}
 
+	var classChange *dataClassChange
+	if body.DataClass != nil {
+		class, err := dataClassFromRequest(*body.DataClass)
+		if err != nil {
+			badRequest(w, "%s", err.Error())
+			return
+		}
+		classChange = &dataClassChange{previous: string(env.Spec.DataClass), next: string(class)}
+	}
+	var residency *residencyChange
+	if body.Residency != nil {
+		residency = &residencyChange{previous: env.Spec.Residency, next: strings.TrimSpace(*body.Residency)}
+	}
+
 	changed := changedParameterNames(previousParameters, nextParameters)
-	if !s.recorded(w, req, requirementsTransition(env, previousDigest, nextDigest, changed, body.Owners)) {
+	if !s.recorded(w, req, requirementsTransition(env, previousDigest, nextDigest, changed, body.Owners,
+		classChange, residency)) {
 		return
 	}
 
 	patch := client.MergeFrom(env.DeepCopy())
 	if body.Owners != nil {
 		env.Spec.Owners = *body.Owners
+	}
+	if classChange != nil {
+		env.Spec.DataClass = kitchenv1alpha1.DataClass(classChange.next)
+	}
+	if residency != nil {
+		env.Spec.Residency = residency.next
 	}
 	switch {
 	case nextDigest == "":
@@ -309,7 +359,7 @@ func (s *Server) evaluateRequirements(
 			"requirements are declared but not evaluated: " + err.Error()
 	}
 
-	input := eligibilityInput(env, release, build, evidence)
+	input := s.eligibilityInput(ctx, env, release, build, evidence)
 	result, err := policy.Evaluate(ctx, info.Bundle, input)
 	if err != nil {
 		return nil, false, []string{},
@@ -340,14 +390,29 @@ func (s *Server) evaluateRequirements(
 // eligibility question, through the one materializer every evaluation uses
 // (policy.MaterializeInput) — which is what keeps the preview and the
 // promotion decision the same evaluation: same bundle, same evidence, same
-// answer.
-func eligibilityInput(
+// claims, same answer.
+func (s *Server) eligibilityInput(
+	ctx context.Context,
 	env *kitchenv1alpha1.Environment,
 	release *kitchenv1alpha1.Release,
 	build *kitchenv1alpha1.Build,
 	evidence []policy.Evidence,
 ) policy.Input {
-	return policy.MaterializeInput(policy.KindEligibility, time.Now().UTC(), env, release, build, evidence)
+	// The project and the claims are context rather than prerequisites: a
+	// project that cannot be read is judged unclassified, and claims that
+	// cannot be listed are judged absent — the same degraded honesty the
+	// evidence read keeps.
+	var project *kitchenv1alpha1.Project
+	found := &kitchenv1alpha1.Project{}
+	if err := s.get(ctx, env.Spec.ProjectRef.Name, found); err == nil {
+		project = found
+	}
+	claims := []policy.Claim{}
+	list := &kitchenv1alpha1.ResourceClaimList{}
+	if err := s.Client.List(ctx, list, client.InNamespace(s.Namespace)); err == nil {
+		claims = policy.ClaimFacts(env, list.Items)
+	}
+	return policy.MaterializeInput(policy.KindEligibility, time.Now().UTC(), project, env, release, build, evidence, claims)
 }
 
 // environmentEligibility answers how a release measures up against an

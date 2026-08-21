@@ -97,6 +97,28 @@ type EnvironmentSpec struct {
 	// is every environment's starting state and exactly today's behaviour.
 	// +optional
 	Requirements *EnvironmentRequirements `json:"requirements,omitempty"`
+
+	// DataClass is the highest sensitivity class of data this environment is
+	// rated to hold — its ceiling, not a label on its contents. At promotion
+	// the policy engine refuses a project whose class exceeds it (rule
+	// dataclass-le-environment), which includes a classified project landing
+	// on an environment nobody has rated. Absent means unclassified,
+	// surfaced as such and never defaulted. Like requirements, it is the
+	// owners' declaration rather than the deploying team's, and it is
+	// written through the same owner-gated endpoint.
+	// +optional
+	DataClass DataClass `json:"dataClass,omitempty"`
+
+	// Residency declares where this environment's data is located — a
+	// region or jurisdiction in the operator's own vocabulary ("CH",
+	// "eu-central-1"). It is declared, not observed: the platform runs in
+	// the one cluster it is installed into and cannot see past it, so this
+	// records the answer the institution is accountable for. Absent falls
+	// back to the platform default on the Kitchen object, and reads as
+	// "unknown" in the inventory when neither is set. Provisioned resources
+	// record their *actual* placement separately, on the claim's status.
+	// +optional
+	Residency string `json:"residency,omitempty"`
 }
 
 // EnvironmentPhase is the coarse lifecycle summary of an Environment.

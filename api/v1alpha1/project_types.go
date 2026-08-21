@@ -288,6 +288,19 @@ type ProjectSpec struct {
 	// +optional
 	Promotion *PromotionPolicySpec `json:"promotion,omitempty"`
 
+	// DataClass is the sensitivity classification of the data this project
+	// handles: public, internal, confidential or strictlyConfidential, in
+	// that order. Absent means unclassified — surfaced as such, never
+	// defaulted. It is the parent of the classification hierarchy: a claim's
+	// class may not exceed it (checked at the API), and at promotion the
+	// policy engine checks it does not exceed the target environment's
+	// (rule dataclass-le-environment). Reclassifying a project is always
+	// possible — it makes environments below the new class non-compliant,
+	// which the drift and inventory views surface rather than the API
+	// refusing the correction.
+	// +optional
+	DataClass DataClass `json:"dataClass,omitempty"`
+
 	// Which of this Project's environments may idle down to no pods at all,
 	// cold-starting on the next request. It does nothing unless the platform
 	// runs the machinery for it — `spec.scaleToZero.enabled` on the Kitchen
