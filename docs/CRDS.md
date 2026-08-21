@@ -347,10 +347,19 @@ spec:
     replicas: 2                         # previews always get 1
     resources: { cpu: 500m, memory: 512Mi }
 status:
-  conditions: [...]                     # Ready, SourceConnected, WebhookRegistered
+  conditions: [...]                     # Ready, SourceConnected, WebhookRegistered,
+                                        # InitialBuild
   productionEnvironmentRef: { name: my-shop-production }
   latestBuildRef: { name: my-shop-bld-8f3a2c1 }
+  initialBuildRef: { name: my-shop-bld-8f3a2c1 }   # the build the platform made
+                                        # itself, once, when the project was new
 ```
+
+`initialBuildRef` is what makes a new project deploy without waiting for a
+push: the reconciler resolves the production branch's tip and creates one
+Build of it as soon as both connections are usable, and records it here so it
+is never done twice. The `InitialBuild` condition carries why it has not
+happened yet when it has not.
 
 `access` is the project's membership, and it is the whole of the answer: an
 account with no entry holds no role here at all, so the project is not in

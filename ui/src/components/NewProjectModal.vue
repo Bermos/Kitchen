@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { useRouter } from "vue-router";
-import { api } from "../lib/api";
+import { api, type Detection } from "../lib/api";
 import {
   connectionChoices,
   defaultBranchFor,
@@ -119,6 +119,67 @@ function repoTypedIn(term: string) {
   repo.value = term;
 }
 
+// The preflight: read the repository the way a build would and say what the
+// platform makes of it, while the build context is still a form field. It is
+// the difference between "the root directory is one level off" and a build
+// that fails five minutes after the project was created and reads like the
+// platform is broken.
+//
+// It is asked for whenever the three things it depends on settle, and it
+// writes nothing, so asking again is the whole of correcting a wrong answer.
+const rootDirectory = ref("");
+const dockerfilePath = ref("");
+const detection = ref<Detection>();
+const detecting = ref(false);
+const detectError = ref("");
+// Only the newest answer is shown: a slow reply to an older build context
+// would otherwise overwrite the one somebody is looking at.
+let detectRun = 0;
+
+async function detect() {
+  const run = ++detectRun;
+  detection.value = undefined;
+  detectError.value = "";
+  if (!connection.value || !repo.value.includes("/")) return;
+  detecting.value = true;
+  try {
+    const answer = await api.detectRepository(connection.value, {
+      repo: repo.value,
+      ref: productionBranch.value || undefined,
+      rootDirectory: rootDirectory.value || undefined,
+      dockerfilePath: dockerfilePath.value || undefined,
+    });
+    if (run === detectRun) detection.value = answer;
+  } catch (err) {
+    // A preflight that cannot run is not a reason to block the form: the
+    // build is still what decides, and it is allowed to disagree with a
+    // provider that would not answer a question a minute ago.
+    if (run === detectRun) detectError.value = err instanceof Error ? err.message : String(err);
+  } finally {
+    if (run === detectRun) detecting.value = false;
+  }
+}
+
+// Typing settles before the provider is asked, and every field the answer is
+// about restarts the clock.
+let detectTimer: ReturnType<typeof setTimeout> | undefined;
+watch([repo, connection, productionBranch, rootDirectory, dockerfilePath], () => {
+  clearTimeout(detectTimer);
+  detectTimer = setTimeout(() => void detect(), 400);
+});
+
+// What the verdict reads as. A framework nobody recognised is a warning
+// rather than an error, because creating the project anyway is a legitimate
+// choice — the build strategy can be set afterwards.
+const detectionColor = computed(() => (detection.value?.detected ? "success" : "warning"));
+const detectionTitle = computed(() => {
+  const found = detection.value;
+  if (!found) return "";
+  if (!found.detected) return "No framework detected";
+  const how = found.dockerfile ? "Dockerfile" : `built with ${found.strategy}`;
+  return `Detected ${found.framework} — ${how}`;
+});
+
 // A chosen repository knows which branch it deploys from, so the production
 // branch follows it — until it is edited by hand, at which point it is the
 // user's, exactly as the name is.
@@ -155,6 +216,8 @@ async function create() {
       registry: registry.value!,
       productionBranch: productionBranch.value || undefined,
       previews: previews.value,
+      rootDirectory: rootDirectory.value || undefined,
+      dockerfilePath: dockerfilePath.value || undefined,
     });
     open.value = false;
     name.value = "";
@@ -162,6 +225,9 @@ async function create() {
     repo.value = "";
     typedRepo.value = "";
     branchEdited.value = false;
+    rootDirectory.value = "";
+    dockerfilePath.value = "";
+    detection.value = undefined;
     toast.add({ title: `Project ${project.name} created`, color: "success", icon: "i-lucide-check" });
     emit("created");
     void router.push({ name: "project", params: { name: project.name } });
@@ -258,6 +324,44 @@ async function create() {
         <UFormField label="Production branch" help="Builds of this branch promote to production.">
           <UInput v-model="productionBranch" class="w-44 font-mono" @input="branchEdited = true" />
         </UFormField>
+
+        <!-- What the platform makes of the repository, and the two fields that
+             change the answer. Both are optional and both are what a monorepo
+             or an unconventionally-placed Dockerfile needs, so they sit with
+             the verdict they explain rather than in a settings page reached
+             after the first build has already failed. -->
+        <div class="rounded-md border border-default p-3 space-y-3">
+          <div class="grid gap-3 sm:grid-cols-2">
+            <UFormField label="Root directory" help="The directory that is built. Empty is the repository itself.">
+              <UInput v-model="rootDirectory" placeholder="apps/shop" class="w-full font-mono" />
+            </UFormField>
+            <UFormField label="Dockerfile path" help="Relative to the root directory. Empty is ./Dockerfile.">
+              <UInput v-model="dockerfilePath" placeholder="Dockerfile" class="w-full font-mono" />
+            </UFormField>
+          </div>
+          <p v-if="detecting" class="text-xs text-muted flex items-center gap-1.5">
+            <UIcon name="i-lucide-loader-circle" class="animate-spin" />
+            Reading the repository…
+          </p>
+          <UAlert
+            v-else-if="detection"
+            :color="detectionColor"
+            variant="soft"
+            :icon="detection.detected ? 'i-lucide-check' : 'i-lucide-triangle-alert'"
+            :title="detectionTitle"
+            :description="
+              detection.detected
+                ? `${detection.rootDirectory || '.'} at ${detection.ref}${detection.port ? ` — listens on ${detection.port}` : ''}`
+                : detection.message
+            "
+          />
+          <p v-else-if="detectError" class="text-xs text-muted">
+            The layout could not be checked ({{ detectError }}) — the build decides.
+          </p>
+          <p v-if="detection?.files?.length" class="text-xs text-muted font-mono truncate">
+            {{ detection.files.join("  ") }}
+          </p>
+        </div>
         <USwitch
           v-model="previews"
           label="Preview environments"

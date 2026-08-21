@@ -103,6 +103,10 @@ export interface NewProject {
   registry: string;
   productionBranch?: string;
   previews?: boolean;
+  /** The build context, when the preflight showed it was wrong and somebody
+   * corrected it on the form rather than after a failed build. */
+  rootDirectory?: string;
+  dockerfilePath?: string;
 }
 
 export interface Revision {
@@ -626,6 +630,38 @@ export interface ConnectionRepositories {
   items: Repository[];
   truncated?: boolean;
   /** Why there is no listing, in words a form can show. */
+  message?: string;
+}
+
+/**
+ * What the build context currently is, asked about before the project exists.
+ * Every field is the value the form holds, so changing the root directory and
+ * asking again is the whole of correcting it.
+ */
+export interface DetectRequest {
+  repo: string;
+  ref?: string;
+  rootDirectory?: string;
+  dockerfilePath?: string;
+}
+
+/**
+ * What the repository looks like to the platform.
+ *
+ * `detected` false is not an error: it is the answer, and the answer the form
+ * exists to deliver before a build spends five minutes reaching it. `message`
+ * says why in words a form can show, whether or not anything was detected,
+ * and `files` is what the verdict was reached from.
+ */
+export interface Detection {
+  detected: boolean;
+  framework?: string;
+  strategy?: string;
+  port?: number;
+  ref?: string;
+  rootDirectory?: string;
+  dockerfile: boolean;
+  files?: string[];
   message?: string;
 }
 
@@ -2171,6 +2207,12 @@ export const api = {
   // self-service, and this is the field after the connection.
   connectionRepositories: (name: string) =>
     request<ConnectionRepositories>("GET", `/connections/${encodeURIComponent(name)}/repositories`),
+  // The field after the repository: read it the way a build would and say what
+  // the platform makes of it, while the build context is still a form field.
+  // It writes nothing, which is why a form may ask it on every keystroke's
+  // worth of settling.
+  detectRepository: (name: string, target: DetectRequest) =>
+    request<Detection>("POST", `/connections/${encodeURIComponent(name)}/detect`, target),
   domains: list<Domain>("/domains"),
   domain: (name: string) => request<Domain>("GET", `/domains/${name}`),
   createDomain: (domain: NewDomain) => request<Domain>("POST", "/domains", domain),

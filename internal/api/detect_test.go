@@ -105,11 +105,11 @@ func TestDetectingHonoursTheBuildContext(t *testing.T) {
 		"":          {"README.md", "apps/"},
 		"apps/shop": {"Dockerfile", "main.go"},
 	}, nil)
-	h := newHarness(t, nil, append(fixtures(), gitHubConnection("hub", github.URL, "ghp_stored")...)...)
+	h := newHarness(t, nil, append(fixtures(), gitHubConnection("source", github.URL, "ghp_stored")...)...)
 
 	// The repository root is nothing the platform recognises, which is the
 	// answer somebody needs to see before they create the project.
-	recorder := h.do(t, http.MethodPost, "/api/v1/connections/hub/detect",
+	recorder := h.do(t, http.MethodPost, "/api/v1/connections/source/detect",
 		`{"repo": "acme/shop", "ref": "main"}`)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
@@ -120,7 +120,7 @@ func TestDetectingHonoursTheBuildContext(t *testing.T) {
 
 	// The same repository with the root directory corrected is a Dockerfile
 	// build, and asking again is the whole of fixing it.
-	recorder = h.do(t, http.MethodPost, "/api/v1/connections/hub/detect",
+	recorder = h.do(t, http.MethodPost, "/api/v1/connections/source/detect",
 		`{"repo": "acme/shop", "ref": "main", "rootDirectory": "apps/shop"}`)
 	view := decode[detectionView](t, recorder)
 	if !view.Detected || view.Framework != "dockerfile" || !view.Dockerfile {
