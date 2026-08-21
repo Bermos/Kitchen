@@ -395,6 +395,14 @@ spec:
                     description: CheckedAt is when the provider was asked.
                     format: date-time
                     type: string
+                  exception:
+                    description: |-
+                      Exception names the break-glass Exception that waived the pull request
+                      requirement for this build, when one did — the rule id it waives is
+                      `require-pull-request`. Like MachineIdentity, empty means the waiver
+                      was not used, not that none exists; every use is a privileged audit
+                      record and a field on the signed source attestation.
+                    type: string
                   independent:
                     description: |-
                       Independent is true when somebody other than the author approved. It is
@@ -872,6 +880,39 @@ spec:
               EnvironmentSpec defines a running instance of a Release with a URL.
               Rollback is changing ReleaseRef to an older Release.
             properties:
+              dataClass:
+                description: |-
+                  DataClass is the highest sensitivity class of data this environment is
+                  rated to hold — its ceiling, not a label on its contents. At promotion
+                  the policy engine refuses a project whose class exceeds it (rule
+                  dataclass-le-environment), which includes a classified project landing
+                  on an environment nobody has rated. Absent means unclassified,
+                  surfaced as such and never defaulted. Like requirements, it is the
+                  owners' declaration rather than the deploying team's, and it is
+                  written through the same owner-gated endpoint.
+                enum:
+                - public
+                - internal
+                - confidential
+                - strictlyConfidential
+                type: string
+              owners:
+                description: |-
+                  Owners name who may change this environment's Requirements. Entries
+                  use the AccessSubject vocabulary: the issuer's `sub`, or an email
+                  address — a value containing `@` is read as one, matched
+                  case-insensitively and honoured only for a token whose address is
+                  verified. Platform operators always may.
+
+                  This list is segregation of duties written as a schema: the team that
+                  deploys into an environment holds project roles, the people who decide
+                  what it demands are named here, and neither grants the other. An empty
+                  or absent list leaves the requirements to the platform's operators
+                  alone — the safe default, since an environment nobody owns must not be
+                  one whoever deploys into it can lower the bar of.
+                items:
+                  type: string
+                type: array
               preview:
                 description: Required when Type is preview.
                 properties:
@@ -908,6 +949,42 @@ spec:
                 required:
                 - name
                 type: object
+              requirements:
+                description: |-
+                  Requirements is what an artifact must bring in order to land here,
+                  declared by the environment's owners rather than by the project that
+                  deploys into it. Absent means this environment declares no bar, which
+                  is every environment's starting state and exactly today's behaviour.
+                properties:
+                  bundleDigest:
+                    description: |-
+                      BundleDigest names the policy bundle by its sha256, in the
+                      `sha256:<64 hex>` form every artifact digest already uses. Anything
+                      else is refused at admission.
+                    pattern: ^sha256:[a-f0-9]{64}$
+                    type: string
+                  parameters:
+                    additionalProperties:
+                      type: string
+                    description: |-
+                      Parameters reach the policy as input.parameters: the owner's tuning of
+                      the bundle's rules — which gate to require, a severity ceiling —
+                      without a bundle of their own for every environment.
+                    type: object
+                required:
+                - bundleDigest
+                type: object
+              residency:
+                description: |-
+                  Residency declares where this environment's data is located — a
+                  region or jurisdiction in the operator's own vocabulary ("CH",
+                  "eu-central-1"). It is declared, not observed: the platform runs in
+                  the one cluster it is installed into and cannot see past it, so this
+                  records the answer the institution is accountable for. Absent falls
+                  back to the platform default on the Kitchen object, and reads as
+                  "unknown" in the inventory when neither is set. Provisioned resources
+                  record their *actual* placement separately, on the claim's status.
+                type: string
               type:
                 default: production
                 description: |-
@@ -1071,6 +1148,273 @@ spec:
               url:
                 description: Primary URL the Environment is reachable at.
                 type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.17.2
+    {{- if .Values.crds.keep }}
+    helm.sh/resource-policy: keep
+    {{- end }}
+  labels:
+    {{- include "kitchen.labels" . | nindent 4 }}
+  name: exceptions.kitchen.bermos.dev
+spec:
+  group: kitchen.bermos.dev
+  names:
+    kind: Exception
+    listKind: ExceptionList
+    plural: exceptions
+    singular: exception
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.projectRef.name
+      name: Project
+      type: string
+    - jsonPath: .spec.environmentRef.name
+      name: Environment
+      type: string
+    - jsonPath: .spec.ruleIDs
+      name: Rules
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .spec.expiresAt
+      name: Expires
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          Exception is the Schema for the exceptions API: one bounded, two-person,
+          per-rule break-glass grant, retained after it ends so the register stays
+          queryable historically.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              ExceptionSpec is the grant itself. It is immutable, like a Promotion's
+              spec and for the same reason: an exception is a record of what two people
+              agreed to, and a record that can be edited afterwards is not a record.
+              Extending or narrowing a grant is a new Exception; ending one early is a
+              resolution, which lives on status because it is an act, not an edit.
+            properties:
+              approvedBy:
+                description: |-
+                  ApprovedBy names the second human — always a second: the CEL rule on
+                  this spec refuses an approver who is the requester. The API verifies
+                  the approver holds the role the escalation ladder demands for the
+                  requested duration; the assertion that they agreed is the requester's,
+                  on the record.
+                minLength: 1
+                type: string
+              autoRollback:
+                default: false
+                description: |-
+                  AutoRollback asks the platform to roll the environment back when the
+                  exception expires unresolved. Off by default: the default consequence
+                  of expiry is that further promotions block, not that a running
+                  workload is yanked.
+                type: boolean
+              environmentRef:
+                description: |-
+                  EnvironmentRef names the environment the waiver applies to. An
+                  exception is scoped to the Promotion pair — a rule waived for staging
+                  says nothing about production.
+                properties:
+                  name:
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+              expiresAt:
+                description: |-
+                  ExpiresAt bounds the grant. There is no unbounded exception: past this
+                  moment the named rules block again, and the deployed release goes
+                  non-compliant on the next evaluation pass.
+                format: date-time
+                type: string
+              incidentRef:
+                description: |-
+                  IncidentRef links the incident this exception was granted for — a
+                  ticket id, a postmortem URL. Optional but expected for an emergency.
+                type: string
+              projectRef:
+                description: |-
+                  LocalObjectReference references another Kitchen object by name within the
+                  platform namespace. Cross-namespace references are not supported in v1alpha1.
+                properties:
+                  name:
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+              reason:
+                description: |-
+                  Reason is why, in the requester's own words. Required: an exception
+                  without a reason is a bypass, and a bypass is what this object exists
+                  to replace.
+                minLength: 1
+                type: string
+              releaseRef:
+                description: |-
+                  ReleaseRef optionally narrows the grant to one release. Empty covers
+                  the whole environment: any release promoted there while the exception
+                  is active has the named rules waived.
+                properties:
+                  name:
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+              requestedBy:
+                description: RequestedBy names who asked for the exception.
+                minLength: 1
+                type: string
+              ruleIDs:
+                description: |-
+                  RuleIDs names the rules this exception waives, by the stable ids the
+                  bundle publishes. It is a list of specific rules and never a blanket
+                  bypass: a rule not named here still blocks, however urgent the hour.
+                items:
+                  minLength: 1
+                  type: string
+                minItems: 1
+                type: array
+                x-kubernetes-list-type: atomic
+            required:
+            - approvedBy
+            - environmentRef
+            - expiresAt
+            - projectRef
+            - reason
+            - requestedBy
+            - ruleIDs
+            type: object
+            x-kubernetes-validations:
+            - message: 'Exception spec is immutable: a break-glass grant is a record
+                of what was agreed; grant a new one instead of editing this'
+              rule: self == oldSelf
+            - message: 'an exception takes two people: the approver must be somebody
+                other than the requester'
+              rule: self.approvedBy != self.requestedBy
+          status:
+            description: |-
+              ExceptionStatus is what became of the grant: its phase, who relied on it,
+              and — when resolved — who ended it.
+            properties:
+              conditions:
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              phase:
+                description: ExceptionPhase is where an exception is in its life.
+                enum:
+                - Active
+                - Expired
+                - Resolved
+                type: string
+              resolvedAt:
+                description: ResolvedAt is when.
+                format: date-time
+                type: string
+              resolvedBy:
+                description: |-
+                  ResolvedBy names who resolved it, when somebody did. The resolution's
+                  reason is in the audit log, where an auditable act belongs.
+                type: string
+              usedBy:
+                description: |-
+                  UsedBy names every Promotion that relied on this exception — was
+                  allowed-with-exception because it waived a fired rule. The register's
+                  answer to "what actually went out under this grant".
+                items:
+                  type: string
+                type: array
+                x-kubernetes-list-type: atomic
             type: object
         type: object
     served: true
@@ -1515,6 +1859,46 @@ spec:
                         minimum: 90
                         type: integer
                     type: object
+                  exceptions:
+                    default: {}
+                    description: |-
+                      Exceptions configures break-glass exceptions: the escalation ladder
+                      deciding who may approve a waiver of a given duration. The default
+                      `{}` keeps an upgraded singleton reading the same as a fresh one; the
+                      compiled-in ladder applies while nothing is configured.
+                    properties:
+                      ladder:
+                        description: |-
+                          Ladder maps requested duration to the approver role it takes,
+                          evaluated shortest rung first. A duration beyond every rung always
+                          needs a platform operator. Empty uses the compiled-in default:
+                          up to 24h needs developer, up to 720h (30 days) needs admin, and
+                          anything longer needs an operator.
+                        items:
+                          description: |-
+                            ExceptionTier is one rung of the escalation ladder: grants up to
+                            MaxDuration need an approver holding at least Role.
+                          properties:
+                            maxDuration:
+                              description: MaxDuration is the longest grant this rung
+                                covers, e.g. "24h".
+                              type: string
+                            role:
+                              description: |-
+                                Role is the least role the approver must hold: developer or admin on
+                                the project, or operator on the platform.
+                              enum:
+                              - developer
+                              - admin
+                              - operator
+                              type: string
+                          required:
+                          - maxDuration
+                          - role
+                          type: object
+                        type: array
+                        x-kubernetes-list-type: atomic
+                    type: object
                   gates:
                     description: |-
                       Gates are the quality gates run over every artifact the platform
@@ -1818,6 +2202,21 @@ spec:
                       chart writes it as <release>-registry.
                     type: string
                 type: object
+              residency:
+                description: |-
+                  Residency declares where this installation's data is located — the
+                  region or jurisdiction of the cluster itself, in the operator's own
+                  vocabulary ("CH", "eu-central-1"). It is the platform-wide default an
+                  Environment without a residency of its own inherits in the compliance
+                  inventory.
+
+                  It is declared, not observed: Kitchen runs inside the cluster and has
+                  no vantage point to verify where the metal is, so this field records
+                  the answer the institution is accountable for rather than pretending
+                  to measure one. Provisioned resources are the exception — a provider
+                  that reports its actual placement gets that recorded on the claim's
+                  status, which takes precedence over any declaration.
+                type: string
               scaleToZero:
                 default: {}
                 description: |-
@@ -2023,6 +2422,26 @@ spec:
                         type: integer
                     required:
                     - recording
+                    type: object
+                  policy:
+                    description: |-
+                      PolicyStatus reports whether policy decisions are being stored, which —
+                      like AuditStatus — is a different question from whether they are being
+                      made. The engine is a pure function and always answers; what needs the
+                      telemetry store is keeping the answer, with the inputs that make it
+                      reproducible. An installation without one still gets decisions, and this
+                      is where it is told they leave no replayable record behind.
+                    properties:
+                      message:
+                        description: Message explains decisions that are not being
+                          stored.
+                        type: string
+                      storing:
+                        description: Storing is true when the operator has a store
+                          to keep decisions in.
+                        type: boolean
+                    required:
+                    - storing
                     type: object
                 type: object
               components:
@@ -2514,6 +2933,24 @@ spec:
                     - buildpacks
                     type: string
                 type: object
+              dataClass:
+                description: |-
+                  DataClass is the sensitivity classification of the data this project
+                  handles: public, internal, confidential or strictlyConfidential, in
+                  that order. Absent means unclassified — surfaced as such, never
+                  defaulted. It is the parent of the classification hierarchy: a claim's
+                  class may not exceed it (checked at the API), and at promotion the
+                  policy engine checks it does not exceed the target environment's
+                  (rule dataclass-le-environment). Reclassifying a project is always
+                  possible — it makes environments below the new class non-compliant,
+                  which the drift and inventory views surface rather than the API
+                  refusing the correction.
+                enum:
+                - public
+                - internal
+                - confidential
+                - strictlyConfidential
+                type: string
               env:
                 description: Environment variables, overlaid per environment type.
                 items:
@@ -2593,6 +3030,57 @@ spec:
                       Grace period before a preview Environment is torn down after its
                       pull request closes.
                     type: string
+                type: object
+              promotion:
+                description: |-
+                  Promotion is the project's staged pipeline, absent for the default
+                  build-straight-to-production flow. The stages are topology — which
+                  environments, in which order — and deliberately not policy: what each
+                  environment demands lives on the Environment (spec.requirements), owned
+                  by its owners, so the team that arranges the pipeline cannot lower any
+                  stage's bar by rearranging it.
+                properties:
+                  stages:
+                    description: |-
+                      Stages, in promotion order. The order is the pipeline, so this is a
+                      plain ordered list rather than a merge-by-name map.
+                    items:
+                      description: |-
+                        PromotionStage is one rung of a project's promotion ladder: a name for the
+                        rung, the Environment that is the rung, and whether an artifact climbs onto
+                        the next one by itself.
+                      properties:
+                        autoPromote:
+                          description: |-
+                            AutoPromote creates the next Promotion into this stage automatically
+                            when the stage before it applies successfully. Whether that promotion
+                            then goes through is this stage's environment's own requirements —
+                            evidence-gating an automatic promotion is a rule on the environment
+                            (a required gate, a severity ceiling), not a second mechanism here.
+                          type: boolean
+                        environment:
+                          description: |-
+                            Environment names the Environment this stage deploys into. It must
+                            belong to this project — validated where the stages are written and
+                            where they are acted on, since a cross-object rule cannot live in CEL.
+                            The first build for a stage creates the Environment if it is missing.
+                          minLength: 1
+                          type: string
+                        name:
+                          description: |-
+                            Name of the stage — "staging", "production" — a DNS label so it can
+                            appear in generated names.
+                          maxLength: 63
+                          pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                          type: string
+                      required:
+                      - environment
+                      - name
+                      type: object
+                    minItems: 1
+                    type: array
+                required:
+                - stages
                 type: object
               registry:
                 description: RegistrySpec selects where built images are stored.
@@ -2873,6 +3361,250 @@ spec:
                 type: object
               webhookId:
                 description: Provider-side identifier of the registered git webhook.
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.17.2
+    {{- if .Values.crds.keep }}
+    helm.sh/resource-policy: keep
+    {{- end }}
+  labels:
+    {{- include "kitchen.labels" . | nindent 4 }}
+  name: promotions.kitchen.bermos.dev
+spec:
+  group: kitchen.bermos.dev
+  names:
+    kind: Promotion
+    listKind: PromotionList
+    plural: promotions
+    singular: promotion
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.projectRef.name
+      name: Project
+      type: string
+    - jsonPath: .spec.environmentRef.name
+      name: Environment
+      type: string
+    - jsonPath: .spec.releaseRef.name
+      name: Release
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          Promotion is the Schema for the promotions API: one immutable request to
+          move one Release into one Environment, with the evaluated decision on its
+          status. It is how an artifact moves through a project's stages — the same
+          digest at every stage, judged against each environment's own bar.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              PromotionSpec is one request to move one Release into one Environment. It
+              is immutable, like a Release's spec and for the same reason: a promotion is
+              a record of what was asked, and a record that can be edited afterwards is
+              not a record. Retrying a blocked promotion is a new Promotion, never an
+              edit of the old one.
+            properties:
+              environmentRef:
+                description: |-
+                  EnvironmentRef names where the release should land. The environment
+                  must belong to the project — the reconciler fails a promotion whose
+                  references disagree, since a cross-object rule cannot live in CEL.
+                properties:
+                  name:
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+              projectRef:
+                description: |-
+                  LocalObjectReference references another Kitchen object by name within the
+                  platform namespace. Cross-namespace references are not supported in v1alpha1.
+                properties:
+                  name:
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+              reason:
+                description: |-
+                  Reason is the requester's own words for why, carried into the audit
+                  record. Optional for routine moves; an emergency promotion under an
+                  exception is expected to have one.
+                type: string
+              releaseRef:
+                description: |-
+                  ReleaseRef names what should land there: an immutable snapshot, so the
+                  digest that was built is the digest that is deployed — a promotion never
+                  rebuilds anything, which is also what makes a rollback a promotion of an
+                  older release.
+                properties:
+                  name:
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+              requestedBy:
+                description: |-
+                  RequestedBy names who asked: an account for a manual promotion, a
+                  controller identity (`system:controller/...`) for an automatic one.
+                minLength: 1
+                type: string
+              trigger:
+                description: Trigger says whether a person or the pipeline asked.
+                enum:
+                - manual
+                - automatic
+                type: string
+            required:
+            - environmentRef
+            - projectRef
+            - releaseRef
+            - requestedBy
+            - trigger
+            type: object
+            x-kubernetes-validations:
+            - message: Promotion spec is immutable
+              rule: self == oldSelf
+          status:
+            description: |-
+              PromotionStatus is what became of the request: the phase, the decision that
+              judged it, and — when blocked — the rules that stood in the way, by id.
+            properties:
+              appliedAt:
+                description: AppliedAt is when the environment was actually moved.
+                format: date-time
+                type: string
+              conditions:
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              decisionID:
+                description: |-
+                  DecisionID is the stored decision this promotion acted on — the way to
+                  its fired rules, its input and the bundle it can be replayed from.
+                type: string
+              evaluatedAt:
+                description: EvaluatedAt is when the policy was evaluated.
+                format: date-time
+                type: string
+              message:
+                description: |-
+                  Message is the phase in a sentence: why it failed, what blocked it, or
+                  what was applied.
+                type: string
+              phase:
+                description: PromotionPhase is where a promotion is in its short life.
+                enum:
+                - Pending
+                - Evaluating
+                - Allowed
+                - AllowedWithException
+                - Blocked
+                - Applied
+                - Failed
+                type: string
+              unmetRules:
+                description: |-
+                  UnmetRules names the rules that fired unwaived, as the stable ids the
+                  bundle publishes — a blocked promotion says exactly what is missing,
+                  never a generic refusal.
+                items:
+                  type: string
+                type: array
+              verdict:
+                description: |-
+                  Verdict is the policy engine's word: allowed, allowed-with-exception or
+                  blocked. Exactly three; there is no fourth state.
                 type: string
             type: object
         type: object
@@ -3206,6 +3938,19 @@ spec:
                 required:
                 - name
                 type: object
+              dataClass:
+                description: |-
+                  DataClass is the sensitivity classification of the data this claim's
+                  resource holds. It may not exceed the project's own class — children
+                  narrow a classification, never widen it — which the API enforces when
+                  the claim is created. Absent means unclassified, surfaced as such and
+                  never defaulted.
+                enum:
+                - public
+                - internal
+                - confidential
+                - strictlyConfidential
+                type: string
               deletionPolicy:
                 default: Retain
                 description: |-
@@ -3282,6 +4027,19 @@ spec:
                     id:
                       description: ID is the provider-side branch identifier.
                       type: string
+                    provenance:
+                      description: |-
+                        Provenance is the provider's declaration of what this branch's data
+                        derives from — production for a branch of a production database,
+                        however cheap the copy. Empty means the provider declared nothing.
+                        It is per-branch because it is the branch, not the primary, that a
+                        preview's workload reads, and the policy engine judges the preview on
+                        exactly this value.
+                      enum:
+                      - production
+                      - masked
+                      - synthetic
+                      type: string
                     secretName:
                       description: |-
                         SecretName is the per-environment binding Secret in the project
@@ -3349,6 +4107,20 @@ spec:
                   - type
                   type: object
                 type: array
+              dataProvenance:
+                description: |-
+                  DataProvenance is the provider's declaration of what the provisioned
+                  data derives from: production, masked or synthetic. Empty means the
+                  provider declared nothing (undeclared) — surfaced as such, and treated
+                  by policy as the worst case rather than as clean. It is a declaration
+                  the platform records and attests (a signed
+                  kitchen.bermos.dev DataClass/v1 statement), never something it
+                  inspects the data to establish.
+                enum:
+                - production
+                - masked
+                - synthetic
+                type: string
               instanceID:
                 description: |-
                   InstanceID is the provider-side identifier of the provisioned resource,
@@ -3372,6 +4144,17 @@ spec:
                 items:
                   type: string
                 type: array
+              residency:
+                description: |-
+                  Residency is where the provisioned resource actually is, as the
+                  provider reported it — a Neon region id, for the provider that ships.
+                  It is recorded from the provider's answer rather than from anything
+                  declared, which is what makes it the placement of record: an
+                  environment's residency says where data is meant to be, this says
+                  where this resource's data is. Empty when the provider reports no
+                  placement, and read as "unknown" by the inventory rather than
+                  defaulted.
+                type: string
               secretName:
                 description: |-
                   Secret in the project namespace holding the binding keys
