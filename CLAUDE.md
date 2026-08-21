@@ -295,6 +295,29 @@ test files, and goconst has already caught a release name repeated across
 assertions. Run it before every push, not only after touching Go code you
 consider "real".
 
+## Before opening a pull request — the final pass
+
+`make test` and `make lint` prove the pieces work; they do not prove the
+branch is finished. Before opening a pull request — and again before merging
+one that grew across several sessions — walk the whole diff once against
+three questions, and fix what the walk finds rather than reporting it:
+
+- **Does it do what the issue says?** Re-read the issue's acceptance criteria
+  against the diff, criterion by criterion — the text as written, not the plan
+  as remembered. A criterion the code only half-meets is named in the pull
+  request description, never left as a silent hope.
+- **Is it coherent with itself?** A branch built across sessions drifts: the
+  same concept named two ways, a seam built in one commit and bypassed in the
+  next, an identifier spelled three ways between the code, the docs and the
+  dashboard. Read the diff as one change and reconcile it.
+- **Is every surface finished?** For each route added or changed: the row in
+  `internal/api/policy.go`, the row in docs/API.md's route table, the section
+  in its `docs/api/<resource>.md` page, the regenerated dashboard policy, a
+  screen (or an existing one extended), and the CLI decision — a command, or
+  a deliberate note that `kitchen api` carries it. The tests enforce most of
+  this chain; the two docs rows and the screen are exactly the links they
+  cannot.
+
 ## Checking chart behaviour without waiting for CI
 
 **In a dev container the Docker daemon is installed but not running — start it
