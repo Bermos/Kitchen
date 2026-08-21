@@ -790,7 +790,7 @@ func newHarness(t *testing.T, kitchen *kitchenv1alpha1.Kitchen, objs ...runtime.
 	objects := append([]runtime.Object{kitchen}, objs...)
 	c := fake.NewClientBuilder().WithScheme(scheme).
 		WithRuntimeObjects(objects...).
-		WithStatusSubresource(&kitchenv1alpha1.Build{}, &kitchenv1alpha1.Environment{}).
+		WithStatusSubresource(&kitchenv1alpha1.Build{}, &kitchenv1alpha1.Environment{}, &kitchenv1alpha1.Exception{}).
 		Build()
 
 	logs := &stubLogs{}

@@ -84,6 +84,14 @@ const (
 	// that the URI space has one owner.
 	PredicatePromotionDecision = "https://kitchen.bermos.dev/attestation/promotion-decision/v1"
 
+	// PredicateBreakGlass records that a break-glass exception was used to
+	// move this artifact: which exception, which rules it waived, who asked
+	// and who approved, and until when. The authoritative record is the
+	// Exception object bound to the (release, environment) pair — this
+	// travels with the artifact so the fact is visible wherever the image
+	// goes, cosign included.
+	PredicateBreakGlass = "https://kitchen.bermos.dev/attestation/break-glass/v1"
+
 	// PredicateDataClass records a provider's declaration of what a
 	// provisioned resource's data derives from — production, masked or
 	// synthetic — at the moment the claim (or one of its preview branches)

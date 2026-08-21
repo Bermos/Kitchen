@@ -317,6 +317,31 @@ type decision struct {
 	DecidedBy    string         `json:"decidedBy,omitempty"`
 }
 
+// exception is one break-glass grant as the register serves it: who asked,
+// who approved, what it waives, until when, and what became of it. Phase is
+// judged against the clock server-side, so Expired here means expired now.
+type exception struct {
+	Name        string   `json:"name"`
+	Project     string   `json:"project"`
+	Environment string   `json:"environment"`
+	Release     string   `json:"release,omitempty"`
+	RuleIDs     []string `json:"ruleIDs"`
+	Reason      string   `json:"reason"`
+	RequestedBy string   `json:"requestedBy"`
+	ApprovedBy  string   `json:"approvedBy"`
+	IncidentRef string   `json:"incidentRef,omitempty"`
+
+	ExpiresAt    time.Time `json:"expiresAt"`
+	AutoRollback bool      `json:"autoRollback"`
+
+	Phase      string     `json:"phase"`
+	UsedBy     []string   `json:"usedBy,omitempty"`
+	ResolvedBy string     `json:"resolvedBy,omitempty"`
+	ResolvedAt *time.Time `json:"resolvedAt,omitempty"`
+
+	CreatedAt time.Time `json:"createdAt"`
+}
+
 // replayVerdict is the original decision's half of a replay answer.
 type replayVerdict struct {
 	Verdict string `json:"verdict"`
@@ -616,6 +641,17 @@ func (c *client) replayDecision(ctx context.Context, id string) (*decisionReplay
 	answer := &decisionReplay{}
 	return answer, c.do(ctx, "replaying the decision "+id,
 		http.MethodPost, "/decisions/"+id+"/replay", nil, nil, answer)
+}
+
+func (c *client) exceptions(ctx context.Context, query url.Values) ([]exception, error) {
+	answer := &list[exception]{}
+	err := c.do(ctx, "listing exceptions", http.MethodGet, "/exceptions", query, nil, answer)
+	return answer.Items, err
+}
+
+func (c *client) exception(ctx context.Context, name string) (*exception, error) {
+	answer := &exception{}
+	return answer, c.do(ctx, "reading the exception "+name, http.MethodGet, "/exceptions/"+name, nil, nil, answer)
 }
 
 func (c *client) build(ctx context.Context, name string) (*build, error) {

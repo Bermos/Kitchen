@@ -248,6 +248,61 @@ func newPromotionView(promotion *kitchenv1alpha1.Promotion) promotionView {
 	return view
 }
 
+// exceptionView is one break-glass exception as the register serves it: the
+// grant whole — who asked, who approved, what it waives, until when — plus
+// what became of it. Phase is the effective phase, judged against the clock
+// rather than read off status, so a grant past its expiry never reads Active
+// however recently it was reconciled.
+type exceptionView struct {
+	Name        string   `json:"name"`
+	Project     string   `json:"project"`
+	Environment string   `json:"environment"`
+	Release     string   `json:"release,omitempty"`
+	RuleIDs     []string `json:"ruleIDs"`
+	Reason      string   `json:"reason"`
+	RequestedBy string   `json:"requestedBy"`
+	ApprovedBy  string   `json:"approvedBy"`
+	IncidentRef string   `json:"incidentRef,omitempty"`
+
+	ExpiresAt    time.Time `json:"expiresAt"`
+	AutoRollback bool      `json:"autoRollback"`
+
+	Phase      string     `json:"phase"`
+	UsedBy     []string   `json:"usedBy,omitempty"`
+	ResolvedBy string     `json:"resolvedBy,omitempty"`
+	ResolvedAt *time.Time `json:"resolvedAt,omitempty"`
+
+	CreatedAt  time.Time       `json:"createdAt"`
+	Conditions []conditionView `json:"conditions,omitempty"`
+}
+
+func newExceptionView(exception *kitchenv1alpha1.Exception) exceptionView {
+	view := exceptionView{
+		Name:         exception.Name,
+		Project:      exception.Spec.ProjectRef.Name,
+		Environment:  exception.Spec.EnvironmentRef.Name,
+		RuleIDs:      exception.Spec.RuleIDs,
+		Reason:       exception.Spec.Reason,
+		RequestedBy:  exception.Spec.RequestedBy,
+		ApprovedBy:   exception.Spec.ApprovedBy,
+		IncidentRef:  exception.Spec.IncidentRef,
+		ExpiresAt:    exception.Spec.ExpiresAt.Time,
+		AutoRollback: exception.Spec.AutoRollback,
+		Phase:        string(exception.EffectivePhase(time.Now())),
+		UsedBy:       exception.Status.UsedBy,
+		ResolvedBy:   exception.Status.ResolvedBy,
+		CreatedAt:    exception.CreationTimestamp.Time,
+		Conditions:   conditionViews(exception.Status.Conditions),
+	}
+	if exception.Spec.ReleaseRef != nil {
+		view.Release = exception.Spec.ReleaseRef.Name
+	}
+	if at := exception.Status.ResolvedAt; at != nil {
+		view.ResolvedAt = &at.Time
+	}
+	return view
+}
+
 type revisionView struct {
 	SHA         string `json:"sha"`
 	Branch      string `json:"branch"`
@@ -296,6 +351,7 @@ type sourceView struct {
 	SelfApproved    bool       `json:"selfApproved"`
 	Independent     bool       `json:"independent"`
 	MachineIdentity string     `json:"machineIdentity,omitempty"`
+	Exception       string     `json:"exception,omitempty"`
 	Required        bool       `json:"required"`
 	CheckedAt       *time.Time `json:"checkedAt,omitempty"`
 	Message         string     `json:"message,omitempty"`
@@ -315,6 +371,7 @@ func newSourceView(source *kitchenv1alpha1.SourceProvenanceStatus) *sourceView {
 		SelfApproved:    source.SelfApproved,
 		Independent:     source.Independent,
 		MachineIdentity: source.MachineIdentity,
+		Exception:       source.Exception,
 		Required:        source.Required,
 		Message:         source.Message,
 	}

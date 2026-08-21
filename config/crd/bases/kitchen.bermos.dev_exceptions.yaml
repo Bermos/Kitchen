@@ -1,0 +1,262 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.17.2
+  name: exceptions.kitchen.bermos.dev
+spec:
+  group: kitchen.bermos.dev
+  names:
+    kind: Exception
+    listKind: ExceptionList
+    plural: exceptions
+    singular: exception
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.projectRef.name
+      name: Project
+      type: string
+    - jsonPath: .spec.environmentRef.name
+      name: Environment
+      type: string
+    - jsonPath: .spec.ruleIDs
+      name: Rules
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .spec.expiresAt
+      name: Expires
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          Exception is the Schema for the exceptions API: one bounded, two-person,
+          per-rule break-glass grant, retained after it ends so the register stays
+          queryable historically.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              ExceptionSpec is the grant itself. It is immutable, like a Promotion's
+              spec and for the same reason: an exception is a record of what two people
+              agreed to, and a record that can be edited afterwards is not a record.
+              Extending or narrowing a grant is a new Exception; ending one early is a
+              resolution, which lives on status because it is an act, not an edit.
+            properties:
+              approvedBy:
+                description: |-
+                  ApprovedBy names the second human — always a second: the CEL rule on
+                  this spec refuses an approver who is the requester. The API verifies
+                  the approver holds the role the escalation ladder demands for the
+                  requested duration; the assertion that they agreed is the requester's,
+                  on the record.
+                minLength: 1
+                type: string
+              autoRollback:
+                default: false
+                description: |-
+                  AutoRollback asks the platform to roll the environment back when the
+                  exception expires unresolved. Off by default: the default consequence
+                  of expiry is that further promotions block, not that a running
+                  workload is yanked.
+                type: boolean
+              environmentRef:
+                description: |-
+                  EnvironmentRef names the environment the waiver applies to. An
+                  exception is scoped to the Promotion pair — a rule waived for staging
+                  says nothing about production.
+                properties:
+                  name:
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+              expiresAt:
+                description: |-
+                  ExpiresAt bounds the grant. There is no unbounded exception: past this
+                  moment the named rules block again, and the deployed release goes
+                  non-compliant on the next evaluation pass.
+                format: date-time
+                type: string
+              incidentRef:
+                description: |-
+                  IncidentRef links the incident this exception was granted for — a
+                  ticket id, a postmortem URL. Optional but expected for an emergency.
+                type: string
+              projectRef:
+                description: |-
+                  LocalObjectReference references another Kitchen object by name within the
+                  platform namespace. Cross-namespace references are not supported in v1alpha1.
+                properties:
+                  name:
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+              reason:
+                description: |-
+                  Reason is why, in the requester's own words. Required: an exception
+                  without a reason is a bypass, and a bypass is what this object exists
+                  to replace.
+                minLength: 1
+                type: string
+              releaseRef:
+                description: |-
+                  ReleaseRef optionally narrows the grant to one release. Empty covers
+                  the whole environment: any release promoted there while the exception
+                  is active has the named rules waived.
+                properties:
+                  name:
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+              requestedBy:
+                description: RequestedBy names who asked for the exception.
+                minLength: 1
+                type: string
+              ruleIDs:
+                description: |-
+                  RuleIDs names the rules this exception waives, by the stable ids the
+                  bundle publishes. It is a list of specific rules and never a blanket
+                  bypass: a rule not named here still blocks, however urgent the hour.
+                items:
+                  minLength: 1
+                  type: string
+                minItems: 1
+                type: array
+                x-kubernetes-list-type: atomic
+            required:
+            - approvedBy
+            - environmentRef
+            - expiresAt
+            - projectRef
+            - reason
+            - requestedBy
+            - ruleIDs
+            type: object
+            x-kubernetes-validations:
+            - message: 'Exception spec is immutable: a break-glass grant is a record
+                of what was agreed; grant a new one instead of editing this'
+              rule: self == oldSelf
+            - message: 'an exception takes two people: the approver must be somebody
+                other than the requester'
+              rule: self.approvedBy != self.requestedBy
+          status:
+            description: |-
+              ExceptionStatus is what became of the grant: its phase, who relied on it,
+              and — when resolved — who ended it.
+            properties:
+              conditions:
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              phase:
+                description: ExceptionPhase is where an exception is in its life.
+                enum:
+                - Active
+                - Expired
+                - Resolved
+                type: string
+              resolvedAt:
+                description: ResolvedAt is when.
+                format: date-time
+                type: string
+              resolvedBy:
+                description: |-
+                  ResolvedBy names who resolved it, when somebody did. The resolution's
+                  reason is in the audit log, where an auditable act belongs.
+                type: string
+              usedBy:
+                description: |-
+                  UsedBy names every Promotion that relied on this exception — was
+                  allowed-with-exception because it waived a fired rule. The register's
+                  answer to "what actually went out under this grant".
+                items:
+                  type: string
+                type: array
+                x-kubernetes-list-type: atomic
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

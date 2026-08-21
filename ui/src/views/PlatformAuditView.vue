@@ -2,6 +2,7 @@
 import { computed, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import DecisionsPanel from "../components/DecisionsPanel.vue";
+import ExceptionsPanel from "../components/ExceptionsPanel.vue";
 import { api, type AuditRecord } from "../lib/api";
 import { timeAgo } from "../lib/format";
 import { useAsync } from "../lib/useAsync";
@@ -363,6 +364,12 @@ const truncated = computed(() => {
       edited afterwards no longer hashes to the hash stored beside it. What this cannot catch on its own is a tail
       rewritten whole — the anchor above is what bounds that.
     </p>
+
+    <!-- The exception register sits right above the decisions it changes:
+         every standing waiver, prominent and permanent, because the loudness
+         is the design — an emergency deployment is allowed and seen, never
+         blocked and worked around. -->
+    <ExceptionsPanel />
 
     <!-- The decision register lives on the audit screen because it answers to
          the same standard: every verdict is a stored record, and a stored

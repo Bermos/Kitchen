@@ -16,6 +16,12 @@ limitations under the License.
 
 package v1alpha1
 
+import (
+	"time"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
+
 // The compliance surface: the two things the platform produces so that what it
 // did can be substantiated later. See docs/COMPLIANCE.md for the model they
 // belong to.
@@ -198,6 +204,85 @@ type QualityGateSpec struct {
 	TimeoutSeconds int32 `json:"timeoutSeconds,omitempty"`
 }
 
+// ExceptionApproverRole is who may approve an exception of a given duration:
+// a project role, or the platform's operators for the longest grants.
+// +kubebuilder:validation:Enum=developer;admin;operator
+type ExceptionApproverRole string
+
+const (
+	// ExceptionApproverDeveloper: anyone holding developer on the project —
+	// in practice, whoever is on call for it.
+	ExceptionApproverDeveloper ExceptionApproverRole = "developer"
+	// ExceptionApproverAdmin: the project's admins — the environment's
+	// owning team.
+	ExceptionApproverAdmin ExceptionApproverRole = "admin"
+	// ExceptionApproverOperator: the platform's operators — above the team.
+	ExceptionApproverOperator ExceptionApproverRole = "operator"
+)
+
+// ExceptionTier is one rung of the escalation ladder: grants up to
+// MaxDuration need an approver holding at least Role.
+type ExceptionTier struct {
+	// MaxDuration is the longest grant this rung covers, e.g. "24h".
+	MaxDuration metav1.Duration `json:"maxDuration"`
+
+	// Role is the least role the approver must hold: developer or admin on
+	// the project, or operator on the platform.
+	Role ExceptionApproverRole `json:"role"`
+}
+
+// ExceptionPolicySpec configures break-glass exceptions — today, the
+// escalation ladder: who may approve a waiver, escalating with how long it
+// is asked for. A short grant is an on-call decision; a long one is a
+// standing risk somebody senior has to own.
+type ExceptionPolicySpec struct {
+	// Ladder maps requested duration to the approver role it takes,
+	// evaluated shortest rung first. A duration beyond every rung always
+	// needs a platform operator. Empty uses the compiled-in default:
+	// up to 24h needs developer, up to 720h (30 days) needs admin, and
+	// anything longer needs an operator.
+	// +optional
+	// +listType=atomic
+	Ladder []ExceptionTier `json:"ladder,omitempty"`
+}
+
+// defaultExceptionLadder is the compiled-in ladder an empty spec means. It
+// mirrors the documented default rather than being a CRD default, so an
+// upgraded singleton and a fresh one read the same.
+var defaultExceptionLadder = []ExceptionTier{
+	{MaxDuration: metav1.Duration{Duration: 24 * time.Hour}, Role: ExceptionApproverDeveloper},
+	{MaxDuration: metav1.Duration{Duration: 720 * time.Hour}, Role: ExceptionApproverAdmin},
+}
+
+// EffectiveLadder is the ladder in force: the configured one, or the
+// compiled-in default when none is. Nil-safe, like every accessor on an
+// optional spec block.
+func (s *ExceptionPolicySpec) EffectiveLadder() []ExceptionTier {
+	if s == nil || len(s.Ladder) == 0 {
+		return defaultExceptionLadder
+	}
+	return s.Ladder
+}
+
+// RequiredApproverRole answers who may approve a grant of this duration: the
+// lowest rung whose MaxDuration covers it, and the platform's operators for
+// anything beyond every rung — a duration the ladder never thought of is the
+// biggest ask, not the smallest.
+func (s *ExceptionPolicySpec) RequiredApproverRole(duration time.Duration) ExceptionApproverRole {
+	required := ExceptionApproverOperator
+	best := time.Duration(-1)
+	for _, tier := range s.EffectiveLadder() {
+		if duration > tier.MaxDuration.Duration {
+			continue
+		}
+		if best < 0 || tier.MaxDuration.Duration < best {
+			best = tier.MaxDuration.Duration
+			required = tier.Role
+		}
+	}
+	return required
+}
+
 // ComplianceSpec configures what evidence the platform produces about its own
 // operation.
 type ComplianceSpec struct {
@@ -243,6 +328,14 @@ type ComplianceSpec struct {
 	// kind this must not have.
 	// +optional
 	MachineIdentities []string `json:"machineIdentities,omitempty"`
+
+	// Exceptions configures break-glass exceptions: the escalation ladder
+	// deciding who may approve a waiver of a given duration. The default
+	// `{}` keeps an upgraded singleton reading the same as a fresh one; the
+	// compiled-in ladder applies while nothing is configured.
+	// +kubebuilder:default={}
+	// +optional
+	Exceptions *ExceptionPolicySpec `json:"exceptions,omitempty"`
 }
 
 // AuditStatus reports whether the audit log is actually recording, which is

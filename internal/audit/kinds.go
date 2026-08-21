@@ -32,6 +32,7 @@ const (
 	KindConnection     = "Connection"
 	KindDomain         = "Domain"
 	KindEnvironment    = "Environment"
+	KindException      = "Exception"
 	KindKitchen        = "Kitchen"
 	KindPlatformUpdate = "PlatformUpdate"
 	KindProject        = "Project"

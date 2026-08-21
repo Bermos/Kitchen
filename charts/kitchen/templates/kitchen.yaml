@@ -168,6 +168,13 @@ spec:
     machineIdentities:
       {{- toYaml . | nindent 6 }}
     {{- end }}
+    {{- with .Values.kitchen.compliance.exceptions.ladder }}
+    # The break-glass escalation ladder: the longer a waiver is asked for, the
+    # more senior the approver it takes. Beyond every rung: an operator.
+    exceptions:
+      ladder:
+        {{- toYaml . | nindent 8 }}
+    {{- end }}
     {{- with .Values.kitchen.compliance.gates }}
     # The quality gates run over every artifact. Each records what it found and
     # never whether that was acceptable: the verdict belongs to the environment

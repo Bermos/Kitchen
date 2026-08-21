@@ -39,13 +39,14 @@ const { data, error, loading, refresh } = useAsync(async () => {
   // role of its own — the API resolves which project a request is about from
   // the object it names — so the one place the caller's role is written down
   // is the project's own payload, and this screen's controls are keyed to it.
-  const [releases, project, promotions, claims] = await Promise.all([
+  const [releases, project, promotions, claims, exceptions] = await Promise.all([
     api.projectReleases(environment.project),
     api.project(environment.project),
     api.projectPromotions(environment.project, { environment: environment.name }),
     api.claims({ project: environment.project }),
+    api.exceptions({ project: environment.project, environment: environment.name }),
   ]);
-  return { environment, releases, project, promotions, claims };
+  return { environment, releases, project, promotions, claims, exceptions };
 });
 watch(name, () => void refresh());
 
@@ -57,6 +58,11 @@ const environment = computed(() => data.value?.environment);
 const blockedPromotion = computed(() =>
   blockedPromotionFor(data.value?.promotions ?? [], data.value?.environment.name ?? ""),
 );
+
+// The active break-glass exceptions scoped to this environment. Loud on
+// purpose and for as long as they stand: an environment running under a
+// waiver must say so on its own screen, not only in the operator's register.
+const activeExceptions = computed(() => data.value?.exceptions ?? []);
 
 // The claims whose data derives from production — on a preview, the finding
 // worth an alert rather than a table cell. The provenance shown is the
@@ -231,6 +237,23 @@ function historyBy(entry: { reason: string; by?: string }): string {
         :description="
           (blockedPromotion.unmetRules?.length ? `Unmet rules: ${blockedPromotion.unmetRules.join(', ')}. ` : '') +
           (blockedPromotion.message ?? '')
+        "
+      />
+      <!-- A standing break-glass exception is shown as loudly as a blocked
+           promotion, and for as long as it stands: this environment's bar is
+           waived, on two people's word, until the stated moment. -->
+      <UAlert
+        v-for="exception in activeExceptions"
+        :key="exception.name"
+        color="warning"
+        variant="soft"
+        icon="i-lucide-alert-triangle"
+        :title="`Break-glass exception ${exception.name} waives ${exception.ruleIDs.join(', ')} until ${new Date(exception.expiresAt).toLocaleString('en-GB')}`"
+        :description="
+          `${exception.reason} — requested by ${exception.requestedBy}, approved by ${exception.approvedBy}` +
+          (exception.release ? `, scoped to ${exception.release}` : '') +
+          (exception.incidentRef ? ` (${exception.incidentRef})` : '') +
+          (exception.usedBy?.length ? `. Relied on by: ${exception.usedBy.join(', ')}` : '')
         "
       />
       <div class="flex items-start justify-between gap-4 flex-wrap">

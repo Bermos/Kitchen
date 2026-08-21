@@ -429,6 +429,29 @@ export interface DecisionReplay {
   decision: string;
 }
 
+/** One break-glass exception: a bounded, two-person, per-rule waiver. Phase
+ *  is the effective phase — the server judges it against the clock, so a
+ *  grant past its expiry never reads Active. */
+export interface Exception {
+  name: string;
+  project: string;
+  environment: string;
+  release?: string;
+  ruleIDs: string[];
+  reason: string;
+  requestedBy: string;
+  approvedBy: string;
+  incidentRef?: string;
+  expiresAt: string;
+  autoRollback: boolean;
+  phase: "Active" | "Expired" | "Resolved";
+  usedBy?: string[];
+  resolvedBy?: string;
+  resolvedAt?: string;
+  createdAt: string;
+  conditions?: Condition[];
+}
+
 /** One policy bundle available to require: what an environment owner pins. */
 export interface PolicyBundle {
   digest: string;
@@ -2525,6 +2548,17 @@ export const api = {
   decision: (id: string) => request<Decision>("GET", `/decisions/${encodeURIComponent(id)}`),
   replayDecision: (id: string) => request<DecisionReplay>("POST", `/decisions/${encodeURIComponent(id)}/replay`),
   policyBundles: () => list<PolicyBundle>("/policy/bundles")(),
+  // The exception register: active grants by default, the whole history with
+  // historical. Resolving is the one write — an auditable act with a reason.
+  exceptions: (query: { project?: string; environment?: string; historical?: boolean } = {}) => {
+    const params: Record<string, string> = {};
+    if (query.project) params.project = query.project;
+    if (query.environment) params.environment = query.environment;
+    if (query.historical) params.historical = "true";
+    return list<Exception>("/exceptions")(params);
+  },
+  resolveException: (name: string, reason: string) =>
+    request<Exception>("PATCH", `/exceptions/${encodeURIComponent(name)}`, { resolved: true, reason }),
   attestations: (build: string) => request<EvidenceSet>("GET", `/builds/${encodeURIComponent(build)}/attestations`),
 
   settings: () => request<Settings>("GET", "/settings"),

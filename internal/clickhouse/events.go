@@ -45,6 +45,11 @@ const (
 	EventDomainAttached    = "domain.attached"
 	EventDomainRemoved     = "domain.removed"
 
+	// Break-glass exceptions. Granting one is exactly the kind of thing a
+	// person scanning "what happened recently" should trip over.
+	EventExceptionGranted  = "exception.granted"
+	EventExceptionResolved = "exception.resolved"
+
 	// The platform's own upgrades. They name no project, environment or
 	// release because they are about the installation itself — which is
 	// precisely why they are worth reading in the same feed: an app that

@@ -138,6 +138,7 @@ rules:
   - connections
   - domains
   - environments
+  - exceptions
   - kitchens
   - platformupdates
   - projects
@@ -175,6 +176,7 @@ rules:
   - connections/status
   - domains/status
   - environments/status
+  - exceptions/status
   - kitchens/status
   - platformupdates/status
   - projects/status
