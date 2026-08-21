@@ -6,6 +6,7 @@ import { duration, shortImage, shortSHA, timeAgo } from "../lib/format";
 import { callerFor } from "../lib/me";
 import { operatorMode } from "../lib/mode";
 import { may } from "../lib/policy";
+import { pipelineShown } from "../lib/promotions";
 import { releaseHistoryEntry, releaseHistoryLabel } from "../lib/status";
 import { useAsync, usePoll } from "../lib/useAsync";
 import ClaimModal from "../components/ClaimModal.vue";
@@ -15,6 +16,7 @@ import EnvVarsPanel from "../components/EnvVarsPanel.vue";
 import KeysPanel from "../components/KeysPanel.vue";
 import MembersPanel from "../components/MembersPanel.vue";
 import PhaseBadge from "../components/PhaseBadge.vue";
+import PipelinePanel from "../components/PipelinePanel.vue";
 import StatusDot from "../components/StatusDot.vue";
 
 const route = useRoute();
@@ -23,19 +25,20 @@ const toast = useToast();
 const name = computed(() => route.params.name as string);
 
 const { data, error, loading, refresh } = useAsync(async () => {
-  const [project, environments, releases, builds, claims, allDomains] = await Promise.all([
+  const [project, environments, releases, builds, claims, allDomains, promotions] = await Promise.all([
     api.project(name.value),
     api.projectEnvironments(name.value),
     api.projectReleases(name.value),
     api.projectBuilds(name.value),
     api.claims({ project: name.value }),
     api.domains(),
+    api.projectPromotions(name.value),
   ]);
   // Domains attach to environments; the project's are the ones pointing at
   // one of its environments.
   const environmentNames = new Set(environments.map((e) => e.name));
   const domains = allDomains.filter((d) => environmentNames.has(d.environment));
-  return { project, environments, releases, builds, claims, domains };
+  return { project, environments, releases, builds, claims, domains, promotions };
 });
 watch(name, () => void refresh());
 usePoll(() => void refresh(), 10000, () => true);
@@ -92,6 +95,10 @@ const environmentCards = computed(() => {
   return first ? [first, ...environments.filter((e) => e.name !== first.name)] : environments;
 });
 const latestBuild = computed(() => data.value?.builds[0]);
+// The pipeline section earns its place when stages are configured or
+// promotions exist to explain; every other project keeps today's screen.
+const promotions = computed(() => data.value?.promotions ?? []);
+const showPipeline = computed(() => pipelineShown(project.value?.promotionStages, promotions.value));
 const framework = computed(() => data.value?.builds.find((b) => b.detectedFramework)?.detectedFramework);
 
 const currentRelease = computed(() => production.value?.release);
@@ -145,8 +152,20 @@ async function rollBack() {
   if (!target || !environment) return;
   rollingBack.value = true;
   try {
-    await api.moveEnvironment(environment.name, target.name);
-    toast.add({ title: `${environment.name} moved to ${target.name}`, color: "success", icon: "i-lucide-undo-2" });
+    const outcome = await api.moveEnvironment(environment.name, target.name);
+    // An environment with requirements answers with the promotion the move
+    // became: nothing has moved yet, and saying "moved" would be a lie the
+    // pipeline section immediately contradicts.
+    if ("trigger" in outcome) {
+      toast.add({
+        title: `Promotion ${outcome.name} requested`,
+        description: `${environment.name} declares requirements; the policy decides whether ${target.name} lands.`,
+        color: "info",
+        icon: "i-lucide-scale",
+      });
+    } else {
+      toast.add({ title: `${environment.name} moved to ${target.name}`, color: "success", icon: "i-lucide-undo-2" });
+    }
     rollbackTarget.value = null;
     await refresh();
   } catch (err) {
@@ -453,6 +472,13 @@ function host(url?: string): string {
       <div v-if="environmentCards.length" class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
         <EnvironmentCard v-for="environment in environmentCards" :key="environment.name" :environment="environment" />
       </div>
+
+      <PipelinePanel
+        v-if="showPipeline"
+        :stages="project.promotionStages ?? []"
+        :environments="data?.environments ?? []"
+        :promotions="promotions"
+      />
 
       <ConditionsTable v-if="operatorMode" :conditions="project.conditions" />
 

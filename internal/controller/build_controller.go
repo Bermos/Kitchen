@@ -200,6 +200,7 @@ func (r *BuildReconciler) git() gitReporting {
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=builds/finalizers,verbs=update
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=projects;connections;kitchens,verbs=get;list;watch
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=releases;environments,verbs=get;list;watch;create;update;patch
+// +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=promotions,verbs=get;list;watch;create
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch
@@ -762,6 +763,10 @@ func (r *BuildReconciler) succeed(
 
 	switch {
 	case build.Spec.Git.PullRequest != nil:
+		// Previews are never routed through a Promotion: the preview *is* the
+		// review vehicle — it exists so the change can be looked at before
+		// anything judges it — and gating its deployment on evidence would
+		// gate producing the evidence.
 		if previewsEnabled(project) {
 			preview := &kitchenv1alpha1.PreviewInfo{
 				PullRequest: *build.Spec.Git.PullRequest,
@@ -774,9 +779,15 @@ func (r *BuildReconciler) succeed(
 			}
 		}
 	case build.Spec.Git.Branch == project.Spec.Source.ProductionBranch:
+		// The build's target is stage one of the project's pipeline when it
+		// has one, and the production environment when it does not — and the
+		// release reaches it directly or through a Promotion, depending on
+		// whether the target sets a bar.
 		envName := project.Name + "-production"
-		if err := r.ensureEnvironment(ctx, build.Namespace, project, envName,
-			kitchenv1alpha1.EnvironmentProduction, nil, release.Name, build); err != nil {
+		if stages := project.Spec.Promotion; stages != nil && len(stages.Stages) > 0 {
+			envName = stages.Stages[0].Environment
+		}
+		if err := r.promoteOrFlip(ctx, build.Namespace, project, envName, release.Name, build); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
@@ -821,6 +832,50 @@ func runtimeFor(project *kitchenv1alpha1.Project, build *kitchenv1alpha1.Build) 
 		runtimeSpec.Port = detected.Port
 	}
 	return runtimeSpec
+}
+
+// promoteOrFlip routes a production-branch build's release to its target
+// environment through the right door.
+//
+// An environment that declares no requirements takes the release exactly the
+// way it always has: ensureEnvironment flips spec.releaseRef directly — zero
+// behaviour change for every installation that never set a bar. An
+// environment that *does* declare requirements is never written to from here:
+// a Promotion is created instead, and the promotion reconciler applies it if
+// and only if the policy allows. A target that does not exist yet is created
+// by ensureEnvironment — an environment must exist to be promoted into, and a
+// fresh one declares no requirements, so the fast path is also the right one.
+func (r *BuildReconciler) promoteOrFlip(
+	ctx context.Context,
+	namespace string,
+	project *kitchenv1alpha1.Project,
+	envName, releaseName string,
+	build *kitchenv1alpha1.Build,
+) error {
+	env := &kitchenv1alpha1.Environment{}
+	err := r.Get(ctx, types.NamespacedName{Namespace: namespace, Name: envName}, env)
+	if apierrors.IsNotFound(err) {
+		return r.ensureEnvironment(ctx, namespace, project, envName,
+			kitchenv1alpha1.EnvironmentProduction, nil, releaseName, build)
+	}
+	if err != nil {
+		return err
+	}
+	// A stage naming another project's environment is a misconfiguration the
+	// admission layer cannot catch (cross-object CEL does not exist); refuse
+	// it here rather than deploying into a stranger's environment.
+	if env.Spec.ProjectRef.Name != project.Name {
+		return fmt.Errorf("environment %s belongs to project %s, not %s: fix spec.promotion.stages",
+			envName, env.Spec.ProjectRef.Name, project.Name)
+	}
+	if env.Spec.Requirements == nil {
+		return r.ensureEnvironment(ctx, namespace, project, envName,
+			kitchenv1alpha1.EnvironmentProduction, nil, releaseName, build)
+	}
+	return createAutomaticPromotion(ctx, r.Client, r.Audit, actorBuildController,
+		correlationFor(build), namespace, project, envName, releaseName,
+		audit.ControllerActor(actorBuildController),
+		fmt.Sprintf("build %s succeeded", build.Name))
 }
 
 // ensureEnvironment points the named Environment at the Release, creating it

@@ -205,6 +205,67 @@ func (p ScaleToZeroPolicy) MaxReplicasOrDefault() int32 {
 	return DefaultMaxReplicas
 }
 
+// PromotionStage is one rung of a project's promotion ladder: a name for the
+// rung, the Environment that is the rung, and whether an artifact climbs onto
+// the next one by itself.
+type PromotionStage struct {
+	// Name of the stage — "staging", "production" — a DNS label so it can
+	// appear in generated names.
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	// +kubebuilder:validation:MaxLength=63
+	Name string `json:"name"`
+
+	// Environment names the Environment this stage deploys into. It must
+	// belong to this project — validated where the stages are written and
+	// where they are acted on, since a cross-object rule cannot live in CEL.
+	// The first build for a stage creates the Environment if it is missing.
+	// +kubebuilder:validation:MinLength=1
+	Environment string `json:"environment"`
+
+	// AutoPromote creates the next Promotion into this stage automatically
+	// when the stage before it applies successfully. Whether that promotion
+	// then goes through is this stage's environment's own requirements —
+	// evidence-gating an automatic promotion is a rule on the environment
+	// (a required gate, a severity ceiling), not a second mechanism here.
+	// +optional
+	AutoPromote bool `json:"autoPromote,omitempty"`
+}
+
+// PromotionPolicySpec is a project's ordered stages. One artifact — the same
+// image digest, never rebuilt — moves through them in order, judged at each
+// boundary by that environment's requirements. The last stage is the
+// production environment. No stages means today's behaviour: a
+// production-branch build targets `<project>-production` directly.
+type PromotionPolicySpec struct {
+	// Stages, in promotion order. The order is the pipeline, so this is a
+	// plain ordered list rather than a merge-by-name map.
+	// +kubebuilder:validation:MinItems=1
+	Stages []PromotionStage `json:"stages"`
+}
+
+// StageIndex answers which stage deploys into the named environment, or -1.
+func (p *PromotionPolicySpec) StageIndex(environment string) int {
+	if p == nil {
+		return -1
+	}
+	for i := range p.Stages {
+		if p.Stages[i].Environment == environment {
+			return i
+		}
+	}
+	return -1
+}
+
+// NextStage is the stage after the one deploying into the named environment,
+// or nil when that stage is the last — or not a stage at all.
+func (p *PromotionPolicySpec) NextStage(environment string) *PromotionStage {
+	index := p.StageIndex(environment)
+	if index < 0 || index+1 >= len(p.Stages) {
+		return nil
+	}
+	return &p.Stages[index+1]
+}
+
 // ProjectSpec defines the desired state of a Project: a repository that
 // becomes a running application.
 type ProjectSpec struct {
@@ -217,6 +278,15 @@ type ProjectSpec struct {
 
 	// +optional
 	Previews PreviewsSpec `json:"previews,omitempty"`
+
+	// Promotion is the project's staged pipeline, absent for the default
+	// build-straight-to-production flow. The stages are topology — which
+	// environments, in which order — and deliberately not policy: what each
+	// environment demands lives on the Environment (spec.requirements), owned
+	// by its owners, so the team that arranges the pipeline cannot lower any
+	// stage's bar by rearranging it.
+	// +optional
+	Promotion *PromotionPolicySpec `json:"promotion,omitempty"`
 
 	// Which of this Project's environments may idle down to no pods at all,
 	// cold-starting on the next request. It does nothing unless the platform

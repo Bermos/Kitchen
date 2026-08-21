@@ -1,0 +1,239 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.17.2
+  name: promotions.kitchen.bermos.dev
+spec:
+  group: kitchen.bermos.dev
+  names:
+    kind: Promotion
+    listKind: PromotionList
+    plural: promotions
+    singular: promotion
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.projectRef.name
+      name: Project
+      type: string
+    - jsonPath: .spec.environmentRef.name
+      name: Environment
+      type: string
+    - jsonPath: .spec.releaseRef.name
+      name: Release
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          Promotion is the Schema for the promotions API: one immutable request to
+          move one Release into one Environment, with the evaluated decision on its
+          status. It is how an artifact moves through a project's stages — the same
+          digest at every stage, judged against each environment's own bar.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              PromotionSpec is one request to move one Release into one Environment. It
+              is immutable, like a Release's spec and for the same reason: a promotion is
+              a record of what was asked, and a record that can be edited afterwards is
+              not a record. Retrying a blocked promotion is a new Promotion, never an
+              edit of the old one.
+            properties:
+              environmentRef:
+                description: |-
+                  EnvironmentRef names where the release should land. The environment
+                  must belong to the project — the reconciler fails a promotion whose
+                  references disagree, since a cross-object rule cannot live in CEL.
+                properties:
+                  name:
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+              projectRef:
+                description: |-
+                  LocalObjectReference references another Kitchen object by name within the
+                  platform namespace. Cross-namespace references are not supported in v1alpha1.
+                properties:
+                  name:
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+              reason:
+                description: |-
+                  Reason is the requester's own words for why, carried into the audit
+                  record. Optional for routine moves; an emergency promotion under an
+                  exception is expected to have one.
+                type: string
+              releaseRef:
+                description: |-
+                  ReleaseRef names what should land there: an immutable snapshot, so the
+                  digest that was built is the digest that is deployed — a promotion never
+                  rebuilds anything, which is also what makes a rollback a promotion of an
+                  older release.
+                properties:
+                  name:
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+              requestedBy:
+                description: |-
+                  RequestedBy names who asked: an account for a manual promotion, a
+                  controller identity (`system:controller/...`) for an automatic one.
+                minLength: 1
+                type: string
+              trigger:
+                description: Trigger says whether a person or the pipeline asked.
+                enum:
+                - manual
+                - automatic
+                type: string
+            required:
+            - environmentRef
+            - projectRef
+            - releaseRef
+            - requestedBy
+            - trigger
+            type: object
+            x-kubernetes-validations:
+            - message: Promotion spec is immutable
+              rule: self == oldSelf
+          status:
+            description: |-
+              PromotionStatus is what became of the request: the phase, the decision that
+              judged it, and — when blocked — the rules that stood in the way, by id.
+            properties:
+              appliedAt:
+                description: AppliedAt is when the environment was actually moved.
+                format: date-time
+                type: string
+              conditions:
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              decisionID:
+                description: |-
+                  DecisionID is the stored decision this promotion acted on — the way to
+                  its fired rules, its input and the bundle it can be replayed from.
+                type: string
+              evaluatedAt:
+                description: EvaluatedAt is when the policy was evaluated.
+                format: date-time
+                type: string
+              message:
+                description: |-
+                  Message is the phase in a sentence: why it failed, what blocked it, or
+                  what was applied.
+                type: string
+              phase:
+                description: PromotionPhase is where a promotion is in its short life.
+                enum:
+                - Pending
+                - Evaluating
+                - Allowed
+                - AllowedWithException
+                - Blocked
+                - Applied
+                - Failed
+                type: string
+              unmetRules:
+                description: |-
+                  UnmetRules names the rules that fired unwaived, as the stable ids the
+                  bundle publishes — a blocked promotion says exactly what is missing,
+                  never a generic refusal.
+                items:
+                  type: string
+                type: array
+              verdict:
+                description: |-
+                  Verdict is the policy engine's word: allowed, allowed-with-exception or
+                  blocked. Exactly three; there is no fourth state.
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

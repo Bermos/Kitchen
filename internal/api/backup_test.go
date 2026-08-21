@@ -292,9 +292,15 @@ func TestEveryCustomResourceKindIsInTheArchive(t *testing.T) {
 	for _, kind := range backup.Kinds {
 		carried[kind.Kind] = true
 	}
-	// PlatformUpdate is the deliberate omission: it is the upgrade history of
-	// a cluster that will not exist by the time anybody restores.
+	// PlatformUpdate is a deliberate omission: it is the upgrade history of
+	// a cluster that will not exist by the time anybody restores. Promotion
+	// is the other: a restored request would arrive statusless and re-apply
+	// itself, racing every other restored request to move environments the
+	// restore already placed — `Environment.spec.releaseRef` carries the
+	// outcome, the decision store carries the history (internal/backup says
+	// so at the Kinds list).
 	carried["PlatformUpdate"] = true
+	carried["Promotion"] = true
 
 	for gvk, goType := range scheme.AllKnownTypes() {
 		if gvk.Group != kitchenv1alpha1.GroupVersion.Group || strings.HasSuffix(gvk.Kind, "List") {

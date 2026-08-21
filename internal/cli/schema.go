@@ -381,8 +381,12 @@ var publishedShapes = map[string]struct {
 	"decisionList": {"A list of stored decisions, newest first", list[decision]{}},
 	"decisionReplay": {"A stored decision re-evaluated from its stored inputs: both verdicts, " +
 		"and whether they match", decisionReplay{}},
-	"release":         {"An immutable snapshot of an image and its configuration", release{}},
-	"releaseList":     {"A list of releases, newest first", list[release]{}},
+	"release":     {"An immutable snapshot of an image and its configuration", release{}},
+	"releaseList": {"A list of releases, newest first", list[release]{}},
+	"promotion": {"One request to move a release into an environment, with what the policy " +
+		"decided about it. Phase is Pending, Evaluating, Allowed, AllowedWithException, " +
+		"Blocked, Applied or Failed; a Blocked one names the unmet rules by id", promotion{}},
+	"promotionList":   {"A list of promotions, newest first", list[promotion]{}},
 	"environment":     {"One environment. Phase is Pending, Deploying, Live, Degraded or Terminating", environment{}},
 	"environmentList": {"A list of environments", list[environment]{}},
 	"envVarList":      {"A project's environment variables. Values are never answered", list[envVar]{}},

@@ -396,6 +396,15 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "Environment")
 		os.Exit(1)
 	}
+	if err = (&controller.PromotionReconciler{
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Activity: recorder,
+		Audit:    auditor,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "Promotion")
+		os.Exit(1)
+	}
 	if err = (&controller.DomainReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),

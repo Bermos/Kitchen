@@ -81,7 +81,7 @@ type ProjectReconciler struct {
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=projects/finalizers,verbs=update
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=connections;kitchens,verbs=get;list;watch
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=builds,verbs=get;list;watch;create;delete
-// +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=releases;environments;domains;resourceclaims,verbs=get;list;watch;delete
+// +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=releases;environments;domains;resourceclaims;promotions,verbs=get;list;watch;delete
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;create;delete
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch
 
@@ -223,13 +223,12 @@ func (r *ProjectReconciler) finalize(ctx context.Context, project *kitchenv1alph
 }
 
 // deleteDependents removes everything in the platform namespace that
-// references the project — builds, releases, environments, and the domains and
-// resource claims hanging off them. They reference the project by name rather
-// than by owner, so nothing garbage-collects them when the project goes. It
-// returns how many are still around, which is nonzero while environment
-// finalizers run.
+// references the project — builds, releases, environments, promotions, and
+// the domains and resource claims hanging off them. They reference the
+// project by name rather than by owner, so nothing garbage-collects them when
+// the project goes. It returns how many are still around, which is nonzero
+// while environment finalizers run.
 func (r *ProjectReconciler) deleteDependents(ctx context.Context, project *kitchenv1alpha1.Project) (int, error) {
-	remaining := 0
 	inNamespace := client.InNamespace(project.Namespace)
 
 	environments := &kitchenv1alpha1.EnvironmentList{}
@@ -243,6 +242,8 @@ func (r *ProjectReconciler) deleteDependents(ctx context.Context, project *kitch
 		}
 	}
 
+	doomed := []client.Object{}
+
 	// Domains go first, while the environments they point at still exist to
 	// say which project they belonged to.
 	domains := &kitchenv1alpha1.DomainList{}
@@ -250,22 +251,13 @@ func (r *ProjectReconciler) deleteDependents(ctx context.Context, project *kitch
 		return 0, err
 	}
 	for i := range domains.Items {
-		if !environmentNames[domains.Items[i].Spec.EnvironmentRef.Name] {
-			continue
-		}
-		remaining++
-		if err := r.Delete(ctx, &domains.Items[i]); err != nil && !apierrors.IsNotFound(err) {
-			return 0, err
+		if environmentNames[domains.Items[i].Spec.EnvironmentRef.Name] {
+			doomed = append(doomed, &domains.Items[i])
 		}
 	}
-
 	for i := range environments.Items {
-		if !environmentNames[environments.Items[i].Name] {
-			continue
-		}
-		remaining++
-		if err := r.Delete(ctx, &environments.Items[i]); err != nil && !apierrors.IsNotFound(err) {
-			return 0, err
+		if environmentNames[environments.Items[i].Name] {
+			doomed = append(doomed, &environments.Items[i])
 		}
 	}
 
@@ -274,12 +266,8 @@ func (r *ProjectReconciler) deleteDependents(ctx context.Context, project *kitch
 		return 0, err
 	}
 	for i := range builds.Items {
-		if builds.Items[i].Spec.ProjectRef.Name != project.Name {
-			continue
-		}
-		remaining++
-		if err := r.Delete(ctx, &builds.Items[i]); err != nil && !apierrors.IsNotFound(err) {
-			return 0, err
+		if builds.Items[i].Spec.ProjectRef.Name == project.Name {
+			doomed = append(doomed, &builds.Items[i])
 		}
 	}
 
@@ -288,12 +276,8 @@ func (r *ProjectReconciler) deleteDependents(ctx context.Context, project *kitch
 		return 0, err
 	}
 	for i := range releases.Items {
-		if releases.Items[i].Spec.ProjectRef.Name != project.Name {
-			continue
-		}
-		remaining++
-		if err := r.Delete(ctx, &releases.Items[i]); err != nil && !apierrors.IsNotFound(err) {
-			return 0, err
+		if releases.Items[i].Spec.ProjectRef.Name == project.Name {
+			doomed = append(doomed, &releases.Items[i])
 		}
 	}
 
@@ -302,16 +286,27 @@ func (r *ProjectReconciler) deleteDependents(ctx context.Context, project *kitch
 		return 0, err
 	}
 	for i := range claims.Items {
-		if claims.Items[i].Spec.ProjectRef.Name != project.Name {
-			continue
-		}
-		remaining++
-		if err := r.Delete(ctx, &claims.Items[i]); err != nil && !apierrors.IsNotFound(err) {
-			return 0, err
+		if claims.Items[i].Spec.ProjectRef.Name == project.Name {
+			doomed = append(doomed, &claims.Items[i])
 		}
 	}
 
-	return remaining, nil
+	promotions := &kitchenv1alpha1.PromotionList{}
+	if err := r.List(ctx, promotions, inNamespace); err != nil {
+		return 0, err
+	}
+	for i := range promotions.Items {
+		if promotions.Items[i].Spec.ProjectRef.Name == project.Name {
+			doomed = append(doomed, &promotions.Items[i])
+		}
+	}
+
+	for _, obj := range doomed {
+		if err := r.Delete(ctx, obj); err != nil && !apierrors.IsNotFound(err) {
+			return 0, err
+		}
+	}
+	return len(doomed), nil
 }
 
 // checkConnection loads a Connection and records a condition. When the

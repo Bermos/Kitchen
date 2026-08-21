@@ -80,6 +80,12 @@ type platform struct {
 	decisions []decision
 	replay    *decisionReplay
 
+	// The pipeline: what the project's promotions list answers, and — when
+	// set — the promotion an environment move becomes (the 202 an
+	// environment with requirements answers).
+	promotions      []promotion
+	moveToPromotion *promotion
+
 	// refuse answers every API call with this status and message when set.
 	refuseStatus  int
 	refuseMessage string
@@ -161,6 +167,12 @@ func (p *platform) serve(w http.ResponseWriter, req *http.Request) {
 		writeAnswer(w, http.StatusOK, list[release]{Items: p.releases})
 	case strings.HasSuffix(path, "/environments"):
 		writeAnswer(w, http.StatusOK, list[environment]{Items: p.environments})
+	case strings.HasSuffix(path, "/promotions") && req.Method == http.MethodPost:
+		p.createPromotion(w, body)
+	case strings.HasSuffix(path, "/promotions"):
+		writeAnswer(w, http.StatusOK, list[promotion]{Items: p.promotions})
+	case strings.HasPrefix(path, "/promotions/"):
+		p.answerPromotion(w, strings.TrimPrefix(path, "/promotions/"))
 	case strings.HasSuffix(path, "/env") && req.Method == http.MethodPatch:
 		p.patchEnv(w, body)
 	case strings.HasPrefix(path, "/projects/"):
@@ -293,8 +305,45 @@ func (p *platform) moveEnvironment(w http.ResponseWriter, body []byte) {
 		writeAnswer(w, http.StatusNotFound, errorBody{Error: "no such environment"})
 		return
 	}
+	// An environment with requirements does not move on the spot: the real
+	// API answers 202 with the promotion the move became.
+	if p.moveToPromotion != nil {
+		accepted := *p.moveToPromotion
+		accepted.Release = asked["release"]
+		writeAnswer(w, http.StatusAccepted, accepted)
+		return
+	}
 	p.environments[0].Release = asked["release"]
 	writeAnswer(w, http.StatusOK, p.environments[0])
+}
+
+func (p *platform) createPromotion(w http.ResponseWriter, body []byte) {
+	asked := map[string]string{}
+	_ = json.Unmarshal(body, &asked)
+	if asked["environment"] == "" || asked["release"] == "" {
+		writeAnswer(w, http.StatusBadRequest, errorBody{Error: "environment and release are both required"})
+		return
+	}
+	accepted := promotion{
+		Name: "shop-promo-1a2b3", Project: "shop",
+		Environment: asked["environment"], Release: asked["release"],
+		Reason: asked["reason"], RequestedBy: "anna@example.com",
+		Trigger: "manual", Phase: "Pending",
+	}
+	p.mutex.Lock()
+	p.promotions = append([]promotion{accepted}, p.promotions...)
+	p.mutex.Unlock()
+	writeAnswer(w, http.StatusCreated, accepted)
+}
+
+func (p *platform) answerPromotion(w http.ResponseWriter, name string) {
+	for _, found := range p.promotions {
+		if found.Name == name {
+			writeAnswer(w, http.StatusOK, found)
+			return
+		}
+	}
+	writeAnswer(w, http.StatusNotFound, errorBody{Error: "promotions.kitchen.bermos.dev \"" + name + "\" not found"})
 }
 
 func (p *platform) patchEnv(w http.ResponseWriter, body []byte) {
