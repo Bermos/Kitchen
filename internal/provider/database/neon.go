@@ -46,6 +46,9 @@ type Neon struct {
 type neonProject struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
+	// RegionID is where Neon placed the project — the actual placement, which
+	// is what the claim's residency records.
+	RegionID string `json:"region_id"`
 }
 
 type neonBranch struct {
@@ -61,6 +64,10 @@ type neonBranch struct {
 // when a previous reconcile created it but its ID was lost before it could be
 // recorded. Either way the binding is read back through the same describe
 // calls, so the two paths cannot drift.
+//
+// The instance is declared production: a claim's Neon project IS the
+// database the application runs against, not a copy of anything. The region
+// is Neon's own answer to where it put the project.
 func (n *Neon) Provision(ctx context.Context, name string) (Instance, error) {
 	existing, err := n.findProject(ctx, name)
 	if err != nil {
@@ -75,7 +82,10 @@ func (n *Neon) Provision(ctx context.Context, name string) (Instance, error) {
 		if err != nil {
 			return Instance{}, err
 		}
-		return Instance{ID: existing.ID, Binding: binding}, nil
+		return Instance{
+			ID: existing.ID, Binding: binding,
+			Provenance: ProvenanceProduction, Region: existing.RegionID,
+		}, nil
 	}
 
 	created := struct {
@@ -90,7 +100,10 @@ func (n *Neon) Provision(ctx context.Context, name string) (Instance, error) {
 	if err != nil {
 		return Instance{}, err
 	}
-	return Instance{ID: created.Project.ID, Binding: binding}, nil
+	return Instance{
+		ID: created.Project.ID, Binding: binding,
+		Provenance: ProvenanceProduction, Region: created.Project.RegionID,
+	}, nil
 }
 
 // Deprovision deletes the Neon project with its data; already gone is fine.
@@ -104,6 +117,13 @@ func (n *Neon) Deprovision(ctx context.Context, instanceID string) error {
 
 // CreateBranch creates a copy-on-write branch with its own read-write
 // endpoint, or finds the branch of that name a previous reconcile created.
+//
+// The branch is declared production, and that declaration is the honest one:
+// a Neon branch is a copy-on-write view of the parent's data at branch time —
+// every row of the production database, under a preview's address. Cheap to
+// make does not make it not production-derived; a provisioner that masks or
+// synthesizes on the way to a branch is where masked/synthetic declarations
+// come from, and Neon does neither.
 func (n *Neon) CreateBranch(ctx context.Context, instanceID, name string) (Branch, error) {
 	branches, err := n.listBranches(ctx, instanceID)
 	if err != nil {
@@ -117,7 +137,7 @@ func (n *Neon) CreateBranch(ctx context.Context, instanceID, name string) (Branc
 		if err != nil {
 			return Branch{}, err
 		}
-		return Branch{ID: existing.ID, Binding: binding}, nil
+		return Branch{ID: existing.ID, Binding: binding, Provenance: ProvenanceProduction}, nil
 	}
 
 	created := struct {
@@ -134,7 +154,7 @@ func (n *Neon) CreateBranch(ctx context.Context, instanceID, name string) (Branc
 	if err != nil {
 		return Branch{}, err
 	}
-	return Branch{ID: created.Branch.ID, Binding: binding}, nil
+	return Branch{ID: created.Branch.ID, Binding: binding, Provenance: ProvenanceProduction}, nil
 }
 
 // DeleteBranch removes a branch with its data; already gone is fine.

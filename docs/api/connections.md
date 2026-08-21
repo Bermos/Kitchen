@@ -34,6 +34,19 @@ an unclassified project is refused the same way: classify the project first.
 Absent means unclassified, shown as such in the
 [inventory](audit.md#the-classification-inventory) rather than defaulted.
 
+The answer carries two facts the *provider* supplies once the claim binds,
+alongside the class the caller chose. `dataProvenance` is the provider's
+declaration of what the provisioned data derives from — `production`,
+`masked` or `synthetic`; absent means the provider declared nothing, which
+policy treats as the worst case rather than as clean. Neon declares
+`production` for both a fresh database and every preview branch, because a
+branch of a production database is production-derived. `residency` is where
+the provider reported the resource actually is (a Neon region id) — reported,
+not declared. Both are visible on the environment screen, where a preview
+running on production-derived data is marked rather than implied, and both
+are enforced at promotion by the default bundle's `data-provenance-preview`
+rule.
+
 **`oidcClient`** asks the platform's own identity provider for an OAuth
 client, so that the application signs its users in with the same accounts as
 the dashboard:

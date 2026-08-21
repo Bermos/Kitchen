@@ -243,8 +243,12 @@ deny contains {"rule": "dataclass-le-environment", "message": message} if {
 
 # --- data-provenance-preview ------------------------------------------------
 # Demands: a preview environment is provisioned only with masked or synthetic
-# data — a claim that declares production-derived data may not back a preview.
-# Inert until claims declare a provenance (issue #138 populates it). Tuned by:
+# data — a claim that declares production-derived data may not back a preview,
+# and a claim whose provider declared *nothing* is treated as the worst case
+# rather than as clean: undeclared fires unless the policy would accept
+# production anyway (or names "undeclared" as acceptable outright). That is
+# what makes "a provisioner that cannot declare cannot be used where a class
+# is required" a property of the system instead of a convention. Tuned by:
 # parameters["preview-data-provenance"] — a comma-separated list of acceptable
 # provenances, defaulting to "masked,synthetic".
 allowed_preview_provenance := provenances if {
@@ -257,14 +261,32 @@ allowed_preview_provenance := {"masked", "synthetic"} if {
 	trim_space(object.get(parameters, "preview-data-provenance", "")) == ""
 }
 
+# An acceptable provenance: listed, or — for the undeclared case alone — the
+# policy already accepts production, because a policy that tolerates the known
+# worst has nothing left to protect from the unknown.
+preview_provenance_acceptable(provenance) if provenance in allowed_preview_provenance
+
+preview_provenance_acceptable("undeclared") if "production" in allowed_preview_provenance
+
 deny contains {"rule": "data-provenance-preview", "message": message} if {
 	object.get(object.get(input, "environment", {}), "type", "") == "preview"
 	some claim in object.get(input, "claims", [])
+	object.get(claim, "provenance", "") != ""
 	provenance := object.get(claim, "provenance", "")
-	provenance != ""
-	not provenance in allowed_preview_provenance
+	not preview_provenance_acceptable(provenance)
 	message := sprintf(
 		"claim %q holds %s-derived data, and a preview environment accepts only: %s",
 		[object.get(claim, "name", "unnamed"), provenance, concat(", ", sort(allowed_preview_provenance))],
+	)
+}
+
+deny contains {"rule": "data-provenance-preview", "message": message} if {
+	object.get(object.get(input, "environment", {}), "type", "") == "preview"
+	some claim in object.get(input, "claims", [])
+	object.get(claim, "provenance", "") == ""
+	not preview_provenance_acceptable("undeclared")
+	message := sprintf(
+		"claim %q declares no data provenance, and an undeclared claim is treated as production-derived: a preview accepts only %s, or a policy that permits production",
+		[object.get(claim, "name", "unnamed"), concat(", ", sort(allowed_preview_provenance))],
 	)
 }

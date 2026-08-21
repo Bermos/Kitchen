@@ -718,7 +718,7 @@ attesting to nothing.
 | **2 — Evidence production** | provenance + SBOM (#128), PR verification (#129), quality gates (#130) — **built** |
 | **3 — Policy** | environment ownership (#131), OPA engine (#132), staged promotion (#133) — **built** |
 | **4 — Continuous compliance** | rescan (#134), OpenVEX (#135), exceptions (#136) |
-| **5 — Institutional surface** | data class (#137) — **built**, resource contract (#138), access (#139), retention (#140), criticality (#141), export (#142) |
+| **5 — Institutional surface** | data class (#137) — **built**, resource contract (#138) — **built**, access (#139), retention (#140), criticality (#141), export (#142) |
 | **6 — The mapping doc** | #143, kept current |
 
 Phase 2 attaches to §5 exactly as expected: every attestation it produces is
@@ -741,6 +741,23 @@ refuses a promotion of a classified project into an environment rated below
 it (or not rated at all). Every classification change is a privileged audit
 record carrying the previous value, and `GET /compliance/inventory` answers
 the whole install's classes and locations in one exportable request.
+
+The resource contract (#138) is the provenance axis of the same story: a
+provisioner declares, on its results, what the provisioned data derives from
+— `production`, `masked` or `synthetic` — and an absent declaration is
+*undeclared*, treated by policy as the worst case rather than as clean. Neon
+declares `production` for both a fresh database and every preview branch (a
+copy-on-write branch of a production database is production-derived), which
+is precisely how the default `data-provenance-preview` rule makes
+"production data in a preview" a state the system refuses instead of a
+finding: previews accept `masked`/`synthetic` unless the environment's policy
+says otherwise. Each declaration is recorded on the claim's status, carried
+in the bind's audit record, and signed as a
+`kitchen.bermos.dev/attestation/data-class/v1` statement whose subject is a
+claim identity digest (claims have no OCI repository), kept in the store's
+`signed_records` table. The contract itself is documented in
+[CRDS.md](CRDS.md) so a masking or synthetic-data provisioner can be written
+outside this repository.
 
 ---
 

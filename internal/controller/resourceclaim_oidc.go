@@ -34,7 +34,13 @@ import (
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/idp"
+	"github.com/Bermos/Kitchen/internal/provider/database"
 )
+
+// oidcProviderName is who declares an oidcClient claim's data provenance:
+// the platform itself, since it is its own identity provider's client
+// registrar and there is no Connection whose provider could say instead.
+const oidcProviderName = "kitchen"
 
 // The oidcClient half of the ResourceClaim reconciler: an application asks
 // for single sign-on with one claim, and gets an OAuth client at the
@@ -152,12 +158,20 @@ func (r *ResourceClaimReconciler) reconcileOIDCClaim(
 
 	syncErr := r.syncRedirectURIs(ctx, claim, cfg, handle, registration, registered)
 
-	if err := r.bind(ctx, claim, fmt.Sprintf("claim %s bound: %s at %s",
+	// The platform is this claim's provider, and it can declare: a freshly
+	// registered OAuth client derives from no data at all — synthetic, on
+	// the platform's own word. Declaring it is what keeps an oidcClient
+	// claim from reading as "undeclared" in a preview, where undeclared is
+	// treated as the worst case.
+	claim.Status.DataProvenance = string(database.ProvenanceSynthetic)
+
+	if err := r.bind(ctx, claim, oidcProviderName, fmt.Sprintf("claim %s bound: %s at %s",
 		claim.Name, claim.Spec.Type, cfg.Issuer), map[string]any{
-		"type":   claim.Spec.Type,
-		"issuer": cfg.Issuer,
-		"client": handle.ID,
-		"secret": claim.Status.SecretName,
+		"type":           claim.Spec.Type,
+		"issuer":         cfg.Issuer,
+		"client":         handle.ID,
+		"secret":         claim.Status.SecretName,
+		"dataProvenance": claim.Status.DataProvenance,
 	}); err != nil {
 		return ctrl.Result{}, err
 	}

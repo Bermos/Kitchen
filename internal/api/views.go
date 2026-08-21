@@ -911,9 +911,16 @@ type claimView struct {
 	PreviewBranching bool   `json:"previewBranching"`
 	// DataClass is the claim's declared sensitivity class — never above its
 	// project's, which the create refuses. Absent means unclassified.
-	DataClass  string          `json:"dataClass,omitempty"`
-	CreatedAt  time.Time       `json:"createdAt"`
-	Conditions []conditionView `json:"conditions,omitempty"`
+	DataClass string `json:"dataClass,omitempty"`
+	// DataProvenance is the provider's declaration of what the provisioned
+	// data derives from: production, masked or synthetic. Absent means the
+	// provider declared nothing — shown as undeclared, treated by policy as
+	// the worst case. Residency is where the provider reported the resource
+	// actually is; absent means it reported nothing.
+	DataProvenance string          `json:"dataProvenance,omitempty"`
+	Residency      string          `json:"residency,omitempty"`
+	CreatedAt      time.Time       `json:"createdAt"`
+	Conditions     []conditionView `json:"conditions,omitempty"`
 
 	// RedirectURIs is what an oidcClient claim's client currently accepts as
 	// a callback — the list the operator keeps in step with the project's
@@ -939,6 +946,8 @@ func newClaimView(claim *kitchenv1alpha1.ResourceClaim) claimView {
 		DeletionPolicy:   string(claim.Spec.DeletionPolicy),
 		PreviewBranching: claim.PreviewBranching(),
 		DataClass:        string(claim.Spec.DataClass),
+		DataProvenance:   claim.Status.DataProvenance,
+		Residency:        claim.Status.Residency,
 		CreatedAt:        claim.CreationTimestamp.Time,
 		Conditions:       conditionViews(claim.Status.Conditions),
 		RedirectURIs:     claim.Status.RedirectURIs,

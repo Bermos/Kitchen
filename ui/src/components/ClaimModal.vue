@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { api, type NewClaim } from "../lib/api";
+import { api, DATA_CLASSES, type NewClaim } from "../lib/api";
 import { connectionChoices, noteFor, selectableChoices, type ConnectionChoice } from "../lib/connections";
 import { callerFor } from "../lib/me";
 import { may } from "../lib/policy";
@@ -22,6 +22,14 @@ const name = ref("");
 const connection = ref("");
 const previewBranching = ref(false);
 const deletionPolicy = ref("Retain");
+// "" is unclassified. A class above the project's is refused by the API with
+// the rule spelled out, so the select offers the vocabulary and lets the
+// refusal teach the hierarchy.
+const dataClass = ref("");
+const dataClassOptions = [
+  { label: "unclassified", value: "" },
+  ...DATA_CLASSES.map((value) => ({ label: value, value: value as string })),
+];
 
 // The two things the platform provisions. A database comes from a connection
 // somebody configured; an OAuth client comes from the identity provider the
@@ -84,6 +92,7 @@ watch(open, (value) => {
   connection.value = "";
   previewBranching.value = false;
   deletionPolicy.value = "Retain";
+  dataClass.value = "";
   type.value = "postgres";
   callbackPaths.value = "";
   extraRedirectURIs.value = "";
@@ -110,6 +119,7 @@ async function save() {
           callbackPaths: entries(callbackPaths.value),
           redirectURIs: entries(extraRedirectURIs.value),
           scopes: entries(scopes.value),
+          ...(dataClass.value ? { dataClass: dataClass.value } : {}),
         }
       : {
           name: name.value,
@@ -118,6 +128,7 @@ async function save() {
           type: type.value,
           previewBranching: previewBranching.value,
           deletionPolicy: deletionPolicy.value,
+          ...(dataClass.value ? { dataClass: dataClass.value } : {}),
         };
     const created = await api.createClaim(claim);
     toast.add({
@@ -229,6 +240,13 @@ async function save() {
             <USelect v-model="deletionPolicy" :items="policyOptions" class="w-full" />
           </UFormField>
         </template>
+
+        <UFormField
+          label="Data classification"
+          help="What class of data the resource will hold. It narrows the project's class and may not exceed it — classify the project first if it has none."
+        >
+          <USelect v-model="dataClass" :items="dataClassOptions" class="w-full" />
+        </UFormField>
       </form>
     </template>
 

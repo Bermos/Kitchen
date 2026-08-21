@@ -95,6 +95,11 @@ func MaterializeInput(
 // the data facts issues #137/#138 record about each — its class, what its
 // data derives from, and where the provider actually put it. Claims of other
 // projects are skipped, so callers can hand the whole namespace's list over.
+//
+// The facts are the environment's view of the claim: a preview backed by its
+// own database branch is judged on that branch's declared provenance, not the
+// primary's, because the branch is what its workload reads. An environment
+// with no branch of its own reads the claim's primary declaration.
 func ClaimFacts(env *kitchenv1alpha1.Environment, claims []kitchenv1alpha1.ResourceClaim) []Claim {
 	out := []Claim{}
 	for i := range claims {
@@ -103,10 +108,16 @@ func ClaimFacts(env *kitchenv1alpha1.Environment, claims []kitchenv1alpha1.Resou
 			continue
 		}
 		fact := Claim{
-			Name:      claim.Name,
-			Type:      claim.Spec.Type,
-			DataClass: string(claim.Spec.DataClass),
-			Residency: claim.Status.Residency,
+			Name:       claim.Name,
+			Type:       claim.Spec.Type,
+			DataClass:  string(claim.Spec.DataClass),
+			Provenance: claim.Status.DataProvenance,
+			Residency:  claim.Status.Residency,
+		}
+		for _, branch := range claim.Status.Branches {
+			if branch.Environment == env.Name && branch.Provenance != "" {
+				fact.Provenance = branch.Provenance
+			}
 		}
 		out = append(out, fact)
 	}

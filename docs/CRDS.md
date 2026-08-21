@@ -825,16 +825,21 @@ spec:
   connectionRef: { name: neon-prod }
   type: postgres
   deletionPolicy: Retain                # Retain (default) | Delete — what deleting the claim does to the data
+  dataClass: confidential               # never above the project's class; absent = unclassified
   config:
     previewBranching: true              # Neon: DB branch per preview Environment
 status:
   phase: Bound                          # Pending | Bound | Failed
   secretName: shop-db-binding           # binding keys: url, host, port, user, password, database
   instanceID: proj-abc123               # provider-side ID, opaque; what deprovisioning addresses
+  dataProvenance: production            # the provider's declaration: production | masked | synthetic;
+                                        # absent = undeclared, treated by policy as the worst case
+  residency: aws-eu-central-1           # where the provider reported the resource actually is
   branches:                             # one per preview Environment, with previewBranching
     - environment: my-shop-pr-41
       id: br-def456
       secretName: shop-db-binding-my-shop-pr-41
+      provenance: production            # a branch of a production database is production-derived
   conditions: [...]                     # Ready, Provisioned, PreviewBranchesReady
 ```
 
@@ -856,6 +861,44 @@ with its data. Retain is the default because a claim can front a production
 database — destroying data is opted into, never implied. Branches and binding
 Secrets are cleaned up under either policy: they belong to the platform, not to the
 data.
+
+### The provider contract: declaring what the data is
+
+Production-derived data in a preview environment is the finding an auditor
+reaches first, and the platform closes it off by defining the provider
+*contract* rather than any particular provider. A provisioner implements
+`database.Provisioner` (`internal/provider/database`): four idempotent verbs —
+`Provision`, `Deprovision`, `CreateBranch`, `DeleteBranch` — whose results
+carry the compliance half of the contract:
+
+- **`Provenance`** on the returned `Instance`/`Branch` declares what the data
+  derives from: `production`, `masked` or `synthetic`. Empty means the
+  provisioner cannot say — *undeclared* — and undeclared claims are usable
+  only where policy would accept production data: the default bundle's
+  `data-provenance-preview` rule refuses both in a preview, so a provisioner
+  that cannot declare cannot back an environment that requires a class.
+- **`Region`** on the `Instance` reports where the provider actually placed
+  the resource, in its own vocabulary. Reported, not declared: it becomes
+  `status.residency`, the placement of record.
+
+Neon, the provisioner that ships, declares `production` for both verbs: a
+claim's Neon project *is* the production database, and a copy-on-write branch
+is the parent's data under a preview's address — cheap to make does not make
+it not production-derived. A third-party provisioner that masks or
+synthesizes on the way to a branch is exactly the point of the contract:
+implement the interface, declare `masked` or `synthetic` on the results, and
+nothing else in the platform needs to know it exists — the declaration flows
+to the claim's status, the policy engine, the inventory and the environment
+screen by itself.
+
+Every declaration is recorded twice: on `status.dataProvenance` (per branch on
+`status.branches[].provenance` — the branch is what a preview's workload
+reads, so it is the branch's value policy judges a preview on), and as a
+signed `https://kitchen.bermos.dev/attestation/data-class/v1` statement kept
+in the store's `signed_records` table. The statement's subject is a claim
+identity digest — sha256 over namespace/name/uid — because a claim has no OCI
+repository for evidence to attach to; the audit log carries the declaration in
+the bind record besides.
 
 ### `type: oidcClient` — single sign-on for the application
 

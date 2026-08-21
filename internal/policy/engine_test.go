@@ -231,14 +231,26 @@ func TestPreviewsRefuseProductionDerivedData(t *testing.T) {
 	input.Environment.Type = "preview"
 	input.Claims = []Claim{
 		{Name: "db", Type: "postgres", Provenance: "production"},
-		{Name: "cache", Type: "postgres"}, // undeclared: inert until #138
+		{Name: "cache", Type: "postgres"}, // undeclared: the worst case, not clean
+		{Name: "auth", Type: "oidcClient", Provenance: "synthetic"},
 	}
 	result := evaluate(t, input)
-	if result.Verdict != VerdictBlocked || len(result.Fired) != 1 {
-		t.Fatalf("exactly the declared production claim must fire, got %+v", result)
+	if result.Verdict != VerdictBlocked || len(result.Fired) != 2 {
+		t.Fatalf("the production claim and the undeclared one must both fire, got %+v", result)
 	}
-	if result.Fired[0].Rule != "data-provenance-preview" || !strings.Contains(result.Fired[0].Message, `"db"`) {
-		t.Fatalf("the firing must name the claim, got %+v", result.Fired[0])
+	fired := map[string]string{}
+	for _, rule := range result.Fired {
+		if rule.Rule != "data-provenance-preview" {
+			t.Fatalf("only the provenance rule may fire, got %+v", result.Fired)
+		}
+		fired[rule.Message] = rule.Rule
+	}
+	messages := strings.Join(mapKeys(fired), "\n")
+	if !strings.Contains(messages, `"db"`) || !strings.Contains(messages, `"cache"`) {
+		t.Fatalf("the firings must name both claims, got %q", messages)
+	}
+	if strings.Contains(messages, `"auth"`) {
+		t.Fatalf("a synthetic claim must not fire, got %q", messages)
 	}
 
 	// A production environment takes production data.
@@ -247,12 +259,22 @@ func TestPreviewsRefuseProductionDerivedData(t *testing.T) {
 		t.Fatalf("the rule is about previews, got %+v", result.Fired)
 	}
 
-	// The parameter can widen what a preview accepts.
+	// The parameter can widen what a preview accepts — and a policy that
+	// accepts production accepts the undeclared with it, because tolerating
+	// the known worst leaves nothing to protect from the unknown.
 	input.Environment.Type = "preview"
 	input.Parameters = map[string]string{"preview-data-provenance": "masked,synthetic,production"}
 	if result := evaluate(t, input); len(result.Fired) != 0 {
 		t.Fatalf("a widened allowance must pass, got %+v", result.Fired)
 	}
+}
+
+func mapKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for key := range m {
+		keys = append(keys, key)
+	}
+	return keys
 }
 
 func TestExceptionsWaiveButNeverSilence(t *testing.T) {
