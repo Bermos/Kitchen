@@ -364,6 +364,12 @@ func (s *Server) routes() []route {
 		// answers what the stored credential can see, never the credential.
 		{"GET /api/v1/connections", s.listConnections, byRole("choosing a connection")},
 		{"GET /api/v1/connections/{name}/repositories", s.listConnectionRepositories, anyCaller()},
+		// The third field of the same form, and the one that is worth being
+		// wrong about early: it reads the repository the way a build would
+		// and says what the platform makes of it, so a root directory one
+		// level off is a sentence on the form rather than a failed build
+		// five minutes later. It writes nothing and reaches no credential.
+		{"POST /api/v1/connections/{name}/detect", s.detectRepository, anyCaller()},
 		{"POST /api/v1/connections", s.createConnection, operatorOnly("adding a connection")},
 		{"POST /api/v1/connections/test", s.testConnection, operatorOnly("testing a connection")},
 		{"GET /api/v1/connections/{name}", s.getConnection, operatorOnly("reading a connection")},

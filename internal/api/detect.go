@@ -1,0 +1,273 @@
+/*
+Copyright 2026.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package api
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net/http"
+	"slices"
+	"strings"
+	"time"
+
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/types"
+
+	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/detect"
+	"github.com/Bermos/Kitchen/internal/framework"
+	"github.com/Bermos/Kitchen/internal/gitprovider"
+	"github.com/Bermos/Kitchen/internal/provider"
+)
+
+// detectTimeout bounds one preflight. It is shorter than the repository
+// listing's because this is two requests rather than a walk, and somebody is
+// waiting on a form they have half filled in.
+const detectTimeout = 15 * time.Second
+
+// detectRequest asks what a repository is before there is a project to ask
+// about. Every field is the value the form currently holds, which is what
+// makes the answer worth showing: changing the root directory and asking
+// again is the whole of "or fix the build context".
+type detectRequest struct {
+	// Repo is the repository, owner/name.
+	Repo string `json:"repo"`
+
+	// Ref is the branch, tag or commit to look at. Empty means the
+	// repository's default branch — which the caller usually knows, since
+	// the repository picker hands it over, but need not.
+	Ref string `json:"ref,omitempty"`
+
+	// RootDirectory and DockerfilePath are the build context as the form
+	// currently has it.
+	RootDirectory  string `json:"rootDirectory,omitempty"`
+	DockerfilePath string `json:"dockerfilePath,omitempty"`
+}
+
+// detectionView is what the repository looks like to the platform.
+//
+// Detected is false for a repository the platform read and did not recognise,
+// which is not an error: it is the answer, and it is the answer the form
+// exists to deliver early. Message says why in words a form can show, whether
+// or not anything was detected.
+type detectionView struct {
+	Detected  bool   `json:"detected"`
+	Framework string `json:"framework,omitempty"`
+	Strategy  string `json:"strategy,omitempty"`
+	Port      int32  `json:"port,omitempty"`
+
+	// Ref is what was actually read, so a form that sent none can show which
+	// branch the answer is about.
+	Ref string `json:"ref,omitempty"`
+
+	// RootDirectory is the directory the answer is about, normalised the way
+	// a build would normalise it.
+	RootDirectory string `json:"rootDirectory,omitempty"`
+
+	// Dockerfile says the project's Dockerfile is where the request said it
+	// would be — the one thing a person can be wrong about in a way that
+	// silently changes the strategy.
+	Dockerfile bool `json:"dockerfile"`
+
+	// Files are the names at the build root, so somebody who disagrees with
+	// the verdict can see what it was reached from.
+	Files []string `json:"files,omitempty"`
+
+	Message string `json:"message,omitempty"`
+}
+
+// detectRepository is the preflight the new project form runs: read the
+// repository as the build would read it, and say what the platform thinks it
+// is while the build context is still editable.
+//
+// It exists because the alternative is finding out from a failed build, which
+// is several minutes later and reads like the platform is broken rather than
+// like a root directory being one level off. It answers 200 for every case
+// the caller can act on — a repository nobody recognises included — and
+// reserves failures for the platform genuinely being unable to look.
+//
+// It reads no credential back: the token is used to ask the provider a
+// question and never leaves the operator, and nothing here writes anything.
+func (s *Server) detectRepository(w http.ResponseWriter, req *http.Request) {
+	ctx := req.Context()
+
+	body := detectRequest{}
+	if err := decodeBody(req, &body); err != nil {
+		badRequest(w, "%s", err.Error())
+		return
+	}
+	body.Repo = strings.TrimSpace(body.Repo)
+	if body.Repo == "" {
+		badRequest(w, "repo is required: name the repository as owner/name")
+		return
+	}
+
+	connection := &kitchenv1alpha1.Connection{}
+	if err := s.get(ctx, req.PathValue("name"), connection); err != nil {
+		s.writeError(w, err)
+		return
+	}
+
+	git, unsupported, err := s.gitProviderFor(ctx, connection)
+	if unsupported != "" {
+		writeJSON(w, http.StatusOK, detectionView{Message: unsupported})
+		return
+	}
+	if err != nil {
+		s.writeProviderError(w, connection, err)
+		return
+	}
+	reader, ok := gitprovider.Source(git)
+	if !ok {
+		writeJSON(w, http.StatusOK, detectionView{Message: fmt.Sprintf(
+			"the platform's %s support cannot read a repository, so the layout is worked out at build time",
+			connection.Spec.Provider)})
+		return
+	}
+
+	ref := strings.TrimSpace(body.Ref)
+	if ref == "" {
+		if resolver, ok := gitprovider.Revisions(git); ok {
+			// The default branch is the one thing the form may not know, and
+			// the provider does.
+			if revision, err := resolver.HeadRevision(ctx, body.Repo, ""); err == nil {
+				ref = revision.SHA
+			}
+		}
+	}
+	if ref == "" {
+		badRequest(w, "ref is required: name the branch to look at")
+		return
+	}
+
+	target := detect.Target{
+		Repo:               body.Repo,
+		Ref:                ref,
+		RootDirectory:      normalizeRootDirectory(body.RootDirectory),
+		DockerfilePath:     strings.TrimSpace(body.DockerfilePath),
+		ConsiderDockerfile: true,
+	}
+
+	detectCtx, cancel := context.WithTimeout(ctx, detectTimeout)
+	defer cancel()
+
+	signals, err := detect.Signals(detectCtx, reader, target)
+	if errors.Is(err, detect.ErrNotRecognised) {
+		// The root directory is not there. That is the commonest thing this
+		// preflight exists to catch, and it is the caller's to fix.
+		writeJSON(w, http.StatusOK, detectionView{
+			Ref: ref, RootDirectory: target.RootDirectory, Message: err.Error(),
+		})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, errorBody{Error: fmt.Sprintf(
+			"connection %q could not read %s: %s", connection.Name, body.Repo, err.Error())})
+		return
+	}
+
+	view := detectionView{
+		Ref:           ref,
+		RootDirectory: target.RootDirectory,
+		Dockerfile:    signals.Dockerfile,
+		Files:         signals.Files,
+	}
+	if found, ok := framework.Detect(signals); ok {
+		view.Detected = true
+		view.Framework = found.Name
+		view.Strategy = string(found.Strategy)
+		view.Port = found.Port
+	} else {
+		view.Message = "the platform did not recognise this directory: " +
+			"add a Dockerfile, correct the root directory, or set the project's build strategy yourself"
+	}
+	writeJSON(w, http.StatusOK, view)
+}
+
+// normalizeRootDirectory spells the build root the way a build spells it, so
+// that the preflight is answering about the directory the build would read
+// rather than about a near miss.
+func normalizeRootDirectory(root string) string {
+	root = strings.TrimSpace(root)
+	if root == "." {
+		return ""
+	}
+	return strings.Trim(root, "/")
+}
+
+// gitProviderFor resolves the git provider behind a connection, using the
+// credential the operator holds and never handing it back.
+//
+// The middle return is the reason there is nothing to ask, in words a form
+// can show: a provider the platform cannot speak is not a failure, it is a
+// field that has to be typed into instead. An error is the platform being
+// unable to look.
+func (s *Server) gitProviderFor(
+	ctx context.Context,
+	connection *kitchenv1alpha1.Connection,
+) (gitprovider.Provider, string, error) {
+	providerName := connection.Spec.Provider
+
+	// Whether there is anything to ask is a fact about the provider, so it is
+	// settled before the credential is read: matched on the capability the
+	// platform would use the connection for, never on the provider's name —
+	// which is also what keeps a registry connection from being asked for a
+	// token it does not have.
+	if !slices.Contains(provider.Capabilities(providerName), kitchenv1alpha1.CapabilityGitSource) {
+		return nil, fmt.Sprintf(
+			"connection %q is a %s connection, which is not a source of repositories",
+			connection.Name, providerName), nil
+	}
+
+	creds := &corev1.Secret{}
+	key := types.NamespacedName{Namespace: s.Namespace, Name: connection.Spec.CredentialsSecretRef.Name}
+	if err := s.Client.Get(ctx, key, creds); err != nil {
+		return nil, "", err
+	}
+	if len(creds.Data[gitTokenKey]) == 0 {
+		return nil, "", fmt.Errorf(
+			"the credential stored for connection %q has no %q key, so the provider cannot be asked anything",
+			connection.Name, gitTokenKey)
+	}
+
+	factory := s.GitProviders
+	if factory == nil {
+		factory = gitprovider.Default
+	}
+	git, err := factory(connection, string(creds.Data[gitTokenKey]))
+	if errors.Is(err, gitprovider.ErrUnsupportedProvider) {
+		return nil, fmt.Sprintf("the platform has no %s implementation yet", providerName), nil
+	}
+	if err != nil {
+		return nil, "", err
+	}
+	return git, "", nil
+}
+
+// writeProviderError renders a failure to reach the provider. It is a bad
+// gateway rather than a 500 for the same reason the repository listing's is:
+// the platform is working, and the thing it asked did not answer.
+func (s *Server) writeProviderError(w http.ResponseWriter, connection *kitchenv1alpha1.Connection, err error) {
+	if apierrors.IsNotFound(err) {
+		s.writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusBadGateway, errorBody{Error: fmt.Sprintf(
+		"connection %q could not be used: %s", connection.Name, err.Error())})
+}

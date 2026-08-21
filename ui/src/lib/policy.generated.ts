@@ -123,6 +123,7 @@ export type Route =
   | "GET /api/v1/updates/{name}"
   | "GET /api/v1/connections"
   | "GET /api/v1/connections/{name}/repositories"
+  | "POST /api/v1/connections/{name}/detect"
   | "POST /api/v1/connections"
   | "POST /api/v1/connections/test"
   | "GET /api/v1/connections/{name}"
@@ -216,6 +217,7 @@ export const POLICY: Readonly<Record<Route, Requirement>> = {
   "GET /api/v1/updates/{name}": { kind: "operator", doing: "reading a platform update" },
   "GET /api/v1/connections": { kind: "roleShapedBody", doing: "choosing a connection" },
   "GET /api/v1/connections/{name}/repositories": { kind: "authenticated" },
+  "POST /api/v1/connections/{name}/detect": { kind: "authenticated" },
   "POST /api/v1/connections": { kind: "operator", doing: "adding a connection" },
   "POST /api/v1/connections/test": { kind: "operator", doing: "testing a connection" },
   "GET /api/v1/connections/{name}": { kind: "operator", doing: "reading a connection" },
