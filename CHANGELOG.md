@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.0](https://github.com/Bermos/Kitchen/compare/v0.9.0...v0.10.0) (2026-08-21)
+
+
+### Features
+
+* **api:** list a git connection's repositories for the project form ([#164](https://github.com/Bermos/Kitchen/issues/164)) ([c1371fe](https://github.com/Bermos/Kitchen/commit/c1371fe9bed458677fbd3375e63dd6bdb476b5dc))
+
 ## [0.9.0](https://github.com/Bermos/Kitchen/compare/v0.8.0...v0.9.0) (2026-08-20)
 
 
