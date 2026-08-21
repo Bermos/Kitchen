@@ -80,7 +80,27 @@ const (
 // The repository and the commit arrive as environment variables rather than
 // substituted into the script. Both come out of a Project's spec, and nothing
 // constrains a repository name to characters a shell reads literally.
+//
+// A private repository is cloned with the token mounted at
+// KITCHEN_GIT_TOKEN_FILE, and git is told about it the one way that keeps the
+// value out of everything that is written down: an askpass helper, which git
+// runs with this process's environment and which reads the file itself. The
+// URL keeps no credential, so `git remote -v` says what the pod spec says.
+// GIT_TERMINAL_PROMPT=0 is what turns "wait forever for a username nobody can
+// type" into an error, credential or not.
 const cloneScript = `set -e
+export GIT_TERMINAL_PROMPT=0
+if [ -n "$KITCHEN_GIT_TOKEN_FILE" ]; then
+	cat >"$KITCHEN_ASKPASS" <<'EOF'
+#!/bin/sh
+case "$1" in
+Username*) printf 'x-access-token' ;;
+*) cat "$KITCHEN_GIT_TOKEN_FILE" ;;
+esac
+EOF
+	chmod 0700 "$KITCHEN_ASKPASS"
+	export GIT_ASKPASS="$KITCHEN_ASKPASS"
+fi
 git init -q "$KITCHEN_SOURCE_DIR"
 cd "$KITCHEN_SOURCE_DIR"
 git remote add origin "$KITCHEN_GIT_URL"
@@ -104,7 +124,7 @@ func buildpacksPod(
 	build *kitchenv1alpha1.Build,
 	detected framework.Framework,
 	cache *kitchenv1alpha1.BuildCacheStatus,
-	credsSecret, tagRef string,
+	credsSecret, gitSecret, tagRef string,
 ) corev1.PodTemplateSpec {
 	appDir := buildpacksSourceDir
 	if root := buildRootDir(project); root != "" {
@@ -114,6 +134,31 @@ func buildpacksPod(
 	workspace := corev1.VolumeMount{Name: volumeWorkspace, MountPath: buildpacksWorkspaceDir}
 	layers := corev1.VolumeMount{Name: volumeLayers, MountPath: buildpacksLayersDir}
 
+	cloneEnv := []corev1.EnvVar{
+		{Name: "KITCHEN_SOURCE_DIR", Value: buildpacksSourceDir},
+		{Name: "KITCHEN_GIT_URL", Value: repoCloneURL(project)},
+		{Name: "KITCHEN_GIT_SHA", Value: build.Spec.Git.SHA},
+		// git wants a home to look for configuration in, and the
+		// user it runs as here has none of its own.
+		{Name: "HOME", Value: buildpacksWorkspaceDir},
+	}
+	cloneMounts := []corev1.VolumeMount{workspace}
+	volumes := []corev1.Volume{
+		{Name: volumeWorkspace, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+		{Name: volumeLayers, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+		dockerConfigVolume(credsSecret),
+	}
+	if gitSecret != "" {
+		cloneEnv = append(cloneEnv,
+			corev1.EnvVar{Name: "KITCHEN_GIT_TOKEN_FILE", Value: gitCredentialFile},
+			// The askpass helper is written into the workspace, which is
+			// the one directory this pod has that it can write to.
+			corev1.EnvVar{Name: "KITCHEN_ASKPASS", Value: buildpacksWorkspaceDir + "/askpass"},
+		)
+		cloneMounts = append(cloneMounts, gitCredentialMount())
+		volumes = append(volumes, gitCredentialVolume(gitSecret))
+	}
+
 	return corev1.PodTemplateSpec{
 		Spec: corev1.PodSpec{
 			RestartPolicy: corev1.RestartPolicyNever,
@@ -122,18 +167,11 @@ func buildpacksPod(
 				RunAsGroup: ptr.To(cnbGID),
 			},
 			InitContainers: []corev1.Container{{
-				Name:    "clone",
-				Image:   GitCloneImage,
-				Command: []string{"/bin/sh", "-c", cloneScript},
-				Env: []corev1.EnvVar{
-					{Name: "KITCHEN_SOURCE_DIR", Value: buildpacksSourceDir},
-					{Name: "KITCHEN_GIT_URL", Value: repoCloneURL(project)},
-					{Name: "KITCHEN_GIT_SHA", Value: build.Spec.Git.SHA},
-					// git wants a home to look for configuration in, and the
-					// user it runs as here has none of its own.
-					{Name: "HOME", Value: buildpacksWorkspaceDir},
-				},
-				VolumeMounts: []corev1.VolumeMount{workspace},
+				Name:         "clone",
+				Image:        GitCloneImage,
+				Command:      []string{"/bin/sh", "-c", cloneScript},
+				Env:          cloneEnv,
+				VolumeMounts: cloneMounts,
 			}},
 			Containers: []corev1.Container{{
 				Name:    "creator",
@@ -159,11 +197,7 @@ func buildpacksPod(
 				}, frameworkEnv(detected)...),
 				VolumeMounts: []corev1.VolumeMount{workspace, layers, dockerConfigMount()},
 			}},
-			Volumes: []corev1.Volume{
-				{Name: volumeWorkspace, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
-				{Name: volumeLayers, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
-				dockerConfigVolume(credsSecret),
-			},
+			Volumes: volumes,
 		},
 	}
 }
