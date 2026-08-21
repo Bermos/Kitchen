@@ -152,7 +152,9 @@ func TestThePlatformsOwnSurfaceIsTheOperators(t *testing.T) {
 		{http.MethodPatch, "/api/v1/settings", "changing the platform's settings"},
 		// The connection *list* is the picker every project is created from,
 		// so it answers a member a thinned body rather than a refusal (see
-		// TestAMemberPicksAConnectionWithoutSeeingOne). Everything else under
+		// TestAMemberPicksAConnectionWithoutSeeingOne), and the repository
+		// listing next to it is the same form's next field (see
+		// TestListingWhatAConnectionCanSee). Everything else under
 		// /connections is still the operator's, credentials and all.
 		{http.MethodGet, "/api/v1/connections/gh", "reading a connection"},
 		{http.MethodPatch, "/api/v1/connections/gh", "changing a connection"},

@@ -224,6 +224,7 @@ name against `internal/api/policy.go`, so a route that moves fails them too.
 | POST | `/updates` | Upgrade the platform | `operator` |
 | GET | `/updates/{name}` | One upgrade | `operator` |
 | GET | `/connections` | An operator: every connection (never their credentials). Anybody else: the picker — name, capabilities, readiness | any account — body varies |
+| GET | `/connections/{name}/repositories` | What this connection's credential can see, for the repository field of the create-a-project form | any account |
 | POST | `/connections` | Create one — the credential goes in, and never comes back out | `operator` |
 | POST | `/connections/test` | Try a credential against its provider, storing nothing | `operator` |
 | GET | `/connections/{name}` | One connection | `operator` |

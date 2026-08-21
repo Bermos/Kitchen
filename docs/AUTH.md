@@ -446,12 +446,12 @@ whoever can claim that address at the issuer.
 
 | Surface | Role |
 |---|---|
-| `/platform/*`, `PATCH /settings`, `/connections/{name}` and every connection write, `/updates`, `GET /environments/{name}/objects`, `GET /compliance`, `GET /audit/verify` | `operator` |
+| `/platform/*`, `PATCH /settings`, `/connections/{name}` (bar its repository listing) and every connection write, `/updates`, `GET /environments/{name}/objects`, `GET /compliance`, `GET /audit/verify` | `operator` |
 | `GET /settings` | `operator` — it carries the base domain, the issuer, the gateway address and the operator list itself |
 | `DELETE /projects/{name}`, the project's own settings, membership and key writes | project `admin` |
 | Builds and cancellations, releases, environment variables, environments, domains, claims | project `developer` |
 | Projects, builds, releases, environments, logs, metrics, requests, diagnostics, signals, traces, and a project's members and keys | project `viewer` |
-| `POST /projects` | any account |
+| `POST /projects`, `GET /connections/{name}/repositories` | any account |
 | `GET /status`, `GET /connections` | any account, with a body that varies by role |
 | `GET /me` | any account — it describes the caller to themselves |
 | `/logs`, `/events`, `/traffic`, `/metrics/overview`, `/traces`, `/audit` and the collection `GET`s | filtered to the projects the caller can see |
@@ -478,7 +478,11 @@ Four rules go with that table:
   self-service that stops at the first form field hands the developer straight
   back to the operator. Both thinned shapes are distinct types rather than the
   operator's view with fields blanked, so that a field added to one later is
-  not published to everybody by a struct they share.
+  not published to everybody by a struct they share. The repository listing
+  next to it (`GET /connections/{name}/repositories`) is not an exception to
+  the rule but an ordinary route: it is the same form's next field, it answers
+  everybody the same thing, and what it carries is what the credential can
+  see — never the credential.
 - **A field withheld by role is absent, never zeroed.** The dashboard has to be
   able to tell "no tunnel is configured" from "you are not allowed to know", and
   an empty component survey reads as a healthy platform running nothing.

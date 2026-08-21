@@ -52,6 +52,7 @@ import (
 	"github.com/Bermos/Kitchen/internal/chartrepo"
 	"github.com/Bermos/Kitchen/internal/clickhouse"
 	"github.com/Bermos/Kitchen/internal/controller"
+	"github.com/Bermos/Kitchen/internal/gitprovider"
 	"github.com/Bermos/Kitchen/internal/provider"
 	"github.com/Bermos/Kitchen/internal/signals"
 )
@@ -110,6 +111,11 @@ type Server struct {
 	// way the ConnectionReconciler does. Nil means provider.Default; tests
 	// inject fakes.
 	Probes provider.Factory
+
+	// GitProviders resolves the git provider a connection's repository
+	// listing is read through, the same way the reconcilers do. Nil means
+	// gitprovider.Default; tests inject fakes.
+	GitProviders gitprovider.Factory
 
 	// Version is the release this binary was built from, reported by the
 	// updates endpoints as what the platform is currently running.

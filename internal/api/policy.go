@@ -353,12 +353,17 @@ func (s *Server) routes() []route {
 		{"GET /api/v1/updates/{name}", s.getUpdate, operatorOnly("reading a platform update")},
 
 		// Connections hold the platform's credentials to everything else, so
-		// every one of these is the operator's — except the list, which is
-		// also the picker a project is created from. It answers an operator
-		// with the connections themselves and everybody else with the three
-		// things a dropdown needs: name, capabilities, readiness. Nothing on
-		// this route creates, edits, tests or deletes anything.
+		// every one of these is the operator's — except the two the
+		// create-a-project form is filled in from. The list is the picker: it
+		// answers an operator with the connections themselves and everybody
+		// else with the three things a dropdown needs — name, capabilities,
+		// readiness. The repository listing is the next field of the same
+		// form, and it is the caller's own account that would otherwise be
+		// typing the repository's name into it. Neither creates, edits, tests
+		// or deletes anything, and neither can reach a credential: the second
+		// answers what the stored credential can see, never the credential.
 		{"GET /api/v1/connections", s.listConnections, byRole("choosing a connection")},
+		{"GET /api/v1/connections/{name}/repositories", s.listConnectionRepositories, anyCaller()},
 		{"POST /api/v1/connections", s.createConnection, operatorOnly("adding a connection")},
 		{"POST /api/v1/connections/test", s.testConnection, operatorOnly("testing a connection")},
 		{"GET /api/v1/connections/{name}", s.getConnection, operatorOnly("reading a connection")},

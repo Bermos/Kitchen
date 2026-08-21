@@ -2,7 +2,14 @@
 import { computed, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { api } from "../lib/api";
-import { connectionChoices, noteFor, selectableChoices } from "../lib/connections";
+import {
+  connectionChoices,
+  defaultBranchFor,
+  noteFor,
+  repositoryChoices,
+  repositoryNote,
+  selectableChoices,
+} from "../lib/connections";
 import { callerFor } from "../lib/me";
 import { may } from "../lib/policy";
 import { useAsync } from "../lib/useAsync";
@@ -37,6 +44,7 @@ const repo = ref("");
 const connection = ref<string>();
 const registry = ref<string>();
 const productionBranch = ref("main");
+const branchEdited = ref(false);
 const previews = ref(true);
 
 // Every connection is listed, and the ones that cannot back this field say
@@ -67,6 +75,56 @@ watch(registriesAvailable, (options) => {
 });
 watch(sourcesAvailable, (options) => {
   if (!connection.value && options.length === 1) connection.value = options[0]!.value;
+});
+
+// The repository field, for the providers the platform can ask. A git
+// connection holds a credential that already knows which repositories it can
+// see, so the field is a list to filter rather than a name to spell — and the
+// listing is fetched per connection, because it is that connection's
+// credential that answers it.
+//
+// Nothing here can take the typed field away: a provider with no
+// implementation, a token the provider refused, and a listing cut short at
+// the cap all end with somebody who still has a repository to name. So the
+// select is offered when there is something to offer, `createItem` accepts a
+// name that is not in the list, and the plain input is what is left otherwise
+// — with `repositoryNote` saying which of those happened.
+const repositories = useAsync(() => api.connectionRepositories(connection.value!), { immediate: false });
+watch(connection, (value) => {
+  if (value) void repositories.refresh();
+});
+
+// A repository typed into the select rather than chosen from it. Kept as an
+// entry of its own so the field shows what it holds, the way a chosen one is.
+const typedRepo = ref("");
+// A failed listing offers nothing rather than the previous connection's
+// repositories, which is what the field would otherwise be left holding.
+const listedRepos = computed(() =>
+  repositories.error.value ? [] : repositoryChoices(repositories.data.value ?? undefined),
+);
+const repoOptions = computed(() => {
+  const listed = listedRepos.value;
+  if (!typedRepo.value || listed.some((choice) => choice.value === typedRepo.value)) return listed;
+  return [{ label: typedRepo.value, value: typedRepo.value, description: "typed in" }, ...listed];
+});
+// The select is only worth drawing when it has something to list; everything
+// else is the input with a line under it saying why.
+const canPickRepo = computed(() => listedRepos.value.length > 0);
+const repoNote = computed(() =>
+  repositoryNote(repositories.data.value ?? undefined, repositories.error.value ?? undefined),
+);
+
+function repoTypedIn(term: string) {
+  typedRepo.value = term;
+  repo.value = term;
+}
+
+// A chosen repository knows which branch it deploys from, so the production
+// branch follows it — until it is edited by hand, at which point it is the
+// user's, exactly as the name is.
+watch(repo, (value) => {
+  const branch = defaultBranchFor(repositories.data.value ?? undefined, value);
+  if (branch && !branchEdited.value) productionBranch.value = branch;
 });
 
 // "acme/shop" suggests the name "shop", cut down to what the API accepts —
@@ -102,6 +160,8 @@ async function create() {
     name.value = "";
     nameEdited.value = false;
     repo.value = "";
+    typedRepo.value = "";
+    branchEdited.value = false;
     toast.add({ title: `Project ${project.name} created`, color: "success", icon: "i-lucide-check" });
     emit("created");
     void router.push({ name: "project", params: { name: project.name } });
@@ -136,8 +196,27 @@ async function create() {
           icon="i-lucide-triangle-alert"
           :title="connections.error.value"
         />
-        <UFormField label="Repository" help="owner/name on the provider the git connection points at." required>
-          <UInput v-model="repo" placeholder="acme/shop" class="w-full font-mono" autofocus />
+        <UFormField label="Repository" :help="repoNote" required>
+          <USelectMenu
+            v-if="canPickRepo"
+            v-model="repo"
+            :items="repoOptions"
+            value-key="value"
+            :loading="repositories.loading.value"
+            :create-item="true"
+            placeholder="acme/shop"
+            class="w-full font-mono"
+            autofocus
+            @create="repoTypedIn"
+          />
+          <UInput
+            v-else
+            v-model="repo"
+            placeholder="acme/shop"
+            class="w-full font-mono"
+            :loading="repositories.loading.value"
+            autofocus
+          />
         </UFormField>
         <UFormField
           label="Name"
@@ -177,7 +256,7 @@ async function create() {
           <template v-else>ask an operator to add one before creating this project.</template>
         </p>
         <UFormField label="Production branch" help="Builds of this branch promote to production.">
-          <UInput v-model="productionBranch" class="w-44 font-mono" />
+          <UInput v-model="productionBranch" class="w-44 font-mono" @input="branchEdited = true" />
         </UFormField>
         <USwitch
           v-model="previews"

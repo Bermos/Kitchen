@@ -1279,8 +1279,10 @@ func (s *Server) deleteEnvironment(w http.ResponseWriter, req *http.Request) {
 // remove. So the route is filtered by role rather than refused: an operator
 // gets the connections, and everybody else gets the picker's own shape
 // (connectionChoiceView) — names, capabilities and readiness, and no way in
-// from here to read, create, test, change or delete one. Everything under
-// /connections/ stays the operator's.
+// from here to read, create, test, change or delete one. The only other route
+// a member reaches is the repository listing next door, which is the same
+// form's next field; everything else under /connections/ stays the
+// operator's.
 func (s *Server) listConnections(w http.ResponseWriter, req *http.Request) {
 	ctx := req.Context()
 	list := &kitchenv1alpha1.ConnectionList{}

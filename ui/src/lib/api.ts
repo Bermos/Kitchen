@@ -595,6 +595,40 @@ export interface ConnectionTestResult {
   warnings?: string[];
 }
 
+/**
+ * One repository a connection's credential can see, as
+ * `GET /connections/{name}/repositories` lists it.
+ *
+ * `fullName` is owner/name — the only field a project is actually created
+ * with. `defaultBranch` is what the production branch should start as, and
+ * the other two are there so two similarly-named repositories can be told
+ * apart in a list.
+ */
+export interface Repository {
+  fullName: string;
+  defaultBranch?: string;
+  private?: boolean;
+  description?: string;
+}
+
+/**
+ * What a connection can see, and whether it could be asked at all.
+ *
+ * `supported` is the field that matters: a provider the platform cannot
+ * enumerate is not a failure, it is a field that has to be typed into, and
+ * the API says so with a 200 rather than an error. `truncated` says the
+ * listing was cut short at the provider — a repository missing from a picker
+ * is otherwise indistinguishable from one that does not exist.
+ */
+export interface ConnectionRepositories {
+  provider: string;
+  supported: boolean;
+  items: Repository[];
+  truncated?: boolean;
+  /** Why there is no listing, in words a form can show. */
+  message?: string;
+}
+
 /** The DNS change that proves ownership of a custom domain, exactly as the
  * user has to type it into their zone. Either record satisfies the check;
  * the CNAME also routes the hostname at the platform. */
@@ -2132,6 +2166,11 @@ export const api = {
   testConnection: (test: ConnectionTestRequest) =>
     request<ConnectionTestResult>("POST", "/connections/test", test),
   deleteConnection: (name: string) => request<void>("DELETE", `/connections/${name}`),
+  // What this connection's credential can see, for the repository field of
+  // the create-a-project form. Any account may ask: creating a project is
+  // self-service, and this is the field after the connection.
+  connectionRepositories: (name: string) =>
+    request<ConnectionRepositories>("GET", `/connections/${encodeURIComponent(name)}/repositories`),
   domains: list<Domain>("/domains"),
   domain: (name: string) => request<Domain>("GET", `/domains/${name}`),
   createDomain: (domain: NewDomain) => request<Domain>("POST", "/domains", domain),

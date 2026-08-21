@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest";
-import type { Connection } from "./api";
-import { connectionChoices, connectionProvides, connectionReady, noteFor, selectableChoices } from "./connections";
+import type { Connection, ConnectionRepositories } from "./api";
+import {
+  connectionChoices,
+  connectionProvides,
+  connectionReady,
+  defaultBranchFor,
+  noteFor,
+  repositoryChoices,
+  repositoryNote,
+  selectableChoices,
+} from "./connections";
 
 // The picker reads two shapes: the operator's connection, and the thinned one
 // everybody else is answered with. These are about the seam between them —
@@ -112,5 +121,76 @@ describe("the caveat under the field", () => {
     expect(noteFor(choices, "other")).toBe("");
     expect(noteFor(choices, undefined)).toBe("");
     expect(noteFor(choices, "gone")).toBe("");
+  });
+});
+
+// The repository field of the same form. Three answers arrive on a 200 — a
+// listing, a provider that cannot be asked, and a listing cut short — and the
+// field has to render all three without ever losing the ability to be typed
+// into.
+
+const listing = (over: Partial<ConnectionRepositories> = {}): ConnectionRepositories => ({
+  provider: "github",
+  supported: true,
+  items: [
+    { fullName: "acme/shop", defaultBranch: "main", private: true, description: "the shop" },
+    { fullName: "acme/blog", defaultBranch: "trunk" },
+  ],
+  ...over,
+});
+
+describe("the repositories a connection can see", () => {
+  it("offers them in the order the provider answered", () => {
+    expect(repositoryChoices(listing()).map((c) => c.value)).toEqual(["acme/shop", "acme/blog"]);
+  });
+
+  it("describes an entry by the provider's words, or by what else tells it apart", () => {
+    const choices = repositoryChoices(listing());
+    expect(choices[0]!.description).toBe("the shop");
+    expect(choices[1]!.description).toBeUndefined();
+    expect(repositoryChoices(listing({ items: [{ fullName: "acme/secret", private: true }] }))[0]!.description).toBe(
+      "private",
+    );
+  });
+
+  it("offers nothing for a provider that cannot be asked, or before one was", () => {
+    expect(repositoryChoices(listing({ supported: false, items: [] }))).toEqual([]);
+    expect(repositoryChoices(undefined)).toEqual([]);
+  });
+});
+
+describe("the line under the repository field", () => {
+  it("says how to carry on when the listing failed", () => {
+    expect(repositoryNote(undefined, "connection \"hub\" could not list repositories")).toContain("owner/name");
+  });
+
+  it("passes on why a provider could not be asked", () => {
+    const note = repositoryNote(listing({ supported: false, items: [], message: "no gitlab implementation yet" }));
+    expect(note).toBe("no gitlab implementation yet");
+  });
+
+  it("says outright when the listing was cut short", () => {
+    expect(repositoryNote(listing({ truncated: true }))).toContain("type the name");
+  });
+
+  it("says a working credential sees nothing rather than leaving the field blank", () => {
+    expect(repositoryNote(listing({ items: [] }))).toContain("no repositories");
+  });
+
+  it("has nothing to add to a complete listing", () => {
+    expect(repositoryNote(listing())).toContain("owner/name");
+  });
+});
+
+describe("the branch a chosen repository deploys from", () => {
+  it("is the provider's default branch", () => {
+    expect(defaultBranchFor(listing(), "acme/blog")).toBe("trunk");
+  });
+
+  it("is nothing for a name that was typed rather than chosen", () => {
+    expect(defaultBranchFor(listing(), "acme/other")).toBeUndefined();
+    expect(defaultBranchFor(listing(), undefined)).toBeUndefined();
+    expect(defaultBranchFor(undefined, "acme/shop")).toBeUndefined();
+    expect(defaultBranchFor(listing({ items: [{ fullName: "acme/shop" }] }), "acme/shop")).toBeUndefined();
   });
 });
