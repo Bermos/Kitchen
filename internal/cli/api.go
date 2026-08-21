@@ -99,6 +99,58 @@ type project struct {
 	Conditions            []condition `json:"conditions,omitempty"`
 }
 
+// connection is one of the platform's Connections as somebody choosing one
+// sees it. `GET /connections` answers two shapes — the operator's, with a
+// provider and conditions, and the picker's, with readiness — and this reads
+// either: the fields the other shape does not carry simply arrive empty, which
+// is what lets one command serve both roles.
+type connection struct {
+	Name         string   `json:"name"`
+	Provider     string   `json:"provider,omitempty"`
+	Capabilities []string `json:"capabilities,omitempty"`
+	Ready        bool     `json:"ready"`
+}
+
+// can reports whether a connection offers a capability. A connection that has
+// reported none yet is not refused here, for the same reason the API does not
+// refuse it: nothing has assessed it, which is not the same as it being wrong.
+func (c connection) can(capability string) bool {
+	if len(c.Capabilities) == 0 {
+		return true
+	}
+	for _, offered := range c.Capabilities {
+		if offered == capability {
+			return true
+		}
+	}
+	return false
+}
+
+// The two capabilities a project names, spelled as the API spells them.
+const (
+	capabilityGitSource  = "gitSource"
+	capabilityImageStore = "imageStore"
+)
+
+// detection is what the platform makes of a repository before a project exists
+// — `POST /connections/{name}/detect`, the same preflight the dashboard's
+// new-project dialog runs.
+//
+// It is advice, not admission: `detected` false is a repository the platform
+// has no framework for, which is a fine thing to create a project from if it
+// has a Dockerfile or if the person knows something the detector does not.
+type detection struct {
+	Detected      bool     `json:"detected"`
+	Framework     string   `json:"framework,omitempty"`
+	Strategy      string   `json:"strategy,omitempty"`
+	Port          int32    `json:"port,omitempty"`
+	Ref           string   `json:"ref,omitempty"`
+	RootDirectory string   `json:"rootDirectory,omitempty"`
+	Dockerfile    bool     `json:"dockerfile"`
+	Files         []string `json:"files,omitempty"`
+	Message       string   `json:"message,omitempty"`
+}
+
 // revision is the commit a build was of.
 type revision struct {
 	SHA         string `json:"sha"`
@@ -320,6 +372,29 @@ const (
 	phaseDegraded  = "Degraded"
 )
 
+// detectTarget is the preflight's request: POST /connections/{name}/detect. It
+// asks the question a project carries the answers to, at the one moment a wrong
+// root directory is still free to correct.
+type detectTarget struct {
+	Repo           string `json:"repo"`
+	Ref            string `json:"ref,omitempty"`
+	RootDirectory  string `json:"rootDirectory,omitempty"`
+	DockerfilePath string `json:"dockerfilePath,omitempty"`
+}
+
+// newProject is POST /projects. Previews is a pointer so that not passing
+// --previews leaves the platform's default alone rather than turning them off.
+type newProject struct {
+	Name             string `json:"name"`
+	Repo             string `json:"repo"`
+	Connection       string `json:"connection"`
+	Registry         string `json:"registry"`
+	ProductionBranch string `json:"productionBranch,omitempty"`
+	Previews         *bool  `json:"previews,omitempty"`
+	RootDirectory    string `json:"rootDirectory,omitempty"`
+	DockerfilePath   string `json:"dockerfilePath,omitempty"`
+}
+
 // envVarWrite is one variable on the way *in*, which is the only direction a
 // value ever travels.
 //
@@ -364,6 +439,32 @@ func (c *client) projects(ctx context.Context) ([]project, error) {
 func (c *client) project(ctx context.Context, name string) (*project, error) {
 	answer := &project{}
 	return answer, c.do(ctx, "reading the project "+name, http.MethodGet, "/projects/"+name, nil, nil, answer)
+}
+
+func (c *client) connections(ctx context.Context) ([]connection, error) {
+	answer := &list[connection]{}
+	err := c.do(ctx, "listing connections", http.MethodGet, "/connections", nil, nil, answer)
+	return answer.Items, err
+}
+
+// detect asks what the platform makes of a repository, before there is a
+// project to ask about. It is the create flow's preflight, and the answer is
+// advice: a repository the platform has no framework for is still one a
+// project can be created from.
+func (c *client) detect(ctx context.Context, conn string, target detectTarget) (*detection, error) {
+	answer := &detection{}
+	err := c.do(ctx, "reading what "+target.Repo+" looks like",
+		http.MethodPost, "/connections/"+conn+"/detect", nil, target, answer)
+	return answer, err
+}
+
+// createProject is the create. The build context travels with it rather than
+// after it, because creating a project starts a build straight away — a root
+// directory corrected by a later PATCH is corrected one failed build too late.
+func (c *client) createProject(ctx context.Context, body newProject) (*project, error) {
+	answer := &project{}
+	return answer, c.do(ctx, "creating the project "+body.Name,
+		http.MethodPost, "/projects", nil, body, answer)
 }
 
 // setEnv replaces a project's whole variable list. The API keeps the value of

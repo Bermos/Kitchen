@@ -74,6 +74,9 @@ An API key is a member of exactly one project, so a key sees one.`),
 			})
 		}),
 	}
+	// The one write that hangs off a listing, because it is the same noun and
+	// `kitchen projects create` is where somebody looks for it.
+	cmd.AddCommand(newProjectCreateCommand(r))
 	return describe(cmd, meta{
 		Calls:    []string{"GET /api/v1/projects"},
 		Output:   output{Mode: outputDocument, Kind: "projectList"},

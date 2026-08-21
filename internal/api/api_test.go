@@ -918,6 +918,31 @@ func TestCreatingAProject(t *testing.T) {
 	}
 }
 
+// The build context travels with the create rather than after it, because
+// creating a project starts a build straight away: a root directory corrected
+// by a later PATCH is corrected one failed build too late.
+func TestCreatingAProjectKeepsTheBuildContext(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+
+	recorder := h.do(t, http.MethodPost, "/api/v1/projects",
+		`{"name":"blog","repo":"acme/blog","connection":"gh","registry":"registry",`+
+			`"rootDirectory":"/apps/blog/","dockerfilePath":" Dockerfile.web "}`)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+
+	stored := &kitchenv1alpha1.Project{}
+	if err := h.server.get(context.Background(), otherProject, stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored.Spec.Build.RootDirectory != "apps/blog" {
+		t.Errorf("the root directory was not normalised and kept: %q", stored.Spec.Build.RootDirectory)
+	}
+	if stored.Spec.Build.DockerfilePath != "Dockerfile.web" {
+		t.Errorf("the Dockerfile path did not stick: %q", stored.Spec.Build.DockerfilePath)
+	}
+}
+
 func TestCreatingAProjectAppliesTheDefaults(t *testing.T) {
 	h := newHarness(t, nil, fixtures()...)
 

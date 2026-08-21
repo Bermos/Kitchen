@@ -101,6 +101,14 @@ func (s *Server) getProject(w http.ResponseWriter, req *http.Request) {
 // repository, and the two Connections it builds and stores images with. It
 // speaks the API's vocabulary — connections are named, never nested specs —
 // and everything else on a Project keeps its default until a flow needs it.
+//
+// RootDirectory and DockerfilePath are the exception, and they are here
+// because of what happens immediately afterwards: creating a project starts a
+// build of the production branch. A monorepo whose application is in
+// apps/shop, or a Dockerfile somewhere other than the root, would have that
+// first build fail and then be corrected by a PATCH nobody realises they need
+// — so the two fields the preflight (POST /connections/{name}/detect) exists
+// to let somebody correct are the two that can be sent with the project.
 type createProjectRequest struct {
 	Name             string `json:"name"`
 	Repo             string `json:"repo"`
@@ -108,6 +116,8 @@ type createProjectRequest struct {
 	Registry         string `json:"registry"`
 	ProductionBranch string `json:"productionBranch,omitempty"`
 	Previews         *bool  `json:"previews,omitempty"`
+	RootDirectory    string `json:"rootDirectory,omitempty"`
+	DockerfilePath   string `json:"dockerfilePath,omitempty"`
 }
 
 // maxProjectNameLength is what fits: the platform derives object names from
@@ -187,6 +197,8 @@ func (s *Server) createProject(w http.ResponseWriter, req *http.Request) {
 	body.Connection = strings.TrimSpace(body.Connection)
 	body.Registry = strings.TrimSpace(body.Registry)
 	body.ProductionBranch = strings.TrimSpace(body.ProductionBranch)
+	body.RootDirectory = normalizeRootDirectory(body.RootDirectory)
+	body.DockerfilePath = strings.TrimSpace(body.DockerfilePath)
 
 	if err := validateProjectName(body.Name); err != nil {
 		badRequest(w, "%s", err.Error())
@@ -236,6 +248,10 @@ func (s *Server) createProject(w http.ResponseWriter, req *http.Request) {
 				ConnectionRef: kitchenv1alpha1.LocalObjectReference{Name: body.Registry},
 			},
 			Previews: kitchenv1alpha1.PreviewsSpec{Enabled: previews},
+			Build: kitchenv1alpha1.ProjectBuildSpec{
+				RootDirectory:  body.RootDirectory,
+				DockerfilePath: body.DockerfilePath,
+			},
 			// Creating a project is self-service, and the account that creates
 			// one is its admin (docs/AUTH.md, "Who may do what"). The grant is
 			// written here rather than implied, because implying it would mean
