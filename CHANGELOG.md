@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.12.0](https://github.com/Bermos/Kitchen/compare/v0.11.0...v0.12.0) (2026-08-22)
+
+
+### Features
+
+* **operator:** data classification and residency as first-class fields ([#137](https://github.com/Bermos/Kitchen/issues/137)) ([8d9b9f3](https://github.com/Bermos/Kitchen/commit/8d9b9f3f909c99fdaef4f759350455c2cfcab9a5))
+* **operator:** embedded OPA policy engine with reproducible stored decisions ([#132](https://github.com/Bermos/Kitchen/issues/132)) ([69363df](https://github.com/Bermos/Kitchen/commit/69363df3e11d98a22cf0f104d8c3d772d40e9dab))
+* **operator:** environment ownership and eligibility requirements ([#131](https://github.com/Bermos/Kitchen/issues/131)) ([644c02c](https://github.com/Bermos/Kitchen/commit/644c02c98441699e476185d08595a15936c7e366))
+* **operator:** exception and break-glass object with expiry and escalation ([#136](https://github.com/Bermos/Kitchen/issues/136)) ([d8d21f2](https://github.com/Bermos/Kitchen/commit/d8d21f29d0ae813d17020c115dbb5accda136bae))
+* **operator:** resource claim provider contract with data-class attestation ([#138](https://github.com/Bermos/Kitchen/issues/138)) ([4db593d](https://github.com/Bermos/Kitchen/commit/4db593d566aec8cd713c635152e1baef3b5b395b))
+* **operator:** staged promotion pipeline with policy-gated stages ([#133](https://github.com/Bermos/Kitchen/issues/133)) ([2a7babb](https://github.com/Bermos/Kitchen/commit/2a7babb5812194e6eba58f362067b548ba50f7d3))
+
+
+### Bug fixes
+
+* **operator:** clone private repositories with the source connection's token ([8a64253](https://github.com/Bermos/Kitchen/commit/8a64253afd8d6fcb148acdf2963a2f89b1831bb2))
+* **operator:** close the seams between the compliance issues ([#144](https://github.com/Bermos/Kitchen/issues/144)) ([543c6bc](https://github.com/Bermos/Kitchen/commit/543c6bc879b470137ef6ed741e62ba211c444d1c))
+
+
+### Documentation
+
+* walk the diff once before a pull request opens ([5cacded](https://github.com/Bermos/Kitchen/commit/5cacdedb876c9506a85940d370a92407c07d3c69))
+
 ## [0.11.0](https://github.com/Bermos/Kitchen/compare/v0.10.0...v0.11.0) (2026-08-21)
 
 
