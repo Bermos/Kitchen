@@ -37,7 +37,7 @@ func TestGitHubProbeAcceptsAndReportsScopes(t *testing.T) {
 	}))
 	defer server.Close()
 
-	result := (&GitHubProbe{APIURL: server.URL, Token: "tok"}).Probe(context.Background())
+	result := (&GitHubProbe{APIURL: server.URL, Token: testToken}).Probe(context.Background())
 	if !result.Reachable || !result.CredentialChecked || !result.CredentialValid {
 		t.Errorf("expected an accepted credential, got %+v", result)
 	}
@@ -62,7 +62,7 @@ func probeWithScopes(t *testing.T, scopes string, present bool) Result {
 		_, _ = w.Write([]byte(`{"login": "octocat"}`))
 	}))
 	defer server.Close()
-	return (&GitHubProbe{APIURL: server.URL, Token: "tok"}).Probe(context.Background())
+	return (&GitHubProbe{APIURL: server.URL, Token: testToken}).Probe(context.Background())
 }
 
 func TestGitHubProbeWarnsAboutWhatAScopeCannotDo(t *testing.T) {
@@ -137,7 +137,7 @@ func TestGitHubProbeLeavesServerErrorsUnjudged(t *testing.T) {
 	}))
 	defer server.Close()
 
-	result := (&GitHubProbe{APIURL: server.URL, Token: "tok"}).Probe(context.Background())
+	result := (&GitHubProbe{APIURL: server.URL, Token: testToken}).Probe(context.Background())
 	if !result.Reachable || result.CredentialChecked {
 		t.Errorf("expected reachable but unjudged, got %+v", result)
 	}
@@ -147,7 +147,7 @@ func TestGitHubProbeReportsUnreachable(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	server.Close() // The address exists; nothing answers on it.
 
-	result := (&GitHubProbe{APIURL: server.URL, Token: "tok"}).Probe(context.Background())
+	result := (&GitHubProbe{APIURL: server.URL, Token: testToken}).Probe(context.Background())
 	if result.Reachable || result.CredentialChecked {
 		t.Errorf("expected unreachable, got %+v", result)
 	}

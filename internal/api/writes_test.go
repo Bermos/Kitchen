@@ -776,16 +776,28 @@ func TestTestingAStoredCredential(t *testing.T) {
 	}
 }
 
-func TestTestingAProviderThePlatformCannotProbeYet(t *testing.T) {
+func TestTestingAGitLabCredential(t *testing.T) {
 	h := newHarness(t, nil, fixtures()...)
+	gitlab := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v4/user" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		if r.Header.Get("PRIVATE-TOKEN") != "glpat-good" {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte("denied"))
+			return
+		}
+		_, _ = w.Write([]byte(`{"username":"alice"}`))
+	}))
+	defer gitlab.Close()
 
-	// gitlab passes admission but nothing implements it: unchecked, not red.
-	view := testConnection(t, h, `{"provider": "gitlab", "credential": {"token": "glpat"}}`)
-	if view.CredentialChecked || view.CredentialValid {
-		t.Fatalf("an unimplemented provider ruled on a credential: %+v", view)
+	view := testConnection(t, h, `{"provider": "gitlab", "credential": {"token": "glpat-good"},
+		"config": {"apiUrl":"`+gitlab.URL+`/api/v4"}}`)
+	if !view.Reachable || !view.CredentialChecked || !view.CredentialValid {
+		t.Fatalf("a working gitlab token did not come back green: %+v", view)
 	}
-	if !strings.Contains(view.Message, "gitlab") {
-		t.Fatalf("the verdict does not say why nothing was checked: %+v", view)
+	if !strings.Contains(view.Message, "alice") {
+		t.Fatalf("the verdict does not carry the authenticated identity: %+v", view)
 	}
 }
 

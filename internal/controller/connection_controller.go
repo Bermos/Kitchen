@@ -152,8 +152,8 @@ func (r *ConnectionReconciler) probe(
 	}
 	credProbe, err := factory(conn, creds)
 	if errors.Is(err, provider.ErrNotImplemented) {
-		// gitlab and gitea pass admission but nothing in the platform can use
-		// them yet: an honest Unknown beats a fake green.
+		// The CRD can admit a provider before this operator version knows it:
+		// an honest Unknown beats a fake green.
 		message := fmt.Sprintf("the platform has no %s implementation yet, so the credential cannot be checked",
 			conn.Spec.Provider)
 		setCond(condConnected, metav1.ConditionUnknown, reasonProviderNotImplemented, message)

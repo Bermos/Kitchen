@@ -53,11 +53,13 @@ type Provider interface {
 	DeleteWebhook(ctx context.Context, repo, id string) error
 }
 
-// ProviderGitHub is the Connection provider name of the one git provider that
-// has an implementation behind it. It is a constant because it is also what a
-// provider's claims are attributed to in evidence, and the two spellings have
-// to be the same one.
-const ProviderGitHub = "github"
+// Provider names. They are constants because they are also what provider
+// claims are attributed to in evidence, and the spellings must stay aligned.
+const (
+	ProviderGitHub = "github"
+	ProviderGitLab = "gitlab"
+	ProviderGitea  = "gitea"
+)
 
 // Factory builds a Provider for a Connection. The token comes from the
 // Connection's credentials secret.
@@ -80,6 +82,34 @@ func Default(conn *kitchenv1alpha1.Connection, token string) (Provider, error) {
 			}
 		}
 		return &GitHub{APIURL: apiURL, Token: token}, nil
+	case ProviderGitLab:
+		apiURL := "https://gitlab.com/api/v4"
+		if conn.Spec.Config != nil {
+			var cfg struct {
+				APIURL string `json:"apiUrl"`
+			}
+			if err := json.Unmarshal(conn.Spec.Config.Raw, &cfg); err != nil {
+				return nil, fmt.Errorf("invalid gitlab config: %w", err)
+			}
+			if cfg.APIURL != "" {
+				apiURL = cfg.APIURL
+			}
+		}
+		return &GitLab{APIURL: apiURL, Token: token}, nil
+	case ProviderGitea:
+		apiURL := "https://gitea.com/api/v1"
+		if conn.Spec.Config != nil {
+			var cfg struct {
+				APIURL string `json:"apiUrl"`
+			}
+			if err := json.Unmarshal(conn.Spec.Config.Raw, &cfg); err != nil {
+				return nil, fmt.Errorf("invalid gitea config: %w", err)
+			}
+			if cfg.APIURL != "" {
+				apiURL = cfg.APIURL
+			}
+		}
+		return &Gitea{APIURL: apiURL, Token: token}, nil
 	default:
 		return nil, fmt.Errorf("%w: %s", ErrUnsupportedProvider, conn.Spec.Provider)
 	}
