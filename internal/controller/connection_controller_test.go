@@ -185,8 +185,8 @@ var _ = Describe("Connection Controller", func() {
 			Expect(result.RequeueAfter).To(Equal(connectionRetryInterval))
 		})
 
-		It("reports a provider nothing implements as Unknown, with no capabilities", func() {
-			key := createConnection("gitea-conn", "gitea", "whatever", "")
+		It("reports an unknown provider as Unknown, with no capabilities", func() {
+			key := createConnection("unknown-conn", "bitbucket", "whatever", "")
 			result := reconcileOnce(key)
 
 			conn := getConnection(key)
@@ -197,7 +197,7 @@ var _ = Describe("Connection Controller", func() {
 				Expect(condition.Status).To(Equal(metav1.ConditionUnknown))
 				Expect(condition.Reason).To(Equal(reasonProviderNotImplemented))
 			}
-			// Time will not implement gitea; only a new operator does.
+			// Time will not implement an unknown provider; only a new operator does.
 			Expect(result.RequeueAfter).To(BeZero())
 		})
 

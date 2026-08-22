@@ -40,6 +40,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/gitprovider"
 )
 
 const maxBodySize = 10 << 20 // 10 MiB
@@ -117,6 +118,62 @@ type prPayload struct {
 	} `json:"repository"`
 }
 
+type gitlabPushPayload struct {
+	Ref     string `json:"ref"`
+	After   string `json:"after"`
+	User    string `json:"user_name"`
+	Project struct {
+		PathWithNamespace string `json:"path_with_namespace"`
+	} `json:"project"`
+	Commits []struct {
+		Message string `json:"message"`
+		Author  struct {
+			Name     string `json:"name"`
+			Username string `json:"username"`
+		} `json:"author"`
+	} `json:"commits"`
+}
+
+type gitlabMRPayload struct {
+	ObjectAttributes struct {
+		Action       string `json:"action"`
+		State        string `json:"state"`
+		IID          int32  `json:"iid"`
+		SourceBranch string `json:"source_branch"`
+		LastCommit   struct {
+			ID      string `json:"id"`
+			Message string `json:"message"`
+		} `json:"last_commit"`
+	} `json:"object_attributes"`
+	Project struct {
+		PathWithNamespace string `json:"path_with_namespace"`
+	} `json:"project"`
+	User struct {
+		Username string `json:"username"`
+		Name     string `json:"name"`
+	} `json:"user"`
+}
+
+type giteaPushPayload struct {
+	Ref        string `json:"ref"`
+	After      string `json:"after"`
+	Repository struct {
+		FullName string `json:"full_name"`
+	} `json:"repository"`
+	HeadCommit struct {
+		Message string `json:"message"`
+		Author  struct {
+			Username string `json:"username"`
+			Name     string `json:"name"`
+		} `json:"author"`
+	} `json:"head_commit"`
+	Pusher struct {
+		UserName string `json:"username"`
+		Login    string `json:"login"`
+		FullName string `json:"full_name"`
+	} `json:"pusher"`
+}
+
 func (r *GitWebhookReceiver) handleGitEvent(w http.ResponseWriter, req *http.Request) {
 	ctx := req.Context()
 	log := logf.Log.WithName("git-webhook-receiver")
@@ -128,9 +185,12 @@ func (r *GitWebhookReceiver) handleGitEvent(w http.ResponseWriter, req *http.Req
 		return
 	}
 
-	// TODO: event parsing is GitHub-shaped for now; route by the
-	// Connection's provider once more git providers land.
-	event := req.Header.Get("X-GitHub-Event")
+	providerName, err := r.connectionProvider(ctx, connection)
+	if err != nil {
+		http.Error(w, "failed to load connection", http.StatusBadRequest)
+		return
+	}
+	event := webhookEvent(providerName, req.Header)
 	if event == "ping" {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("pong"))
@@ -142,7 +202,7 @@ func (r *GitWebhookReceiver) handleGitEvent(w http.ResponseWriter, req *http.Req
 		return
 	}
 
-	repo, err := repoFullName(event, body)
+	repo, err := repoFullName(providerName, event, body)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -159,7 +219,6 @@ func (r *GitWebhookReceiver) handleGitEvent(w http.ResponseWriter, req *http.Req
 		return
 	}
 
-	signature := req.Header.Get("X-Hub-Signature-256")
 	var created []string
 	verified := false
 	for i := range projects {
@@ -169,13 +228,13 @@ func (r *GitWebhookReceiver) handleGitEvent(w http.ResponseWriter, req *http.Req
 			log.Error(err, "no webhook secret", "project", project.Name)
 			continue
 		}
-		if !verifySignature(signature, body, secret) {
+		if !verifySignature(providerName, req.Header, body, secret) {
 			log.Info("signature verification failed", "project", project.Name, "repo", repo)
 			continue
 		}
 		verified = true
 
-		names, err := r.dispatch(ctx, project, event, body)
+		names, err := r.dispatch(ctx, project, providerName, event, body)
 		if err != nil {
 			log.Error(err, "failed to handle event", "project", project.Name, "event", event)
 			http.Error(w, "failed to handle event", http.StatusInternalServerError)
@@ -197,6 +256,25 @@ func (r *GitWebhookReceiver) handleGitEvent(w http.ResponseWriter, req *http.Req
 // dispatch handles a verified event for one project and returns the names of
 // any Builds it created.
 func (r *GitWebhookReceiver) dispatch(
+	ctx context.Context,
+	project *kitchenv1alpha1.Project,
+	providerName string,
+	event string,
+	body []byte,
+) ([]string, error) {
+	switch providerName {
+	case gitprovider.ProviderGitHub:
+		return r.dispatchGitHub(ctx, project, event, body)
+	case gitprovider.ProviderGitLab:
+		return r.dispatchGitLab(ctx, project, event, body)
+	case gitprovider.ProviderGitea:
+		return r.dispatchGitea(ctx, project, event, body)
+	default:
+		return nil, nil
+	}
+}
+
+func (r *GitWebhookReceiver) dispatchGitHub(
 	ctx context.Context,
 	project *kitchenv1alpha1.Project,
 	event string,
@@ -242,6 +320,110 @@ func (r *GitWebhookReceiver) dispatch(
 			return nil, nil
 		default:
 			return nil, nil
+		}
+	}
+	return nil, nil
+}
+
+func (r *GitWebhookReceiver) dispatchGitLab(
+	ctx context.Context,
+	project *kitchenv1alpha1.Project,
+	event string,
+	body []byte,
+) ([]string, error) {
+	switch event {
+	case "push":
+		payload := gitlabPushPayload{}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			return nil, err
+		}
+		if payload.After == "" || strings.Trim(payload.After, "0") == "" {
+			return nil, nil
+		}
+		if !strings.HasPrefix(payload.Ref, "refs/heads/") {
+			return nil, nil
+		}
+		branch := strings.TrimPrefix(payload.Ref, "refs/heads/")
+		message := ""
+		author := payload.User
+		if n := len(payload.Commits); n > 0 {
+			last := payload.Commits[n-1]
+			message = last.Message
+			if last.Author.Username != "" {
+				author = last.Author.Username
+			} else if last.Author.Name != "" {
+				author = last.Author.Name
+			}
+		}
+		return r.createBuild(ctx, project, payload.After, branch, message, author, nil)
+	case "pull_request":
+		payload := gitlabMRPayload{}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			return nil, err
+		}
+		action := strings.ToLower(payload.ObjectAttributes.Action)
+		switch action {
+		case "open", "opened", "update", "updated", "reopen", "reopened":
+			return r.createBuild(ctx, project,
+				payload.ObjectAttributes.LastCommit.ID,
+				payload.ObjectAttributes.SourceBranch,
+				payload.ObjectAttributes.LastCommit.Message,
+				prefer(payload.User.Username, payload.User.Name),
+				&payload.ObjectAttributes.IID)
+		case "close", "closed", "merge", "merged":
+			env := &kitchenv1alpha1.Environment{ObjectMeta: metav1.ObjectMeta{
+				Name:      fmt.Sprintf("%s-pr-%d", project.Name, payload.ObjectAttributes.IID),
+				Namespace: project.Namespace,
+			}}
+			if err := r.Client.Delete(ctx, env); err != nil && !apierrors.IsNotFound(err) {
+				return nil, err
+			}
+		}
+	}
+	return nil, nil
+}
+
+func (r *GitWebhookReceiver) dispatchGitea(
+	ctx context.Context,
+	project *kitchenv1alpha1.Project,
+	event string,
+	body []byte,
+) ([]string, error) {
+	switch event {
+	case "push":
+		payload := giteaPushPayload{}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			return nil, err
+		}
+		if payload.After == "" || strings.Trim(payload.After, "0") == "" {
+			return nil, nil
+		}
+		if !strings.HasPrefix(payload.Ref, "refs/heads/") {
+			return nil, nil
+		}
+		author := prefer(payload.HeadCommit.Author.Username, payload.Pusher.UserName)
+		author = prefer(author, payload.Pusher.Login)
+		author = prefer(author, payload.HeadCommit.Author.Name)
+		author = prefer(author, payload.Pusher.FullName)
+		branch := strings.TrimPrefix(payload.Ref, "refs/heads/")
+		return r.createBuild(ctx, project, payload.After, branch, payload.HeadCommit.Message, author, nil)
+	case "pull_request":
+		payload := prPayload{}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			return nil, err
+		}
+		switch payload.Action {
+		case "opened", "synchronize", "reopened":
+			return r.createBuild(ctx, project,
+				payload.PullRequest.Head.SHA, payload.PullRequest.Head.Ref, "", "", &payload.Number)
+		case "closed":
+			env := &kitchenv1alpha1.Environment{ObjectMeta: metav1.ObjectMeta{
+				Name:      fmt.Sprintf("%s-pr-%d", project.Name, payload.Number),
+				Namespace: project.Namespace,
+			}}
+			if err := r.Client.Delete(ctx, env); err != nil && !apierrors.IsNotFound(err) {
+				return nil, err
+			}
 		}
 	}
 	return nil, nil
@@ -310,7 +492,30 @@ func (r *GitWebhookReceiver) webhookSecret(ctx context.Context, project *kitchen
 	return value, nil
 }
 
-func repoFullName(event string, body []byte) (string, error) {
+func (r *GitWebhookReceiver) connectionProvider(ctx context.Context, connection string) (string, error) {
+	conn := &kitchenv1alpha1.Connection{}
+	key := types.NamespacedName{Namespace: r.Namespace, Name: connection}
+	if err := r.Client.Get(ctx, key, conn); err != nil {
+		return "", err
+	}
+	return conn.Spec.Provider, nil
+}
+
+func repoFullName(providerName, event string, body []byte) (string, error) {
+	if providerName == gitprovider.ProviderGitLab {
+		envelope := struct {
+			Project struct {
+				PathWithNamespace string `json:"path_with_namespace"`
+			} `json:"project"`
+		}{}
+		if err := json.Unmarshal(body, &envelope); err != nil {
+			return "", fmt.Errorf("invalid %s payload", event)
+		}
+		if envelope.Project.PathWithNamespace == "" {
+			return "", fmt.Errorf("%s payload has no repository", event)
+		}
+		return envelope.Project.PathWithNamespace, nil
+	}
 	envelope := struct {
 		Repository struct {
 			FullName string `json:"full_name"`
@@ -325,14 +530,61 @@ func repoFullName(event string, body []byte) (string, error) {
 	return envelope.Repository.FullName, nil
 }
 
-// verifySignature checks GitHub's X-Hub-Signature-256 HMAC over the body.
-func verifySignature(header string, body []byte, secret string) bool {
-	digest, ok := strings.CutPrefix(header, "sha256=")
-	if !ok {
+func webhookEvent(providerName string, header http.Header) string {
+	switch providerName {
+	case gitprovider.ProviderGitLab:
+		switch header.Get("X-Gitlab-Event") {
+		case "Push Hook":
+			return "push"
+		case "Merge Request Hook":
+			return "pull_request"
+		case "System Hook":
+			return "ping"
+		default:
+			return ""
+		}
+	case gitprovider.ProviderGitea:
+		return strings.ToLower(header.Get("X-Gitea-Event"))
+	default:
+		return strings.ToLower(header.Get("X-GitHub-Event"))
+	}
+}
+
+func verifySignature(providerName string, header http.Header, body []byte, secret string) bool {
+	switch providerName {
+	case gitprovider.ProviderGitLab:
+		return subtleEqual(header.Get("X-Gitlab-Token"), secret)
+	case gitprovider.ProviderGitea:
+		return verifyHMACSHA256(header.Get("X-Gitea-Signature"), body, secret)
+	default:
+		return verifyHMACSHA256(header.Get("X-Hub-Signature-256"), body, secret)
+	}
+}
+
+func verifyHMACSHA256(header string, body []byte, secret string) bool {
+	digest := strings.TrimSpace(header)
+	if digest == "" {
 		return false
+	}
+	if value, ok := strings.CutPrefix(strings.ToLower(digest), "sha256="); ok {
+		digest = value
 	}
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write(body)
 	expected := hex.EncodeToString(mac.Sum(nil))
 	return hmac.Equal([]byte(expected), []byte(digest))
+}
+
+func subtleEqual(a, b string) bool {
+	if len(a) == 0 || len(b) == 0 {
+		return false
+	}
+	return hmac.Equal([]byte(a), []byte(b))
+}
+
+func prefer(first, fallback string) string {
+	if first != "" {
+		return first
+	}
+	return fallback
 }

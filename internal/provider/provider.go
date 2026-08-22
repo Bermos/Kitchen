@@ -37,8 +37,8 @@ import (
 )
 
 // ErrNotImplemented marks a provider the CRD enum admits but the platform has
-// no implementation for yet (gitlab, gitea). A reconciler reports it as an
-// Unknown condition rather than pretending to have checked anything.
+// no implementation for yet. A reconciler reports it as an Unknown condition
+// rather than pretending to have checked anything.
 var ErrNotImplemented = errors.New("provider not implemented")
 
 // Result is the outcome of one probe. Reachability and credential validity
@@ -96,6 +96,26 @@ func Default(conn *kitchenv1alpha1.Connection, creds *corev1.Secret) (Probe, err
 			return nil, err
 		}
 		return &GitHubProbe{APIURL: apiURL, Token: token}, nil
+	case "gitlab":
+		token, err := tokenFrom(creds)
+		if err != nil {
+			return nil, err
+		}
+		apiURL, err := configuredAPIURL(conn, "https://gitlab.com/api/v4")
+		if err != nil {
+			return nil, err
+		}
+		return &GitLabProbe{APIURL: apiURL, Token: token}, nil
+	case "gitea":
+		token, err := tokenFrom(creds)
+		if err != nil {
+			return nil, err
+		}
+		apiURL, err := configuredAPIURL(conn, "https://gitea.com/api/v1")
+		if err != nil {
+			return nil, err
+		}
+		return &GiteaProbe{APIURL: apiURL, Token: token}, nil
 	case "neon":
 		token, err := tokenFrom(creds)
 		if err != nil {
@@ -114,10 +134,7 @@ func Default(conn *kitchenv1alpha1.Connection, creds *corev1.Secret) (Probe, err
 }
 
 // Capabilities is what the platform can actually do through a provider — the
-// operator matches Connections on these, never on provider names. gitlab and
-// gitea deliberately report none: the CRD enum admits them, but nothing in
-// the platform implements their git behavior yet, and a capability nothing
-// can honor would only mislead the matcher.
+// operator matches Connections on these, never on provider names.
 func Capabilities(providerName string) []kitchenv1alpha1.Capability {
 	switch providerName {
 	case "github":
@@ -125,6 +142,8 @@ func Capabilities(providerName string) []kitchenv1alpha1.Capability {
 			kitchenv1alpha1.CapabilityGitSource,
 			kitchenv1alpha1.CapabilityStatusChecks,
 		}
+	case "gitlab", "gitea":
+		return []kitchenv1alpha1.Capability{kitchenv1alpha1.CapabilityGitSource}
 	case "dockerRegistry":
 		return []kitchenv1alpha1.Capability{kitchenv1alpha1.CapabilityImageStore}
 	case "neon":

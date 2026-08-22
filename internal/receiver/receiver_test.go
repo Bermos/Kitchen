@@ -40,6 +40,14 @@ import (
 const webhookSecret = "hunter2"
 
 func newReceiver(t *testing.T, objs ...runtime.Object) (*GitWebhookReceiver, http.Handler) {
+	return newReceiverForProvider(t, "github", objs...)
+}
+
+func newReceiverForProvider(
+	t *testing.T,
+	provider string,
+	objs ...runtime.Object,
+) (*GitWebhookReceiver, http.Handler) {
 	t.Helper()
 	scheme := runtime.NewScheme()
 	if err := clientgoscheme.AddToScheme(scheme); err != nil {
@@ -65,9 +73,16 @@ func newReceiver(t *testing.T, objs ...runtime.Object) (*GitWebhookReceiver, htt
 		ObjectMeta: metav1.ObjectMeta{Name: "kitchen-webhook-shop", Namespace: "default"},
 		Data:       map[string][]byte{"secret": []byte(webhookSecret)},
 	}
+	connection := &kitchenv1alpha1.Connection{
+		ObjectMeta: metav1.ObjectMeta{Name: "gh", Namespace: "default"},
+		Spec: kitchenv1alpha1.ConnectionSpec{
+			Provider:             provider,
+			CredentialsSecretRef: kitchenv1alpha1.LocalObjectReference{Name: "gh-creds"},
+		},
+	}
 
 	c := fake.NewClientBuilder().WithScheme(scheme).
-		WithRuntimeObjects(append([]runtime.Object{project, secret}, objs...)...).Build()
+		WithRuntimeObjects(append([]runtime.Object{project, secret, connection}, objs...)...).Build()
 	r := &GitWebhookReceiver{Client: c, Namespace: "default"}
 	return r, r.handler()
 }
@@ -79,10 +94,33 @@ func sign(body []byte) string {
 }
 
 func deliver(handler http.Handler, event string, body []byte, signature string) *httptest.ResponseRecorder {
+	return deliverAs("github", handler, event, body, signature)
+}
+
+func deliverAs(
+	provider string,
+	handler http.Handler,
+	event string,
+	body []byte,
+	signature string,
+) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(http.MethodPost, "/webhooks/git/gh", bytes.NewReader(body))
-	req.Header.Set("X-GitHub-Event", event)
-	if signature != "" {
-		req.Header.Set("X-Hub-Signature-256", signature)
+	switch provider {
+	case "gitlab":
+		req.Header.Set("X-Gitlab-Event", event)
+		if signature != "" {
+			req.Header.Set("X-Gitlab-Token", signature)
+		}
+	case "gitea":
+		req.Header.Set("X-Gitea-Event", event)
+		if signature != "" {
+			req.Header.Set("X-Gitea-Signature", signature)
+		}
+	default:
+		req.Header.Set("X-GitHub-Event", event)
+		if signature != "" {
+			req.Header.Set("X-Hub-Signature-256", signature)
+		}
 	}
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -219,5 +257,54 @@ func TestPingAndUnknownRepo(t *testing.T) {
 	rec = deliver(handler, "push", body, sign(body))
 	if rec.Code != http.StatusAccepted {
 		t.Errorf("expected 202 for branch deletion, got %d", rec.Code)
+	}
+}
+
+func TestGitLabPushCreatesBuild(t *testing.T) {
+	r, handler := newReceiverForProvider(t, "gitlab")
+	body := []byte(`{
+		"ref": "refs/heads/main",
+		"after": "8f3a2c1d0abc456789ab",
+		"user_name": "bermos",
+		"project": {"path_with_namespace": "acme/shop"},
+		"commits": [{"message": "Add checkout", "author": {"username": "bermos"}}]
+	}`)
+
+	rec := deliverAs("gitlab", handler, "Push Hook", body, webhookSecret)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	build := &kitchenv1alpha1.Build{}
+	key := types.NamespacedName{Name: "shop-bld-8f3a2c1d0abc", Namespace: "default"}
+	if err := r.Client.Get(context.Background(), key, build); err != nil {
+		t.Fatalf("expected build to be created: %v", err)
+	}
+	if build.Spec.Git.Author != "bermos" || build.Spec.Git.Message != "Add checkout" {
+		t.Errorf("unexpected git metadata %+v", build.Spec.Git)
+	}
+}
+
+func TestGiteaPullRequestCreatesBuild(t *testing.T) {
+	r, handler := newReceiverForProvider(t, "gitea")
+	body := []byte(`{
+		"action": "opened",
+		"number": 42,
+		"pull_request": {"head": {"ref": "feat/checkout", "sha": "aaaabbbbccccdddd"}},
+		"repository": {"full_name": "acme/shop"}
+	}`)
+
+	rec := deliverAs("gitea", handler, "pull_request", body, sign(body))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	build := &kitchenv1alpha1.Build{}
+	key := types.NamespacedName{Name: "shop-bld-aaaabbbbcccc", Namespace: "default"}
+	if err := r.Client.Get(context.Background(), key, build); err != nil {
+		t.Fatalf("expected build to be created: %v", err)
+	}
+	if build.Spec.Git.PullRequest == nil || *build.Spec.Git.PullRequest != 42 {
+		t.Errorf("expected pull request 42, got %+v", build.Spec.Git.PullRequest)
 	}
 }
