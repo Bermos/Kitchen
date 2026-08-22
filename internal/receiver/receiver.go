@@ -45,6 +45,19 @@ import (
 
 const maxBodySize = 10 << 20 // 10 MiB
 
+// The normalized event names every provider's headers are mapped onto, and
+// the pull request actions the receiver acts on. GitLab's own spellings are
+// folded onto these in webhookEvent and dispatchGitLab.
+const (
+	eventPush        = "push"
+	eventPullRequest = "pull_request"
+	eventPing        = "ping"
+
+	actionOpened   = "opened"
+	actionReopened = "reopened"
+	actionClosed   = "closed"
+)
+
 // GitWebhookReceiver serves POST /webhooks/git/<connection> and creates Build
 // CRs for verified events. It runs as a manager Runnable on every replica
 // (webhook delivery does not need leader election).
@@ -190,12 +203,12 @@ func (r *GitWebhookReceiver) handleGitEvent(w http.ResponseWriter, req *http.Req
 		return
 	}
 	event := webhookEvent(providerName, req.Header)
-	if event == "ping" {
+	if event == eventPing {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("pong"))
 		return
 	}
-	if event != "push" && event != "pull_request" {
+	if event != eventPush && event != eventPullRequest {
 		w.WriteHeader(http.StatusAccepted)
 		_, _ = fmt.Fprintf(w, "event %q ignored", event)
 		return
@@ -280,7 +293,7 @@ func (r *GitWebhookReceiver) dispatchGitHub(
 	body []byte,
 ) ([]string, error) {
 	switch event {
-	case "push":
+	case eventPush:
 		payload := pushPayload{}
 		if err := json.Unmarshal(body, &payload); err != nil {
 			return nil, err
@@ -298,16 +311,16 @@ func (r *GitWebhookReceiver) dispatchGitHub(
 		}
 		return r.createBuild(ctx, project, payload.After, branch, payload.HeadCommit.Message, author, nil)
 
-	case "pull_request":
+	case eventPullRequest:
 		payload := prPayload{}
 		if err := json.Unmarshal(body, &payload); err != nil {
 			return nil, err
 		}
 		switch payload.Action {
-		case "opened", "synchronize", "reopened":
+		case actionOpened, "synchronize", actionReopened:
 			return r.createBuild(ctx, project,
 				payload.PullRequest.Head.SHA, payload.PullRequest.Head.Ref, "", "", &payload.Number)
-		case "closed":
+		case actionClosed:
 			// TODO: honor previews.ttlAfterClosed instead of immediate teardown.
 			env := &kitchenv1alpha1.Environment{ObjectMeta: metav1.ObjectMeta{
 				Name:      fmt.Sprintf("%s-pr-%d", project.Name, payload.Number),
@@ -331,7 +344,7 @@ func (r *GitWebhookReceiver) dispatchGitLab(
 	body []byte,
 ) ([]string, error) {
 	switch event {
-	case "push":
+	case eventPush:
 		payload := gitlabPushPayload{}
 		if err := json.Unmarshal(body, &payload); err != nil {
 			return nil, err
@@ -355,21 +368,21 @@ func (r *GitWebhookReceiver) dispatchGitLab(
 			}
 		}
 		return r.createBuild(ctx, project, payload.After, branch, message, author, nil)
-	case "pull_request":
+	case eventPullRequest:
 		payload := gitlabMRPayload{}
 		if err := json.Unmarshal(body, &payload); err != nil {
 			return nil, err
 		}
 		action := strings.ToLower(payload.ObjectAttributes.Action)
 		switch action {
-		case "open", "opened", "update", "updated", "reopen", "reopened":
+		case "open", actionOpened, "update", "updated", "reopen", actionReopened:
 			return r.createBuild(ctx, project,
 				payload.ObjectAttributes.LastCommit.ID,
 				payload.ObjectAttributes.SourceBranch,
 				payload.ObjectAttributes.LastCommit.Message,
 				prefer(payload.User.Username, payload.User.Name),
 				&payload.ObjectAttributes.IID)
-		case "close", "closed", "merge", "merged":
+		case "close", actionClosed, "merge", "merged":
 			env := &kitchenv1alpha1.Environment{ObjectMeta: metav1.ObjectMeta{
 				Name:      fmt.Sprintf("%s-pr-%d", project.Name, payload.ObjectAttributes.IID),
 				Namespace: project.Namespace,
@@ -389,7 +402,7 @@ func (r *GitWebhookReceiver) dispatchGitea(
 	body []byte,
 ) ([]string, error) {
 	switch event {
-	case "push":
+	case eventPush:
 		payload := giteaPushPayload{}
 		if err := json.Unmarshal(body, &payload); err != nil {
 			return nil, err
@@ -405,16 +418,16 @@ func (r *GitWebhookReceiver) dispatchGitea(
 		author = prefer(author, payload.Pusher.FullName)
 		branch := strings.TrimPrefix(payload.Ref, "refs/heads/")
 		return r.createBuild(ctx, project, payload.After, branch, payload.HeadCommit.Message, author, nil)
-	case "pull_request":
+	case eventPullRequest:
 		payload := prPayload{}
 		if err := json.Unmarshal(body, &payload); err != nil {
 			return nil, err
 		}
 		switch payload.Action {
-		case "opened", "synchronize", "reopened":
+		case actionOpened, "synchronize", actionReopened:
 			return r.createBuild(ctx, project,
 				payload.PullRequest.Head.SHA, payload.PullRequest.Head.Ref, "", "", &payload.Number)
-		case "closed":
+		case actionClosed:
 			env := &kitchenv1alpha1.Environment{ObjectMeta: metav1.ObjectMeta{
 				Name:      fmt.Sprintf("%s-pr-%d", project.Name, payload.Number),
 				Namespace: project.Namespace,
@@ -533,11 +546,11 @@ func webhookEvent(providerName string, header http.Header) string {
 	case gitprovider.ProviderGitLab:
 		switch header.Get("X-Gitlab-Event") {
 		case "Push Hook":
-			return "push"
+			return eventPush
 		case "Merge Request Hook":
-			return "pull_request"
+			return eventPullRequest
 		case "System Hook":
-			return "ping"
+			return eventPing
 		default:
 			return ""
 		}

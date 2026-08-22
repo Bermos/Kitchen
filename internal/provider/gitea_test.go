@@ -33,7 +33,7 @@ func TestGiteaProbeAcceptsCredential(t *testing.T) {
 	}))
 	defer server.Close()
 
-	result := (&GiteaProbe{APIURL: server.URL, Token: "tok"}).Probe(context.Background())
+	result := (&GiteaProbe{APIURL: server.URL, Token: testToken}).Probe(context.Background())
 	if !result.Reachable || !result.CredentialChecked || !result.CredentialValid {
 		t.Fatalf("expected accepted credential, got %+v", result)
 	}

@@ -24,13 +24,18 @@ import (
 	"testing"
 )
 
+const (
+	giteaHooksPath  = "/repos/acme/shop/hooks"
+	giteaHookSecret = "hunter2"
+)
+
 func TestGiteaEnsureWebhookCreates(t *testing.T) {
 	var created giteaHook
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method + " " + r.URL.Path {
-		case "GET /repos/acme/shop/hooks":
+		case "GET " + giteaHooksPath:
 			_, _ = w.Write([]byte(`[]`))
-		case "POST /repos/acme/shop/hooks":
+		case "POST " + giteaHooksPath:
 			if err := json.NewDecoder(r.Body).Decode(&created); err != nil {
 				t.Fatal(err)
 			}
@@ -46,7 +51,7 @@ func TestGiteaEnsureWebhookCreates(t *testing.T) {
 	gt := &Gitea{APIURL: server.URL, Token: "tok"}
 	id, err := gt.EnsureWebhook(context.Background(), "acme/shop", WebhookSpec{
 		URL:    "https://kitchen.example.com/webhooks/git/gt",
-		Secret: "hunter2",
+		Secret: giteaHookSecret,
 		Events: []string{"push", "pull_request"},
 	})
 	if err != nil {
@@ -55,7 +60,7 @@ func TestGiteaEnsureWebhookCreates(t *testing.T) {
 	if id != "42" {
 		t.Errorf("expected id 42, got %s", id)
 	}
-	if created.Config.Secret != "hunter2" || created.Config.ContentType != "json" {
+	if created.Config.Secret != giteaHookSecret || created.Config.ContentType != "json" {
 		t.Errorf("unexpected hook config %+v", created.Config)
 	}
 }

@@ -26,14 +26,14 @@ import (
 
 func TestGitLabProbeAcceptsCredential(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := r.Header.Get("PRIVATE-TOKEN"); got != "tok" {
+		if got := r.Header.Get("PRIVATE-TOKEN"); got != testToken {
 			t.Errorf("unexpected token header %q", got)
 		}
 		_, _ = w.Write([]byte(`{"username":"bermos"}`))
 	}))
 	defer server.Close()
 
-	result := (&GitLabProbe{APIURL: server.URL, Token: "tok"}).Probe(context.Background())
+	result := (&GitLabProbe{APIURL: server.URL, Token: testToken}).Probe(context.Background())
 	if !result.Reachable || !result.CredentialChecked || !result.CredentialValid {
 		t.Fatalf("expected accepted credential, got %+v", result)
 	}

@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"time"
@@ -33,6 +34,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/provider"
 )
 
 var _ = Describe("Connection Controller", func() {
@@ -185,19 +187,24 @@ var _ = Describe("Connection Controller", func() {
 			Expect(result.RequeueAfter).To(Equal(connectionRetryInterval))
 		})
 
-		It("reports an unknown provider as Unknown, with no capabilities", func() {
-			key := createConnection("unknown-conn", "bitbucket", "whatever", "")
+		It("reports an unimplemented provider as Unknown", func() {
+			// Every value the CRD enum admits now has an implementation, so
+			// the path is reached through a factory that has none — which is
+			// what the reconciler actually depends on.
+			reconciler.Probes = func(*kitchenv1alpha1.Connection, *corev1.Secret) (provider.Probe, error) {
+				return nil, fmt.Errorf("%w: nothing here", provider.ErrNotImplemented)
+			}
+			key := createConnection("unknown-conn", "github", "whatever", "")
 			result := reconcileOnce(key)
 
 			conn := getConnection(key)
-			Expect(conn.Status.Capabilities).To(BeEmpty())
 			for _, condType := range []string{condConnected, condCredentialsValid} {
 				condition := meta.FindStatusCondition(conn.Status.Conditions, condType)
 				Expect(condition).NotTo(BeNil())
 				Expect(condition.Status).To(Equal(metav1.ConditionUnknown))
 				Expect(condition.Reason).To(Equal(reasonProviderNotImplemented))
 			}
-			// Time will not implement an unknown provider; only a new operator does.
+			// Time will not implement a missing provider; only a new operator does.
 			Expect(result.RequeueAfter).To(BeZero())
 		})
 

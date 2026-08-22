@@ -50,31 +50,33 @@ func tokenSecret(token string) *corev1.Secret {
 	}
 }
 
+const testToken = "tok"
+
 func TestDefaultResolvesImplementedProviders(t *testing.T) {
-	probe, err := Default(connection("github", `{"apiUrl": "https://ghe.internal/api/v3"}`), tokenSecret("tok"))
+	probe, err := Default(connection("github", `{"apiUrl": "https://ghe.internal/api/v3"}`), tokenSecret(testToken))
 	if err != nil {
 		t.Fatal(err)
 	}
 	gh, ok := probe.(*GitHubProbe)
-	if !ok || gh.APIURL != "https://ghe.internal/api/v3" || gh.Token != "tok" {
+	if !ok || gh.APIURL != "https://ghe.internal/api/v3" || gh.Token != testToken {
 		t.Errorf("unexpected github probe %#v", probe)
 	}
 
-	probe, err = Default(connection("gitlab", `{"apiUrl": "https://gitlab.internal/api/v4"}`), tokenSecret("tok"))
+	probe, err = Default(connection("gitlab", `{"apiUrl": "https://gitlab.internal/api/v4"}`), tokenSecret(testToken))
 	if err != nil {
 		t.Fatal(err)
 	}
 	gl, ok := probe.(*GitLabProbe)
-	if !ok || gl.APIURL != "https://gitlab.internal/api/v4" || gl.Token != "tok" {
+	if !ok || gl.APIURL != "https://gitlab.internal/api/v4" || gl.Token != testToken {
 		t.Errorf("unexpected gitlab probe %#v", probe)
 	}
 
-	probe, err = Default(connection("gitea", `{"apiUrl": "https://git.internal/api/v1"}`), tokenSecret("tok"))
+	probe, err = Default(connection("gitea", `{"apiUrl": "https://git.internal/api/v1"}`), tokenSecret(testToken))
 	if err != nil {
 		t.Fatal(err)
 	}
 	gt, ok := probe.(*GiteaProbe)
-	if !ok || gt.APIURL != "https://git.internal/api/v1" || gt.Token != "tok" {
+	if !ok || gt.APIURL != "https://git.internal/api/v1" || gt.Token != testToken {
 		t.Errorf("unexpected gitea probe %#v", probe)
 	}
 
@@ -90,7 +92,7 @@ func TestDefaultResolvesImplementedProviders(t *testing.T) {
 
 func TestDefaultRefusesUnimplementedProviders(t *testing.T) {
 	for _, name := range []string{"bitbucket", "svn"} {
-		_, err := Default(connection(name, ""), tokenSecret("tok"))
+		_, err := Default(connection(name, ""), tokenSecret(testToken))
 		if !errors.Is(err, ErrNotImplemented) {
 			t.Errorf("expected ErrNotImplemented for %s, got %v", name, err)
 		}
