@@ -168,7 +168,6 @@ type giteaPushPayload struct {
 		} `json:"author"`
 	} `json:"head_commit"`
 	Pusher struct {
-		UserName string `json:"username"`
 		Login    string `json:"login"`
 		FullName string `json:"full_name"`
 	} `json:"pusher"`
@@ -401,8 +400,7 @@ func (r *GitWebhookReceiver) dispatchGitea(
 		if !strings.HasPrefix(payload.Ref, "refs/heads/") {
 			return nil, nil
 		}
-		author := prefer(payload.HeadCommit.Author.Username, payload.Pusher.UserName)
-		author = prefer(author, payload.Pusher.Login)
+		author := prefer(payload.HeadCommit.Author.Username, payload.Pusher.Login)
 		author = prefer(author, payload.HeadCommit.Author.Name)
 		author = prefer(author, payload.Pusher.FullName)
 		branch := strings.TrimPrefix(payload.Ref, "refs/heads/")
