@@ -407,6 +407,23 @@ jobs:
               exit 1
             fi
           }
+          expect_failure_with() {
+            local expected=$1 namespace=$2 output
+            shift 2
+            if output=$(helm template kitchen charts/kitchen --namespace "${namespace}" "$@" 2>&1); then
+              echo "::error::expected rendering to fail: namespace=${namespace} $*"
+              exit 1
+            fi
+            grep -Fq "${expected}" <<<"${output}" || {
+              echo "::error::rendering failed without the expected message: ${expected}"
+              echo "${output}"
+              exit 1
+            }
+          }
+          # Reused values from a release before self-update existed should
+          # explain how to pick up the new chart defaults, not panic.
+          expect_failure_with "selfUpdate values are missing: upgrade with --reset-then-reuse-values" \
+            kitchen-system ${CHART_BASE} ${CHART_ACME} --set-json selfUpdate=null
           # No base domain for the Kitchen singleton.
           expect_failure kitchen-system
           # Installed outside the operator's platform namespace.
