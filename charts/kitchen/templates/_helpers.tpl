@@ -709,6 +709,9 @@ does not run in.
 {{- if and .Values.kitchen.create .Values.kitchen.ingress.cloudflared.enabled (not .Values.kitchen.ingress.cloudflared.tunnelSecretName) }}
 {{- fail "kitchen.ingress.cloudflared.tunnelSecretName is required when cloudflared is enabled: create a secret holding the tunnel token under the key `token` first." }}
 {{- end }}
+{{- if not .Values.selfUpdate }}
+{{- fail "selfUpdate values are missing: upgrade with --reset-then-reuse-values so new chart defaults are merged with existing overrides." }}
+{{- end }}
 {{- if .Values.selfUpdate.enabled }}
 {{- if not .Values.rbac.create }}
 {{- fail "selfUpdate.enabled requires rbac.create: the update job runs as its own ServiceAccount bound to cluster-admin, which this chart is not creating. Set rbac.create=true, or leave selfUpdate.enabled=false and upgrade with helm." }}

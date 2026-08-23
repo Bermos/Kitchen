@@ -639,7 +639,7 @@ upgrade that both names the operators and re-applies the singleton:
 
 ```sh
 helm upgrade kitchen oci://ghcr.io/bermos/charts/kitchen \
-  --namespace kitchen-system --reuse-values \
+  --namespace kitchen-system --reset-then-reuse-values \
   --set kitchen.applyOnUpgrade=true \
   --set kitchen.access.operators[0]=anna@example.com
 ```
@@ -1059,8 +1059,11 @@ are missing rather than unhealthy.
 ## Upgrade
 
 ```sh
-helm upgrade kitchen ./charts/kitchen --namespace kitchen-system --reuse-values
+helm upgrade kitchen ./charts/kitchen --namespace kitchen-system --reset-then-reuse-values
 ```
+
+`--reset-then-reuse-values` keeps existing overrides while adding defaults
+introduced by the new chart version.
 
 The chart's `version` and `appVersion` are always the same number, and both are
 [SemVer](https://semver.org/spec/v2.0.0.html): one release publishes the chart
@@ -1087,7 +1090,7 @@ page instead of a command:
 
 ```sh
 helm upgrade kitchen oci://ghcr.io/bermos/charts/kitchen \
-  --namespace kitchen-system --reuse-values \
+  --namespace kitchen-system --reset-then-reuse-values \
   --set selfUpdate.enabled=true
 ```
 
@@ -1152,7 +1155,7 @@ and turn the Job on:
 kubectl -n kitchen-system create secret generic kitchen-backup \
   --from-file=backup.tar.gz=./kitchen-backup-prod-2026-08-19T090000Z.tar.gz
 helm upgrade kitchen oci://ghcr.io/bermos/charts/kitchen \
-  --namespace kitchen-system --reuse-values \
+  --namespace kitchen-system --reset-then-reuse-values \
   --set restore.enabled=true --set restore.secretName=kitchen-backup
 ```
 
@@ -1216,7 +1219,7 @@ the two StatefulSets first, orphaning what they manage, then upgrade:
 
 ```sh
 kubectl -n kitchen-system delete sts kitchen-clickhouse kitchen-postgres --cascade=orphan
-helm upgrade kitchen ./charts/kitchen --namespace kitchen-system --reuse-values
+helm upgrade kitchen ./charts/kitchen --namespace kitchen-system --reset-then-reuse-values
 ```
 
 `--cascade=orphan` leaves the pods running and the PVCs intact; the upgrade
