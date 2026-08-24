@@ -289,6 +289,69 @@ type gate struct {
 	Message       string     `json:"message,omitempty"`
 }
 
+// vexStatement is one OpenVEX statement about the artifact, as the API joins
+// it: what was asserted, who asserted it, who submitted it, and what the
+// platform can establish about it. `justified`, `expired` and `verified` are
+// facts rather than a verdict — whether a statement actually suppresses
+// anything is the target environment's bundle's question.
+type vexStatement struct {
+	Vulnerability   string   `json:"vulnerability"`
+	Status          string   `json:"status"`
+	Justification   string   `json:"justification,omitempty"`
+	Products        []string `json:"products,omitempty"`
+	Justified       bool     `json:"justified"`
+	Author          string   `json:"author,omitempty"`
+	SubmittedBy     string   `json:"submittedBy,omitempty"`
+	DocumentID      string   `json:"documentID,omitempty"`
+	Timestamp       string   `json:"timestamp,omitempty"`
+	ExpiresAt       string   `json:"expiresAt,omitempty"`
+	Expired         bool     `json:"expired"`
+	Verified        bool     `json:"verified"`
+	StatusNotes     string   `json:"statusNotes,omitempty"`
+	ImpactStatement string   `json:"impactStatement,omitempty"`
+	ActionStatement string   `json:"actionStatement,omitempty"`
+}
+
+// vexFinding is one finding from the artifact's newest vulnerability scan,
+// beside the statement covering it. A suppressed finding is still a finding
+// and still listed: never silently applied.
+type vexFinding struct {
+	Vulnerability string        `json:"vulnerability"`
+	Severity      string        `json:"severity,omitempty"`
+	Package       string        `json:"package,omitempty"`
+	Version       string        `json:"version,omitempty"`
+	FixedIn       string        `json:"fixedIn,omitempty"`
+	VEX           *vexStatement `json:"vex,omitempty"`
+}
+
+// vexAnswer is what GET /builds/{name}/vex returns.
+type vexAnswer struct {
+	Subject      string         `json:"subject"`
+	Verification string         `json:"verification"`
+	Statements   []vexStatement `json:"statements"`
+	Findings     []vexFinding   `json:"findings"`
+	Caveat       string         `json:"caveat,omitempty"`
+}
+
+// vexSubmission carries the OpenVEX document itself, as the exact bytes its
+// author wrote: the platform signs those bytes, and re-encoding somebody's
+// assertion into a shape of this CLI'"'"'s choosing would be the CLI editing it.
+type vexSubmission struct {
+	Document json.RawMessage `json:"document"`
+}
+
+// vexAccepted is what the API answers a submission with.
+type vexAccepted struct {
+	DocumentID      string   `json:"documentID,omitempty"`
+	PredicateType   string   `json:"predicateType"`
+	Manifest        string   `json:"manifest"`
+	Subject         string   `json:"subject"`
+	Author          string   `json:"author"`
+	SubmittedBy     string   `json:"submittedBy"`
+	Statements      int      `json:"statements"`
+	Vulnerabilities []string `json:"vulnerabilities"`
+}
+
 // firedRule is one policy rule that fired on a decision. A waived rule fired
 // all the same — the exception changed the verdict, not the facts.
 type firedRule struct {
@@ -667,6 +730,22 @@ func (c *client) submitGate(ctx context.Context, name string, body gateSubmissio
 	answer := &gateAccepted{}
 	err := c.do(ctx, "submitting a gate result for "+name,
 		http.MethodPost, "/builds/"+name+"/gates", nil, body, answer)
+	return answer, err
+}
+
+// vex reads the artifact'"'"'s exploitability assertions joined to the findings
+// they modify.
+func (c *client) vex(ctx context.Context, name string) (*vexAnswer, error) {
+	answer := &vexAnswer{}
+	return answer, c.do(ctx, "reading the VEX statements on "+name,
+		http.MethodGet, "/builds/"+name+"/vex", nil, nil, answer)
+}
+
+// submitVEX attaches an OpenVEX document to the build'"'"'s artifact.
+func (c *client) submitVEX(ctx context.Context, name string, body vexSubmission) (*vexAccepted, error) {
+	answer := &vexAccepted{}
+	err := c.do(ctx, "submitting a VEX document for "+name,
+		http.MethodPost, "/builds/"+name+"/vex", nil, body, answer)
 	return answer, err
 }
 

@@ -373,6 +373,12 @@ var publishedShapes = map[string]struct {
 		"whatever it found; Failed means it did not run", list[gate]{}},
 	"gateAccepted": {"Where a submitted gate result was attached, and whose word it is recorded as",
 		gateAccepted{}},
+	"vexAnswer": {"The OpenVEX statements attached to an artifact, joined to the vulnerability-scan " +
+		"findings each is about. `justified`, `expired` and `verified` are facts about a statement, " +
+		"not a verdict: whether it suppresses anything is the target environment's policy's question",
+		vexAnswer{}},
+	"vexAccepted": {"Where a submitted OpenVEX document was attached, who authored it and who " +
+		"submitted it", vexAccepted{}},
 	"evidenceSet": {"The signed evidence attached to an artifact, read out of the registry. " +
 		"`verified` false with attestations present means signatures were not checked, " +
 		"not that they failed", evidenceSet{}},
