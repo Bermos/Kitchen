@@ -83,7 +83,19 @@ func MaterializeInput(
 	}
 	if project != nil {
 		input.Project.DataClass = string(project.Spec.DataClass)
+		input.Project.Criticality = string(project.Spec.Criticality)
+		input.Project.RTO = string(project.Spec.RTO)
+		input.Project.RPO = string(project.Spec.RPO)
 	}
+	// The environment's designation is the *effective* one — its own where it
+	// declares one, its project's where production declares none — because
+	// that is the designation the platform acts on everywhere else, and a
+	// rule reading a different number from the screen beside it would be the
+	// worst kind of disagreement to debug.
+	continuity := kitchenv1alpha1.EffectiveContinuity(project, env)
+	input.Environment.Criticality = string(continuity.Criticality)
+	input.Environment.RTO = string(continuity.RTO)
+	input.Environment.RPO = string(continuity.RPO)
 	if requirements := env.Spec.Requirements; requirements != nil {
 		input.Parameters = requirements.Parameters
 	}

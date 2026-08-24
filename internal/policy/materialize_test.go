@@ -103,3 +103,41 @@ func TestClaimFactsAreTheEnvironmentsOwnProjects(t *testing.T) {
 		t.Fatalf("the claim's class and placement must come through, got %+v", facts[0])
 	}
 }
+
+// The designation reaches the input as the *effective* one, which is what
+// makes a rule and a screen agree about whether a preview is critical.
+func TestMaterializeInputCarriesTheEffectiveDesignation(t *testing.T) {
+	project := &kitchenv1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: "shop"},
+		Spec: kitchenv1alpha1.ProjectSpec{
+			Criticality: kitchenv1alpha1.CriticalityCritical, RTO: "1h", RPO: "5m",
+		},
+	}
+	production := &kitchenv1alpha1.Environment{
+		ObjectMeta: metav1.ObjectMeta{Name: "shop-production"},
+		Spec: kitchenv1alpha1.EnvironmentSpec{
+			ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: "shop"},
+			Type:       kitchenv1alpha1.EnvironmentProduction,
+		},
+	}
+	release := &kitchenv1alpha1.Release{
+		ObjectMeta: metav1.ObjectMeta{Name: "shop-rel-1"},
+		Spec:       kitchenv1alpha1.ReleaseSpec{Image: "registry.example.com/shop@sha256:1111"},
+	}
+
+	input := MaterializeInput(KindPromotion, time.Now().UTC(), project, production, release, nil, nil, nil)
+	if input.Project.Criticality != "critical" || input.Project.RTO != "1h" || input.Project.RPO != "5m" {
+		t.Fatalf("the project's designation must reach the input, got %+v", input.Project)
+	}
+	if input.Environment.Criticality != "critical" || input.Environment.RTO != "1h" {
+		t.Fatalf("production must read its project's designation, got %+v", input.Environment)
+	}
+
+	preview := production.DeepCopy()
+	preview.Name = "shop-pr-7"
+	preview.Spec.Type = kitchenv1alpha1.EnvironmentPreview
+	previewInput := MaterializeInput(KindPromotion, time.Now().UTC(), project, preview, release, nil, nil, nil)
+	if previewInput.Environment.Criticality != "" || previewInput.Environment.RTO != "" {
+		t.Fatalf("a preview is not a critical function, got %+v", previewInput.Environment)
+	}
+}
