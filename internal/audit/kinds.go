@@ -56,6 +56,20 @@ const (
 	// They are their own kind instead, and the record's name is the
 	// singleton's.
 	KindRetention = "Retention"
+
+	// KindEvidenceExport is the third, and it records a *read*: somebody
+	// took an audit pack of a project (#142). The pack is the platform's
+	// whole compliance answer for one project over one range, and "who
+	// exported the evidence, for which window, and what digest did they get"
+	// is exactly the sentence this log exists to be able to produce — the
+	// same argument that makes a platform backup an `export` record rather
+	// than nothing at all.
+	//
+	// It is its own kind rather than a KindProject record with the export
+	// operation, because the log filters on kind and has no filter on
+	// operation: one query has to answer "every pack ever taken", and buried
+	// among a project's settings changes it would not.
+	KindEvidenceExport = "EvidenceExport"
 )
 
 // The `change` key a record's details carry, which is what makes one kind of

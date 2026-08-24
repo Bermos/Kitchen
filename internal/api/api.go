@@ -254,6 +254,13 @@ type logReader interface {
 	Decision(ctx context.Context, id string) (clickhouse.Decision, bool, error)
 	InsertDecision(ctx context.Context, decision clickhouse.Decision) error
 	PolicyBundle(ctx context.Context, digest string) (string, bool, error)
+
+	// The signed records: the DSSE envelopes the platform minted about
+	// things with no OCI registry to live in — a claim's data-class
+	// declaration, a recertification cycle's closing artefact. Only the
+	// audit pack reads them, and it reads them for the reason they exist:
+	// an envelope carried whole verifies without the platform that made it.
+	QuerySignedRecords(ctx context.Context, query clickhouse.SignedRecordQuery) ([]clickhouse.SignedRecord, error)
 }
 
 // The store reads the signals gatherer needs are a subset of the ones above, so
