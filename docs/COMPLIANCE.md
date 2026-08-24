@@ -2,11 +2,10 @@
 
 > Status: **phases 1–4 implemented** (issues #126, #127, #128, #129, #130,
 > #131, #132, #133, #134, #135, #136), and phase 5 in part (#137, #138,
-> #139, #141). What is designed and not built is the rest of phase 5 —
-> retention (#140), export (#142) — and the mapping document (#143). This
-> document is written so that adding them stays additive: each one attaches
-> to something an earlier phase put in place, and the places where it
-> attaches are named.
+> #139, #140, #141). What is designed and not built is the rest of phase 5 —
+> export (#142) — and the mapping document (#143). This document is written
+> so that adding them stays additive: each one attaches to something an
+> earlier phase put in place, and the places where it attaches are named.
 
 Kitchen is not, and cannot be, "FINMA compliant". Compliance is a property of
 an institution, not of software. What Kitchen can demonstrate is that a
@@ -900,7 +899,7 @@ is the history; the drift view is only its newest row.
   year of near-identical statements on every artifact, and the register is
   already the record.
 - **The newest scan is the current claim, and the older ones are history.**
-  `status.artifact.evidence` is an index (§14), so a rescan replaces the
+  `status.artifact.evidence` is an index (§15), so a rescan replaces the
   vulnerability-scan entry rather than appending one — and the *evaluation*
   reads the same way: `policy.EvidenceFrom` collapses the vulnerability-scan
   predicate to its newest entry before the rules see any of them, ordered by
@@ -1242,7 +1241,7 @@ every decision, who made it, which were self-reviews, which revocations were
 actually carried out — as a DSSE envelope under
 `kitchen.bermos.dev/attestation/access-review/v1`, kept in the store's
 `signed_records` table under no TTL. It is the resource claim's data-class
-declaration exactly (§13): a review has no OCI repository, so the subject is
+declaration exactly (§14): a review has no OCI repository, so the subject is
 an identity digest over the object's namespace, name and UID, and the envelope
 is kept whole rather than attached to anything.
 
@@ -1459,7 +1458,301 @@ exactly §3's line about where this platform's scope ends.
 
 ---
 
-## 12. Configuration
+## 12. Retention, immutability and the clock (issue #140)
+
+Logs are only evidence if they can be shown not to have changed, and if the
+timestamps mean something. Both are cheap to build in now and expensive to
+retrofit, which is why this sits in phase 5 rather than in a follow-up.
+
+Three separate claims live here and they are worth keeping apart, because each
+one is worth exactly what it can be defended as:
+
+1. **Retention** — the platform keeps each class of what it holds for a stated
+   time, and can show what it is holding right now.
+2. **Immutability** — the platform's own credential can append to the audit log
+   and cannot rewrite it.
+3. **Time** — the clocks that stamp all of it agree with each other, to a stated
+   tolerance, and the platform measures rather than assumes that.
+
+### 12.1 One model, not five
+
+Retention was already here and it was scattered.
+`spec.observability.clickhouse.retentionDays` covered every telemetry table with
+one number; `spec.compliance.audit.retentionDays` covered the audit log and the
+decision register; the raw request table quietly kept a week and the hourly
+rollup twelve retentions, derived rather than configured. Nothing was wrong with
+any of it, and together they could not answer the question a records-retention
+policy asks, which is per *class* and not per table: how long do you keep
+container logs.
+
+So `spec.retention` is now the one place that says it, in nine classes —
+`containerLogs`, `buildLogs`, `flows`, `metrics`, `traces`, `requests`,
+`clusterEvents`, `activity`, `audit` — and everything that enforces a retention
+reads it. `internal/retention` resolves the singleton into a model; the store's
+TTLs, the sweep's horizons, the API's answer and the singleton's status are four
+readers of that one decision rather than four decisions.
+
+**Every field is optional and an absent one inherits the knob it used to be.**
+That is not politeness towards old configuration, it is the upgrade contract: an
+installation that has never heard of `spec.retention` reads exactly as it did,
+and the two old fields are this model's defaults rather than a second model
+beside it. `source` on every answer says which of the two a number came from,
+because an operator reading "30" wants to know whether anybody chose it.
+
+The request ratios stay derived. Raw request rows are the densest thing in the
+store and a week of them is what "show me the failing requests" needs; the hourly
+rollup keeps twelve of the configured window so a year-scale view has something
+to read. Installations do not need to disagree about those, and a second knob is
+a second thing to explain.
+
+### 12.2 Two classes, one table, and what that costs
+
+Build logs and container logs are different classes and the same table. They
+answer different questions — a container log is operational, a build log is part
+of the account of how an artifact came to exist and is read months later beside
+its provenance — and installations routinely want the second kept longer.
+
+ClickHouse can express that: a TTL is a list, and each entry may carry a `DELETE
+WHERE`. What it cannot express is that *and* `ttl_only_drop_parts`, which is the
+setting that makes expiry a metadata drop of a whole day-partition rather than a
+rewrite of every part holding one stale row. With only-drop-parts on, a part is
+dropped when **every** row in it has expired — and a part holding both classes
+never does until the longer of the two dates, so the shorter class would be a
+promise the store was not keeping, silently, forever.
+
+The rule the schema implements is therefore: **you pay for the difference only
+if you ask for one.** Configure the two classes the same and the log table
+carries one TTL and keeps the cheap mode. Configure them apart and it carries
+two conditional TTLs and the mode comes off, so expiry becomes a row-level delete
+during merge. That costs merge time, and it is the price of two retentions in one
+table rather than a lie about one of them.
+
+The two conditions are exact complements (`source = 'build'` and `source !=
+'build'`) because a row matching both would have two dates and no answer, and a
+row matching neither would never expire at all.
+
+### 12.3 What the immutability claim is, exactly
+
+§4.3 already says carefully what the hash chain does and does not prove: it
+catches an editor who has the store but not the chain, and it does not catch
+somebody who can rewrite the whole tail, because recomputing every hash from the
+edit onwards is as cheap for them as it was for the platform.
+
+What is added here is one specific thing, and it is worth having precisely
+because it is specific. The operator revokes `ALTER UPDATE`, `ALTER DELETE`,
+`TRUNCATE` and `DROP TABLE` on `audit_log` **from the user Kitchen itself
+connects as**. Both the operator and the REST API hold that credential; a bug, a
+compromised operator pod, or an authenticated caller who found a way to reach the
+store's `Exec` could otherwise delete a range of records and rebuild the chain
+over the gap, and there is no cryptography anywhere in this design that would
+notice. After the revoke, the platform can append to its own log and cannot
+rewrite it.
+
+`ALTER TTL` is deliberately *not* revoked: `EnsureAuditSchema` keeps the table's
+retention in step with the configured one and cannot do that without it. It is
+also the one mutation whose blast radius is already bounded — a retention below
+the floor is refused at admission and at the API — which is the argument for
+keeping it rather than an apology for it.
+
+What this does **not** stop, said out loud because a defence nobody can state the
+limits of is a defence nobody should rely on:
+
+- a ClickHouse administrator, who can grant the privileges straight back;
+- anybody with the store's filesystem, since a MergeTree part is a directory;
+- a restore of the whole database from a doctored backup;
+- and it is not retroactive: it revokes a privilege, it does not seal the rows
+  already written.
+
+Bounding those is what an external anchor is for — a transparency log, an
+operator-signed checkpoint — and this is deliberately not that.
+
+It is also **best effort, and reported rather than enforced.** ClickHouse's RBAC
+refuses a partial revoke against a user granted everything at a wider scope
+unless `partial_revokes` is enabled for them, and an installation pointing
+Kitchen at a store it does not administer may not be allowed to revoke anything
+at all. A refused revoke does not fail the reconcile: it lands on
+`Kitchen.status.compliance.audit.immutable` (false) with the reason beside it,
+and on `GET /api/v1/compliance`. The honest consequence is "this installation's
+log rests on the hash chain alone", which is a smaller claim and one the platform
+should state rather than a reason to stop.
+
+**The threat model for every other class is prose, and this is it.** Container
+logs, build logs, flows, metrics, traces, requests, cluster events and the
+activity feed carry no chain and no revoked grant. They are operational
+telemetry: an account of how the platform behaved, useful in an incident, and
+*not* evidence in the sense §4 uses the word. Anybody who can reach the telemetry
+store can edit them and nothing here would detect it. Treating them as evidence
+would be the kind of claim that is worse than none — so the platform does not
+make it, and the things it *does* treat as evidence (the audit log, the decision
+register, the signed records, the attestations in the registry) are each
+protected by something specific and named. An installation that needs
+tamper-evidence over application logs needs a write-once sink outside this
+cluster; that is a shipping problem, and no retention setting can stand in for
+it.
+
+### 12.4 Deletion evidence, and why it is a claim about what is left
+
+"When retention expires, record that it did" has an obstacle in it worth naming
+before the design: **ClickHouse expires data on its own merge schedule and tells
+nobody.** There is no callback, no return value, and unless part logging happens
+to be enabled, nothing durable to read afterwards. A record written by inferring
+what the store must have done would be a guess with a timestamp on it, which is
+worse than no record.
+
+So the daily sweep does not claim to observe the store's deletions. It makes a
+**dated claim about what is left**: for each class, the horizon its own
+configuration puts there, the oldest row that survives it, how much the class
+holds, and how much of that is still on the wrong side of the line. Two
+consecutive records are the evidence that data expired between them, and it is
+the kind of evidence retention actually needs — not "these particular rows were
+deleted", which nothing here can substantiate, but "at this time, under this
+rule, this class held nothing older than this date".
+
+Where it *can* delete exactly, it does: a partition every row of which is past
+the horizon is dropped as metadata and those rows are counted, which is the one
+number in the record that is exact rather than observed. It usually finds none,
+because the store's own TTL merge got there first — that is the intended division
+of labour, not a failure.
+
+**The sweep never deletes rows it cannot attribute to exactly one class.** That
+rule covers two cases at once. The log table is shared, so a partition drop there
+would take the longer-lived class with it; and the audit log is never swept,
+because a sweeper that could delete audit rows on a schedule is a sweeper that
+could delete the record of its own deletions. Audit expiry is left entirely to
+the table's own TTL.
+
+The record goes into the existing audit log rather than into a ledger of its own:
+one record per pass, kind `Retention`, `details.change` `retention-sweep`,
+carrying every class with its horizon and its numbers. One per class would be
+nine lines a day for the same fact.
+
+There is a circularity in that, and it is better named than engineered around:
+the evidence of audit expiry lives in the audit log and ages out under the audit
+retention. What bounds it is the floor. A record of what was deleted four hundred
+days ago is not evidence anybody is looking for; a record of what was deleted
+last month is, and ninety days guarantees it.
+
+### 12.5 The floor, and the one way under it
+
+`spec.retention.audit` has a floor of **90 days**, and §4.7's reasoning is the
+whole of why: an incident reporting duty runs from when an institution *became
+aware*, which can be well after the transition that caused it, and a log that has
+already aged out cannot substantiate the report. Ninety days is the shortest
+window in which "we found out, then we looked" is still a sentence the log can
+support. The default is 365 and installations under a records-retention
+obligation will want years; the ceiling is disk.
+
+A floor with no way past it is a floor somebody eventually removes from the code.
+So there is one, and it is a named field rather than a smaller number:
+`spec.retention.auditFloorOverride`, with a `reason` of at least twenty
+characters and an `approvedBy`. An installation that genuinely cannot keep ninety
+days — a demonstration cluster, a jurisdiction whose data-minimisation rule bites
+first — says so *in the object*, with a name against it, instead of patching the
+platform.
+
+It is refused in three places, and that is not belt and braces:
+
+- a **CEL rule on the CRD**, so a `kubectl apply` behind the platform's back is
+  refused too;
+- the **API**, which answers `400` naming the field, the number, the floor and
+  the override — because a caller should be told what to do about it by the thing
+  they were talking to, not by a webhook message about a rule id;
+- the **chart**, which fails the render rather than the install.
+
+Using it is itself an audit record: kind `Retention`, `details.change`
+`audit-floor-override`, carrying the number, the floor, the reason and the
+approver. "Who decided we keep sixty days, and why" is a question with a written
+answer and a history. The override is also read back in full by `GET
+/platform/retention`, which is not the API reading a credential back — the whole
+value of the field is that somebody outside the platform can see it.
+
+### 12.6 Clock sync is measured, and the method's limits are the point
+
+Every correlation in an incident report is three timestamps from three machines:
+a log line the collector read off a node, a request row the operator wrote, an
+audit record appended from whichever replica served the request. Clocks that
+disagree by more than the gaps being reasoned about do not make any of those
+wrong — they make the **order** wrong, silently, and there is nothing in the data
+that shows it. Retention and immutability are both worthless over a log whose
+ordering cannot be trusted, which is why this ships with them.
+
+What the operator can actually observe from inside the cluster is the kubelet's
+node lease. Each kubelet renews a Lease in `kube-node-lease`, stamping
+`spec.renewTime` **from the node's own clock**; the operator compares that stamp
+with its own. Three properties of that measurement are carried on the status
+itself, in `method`, rather than left in a code comment:
+
+- **It is one-sided in its precision.** A renewal is up to the kubelet's renewal
+  period old by the time anyone reads it — ten seconds by default — so a node
+  whose clock is *behind* is indistinguishable from a node whose renewal is
+  merely stale, up to that period. A node whose clock is *ahead* stamps a time in
+  the future, which nothing but a wrong clock produces. The threshold is
+  therefore applied asymmetrically: a future stamp counts in full, a past one is
+  forgiven up to a 45-second renewal grace. That grace is compiled in rather than
+  configured, because it is a property of the kubelet and not of the
+  installation.
+- **The reference is the operator's own clock**, which comes from whichever node
+  the operator happens to be running on. So what is measured is *disagreement
+  within the cluster*, not agreement with UTC. **A cluster whose every node is
+  uniformly ten minutes fast reads as perfectly synchronised here**, and that is
+  the honest limit of the method.
+- **Nothing outside the cluster is asked.** Measuring against UTC would mean
+  reaching an NTP server or an HTTP `Date` header from the operator pod, and a
+  platform that owns its cluster has no business deciding on its operator's
+  behalf which time source the institution trusts. Whether the cluster's clocks
+  agree with the world is the job of whatever runs `chrony` on those nodes.
+
+The threshold is `spec.observability.clockSync.maxDriftSeconds`, default **5**,
+and it is chosen against the *use* rather than against NTP's accuracy: five
+seconds is roughly where "these happened in this order" stops being safe to say
+across machines. A properly synchronised cluster sits three orders of magnitude
+inside it, so a breach means time sync is broken rather than merely imprecise.
+
+Drift beyond it appears as an unhealthy entry in the component survey —
+`status.components`, name `clock-sync`, kind `Node`, `available` of `desired`
+being nodes inside the threshold — which is the list an operator already reads
+and the one that exists for exactly this kind of invisible failure. The message
+names the worst node, the size and direction of its offset, and what to go and
+look at, because "clock drift detected" is a message that sends somebody to a
+search engine rather than to a machine.
+
+Two things are deliberately *not* unhealthy: a node with no kubelet lease (the
+check has no opinion about it) and a cluster where the leases cannot be read at
+all (that is somebody else's RBAC, not a broken clock). Both are reported on
+`status.clockSync.message` instead. A check that cried wolf would be turned off
+inside a week, and a check that is off is worth nothing at all.
+
+### 12.7 Things that are true and easy to get wrong here
+
+- **A retention is a floor on what is deleted, not a ceiling on what is kept.**
+  With `ttl_only_drop_parts` on — which is every table with one date — a
+  day-partition is dropped when the whole partition is past its date, so at any
+  moment the store holds up to one partition's worth of rows older than the
+  horizon. That is what `expired` on the retention answer counts, and a small
+  number there is normal. A number that stays large is the store holding data
+  past its date, which is a thing to go and look at.
+- **`enforced` false does not mean unenforced.** It means nothing has measured it
+  yet: the configured half of the status is published within a reconcile of a
+  change and the measured half within a day, and conflating "we have not looked"
+  with "it is not happening" is the confusion this whole document is arranged to
+  avoid.
+- **A measurement is a claim about a horizon, so changing the horizon discards
+  it.** Reporting yesterday's oldest row beside a retention that has just moved
+  would be reporting a claim nothing has checked, so the status drops the
+  measurement for a class whose number moved and keeps it for the classes that
+  did not.
+- **`signed_records` carries no TTL and that is on purpose.** It holds the
+  envelopes with no registry to live in; a signed statement is kept as long as
+  anything might cite it, and there are few enough of them that retention is not
+  a disk question. It is deliberately not a retention class.
+- **The retention sweep records even when it measured nothing.** A store that was
+  down produces nine observations that each say so, and the pass records that.
+  "We hold nothing" and "we could not ask" are the two answers a retention record
+  must never confuse.
+
+---
+
+## 13. Configuration
 
 ```yaml
 kitchen:
@@ -1504,6 +1797,19 @@ kitchen:
         format: grype-json
         args: [-o, json, --file, $(KITCHEN_FINDINGS), sbom:$(KITCHEN_SBOM)]
         timeoutSeconds: 900
+  retention:                 # how long each class is kept; absent = inherit
+    containerLogs: 14        # empty inherits observability.clickhouse.retentionDays
+    buildLogs: 180           # its own class: read beside an artifact's provenance
+    flows:                   # …and so on for metrics, traces, requests,
+    metrics:                 #    clusterEvents and activity
+    audit: 365               # empty inherits compliance.audit.retentionDays
+    auditFloorOverride:      # the only way under the 90-day floor
+      reason: ""             # at least 20 characters, and read back in full
+      approvedBy: ""
+  observability:
+    clockSync:               # do the clocks that stamp all of this agree?
+      enabled: true
+      maxDriftSeconds: 5     # measured against the kubelet leases; see §12.6
     access:                    # ask who holds what, and watch our own objects
       enabled: true
       intervalDays: 90         # from the last cycle's close; 0 opens none
@@ -1545,7 +1851,7 @@ full surface.
 
 ---
 
-## 13. Phases
+## 14. Phases
 
 | | |
 |---|---|
@@ -1553,7 +1859,7 @@ full surface.
 | **2 — Evidence production** | provenance + SBOM (#128), PR verification (#129), quality gates (#130) — **built** |
 | **3 — Policy** | environment ownership (#131), OPA engine (#132), staged promotion (#133) — **built** |
 | **4 — Continuous compliance** | rescan (#134), OpenVEX (#135), exceptions (#136) — **built** |
-| **5 — Institutional surface** | data class (#137) — **built**, resource contract (#138) — **built**, access (#139) — **built**, criticality (#141) — **built**, retention (#140), export (#142) |
+| **5 — Institutional surface** | data class (#137) — **built**, resource contract (#138) — **built**, access (#139) — **built**, retention (#140) — **built**, criticality (#141) — **built**, export (#142) |
 | **6 — The mapping doc** | #143, kept current |
 
 Phase 2 attaches to §5 exactly as expected: every attestation it produces is
@@ -1671,7 +1977,7 @@ attaches to §4 by making the log's own convention into a property of it: the
 classification with six named classes, materialized by the recorder and
 filterable in one request — inside the hashed details rather than in a column,
 because a new column would change the hash of every record ever written. It
-attaches to §13's `signed_records` at the seam that table's comment already
+attaches to §14's `signed_records` at the seam that table's comment already
 reserved for it: a closed recertification cycle is an envelope with no
 registry to live in, exactly as a claim's data-class declaration is. And it
 attaches to nothing at all in the promotion path, on purpose — §11.7 — because
@@ -1679,7 +1985,7 @@ an access control that could refuse a deployment is one that gets switched off.
 
 ---
 
-## 14. Things that are true and easy to get wrong
+## 15. Things that are true and easy to get wrong
 
 - **A gap in the sequence is not always a deletion.** It is also an append that
   claimed its number and then died before the row landed. The head object and

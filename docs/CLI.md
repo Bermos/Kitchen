@@ -177,6 +177,7 @@ give.
 | `kitchen criticality` | What supports each designated function, and (`dependents`) what breaks without one third party | `GET /compliance/criticality`, `GET /compliance/dependents` |
 | `kitchen access identities` | Who holds what on the platform, and which grants look like they belong to nobody | `GET /access/identities` |
 | `kitchen access reviews/show` | The recertification cycles and what each one decided | `GET /access/reviews`, `GET /access/reviews/{name}` |
+| `kitchen retention` | How long the platform keeps each class, and how far back each one goes | `GET /platform/retention` |
 | `kitchen releases` | The project's releases — what there is to roll back to | `GET /projects/{name}/releases` |
 | `kitchen environments` | The project's environments and where they answer | `GET /projects/{name}/environments` |
 | `kitchen api` | Any endpoint of the API, authenticated | anything |
@@ -537,6 +538,41 @@ kitchen api PATCH /access/reviews/access-review-8x2kd --data '{"decisions":
 Closing is what carries out the revocations and mints the retained artefact.
 All of these need the operator role: the answer is the whole installation's
 access in one document. See [docs/api/access.md](api/access.md).
+### Retention
+
+```sh
+kitchen retention
+kitchen retention --json
+```
+
+One row per class of what the platform keeps: container logs, build logs,
+flows, metrics, traces, requests, cluster events, the activity feed and the
+audit log. Each row is the rule in force, whether somebody set it or it is
+inherited, and — the column that matters — the oldest row the last retention
+sweep found. That last one is the claim retention actually makes: nothing of
+this class is older than this.
+
+It is worth having in a pipeline for the same reason `kitchen drift` is. "How
+long do you keep container logs, and can you show me that nothing older than
+that is there" arrives with a deadline attached, and this answers it in one
+call.
+
+An installation keeping audit records for less than the platform's 90-day floor
+prints the override that says who decided so and why. An override nobody can
+see is not an override, it is a setting.
+
+**Changing it is left to `kitchen api`, deliberately.** A retention change is a
+records decision rather than an operational one, and putting the audit floor's
+override behind a flag would make typing it easier than thinking about it:
+
+```sh
+kitchen api PATCH /platform/retention --data '{"buildLogs": 180}'
+kitchen api PATCH /platform/retention --data '{"audit": 60,
+  "auditFloorOverride": {"reason": "…", "approvedBy": "cto@example.com"}}'
+```
+
+See [docs/api/platform.md](api/platform.md) for the bodies and what the floor
+refuses.
 
 ### Anything else
 

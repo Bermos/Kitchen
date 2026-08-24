@@ -240,6 +240,8 @@ name against `internal/api/policy.go`, so a route that moves fails them too.
 | GET | `/platform/storage` | Volumes and what mounts them, plus the telemetry store's own health | `operator` |
 | GET | `/platform/events` | The cluster's Warning history, faceted. `?reason=`, `?kind=`, `?node=`, `?search=` | `operator` |
 | GET | `/platform/ingest` | Collector presence and freshness, and what the flow follower lost | `operator` |
+| GET | `/platform/retention` | How long each class of what the platform keeps is kept, and how far back each one actually goes | `operator` |
+| PATCH | `/platform/retention` | Change any class's retention. Refuses an audit retention under the documented floor without an explicit override | `operator` |
 | GET | `/platform/backup` | What an export would carry, what it would not, and whether this cluster can snapshot volumes | `operator` |
 | POST | `/platform/backup` | Export the platform's state as one gzipped tar | `operator` |
 | GET | `/settings` | The platform's settings — the `Kitchen` singleton, operator list included | `operator` |
