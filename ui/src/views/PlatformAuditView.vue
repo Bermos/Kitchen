@@ -5,6 +5,7 @@ import DecisionsPanel from "../components/DecisionsPanel.vue";
 import CriticalityPanel from "../components/CriticalityPanel.vue";
 import DriftPanel from "../components/DriftPanel.vue";
 import AccessReviewPanel from "../components/AccessReviewPanel.vue";
+import AuditPackPanel from "../components/AuditPackPanel.vue";
 import ExceptionsPanel from "../components/ExceptionsPanel.vue";
 import { api, type AuditRecord } from "../lib/api";
 import { timeAgo } from "../lib/format";
@@ -398,6 +399,13 @@ const truncated = computed(() => {
       edited afterwards no longer hashes to the hash stored beside it. What this cannot catch on its own is a tail
       rewritten whole — the anchor above is what bounds that.
     </p>
+
+    <!-- The evidence export sits between the log and everything derived from
+         it, and above rather than below, because on the day somebody opens
+         this screen with a deadline it is what they came to do. Every panel
+         under it is one section of the pack shown on its own; this is all of
+         them in one file, signed, for a window. -->
+    <AuditPackPanel />
 
     <!-- Access recertification sits directly under the log, because it is the
          one control in this suite that is about the people reading the rest

@@ -2455,6 +2455,86 @@ export async function downloadBackup(): Promise<{ blob: Blob; filename: string }
   return { blob: await res.blob(), filename: named?.[1] ?? "kitchen-backup.tar.gz" };
 }
 
+/** The half of an audit pack this dashboard reads.
+ *
+ * It is deliberately narrow. The screen's job is to take a pack and hand it
+ * over, not to interpret it — a type mirroring the whole document would be a
+ * second copy of the API's shape for somebody to keep in step, and the pack's
+ * own page (docs/api/audit-pack.md) is where the fields are described. What is
+ * here is what the screen shows before somebody saves the file: whether it is
+ * signed, whether the window is fully covered, and how much is in it. */
+export interface AuditPack {
+  schema: string;
+  project: string;
+  range: { from: string; to: string; halfOpen: string };
+  verification: {
+    signed: boolean;
+    message?: string;
+    keyID?: string;
+    procedure: string[];
+    warning: string;
+  };
+  retention: { truncated: boolean; message: string; auditDays: number; coveredFrom?: string };
+  platform: { auditRecording: boolean; rescanning: boolean; rescanMessage?: string };
+  inventory: { environments: unknown[]; releases: unknown[]; claims: unknown[] };
+  changeLog: unknown[];
+  promotions: unknown[];
+  decisions: { items: unknown[]; truncated: boolean; message?: string };
+  attestations: unknown[];
+  exceptions: unknown[];
+  drift: { current: unknown[]; history: unknown[] };
+  auditLog: { items: unknown[]; truncated: boolean; message?: string; privileged: number };
+  signedRecords: { items: unknown[] };
+}
+
+/** One rendering of one project's audit pack, as a file to save.
+ *
+ * It does not go through `request` for the reason `downloadBackup` does not:
+ * the answer is a document rather than an API payload, it can be HTML, and it
+ * cannot be a plain link either — every call to this API carries a bearer
+ * token, which an `<a download>` has no way to send.
+ *
+ * `digest` is the sha256 of the *pack's* bytes, whichever rendering was asked
+ * for: it identifies the document, not the response, which is what lets a
+ * printed page be tied back to the bytes that were signed. */
+export async function downloadAuditPack(
+  project: string,
+  window: { from: string; to: string },
+  format: "json" | "dsse" | "html" = "json",
+): Promise<{ blob: Blob; filename: string; digest: string }> {
+  const config = await loadConfig();
+  const base = config.apiURL === window_origin() ? "" : config.apiURL;
+  const params = new URLSearchParams({ from: window.from, to: window.to });
+  if (format !== "json") params.set("format", format);
+  const res = await authorized((bearer) =>
+    fetch(`${base}/api/v1/projects/${encodeURIComponent(project)}/audit-pack?${params}`, {
+      headers: { authorization: `Bearer ${bearer}` },
+    }),
+  );
+  if (!res.ok) {
+    let message = `${res.status}`;
+    try {
+      message = ((await res.json()) as { error: string }).error;
+    } catch {
+      // keep the status
+    }
+    throw new APIError(res.status, message);
+  }
+  const disposition = res.headers.get("content-disposition") ?? "";
+  const named = /filename="?([^";]+)"?/.exec(disposition);
+  return {
+    blob: await res.blob(),
+    filename: named?.[1] ?? `kitchen-audit-pack-${project}.${format === "html" ? "html" : "json"}`,
+    digest: res.headers.get("x-kitchen-pack-digest") ?? "",
+  };
+}
+
+/** The page's own origin, named so `downloadAuditPack`'s `window` parameter —
+ *  which is the time window, not the browser's — cannot shadow it. */
+function window_origin(): string {
+  return globalThis.location.origin;
+}
+
 const list =
   <T>(path: string) =>
   async (query?: Record<string, string>): Promise<T[]> => {
