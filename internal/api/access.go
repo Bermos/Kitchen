@@ -24,6 +24,7 @@ import (
 	"strings"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -530,13 +531,26 @@ func (s *Server) snapshot(ctx context.Context, review *kitchenv1alpha1.AccessRev
 		entries = append(entries, entry)
 	}
 
-	review.Status.Phase = kitchenv1alpha1.AccessReviewOpen
-	review.Status.OpenedAt = &now
-	review.Status.SnapshotAt = &metav1.Time{Time: survey.At}
-	review.Status.Entries = entries
-	review.Status.Pending = int32(len(entries)) //nolint:gosec // a grant count is not a security boundary
-	review.Status.Orphaned = orphans
-	return s.Client.Status().Update(ctx, review)
+	// Written with a retry, because the reconciler wakes on the Create and may
+	// stamp the cycle Open before this lands — a benign race with exactly one
+	// bad outcome, which is the caller being told their cycle failed when it
+	// exists and is a re-read away from being complete.
+	for attempt := 0; ; attempt++ {
+		review.Status.Phase = kitchenv1alpha1.AccessReviewOpen
+		review.Status.OpenedAt = &now
+		review.Status.SnapshotAt = &metav1.Time{Time: survey.At}
+		review.Status.Entries = entries
+		review.Status.Pending = int32(len(entries)) //nolint:gosec // a grant count is not a security boundary
+		review.Status.Orphaned = orphans
+
+		err := s.Client.Status().Update(ctx, review)
+		if err == nil || !apierrors.IsConflict(err) || attempt == 2 {
+			return err
+		}
+		if err := s.Client.Get(ctx, client.ObjectKeyFromObject(review), review); err != nil {
+			return err
+		}
+	}
 }
 
 // openCycles lists the cycles that are not closed.

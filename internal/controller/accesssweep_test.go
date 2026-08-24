@@ -446,6 +446,128 @@ func TestAWriterThatNamesItselfKitchenIsNotDetected(t *testing.T) {
 	}
 }
 
+// The acceptance criterion end to end: a Kitchen-managed object carrying a
+// manager the platform does not recognise is counted, timestamped and
+// published — the alert, in the one place an operator looks.
+func TestASweepCountsAndPublishesAnOutOfBandWrite(t *testing.T) {
+	written := metav1.NewTime(accessNow.Add(-time.Minute))
+	edited := &kitchenv1alpha1.Environment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "shop-production", Namespace: PlatformNamespace,
+			ManagedFields: []metav1.ManagedFieldsEntry{{
+				Manager: "kubectl-edit", Operation: metav1.ManagedFieldsOperationUpdate, Time: &written,
+				FieldsV1: &metav1.FieldsV1{Raw: []byte(`{"f:spec":{"f:requirements":{}}}`)},
+			}},
+		},
+		Spec: kitchenv1alpha1.EnvironmentSpec{
+			ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: accessProject},
+		},
+	}
+	fixtures := newAccessFixtures(t, edited)
+	ctx := context.Background()
+
+	report, err := fixtures.sweeper.SweepOnce(ctx)
+	if err != nil {
+		t.Fatalf("SweepOnce: %v", err)
+	}
+	if report.OutOfBand != 1 {
+		t.Fatalf("want one out-of-band write, got %d", report.OutOfBand)
+	}
+	if report.LastOutOfBand == nil || !report.LastOutOfBand.Equal(written.Time.UTC()) {
+		t.Errorf("the newest such write must be dated, got %v", report.LastOutOfBand)
+	}
+
+	kitchen := &kitchenv1alpha1.Kitchen{}
+	if err := fixtures.client.Get(ctx, types.NamespacedName{Name: KitchenSingletonName}, kitchen); err != nil {
+		t.Fatal(err)
+	}
+	status := kitchen.Status.Compliance.Access
+	if status == nil || status.OutOfBandWrites != 1 || status.LastOutOfBand == nil {
+		t.Fatalf("the finding must reach the singleton, or it is an alert nobody can see: %+v", status)
+	}
+
+	// And it is recorded once, not once every five minutes: a foreign manager
+	// stays on the object until the platform writes those fields again.
+	second, err := fixtures.sweeper.SweepOnce(ctx)
+	if err != nil {
+		t.Fatalf("second SweepOnce: %v", err)
+	}
+	if second.OutOfBand != 1 {
+		t.Errorf("the standing count must not grow on a second pass, got %d", second.OutOfBand)
+	}
+}
+
+// The detection's audit record is privileged and classified `integrity`, is
+// about the platform rather than about the project whose object was written,
+// and puts the field manager in the details rather than in the actor — a
+// manager name is a string the writer chose, and the log must not present it
+// as an authenticated identity.
+func TestTheOutOfBandRecordIsAboutThePlatformAndNamesTheManagerAsData(t *testing.T) {
+	kitchen := accessSingleton()
+	transition := outOfBandTransition(OutOfBandWrite{
+		Kind: audit.KindProject, Namespace: PlatformNamespace, Name: accessProject,
+		Manager: "kubectl-edit", Operation: "Update", At: accessNow,
+		Fields: `{"f:spec":{"f:access":{}}}`,
+	}, kitchen)
+
+	if transition.Kind != audit.KindKitchen {
+		t.Errorf("the record is a statement about the platform's integrity, got kind %q", transition.Kind)
+	}
+	if transition.Project != "" {
+		t.Errorf("it must not land in a project's audit view as though the project did it, got %q",
+			transition.Project)
+	}
+	if transition.Privileged != audit.PrivilegeIntegrity {
+		t.Errorf("a write the platform did not make is a privileged integrity record, got %q",
+			transition.Privileged)
+	}
+	if transition.Actor != "" {
+		t.Errorf("the actor is the reconciler that noticed, never the manager that wrote: %q", transition.Actor)
+	}
+	if transition.Details["fieldManager"] != "kubectl-edit" {
+		t.Errorf("the manager belongs in the details, where an unverified claim belongs: %+v",
+			transition.Details)
+	}
+	for _, key := range []string{"objectKind", "objectName", "operation", "detection", "fields"} {
+		if _, ok := transition.Details[key]; !ok {
+			t.Errorf("the record must carry %q: %+v", key, transition.Details)
+		}
+	}
+}
+
+// Turned off, the detection looks for nothing — an installation that decided
+// its cluster access is managed elsewhere is not nagged about it.
+func TestDetectionOffLooksForNothing(t *testing.T) {
+	written := metav1.NewTime(accessNow)
+	edited := &kitchenv1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "blog", Namespace: PlatformNamespace,
+			ManagedFields: []metav1.ManagedFieldsEntry{{
+				Manager: "kubectl-edit", Operation: metav1.ManagedFieldsOperationUpdate, Time: &written,
+			}},
+		},
+	}
+	fixtures := newAccessFixtures(t, edited)
+	ctx := context.Background()
+
+	kitchen := &kitchenv1alpha1.Kitchen{}
+	if err := fixtures.client.Get(ctx, types.NamespacedName{Name: KitchenSingletonName}, kitchen); err != nil {
+		t.Fatal(err)
+	}
+	kitchen.Spec.Compliance.Access.DetectOutOfBandWrites = false
+	if err := fixtures.client.Update(ctx, kitchen); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := fixtures.sweeper.SweepOnce(ctx)
+	if err != nil {
+		t.Fatalf("SweepOnce: %v", err)
+	}
+	if report.OutOfBand != 0 {
+		t.Errorf("detection is off and something was reported: %d", report.OutOfBand)
+	}
+}
+
 // The sweep publishes what it found on the singleton, so an alert nobody can
 // see is not what this is.
 func TestTheSweepPublishesTheAccessPostureOnTheSingleton(t *testing.T) {

@@ -1425,6 +1425,38 @@ operator included, and there is no way back that does not involve `kubectl`. A
 compliance control that can lock an institution out of its own platform is one
 that gets turned off.
 
+### 11.8 "Elevated and time-boxed", and what is actually built
+
+The issue asks for privileged operations to be treated as a distinct class:
+**elevated, time-boxed, audit-logged separately.** Two of those three are
+built and the third is not, so it is named here rather than left to be assumed.
+
+*Audit-logged separately* is §4's `privileged` classification, made into a
+property of the log rather than a convention six call sites happened to share:
+six named classes, one filter, and the marking inside what the chain hashes so
+it cannot be added or removed after the fact.
+
+*Time-boxed* is the recertification cadence. A grant does not expire, but the
+**review of it** does: every grant on the platform has a dated, signed answer
+to "who last confirmed this, and when", and a cycle that goes past its deadline
+says so on the singleton. That is a bound on how long authority can stand
+unexamined, which is what the phrase buys in practice.
+
+*Elevated* — a just-in-time elevation, where an operator holds no authority
+until they request it for an hour — is **not built**, and the reason is
+§11.5 rather than effort. Elevation is only a control if the un-elevated state
+is actually weaker, and on this platform the un-elevated state of somebody
+holding a kubeconfig is: full authority, unobserved. A Kitchen-level elevation
+gate would add a step for the honest operator and none at all for the one it
+is meant to catch, while producing evidence that reads as though it had. That
+would be worse than nothing, on this document's own standard.
+
+What would make it real is elevation at the layer that actually holds the
+authority — short-lived cluster credentials, issued on request, with the
+issuing system's own log outside Kitchen's reach. That is an institutional
+control that Kitchen can carry inputs for and cannot implement, which is
+exactly §3's line about where this platform's scope ends.
+
 ---
 
 ## 12. Configuration
