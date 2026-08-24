@@ -637,6 +637,57 @@ func applyResource(resources *corev1.ResourceRequirements, name corev1.ResourceN
 	return nil
 }
 
+// applyProjectBuildAndRuntime sets the build and runtime half of a settings
+// PATCH: how the image is built, and what the Deployment asks for once it is.
+// It is lifted out of patchProject because that handler is one long sequence
+// of "was this field sent", and two features arriving at once pushed the
+// sequence past what gocyclo will read. Nothing here touches the cluster or
+// the caller — it edits the object in place and hands back the refusal for
+// patchProject to write, so the handler keeps every response in one place.
+func applyProjectBuildAndRuntime(project *kitchenv1alpha1.Project, body patchProjectRequest) error {
+	if body.BuildStrategy != nil {
+		strategy := kitchenv1alpha1.BuildStrategy(strings.TrimSpace(*body.BuildStrategy))
+		switch strategy {
+		case kitchenv1alpha1.BuildStrategyAuto, kitchenv1alpha1.BuildStrategyDockerfile, kitchenv1alpha1.BuildStrategyBuildpacks:
+			project.Spec.Build.Strategy = strategy
+		default:
+			return fmt.Errorf("buildStrategy must be auto, dockerfile or buildpacks (got %q)", *body.BuildStrategy)
+		}
+	}
+	if body.DockerfilePath != nil {
+		project.Spec.Build.DockerfilePath = strings.TrimSpace(*body.DockerfilePath)
+	}
+	if body.RootDirectory != nil {
+		project.Spec.Build.RootDirectory = strings.TrimSpace(*body.RootDirectory)
+	}
+	if body.Port != nil {
+		// Zero is not "no port": it is the project handing the question back
+		// to the platform, which answers it from the framework each build
+		// detects. Anything else is a port someone chose.
+		if *body.Port < 0 || *body.Port > 65535 {
+			return fmt.Errorf("port must be between 1 and 65535, or 0 to derive it from the detected framework (got %d)", *body.Port)
+		}
+		project.Spec.Runtime.Port = *body.Port
+	}
+	if body.Replicas != nil {
+		if *body.Replicas < 1 {
+			return fmt.Errorf("replicas must be at least 1 (got %d) — production never scales to zero", *body.Replicas)
+		}
+		project.Spec.Runtime.Replicas = body.Replicas
+	}
+	if body.CPU != nil {
+		if err := applyResource(&project.Spec.Runtime.Resources, corev1.ResourceCPU, strings.TrimSpace(*body.CPU)); err != nil {
+			return err
+		}
+	}
+	if body.Memory != nil {
+		if err := applyResource(&project.Spec.Runtime.Resources, corev1.ResourceMemory, strings.TrimSpace(*body.Memory)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *Server) patchProject(w http.ResponseWriter, req *http.Request) {
 	ctx := req.Context()
 
@@ -675,50 +726,9 @@ func (s *Server) patchProject(w http.ResponseWriter, req *http.Request) {
 	if body.PreviewsProtected != nil {
 		project.Spec.Previews.Protected = body.PreviewsProtected
 	}
-	if body.BuildStrategy != nil {
-		strategy := kitchenv1alpha1.BuildStrategy(strings.TrimSpace(*body.BuildStrategy))
-		switch strategy {
-		case kitchenv1alpha1.BuildStrategyAuto, kitchenv1alpha1.BuildStrategyDockerfile, kitchenv1alpha1.BuildStrategyBuildpacks:
-			project.Spec.Build.Strategy = strategy
-		default:
-			badRequest(w, "buildStrategy must be auto, dockerfile or buildpacks (got %q)", *body.BuildStrategy)
-			return
-		}
-	}
-	if body.DockerfilePath != nil {
-		project.Spec.Build.DockerfilePath = strings.TrimSpace(*body.DockerfilePath)
-	}
-	if body.RootDirectory != nil {
-		project.Spec.Build.RootDirectory = strings.TrimSpace(*body.RootDirectory)
-	}
-	if body.Port != nil {
-		// Zero is not "no port": it is the project handing the question back
-		// to the platform, which answers it from the framework each build
-		// detects. Anything else is a port someone chose.
-		if *body.Port < 0 || *body.Port > 65535 {
-			badRequest(w, "port must be between 1 and 65535, or 0 to derive it from the detected framework (got %d)", *body.Port)
-			return
-		}
-		project.Spec.Runtime.Port = *body.Port
-	}
-	if body.Replicas != nil {
-		if *body.Replicas < 1 {
-			badRequest(w, "replicas must be at least 1 (got %d) — production never scales to zero", *body.Replicas)
-			return
-		}
-		project.Spec.Runtime.Replicas = body.Replicas
-	}
-	if body.CPU != nil {
-		if err := applyResource(&project.Spec.Runtime.Resources, corev1.ResourceCPU, strings.TrimSpace(*body.CPU)); err != nil {
-			badRequest(w, "%s", err.Error())
-			return
-		}
-	}
-	if body.Memory != nil {
-		if err := applyResource(&project.Spec.Runtime.Resources, corev1.ResourceMemory, strings.TrimSpace(*body.Memory)); err != nil {
-			badRequest(w, "%s", err.Error())
-			return
-		}
+	if err := applyProjectBuildAndRuntime(project, body); err != nil {
+		badRequest(w, "%s", err.Error())
+		return
 	}
 	if body.PromotionStages != nil {
 		stages, err := s.promotionStagesFromRequest(ctx, project, *body.PromotionStages)
