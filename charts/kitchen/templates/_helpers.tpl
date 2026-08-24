@@ -709,8 +709,10 @@ does not run in.
 {{- if and .Values.kitchen.create .Values.kitchen.ingress.cloudflared.enabled (not .Values.kitchen.ingress.cloudflared.tunnelSecretName) }}
 {{- fail "kitchen.ingress.cloudflared.tunnelSecretName is required when cloudflared is enabled: create a secret holding the tunnel token under the key `token` first." }}
 {{- end }}
-{{- if not .Values.selfUpdate }}
-{{- fail "selfUpdate values are missing: upgrade with --reset-then-reuse-values so new chart defaults are merged with existing overrides." }}
+{{- range $values := list "selfUpdate" "restore" "scaleToZero" "collector" "clickhouse" }}
+{{- if not (get $.Values $values) }}
+{{- fail (printf "%s values are missing: upgrade with --reset-then-reuse-values so new chart defaults are merged with existing overrides." $values) }}
+{{- end }}
 {{- end }}
 {{- if .Values.selfUpdate.enabled }}
 {{- if not .Values.rbac.create }}
