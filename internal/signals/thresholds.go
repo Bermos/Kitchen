@@ -24,7 +24,7 @@ import "time"
 // They are constants rather than configuration, which docs/OBSERVABILITY.md §7
 // settles explicitly: configurable thresholds are an alerting-era feature, and
 // the catalogue is versioned code either way. They are gathered here rather
-// than spread across the rules because the only way to keep thirty-six rules
+// than spread across the rules because the only way to keep thirty-odd rules
 // agreeing on what "sustained" or "near the limit" means is to make disagreeing
 // require editing the same screenful of text.
 //

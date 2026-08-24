@@ -35,7 +35,7 @@ limitations under the License.
 //
 //   - A rule is a unit test with a struct literal. No cluster, no store, no
 //     clock — the snapshot carries its own [Snapshot.Now].
-//   - Thirty-six rules over one snapshot cost one round of reads, not thirty-six.
+//   - Thirty-odd rules over one snapshot cost one round of reads, not thirty-odd.
 //   - Evaluating on request (what happens today, when a screen asks) and
 //     evaluating on a timer (what stage 5 of docs/OBSERVABILITY.md adds) are the
 //     same call. The loop is additive; nothing here has to move for it.

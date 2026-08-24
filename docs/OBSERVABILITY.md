@@ -675,9 +675,64 @@ means it also surfaces on the environment's diagnostics strip.
 | `platform.error-correlated` | 5xx rising in ≥ 3 projects simultaneously | same |
 | `platform.component-unhealthy` | the existing component survey, folded into the same feed | Kitchen status |
 
+**Continuity — the one rule whose number is not ours** (dev + operator)
+
+| Signal | Fires when | Computed from |
+|---|---|---|
+| `env.rto-at-risk` | an environment is serving nothing and has spent half its declared RTO; critical once it is past | workload status (API) + the designation on the Project and the Environment |
+
 Thresholds are constants with taste, not user configuration, in v1 —
 configurable thresholds are an alerting-era feature and the catalogue is
-versioned code either way.
+versioned code either way. **`env.rto-at-risk` is the exception, and it is a
+different kind of number entirely.** A recovery time objective is not a
+threshold anybody on this side of the API should have an opinion about: the
+institution sets it, on the Project or the Environment (issue #141), and the
+platform's job is to hold the estate to it. Change the RTO and you have
+changed when the pager goes off — two environments with the same outage and
+different objectives get different answers, which is the difference between a
+tolerance that drives alerting and one that decorates a screen. Half is where
+it warns, because half of a tolerance is the last moment at which acting still
+leaves as long as has already been lost; waiting for the breach would be a
+notification that arrives when the only remaining decision is what to tell the
+regulator.
+
+It deliberately does not suppress `workload.notready`, which reads the same
+condition. They are two different statements — "the pods are gone" and "you
+have spent 80% of the time you have" — and an operator holding a
+fifteen-minute objective wants the second one at minute eight rather than the
+first one at minute ten. An environment idled to zero by scale-to-zero wants
+no pods and is not an outage; the rule reads *desired*, so it never fires on a
+parked environment.
+
+**Criticality is the other half, applied once over the whole round.** A
+warning about an environment designated `critical` is raised to a critical
+finding, in `Registry.Evaluate` rather than in thirty-odd rules — a
+designation honoured by some rules and forgotten by the rest would be worse
+than one honoured by none. It moves no rule's version (no rule's meaning
+changed) and no fingerprint, so a condition that opened as a warning and
+escalated when somebody designated the environment stays the same condition.
+`important` escalates nothing, on purpose: if the middle rung escalated too
+there would be nothing left at warning, and a list where everything is
+critical is a list nobody reads.
+
+### What an RPO would take
+
+Nothing fires on a declared RPO, and nothing is going to be made to. Measuring
+a recovery *point* needs a recovery point to measure against — the age of the
+newest restorable copy of the data — and the platform observes none: no
+provider it ships declares one, and a `ResourceClaim`'s status has no field
+that could carry one honestly. A rule that "checked" the RPO today would be a
+rule that always passes, which is worse than no rule, because it would read as
+evidence.
+
+What would close it is small and is on the provider side of the resource
+contract (docs/CRDS.md): a provisioner declaring a recovery point on the
+claim's status, the way it already declares provenance and residency. With
+that, `claim.rpo-at-risk` is the same shape as the rule above — the declared
+objective against an observed number — and would land without any of this
+moving. Until then the RPO is carried, mapped in `GET /compliance/criticality`
+and reachable by a policy bundle, and the documentation says plainly that it
+alerts on nothing.
 
 ---
 

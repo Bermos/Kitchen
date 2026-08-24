@@ -156,7 +156,7 @@ type PlatformFacts struct {
 // It is a plain struct because cert-manager's kinds are addressed as
 // unstructured objects — the operator does that everywhere, to avoid tying the
 // build to cert-manager's release cadence — and digging through nested maps is
-// not something thirty-six rules should each learn to do. [Gather] does it
+// not something thirty-odd rules should each learn to do. [Gather] does it
 // once.
 type Certificate struct {
 	Namespace string
