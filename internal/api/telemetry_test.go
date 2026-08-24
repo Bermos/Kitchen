@@ -314,7 +314,7 @@ func TestLogsStreamAsServerSentEvents(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/builds/shop-bld-abc123def456/logs", nil)
 	req.Header.Set("Authorization", "Bearer "+h.issuer.token(t))
-	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("Accept", eventStream)
 	// The stream follows until the client goes away; a cancelled context is
 	// the client going away. The deadline is only a backstop so a broken
 	// stream cannot hang the suite.
@@ -333,7 +333,7 @@ func TestLogsStreamAsServerSentEvents(t *testing.T) {
 	cancel()
 	<-done
 
-	if got := recorder.Header().Get("Content-Type"); got != "text/event-stream" {
+	if got := recorder.Header().Get("Content-Type"); got != eventStream {
 		t.Fatalf("Content-Type = %q, want text/event-stream (body: %s)", got, recorder.Body.String())
 	}
 	body := recorder.Body.String()
