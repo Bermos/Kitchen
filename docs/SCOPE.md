@@ -234,16 +234,34 @@ have to rediscover it:
   application's, for the reason that matters: the moment anyone needs the runbook is the
   moment the app is down.
 
-  **The docs half is scoped as issue #187**, and scoping it settled three things. The
-  renderer is an image — so zensical, Hugo or anything else is the project's choice and
-  never the platform's, and what the platform owes is a pinned default so that plain
-  markdown with no configuration still renders. The rendered site is an OCI referrer on
-  the build's own artifact, which is where `internal/attestation` already puts megabytes
-  that came out of a pod, so the feature adds no storage, no PVC and no dependency on
-  object storage (#81), and is backed up exactly as much as the image it belongs to. And
-  it is served on its own origin behind the preview gate rather than from the dashboard:
-  a rendered site is project-authored HTML and script, and same-origin hosting would hand
-  any doc page the reader's session.
+  **The docs half is scoped as issue #187**, and scoping it turned the feature inside
+  out. The first draft published a *rendered site* — the renderer is an image, so pick
+  zensical or Hugo — served on its own origin behind the preview gate, because
+  project-authored HTML and script on the dashboard's origin would be handed the reader's
+  session. What that design cannot do is the thing actually wanted: docs that live on the
+  project page, in the platform's own styling, where nobody can ship a light theme into a
+  dark dashboard or a font nobody asked for.
+
+  So the artifact is **an HTML fragment per page and a navigation tree**, not a site: no
+  stylesheet, no script, no theme, and the dashboard renders it with its own components.
+  That is also the safer half of the trade, which is worth stating because Backstage's
+  TechDocs made the other one — a full themed site, sanitized in the reader's browser and
+  injected into a shadow DOM — and has paid for it in advisories twice over, once for a
+  second route that served the bytes unsanitized and once for a gap in the allowlist. The
+  rules that follow are all the same rule: never accept what you intend to strip. Raw
+  HTML passthrough off, so the vocabulary is closed; sanitizing in Go on the server, so
+  no route can forget and a fixed allowlist applies retroactively; an unknown class
+  dropped rather than passed through, which is what makes "it cannot be off-brand" a
+  guarantee rather than a hope. With no script and no style left in the payload the
+  origin question dissolves, and the docs can live at `/projects/{project}/docs`.
+
+  Two things survived from the first draft unchanged. The fragments are an OCI referrer
+  on the build's artifact — where `internal/attestation` already puts megabytes that came
+  out of a pod — so the feature adds no storage, no PVC and no dependency on object
+  storage (#81), and is backed up exactly as much as the image it belongs to. And a
+  renderer image stays as the escape hatch for a project that needs MkDocs or Hugo
+  semantics, sanitized identically; what changed is that the common case no longer pays
+  for it, since a markdown converter with no theme to run needs no pod at all.
 
   Then the sweet part, still parked — a runbook linked from the page that tells you when
   to run it, started from there by people allowed to start it, with an audit trail:
