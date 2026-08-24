@@ -21,6 +21,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -51,6 +52,21 @@ var (
 
 func TestControllers(t *testing.T) {
 	RegisterFailHandler(Fail)
+
+	// Gomega's default budget is one second, which is the wrong order of
+	// magnitude for anything driven against a real API server. A teardown
+	// that waits on the project finalizer is the case that proves it: it
+	// needs two reconcile passes, each listing seven kinds, and the *first*
+	// one in a process also pays for the client's discovery and REST mapping
+	// of those kinds. Measured, that first teardown takes about 1.2 seconds
+	// where every later one takes 0.2 — so the default fails the first spec
+	// to try it and passes the rest, which reads as a flake and is not one.
+	//
+	// The budget is a ceiling, not a wait: Eventually returns the moment its
+	// condition holds, so a generous one costs nothing when things are well
+	// and reports honestly when they are not.
+	SetDefaultEventuallyTimeout(30 * time.Second)
+	SetDefaultEventuallyPollingInterval(50 * time.Millisecond)
 
 	RunSpecs(t, "Controller Suite")
 }
