@@ -146,12 +146,18 @@ type removeMemberRequest struct {
 // a project's CI keys are (keys.go). It is an interface for the same reason
 // logReader is — a test must be able to answer without an issuer to talk to.
 //
-// The four are one interface because they are one connection, resolved off
-// the platform's own identity-provider secret. Splitting them would mean two
+// They are one interface because they are one connection, resolved off the
+// platform's own identity-provider secret. Splitting them would mean two
 // resolutions of the same thing, which is two ways for the platform to
 // disagree with itself about which issuer it is talking to.
 type accountDirectory interface {
 	AccountByEmail(ctx context.Context, email string) (*idp.Account, error)
+	// Accounts is every account the issuer holds. It is what the access
+	// survey (access.go) asks whether a grant belongs to anybody at all, and
+	// it is the one read here that a federated issuer answers with
+	// idp.ErrNoDirectory — which the survey treats as "could not ask" rather
+	// than as "nobody is behind it".
+	Accounts(ctx context.Context) ([]idp.Account, error)
 	Keys(ctx context.Context, project string) ([]idp.Key, error)
 	CreateKey(ctx context.Context, project, name string) (*idp.IssuedKey, error)
 	DeleteKey(ctx context.Context, project, name string) (*idp.Key, error)

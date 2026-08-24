@@ -238,6 +238,13 @@ type logReader interface {
 	QueryAuditRecords(ctx context.Context, query clickhouse.AuditQuery) ([]clickhouse.AuditRecord, error)
 	ScanAuditRecords(ctx context.Context, from int64, limit int) ([]clickhouse.AuditRecord, error)
 
+	// ActorActivity is the same table read for a different question: when was
+	// each identity last recorded doing something. It is what the access
+	// survey judges dormancy against, and it is here rather than anywhere
+	// else because the audit log is the only record of activity that answers
+	// to an evidence standard.
+	ActorActivity(ctx context.Context) (map[string]time.Time, error)
+
 	// The decision register: the policy engine's stored decisions and the
 	// bundles they cite. InsertDecision is the one write in this interface,
 	// and it is here because a replay is a decision of its own — served by

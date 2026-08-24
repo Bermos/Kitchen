@@ -118,6 +118,11 @@ export type Route =
   | "GET /api/v1/compliance/drift"
   | "GET /api/v1/compliance/criticality"
   | "GET /api/v1/compliance/dependents"
+  | "GET /api/v1/access/identities"
+  | "GET /api/v1/access/reviews"
+  | "POST /api/v1/access/reviews"
+  | "GET /api/v1/access/reviews/{name}"
+  | "PATCH /api/v1/access/reviews/{name}"
   | "GET /api/v1/audit"
   | "GET /api/v1/audit/verify"
   | "GET /api/v1/metrics/overview"
@@ -232,6 +237,11 @@ export const POLICY: Readonly<Record<Route, Requirement>> = {
   "GET /api/v1/compliance/drift": { kind: "visibleProjects" },
   "GET /api/v1/compliance/criticality": { kind: "visibleProjects" },
   "GET /api/v1/compliance/dependents": { kind: "visibleProjects" },
+  "GET /api/v1/access/identities": { kind: "operator", doing: "reading who holds what on the platform" },
+  "GET /api/v1/access/reviews": { kind: "operator", doing: "reading the platform's access recertifications" },
+  "POST /api/v1/access/reviews": { kind: "operator", doing: "opening an access recertification" },
+  "GET /api/v1/access/reviews/{name}": { kind: "operator", doing: "reading an access recertification" },
+  "PATCH /api/v1/access/reviews/{name}": { kind: "operator", doing: "deciding an access recertification" },
   "GET /api/v1/audit": { kind: "visibleProjects" },
   "GET /api/v1/audit/verify": { kind: "operator", doing: "verifying the audit log's chain" },
   "GET /api/v1/metrics/overview": { kind: "visibleProjects" },

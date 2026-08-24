@@ -175,6 +175,8 @@ give.
 | `kitchen decisions list/show/replay` | The stored policy decisions, and re-running one from its stored inputs | `GET /decisions`, `GET /decisions/{id}`, `POST /decisions/{id}/replay` |
 | `kitchen drift` | What is deployed right now that no longer meets its environment's bar | `GET /compliance/drift` |
 | `kitchen criticality` | What supports each designated function, and (`dependents`) what breaks without one third party | `GET /compliance/criticality`, `GET /compliance/dependents` |
+| `kitchen access identities` | Who holds what on the platform, and which grants look like they belong to nobody | `GET /access/identities` |
+| `kitchen access reviews/show` | The recertification cycles and what each one decided | `GET /access/reviews`, `GET /access/reviews/{name}` |
 | `kitchen releases` | The project's releases — what there is to roll back to | `GET /projects/{name}/releases` |
 | `kitchen environments` | The project's environments and where they answer | `GET /projects/{name}/environments` |
 | `kitchen api` | Any endpoint of the API, authenticated | anything |
@@ -497,6 +499,44 @@ and goes through `kitchen api`:
 kitchen api PATCH /projects/shop --data '{"criticality":"critical","rto":"1h","rpo":"5m"}'
 kitchen api PATCH /environments/shop-production/requirements --data '{"criticality":"critical","rto":"15m"}'
 ```
+
+### Access, and who reviewed it
+
+```sh
+kitchen access identities --json
+kitchen access identities --orphaned --json
+kitchen access reviews --historical --json
+kitchen access show access-review-8x2kd --json
+```
+
+One row per grant, not per account: an account holding admin on three projects
+is three rows, because those are three decisions for a reviewer. `--orphaned`
+narrows to the grants that are **both** dormant and unknown to the identity
+provider — either alone has an innocent reading, the pair does not — which is
+the list worth acting on, and the reason this is a command rather than a
+`kitchen api` line. A monthly job that opens a ticket on a non-empty answer is
+the shape it is for; the exit code stays zero, because a command that failed on
+a finding gets turned off the first week it finds one.
+
+Two words to read carefully in the answer. `inactive` is the audit log's, and
+the audit log records writes, so an account that only ever reads looks dormant
+and is not. `directoryConsulted: false` means nothing at all is claimed about
+whether a grant belongs to anybody — a federated issuer serves no account
+directory, and "we could not ask" is not "nobody is behind it".
+
+Opening a cycle and deciding a grant are writes with a person's name on them,
+so they are spelled out rather than made muscle-memory:
+
+```sh
+kitchen api POST /access/reviews --data '{"scope": "all", "reason": "the annual audit"}'
+kitchen api PATCH /access/reviews/access-review-8x2kd --data '{"decisions":
+  [{"subject": "user_7", "grant": "shop", "decision": "revoke", "note": "left in June"}],
+  "close": true}'
+```
+
+Closing is what carries out the revocations and mints the retained artefact.
+All of these need the operator role: the answer is the whole installation's
+access in one document. See [docs/api/access.md](api/access.md).
 
 ### Anything else
 

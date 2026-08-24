@@ -288,6 +288,7 @@ func fixtures() []runtime.Object {
 // stubLogs stands in for the telemetry store.
 type stubLogs struct {
 	auditRecords  []clickhouse.AuditRecord
+	actorActivity map[string]time.Time
 	lastAudit     clickhouse.AuditQuery
 	auditErr      error
 	lastScanFrom  int64
@@ -628,6 +629,13 @@ func (s *stubLogs) QueryAuditRecords(
 	return s.auditRecords, nil
 }
 
+func (s *stubLogs) ActorActivity(_ context.Context) (map[string]time.Time, error) {
+	if s.auditErr != nil {
+		return nil, s.auditErr
+	}
+	return s.actorActivity, nil
+}
+
 // ScanAuditRecords answers the run starting at `from`, out of whatever the
 // stub was given. It filters rather than returning everything, because the
 // chain verifier's whole behaviour is about which records it was handed.
@@ -815,7 +823,8 @@ func newHarness(t *testing.T, kitchen *kitchenv1alpha1.Kitchen, objs ...runtime.
 	objects := append([]runtime.Object{kitchen}, objs...)
 	c := fake.NewClientBuilder().WithScheme(scheme).
 		WithRuntimeObjects(objects...).
-		WithStatusSubresource(&kitchenv1alpha1.Build{}, &kitchenv1alpha1.Environment{}, &kitchenv1alpha1.Exception{}).
+		WithStatusSubresource(&kitchenv1alpha1.Build{}, &kitchenv1alpha1.Environment{},
+			&kitchenv1alpha1.Exception{}, &kitchenv1alpha1.AccessReview{}).
 		Build()
 
 	logs := &stubLogs{}

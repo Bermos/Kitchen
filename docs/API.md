@@ -211,6 +211,11 @@ name against `internal/api/policy.go`, so a route that moves fails them too.
 | POST | `/logs/saved` | Keep the current selection under a name | any account |
 | DELETE | `/logs/saved/{name}` | Forget one | any account — filtered |
 | GET | `/events` | The platform's recent activity, newest first. `?project=` and `?limit=` filter | any account — filtered |
+| GET | `/access/identities` | Who holds what on the platform right now, one row per grant, with last activity and whether anything is still behind it | `operator` |
+| GET | `/access/reviews` | The recertification register, newest first. `?historical=true` adds the closed cycles | `operator` |
+| POST | `/access/reviews` | Open a recertification cycle out of cadence; the snapshot is frozen on the spot | `operator` |
+| GET | `/access/reviews/{name}` | One cycle whole: the snapshot, every decision, and the artefact it produced | `operator` |
+| PATCH | `/access/reviews/{name}` | Record decisions, close the cycle, or both. Closing applies the revocations and mints the artefact | `operator` |
 | GET | `/audit` | The tamper-evident log of state transitions. `?kind=`, `?name=`, `?project=`, `?actor=`, `?privileged=true`, `?privilegeClass=`, `?since=`, `?until=`, `?limit=` | any account — filtered |
 | GET | `/audit/verify` | Re-derive the chain's hashes over a run and report every break. `?from=`, `?limit=` | `operator` |
 | GET | `/compliance` | What the platform is producing: whether the audit log is recording, decisions are stored, and the key artifacts are signed under | `operator` |
@@ -272,6 +277,7 @@ written at the same time without colliding. One file per resource makes two
 such changes two changes to two different files.
 
 - [Accounts](api/accounts.md) — who the caller is, and what they may do
+- [Access and recertification](api/access.md) — who holds what, the cycles that review it, and the writes the platform did not make
 - [Projects](api/projects.md) — settings, environment variables, membership, CI keys, and deletion
 - [Builds](api/builds.md) — starting and cancelling one, what it reused, and the evidence it left
 - [Environments and releases](api/environments.md) — rolling back, what is running, what is wrong with it, and the bar an environment sets

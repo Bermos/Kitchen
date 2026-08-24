@@ -399,6 +399,29 @@ func (s *Server) routes() []route {
 		// route on this platform refuses a deployment because of it.
 		{"GET /api/v1/compliance/criticality", s.complianceCriticality, acrossProjects()},
 		{"GET /api/v1/compliance/dependents", s.complianceDependents, acrossProjects()},
+		// Access recertification. Every one of these is the operator's, and
+		// not out of caution: the answer is the whole installation's access
+		// in one document, so a member who could read it would learn every
+		// account on the platform and every project's membership. "Who has
+		// access to shop" is already answerable to shop's own admins,
+		// through GET /projects/{name}/members.
+		//
+		// Deciding is the same requirement as opening, which is deliberate:
+		// there is no role between operator and member to give a reviewer,
+		// and inventing one to hold a review would be a fourth role in a
+		// model that has three. Who was *expected* to review is on the cycle;
+		// who actually decided is on every entry and in the audit log.
+		{"GET /api/v1/access/identities", s.listIdentities,
+			operatorOnly("reading who holds what on the platform")},
+		{"GET /api/v1/access/reviews", s.listAccessReviews,
+			operatorOnly("reading the platform's access recertifications")},
+		{"POST /api/v1/access/reviews", s.openAccessReview,
+			operatorOnly("opening an access recertification")},
+		{"GET /api/v1/access/reviews/{name}", s.getAccessReview,
+			operatorOnly("reading an access recertification")},
+		{"PATCH /api/v1/access/reviews/{name}", s.reviewAccess,
+			operatorOnly("deciding an access recertification")},
+
 		{"GET /api/v1/audit", s.listAuditRecords, acrossProjects()},
 		// Verifying the chain is a statement about the whole log, including
 		// the records of platform changes a member never sees.
