@@ -157,6 +157,15 @@ moves until its owners repin. The bytes a decision cited are persisted to the
 store on first use, so deleting the ConfigMap deletes nothing a decision
 depends on.
 
+**That is true of the built-in bundle across operator upgrades too**, and it is
+the one place it surprises people. A release that changes a compiled-in rule
+changes the built-in bundle's digest, so an environment pinned to the previous
+one no longer resolves: its promotions answer "the environment's requirements
+could not be evaluated", which is a refusal to judge rather than a verdict —
+deliberately, because a bar that cannot be read is not a bar that has been
+cleared. Read this listing after an upgrade and repin the environments whose
+digest has moved.
+
 ## CLI
 
 `kitchen decisions list|show|replay` cover the three reads and the replay,
