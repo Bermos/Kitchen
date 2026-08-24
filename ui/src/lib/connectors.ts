@@ -77,11 +77,24 @@ export function providerGuidance(provider: string, apiUrl?: string): ProviderGui
         link: { href: "https://console.neon.tech/app/settings/api-keys", label: "API keys in the Neon console" },
       };
     case "gitlab":
+      return {
+        tokenLabel: "Access token",
+        purpose:
+          "Kitchen registers the repository's push and merge-request webhook with this token and reads the repository to build it.",
+        permissions: [
+          "Personal, project, or group access token with API access to the repositories you deploy.",
+          "The token is also used by webhook delivery checks (`X-Gitlab-Token`) and repository reads.",
+        ],
+        link: { href: "https://gitlab.com/-/user_settings/personal_access_tokens", label: "Personal access tokens in GitLab" },
+      };
     case "gitea":
       return {
         tokenLabel: "Access token",
-        purpose: `The platform has no ${provider === "gitlab" ? "GitLab" : "Gitea"} implementation yet: the connection is stored, but nothing uses it and the credential is never checked.`,
-        permissions: [],
+        purpose:
+          "Kitchen registers the repository's push and pull-request webhook with this token and reads the repository to build it.",
+        permissions: [
+          "A Gitea access token with read access to the repository and webhook administration permissions.",
+        ],
       };
     case "dockerRegistry":
       return {

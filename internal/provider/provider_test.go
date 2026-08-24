@@ -50,14 +50,34 @@ func tokenSecret(token string) *corev1.Secret {
 	}
 }
 
+const testToken = "tok"
+
 func TestDefaultResolvesImplementedProviders(t *testing.T) {
-	probe, err := Default(connection("github", `{"apiUrl": "https://ghe.internal/api/v3"}`), tokenSecret("tok"))
+	probe, err := Default(connection("github", `{"apiUrl": "https://ghe.internal/api/v3"}`), tokenSecret(testToken))
 	if err != nil {
 		t.Fatal(err)
 	}
 	gh, ok := probe.(*GitHubProbe)
-	if !ok || gh.APIURL != "https://ghe.internal/api/v3" || gh.Token != "tok" {
+	if !ok || gh.APIURL != "https://ghe.internal/api/v3" || gh.Token != testToken {
 		t.Errorf("unexpected github probe %#v", probe)
+	}
+
+	probe, err = Default(connection("gitlab", `{"apiUrl": "https://gitlab.internal/api/v4"}`), tokenSecret(testToken))
+	if err != nil {
+		t.Fatal(err)
+	}
+	gl, ok := probe.(*GitLabProbe)
+	if !ok || gl.APIURL != "https://gitlab.internal/api/v4" || gl.Token != testToken {
+		t.Errorf("unexpected gitlab probe %#v", probe)
+	}
+
+	probe, err = Default(connection("gitea", `{"apiUrl": "https://git.internal/api/v1"}`), tokenSecret(testToken))
+	if err != nil {
+		t.Fatal(err)
+	}
+	gt, ok := probe.(*GiteaProbe)
+	if !ok || gt.APIURL != "https://git.internal/api/v1" || gt.Token != testToken {
+		t.Errorf("unexpected gitea probe %#v", probe)
 	}
 
 	probe, err = Default(connection("neon", ""), tokenSecret("key"))
@@ -71,8 +91,8 @@ func TestDefaultResolvesImplementedProviders(t *testing.T) {
 }
 
 func TestDefaultRefusesUnimplementedProviders(t *testing.T) {
-	for _, name := range []string{"gitlab", "gitea"} {
-		_, err := Default(connection(name, ""), tokenSecret("tok"))
+	for _, name := range []string{"bitbucket", "svn"} {
+		_, err := Default(connection(name, ""), tokenSecret(testToken))
 		if !errors.Is(err, ErrNotImplemented) {
 			t.Errorf("expected ErrNotImplemented for %s, got %v", name, err)
 		}
@@ -194,11 +214,9 @@ func TestCapabilitiesMatchWhatThePlatformImplements(t *testing.T) {
 	if got := Capabilities("neon"); len(got) != 1 || got[0] != kitchenv1alpha1.CapabilityDatabase {
 		t.Errorf("unexpected neon capabilities %v", got)
 	}
-	// No git implementation exists for these, so advertising gitSource would
-	// let a Project pick a connection nothing can build from.
 	for _, name := range []string{"gitlab", "gitea"} {
-		if got := Capabilities(name); got != nil {
-			t.Errorf("expected no capabilities for %s, got %v", name, got)
+		if got := Capabilities(name); len(got) != 1 || got[0] != kitchenv1alpha1.CapabilityGitSource {
+			t.Errorf("expected gitSource capability for %s, got %v", name, got)
 		}
 	}
 }
