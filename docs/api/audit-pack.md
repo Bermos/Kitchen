@@ -56,6 +56,12 @@ served: an export nobody can prove happened is the one shape of this feature
 that would be worse than not having it. `GET /api/v1/audit?kind=EvidenceExport`
 is "every pack anybody has ever taken".
 
+Each *format* is a record, so taking a pack and its signature is two, and the
+dashboard's Export followed by all three downloads is four. That is the honest
+count rather than an artefact: each one is a copy of the evidence leaving, the
+`details.format` says which, and `details.digest` is the same value across all
+of them because the digest identifies the document rather than the response.
+
 ## The three formats
 
 One address, one document, three renderings. `?format=` chooses.
