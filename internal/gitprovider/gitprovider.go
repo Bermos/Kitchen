@@ -69,48 +69,46 @@ type Factory func(conn *kitchenv1alpha1.Connection, token string) (Provider, err
 func Default(conn *kitchenv1alpha1.Connection, token string) (Provider, error) {
 	switch conn.Spec.Provider {
 	case ProviderGitHub:
-		apiURL := "https://api.github.com"
-		if conn.Spec.Config != nil {
-			var cfg struct {
-				APIURL string `json:"apiUrl"`
-			}
-			if err := json.Unmarshal(conn.Spec.Config.Raw, &cfg); err != nil {
-				return nil, fmt.Errorf("invalid github config: %w", err)
-			}
-			if cfg.APIURL != "" {
-				apiURL = cfg.APIURL
-			}
+		apiURL, err := configuredAPIURL(conn, "https://api.github.com")
+		if err != nil {
+			return nil, err
 		}
 		return &GitHub{APIURL: apiURL, Token: token}, nil
 	case ProviderGitLab:
-		apiURL := "https://gitlab.com/api/v4"
-		if conn.Spec.Config != nil {
-			var cfg struct {
-				APIURL string `json:"apiUrl"`
-			}
-			if err := json.Unmarshal(conn.Spec.Config.Raw, &cfg); err != nil {
-				return nil, fmt.Errorf("invalid gitlab config: %w", err)
-			}
-			if cfg.APIURL != "" {
-				apiURL = cfg.APIURL
-			}
+		apiURL, err := configuredAPIURL(conn, "https://gitlab.com/api/v4")
+		if err != nil {
+			return nil, err
 		}
 		return &GitLab{APIURL: apiURL, Token: token}, nil
 	case ProviderGitea:
-		apiURL := "https://gitea.com/api/v1"
-		if conn.Spec.Config != nil {
-			var cfg struct {
-				APIURL string `json:"apiUrl"`
-			}
-			if err := json.Unmarshal(conn.Spec.Config.Raw, &cfg); err != nil {
-				return nil, fmt.Errorf("invalid gitea config: %w", err)
-			}
-			if cfg.APIURL != "" {
-				apiURL = cfg.APIURL
-			}
+		// Gitea has no hosted default worth assuming — the audience for it
+		// self-hosts — but gitea.com exists and a Connection that names no
+		// apiUrl has to resolve to something.
+		apiURL, err := configuredAPIURL(conn, "https://gitea.com/api/v1")
+		if err != nil {
+			return nil, err
 		}
 		return &Gitea{APIURL: apiURL, Token: token}, nil
 	default:
 		return nil, fmt.Errorf("%w: %s", ErrUnsupportedProvider, conn.Spec.Provider)
 	}
+}
+
+// configuredAPIURL is the Connection's own apiUrl, or the provider's hosted
+// default. Every provider here is one somebody can self-host, so the override
+// is the interesting case rather than the exception.
+func configuredAPIURL(conn *kitchenv1alpha1.Connection, fallback string) (string, error) {
+	if conn.Spec.Config == nil {
+		return fallback, nil
+	}
+	var cfg struct {
+		APIURL string `json:"apiUrl"`
+	}
+	if err := json.Unmarshal(conn.Spec.Config.Raw, &cfg); err != nil {
+		return "", fmt.Errorf("invalid %s config: %w", conn.Spec.Provider, err)
+	}
+	if cfg.APIURL == "" {
+		return fallback, nil
+	}
+	return cfg.APIURL, nil
 }
