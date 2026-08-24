@@ -22,6 +22,9 @@ import (
 	"math"
 	"regexp"
 	"strconv"
+	"strings"
+
+	"github.com/Bermos/Kitchen/internal/retention"
 )
 
 // The telemetry schema, and who writes what into it.
@@ -240,50 +243,92 @@ func hourlyRequestRetention(retentionDays int32) int32 {
 
 // ttlIntervalPattern pulls the retention out of a table's DDL. ClickHouse
 // normalizes `INTERVAL 30 DAY` to `toIntervalDay(30)`, whichever form it was
-// created with.
+// created with. A table may carry more than one — the log table does, when
+// build logs and container logs are kept for different lengths — so this is
+// read with FindAllStringSubmatch and compared as an ordered list.
 var ttlIntervalPattern = regexp.MustCompile(`toIntervalDay\((\d+)\)`)
+
+// buildLogsCondition is how the log table tells a build's output from a
+// running container's. It reads the `source` column kitchenColumns
+// materializes out of the collector's resource attributes, and the two clauses
+// are written as exact complements so that a row can only ever match one of
+// them — a row matching both would have two dates and no answer.
+const (
+	buildLogsCondition     = "source = 'build'"
+	containerLogsCondition = "source != 'build'"
+)
 
 // EnsureTelemetrySchema creates every telemetry table — logs, events, flows,
 // requests, cluster events, metrics and traces — and keeps their TTLs in step
-// with the retention configured on the Kitchen object. One retention knob
-// covers all of them: they are facets of the same telemetry store, and a
-// second knob would be a second thing to explain. The request tables are the
-// one place that knob is scaled rather than applied, and the ratios are
-// derived from it rather than configured beside it.
+// with the retention model configured on the Kitchen object.
+//
+// It used to take one number for all of them, on the argument that they are
+// facets of one store and a second knob would be a second thing to explain.
+// What changed is that "how long do you keep container logs" is a question a
+// records-retention policy asks by class, and answering it with one number was
+// answering a different question — see internal/retention, which is now the
+// single place the answer is decided and this the place most of it is applied.
+// The request tables are still the one place a class's number is *scaled*
+// rather than applied, and the ratios are still derived rather than
+// configured.
 //
 // Kitchen's pre-collector `logs`, `traces` and `metrics` tables are
 // deliberately not dropped. They hold real history that this schema has no
 // migration for, they age out on their own TTL, and an operator who wants the
 // disk back before then can drop them by hand.
-func (c *Client) EnsureTelemetrySchema(ctx context.Context, retentionDays int32) error {
-	if err := c.EnsureLogsSchema(ctx, retentionDays); err != nil {
+func (c *Client) EnsureTelemetrySchema(ctx context.Context, model retention.Model) error {
+	if err := c.EnsureLogsSchema(ctx,
+		model.Days(retention.ClassContainerLogs), model.Days(retention.ClassBuildLogs)); err != nil {
 		return err
 	}
-	if err := c.EnsureEventsSchema(ctx, retentionDays); err != nil {
+	if err := c.EnsureEventsSchema(ctx, model.Days(retention.ClassActivity)); err != nil {
 		return err
 	}
-	if err := c.EnsureFlowsSchema(ctx, retentionDays); err != nil {
+	if err := c.EnsureFlowsSchema(ctx, model.Days(retention.ClassFlows)); err != nil {
 		return err
 	}
-	if err := c.EnsureRequestsSchema(ctx, retentionDays); err != nil {
+	if err := c.EnsureRequestsSchema(ctx, model.Days(retention.ClassRequests)); err != nil {
 		return err
 	}
-	if err := c.EnsureK8sEventsSchema(ctx, retentionDays); err != nil {
+	if err := c.EnsureK8sEventsSchema(ctx, model.Days(retention.ClassClusterEvents)); err != nil {
 		return err
 	}
-	if err := c.EnsureMetricsSchema(ctx, retentionDays); err != nil {
+	if err := c.EnsureMetricsSchema(ctx, model.Days(retention.ClassMetrics)); err != nil {
 		return err
 	}
-	return c.EnsureTracesSchema(ctx, retentionDays)
+	return c.EnsureTracesSchema(ctx, model.Days(retention.ClassTraces))
 }
 
 // EnsureLogsSchema creates the log table if it is missing and keeps its TTL in
-// step with the retention configured on the Kitchen object. It is safe to run
-// on every reconcile: the DDL is idempotent and the TTL is only altered when
-// it actually differs.
-func (c *Client) EnsureLogsSchema(ctx context.Context, retentionDays int32) error {
-	return c.ensureTableTTL(ctx, LogsTable,
-		createLogsTable(c.cfg.Database, retentionDays), timeColumnLogs, retentionDays)
+// step with the two classes that live in it. It is safe to run on every
+// reconcile: the DDL is idempotent and the TTL is only altered when it
+// actually differs.
+//
+// Build logs and container logs share this table, so two retentions become two
+// TTL rules over the same rows rather than two tables. That has a cost, and it
+// is charged only to the installation that asks for it: with one date the
+// table keeps `ttl_only_drop_parts`, and expiry is a metadata drop of whole
+// day-partitions. With two, the setting has to come off — a part holding both
+// classes is never wholly expired, so with only-drop-parts on it would be
+// dropped at the *longer* of the two dates and the shorter class would be a
+// promise the store was not keeping. Off, expiry is a row-level delete during
+// merge, which costs merge time and keeps the promise. See COMPLIANCE.md
+// §14.2.
+func (c *Client) EnsureLogsSchema(ctx context.Context, containerDays, buildDays int32) error {
+	rules := logRetentionRules(containerDays, buildDays)
+	return c.ensureTableRules(ctx, LogsTable,
+		createLogsTable(c.cfg.Database, containerDays, buildDays), timeColumnLogs, rules)
+}
+
+// logRetentionRules is the log table's TTL, as one rule or as two.
+func logRetentionRules(containerDays, buildDays int32) []ttlRule {
+	if containerDays == buildDays {
+		return []ttlRule{{days: containerDays}}
+	}
+	return []ttlRule{
+		{days: containerDays, where: containerLogsCondition},
+		{days: buildDays, where: buildLogsCondition},
+	}
 }
 
 // EnsureEventsSchema creates the platform activity table.
@@ -415,8 +460,25 @@ func (c *Client) ensureTable(ctx context.Context, table, ddl string, retentionDa
 // buckets by `bucket`, and a MODIFY TTL naming the wrong column is refused
 // rather than ignored.
 func (c *Client) ensureTableTTL(ctx context.Context, table, ddl, column string, retentionDays int32) error {
-	if retentionDays < 1 {
-		return fmt.Errorf("retentionDays must be at least 1, got %d", retentionDays)
+	return c.ensureTableRules(ctx, table, ddl, column, []ttlRule{{days: retentionDays}})
+}
+
+// ensureTableRules is the general case: a table whose TTL is one rule, or
+// several with a condition each.
+//
+// The comparison is over the *list* of day intervals in the table's DDL, in
+// order, rather than over a single number. Two rules that differ only in their
+// conditions cannot be told apart that way, which is acceptable here for the
+// reason the one caller with conditions gives: those conditions are compiled
+// in and exact complements, so the only thing that ever moves is the days.
+func (c *Client) ensureTableRules(ctx context.Context, table, ddl, column string, rules []ttlRule) error {
+	if len(rules) == 0 {
+		return fmt.Errorf("a TTL needs at least one rule, got none for %s", table)
+	}
+	for _, rule := range rules {
+		if rule.days < 1 {
+			return fmt.Errorf("retentionDays must be at least 1, got %d", rule.days)
+		}
 	}
 
 	db := quoteIdentifier(c.cfg.Database)
@@ -433,33 +495,87 @@ func (c *Client) ensureTableTTL(ctx context.Context, table, ddl, column string, 
 	if err != nil {
 		return err
 	}
-	if current == retentionDays {
+	if sameDays(current, ruleDays(rules)) {
 		return nil
 	}
-	return c.Exec(ctx, fmt.Sprintf("ALTER TABLE %s.%s MODIFY TTL %s",
-		db, quoteIdentifier(table), ttlExpressionOn(column, retentionDays)))
+	if err := c.Exec(ctx, fmt.Sprintf("ALTER TABLE %s.%s MODIFY TTL %s",
+		db, quoteIdentifier(table), ttlExpressionRules(column, rules))); err != nil {
+		return err
+	}
+	// The only-drop-parts mode follows the shape of the TTL, not the other
+	// way round: see EnsureLogsSchema for what one setting on a two-rule
+	// table would silently do. It is set beside every TTL change rather than
+	// only where it varies, so a table that has ever held the other shape
+	// cannot be left in it.
+	return c.Exec(ctx, fmt.Sprintf("ALTER TABLE %s.%s MODIFY SETTING ttl_only_drop_parts = %d",
+		db, quoteIdentifier(table), onlyDropParts(rules)))
 }
 
-// tableRetentionDays reads back the retention ClickHouse is enforcing. A table
-// without a TTL — one created by an older version of Kitchen, or edited by
-// hand — reports 0, which never matches and so gets the TTL applied.
-func (c *Client) tableRetentionDays(ctx context.Context, table string) (int32, error) {
+// ttlRule is one TTL expression: how many days, and which rows it covers. An
+// empty condition covers every row, which is what all but one table has.
+type ttlRule struct {
+	days  int32
+	where string
+}
+
+// ruleDays is the rules' intervals in order, which is what a table's DDL is
+// compared against.
+func ruleDays(rules []ttlRule) []int32 {
+	days := make([]int32, 0, len(rules))
+	for _, rule := range rules {
+		days = append(days, rule.days)
+	}
+	return days
+}
+
+func sameDays(a, b []int32) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// onlyDropParts is 1 while a table has one date for every row, and 0 once it
+// has two. See EnsureLogsSchema.
+func onlyDropParts(rules []ttlRule) int {
+	if len(rules) > 1 {
+		return 0
+	}
+	return 1
+}
+
+// tableRetentionDays reads back the retentions ClickHouse is enforcing, in the
+// order the DDL states them. A table without a TTL — one created by an older
+// version of Kitchen, or edited by hand — reports an empty list, which never
+// matches and so gets the TTL applied.
+func (c *Client) tableRetentionDays(ctx context.Context, table string) ([]int32, error) {
 	query := fmt.Sprintf(
 		"SELECT engine_full FROM system.tables WHERE database = %s AND name = %s",
 		quoteLiteral(c.cfg.Database), quoteLiteral(table))
 	engine, err := c.Query(ctx, query)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	match := ttlIntervalPattern.FindStringSubmatch(engine)
-	if match == nil {
-		return 0, nil
+	matches := ttlIntervalPattern.FindAllStringSubmatch(engine, -1)
+	if len(matches) == 0 {
+		return nil, nil
 	}
-	days, err := strconv.ParseInt(match[1], 10, 32)
-	if err != nil {
-		return 0, nil
+	days := make([]int32, 0, len(matches))
+	for _, match := range matches {
+		parsed, err := strconv.ParseInt(match[1], 10, 32)
+		if err != nil {
+			// Unreadable is not "no TTL": returning nothing here would make
+			// the caller reapply, which is the safe direction.
+			return nil, nil
+		}
+		days = append(days, int32(parsed))
 	}
-	return int32(days), nil
+	return days, nil
 }
 
 func ttlExpression(retentionDays int32) string {
@@ -471,6 +587,21 @@ func ttlExpression(retentionDays int32) string {
 // into the statement as written.
 func ttlExpressionOn(column string, retentionDays int32) string {
 	return fmt.Sprintf("toDateTime(%s) + toIntervalDay(%d)", column, retentionDays)
+}
+
+// ttlExpressionRules writes the whole TTL clause. The conditions are compiled
+// in (buildLogsCondition and its complement) and never come from
+// configuration, so they go into the statement as written, like the column.
+func ttlExpressionRules(column string, rules []ttlRule) string {
+	parts := make([]string, 0, len(rules))
+	for _, rule := range rules {
+		part := ttlExpressionOn(column, rule.days)
+		if rule.where != "" {
+			part += " DELETE WHERE " + rule.where
+		}
+		parts = append(parts, part)
+	}
+	return strings.Join(parts, ", ")
 }
 
 // kitchenColumns are what every OTel table gains, and the whole reason the
@@ -516,6 +647,16 @@ const logStreamColumnDDL = `
 // merge storm.
 const writeHeavySettings = "SETTINGS index_granularity = 8192, ttl_only_drop_parts = 1"
 
+// writeHeavySettingsDropping is writeHeavySettings with the part-drop mode
+// chosen rather than assumed. Only the log table needs it, and only because
+// two classes share it: see EnsureLogsSchema.
+func writeHeavySettingsDropping(onlyDropParts int) string {
+	if onlyDropParts == 1 {
+		return writeHeavySettings
+	}
+	return fmt.Sprintf("SETTINGS index_granularity = 8192, ttl_only_drop_parts = %d", onlyDropParts)
+}
+
 // createLogsTable is upstream's log schema plus kitchenColumns.
 //
 // The base columns, the codecs and the skipping indexes are transcribed from
@@ -533,7 +674,8 @@ const writeHeavySettings = "SETTINGS index_granularity = 8192, ttl_only_drop_par
 // `EventName` is optional upstream and detected once, by a `DESC TABLE` at
 // collector startup. It is included, which means adding it later would need a
 // collector restart rather than only a DDL change.
-func createLogsTable(database string, retentionDays int32) string {
+func createLogsTable(database string, containerDays, buildDays int32) string {
+	rules := logRetentionRules(containerDays, buildDays)
 	return fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.%s
 (
     Timestamp DateTime64(9) CODEC(Delta(8), ZSTD(1)),
@@ -575,7 +717,7 @@ ORDER BY (project, environment, Timestamp)
 TTL %s
 %s`,
 		quoteIdentifier(database), quoteIdentifier(LogsTable), kitchenColumns, logStreamColumnDDL,
-		ttlExpressionOn(timeColumnLogs, retentionDays), writeHeavySettings)
+		ttlExpressionRules(timeColumnLogs, rules), writeHeavySettingsDropping(onlyDropParts(rules)))
 }
 
 // createTracesTable is upstream's span schema plus kitchenColumns, ordered the

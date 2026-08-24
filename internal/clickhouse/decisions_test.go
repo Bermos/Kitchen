@@ -22,6 +22,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Bermos/Kitchen/internal/retention"
 )
 
 // A stored decision is a reproduction contract: the row must carry both
@@ -210,7 +212,7 @@ func TestEnsurePolicySchemaIsNotPartOfTheTelemetrySchema(t *testing.T) {
 	store := newFakeLogStore(t)
 	store.rows = ""
 
-	if err := store.client(t).EnsureTelemetrySchema(context.Background(), 30); err != nil {
+	if err := store.client(t).EnsureTelemetrySchema(context.Background(), retention.Uniform(30)); err != nil {
 		t.Fatalf("EnsureTelemetrySchema: %v", err)
 	}
 	if store.sawQuery(PromotionDecisionsTable) || store.sawQuery(PolicyBundlesTable) {
