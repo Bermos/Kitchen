@@ -20,7 +20,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -49,8 +48,8 @@ import (
 // Issue #142's acceptance criteria, criterion by criterion.
 //
 //  1. the pack for a range is byte-reproducible
-//  2. it is independently verifiable — the published procedure is *run* here,
-//     with openssl, against the envelope the API served
+//  2. it is independently verifiable — the shell commands the pack publishes
+//     are *run* here, verbatim, against the two documents the API served
 //  3. a typical project's pack completes well inside a minute
 //  4. its contents are documented field by field — which is docs/api/audit-pack.md,
 //     and TestEveryPackFieldIsDocumented checks the two cannot drift apart
@@ -380,11 +379,16 @@ func TestPhasesAreJudgedAtTheRangesEndAndNotNow(t *testing.T) {
 
 // --- Criterion 2: independently verifiable ----------------------------------
 
-// The procedure the pack publishes is run here, with openssl, against the two
-// documents the API served. A procedure nobody executes is an intention.
+// The procedure the pack publishes is **run** here — the shell commands out of
+// `verification.procedure`, executed verbatim against the two documents the
+// API served, with no Kitchen code anywhere in the verification path. A
+// procedure nobody executes is an intention, and §5's exit story is only true
+// if somebody has walked out of the door.
 func TestThePublishedProcedureActuallyVerifies(t *testing.T) {
-	if _, err := exec.LookPath("openssl"); err != nil {
-		t.Skip("openssl is not on PATH, so the published procedure cannot be run here")
+	for _, tool := range []string{"sh", "jq", "base64", "openssl", "wc", "sha256sum"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skipf("%s is not on PATH, so the published procedure cannot be run here", tool)
+		}
 	}
 	h := packHarness(t)
 	withSigningKey(t, h)
@@ -418,38 +422,57 @@ func TestThePublishedProcedureActuallyVerifies(t *testing.T) {
 		t.Fatalf("want predicate %q, got %q", attestation.PredicateAuditPack, statement.PredicateType)
 	}
 
-	// Steps 3 and 4: rebuild the pre-authentication encoding and check the
-	// signature with openssl and the published key — no Kitchen code in the
-	// verification path at all.
+	// Steps 2 to 4, verbatim: the shell out of the published procedure, run
+	// against the files as a reader would have saved them. Step 1 is the two
+	// `curl`s, which is what the recorders above already did.
 	directory := t.TempDir()
-	decoded := envelopeOf(t, envelope.Body.Bytes())
-	payload, err := base64.StdEncoding.DecodeString(decoded.Payload)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pae := attestation.PAE(decoded.PayloadType, payload)
-	if want := fmt.Sprintf("DSSEv1 28 %s %d ", attestation.PayloadType, len(payload)); !bytes.HasPrefix(pae, []byte(want)) {
-		t.Fatalf("the procedure's printf must produce the same prefix the encoding does: %q", want)
-	}
-	signature, err := base64.StdEncoding.DecodeString(decoded.Signatures[0].Sig)
-	if err != nil {
-		t.Fatal(err)
-	}
-	write(t, filepath.Join(directory, "pae.bin"), pae)
-	write(t, filepath.Join(directory, "sig.bin"), signature)
+	write(t, filepath.Join(directory, "pack.json"), packed.Body.Bytes())
+	write(t, filepath.Join(directory, "pack.dsse.json"), envelope.Body.Bytes())
 	write(t, filepath.Join(directory, "public.pem"), []byte(pack.Verification.PublicKey))
 
-	output, err := exec.Command("openssl", "dgst", "-sha256",
-		"-verify", filepath.Join(directory, "public.pem"),
-		"-signature", filepath.Join(directory, "sig.bin"),
-		filepath.Join(directory, "pae.bin")).CombinedOutput()
-	if err != nil {
-		t.Fatalf("the published procedure does not verify the pack it was published with: %v\n%s",
-			err, output)
+	output := runProcedure(t, directory, pack.Verification.Procedure[1:])
+	if !strings.Contains(output, hex.EncodeToString(sum[:])) {
+		t.Fatalf("the published sha256sum did not print the digest the statement names:\n%s", output)
 	}
-	if !strings.Contains(string(output), "Verified OK") {
-		t.Fatalf("openssl did not verify the signature: %s", output)
+	if !strings.Contains(output, "Verified OK") {
+		t.Fatalf("the published procedure did not verify the pack it was published with:\n%s", output)
 	}
+}
+
+// runProcedure executes the shell out of the published steps, in order, in one
+// directory. Each step is numbered prose with the command in backticks — the
+// same string a reader copies — so the extraction here is the same one a
+// person makes with their eyes.
+func runProcedure(t *testing.T, directory string, steps []string) string {
+	t.Helper()
+	output := &strings.Builder{}
+	for _, step := range steps {
+		script := shellIn(t, step)
+		command := exec.Command("sh", "-c", script)
+		command.Dir = directory
+		answer, err := command.CombinedOutput()
+		output.Write(answer)
+		if err != nil {
+			t.Fatalf("the published step\n\t%s\ncould not be run: %v\n%s", script, err, answer)
+		}
+	}
+	return output.String()
+}
+
+// shellIn pulls the command out of one published step. A step that carries no
+// backticked command is a step this test cannot run, and saying so is better
+// than silently checking nothing.
+func shellIn(t *testing.T, step string) string {
+	t.Helper()
+	_, rest, found := strings.Cut(step, "`")
+	if !found {
+		t.Fatalf("the published step carries no command to run: %s", step)
+	}
+	script, _, found := strings.Cut(rest, "`")
+	if !found {
+		t.Fatalf("the published step's command is not closed: %s", step)
+	}
+	return script
 }
 
 // An envelope over bytes somebody edited must not verify. The check above
