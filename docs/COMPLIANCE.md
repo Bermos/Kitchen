@@ -1031,7 +1031,10 @@ because it has two legitimate owners.
   marking matters.
 - **The environment believes.** `parameters["vexRequireVerified"]` (**on by
   default**) refuses a statement whose envelope no key the platform holds
-  accepted, `parameters["vexTrustedAuthors"]` narrows to named authors, and
+  accepted, `parameters["vexTrustedAuthors"]` narrows to named authors —
+  matched exactly and case-insensitively, the same rule the platform's own list
+  uses, so an address copied from the singleton into an environment's
+  parameters means the same thing in both places — and
   `parameters["vexMaxAgeDays"]` bounds how long a statement stays current
   without being restated. Production can be stricter than the platform;
   nothing can be looser than it.
