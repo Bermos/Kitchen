@@ -450,6 +450,17 @@ func (s *Server) routes() []route {
 		{"GET /api/v1/platform/events", s.platformEvents, operatorOnly("reading the platform's cluster events")},
 		{"GET /api/v1/platform/ingest", s.platformIngest, operatorOnly("reading the platform's ingest")},
 
+		// How long each class of what the platform keeps is kept, and how far
+		// back each class actually goes. The operator's, like every other
+		// platform setting — and a route of its own rather than four more
+		// fields on /settings, because it is the answer to a question asked
+		// from outside the platform, which somebody has to be able to fetch
+		// and cite.
+		{"GET /api/v1/platform/retention", s.getRetention,
+			operatorOnly("reading the platform's retention")},
+		{"PATCH /api/v1/platform/retention", s.patchRetention,
+			operatorOnly("changing the platform's retention")},
+
 		// The backup. Reading what an archive would carry is already the
 		// platform's shape — how many projects, which secrets, which database —
 		// and taking one hands over every credential the installation holds, so
