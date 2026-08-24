@@ -35,4 +35,10 @@ const (
 	actorPromotionController     = "promotion"
 	actorReleaseController       = "release"
 	actorResourceClaimController = "resourceclaim"
+	// actorRescanSweep attributes what the continuous re-evaluation pass does
+	// on its own initiative — today, the rollback an expired exception asked
+	// for. The decisions it produces are the policy engine's and carry
+	// actorPolicyEngine, because a verdict is the engine's word wherever it
+	// was asked for.
+	actorRescanSweep = "rescan"
 )

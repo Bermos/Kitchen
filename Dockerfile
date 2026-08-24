@@ -85,6 +85,14 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
 RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
     go build -ldflags "-X github.com/Bermos/Kitchen/internal/version.Version=${VERSION}" \
     -o qualitygate cmd/qualitygate/main.go
+# The two halves of the rescan pod's contract: one carries a deployed
+# artifact's bill of materials in, the other carries the scanner's findings
+# out. Neither is the scanner, which is an image somebody else wrote and runs
+# between them. Same source tree, same release, same image — and the same
+# argument the quality gate publisher makes for riding here.
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
+    go build -ldflags "-X github.com/Bermos/Kitchen/internal/version.Version=${VERSION}" \
+    -o rescan cmd/rescan/main.go
 
 # Use distroless as minimal base image to package the manager binary
 # Refer to https://github.com/GoogleContainerTools/distroless for more details
@@ -95,6 +103,7 @@ COPY --from=builder /workspace/backup .
 COPY --from=builder /workspace/restore .
 COPY --from=builder /workspace/gate .
 COPY --from=builder /workspace/qualitygate .
+COPY --from=builder /workspace/rescan .
 USER 65532:65532
 
 ENTRYPOINT ["/manager"]

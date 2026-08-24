@@ -322,6 +322,77 @@ spec:
                 - Degraded
                 - Terminating
                 type: string
+              rescan:
+                description: |-
+                  Rescan is where the continuous re-evaluation pass (#134) keeps its
+                  place: what it last scanned, against which vulnerability database, and
+                  what the environment's own bar said about the result. It is the
+                  sweep's working state as much as its answer — the sweep is stateless
+                  between passes and reads its next move off this.
+                properties:
+                  artifact:
+                    type: string
+                  dataSnapshot:
+                    description: |-
+                      DataSnapshot identifies the vulnerability database the findings were
+                      produced against. It is the field that makes a scan reproducible: the
+                      same artifact matched against the same snapshot yields the same
+                      findings, and a decision that cannot name its snapshot can only be
+                      repeated, never reproduced.
+                    type: string
+                  decisionID:
+                    type: string
+                  findings:
+                    description: |-
+                      Findings is how many the scanner reported, after the platform's
+                      normalization. Zero with an Evaluated phase means a clean scan; zero
+                      with a Failed one means nothing was scanned.
+                    format: int32
+                    type: integer
+                  finishedAt:
+                    format: date-time
+                    type: string
+                  jobName:
+                    description: |-
+                      JobName is the scanner Job in the application's namespace while one is
+                      in flight. It is the sweep's own bookkeeping and is left behind after a
+                      pass so that a person can look at what happened before the Job's TTL
+                      collects it.
+                    type: string
+                  message:
+                    description: Message is the one line a person reads.
+                    type: string
+                  phase:
+                    description: Phase is where the pass stands.
+                    enum:
+                    - Scanning
+                    - Evaluated
+                    - Failed
+                    type: string
+                  release:
+                    description: |-
+                      Release is the release that was scanned, and Artifact the
+                      repository@digest it deploys. Both are recorded because a release can
+                      be deleted and the digest is what the evidence is attached to.
+                    type: string
+                  startedAt:
+                    description: |-
+                      StartedAt and FinishedAt time-stamp the scan itself. FinishedAt is what
+                      the sweep counts the interval from, so a scan that never finishes
+                      delays the next one rather than doubling it.
+                    format: date-time
+                    type: string
+                  unmetRules:
+                    items:
+                      type: string
+                    type: array
+                    x-kubernetes-list-type: atomic
+                  verdict:
+                    description: |-
+                      Verdict, UnmetRules and DecisionID are the re-evaluation's outcome and
+                      the way back to the stored decision that holds its whole input.
+                    type: string
+                type: object
               url:
                 description: Primary URL the Environment is reachable at.
                 type: string

@@ -225,6 +225,91 @@ func (g *GitReport) Matches(other *GitReport) bool {
 		g.Error == other.Error
 }
 
+// RescanPhase is where one environment stands in the continuous
+// re-evaluation pass.
+// +kubebuilder:validation:Enum=Scanning;Evaluated;Failed
+type RescanPhase string
+
+const (
+	// RescanScanning: a scanner pod is in flight over the deployed artifact.
+	RescanScanning RescanPhase = "Scanning"
+	// RescanEvaluated: the scan finished, its findings were signed onto the
+	// artifact, and the environment's bar was re-run over them. Verdict says
+	// what came out — including "blocked", which is a completed pass and not
+	// a failed one.
+	RescanEvaluated RescanPhase = "Evaluated"
+	// RescanFailed: the pass could not be made. The scanner did not run, the
+	// artifact carries no bill of materials to match against, the findings
+	// could not be read back. Nothing is known either way, which is a
+	// different thing from knowing the release is fine — the same distinction
+	// a quality gate keeps between Completed and Failed.
+	RescanFailed RescanPhase = "Failed"
+)
+
+// EnvironmentRescanStatus is what the last re-evaluation of this environment's
+// deployed release found.
+//
+// Every field is about one (environment, release, moment) triple. A release
+// that moves resets it: the answer was about the artifact that was running,
+// and carrying it forward onto a new one would be reporting a scan that never
+// happened.
+type EnvironmentRescanStatus struct {
+	// Phase is where the pass stands.
+	// +optional
+	Phase RescanPhase `json:"phase,omitempty"`
+
+	// Release is the release that was scanned, and Artifact the
+	// repository@digest it deploys. Both are recorded because a release can
+	// be deleted and the digest is what the evidence is attached to.
+	// +optional
+	Release string `json:"release,omitempty"`
+	// +optional
+	Artifact string `json:"artifact,omitempty"`
+
+	// JobName is the scanner Job in the application's namespace while one is
+	// in flight. It is the sweep's own bookkeeping and is left behind after a
+	// pass so that a person can look at what happened before the Job's TTL
+	// collects it.
+	// +optional
+	JobName string `json:"jobName,omitempty"`
+
+	// StartedAt and FinishedAt time-stamp the scan itself. FinishedAt is what
+	// the sweep counts the interval from, so a scan that never finishes
+	// delays the next one rather than doubling it.
+	// +optional
+	StartedAt *metav1.Time `json:"startedAt,omitempty"`
+	// +optional
+	FinishedAt *metav1.Time `json:"finishedAt,omitempty"`
+
+	// DataSnapshot identifies the vulnerability database the findings were
+	// produced against. It is the field that makes a scan reproducible: the
+	// same artifact matched against the same snapshot yields the same
+	// findings, and a decision that cannot name its snapshot can only be
+	// repeated, never reproduced.
+	// +optional
+	DataSnapshot string `json:"dataSnapshot,omitempty"`
+
+	// Findings is how many the scanner reported, after the platform's
+	// normalization. Zero with an Evaluated phase means a clean scan; zero
+	// with a Failed one means nothing was scanned.
+	// +optional
+	Findings int32 `json:"findings,omitempty"`
+
+	// Verdict, UnmetRules and DecisionID are the re-evaluation's outcome and
+	// the way back to the stored decision that holds its whole input.
+	// +optional
+	Verdict string `json:"verdict,omitempty"`
+	// +optional
+	// +listType=atomic
+	UnmetRules []string `json:"unmetRules,omitempty"`
+	// +optional
+	DecisionID string `json:"decisionID,omitempty"`
+
+	// Message is the one line a person reads.
+	// +optional
+	Message string `json:"message,omitempty"`
+}
+
 // EnvironmentStatus defines the observed state of an Environment.
 type EnvironmentStatus struct {
 	// +optional
@@ -248,6 +333,14 @@ type EnvironmentStatus struct {
 	// connection without the statusChecks capability.
 	// +optional
 	GitReport *GitReport `json:"gitReport,omitempty"`
+
+	// Rescan is where the continuous re-evaluation pass (#134) keeps its
+	// place: what it last scanned, against which vulnerability database, and
+	// what the environment's own bar said about the result. It is the
+	// sweep's working state as much as its answer — the sweep is stateless
+	// between passes and reads its next move off this.
+	// +optional
+	Rescan *EnvironmentRescanStatus `json:"rescan,omitempty"`
 
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
