@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -825,5 +826,95 @@ func TestAPairIsNotRescannedBeforeItsIntervalIsUp(t *testing.T) {
 	}
 	if report.Started != 1 {
 		t.Errorf("a pair past its interval was not rescanned: %+v", report)
+	}
+}
+
+func TestAFinishedJobIsNotRescannedAgainst(t *testing.T) {
+	// The Job's name is deterministic on the pair and its TTL is the same hour
+	// as the interval floor, so a pair can come due again in the moment before
+	// the TTL controller has collected the last scan's Job. Adopting it would
+	// stamp the pair Scanning against a scan that is over, read the old pod's
+	// termination message, and re-sign yesterday's findings under yesterday's
+	// snapshot — and, because scannedAt comes off the report, stamp the result
+	// with the old scan's time and be immediately due again.
+	f := newRescanFixtures(t, func(k *kitchenv1alpha1.Kitchen) {
+		k.Spec.Compliance.Rescan.Interval = metav1.Duration{Duration: 24 * time.Hour}
+	}, rescanEnvironment(nil))
+	ctx := context.Background()
+	f.scanThrough(t)
+	published := len(f.store.decisions)
+
+	f.sweeper.Now = func() time.Time { return time.Now().Add(48 * time.Hour) }
+	report, err := f.sweeper.SweepOnce(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Started != 0 || report.Scanning != 0 {
+		t.Fatalf("the finished job was adopted as an in-flight scan: %+v", report)
+	}
+	if state := f.environment(t).Status.Rescan; state.Phase == kitchenv1alpha1.RescanScanning {
+		t.Errorf("the pair is scanning against a job that already finished: %+v", state)
+	}
+	if len(f.store.decisions) != published {
+		t.Errorf("a stale scan was published again: %d decisions, was %d",
+			len(f.store.decisions), published)
+	}
+	key := types.NamespacedName{
+		Namespace: appNamespace(rescanProject),
+		Name:      rescanJobName(rescanEnvName, rescanRelease),
+	}
+	if err := f.client.Get(ctx, key, &batchv1.Job{}); err == nil {
+		t.Error("the previous scan's job was left where the next step will find it again")
+	}
+
+	// With it gone the pair starts cleanly, which is what makes this a delay
+	// of one step rather than a pair that never scans again.
+	report, err = f.sweeper.SweepOnce(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Started != 1 {
+		t.Errorf("the pair did not start once the stale job was gone: %+v", report)
+	}
+}
+
+func TestAPairStuckInPublishIsStillCountedAsScanning(t *testing.T) {
+	// The budget pre-pass counts a pair by inFlight(); the report has to count
+	// it the same way. A publish that fails before it records — an unreadable
+	// registry credential, a store that is down — leaves the pair Scanning and
+	// holding its slot, and a singleton reporting `running: true,
+	// environments: 1, scanning: 0` would describe a sweep that is idle and
+	// healthy while it is neither.
+	f := newRescanFixtures(t, nil, rescanEnvironment(nil))
+	ctx := context.Background()
+
+	if _, err := f.sweeper.SweepOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	blob := "sha256:" + strings.Repeat("b", 64)
+	f.attester.blobs[blob] = []byte(grypeReport)
+	f.finishScan(t, rescanReport{Blob: blob, FinishedAt: "2026-08-24T03:16:11Z"})
+
+	f.sweeper.Attesters = func([]byte, string) (ArtifactAttester, error) {
+		return nil, errors.New("the registry connection's credential could not be read")
+	}
+	report, err := f.sweeper.SweepOnce(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Scanning != 1 {
+		t.Fatalf("a pair holding a concurrency slot was reported as %d scanning: %+v",
+			report.Scanning, report)
+	}
+	if report.Evaluated != 0 {
+		t.Errorf("a publish that failed was counted as an evaluation: %+v", report)
+	}
+	kitchen := &kitchenv1alpha1.Kitchen{}
+	if err := f.client.Get(ctx, types.NamespacedName{Name: KitchenSingletonName}, kitchen); err != nil {
+		t.Fatal(err)
+	}
+	if status := kitchen.Status.Compliance.Rescan; status.Scanning != 1 {
+		t.Errorf("the singleton reports %d scanning while the budget is spent: %+v",
+			status.Scanning, status)
 	}
 }
