@@ -175,6 +175,12 @@ deny contains {"rule": "max-severity", "message": message} if {
 	)
 }
 
+# The findings the newest scan reports. It reads every entry carrying the type
+# because that is what a comprehension does, but the input carries at most one:
+# a scan is a restatement of the same claim and policy.EvidenceFrom collapses
+# them to the newest before the rules ever see them. That is deliberately not
+# done here — a bundle-side rule would be this bundle's alone, and a custom
+# bundle would inherit the accumulation without knowing it had.
 scan_findings contains finding if {
 	some entry in evidence
 	object.get(entry, "predicateType", "") == vulnerability_scan_type
