@@ -175,6 +175,15 @@ spec:
       ladder:
         {{- toYaml . | nindent 8 }}
     {{- end }}
+    # Who may assert that a finding does not apply here. Admission only: whose
+    # word a given environment then takes is that environment's bundle
+    # parameters, which can be stricter than this and never looser.
+    vex:
+      enabled: {{ .Values.kitchen.compliance.vex.enabled }}
+      {{- with .Values.kitchen.compliance.vex.trustedAuthors }}
+      trustedAuthors:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
     # The continuous re-evaluation pass: every deployed release, matched
     # against a current vulnerability database on an interval and re-judged
     # against its environment's own bar. No rebuild and no redeploy — what is
