@@ -152,6 +152,12 @@ function time(iso?: string): string {
               <td class="px-3 py-2 text-xs font-mono text-toned break-all">{{ item.release }}</td>
               <td class="px-3 py-2 text-xs font-mono" :class="statusTone(item.status)">
                 {{ statusLabels[item.status] ?? item.status }}
+                <!-- A row whose newest answer is older than the last scan
+                     attempt says so on the status, because the verdict beside
+                     it is about a scan that is no longer the last one. -->
+                <p v-if="item.scanFailed" class="text-[11px] text-warning" :title="item.scanFailed">
+                  last scan did not run
+                </p>
               </td>
               <td class="px-3 py-2 text-xs text-dimmed font-mono whitespace-nowrap" :title="item.scannedAt">
                 {{ time(item.scannedAt) }}
@@ -168,6 +174,9 @@ function time(iso?: string): string {
               <td colspan="7" class="px-3 py-2 bg-elevated/30">
                 <div class="space-y-1.5 text-xs">
                   <p class="text-toned">{{ item.message }}</p>
+                  <p v-if="item.scanFailed" class="text-warning">
+                    The last scan of this release did not run: {{ item.scanFailed }}
+                  </p>
                   <p v-for="rule in item.rules" :key="rule.rule">
                     <span class="font-mono" :class="rule.since === 'rescan' ? 'text-error' : 'text-warning'">
                       {{ rule.rule }}
@@ -177,7 +186,17 @@ function time(iso?: string): string {
                       (did not fire when this release was promoted)
                     </span>
                     <span v-else class="text-warning">
-                      (fired at promotion, waived<template v-if="rule.exception"> by {{ rule.exception }}</template>)
+                      (fired at promotion, waived<template v-if="rule.waivedAtPromotion">
+                        by {{ rule.waivedAtPromotion }}</template>)
+                    </span>
+                    <!-- The grant holding this rule *now*, which is the datum
+                         a reader of a waived row actually needs: it is what
+                         they renew, resolve, or fix the finding under. It is a
+                         different fact from whatever waived the rule at
+                         promotion, so it is a different field and a different
+                         sentence. -->
+                    <span v-if="rule.exception" class="text-warning">
+                      — waived now by {{ rule.exception }}
                     </span>
                   </p>
                   <p class="font-mono text-dimmed break-all">

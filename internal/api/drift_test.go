@@ -17,9 +17,14 @@ limitations under the License.
 package api
 
 import (
+	"context"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/clickhouse"
@@ -113,8 +118,11 @@ func TestDriftTellsANewFailureFromAWaiverThatRanOut(t *testing.T) {
 	if len(item.Rules) != 1 || item.Rules[0].Since != driftSincePromotion {
 		t.Errorf("the rule does not say it was already firing at promotion: %+v", item.Rules)
 	}
-	if item.Rules[0].Exception != "exc-1" {
-		t.Errorf("the grant that waived it is not named: %+v", item.Rules[0])
+	if item.Rules[0].WaivedAtPromotion != "exc-1" {
+		t.Errorf("the grant that waived it at promotion is not named: %+v", item.Rules[0])
+	}
+	if item.Rules[0].Exception != "" {
+		t.Errorf("a rule firing unwaived named a grant as waiving it: %+v", item.Rules[0])
 	}
 }
 
@@ -159,6 +167,72 @@ func TestAPairNothingHasReEvaluatedIsNeverCountedAsCompliant(t *testing.T) {
 	}
 	if body.Message == "" {
 		t.Error("a platform that is not re-evaluating anything did not say so")
+	}
+}
+
+func TestAPairWhoseLastScanFailedDoesNotReadAsCompliant(t *testing.T) {
+	// Monday's scan allowed the release. Tuesday's scanner pod could not pull
+	// its image. The newest *stored decision* is still Monday's — the last
+	// scan that succeeded — so a verdict switch reading it alone answers
+	// "re-evaluated and still clears its environment's bar" with a scannedAt
+	// from before the scanner started failing. §9.8 is explicit that
+	// not-evaluated is never counted as compliant, and this is the case that
+	// produces a stale answer rather than none.
+	h := asMember(t, kitchenv1alpha1.AccessRoleViewer)
+	driftDecisions(h, policy.VerdictAllowed, "[]", "[]")
+	failLastScan(t, h, "the scan did not run: ImagePullBackOff")
+
+	body := driftBodyFor(t, h, "")
+	if len(body.Items) != 1 {
+		t.Fatalf("a pair whose last scan failed was left out of the drift view: %+v", body)
+	}
+	item := body.Items[0]
+	if item.Status != driftUnknown {
+		t.Fatalf("a pair whose last scan failed read as %q", item.Status)
+	}
+	if item.ScanFailed == "" || !strings.Contains(item.ScanFailed, "ImagePullBackOff") {
+		t.Errorf("why the scan did not run was dropped: %+v", item)
+	}
+	if body.Drifting != 1 || body.Counts[driftCompliant] != 0 {
+		t.Errorf("a pair nothing currently vouches for was counted as compliant: %+v", body)
+	}
+	// The stale answer is still shown beside the failure rather than hidden:
+	// "allowed, as of Monday" is what makes the failure legible.
+	if item.Verdict != policy.VerdictAllowed || item.ScannedAt == nil {
+		t.Errorf("the newest answer that did stand was dropped: %+v", item)
+	}
+
+	// A blocked pair whose last scan failed is still blocked — the failure
+	// does not soften a finding, it only refuses to invent a clean one.
+	h = asMember(t, kitchenv1alpha1.AccessRoleViewer)
+	driftDecisions(h, policy.VerdictBlocked,
+		`[{"rule":"max-severity","message":"CVE-2026-1 is critical","waived":false}]`, "[]")
+	failLastScan(t, h, "the scan did not run: ImagePullBackOff")
+
+	item = driftBodyFor(t, h, "").Items[0]
+	if item.Status != driftNewlyFailing || item.ScanFailed == "" {
+		t.Errorf("a blocked pair whose scan then failed reads as %q with %q",
+			item.Status, item.ScanFailed)
+	}
+}
+
+// failLastScan records on the deployed environment that the most recent scan
+// attempt did not run, which is the cluster half of the join.
+func failLastScan(t *testing.T, h *harness, reason string) {
+	t.Helper()
+	env := &kitchenv1alpha1.Environment{}
+	if err := h.server.Client.Get(context.Background(),
+		types.NamespacedName{Namespace: testNamespace, Name: testEnvironment}, env); err != nil {
+		t.Fatal(err)
+	}
+	env.Status.Rescan = &kitchenv1alpha1.EnvironmentRescanStatus{
+		Phase:      kitchenv1alpha1.RescanFailed,
+		Release:    testRelease,
+		FinishedAt: &metav1.Time{Time: time.Now().UTC()},
+		Message:    reason,
+	}
+	if err := h.server.Client.Status().Update(context.Background(), env); err != nil {
+		t.Fatal(err)
 	}
 }
 

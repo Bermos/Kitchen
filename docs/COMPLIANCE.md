@@ -863,9 +863,17 @@ five words — `compliant`, `waived`, `newly-failing`, `waived-at-promotion`,
 
 `not-evaluated` is the one that matters most and is easiest to leave out. A
 pair nothing has re-checked is a finding about the *platform*, not about the
-release, and it is never counted as compliant. For the same reason the answer
-leads with `rescanning`: an empty drift view under a pass that is off means
-*nobody is looking*, which is not the same answer as nothing being wrong.
+release, and it is never counted as compliant. So is a pair whose **last scan
+attempt did not run**, which is the same failure wearing a disguise: the
+verdict on a row comes from the newest stored *decision*, which is the last
+scan that succeeded, so a pair scanned clean on Monday whose Tuesday scanner
+could not pull its image would otherwise read `compliant` with a `scannedAt`
+from before the failure. Such a row carries `scanFailed` and is
+`not-evaluated`; a row that was already blocked stays blocked, because a failed
+scan does not soften a finding, it only refuses to invent a clean one. For the
+same reason the answer leads with `rescanning`: an empty drift view under a
+pass that is off means *nobody is looking*, which is not the same answer as
+nothing being wrong.
 
 Historical scans are retained without anything special being done about it:
 every rescan is a stored decision, timestamped, under the audit retention

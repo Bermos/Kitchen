@@ -389,7 +389,13 @@ export interface DriftRule {
    *  for one that fired then too and was waived by an exception which has
    *  since run out. The distinction is the whole point of the view. */
   since: "rescan" | "promotion";
+  /** The grant waiving this rule in the evaluation this row reports — the one
+   *  currently holding the release up. Empty on a rule firing unwaived. */
   exception?: string;
+  /** The grant that waived this rule when the release was promoted, where
+   *  there was one. On a blocked row that is the grant which has since run
+   *  out, and it is the reader's next stop. */
+  waivedAtPromotion?: string;
 }
 
 /** One deployed (environment, release) pair measured against its bar today. */
@@ -407,6 +413,10 @@ export interface DriftItem {
   dataSnapshot?: string;
   findings?: number;
   decisionID?: string;
+  /** Why the most recent scan attempt did not run, where it did not. A row
+   *  carrying it is answering with something older than the failure, whatever
+   *  its verdict says — which is why such a row is never `compliant`. */
+  scanFailed?: string;
   promotedVerdict?: string;
   promotedAt?: string;
   rules: DriftRule[];
