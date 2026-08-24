@@ -388,7 +388,12 @@ const logStreamer = (query: LogQuery, onLine: (line: LogLine) => void, signal: A
            says what somebody claims about it — and a suppression that could
            not be seen beside the finding it suppresses would be the one thing
            this feature must not be. -->
-      <VEXPanel v-if="build.artifact?.digest" :build="build.name" />
+      <VEXPanel
+        v-if="build.artifact?.digest"
+        :build="build.name"
+        :project="build.project"
+        :role="project.data.value?.role"
+      />
 
       <ConditionsTable v-if="operatorMode" :conditions="build.conditions" />
 

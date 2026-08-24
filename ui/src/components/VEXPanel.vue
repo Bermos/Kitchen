@@ -1,6 +1,8 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { computed, ref } from "vue";
 import { api, type VEXAnswer, type VEXStatement } from "../lib/api";
+import { callerFor } from "../lib/me";
+import { may } from "../lib/policy";
 
 // Exploitability assertions, beside the findings they modify.
 //
@@ -19,11 +21,25 @@ import { api, type VEXAnswer, type VEXStatement } from "../lib/api";
 // production. This panel reports facts about the artifact, which is the same
 // line the gates panel holds.
 
-const props = defineProps<{ build: string }>();
+const props = defineProps<{ build: string; project?: string; role?: string }>();
+const toast = useToast();
 
 const answer = ref<VEXAnswer | null>(null);
 const error = ref("");
 const loading = ref(false);
+
+// Filing an assertion is an **admin's** write, which is the one place this
+// parts company with the gates it otherwise resembles: a gate result is a fact
+// about an artifact, and a not_affected statement is an assertion whose effect
+// is to stop a finding counting. The API enforces it; this only decides
+// whether to draw the form, so a developer is not offered a control that would
+// be refused.
+const caller = computed(() => callerFor(props.role, props.project));
+const mayAssert = computed(() => may("POST /api/v1/builds/{name}/vex", caller.value));
+
+const composing = ref(false);
+const draft = ref("");
+const submitting = ref(false);
 
 // Read on demand, like the evidence panel: the answer comes from the registry
 // and is not worth a round trip on every build anybody opens.
@@ -36,6 +52,42 @@ async function load() {
     error.value = cause instanceof Error ? cause.message : String(cause);
   } finally {
     loading.value = false;
+  }
+}
+
+// Submitting sends the document as the exact bytes whoever wrote it wrote: the
+// platform signs those bytes, and re-encoding somebody's assertion into a
+// shape of this dashboard's choosing would be the dashboard editing it. So the
+// textarea's contents are parsed only to fail early on JSON that is not JSON,
+// and the raw text is what goes out.
+async function submit() {
+  let document: unknown;
+  try {
+    document = JSON.parse(draft.value);
+  } catch (cause) {
+    error.value = `That is not JSON: ${cause instanceof Error ? cause.message : String(cause)}`;
+    return;
+  }
+  submitting.value = true;
+  error.value = "";
+  try {
+    const accepted = await api.submitVEX(props.build, document);
+    toast.add({
+      title: "Assertion filed",
+      description: `Attributed to you, authored by ${accepted.author}, covering ${accepted.vulnerabilities.join(", ")}.`,
+      color: "success",
+      icon: "i-lucide-shield-check",
+    });
+    draft.value = "";
+    composing.value = false;
+    await load();
+  } catch (cause) {
+    // The refusals are the interesting half — an unjustified not_affected, an
+    // author the platform does not admit, a platform holding no key — so they
+    // are shown where the form is rather than in a toast that scrolls away.
+    error.value = cause instanceof Error ? cause.message : String(cause);
+  } finally {
+    submitting.value = false;
   }
 }
 
@@ -90,14 +142,52 @@ function caveat(statement: VEXStatement): string {
           finding is listed, with the assertion covering it and whoever made it.
         </p>
       </div>
-      <UButton size="xs" color="neutral" variant="subtle" :loading="loading" @click="load">
-        {{ answer ? "Re-read the assertions" : "Read the assertions" }}
-      </UButton>
+      <div class="flex items-center gap-2">
+        <UButton
+          v-if="mayAssert"
+          size="xs"
+          color="neutral"
+          :variant="composing ? 'solid' : 'subtle'"
+          @click="composing = !composing"
+        >
+          {{ composing ? "Cancel" : "File an assertion" }}
+        </UButton>
+        <UButton size="xs" color="neutral" variant="subtle" :loading="loading" @click="load">
+          {{ answer ? "Re-read the assertions" : "Read the assertions" }}
+        </UButton>
+      </div>
     </div>
 
     <UAlert v-if="error" color="error" variant="soft" icon="i-lucide-triangle-alert" :title="error" />
 
-    <template v-else-if="answer">
+    <!-- The document goes out as written. What the platform adds is
+         attribution — who submitted it, recorded on the build and in the audit
+         log — and a signature meaning these bytes were submitted by that
+         identity at that moment. It is not a claim that the assertion is
+         true. -->
+    <div v-if="composing" class="space-y-2 rounded border border-default px-3 py-3">
+      <p class="text-xs text-muted">
+        Paste an OpenVEX document. It is signed and attached exactly as written, and recorded against your name.
+        A <span class="font-mono">not_affected</span> statement must give one of OpenVEX's five justifications —
+        free text alone is refused, because a suppression whose reason cannot be counted cannot be reviewed.
+      </p>
+      <UTextarea
+        v-model="draft"
+        :rows="10"
+        class="w-full font-mono text-xs"
+        placeholder='{"@context": "https://openvex.dev/ns/v0.2.0", "author": "…", "statements": [ … ]}'
+      />
+      <div class="flex items-center gap-2">
+        <UButton size="xs" color="primary" :loading="submitting" :disabled="!draft.trim()" @click="submit">
+          Sign and attach
+        </UButton>
+        <span class="text-[11px] text-dimmed">Attached to the artifact's digest, not to this build.</span>
+      </div>
+    </div>
+
+    <!-- v-if rather than v-else-if on the alert: an error from a refused
+         submission must not blank the listing the reader was looking at. -->
+    <template v-if="answer">
       <UAlert v-if="answer.caveat" color="warning" variant="soft" icon="i-lucide-shield-question" :title="answer.caveat" />
 
       <p v-if="!answer.findings.length && !answer.statements.length" class="text-xs text-muted">
