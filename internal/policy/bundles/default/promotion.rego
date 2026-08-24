@@ -224,7 +224,13 @@ vulnerability_of(finding) := "an unnamed finding" if {
 #       on by default rather than opt-in.
 #   parameters["vexTrustedAuthors"] — comma-separated authors this environment
 #       takes the word of. Empty means every author the platform admitted at
-#       ingest, which is the operator's own narrower list.
+#       ingest, which is the operator's own narrower list. Matching is exact
+#       and **case-insensitive**, which is not a nicety: it is the same rule
+#       VEXSpec.AdmitsAuthor applies to the platform's own list, and §10.5
+#       presents the two as one idea at two levels. An operator who copied
+#       `Security@Shop.Example` off the singleton into an environment's
+#       parameters and got a case-sensitive comparison would have every
+#       statement silently refused, with no message anywhere saying why.
 #   parameters["vexMaxAgeDays"] — how old a statement may be, judged against
 #       input.at so a replay suppresses exactly what the original suppressed.
 #       Empty means no bound. Under a bound, a statement carrying no timestamp
@@ -245,7 +251,7 @@ vex_require_verified if lower(trim_space(object.get(parameters, "vexRequireVerif
 
 vex_trusted_authors := {author |
 	some part in split(object.get(parameters, "vexTrustedAuthors", ""), ",")
-	author := trim_space(part)
+	author := lower(trim_space(part))
 	author != ""
 }
 
@@ -267,7 +273,7 @@ vex_signature_acceptable(statement) if object.get(statement, "verified", false) 
 
 vex_author_acceptable(_) if count(vex_trusted_authors) == 0
 
-vex_author_acceptable(statement) if object.get(statement, "author", "") in vex_trusted_authors
+vex_author_acceptable(statement) if lower(trim_space(object.get(statement, "author", ""))) in vex_trusted_authors
 
 vex_within_age(_) if vex_age_parameter == ""
 

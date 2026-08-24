@@ -298,6 +298,16 @@ func TestVEXTrustedAuthorsNarrowsWhoIsBelieved(t *testing.T) {
 		t.Fatal("a named author's statement must suppress")
 	}
 
+	// Case-insensitively, because the platform's own trustedAuthors list is
+	// (VEXSpec.AdmitsAuthor) and §10.5 presents the two as one idea at two
+	// levels. An operator copying an address off the singleton into an
+	// environment's parameters must not get a different answer for it.
+	shouted := vexInput(statement)
+	shouted.Parameters["vexTrustedAuthors"] = " Security@Shop.Example "
+	if !suppressed(t, shouted) {
+		t.Fatal("the same author spelled in another case was silently not believed")
+	}
+
 	others := vexInput(statement)
 	others.Parameters["vexTrustedAuthors"] = "vendor@upstream.example"
 	if suppressed(t, others) {
