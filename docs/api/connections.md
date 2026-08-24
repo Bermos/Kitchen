@@ -221,7 +221,7 @@ who still has a repository to name:
 
 | Answer | What it means |
 |---|---|
-| `"supported": false` | The provider has no listing behind it — a `dockerRegistry` or `neon` connection, or a `gitlab`/`gitea` one the platform does not implement yet. `message` says which |
+| `"supported": false` | The provider has no listing behind it — today, that means `dockerRegistry`, `neon`, `gitlab`, or `gitea`. `message` says which |
 | `"truncated": true` | The credential can see more than the listing carries. It stops at 500, most recently pushed first |
 | `502` | The provider refused or could not be reached; the body carries its own words — a token that has expired says so here |
 

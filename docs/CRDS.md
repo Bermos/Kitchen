@@ -296,10 +296,9 @@ it as a special case — it is deletable, replaceable, and pickable exactly like
 one someone created on the connections page.
 
 First-party providers: `github` (capabilities `gitSource` and `statusChecks`),
-`dockerRegistry` (capability `imageStore`), `neon` (capability `database`). `gitlab` and
-`gitea` pass admission and report **no** capabilities: nothing implements them yet, and a
-capability nothing can honor would only mislead the matcher. The operator matches on
-**capabilities**, not provider names, so CloudNativePG can later implement `database` too.
+`gitlab` and `gitea` (capability `gitSource`), `dockerRegistry` (capability `imageStore`),
+`neon` (capability `database`). The operator matches on **capabilities**, not provider names,
+so CloudNativePG can later implement `database` too.
 
 ## `Project` (namespaced: kitchen-system)
 

@@ -31,9 +31,9 @@ describe("connectors", () => {
     expect(guidance?.link?.href).toBe("https://github.internal/settings/tokens");
   });
 
-  it("says outright that gitlab and gitea are not implemented", () => {
-    expect(providerGuidance("gitlab")?.purpose).toContain("no GitLab implementation yet");
-    expect(providerGuidance("gitea")?.purpose).toContain("no Gitea implementation yet");
+  it("explains gitlab and gitea token use", () => {
+    expect(providerGuidance("gitlab")?.purpose).toContain("merge-request webhook");
+    expect(providerGuidance("gitea")?.purpose).toContain("pull-request webhook");
     expect(providerGuidance("svn")).toBeUndefined();
   });
 

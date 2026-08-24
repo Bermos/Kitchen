@@ -125,8 +125,7 @@ func TestListingRepositoriesOfAProviderThatHasNone(t *testing.T) {
 	}
 }
 
-func TestListingRepositoriesOfAProviderTheresNoImplementationFor(t *testing.T) {
-	// gitlab passes admission and nothing in the platform can talk to it yet.
+func TestListingRepositoriesOfAProviderWithoutEnumeration(t *testing.T) {
 	connection := &kitchenv1alpha1.Connection{
 		ObjectMeta: metav1.ObjectMeta{Name: "lab", Namespace: testNamespace},
 		Spec: kitchenv1alpha1.ConnectionSpec{
@@ -134,7 +133,11 @@ func TestListingRepositoriesOfAProviderTheresNoImplementationFor(t *testing.T) {
 			CredentialsSecretRef: kitchenv1alpha1.LocalObjectReference{Name: connectionSecretPrefix + "lab"},
 		},
 	}
-	h := newHarness(t, nil, append(fixtures(), connection)...)
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: connectionSecretPrefix + "lab", Namespace: testNamespace},
+		Data:       map[string][]byte{gitTokenKey: []byte("glpat")},
+	}
+	h := newHarness(t, nil, append(fixtures(), connection, secret)...)
 
 	recorder := h.do(t, http.MethodGet, "/api/v1/connections/lab/repositories", "")
 	if recorder.Code != http.StatusOK {
@@ -144,8 +147,8 @@ func TestListingRepositoriesOfAProviderTheresNoImplementationFor(t *testing.T) {
 	if view.Supported {
 		t.Fatalf("gitlab answered as enumerable: %+v", view)
 	}
-	if !strings.Contains(view.Message, "gitlab") {
-		t.Fatalf("the answer does not say which provider it is about: %+v", view)
+	if !strings.Contains(view.Message, "cannot enumerate repositories") {
+		t.Fatalf("the answer does not say how to proceed: %+v", view)
 	}
 }
 

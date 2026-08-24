@@ -404,8 +404,8 @@ func (s *Server) testConnection(w http.ResponseWriter, req *http.Request) {
 	}
 	credProbe, err := factory(conn, creds)
 	if errors.Is(err, provider.ErrNotImplemented) {
-		// gitlab and gitea pass admission but nothing in the platform can use
-		// them yet, exactly as the reconciler reports it: unchecked, not red.
+		// The CRD can admit a provider before this operator version knows it,
+		// exactly as the reconciler reports it: unchecked, not red.
 		writeJSON(w, http.StatusOK, connectionTestView{Message: fmt.Sprintf(
 			"the platform has no %s implementation yet, so the credential cannot be checked", providerName)})
 		return
