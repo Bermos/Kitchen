@@ -26,8 +26,11 @@ import (
 	"unicode/utf8"
 )
 
-// GitHub implements StatusReporter as well as Provider.
-var _ StatusReporter = (*GitHub)(nil)
+// GitHub implements both reporting halves as well as Provider.
+var (
+	_ StatusReporter      = (*GitHub)(nil)
+	_ DeploymentPublisher = (*GitHub)(nil)
+)
 
 // githubDescriptionLimit is where GitHub rejects a status description. It
 // applies to commit statuses and deployment statuses alike, and a build

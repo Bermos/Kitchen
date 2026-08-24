@@ -57,6 +57,33 @@ func (g gitReporting) reporterFor(
 	ctx context.Context,
 	project *kitchenv1alpha1.Project,
 ) (gitprovider.StatusReporter, bool) {
+	provider, ok := g.reportingProviderFor(ctx, project)
+	if !ok {
+		return nil, false
+	}
+	return gitprovider.Reporter(provider)
+}
+
+// publisherFor resolves the deployment-publishing half, which not every forge
+// has: Gitea keeps no deployment record at all. Its absence is not a failure
+// and must not stop the commit status or the pull request comment.
+func (g gitReporting) publisherFor(
+	ctx context.Context,
+	project *kitchenv1alpha1.Project,
+) (gitprovider.DeploymentPublisher, bool) {
+	provider, ok := g.reportingProviderFor(ctx, project)
+	if !ok {
+		return nil, false
+	}
+	return gitprovider.Deployments(provider)
+}
+
+// reportingProviderFor builds the Project's source provider, once the
+// Connection behind it exists, claims statusChecks and holds a credential.
+func (g gitReporting) reportingProviderFor(
+	ctx context.Context,
+	project *kitchenv1alpha1.Project,
+) (gitprovider.Provider, bool) {
 	conn := &kitchenv1alpha1.Connection{}
 	key := types.NamespacedName{Namespace: project.Namespace, Name: project.Spec.Source.ConnectionRef.Name}
 	if err := g.Get(ctx, key, conn); err != nil {
@@ -84,7 +111,7 @@ func (g gitReporting) reporterFor(
 	if err != nil {
 		return nil, false
 	}
-	return gitprovider.Reporter(provider)
+	return provider, true
 }
 
 // connectionProvides reports whether a Connection offers a capability. A
@@ -166,20 +193,24 @@ func (g gitReporting) reportEnvironment(
 	log := logf.FromContext(ctx)
 	repo := project.Spec.Source.Repo
 
-	err := reporter.PublishDeployment(ctx, repo, gitprovider.Deployment{
-		SHA:         revision.SHA,
-		Ref:         revision.Branch,
-		Environment: env.Name,
-		State:       state,
-		Description: deploymentDescription(env, state),
-		URL:         env.Status.URL,
-		Transient:   env.Spec.Type == kitchenv1alpha1.EnvironmentPreview,
-		Production:  env.Spec.Type == kitchenv1alpha1.EnvironmentProduction,
-	})
-	if err != nil {
-		log.Error(err, "failed to publish the deployment", "environment", env.Name, "repo", repo)
-		report.Error = err.Error()
-		return report
+	// A forge with no deployment record still gets everything else. Only a
+	// provider that has the half and refused it is a failure worth recording.
+	if publisher, ok := g.publisherFor(ctx, project); ok {
+		err := publisher.PublishDeployment(ctx, repo, gitprovider.Deployment{
+			SHA:         revision.SHA,
+			Ref:         revision.Branch,
+			Environment: env.Name,
+			State:       state,
+			Description: deploymentDescription(env, state),
+			URL:         env.Status.URL,
+			Transient:   env.Spec.Type == kitchenv1alpha1.EnvironmentPreview,
+			Production:  env.Spec.Type == kitchenv1alpha1.EnvironmentProduction,
+		})
+		if err != nil {
+			log.Error(err, "failed to publish the deployment", "environment", env.Name, "repo", repo)
+			report.Error = err.Error()
+			return report
+		}
 	}
 
 	// Only a preview belongs to a pull request, and the comment is the half
@@ -241,15 +272,17 @@ func (g gitReporting) retireEnvironment(
 
 	log := logf.FromContext(ctx)
 	repo := project.Spec.Source.Repo
-	err := reporter.PublishDeployment(ctx, repo, gitprovider.Deployment{
-		SHA:         report.Revision,
-		Environment: env.Name,
-		State:       gitprovider.DeploymentInactive,
-		Description: "the preview environment was removed",
-		Transient:   true,
-	})
-	if err != nil {
-		log.Error(err, "failed to retire the deployment", "environment", env.Name, "repo", repo)
+	if publisher, ok := g.publisherFor(ctx, project); ok {
+		err := publisher.PublishDeployment(ctx, repo, gitprovider.Deployment{
+			SHA:         report.Revision,
+			Environment: env.Name,
+			State:       gitprovider.DeploymentInactive,
+			Description: "the preview environment was removed",
+			Transient:   true,
+		})
+		if err != nil {
+			log.Error(err, "failed to retire the deployment", "environment", env.Name, "repo", repo)
+		}
 	}
 
 	comment := previewComment{
