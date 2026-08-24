@@ -69,7 +69,16 @@ type Snapshot struct {
 	Routes       []gatewayv1.HTTPRoute
 	Certificates []Certificate
 	Environments []kitchenv1alpha1.Environment
+	Projects     []kitchenv1alpha1.Project
 	Builds       []kitchenv1alpha1.Build
+
+	// Continuity is each environment's resolved criticality and disruption
+	// tolerances (#141), folded from Projects and Environments once by
+	// [ContinuityFacts]. It is a derived field on the snapshot rather than
+	// something the rules re-derive, because the resolution rule — production
+	// falls back to its project, a preview never does — has exactly one right
+	// answer and thirty-odd chances to be got differently wrong.
+	Continuity map[EnvKey]ContinuityFor
 
 	// ClusterEvents is the recent Warning history, newest first, as the
 	// k8s_events recorder wrote it.

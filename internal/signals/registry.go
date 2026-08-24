@@ -88,6 +88,7 @@ func all() []Signal {
 		edgeSignals(),
 		buildSignals(),
 		platformSignals(),
+		continuitySignals(),
 	}
 	var signals []Signal
 	for _, group := range groups {
@@ -134,6 +135,11 @@ func (r *Registry) Evaluate(snapshot *Snapshot) Findings {
 		}
 		findings = append(findings, stamped(signal.Evaluate(snapshot), signal, snapshot.Now)...)
 	}
+	// The institution's designations are applied to the whole round rather
+	// than inside the rules — one place, thirty-odd rules — and before the
+	// sort, because escalating a finding is exactly a claim about where it
+	// belongs in the order. See [Findings.escalate].
+	findings.escalate(snapshot.Continuity)
 	findings.Sort()
 	return findings
 }

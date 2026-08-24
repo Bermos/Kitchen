@@ -146,6 +146,19 @@ const (
 	PendingGrace = 2 * time.Minute
 )
 
+// Continuity. The one rule here whose threshold is not a number in this file —
+// the recovery time objective is the institution's — still needs to know how
+// much of it may be spent before somebody is told.
+const (
+	// RTOWarnFraction is how much of a declared RTO an outage may consume
+	// before it is worth waking somebody. Half, because half of a tolerance
+	// is the last moment at which acting still leaves as long as has already
+	// been lost — and because the alternative, waiting for the breach, is a
+	// notification that arrives when the only remaining decision is what to
+	// tell the regulator.
+	RTOWarnFraction = 0.5
+)
+
 // Environment traffic, read from the request rollup.
 const (
 	// ErrorRateFiring is the 5xx share that is wrong on its own terms,
