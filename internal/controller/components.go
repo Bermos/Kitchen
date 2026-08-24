@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -99,6 +100,20 @@ func (r *KitchenReconciler) surveyComponents(
 		// from any replica count, so it is only ever readable from status.
 		surveyed = append(surveyed, r.componentOf(ctx, &ds.ObjectMeta, "DaemonSet", ds.Spec.Selector,
 			ds.Status.DesiredNumberScheduled, ds.Status.NumberAvailable))
+	}
+
+	// The clock check is not a workload, and it goes through the same name
+	// resolution as one anyway: status.components is a map list, and a
+	// workload that happened to carry the same component label would
+	// otherwise make the whole status update fail rather than merely read
+	// oddly.
+	clock, clockStatus := r.surveyClockSync(ctx, kitchen, time.Now().UTC())
+	kitchen.Status.ClockSync = clockStatus
+	if clock != nil {
+		surveyed = append(surveyed, surveyedWorkload{
+			status:     *clock,
+			objectName: clockComponentName + "-check",
+		})
 	}
 
 	components := resolveNames(surveyed)
