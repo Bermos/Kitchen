@@ -95,31 +95,37 @@ type packRender struct {
 	Bytes  int
 }
 
+// packAbsent is what the rendering prints where the document carries nothing.
+// It is an em dash rather than a blank cell, for the reason every absence in
+// this suite is a word: a blank invites a generous reading, and a printed page
+// is read by somebody who cannot ask what it meant.
+const packAbsent = "—"
+
 // packFuncs are the four things the template cannot do for itself.
 var packFuncs = template.FuncMap{
 	// stamp is the one date format the page uses. UTC, always, because a
 	// document read in three time zones must not read differently in each.
 	"stamp": func(at time.Time) string {
 		if at.IsZero() {
-			return "—"
+			return packAbsent
 		}
 		return at.UTC().Format("2006-01-02 15:04 UTC")
 	},
 	"maybe": func(at *time.Time) string {
 		if at == nil {
-			return "—"
+			return packAbsent
 		}
 		return at.UTC().Format("2006-01-02 15:04 UTC")
 	},
 	"join": func(values []string) string {
 		if len(values) == 0 {
-			return "—"
+			return packAbsent
 		}
 		return strings.Join(values, ", ")
 	},
 	"orDash": func(value string) string {
 		if strings.TrimSpace(value) == "" {
-			return "—"
+			return packAbsent
 		}
 		return value
 	},

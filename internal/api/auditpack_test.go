@@ -356,7 +356,7 @@ func TestNoPartOfAPackIsReadOffTheClock(t *testing.T) {
 // moved. Both phases in the document are judged at the range's end instead.
 func TestPhasesAreJudgedAtTheRangesEndAndNotNow(t *testing.T) {
 	h := packHarness(t)
-	pack := fetchPack(t, h, packPath)
+	pack := fetchPack(t, h)
 
 	if len(pack.Exceptions) != 1 {
 		t.Fatalf("the window's exception must be in the pack, got %+v", pack.Exceptions)
@@ -481,7 +481,7 @@ func TestATamperedPackDoesNotVerify(t *testing.T) {
 // what is missing is the means to check it somewhere else.
 func TestAnUnsignedPlatformSaysSoRatherThanLookingSigned(t *testing.T) {
 	h := packHarness(t)
-	pack := fetchPack(t, h, packPath)
+	pack := fetchPack(t, h)
 
 	if pack.Verification.Signed {
 		t.Fatal("attestation is off in the fixtures, so the pack cannot claim to be signed")
@@ -597,7 +597,7 @@ func TestARangeRetentionHasTruncatedSaysSo(t *testing.T) {
 		}},
 	})
 
-	pack := fetchPack(t, h, packPath)
+	pack := fetchPack(t, h)
 	if !pack.Retention.Truncated {
 		t.Fatalf("a window older than the oldest kept record must be reported as truncated: %+v",
 			pack.Retention)
@@ -623,7 +623,7 @@ func TestAWholeRangeInsideRetentionIsSaidToBeCovered(t *testing.T) {
 		}},
 	})
 
-	pack := fetchPack(t, h, packPath)
+	pack := fetchPack(t, h)
 	if pack.Retention.Truncated {
 		t.Fatalf("this window is inside what the store holds: %+v", pack.Retention)
 	}
@@ -649,11 +649,14 @@ func TestAPackWillNotBeTakenWithoutBothEndsOfItsWindow(t *testing.T) {
 	}
 }
 
-// The pack is one project's whole answer, in one request: every section the
-// issue names is in the document, populated from the fixtures.
-func TestOneRequestCarriesEverySectionTheIssueNames(t *testing.T) {
+// The pack is one project's whole answer, in one request. The issue names
+// seven things it has to carry, and the three tests below walk them: the
+// estate and the changes to it, the verdicts and the evidence behind them,
+// and the registers.
+
+func TestOnePackCarriesTheEstateAndTheChangesToIt(t *testing.T) {
 	h := packHarness(t)
-	pack := fetchPack(t, h, packPath)
+	pack := fetchPack(t, h)
 
 	if pack.Schema != AuditPackSchema || pack.Project != shopProject {
 		t.Fatalf("the document must identify itself, got %+v", pack.Range)
@@ -666,7 +669,7 @@ func TestOneRequestCarriesEverySectionTheIssueNames(t *testing.T) {
 	if !contains(pack.Inventory.ThirdParties, neonProvider) {
 		t.Fatalf("the third parties must be named, got %+v", pack.Inventory.ThirdParties)
 	}
-	// Change log with author and approver.
+	// Change log with author and approver — the pair §8 exists to record.
 	if len(pack.ChangeLog) == 0 {
 		t.Fatal("the change log must carry the window's releases")
 	}
@@ -677,6 +680,12 @@ func TestOneRequestCarriesEverySectionTheIssueNames(t *testing.T) {
 	if change.Review == nil || len(change.Review.Approvers) != 2 || !change.Review.Independent {
 		t.Fatalf("the change must name who approved it, got %+v", change.Review)
 	}
+}
+
+func TestOnePackCarriesTheVerdictsAndTheEvidenceBehindThem(t *testing.T) {
+	h := packHarness(t)
+	pack := fetchPack(t, h)
+
 	// Promotion decisions with their reproduction inputs.
 	if len(pack.Promotions) != 1 || pack.Promotions[0].DecisionID != "decision-pack-1" {
 		t.Fatalf("the window's promotion must be here with its decision, got %+v", pack.Promotions)
@@ -685,7 +694,7 @@ func TestOneRequestCarriesEverySectionTheIssueNames(t *testing.T) {
 	if decision.BundleDigest == "" || decision.InputDigest == "" || len(decision.Input) == 0 {
 		t.Fatalf("a decision must carry what it can be replayed from, got %+v", decision)
 	}
-	// Attestation set per deployed artifact.
+	// Attestation set per deployed artifact — an index, with the coordinates.
 	artifact := packArtifactFor(t, pack, "shop-rel-pack")
 	if len(artifact.Evidence) != 2 || artifact.Digest == "" {
 		t.Fatalf("the artifact's evidence must be indexed, got %+v", artifact)
@@ -697,6 +706,12 @@ func TestOneRequestCarriesEverySectionTheIssueNames(t *testing.T) {
 	if artifact.NewestScan == nil || artifact.NewestScan.DecisionID != "decision-pack-2" {
 		t.Fatalf("the newest re-evaluation is the one that counts, got %+v", artifact.NewestScan)
 	}
+}
+
+func TestOnePackCarriesEveryRegisterTheIssueNames(t *testing.T) {
+	h := packHarness(t)
+	pack := fetchPack(t, h)
+
 	// Active and historical exceptions.
 	if len(pack.Exceptions) != 1 || pack.Exceptions[0].ApprovedBy != "hopper" {
 		t.Fatalf("the exception register must be here, got %+v", pack.Exceptions)
@@ -726,7 +741,7 @@ func TestOneRequestCarriesEverySectionTheIssueNames(t *testing.T) {
 // verify, which would make the section worse than useless.
 func TestSignedEnvelopesAreCarriedVerbatim(t *testing.T) {
 	h := packHarness(t)
-	pack := fetchPack(t, h, packPath)
+	pack := fetchPack(t, h)
 
 	for _, record := range pack.SignedRecords.Items {
 		for _, stored := range h.logs.records {
@@ -746,7 +761,7 @@ func TestSignedEnvelopesAreCarriedVerbatim(t *testing.T) {
 // than the omission being silent.
 func TestACyclesEntriesAreNarrowedAndTheOmissionIsCounted(t *testing.T) {
 	h := packHarness(t)
-	pack := fetchPack(t, h, packPath)
+	pack := fetchPack(t, h)
 
 	cycle := pack.Access.Cycles[0]
 	if cycle.EntriesTotal != 3 || len(cycle.Entries) != 2 {
@@ -786,7 +801,7 @@ func TestAnExportTheLogCannotRecordIsNotServed(t *testing.T) {
 // document without holding it.
 func TestTheExportRecordIdentifiesTheDocument(t *testing.T) {
 	h := packHarness(t)
-	pack := fetchPack(t, h, packPath)
+	pack := fetchPack(t, h)
 	counts := packCounts(pack)
 
 	if audit.KindEvidenceExport == audit.KindProject {
@@ -876,9 +891,9 @@ func TestAnUnknownFormatIsRefusedWithTheThreeThatExist(t *testing.T) {
 
 // --- helpers ---------------------------------------------------------------
 
-func fetchPack(t *testing.T, h *harness, path string) auditPack {
+func fetchPack(t *testing.T, h *harness) auditPack {
 	t.Helper()
-	recorder := h.do(t, http.MethodGet, path, "")
+	recorder := h.do(t, http.MethodGet, packPath, "")
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
 	}

@@ -135,6 +135,31 @@ type packSummary struct {
 	} `json:"signedRecords"`
 }
 
+// describe fills in what the command reports from what the document says.
+// The counts are the file's own, so an empty quarter and a failed export are
+// two different answers rather than the same one.
+func (p packSummary) describe(taken *auditPackTaken) {
+	taken.From, taken.To = p.Range.From, p.Range.To
+	taken.Signed = p.Verification.Signed
+	taken.Truncated = p.Retention.Truncated || p.Decisions.Truncated || p.AuditLog.Truncated
+	taken.Coverage = p.Retention.Message
+	taken.Sections = map[string]int{
+		"environments":  len(p.Inventory.Environments),
+		"releases":      len(p.Inventory.Releases),
+		"claims":        len(p.Inventory.Claims),
+		"changes":       len(p.ChangeLog),
+		"promotions":    len(p.Promotions),
+		"decisions":     len(p.Decisions.Items),
+		"attestations":  len(p.Attestations),
+		"exceptions":    len(p.Exceptions),
+		"auditRecords":  len(p.AuditLog.Items),
+		"signedRecords": len(p.SignedRecords.Items),
+	}
+	if !taken.Signed && taken.Message == "" {
+		taken.Message = p.Verification.Message
+	}
+}
+
 func newAuditPackCommand(r *Runtime) *cobra.Command {
 	var (
 		from        string
@@ -193,7 +218,7 @@ EvidenceExport.`),
 		"the start of the window, inclusive: a date (2026-01-01) or an RFC 3339 timestamp")
 	cmd.Flags().StringVar(&to, "to", "",
 		"the end of the window, exclusive: a date or an RFC 3339 timestamp")
-	cmd.Flags().StringVar(&format, "format", "json",
+	cmd.Flags().StringVar(&format, "format", packFormatJSON,
 		"json for the machine-readable pack, html for the reader's rendering")
 	cmd.Flags().StringVarP(&directory, "output", "o", "",
 		"where to write. The default is the current directory; the files are named after "+
@@ -234,28 +259,70 @@ type packRequest struct {
 	force       bool
 }
 
-func takeAuditPack(parent context.Context, r *Runtime, ask packRequest) error {
+// The two renderings this command writes. `dsse` is not among them because it
+// is not a rendering somebody asks for: it is the signature over the pack, and
+// it is fetched with the pack rather than instead of it.
+const (
+	packFormatJSON = "json"
+	packFormatHTML = "html"
+	packFormatDSSE = "dsse"
+)
+
+// asked is the request with its flags checked: the project resolved and the
+// window read into instants. It is a step of its own because a command whose
+// validation and whose work are one function is a command nobody can read.
+type packAsk struct {
+	project   string
+	format    string
+	from      time.Time
+	to        time.Time
+	directory string
+}
+
+func checkPackRequest(r *Runtime, ask packRequest) (packAsk, error) {
 	project, err := r.projectName()
 	if err != nil {
-		return err
+		return packAsk{}, err
 	}
 	format := strings.ToLower(strings.TrimSpace(ask.format))
-	if format != "json" && format != "html" {
-		return failf(codeUsage, "--format is json or html (got %q)", ask.format).
+	if format != packFormatJSON && format != packFormatHTML {
+		return packAsk{}, failf(codeUsage, "--format is json or html (got %q)", ask.format).
 			withHint("the signature is written beside a json pack; there is nothing to sign an " +
 				"HTML rendering with, because a rendering is not the document")
 	}
 	from, err := packInstant("from", ask.from)
 	if err != nil {
-		return err
+		return packAsk{}, err
 	}
 	to, err := packInstant("to", ask.to)
 	if err != nil {
-		return err
+		return packAsk{}, err
 	}
 	if !to.After(from) {
-		return failf(codeUsage, "--to must be after --from (%s is not after %s)",
+		return packAsk{}, failf(codeUsage, "--to must be after --from (%s is not after %s)",
 			to.Format(time.RFC3339), from.Format(time.RFC3339))
+	}
+
+	directory := ask.directory
+	if directory == "" {
+		directory = r.WorkingDir
+	}
+	if directory == "" {
+		directory = "."
+	}
+	return packAsk{
+		project:   project,
+		format:    format,
+		from:      from,
+		to:        to,
+		directory: absolute(r, directory),
+	}, nil
+}
+
+func takeAuditPack(parent context.Context, r *Runtime, ask packRequest) error {
+	checked, err := checkPackRequest(r, ask)
+	if err != nil {
+		return err
 	}
 
 	client, err := r.client()
@@ -266,32 +333,23 @@ func takeAuditPack(parent context.Context, r *Runtime, ask packRequest) error {
 	defer cancel()
 
 	query := url.Values{}
-	query.Set("from", from.Format(time.RFC3339))
-	query.Set("to", to.Format(time.RFC3339))
-	if format == "html" {
-		query.Set("format", "html")
+	query.Set("from", checked.from.Format(time.RFC3339))
+	query.Set("to", checked.to.Format(time.RFC3339))
+	if checked.format == packFormatHTML {
+		query.Set("format", packFormatHTML)
 	}
 
-	directory := ask.directory
-	if directory == "" {
-		directory = r.WorkingDir
-	}
-	if directory == "" {
-		directory = "."
-	}
-	directory = absolute(r, directory)
-
-	path := "/projects/" + url.PathEscape(project) + "/audit-pack"
+	path := "/projects/" + url.PathEscape(checked.project) + "/audit-pack"
 	packFile, served, err := downloadPack(ctx, client,
-		"exporting an audit pack", path, query, directory, ask.force)
+		"exporting an audit pack", path, query, checked.directory, ask.force)
 	if err != nil {
 		return err
 	}
 
 	taken := auditPackTaken{
-		Project:      project,
-		From:         from.Format(time.RFC3339),
-		To:           to.Format(time.RFC3339),
+		Project:      checked.project,
+		From:         checked.from.Format(time.RFC3339),
+		To:           checked.to.Format(time.RFC3339),
 		File:         packFile,
 		ServedDigest: served,
 		Sections:     map[string]int{},
@@ -312,40 +370,21 @@ func takeAuditPack(parent context.Context, r *Runtime, ask packRequest) error {
 				"the document the platform signed", served, taken.Digest)
 	}
 
-	if format == "json" {
+	if checked.format == packFormatJSON {
 		summary, err := readPackSummary(packFile)
 		if err != nil {
 			return err
 		}
-		taken.From, taken.To = summary.Range.From, summary.Range.To
-		taken.Signed = summary.Verification.Signed
-		taken.Truncated = summary.Retention.Truncated ||
-			summary.Decisions.Truncated || summary.AuditLog.Truncated
-		taken.Coverage = summary.Retention.Message
-		taken.Sections = map[string]int{
-			"environments":  len(summary.Inventory.Environments),
-			"releases":      len(summary.Inventory.Releases),
-			"claims":        len(summary.Inventory.Claims),
-			"changes":       len(summary.ChangeLog),
-			"promotions":    len(summary.Promotions),
-			"decisions":     len(summary.Decisions.Items),
-			"attestations":  len(summary.Attestations),
-			"exceptions":    len(summary.Exceptions),
-			"auditRecords":  len(summary.AuditLog.Items),
-			"signedRecords": len(summary.SignedRecords.Items),
-		}
-		if !taken.Signed && taken.Message == "" {
-			taken.Message = summary.Verification.Message
-		}
+		summary.describe(&taken)
 
 		if !ask.noSignature && taken.Signed {
 			signature := url.Values{}
 			for key, values := range query {
 				signature[key] = values
 			}
-			signature.Set("format", "dsse")
+			signature.Set("format", packFormatDSSE)
 			envelope, _, err := downloadPack(ctx, client,
-				"signing an audit pack", path, signature, directory, ask.force)
+				"signing an audit pack", path, signature, checked.directory, ask.force)
 			if err != nil {
 				return err
 			}
