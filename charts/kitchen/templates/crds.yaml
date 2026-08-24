@@ -950,6 +950,25 @@ spec:
               EnvironmentSpec defines a running instance of a Release with a URL.
               Rollback is changing ReleaseRef to an older Release.
             properties:
+              criticality:
+                description: |-
+                  Criticality is how much it matters that *this environment* keeps
+                  working, which is a different question from how much the project
+                  matters. A critical project's preview environments are not critical
+                  functions, and a nonCritical project may own the staging environment
+                  four teams integrate against. Absent means undesignated: a production
+                  environment then reads its project's designation and a preview reads
+                  nothing, derived rather than written — see [EffectiveContinuity].
+
+                  It is declared here by the environment's owners, through the same
+                  owner-gated endpoint as the bar and the data class, and for the same
+                  reason: what an environment is worth is not the deploying team's to
+                  say.
+                enum:
+                - nonCritical
+                - important
+                - critical
+                type: string
               dataClass:
                 description: |-
                   DataClass is the highest sensitivity class of data this environment is
@@ -1054,6 +1073,25 @@ spec:
                   back to the platform default on the Kitchen object, and reads as
                   "unknown" in the inventory when neither is set. Provisioned resources
                   record their *actual* placement separately, on the claim's status.
+                type: string
+              rpo:
+                description: |-
+                  RPO is how much of this environment's data may be lost. Carried,
+                  mapped and reachable by policy; nothing alerts on it yet, because the
+                  platform observes no recovery points.
+                maxLength: 16
+                minLength: 2
+                pattern: ^([0-9]+h)?([0-9]+m)?$
+                type: string
+              rto:
+                description: |-
+                  RTO is how long this environment may be unavailable before the
+                  institution's tolerance is breached — a Go duration of whole hours and
+                  minutes. It is the threshold the environment.rto-at-risk signal fires
+                  against, so setting it changes what wakes somebody up.
+                maxLength: 16
+                minLength: 2
+                pattern: ^([0-9]+h)?([0-9]+m)?$
                 type: string
               type:
                 default: production
@@ -3253,6 +3291,25 @@ spec:
                     - buildpacks
                     type: string
                 type: object
+              criticality:
+                description: |-
+                  Criticality is how much it matters that this project's function keeps
+                  working: nonCritical, important or critical. Absent means undesignated
+                  — surfaced as such, never defaulted, because Kitchen does not decide
+                  what is critical and must not appear to have. It is the institution's
+                  input; what the platform does with it is map it onto the resources
+                  that serve the function (GET /compliance/criticality) and let it
+                  decide how loudly the environments running it alert.
+
+                  A project's designation reaches its *production* environments as a
+                  fallback and reaches its previews not at all — see
+                  [EffectiveContinuity] for why criticality does not inherit the way a
+                  data class does.
+                enum:
+                - nonCritical
+                - important
+                - critical
+                type: string
               dataClass:
                 description: |-
                   DataClass is the sensitivity classification of the data this project
@@ -3417,6 +3474,28 @@ spec:
                 required:
                 - connectionRef
                 type: object
+              rpo:
+                description: |-
+                  RPO is the recovery point objective: how much data this project's
+                  function may lose. Same spelling as RTO.
+
+                  Kitchen carries and maps it and does not yet alert on it, because the
+                  platform observes no recovery points to measure it against — see
+                  docs/OBSERVABILITY.md, "What an RPO would take".
+                maxLength: 16
+                minLength: 2
+                pattern: ^([0-9]+h)?([0-9]+m)?$
+                type: string
+              rto:
+                description: |-
+                  RTO is the recovery time objective: how long this project's function
+                  may be unavailable before the institution's own tolerance is breached.
+                  A Go duration of whole hours and minutes — "4h", "30m". Absent means
+                  no tolerance has been set, which is not the same as zero.
+                maxLength: 16
+                minLength: 2
+                pattern: ^([0-9]+h)?([0-9]+m)?$
+                type: string
               runtime:
                 description: RuntimeSpec describes how an application runs.
                 properties:
