@@ -199,6 +199,12 @@ func (e *PolicyEvaluator) Evaluate(
 	input := policy.MaterializeInput(req.Kind, req.At, req.Project, env, release, build, evidence, claims)
 	input.Exceptions = exceptions
 	input.DataSnapshot = req.DataSnapshot
+	// The seam for #135: ingested OpenVEX statements belong on input.VEX,
+	// set here, so that every kind of evaluation suppresses the same findings
+	// the same way — the default bundle's max-severity rule already consults
+	// them (`vex_not_affected`), and nothing populates them yet. It goes here
+	// rather than in MaterializeInput for the reason Exceptions does: which
+	// statements are in scope is a listing, not a materialization.
 	result, err := policy.Evaluate(ctx, info.Bundle, input)
 	if err != nil {
 		// The bundle resolved and would not evaluate: a broken bundle, not a
