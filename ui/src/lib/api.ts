@@ -307,6 +307,12 @@ export interface AuditRecord {
   toState?: string;
   reason?: string;
   details?: string;
+  /** A transition that moved a control rather than a workload — a waiver, a
+   *  requirement, a credential, a grant, or a write the platform did not
+   *  make. Read out of the details, which is what the chain hashes: the
+   *  marking cannot be added or removed without verification saying so. */
+  privileged?: boolean;
+  privilegeClass?: string;
   prevHash: string;
   hash: string;
 }
@@ -316,6 +322,8 @@ export interface AuditQuery {
   name?: string;
   project?: string;
   actor?: string;
+  privileged?: boolean;
+  privilegeClass?: string;
   since?: string;
   until?: string;
   limit?: number;
@@ -614,6 +622,102 @@ export interface Exception {
   resolvedAt?: string;
   createdAt: string;
   conditions?: Condition[];
+}
+
+/** One grant in the access survey: one account's one role in one place, with
+ *  what the platform knows about whether anybody is still behind it.
+ *
+ *  `orphaned` is `inactive` AND `unknown` together, never either alone —
+ *  either on its own has an innocent reading (a quiet quarter, an issuer that
+ *  serves no directory) and the pair does not. */
+export interface Identity {
+  subject: string;
+  email?: string;
+  grant: string;
+  role: string;
+  lastActive?: string;
+  inactive?: boolean;
+  unknown?: boolean;
+  orphaned?: boolean;
+}
+
+/** Who holds what on the platform, whole. `directoryConsulted` is
+ *  load-bearing: false means nothing at all is claimed about ownership,
+ *  because the identity provider could not be asked. */
+export interface IdentitySurvey {
+  generatedAt: string;
+  inactivityDays: number;
+  directoryConsulted: boolean;
+  identities: Identity[];
+  orphans: number;
+  message?: string;
+}
+
+/** One grant inside a recertification cycle, with what was decided about it. */
+export interface AccessReviewEntry {
+  subject: string;
+  email?: string;
+  grant: string;
+  role: string;
+  lastActive?: string;
+  inactive?: boolean;
+  unknown?: boolean;
+  orphaned?: boolean;
+  decision?: "confirm" | "revoke";
+  decidedBy?: string;
+  decidedAt?: string;
+  note?: string;
+  selfReview?: boolean;
+  applied?: boolean;
+  applyMessage?: string;
+}
+
+/** The retained artefact a closed cycle produced: a pointer to the signed
+ *  record in the store, never a copy of it. `message` is what to read when a
+ *  cycle closed without one. */
+export interface AccessReviewArtifact {
+  recordID?: string;
+  subject?: string;
+  predicateType?: string;
+  signedAt?: string;
+  message?: string;
+}
+
+/** One recertification cycle. `phase` is judged against the clock server-side,
+ *  so Overdue means overdue now rather than "the reconciler got round to it".
+ *  Overdue is a report and never a consequence. */
+export interface AccessReview {
+  name: string;
+  scope: "platform" | "project" | "all";
+  project?: string;
+  reviewers: string[];
+  openedBy: string;
+  reason?: string;
+  dueBy: string;
+  openedAt?: string;
+  snapshotAt?: string;
+  closedBy?: string;
+  closedAt?: string;
+  phase: "Open" | "Overdue" | "Closed";
+  pending: number;
+  confirmed: number;
+  revoked: number;
+  selfReviewed: number;
+  orphaned: number;
+  entries: AccessReviewEntry[];
+  artifact?: AccessReviewArtifact;
+  createdAt: string;
+  conditions?: Condition[];
+}
+
+/** One decision a reviewer records about one grant. The (subject, grant) pair
+ *  identifies the entry: an account holding a role on four projects is four
+ *  decisions. */
+export interface AccessDecision {
+  subject: string;
+  grant: string;
+  decision: "confirm" | "revoke";
+  note?: string;
 }
 
 /** One policy bundle available to require: what an environment owner pins. */
@@ -2818,6 +2922,18 @@ export const api = {
   },
   resolveException: (name: string, reason: string) =>
     request<Exception>("PATCH", `/exceptions/${encodeURIComponent(name)}`, { resolved: true, reason }),
+  // Access recertification. Every one of these is the operator's: the answer
+  // is the whole installation's access in one document.
+  identities: () => request<IdentitySurvey>("GET", "/access/identities"),
+  accessReviews: (historical = false) =>
+    list<AccessReview>("/access/reviews")(historical ? { historical: "true" } : {}),
+  accessReview: (name: string) => request<AccessReview>("GET", `/access/reviews/${encodeURIComponent(name)}`),
+  openAccessReview: (body: { scope?: string; project?: string; reason?: string } = {}) =>
+    request<AccessReview>("POST", "/access/reviews", body),
+  // Decisions and the close go in one request on purpose: a close that raced
+  // the last decision would mint an artefact missing it.
+  reviewAccess: (name: string, body: { decisions?: AccessDecision[]; close?: boolean }) =>
+    request<AccessReview>("PATCH", `/access/reviews/${encodeURIComponent(name)}`, body),
   attestations: (build: string) => request<EvidenceSet>("GET", `/builds/${encodeURIComponent(build)}/attestations`),
   // Exploitability assertions, joined to the findings they modify. The read is
   // what keeps a suppression from being silent: it is the one place a person

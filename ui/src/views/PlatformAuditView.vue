@@ -4,6 +4,7 @@ import { useRoute, useRouter } from "vue-router";
 import DecisionsPanel from "../components/DecisionsPanel.vue";
 import CriticalityPanel from "../components/CriticalityPanel.vue";
 import DriftPanel from "../components/DriftPanel.vue";
+import AccessReviewPanel from "../components/AccessReviewPanel.vue";
 import ExceptionsPanel from "../components/ExceptionsPanel.vue";
 import { api, type AuditRecord } from "../lib/api";
 import { timeAgo } from "../lib/format";
@@ -27,7 +28,7 @@ const router = useRouter();
 /** The filters the store itself applies — the three questions anyone asks of
  *  an audit log: what happened to this object, what did this person do, and
  *  what happened in this window. */
-const FILTERS = ["kind", "name", "project", "actor"] as const;
+const FILTERS = ["kind", "name", "project", "actor", "privilegeClass"] as const;
 
 const ranges = [
   { label: "Last 24 hours", value: 1440 },
@@ -62,7 +63,21 @@ function selection() {
     const value = param(key);
     if (value) query[key] = value;
   }
+  // A class implies the marking, so the two never both need spelling.
+  if (param("privileged") === "true" && !query.privilegeClass) query.privileged = "true";
   return query;
+}
+
+/** Privileged-only is the supervisor's question — what moved a control rather
+ *  than a workload — and it is one toggle rather than six filters. */
+const privilegedOnly = computed(() => param("privileged") === "true" || param("privilegeClass") !== "");
+
+function togglePrivileged() {
+  if (privilegedOnly.value) {
+    apply({ privileged: undefined, privilegeClass: undefined });
+    return;
+  }
+  apply({ privileged: "true" });
 }
 
 const records = useAsync(() => api.audit(selection()));
@@ -176,6 +191,12 @@ const truncated = computed(() => {
         </p>
       </div>
       <div class="flex items-center gap-2">
+        <!-- The supervisor's question, one toggle: what moved a control
+             rather than a workload. Waivers, requirements, classifications,
+             grants, credentials, and writes the platform did not make. -->
+        <UButton size="xs" color="neutral" :variant="privilegedOnly ? 'solid' : 'subtle'" @click="togglePrivileged">
+          Privileged only
+        </UButton>
         <USelect
           :model-value="rangeMinutes"
           :items="ranges"
@@ -347,6 +368,17 @@ const truncated = computed(() => {
               <span class="font-mono" :class="operationColour[record.operation] ?? 'text-toned'">
                 {{ record.operation }}
               </span>
+              <!-- A privileged record moved a control rather than a workload.
+                   The class is a filter as well as a badge: one click narrows
+                   the log to every waiver, or every credential rotation. -->
+              <button
+                v-if="record.privileged"
+                class="ml-2 font-mono text-[11px] px-1 rounded border border-warning/40 text-warning hover:border-warning"
+                :title="`Narrow to ${record.privilegeClass || 'privileged'} records`"
+                @click="apply({ privileged: 'true', privilegeClass: record.privilegeClass || undefined })"
+              >
+                {{ record.privilegeClass || "privileged" }}
+              </button>
               <span v-if="move(record)" class="font-mono text-dimmed ml-2">{{ move(record) }}</span>
               <p class="text-toned break-words">{{ record.reason }}</p>
               <p v-if="record.details" class="text-[11px] text-dimmed font-mono break-all">{{ record.details }}</p>
@@ -366,6 +398,12 @@ const truncated = computed(() => {
       edited afterwards no longer hashes to the hash stored beside it. What this cannot catch on its own is a tail
       rewritten whole — the anchor above is what bounds that.
     </p>
+
+    <!-- Access recertification sits directly under the log, because it is the
+         one control in this suite that is about the people reading the rest
+         of it. Everything above records what the platform did; this records
+         who was allowed to do it, and who last checked that. -->
+    <AccessReviewPanel />
 
     <!-- The exception register sits right above the decisions it changes:
          every standing waiver, prominent and permanent, because the loudness
