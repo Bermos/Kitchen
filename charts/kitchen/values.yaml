@@ -616,7 +616,7 @@ kitchen:
     # later beside its provenance, where a container log is operational.
     # Container logs and build logs share one table, so setting these apart
     # costs the table its cheap part-drop expiry — see docs/COMPLIANCE.md
-    # §14.2.
+    # §12.2.
     buildLogs: ~
     # -- Days to retain observed network flows — the traffic view.
     flows: ~

@@ -70,7 +70,7 @@ import (
 //     each other to within X, and whether they agree with the world is the
 //     job of whatever runs ntpd on those nodes.
 //
-// docs/COMPLIANCE.md §14.5 says the same thing at length, because a
+// docs/COMPLIANCE.md §12.6 says the same thing at length, because a
 // measurement whose limits are only in a code comment is a measurement
 // somebody will over-read.
 

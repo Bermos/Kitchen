@@ -3175,7 +3175,7 @@ spec:
                       Installations routinely want the second kept longer than the first.
 
                       Both live in the same table, which has a consequence worth knowing
-                      before setting them apart: see docs/COMPLIANCE.md §14.2.
+                      before setting them apart: see docs/COMPLIANCE.md §12.2.
                     format: int32
                     minimum: 1
                     type: integer
@@ -3544,7 +3544,7 @@ spec:
                           False is not a fault and does not stop anything: it means the claim
                           this installation can make about its log is the hash chain's alone,
                           which is a smaller claim and an honest one. The message says why the
-                          revoke did not take. docs/COMPLIANCE.md §14.3 states exactly what the
+                          revoke did not take. docs/COMPLIANCE.md §12.3 states exactly what the
                           true case does and does not cover.
                         type: boolean
                       message:
@@ -3819,7 +3819,7 @@ spec:
                             number here that is exact rather than observed: the sweep only ever
                             drops a partition every row of which is past the horizon, so it can
                             count them. Everything the store expired on its own schedule is
-                            invisible to it, and §14.4 says so.
+                            invisible to it, and §12.4 says so.
                           format: int64
                           type: integer
                         rows:

@@ -21,7 +21,7 @@ import (
 )
 
 // Retention: how long each class of what the platform keeps is kept, said in
-// one place. See docs/COMPLIANCE.md §14 for the model and for what the
+// one place. See docs/COMPLIANCE.md §12 for the model and for what the
 // immutability claim over the audit table does and does not cover.
 //
 // It is one block rather than a knob per collector because the question a
@@ -73,7 +73,7 @@ type RetentionSpec struct {
 	// Installations routinely want the second kept longer than the first.
 	//
 	// Both live in the same table, which has a consequence worth knowing
-	// before setting them apart: see docs/COMPLIANCE.md §14.2.
+	// before setting them apart: see docs/COMPLIANCE.md §12.2.
 	// +kubebuilder:validation:Minimum=1
 	// +optional
 	BuildLogs *int32 `json:"buildLogs,omitempty"`
@@ -244,7 +244,7 @@ type RetentionClassStatus struct {
 	// number here that is exact rather than observed: the sweep only ever
 	// drops a partition every row of which is past the horizon, so it can
 	// count them. Everything the store expired on its own schedule is
-	// invisible to it, and §14.4 says so.
+	// invisible to it, and §12.4 says so.
 	// +optional
 	Removed int64 `json:"removed,omitempty"`
 
@@ -284,7 +284,7 @@ type RetentionStatus struct {
 // from the operator's own.
 //
 // Method is carried because the honest reading of every number here depends on
-// it: see docs/COMPLIANCE.md §14.5, which says what this measures, what it
+// it: see docs/COMPLIANCE.md §12.6, which says what this measures, what it
 // cannot measure, and why the platform does not reach for an external time
 // source to do better.
 type ClockSyncStatus struct {

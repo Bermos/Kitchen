@@ -1407,7 +1407,7 @@ kubectl delete namespace kitchen-system
 | `kitchen.observability.clockSync.enabled` | `true` | Measure how far the cluster's clocks are from the operator's own, and report drift as an unhealthy component. Every correlation in an incident report is timestamps from several machines, so clocks that disagree make the order wrong silently. |
 | `kitchen.observability.clockSync.maxDriftSeconds` | `5` | Seconds a node's clock may be from the operator's before the check reports it. Chosen against the use rather than against NTP's accuracy: five seconds is roughly where "these happened in this order" stops being safe to say across machines. |
 | `kitchen.retention.containerLogs` | `~` | Days to retain application, platform and cluster container logs. Empty inherits `kitchen.observability.clickhouse.retentionDays`, as every entry below does. |
-| `kitchen.retention.buildLogs` | `~` | Days to retain build output. Its own class because a build log is read months later beside an artifact's provenance. It shares a table with the container logs, so setting the two apart costs that table its cheap part-drop expiry — see docs/COMPLIANCE.md §14.2. |
+| `kitchen.retention.buildLogs` | `~` | Days to retain build output. Its own class because a build log is read months later beside an artifact's provenance. It shares a table with the container logs, so setting the two apart costs that table its cheap part-drop expiry — see docs/COMPLIANCE.md §12.2. |
 | `kitchen.retention.flows` | `~` | Days to retain observed network flows. |
 | `kitchen.retention.metrics` | `~` | Days to retain metric series and their rollups. |
 | `kitchen.retention.traces` | `~` | Days to retain spans. |

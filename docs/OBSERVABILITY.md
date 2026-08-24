@@ -454,7 +454,7 @@ two installations need to disagree about.
 
 What did move is the number they scale. Retention was one knob for every
 telemetry table (`observability.clickhouse.retentionDays`) until #140 made it
-one *model* of nine classes — see §5.1 below, and docs/COMPLIANCE.md §14 for
+one *model* of nine classes — see §5.1 below, and docs/COMPLIANCE.md §12 for
 the reasoning. That old field is still there and still means what it meant: it
 is the default every telemetry class inherits.
 
@@ -515,7 +515,7 @@ worth knowing:
   TTLs and the setting comes off — a part holding both classes is never wholly
   expired, so only-drop-parts would silently expire the shorter class at the
   longer date. Two retentions in one table cost merge time; one costs nothing.
-  docs/COMPLIANCE.md §14.2 has the whole of it.
+  docs/COMPLIANCE.md §12.2 has the whole of it.
 - **A class can span several tables.** The metrics class applies to five point
   types and the rollup; the traces class to the spans and the id lookup; the
   requests class to the raw table and both rollups, scaled by the ratios below.
@@ -525,7 +525,7 @@ A daily leader-elected sweep then measures each class against the horizon its
 own configuration puts there and records the result in the audit log — how far
 back the class actually goes, not merely how far back it is configured to go.
 `GET /api/v1/platform/retention` and `kitchen retention` answer from it, and
-docs/COMPLIANCE.md §14.4 says why it is a claim about what is *left* rather
+docs/COMPLIANCE.md §12.4 says why it is a claim about what is *left* rather
 than an observation of what was deleted.
 
 ### 5.2 Whether the timestamps mean anything
@@ -543,7 +543,7 @@ machines, and a cluster whose clocks disagree makes the *order* of those rows
 wrong without making any single row wrong. The method's limits are real and
 stated — it measures disagreement within the cluster rather than agreement with
 UTC, and it forgives a renewal period in the past direction — see
-docs/COMPLIANCE.md §14.6.
+docs/COMPLIANCE.md §12.6.
 
 ---
 
