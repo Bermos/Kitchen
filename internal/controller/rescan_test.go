@@ -533,6 +533,26 @@ func rescanException(name string, expiresIn time.Duration, autoRollback bool) *k
 	}
 }
 
+// reliedOn is the register's record that a promotion of `release` into the
+// environment actually went out under this grant, which is what an
+// auto-rollback is allowed to act on. It returns the Promotion the status row
+// names, because the sweep reads the object rather than trusting the name.
+func reliedOn(
+	exception *kitchenv1alpha1.Exception, promotion, release string,
+) *kitchenv1alpha1.Promotion {
+	exception.Status.UsedBy = append(exception.Status.UsedBy, promotion)
+	return &kitchenv1alpha1.Promotion{
+		ObjectMeta: metav1.ObjectMeta{Name: promotion, Namespace: PlatformNamespace},
+		Spec: kitchenv1alpha1.PromotionSpec{
+			ProjectRef:     kitchenv1alpha1.LocalObjectReference{Name: rescanProject},
+			EnvironmentRef: kitchenv1alpha1.LocalObjectReference{Name: rescanEnvName},
+			ReleaseRef:     kitchenv1alpha1.LocalObjectReference{Name: release},
+			RequestedBy:    "grace@example.com",
+			Trigger:        kitchenv1alpha1.PromotionManual,
+		},
+	}
+}
+
 // scanThrough drives one pair from due to evaluated.
 func (f *rescanFixtures) scanThrough(t *testing.T) {
 	t.Helper()
@@ -584,8 +604,9 @@ func TestAnExpiredExceptionStopsWaivingWithNoExpiryEngine(t *testing.T) {
 }
 
 func TestAnExpiredExceptionThatAskedForARollbackGetsOne(t *testing.T) {
-	f := newRescanFixtures(t, nil,
-		rescanEnvironment(requiringProvenance()), rescanException("exc-rollback", -time.Minute, true))
+	exception := rescanException("exc-rollback", -time.Minute, true)
+	promotion := reliedOn(exception, "shop-prm-1", rescanRelease)
+	f := newRescanFixtures(t, nil, rescanEnvironment(requiringProvenance()), exception, promotion)
 	f.evidence.set = attestation.EvidenceSet{Attestations: []attestation.Evidence{}}
 	f.scanThrough(t)
 
@@ -606,6 +627,54 @@ func TestAnExpiredExceptionThatAskedForARollbackGetsOne(t *testing.T) {
 	// substitute for recording it.
 	if len(f.store.decisions) != 1 || f.store.decisions[0].Verdict != policy.VerdictBlocked {
 		t.Errorf("the blocked re-evaluation was not recorded: %+v", f.store.decisions)
+	}
+}
+
+func TestALongDeadGrantDoesNotYankAReleaseItNeverLetOut(t *testing.T) {
+	// March: a 24-hour waiver on production to ship a hotfix, autoRollback on,
+	// naming no release. Nobody ever resolved it, and the register keeps it —
+	// Covers() answers true for any release and EffectivePhase() answers
+	// Expired forever. August: an unrelated release is deployed and a rescan
+	// blocks it on the same rule id, for a CVE nobody involved has heard of.
+	//
+	// Rolling production back here would be exactly the failure the narrowness
+	// exists to prevent: a hotfix grant turned into a mechanism that yanks a
+	// running workload for an unrelated reason.
+	stale := rescanException("exc-march", -5*30*24*time.Hour, true)
+	promotion := reliedOn(stale, "shop-prm-march", rescanOldRel)
+	f := newRescanFixtures(t, nil, rescanEnvironment(requiringProvenance()), stale, promotion)
+	f.evidence.set = attestation.EvidenceSet{Attestations: []attestation.Evidence{}}
+	f.scanThrough(t)
+
+	env := f.environment(t)
+	if env.Spec.ReleaseRef.Name != rescanRelease {
+		t.Fatalf("a five-month-old grant this release never went out under rolled it back to %q",
+			env.Spec.ReleaseRef.Name)
+	}
+	// The non-compliance is still recorded and still visible — the rollback is
+	// what is refused, never the finding.
+	state := env.Status.Rescan
+	if state == nil || state.Verdict != policy.VerdictBlocked {
+		t.Fatalf("the blocked re-evaluation was not recorded on the environment: %+v", state)
+	}
+	if len(f.store.decisions) != 1 || f.store.decisions[0].Verdict != policy.VerdictBlocked {
+		t.Errorf("the blocked re-evaluation was not stored: %+v", f.store.decisions)
+	}
+}
+
+func TestAGrantWhoseUseNothingRecordsRollsNothingBack(t *testing.T) {
+	// The same shape with the link missing altogether: an expired grant that
+	// asked for a rollback, covering this pair, waiving the rule that is
+	// firing — and no promotion in status.usedBy. An unmatchable record is not
+	// a link, and a workload left running is the recoverable direction.
+	orphan := rescanException("exc-unused", -time.Minute, true)
+	f := newRescanFixtures(t, nil, rescanEnvironment(requiringProvenance()), orphan)
+	f.evidence.set = attestation.EvidenceSet{Attestations: []attestation.Evidence{}}
+	f.scanThrough(t)
+
+	if env := f.environment(t); env.Spec.ReleaseRef.Name != rescanRelease {
+		t.Fatalf("a grant nothing recorded a use of rolled the environment back to %q",
+			env.Spec.ReleaseRef.Name)
 	}
 }
 
