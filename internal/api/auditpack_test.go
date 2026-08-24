@@ -28,6 +28,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -52,7 +53,7 @@ import (
 //     with openssl, against the envelope the API served
 //  3. a typical project's pack completes well inside a minute
 //  4. its contents are documented field by field — which is docs/api/audit-pack.md,
-//     and TestEveryPackSectionIsDocumented checks the two cannot drift apart
+//     and TestEveryPackFieldIsDocumented checks the two cannot drift apart
 //
 // plus the design rules the criteria do not state: nothing about "now" inside
 // the signed bytes, a truncated window said out loud, and no credential.
@@ -993,4 +994,69 @@ func withSigningKey(t *testing.T, h *harness) {
 	if err := h.server.Client.Create(ctx, secret); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// --- Criterion 4: documented field by field --------------------------------
+
+// Every field of the document appears in its page, walked off the structs
+// rather than listed by hand — because a list by hand is a list that goes
+// stale on the first field somebody adds.
+//
+// "Documented field by field, mapped to the requirement each satisfies" is an
+// acceptance criterion, and it is the one that decays silently: the code keeps
+// working, the page quietly stops describing it. This is the only link in the
+// chain that a test can hold.
+func TestEveryPackFieldIsDocumented(t *testing.T) {
+	page, err := os.ReadFile(filepath.Join("..", "..", "docs", "api", "audit-pack.md"))
+	if err != nil {
+		t.Fatalf("the pack's page must exist: %v", err)
+	}
+	documented := string(page)
+
+	missing := []string{}
+	for _, field := range jsonFieldsOf(reflect.TypeOf(auditPack{}), map[reflect.Type]bool{}) {
+		if !strings.Contains(documented, field) {
+			missing = append(missing, field)
+		}
+	}
+	if len(missing) > 0 {
+		t.Fatalf("docs/api/audit-pack.md does not mention %s — a field nobody documented is a "+
+			"field an examiner has to guess at", strings.Join(missing, ", "))
+	}
+
+	// And the requirement mapping is the other half of the criterion: the
+	// page has to say which requirement each part is there to satisfy.
+	for _, code := range []string{"GR-J3", "GR-L1", "GR-D1", "GR-D8", "GR-E2", "GR-G6", "GR-C4"} {
+		if !strings.Contains(documented, code) {
+			t.Errorf("the page maps nothing to %s", code)
+		}
+	}
+}
+
+// jsonFieldsOf collects every json name in a struct tree, once each. Anonymous
+// and unexported fields are skipped, and a type already walked is not walked
+// again — the document has no cycles today, and a future one must not hang the
+// test instead of failing it.
+func jsonFieldsOf(walked reflect.Type, seen map[reflect.Type]bool) []string {
+	for walked.Kind() == reflect.Pointer || walked.Kind() == reflect.Slice {
+		walked = walked.Elem()
+	}
+	if walked.Kind() != reflect.Struct || seen[walked] {
+		return nil
+	}
+	seen[walked] = true
+
+	names := []string{}
+	for i := range walked.NumField() {
+		field := walked.Field(i)
+		if !field.IsExported() {
+			continue
+		}
+		name, _, _ := strings.Cut(field.Tag.Get("json"), ",")
+		if name != "" && name != "-" {
+			names = append(names, name)
+		}
+		names = append(names, jsonFieldsOf(field.Type, seen)...)
+	}
+	return names
 }

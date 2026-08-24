@@ -163,6 +163,7 @@ name against `internal/api/policy.go`, so a route that moves fails them too.
 | POST | `/projects/{name}/builds` | Build a commit — a rebuild | `developer` |
 | GET | `/projects/{name}/releases` | That project's releases, newest first | `viewer` |
 | GET | `/projects/{name}/environments` | That project's environments | `viewer` |
+| GET | `/projects/{name}/audit-pack` | One project's whole compliance answer for one half-open window, signed and byte-reproducible: inventory, change log with author and approver, promotions and their decisions with reproduction inputs, the evidence index per artifact, exceptions, recertification cycles, drift, the audit log's slice and every signed statement carried whole. `?from=` and `?to=` are required; `?format=` is `json`, `dsse` or `html` | `operator` |
 | GET | `/projects/{name}/members` | Who holds a role on it — the readable form of `spec.access` | `viewer` |
 | POST | `/projects/{name}/members` | Give somebody a role. The address is resolved to a `sub` before it is written | `admin` |
 | PATCH | `/projects/{name}/members` | Move a member to another role | `admin` |
@@ -292,6 +293,7 @@ such changes two changes to two different files.
 - [Promotions](api/promotions.md) — the staged pipeline: asking for a release to land, and what the policy decided
 - [Exceptions](api/exceptions.md) — break-glass: bounded, two-person, per-rule waivers, and the register of every one
 - [Criticality and disruption tolerance](api/criticality.md) — designating a function, the map of everything supporting it, and what breaks when a third party is unavailable
+- [The audit pack](api/audit-pack.md) — one project's whole compliance answer for one window, signed, reproducible, and readable by somebody who is not an engineer
 - [Platform status and the operator's screens](api/platform.md) — whether the platform is healthy, and everything behind /platform
 - [Settings and updates](api/settings.md) — the installation's own configuration, and moving it to a new version
 
