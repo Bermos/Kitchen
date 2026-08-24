@@ -301,6 +301,37 @@ type ProjectSpec struct {
 	// +optional
 	DataClass DataClass `json:"dataClass,omitempty"`
 
+	// Criticality is how much it matters that this project's function keeps
+	// working: nonCritical, important or critical. Absent means undesignated
+	// — surfaced as such, never defaulted, because Kitchen does not decide
+	// what is critical and must not appear to have. It is the institution's
+	// input; what the platform does with it is map it onto the resources
+	// that serve the function (GET /compliance/criticality) and let it
+	// decide how loudly the environments running it alert.
+	//
+	// A project's designation reaches its *production* environments as a
+	// fallback and reaches its previews not at all — see
+	// [EffectiveContinuity] for why criticality does not inherit the way a
+	// data class does.
+	// +optional
+	Criticality Criticality `json:"criticality,omitempty"`
+
+	// RTO is the recovery time objective: how long this project's function
+	// may be unavailable before the institution's own tolerance is breached.
+	// A Go duration of whole hours and minutes — "4h", "30m". Absent means
+	// no tolerance has been set, which is not the same as zero.
+	// +optional
+	RTO Tolerance `json:"rto,omitempty"`
+
+	// RPO is the recovery point objective: how much data this project's
+	// function may lose. Same spelling as RTO.
+	//
+	// Kitchen carries and maps it and does not yet alert on it, because the
+	// platform observes no recovery points to measure it against — see
+	// docs/OBSERVABILITY.md, "What an RPO would take".
+	// +optional
+	RPO Tolerance `json:"rpo,omitempty"`
+
 	// Which of this Project's environments may idle down to no pods at all,
 	// cold-starting on the next request. It does nothing unless the platform
 	// runs the machinery for it — `spec.scaleToZero.enabled` on the Kitchen

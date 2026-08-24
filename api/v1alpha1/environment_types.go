@@ -119,6 +119,34 @@ type EnvironmentSpec struct {
 	// record their *actual* placement separately, on the claim's status.
 	// +optional
 	Residency string `json:"residency,omitempty"`
+
+	// Criticality is how much it matters that *this environment* keeps
+	// working, which is a different question from how much the project
+	// matters. A critical project's preview environments are not critical
+	// functions, and a nonCritical project may own the staging environment
+	// four teams integrate against. Absent means undesignated: a production
+	// environment then reads its project's designation and a preview reads
+	// nothing, derived rather than written — see [EffectiveContinuity].
+	//
+	// It is declared here by the environment's owners, through the same
+	// owner-gated endpoint as the bar and the data class, and for the same
+	// reason: what an environment is worth is not the deploying team's to
+	// say.
+	// +optional
+	Criticality Criticality `json:"criticality,omitempty"`
+
+	// RTO is how long this environment may be unavailable before the
+	// institution's tolerance is breached — a Go duration of whole hours and
+	// minutes. It is the threshold the environment.rto-at-risk signal fires
+	// against, so setting it changes what wakes somebody up.
+	// +optional
+	RTO Tolerance `json:"rto,omitempty"`
+
+	// RPO is how much of this environment's data may be lost. Carried,
+	// mapped and reachable by policy; nothing alerts on it yet, because the
+	// platform observes no recovery points.
+	// +optional
+	RPO Tolerance `json:"rpo,omitempty"`
 }
 
 // EnvironmentPhase is the coarse lifecycle summary of an Environment.

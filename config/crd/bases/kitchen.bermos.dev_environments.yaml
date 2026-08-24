@@ -57,6 +57,25 @@ spec:
               EnvironmentSpec defines a running instance of a Release with a URL.
               Rollback is changing ReleaseRef to an older Release.
             properties:
+              criticality:
+                description: |-
+                  Criticality is how much it matters that *this environment* keeps
+                  working, which is a different question from how much the project
+                  matters. A critical project's preview environments are not critical
+                  functions, and a nonCritical project may own the staging environment
+                  four teams integrate against. Absent means undesignated: a production
+                  environment then reads its project's designation and a preview reads
+                  nothing, derived rather than written — see [EffectiveContinuity].
+
+                  It is declared here by the environment's owners, through the same
+                  owner-gated endpoint as the bar and the data class, and for the same
+                  reason: what an environment is worth is not the deploying team's to
+                  say.
+                enum:
+                - nonCritical
+                - important
+                - critical
+                type: string
               dataClass:
                 description: |-
                   DataClass is the highest sensitivity class of data this environment is
@@ -161,6 +180,25 @@ spec:
                   back to the platform default on the Kitchen object, and reads as
                   "unknown" in the inventory when neither is set. Provisioned resources
                   record their *actual* placement separately, on the claim's status.
+                type: string
+              rpo:
+                description: |-
+                  RPO is how much of this environment's data may be lost. Carried,
+                  mapped and reachable by policy; nothing alerts on it yet, because the
+                  platform observes no recovery points.
+                maxLength: 16
+                minLength: 2
+                pattern: ^([0-9]+h)?([0-9]+m)?$
+                type: string
+              rto:
+                description: |-
+                  RTO is how long this environment may be unavailable before the
+                  institution's tolerance is breached — a Go duration of whole hours and
+                  minutes. It is the threshold the environment.rto-at-risk signal fires
+                  against, so setting it changes what wakes somebody up.
+                maxLength: 16
+                minLength: 2
+                pattern: ^([0-9]+h)?([0-9]+m)?$
                 type: string
               type:
                 default: production
