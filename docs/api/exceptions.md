@@ -44,8 +44,9 @@ on the project or platform. That the approver actually agreed is the
 requester's assertion, made on a permanent, privileged audit record carrying
 both names, visible in the register and on every artifact the exception
 moves. `release` optionally narrows the grant to one release; `autoRollback`
-(default false) is carried for the rescan controller and does not change
-what this endpoint does.
+(default false) asks the continuous re-evaluation pass to retreat the
+environment to its previous release if the grant expires unresolved while
+what it waived is still firing, and does not change what this endpoint does.
 
 Refusals: `400` for a missing reason, no `ruleIDs`, an `expiresAt` not in the
 future, an approver who is the caller, or an approver without the ladder's
@@ -122,10 +123,20 @@ the exception's name on the build's source status, and an
 controller flips the phase to `Expired` at the deadline, with a privileged
 audit record, and an expired, unresolved exception waives nothing — further
 promotions that relied on it are `Blocked`, naming the expired exception in
-their message. What expiry does **not** yet do: nothing re-evaluates what is
-already running, so a release deployed under the grant keeps running and its
-stored decision stands until something asks again. The scheduled
-re-evaluation pass that turns an expiry into a visible non-compliance — and
-the machinery that can act on `autoRollback` — arrive with the rescan
-controller (#134); until then `autoRollback` is carried on the object and
-changes nothing.
+their message.
+
+What turns that into a statement about what is *already running* is the
+continuous re-evaluation pass ([COMPLIANCE.md](../COMPLIANCE.md) §9), and it
+needs no expiry machinery of its own: an expired grant simply stops appearing
+in the listing every evaluation materializes its input from, the rules it
+waived fire unwaived, and the pair goes `blocked` on its next scan. It shows
+up on `GET /compliance/drift` as `waived-at-promotion` — told apart from a
+release that is newly failing, because an expired waiver is not a new
+vulnerability.
+
+`autoRollback` is acted on there and nowhere else, and narrowly: only when
+the re-evaluation is blocked, only when the expired grant waived a rule that
+is now firing unwaived, and only when there is a previous release to go back
+to. The move is a privileged audit record before it is a rollback. The
+default is off, because the default consequence of expiry is that nothing new
+goes out, not that something running is yanked.

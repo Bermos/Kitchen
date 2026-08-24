@@ -394,6 +394,70 @@ kitchen:
       #     role: admin
       # ```
       ladder: []
+    rescan:
+      # -- Re-evaluate every currently-deployed release on a schedule, against
+      # a **current** vulnerability database, through the same policy code
+      # path a promotion uses. This is the difference between a gate and a
+      # control: an artifact compliant in March is not necessarily compliant
+      # in June, and nothing about the artifact has to change for that to be
+      # true.
+      #
+      # It needs no rebuild and no redeploy — the bill of materials the build
+      # already attested is what is matched, so the image is never even
+      # pulled. What comes out is a signed vulnerability-scan attestation on
+      # the artifact's digest, a stored decision, and a row on
+      # `GET /compliance/drift`.
+      #
+      # Off by default: it costs a scanner pod per environment per interval in
+      # the application's own namespace, and an installation should turn that
+      # on knowing it.
+      enabled: false
+      # -- How often each deployed (environment, release) pair is
+      # re-evaluated, counted from its own last finished scan — so the estate
+      # spreads itself out rather than firing every environment at the same
+      # minute forever. Daily, because vulnerability databases move daily; the
+      # floor is an hour.
+      interval: 24h
+      # -- How many scans may be in flight at once, across the whole platform.
+      # The first sweep after an upgrade has every environment due at the same
+      # instant, and this is what stops two hundred environments becoming two
+      # hundred simultaneous image pulls.
+      concurrency: 4
+      # -- The matcher run over each artifact's bill of materials: an image
+      # you name, pointed at `$(KITCHEN_SBOM)`, writing findings to
+      # `$(KITCHEN_FINDINGS)` and — where it can say so — its vulnerability
+      # database's identifier to `$(KITCHEN_DATA_SNAPSHOT)`.
+      #
+      # There is deliberately no default. A scanner is pulled on every scan
+      # and its database moves on somebody else's schedule; an installation
+      # that has not chosen one has not decided something the chart should
+      # decide for it. Enabled with no scanner, the pass reports itself as
+      # inert rather than quietly picking a vendor.
+      #
+      # `format` is `grype-json`, `trivy-json` or `osv-json` — the shapes the
+      # operator can read a finding out of. The raw report is signed either
+      # way; what an unknown format loses is the normalized findings list the
+      # policy rules judge.
+      #
+      # Like a gate, a scan records findings and **never** a verdict, so do
+      # not pass a flag that makes the scanner exit non-zero on findings: a
+      # non-zero exit means the scan did not run.
+      #
+      # ```yaml
+      # scanner:
+      #   name: grype
+      #   image: anchore/grype:v0.87.0
+      #   version: "0.87.0"
+      #   format: grype-json
+      #   args:
+      #     - -o
+      #     - json
+      #     - --file
+      #     - $(KITCHEN_FINDINGS)
+      #     - sbom:$(KITCHEN_SBOM)
+      #   timeoutSeconds: 900
+      # ```
+      scanner: {}
     # Policy bundles are deliberately not a value here. The operator ships a
     # built-in bundle, and an institution distributes its own as ConfigMaps in
     # kitchen-system labelled `kitchen.bermos.dev/policy-bundle: "true"` (each
