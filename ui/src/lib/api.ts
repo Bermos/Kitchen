@@ -2249,6 +2249,16 @@ export const api = {
   // asks it again, which is what the settings page's re-check does.
   updates: (refresh = false) => request<PlatformUpdates>("GET", `/updates${refresh ? "?refresh=true" : ""}`),
   startUpdate: (version: string) => request<PlatformUpdate>("POST", "/updates", { version }),
+  // What helm said while it upgraded the platform — the same LogLine rows and
+  // the same bounded-then-followed pair as a build's output, over the
+  // self-update job's pod. The job is reaped an hour after it finishes and the
+  // lines outlive it in the store, so a finished update answers as readily as
+  // the one running now; an update that never started a job answers with an
+  // empty page rather than an error.
+  updateLogs: (name: string, query: LogQuery = {}) =>
+    request<{ items: LogLine[] }>("GET", `/updates/${name}/logs${logQuery(query)}`).then((b) => b.items),
+  streamUpdateLogs: (name: string, query: LogQuery, onLine: (line: LogLine) => void, signal: AbortSignal) =>
+    streamRows<LogLine>(`/updates/${name}/logs${logQuery(query)}`, onLine, signal),
 
   builds: list<Build>("/builds"),
   build: (name: string) => request<Build>("GET", `/builds/${name}`),
