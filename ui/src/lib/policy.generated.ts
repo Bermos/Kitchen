@@ -113,6 +113,7 @@ export type Route =
   | "GET /api/v1/policy/bundles"
   | "GET /api/v1/compliance"
   | "GET /api/v1/compliance/inventory"
+  | "GET /api/v1/compliance/drift"
   | "GET /api/v1/audit"
   | "GET /api/v1/audit/verify"
   | "GET /api/v1/metrics/overview"
@@ -222,6 +223,7 @@ export const POLICY: Readonly<Record<Route, Requirement>> = {
   "GET /api/v1/policy/bundles": { kind: "operator", doing: "listing the platform's policy bundles" },
   "GET /api/v1/compliance": { kind: "operator", doing: "reading the platform's compliance posture" },
   "GET /api/v1/compliance/inventory": { kind: "visibleProjects" },
+  "GET /api/v1/compliance/drift": { kind: "visibleProjects" },
   "GET /api/v1/audit": { kind: "visibleProjects" },
   "GET /api/v1/audit/verify": { kind: "operator", doing: "verifying the audit log's chain" },
   "GET /api/v1/metrics/overview": { kind: "visibleProjects" },

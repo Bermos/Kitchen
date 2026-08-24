@@ -381,6 +381,9 @@ var publishedShapes = map[string]struct {
 	"decisionList": {"A list of stored decisions, newest first", list[decision]{}},
 	"decisionReplay": {"A stored decision re-evaluated from its stored inputs: both verdicts, " +
 		"and whether they match", decisionReplay{}},
+	"drift": {"Deployed releases measured against their environment's bar today. Status is " +
+		"compliant, waived, newly-failing, waived-at-promotion or not-evaluated; `rescanning` " +
+		"false means nothing is checking, which is not the same as nothing being wrong", drift{}},
 	"exception": {"One break-glass exception: who asked, who approved, the rules it waives, " +
 		"until when, and the promotions that relied on it. Phase is Active, Expired or Resolved", exception{}},
 	"exceptionList": {"A list of exceptions, soonest to expire first", list[exception]{}},

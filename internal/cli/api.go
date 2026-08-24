@@ -317,6 +317,52 @@ type decision struct {
 	DecidedBy    string         `json:"decidedBy,omitempty"`
 }
 
+// driftRule is one rule standing in the way of a deployed release, and
+// whether it was already standing there when the release was promoted.
+type driftRule struct {
+	Rule    string `json:"rule"`
+	Message string `json:"message,omitempty"`
+	// Since is "rescan" for a rule that started failing after promotion, and
+	// "promotion" for one that fired then too and was waived by an exception
+	// which has since run out.
+	Since     string `json:"since"`
+	Exception string `json:"exception,omitempty"`
+}
+
+// driftItem is one deployed (environment, release) pair as the drift view
+// answers it.
+type driftItem struct {
+	Project     string `json:"project"`
+	Environment string `json:"environment"`
+	Release     string `json:"release"`
+	Artifact    string `json:"artifact,omitempty"`
+	// Status is compliant, waived, newly-failing, waived-at-promotion or
+	// not-evaluated.
+	Status          string      `json:"status"`
+	Verdict         string      `json:"verdict,omitempty"`
+	ScannedAt       *time.Time  `json:"scannedAt,omitempty"`
+	DataSnapshot    string      `json:"dataSnapshot,omitempty"`
+	Findings        int32       `json:"findings,omitempty"`
+	DecisionID      string      `json:"decisionID,omitempty"`
+	PromotedVerdict string      `json:"promotedVerdict,omitempty"`
+	PromotedAt      *time.Time  `json:"promotedAt,omitempty"`
+	Rules           []driftRule `json:"rules,omitempty"`
+	Message         string      `json:"message,omitempty"`
+}
+
+// drift is `GET /compliance/drift`: what is running right now that no longer
+// meets its environment's bar.
+type drift struct {
+	GeneratedAt time.Time `json:"generatedAt"`
+	// Rescanning says whether the continuous re-evaluation pass is running at
+	// all. An empty answer means two different things depending on it.
+	Rescanning bool           `json:"rescanning"`
+	Message    string         `json:"message,omitempty"`
+	Drifting   int            `json:"drifting"`
+	Items      []driftItem    `json:"items"`
+	Counts     map[string]int `json:"counts,omitempty"`
+}
+
 // exception is one break-glass grant as the register serves it: who asked,
 // who approved, what it waives, until when, and what became of it. Phase is
 // judged against the clock server-side, so Expired here means expired now.
@@ -641,6 +687,13 @@ func (c *client) replayDecision(ctx context.Context, id string) (*decisionReplay
 	answer := &decisionReplay{}
 	return answer, c.do(ctx, "replaying the decision "+id,
 		http.MethodPost, "/decisions/"+id+"/replay", nil, nil, answer)
+}
+
+// complianceDrift asks what is deployed and no longer compliant.
+func (c *client) complianceDrift(ctx context.Context, query url.Values) (*drift, error) {
+	answer := &drift{}
+	return answer, c.do(ctx, "reading compliance drift",
+		http.MethodGet, "/compliance/drift", query, nil, answer)
 }
 
 func (c *client) exceptions(ctx context.Context, query url.Values) ([]exception, error) {
