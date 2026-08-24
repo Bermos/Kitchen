@@ -435,6 +435,95 @@ type drift struct {
 	Counts     map[string]int `json:"counts,omitempty"`
 }
 
+// criticalityEnvironment is one environment under a designated function, with
+// the designation that actually applies to it — its own, or its project's
+// where production declares none, which `inherited` names.
+type criticalityEnvironment struct {
+	Name        string   `json:"name"`
+	Type        string   `json:"type"`
+	Criticality string   `json:"criticality"`
+	RTO         string   `json:"rto,omitempty"`
+	RPO         string   `json:"rpo,omitempty"`
+	Inherited   []string `json:"inherited,omitempty"`
+	URL         string   `json:"url,omitempty"`
+	Release     string   `json:"release,omitempty"`
+	Image       string   `json:"image,omitempty"`
+	Domains     []string `json:"domains,omitempty"`
+}
+
+// criticalityClaim is one provisioned resource, with the third party behind it.
+type criticalityClaim struct {
+	Name       string `json:"name"`
+	Type       string `json:"type"`
+	Connection string `json:"connection,omitempty"`
+	Provider   string `json:"provider,omitempty"`
+	Phase      string `json:"phase,omitempty"`
+	DataClass  string `json:"dataClass"`
+	Residency  string `json:"residency"`
+}
+
+// criticalityConnection is one third-party relationship, and what for.
+type criticalityConnection struct {
+	Name     string   `json:"name"`
+	Provider string   `json:"provider"`
+	UsedFor  []string `json:"usedFor"`
+}
+
+// criticalityFunction is one designated function and everything supporting it.
+type criticalityFunction struct {
+	Project      string                   `json:"project"`
+	Criticality  string                   `json:"criticality"`
+	RTO          string                   `json:"rto,omitempty"`
+	RPO          string                   `json:"rpo,omitempty"`
+	Environments []criticalityEnvironment `json:"environments"`
+	Claims       []criticalityClaim       `json:"claims"`
+	Connections  []criticalityConnection  `json:"connections"`
+	ThirdParties []string                 `json:"thirdParties"`
+}
+
+// criticalityMap is `GET /compliance/criticality`.
+type criticalityMap struct {
+	GeneratedAt time.Time             `json:"generatedAt"`
+	Minimum     string                `json:"minimum,omitempty"`
+	Functions   []criticalityFunction `json:"functions"`
+	// Undesignated is how many visible projects nobody has designated — the
+	// number that says whether a short map is a small estate or an unfinished
+	// designation exercise.
+	Undesignated int    `json:"undesignated"`
+	Depth        string `json:"depth"`
+}
+
+// criticalityDependent is one environment that would be affected.
+type criticalityDependent struct {
+	Project     string   `json:"project"`
+	Environment string   `json:"environment"`
+	Type        string   `json:"type"`
+	Criticality string   `json:"criticality"`
+	RTO         string   `json:"rto,omitempty"`
+	RPO         string   `json:"rpo,omitempty"`
+	Inherited   []string `json:"inherited,omitempty"`
+	Through     []string `json:"through"`
+}
+
+// criticalitySubject names what a reverse query was asked about.
+type criticalitySubject struct {
+	Kind        string   `json:"kind"`
+	Name        string   `json:"name"`
+	Provider    string   `json:"provider,omitempty"`
+	Connections []string `json:"connections,omitempty"`
+}
+
+// dependents is `GET /compliance/dependents`: what breaks without one third
+// party.
+type dependents struct {
+	GeneratedAt time.Time              `json:"generatedAt"`
+	Subject     criticalitySubject     `json:"subject"`
+	Affected    []criticalityDependent `json:"affected"`
+	Counts      map[string]int         `json:"counts"`
+	TightestRTO string                 `json:"tightestRTO,omitempty"`
+	Depth       string                 `json:"depth"`
+}
+
 // exception is one break-glass grant as the register serves it: who asked,
 // who approved, what it waives, until when, and what became of it. Phase is
 // judged against the clock server-side, so Expired here means expired now.
@@ -782,6 +871,20 @@ func (c *client) complianceDrift(ctx context.Context, query url.Values) (*drift,
 	answer := &drift{}
 	return answer, c.do(ctx, "reading compliance drift",
 		http.MethodGet, "/compliance/drift", query, nil, answer)
+}
+
+// criticalityMap asks what supports each designated function.
+func (c *client) criticalityMap(ctx context.Context, query url.Values) (*criticalityMap, error) {
+	answer := &criticalityMap{}
+	return answer, c.do(ctx, "reading the criticality map",
+		http.MethodGet, "/compliance/criticality", query, nil, answer)
+}
+
+// dependents asks what breaks without one connection or one third party.
+func (c *client) dependents(ctx context.Context, query url.Values) (*dependents, error) {
+	answer := &dependents{}
+	return answer, c.do(ctx, "reading what depends on it",
+		http.MethodGet, "/compliance/dependents", query, nil, answer)
 }
 
 func (c *client) exceptions(ctx context.Context, query url.Values) ([]exception, error) {

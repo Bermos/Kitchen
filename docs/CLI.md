@@ -174,6 +174,7 @@ give.
 | `kitchen vex list/submit` | What has been asserted about an artifact's findings applying here, and asserting it | `GET /builds/{name}/vex`, `POST /builds/{name}/vex` |
 | `kitchen decisions list/show/replay` | The stored policy decisions, and re-running one from its stored inputs | `GET /decisions`, `GET /decisions/{id}`, `POST /decisions/{id}/replay` |
 | `kitchen drift` | What is deployed right now that no longer meets its environment's bar | `GET /compliance/drift` |
+| `kitchen criticality` | What supports each designated function, and (`dependents`) what breaks without one third party | `GET /compliance/criticality`, `GET /compliance/dependents` |
 | `kitchen releases` | The project's releases — what there is to roll back to | `GET /projects/{name}/releases` |
 | `kitchen environments` | The project's environments and where they answer | `GET /projects/{name}/environments` |
 | `kitchen api` | Any endpoint of the API, authenticated | anything |
@@ -466,6 +467,36 @@ The exit code stays zero on a non-empty answer. Drift is a finding, not a
 failure of the command — a command that failed on a finding gets turned off the
 first week it finds something — so a nightly `kitchen drift --json` that opens a
 ticket on a non-empty `items` is the shape this is for.
+
+### Criticality, and what depends on what
+
+```sh
+kitchen criticality --criticality critical --json
+kitchen criticality dependents --provider neon --json
+```
+
+The first is the function-to-resource mapping: every designated function with
+the environments, releases, resource claims, connections, domains and third
+parties standing behind it. It is the operational-resilience register an
+institution would otherwise assemble by hand across four systems, and it is a
+nightly job away from being kept current — the answer is derived from the
+reconciled graph on every request, so there is nothing to keep in step.
+
+The second walks it backwards, which is the question asked during an incident
+by somebody who has a terminal and not a browser: every environment that
+depends on one Connection or on one third party, worst designation first, with
+the tightest recovery objective among them. Exactly one of `--connection` or
+`--provider`. Nothing depending on it is an empty answer and exit 0.
+
+**Kitchen does not decide what is critical and does not set the tolerances.**
+Designating a project or an environment is a rare, deliberate write made by
+somebody who is not in a terminal at the time, so it has no command of its own
+and goes through `kitchen api`:
+
+```sh
+kitchen api PATCH /projects/shop --data '{"criticality":"critical","rto":"1h","rpo":"5m"}'
+kitchen api PATCH /environments/shop-production/requirements --data '{"criticality":"critical","rto":"15m"}'
+```
 
 ### Anything else
 

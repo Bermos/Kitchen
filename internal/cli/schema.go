@@ -390,6 +390,14 @@ var publishedShapes = map[string]struct {
 	"drift": {"Deployed releases measured against their environment's bar today. Status is " +
 		"compliant, waived, newly-failing, waived-at-promotion or not-evaluated; `rescanning` " +
 		"false means nothing is checking, which is not the same as nothing being wrong", drift{}},
+	"criticalityMap": {"The function-to-resource mapping: every designated function with the " +
+		"environments, releases, claims, connections, domains and third parties behind it. " +
+		"`undesignated` counts the projects nobody has designated, and `depth` says how far " +
+		"the traversal follows — a third party the application calls from its own code is not " +
+		"a Connection and is not in it", criticalityMap{}},
+	"dependents": {"What breaks if one connection, or one third party, is unavailable: every " +
+		"affected environment worst-designation-first, how each depends on it, and the " +
+		"tightest recovery objective among them", dependents{}},
 	"exception": {"One break-glass exception: who asked, who approved, the rules it waives, " +
 		"until when, and the promotions that relied on it. Phase is Active, Expired or Resolved", exception{}},
 	"exceptionList": {"A list of exceptions, soonest to expire first", list[exception]{}},
