@@ -177,24 +177,41 @@ func (c *client) download(
 	query url.Values,
 	w io.Writer,
 ) (string, int64, error) {
+	name, written, _, err := c.downloadWithHeaders(ctx, doing, method, path, query, w)
+	return name, written, err
+}
+
+// downloadWithHeaders is download, plus the response's headers.
+//
+// One caller wants them: an audit pack is served with the digest of its own
+// bytes in `X-Kitchen-Pack-Digest`, and comparing that against what actually
+// landed on disk is the cheapest check that the document somebody is about to
+// hand to an examiner is the one the platform signed. Everything else uses
+// `download` and never sees them.
+func (c *client) downloadWithHeaders(
+	ctx context.Context,
+	doing, method, path string,
+	query url.Values,
+	w io.Writer,
+) (string, int64, http.Header, error) {
 	req, err := c.request(ctx, method, path, query, nil)
 	if err != nil {
-		return "", 0, annotate(err, doing)
+		return "", 0, nil, annotate(err, doing)
 	}
-	req.Header.Set("accept", "application/gzip, application/json")
+	req.Header.Set("accept", "application/gzip, application/json, text/html")
 
 	res, err := c.http.Do(req)
 	if err != nil {
-		return "", 0, unreachable(err, c.base).doing(doing)
+		return "", 0, nil, unreachable(err, c.base).doing(doing)
 	}
 	defer func() { _ = res.Body.Close() }()
 
 	if res.StatusCode >= 400 {
 		answer, readErr := io.ReadAll(io.LimitReader(res.Body, 1<<20))
 		if readErr != nil {
-			return "", 0, unreachable(readErr, c.base).doing(doing)
+			return "", 0, nil, unreachable(readErr, c.base).doing(doing)
 		}
-		return "", 0, fromStatus(res.StatusCode, answer).doing(doing)
+		return "", 0, nil, fromStatus(res.StatusCode, answer).doing(doing)
 	}
 
 	written, err := io.Copy(w, res.Body)
@@ -202,9 +219,9 @@ func (c *client) download(
 		// The status line said 200 and the body stopped part-way, so what is on
 		// disk is a truncated archive. Saying so is the whole point: a
 		// half-written backup that reports success is worse than no backup.
-		return "", written, unreachable(err, c.base).doing(doing)
+		return "", written, res.Header, unreachable(err, c.base).doing(doing)
 	}
-	return filenameFrom(res.Header.Get("content-disposition")), written, nil
+	return filenameFrom(res.Header.Get("content-disposition")), written, res.Header, nil
 }
 
 // filenameFrom reads the name a Content-Disposition suggests, and answers
