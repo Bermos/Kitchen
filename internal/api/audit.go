@@ -82,12 +82,20 @@ type auditRecordBody struct {
 	ToState     string    `json:"toState,omitempty"`
 	Reason      string    `json:"reason,omitempty"`
 	Details     string    `json:"details,omitempty"`
-	PrevHash    string    `json:"prevHash"`
-	Hash        string    `json:"hash"`
+	// Privileged and PrivilegeClass are lifted out of the details so a
+	// reader does not have to parse an opaque JSON string to tell a waiver
+	// from a redeploy. The details still carry them verbatim, because that
+	// is what the chain covers — these two are a reading of the record, not
+	// a second source for it.
+	Privileged     bool   `json:"privileged,omitempty"`
+	PrivilegeClass string `json:"privilegeClass,omitempty"`
+	PrevHash       string `json:"prevHash"`
+	Hash           string `json:"hash"`
 }
 
 func auditBody(record clickhouse.AuditRecord) auditRecordBody {
-	return auditRecordBody{
+	class, privileged := audit.PrivilegeOf(record.Details)
+	body := auditRecordBody{
 		Sequence:    record.Sequence,
 		Timestamp:   record.Timestamp,
 		Actor:       record.Actor,
@@ -104,16 +112,32 @@ func auditBody(record clickhouse.AuditRecord) auditRecordBody {
 		PrevHash:    record.PrevHash,
 		Hash:        record.Hash,
 	}
+	body.Privileged = privileged
+	body.PrivilegeClass = string(class)
+	return body
 }
 
 // listAuditRecords serves a page of the audit log, newest first.
 //
-// The filters are the three questions anyone asks of an audit log: what
-// happened to this object, what did this person do, and what happened in this
-// window. They compose, so "what did this person do to this project last
-// Tuesday" is one request.
+// The filters are the four questions anyone asks of an audit log: what
+// happened to this object, what did this person do, what happened in this
+// window, and — the supervisor's question — what moved a control rather than
+// a workload. They compose, so "which waivers did this person grant last
+// quarter" is one request.
 func (s *Server) listAuditRecords(w http.ResponseWriter, req *http.Request) {
 	ctx := req.Context()
+
+	privileged, err := boolParam(req, "privileged")
+	if err != nil {
+		badRequest(w, "%s", err.Error())
+		return
+	}
+	class := strings.TrimSpace(req.URL.Query().Get("privilegeClass"))
+	if class != "" && !audit.Privilege(class).Valid() {
+		badRequest(w, "privilegeClass %q is not a class of privileged act: one of %s",
+			class, joinPrivileges())
+		return
+	}
 
 	since, err := timeParam(req, "since")
 	if err != nil {
@@ -147,9 +171,13 @@ func (s *Server) listAuditRecords(w http.ResponseWriter, req *http.Request) {
 		Name:      strings.TrimSpace(req.URL.Query().Get("name")),
 		Project:   project,
 		Actor:     strings.TrimSpace(req.URL.Query().Get("actor")),
-		Since:     since,
-		Until:     until,
-		Limit:     limit,
+
+		Privileged:     privileged,
+		PrivilegeClass: class,
+
+		Since: since,
+		Until: until,
+		Limit: limit,
 	})
 	if err != nil {
 		s.writeStoreError(w, err, "the audit log query")
@@ -169,6 +197,16 @@ func (s *Server) listAuditRecords(w http.ResponseWriter, req *http.Request) {
 		body = append(body, auditBody(record))
 	}
 	writeList(w, body)
+}
+
+// joinPrivileges words the vocabulary for a refusal, so that a mistyped
+// class is answered with the list rather than with an empty page.
+func joinPrivileges() string {
+	names := make([]string, 0, len(audit.Privileges()))
+	for _, privilege := range audit.Privileges() {
+		names = append(names, string(privilege))
+	}
+	return strings.Join(names, ", ")
 }
 
 // auditVerificationBody is the chain verifier's answer.

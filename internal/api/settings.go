@@ -233,6 +233,10 @@ func (s *Server) patchSettings(w http.ResponseWriter, req *http.Request) {
 			"removed": subjectsOf(removed),
 			"change":  "operators",
 		}
+		// Changing who owns the platform is the highest-consequence write
+		// this API has, so the record is classified `access` and separable
+		// from the base-domain edit it may have arrived alongside.
+		transition.Privileged = audit.PrivilegeAccess
 	}
 	if !s.recorded(w, req, transition) {
 		return

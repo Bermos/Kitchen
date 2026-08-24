@@ -211,7 +211,7 @@ name against `internal/api/policy.go`, so a route that moves fails them too.
 | POST | `/logs/saved` | Keep the current selection under a name | any account |
 | DELETE | `/logs/saved/{name}` | Forget one | any account — filtered |
 | GET | `/events` | The platform's recent activity, newest first. `?project=` and `?limit=` filter | any account — filtered |
-| GET | `/audit` | The tamper-evident log of state transitions. `?kind=`, `?name=`, `?project=`, `?actor=`, `?since=`, `?until=`, `?limit=` | any account — filtered |
+| GET | `/audit` | The tamper-evident log of state transitions. `?kind=`, `?name=`, `?project=`, `?actor=`, `?privileged=true`, `?privilegeClass=`, `?since=`, `?until=`, `?limit=` | any account — filtered |
 | GET | `/audit/verify` | Re-derive the chain's hashes over a run and report every break. `?from=`, `?limit=` | `operator` |
 | GET | `/compliance` | What the platform is producing: whether the audit log is recording, decisions are stored, and the key artifacts are signed under | `operator` |
 | GET | `/compliance/inventory` | Every environment and claim with its data class, provenance and residency — the classification inventory, exportable in one request | any account — filtered |

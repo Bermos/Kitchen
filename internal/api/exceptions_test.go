@@ -29,6 +29,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/audit"
 )
 
 // The break-glass surface: what these tests pin is the two-person rule, the
@@ -399,8 +400,8 @@ func TestTheExceptionTransitionCarriesTheGrantWhole(t *testing.T) {
 	if transition.Kind != "Exception" || transition.Project != feedProject {
 		t.Fatalf("unexpected transition: %+v", transition)
 	}
-	if transition.Details["privileged"] != true {
-		t.Fatalf("granting a waiver is a privileged record: %+v", transition.Details)
+	if transition.Privileged != audit.PrivilegeBreakGlass {
+		t.Fatalf("granting a waiver is a privileged break-glass record, got %q", transition.Privileged)
 	}
 	for _, key := range []string{"ruleIDs", "reason", "requestedBy", "approvedBy", "expiresAt",
 		"requiredRole", "incidentRef", "environment"} {

@@ -242,11 +242,12 @@ func (s *Server) addMember(w http.ResponseWriter, req *http.Request) {
 	patch := membershipPatch(project)
 	project.Spec.Access = append(project.Spec.Access, grant)
 	if !s.recorded(w, req, audit.Transition{
-		Object:    project,
-		Kind:      audit.KindProject,
-		Operation: clickhouse.AuditUpdate,
-		To:        string(grant.Role),
-		Project:   project.Name,
+		Object:     project,
+		Kind:       audit.KindProject,
+		Operation:  clickhouse.AuditUpdate,
+		Privileged: audit.PrivilegeAccess,
+		To:         string(grant.Role),
+		Project:    project.Name,
 		Reason: fmt.Sprintf("%s was given %s on %s",
 			describeMember(grant), grant.Role, project.Name),
 		Details: map[string]any{
@@ -310,12 +311,13 @@ func (s *Server) changeMemberRole(w http.ResponseWriter, req *http.Request) {
 	patch := membershipPatch(project)
 	project.Spec.Access[at].Role = role
 	if !s.recorded(w, req, audit.Transition{
-		Object:    project,
-		Kind:      audit.KindProject,
-		Operation: clickhouse.AuditUpdate,
-		From:      string(was.Role),
-		To:        string(role),
-		Project:   project.Name,
+		Object:     project,
+		Kind:       audit.KindProject,
+		Operation:  clickhouse.AuditUpdate,
+		Privileged: audit.PrivilegeAccess,
+		From:       string(was.Role),
+		To:         string(role),
+		Project:    project.Name,
 		Reason: fmt.Sprintf("%s went from %s to %s on %s",
 			describeMember(was), was.Role, role, project.Name),
 		Details: map[string]any{
@@ -367,12 +369,13 @@ func (s *Server) removeMember(w http.ResponseWriter, req *http.Request) {
 	patch := membershipPatch(project)
 	project.Spec.Access = append(project.Spec.Access[:at], project.Spec.Access[at+1:]...)
 	if !s.recorded(w, req, audit.Transition{
-		Object:    project,
-		Kind:      audit.KindProject,
-		Operation: clickhouse.AuditUpdate,
-		From:      string(was.Role),
-		Project:   project.Name,
-		Reason:    fmt.Sprintf("%s no longer has a role on %s", describeMember(was), project.Name),
+		Object:     project,
+		Kind:       audit.KindProject,
+		Operation:  clickhouse.AuditUpdate,
+		Privileged: audit.PrivilegeAccess,
+		From:       string(was.Role),
+		Project:    project.Name,
+		Reason:     fmt.Sprintf("%s no longer has a role on %s", describeMember(was), project.Name),
 		Details: map[string]any{
 			"member": was.Subject,
 			"email":  was.Email,

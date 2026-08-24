@@ -102,7 +102,6 @@ func exceptionTransition(
 	exception *kitchenv1alpha1.Exception, required kitchenv1alpha1.ExceptionApproverRole,
 ) audit.Transition {
 	details := map[string]any{
-		"privileged":   true,
 		"environment":  exception.Spec.EnvironmentRef.Name,
 		"ruleIDs":      exception.Spec.RuleIDs,
 		"reason":       exception.Spec.Reason,
@@ -119,11 +118,12 @@ func exceptionTransition(
 		details["incidentRef"] = exception.Spec.IncidentRef
 	}
 	return audit.Transition{
-		Object:    exception,
-		Kind:      audit.KindException,
-		Operation: clickhouse.AuditCreate,
-		To:        string(kitchenv1alpha1.ExceptionActive),
-		Project:   exception.Spec.ProjectRef.Name,
+		Object:     exception,
+		Kind:       audit.KindException,
+		Operation:  clickhouse.AuditCreate,
+		Privileged: audit.PrivilegeBreakGlass,
+		To:         string(kitchenv1alpha1.ExceptionActive),
+		Project:    exception.Spec.ProjectRef.Name,
 		Reason: fmt.Sprintf(
 			"break-glass exception granted: %s waived for %s until %s, requested by %s, approved by %s",
 			strings.Join(exception.Spec.RuleIDs, ", "), exception.Spec.EnvironmentRef.Name,
@@ -400,15 +400,15 @@ func (s *Server) resolveException(w http.ResponseWriter, req *http.Request) {
 	caller, _ := CallerFrom(ctx)
 	from := string(exception.EffectivePhase(time.Now()))
 	if !s.recorded(w, req, audit.Transition{
-		Object:    exception,
-		Kind:      audit.KindException,
-		Operation: clickhouse.AuditUpdate,
-		From:      from,
-		To:        string(kitchenv1alpha1.ExceptionResolved),
-		Project:   exception.Spec.ProjectRef.Name,
-		Reason:    fmt.Sprintf("exception %s resolved: %s", exception.Name, body.Reason),
+		Object:     exception,
+		Kind:       audit.KindException,
+		Operation:  clickhouse.AuditUpdate,
+		Privileged: audit.PrivilegeBreakGlass,
+		From:       from,
+		To:         string(kitchenv1alpha1.ExceptionResolved),
+		Project:    exception.Spec.ProjectRef.Name,
+		Reason:     fmt.Sprintf("exception %s resolved: %s", exception.Name, body.Reason),
 		Details: map[string]any{
-			"privileged":  true,
 			"reason":      body.Reason,
 			"environment": exception.Spec.EnvironmentRef.Name,
 			"ruleIDs":     exception.Spec.RuleIDs,

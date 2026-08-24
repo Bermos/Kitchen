@@ -29,6 +29,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/audit"
 )
 
 var _ = Describe("Exception Controller", func() {
@@ -173,7 +174,7 @@ var _ = Describe("Exception Controller", func() {
 		Expect(transition.Kind).To(Equal("Exception"))
 		Expect(transition.From).To(Equal("Active"))
 		Expect(transition.To).To(Equal("Expired"))
-		Expect(transition.Details["privileged"]).To(BeTrue())
+		Expect(transition.Privileged).To(Equal(audit.PrivilegeBreakGlass))
 		Expect(transition.Details["ruleIDs"]).To(Equal([]string{"max-severity"}))
 		Expect(transition.Details["usedBy"]).To(Equal([]string{"shop-promo-7"}))
 	})

@@ -503,8 +503,8 @@ func TestTheBreakGlassTransitionSaysEverythingAnAuditorAsks(t *testing.T) {
 	if transition.Kind != "Build" || transition.Project != "shop" {
 		t.Fatalf("unexpected transition: %+v", transition)
 	}
-	if transition.Details["privileged"] != true {
-		t.Fatalf("a break-glass use is a privileged record: %+v", transition.Details)
+	if transition.Privileged != audit.PrivilegeBreakGlass {
+		t.Fatalf("a break-glass use is a privileged break-glass record, got %q", transition.Privileged)
 	}
 	if transition.Details["rule"] != RulePullRequest || transition.Details["exception"] != breakGlassGrant {
 		t.Fatalf("the record names the rule and the grant: %+v", transition.Details)
