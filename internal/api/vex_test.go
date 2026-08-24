@@ -362,6 +362,35 @@ func TestAnUnverifiedVEXDocumentIsListedAndSaidToBeUnverified(t *testing.T) {
 	}
 }
 
+func TestAVEXSubmissionIsRecordedBeforeItIsAttached(t *testing.T) {
+	h, registry, _ := gateHarness(t)
+
+	// A log that cannot append refuses the write it was asked to record.
+	// Attribution is the whole of what the platform adds to somebody else'"'"'s
+	// assertion, so an assertion attached with nothing said about who filed it
+	// is the one outcome this endpoint must not have — over-recording is the
+	// acceptable direction, and this is which direction it fails in.
+	h.withUnreachableAuditLog(t)
+
+	recorder := submitVEXDocument(t, h, vexDocument)
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("want 503 when the log cannot append, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if len(registry.attached) != 0 {
+		t.Error("a document nothing recorded was attached to the artifact anyway")
+	}
+
+	// And what is foreseeable is still decided in the caller'"'"'s own words: a
+	// document the platform would refuse outright is refused as such rather
+	// than as a broken log.
+	unjustified := `{"@context":"https://openvex.dev/ns/v0.2.0","author":"security@shop.example",
+		"statements":[{"vulnerability":"CVE-2026-1","status":"not_affected"}]}`
+	if recorder := submitVEXDocument(t, h, unjustified); recorder.Code != http.StatusBadRequest {
+		t.Fatalf("want 400 about the document rather than %d about the log: %s",
+			recorder.Code, recorder.Body.String())
+	}
+}
+
 // setVEXSpec rewrites what the platform admits.
 func setVEXSpec(t *testing.T, h *harness, spec *kitchenv1alpha1.VEXSpec) {
 	t.Helper()
