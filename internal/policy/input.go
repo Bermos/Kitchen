@@ -110,9 +110,9 @@ type EnvironmentFacts struct {
 	Name string `json:"name"`
 	// Type is production or preview, which is what data-provenance-preview
 	// pivots on.
-	Type        string `json:"type,omitempty"`
-	DataClass   string `json:"dataClass,omitempty"`
-	Residency   string `json:"residency,omitempty"`
+	Type      string `json:"type,omitempty"`
+	DataClass string `json:"dataClass,omitempty"`
+	Residency string `json:"residency,omitempty"`
 	// Criticality, RTO and RPO are the designation that *applies here*, which
 	// for a production environment declaring none is its project's — resolved
 	// by v1alpha1.EffectiveContinuity, the one implementation, so a rule and

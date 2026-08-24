@@ -391,6 +391,14 @@ func (s *Server) routes() []route {
 		// is scoped like the register — the caller's own projects, and the
 		// whole install for an operator.
 		{"GET /api/v1/compliance/drift", s.complianceDrift, acrossProjects()},
+		// The criticality mapping, both directions (#141). Same shape and
+		// same filtering as the inventory: which of *your* functions are
+		// designated and what stands behind them, and which of your
+		// environments a third party takes with it. Neither decides
+		// anything — the designation is the institution's input, and no
+		// route on this platform refuses a deployment because of it.
+		{"GET /api/v1/compliance/criticality", s.complianceCriticality, acrossProjects()},
+		{"GET /api/v1/compliance/dependents", s.complianceDependents, acrossProjects()},
 		{"GET /api/v1/audit", s.listAuditRecords, acrossProjects()},
 		// Verifying the chain is a statement about the whole log, including
 		// the records of platform changes a member never sees.

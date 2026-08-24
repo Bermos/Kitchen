@@ -81,6 +81,20 @@ type patchEnvironmentRequirementsRequest struct {
 	// falls back to the platform default; the value is declared, not
 	// observed.
 	Residency *string `json:"residency,omitempty"`
+	// Criticality designates how much it matters that *this environment*
+	// keeps working, and RTO/RPO are its disruption tolerances. Empty removes
+	// each. They travel on this endpoint for the same reason the data class
+	// does: what an environment is worth is its owners' declaration, not the
+	// deploying team's, and a preview of a critical project is not itself a
+	// critical function.
+	//
+	// Kitchen does not decide any of the three, and refuses no deployment
+	// because of them. Setting an RTO changes when env.rto-at-risk fires;
+	// designating an environment critical raises this environment's warnings
+	// to critical findings.
+	Criticality *string `json:"criticality,omitempty"`
+	RTO         *string `json:"rto,omitempty"`
+	RPO         *string `json:"rpo,omitempty"`
 }
 
 // environmentOwner reports whether the caller is named in the environment's
@@ -152,6 +166,8 @@ func requirementsTransition(
 	owners *[]string,
 	dataClass *dataClassChange,
 	residency *residencyChange,
+	continuity continuityChange,
+	before kitchenv1alpha1.Continuity,
 ) audit.Transition {
 	details := map[string]any{
 		"privileged":           true,
@@ -172,6 +188,7 @@ func requirementsTransition(
 		details["previousResidency"] = residency.previous
 		details["residency"] = residency.next
 	}
+	continuity.recordInto(details, before)
 	return audit.Transition{
 		Object:    env,
 		Kind:      audit.KindEnvironment,
@@ -182,6 +199,57 @@ func requirementsTransition(
 		Reason:    fmt.Sprintf("environment %s requirements changed", env.Name),
 		Details:   details,
 	}
+}
+
+// barChange is the bundle and parameters a PATCH leaves behind, worked out
+// before anything is recorded so that the audit record describes the change
+// that is actually made.
+type barChange struct {
+	previousDigest     string
+	previousParameters map[string]string
+	nextDigest         string
+	nextParameters     map[string]string
+}
+
+// resolveBar works that out, or says what is wrong with the request. It is a
+// function of its own rather than a block in the handler because the three
+// refusals below are the fiddly part of this endpoint and are worth reading
+// without the ownership check, the designation and the recording around them.
+func resolveBar(
+	env *kitchenv1alpha1.Environment, body patchEnvironmentRequirementsRequest,
+) (barChange, string) {
+	bar := barChange{}
+	if env.Spec.Requirements != nil {
+		bar.previousDigest = env.Spec.Requirements.BundleDigest
+		bar.previousParameters = env.Spec.Requirements.Parameters
+	}
+	bar.nextDigest, bar.nextParameters = bar.previousDigest, bar.previousParameters
+
+	if body.BundleDigest != nil {
+		bar.nextDigest = strings.TrimSpace(*body.BundleDigest)
+		if bar.nextDigest != "" && !bundleDigestPattern.MatchString(bar.nextDigest) {
+			return barChange{}, fmt.Sprintf(
+				"bundleDigest %q is not a bundle digest: it has the form sha256:<64 hex characters>",
+				bar.nextDigest)
+		}
+	}
+	if body.Parameters != nil {
+		bar.nextParameters = body.Parameters
+	}
+	if bar.nextDigest != "" {
+		return bar, ""
+	}
+	if body.Parameters == nil {
+		bar.nextParameters = nil
+		return bar, ""
+	}
+	if body.BundleDigest == nil {
+		return barChange{}, fmt.Sprintf(
+			"environment %q declares no requirements, so there are no parameters to change: "+
+				"set bundleDigest first", env.Name)
+	}
+	return barChange{}, "parameters have nothing to parameterize: an empty bundleDigest removes the " +
+		"requirements, and an environment without requirements takes none"
 }
 
 // patchEnvironmentRequirements changes what an environment demands of an
@@ -208,9 +276,15 @@ func (s *Server) patchEnvironmentRequirements(w http.ResponseWriter, req *http.R
 		badRequest(w, "%s", err.Error())
 		return
 	}
+	continuity, err := continuityFromRequest(body.Criticality, body.RTO, body.RPO)
+	if err != nil {
+		badRequest(w, "%s", err.Error())
+		return
+	}
 	if body.BundleDigest == nil && body.Parameters == nil && body.Owners == nil &&
-		body.DataClass == nil && body.Residency == nil {
-		badRequest(w, "nothing to change: send bundleDigest, parameters, owners, dataClass or residency")
+		body.DataClass == nil && body.Residency == nil && !continuity.touched() {
+		badRequest(w, "nothing to change: send bundleDigest, parameters, owners, dataClass, "+
+			"residency, criticality, rto or rpo")
 		return
 	}
 	if body.Owners != nil {
@@ -222,38 +296,13 @@ func (s *Server) patchEnvironmentRequirements(w http.ResponseWriter, req *http.R
 		}
 	}
 
-	// Work out the requirements this patch leaves behind before anything is
-	// recorded, so the record describes the change that is actually made.
-	previousDigest, previousParameters := "", map[string]string(nil)
-	if env.Spec.Requirements != nil {
-		previousDigest = env.Spec.Requirements.BundleDigest
-		previousParameters = env.Spec.Requirements.Parameters
+	bar, problem := resolveBar(env, body)
+	if problem != "" {
+		badRequest(w, "%s", problem)
+		return
 	}
-	nextDigest, nextParameters := previousDigest, previousParameters
-	if body.BundleDigest != nil {
-		nextDigest = strings.TrimSpace(*body.BundleDigest)
-		if nextDigest != "" && !bundleDigestPattern.MatchString(nextDigest) {
-			badRequest(w, "bundleDigest %q is not a bundle digest: it has the form sha256:<64 hex characters>",
-				nextDigest)
-			return
-		}
-	}
-	if body.Parameters != nil {
-		nextParameters = body.Parameters
-	}
-	if nextDigest == "" {
-		if body.Parameters != nil {
-			if body.BundleDigest == nil {
-				badRequest(w, "environment %q declares no requirements, so there are no parameters to change: "+
-					"set bundleDigest first", env.Name)
-				return
-			}
-			badRequest(w, "parameters have nothing to parameterize: an empty bundleDigest removes the "+
-				"requirements, and an environment without requirements takes none")
-			return
-		}
-		nextParameters = nil
-	}
+	previousDigest, previousParameters := bar.previousDigest, bar.previousParameters
+	nextDigest, nextParameters := bar.nextDigest, bar.nextParameters
 
 	var classChange *dataClassChange
 	if body.DataClass != nil {
@@ -270,8 +319,13 @@ func (s *Server) patchEnvironmentRequirements(w http.ResponseWriter, req *http.R
 	}
 
 	changed := changedParameterNames(previousParameters, nextParameters)
+	// The designation as it stands, for the record: a change without its
+	// previous value is a change nobody can reverse on paper.
+	before := kitchenv1alpha1.Continuity{
+		Criticality: env.Spec.Criticality, RTO: env.Spec.RTO, RPO: env.Spec.RPO,
+	}
 	if !s.recorded(w, req, requirementsTransition(env, previousDigest, nextDigest, changed, body.Owners,
-		classChange, residency)) {
+		classChange, residency, continuity, before)) {
 		return
 	}
 
@@ -285,6 +339,7 @@ func (s *Server) patchEnvironmentRequirements(w http.ResponseWriter, req *http.R
 	if residency != nil {
 		env.Spec.Residency = residency.next
 	}
+	continuity.apply(&env.Spec.Criticality, &env.Spec.RTO, &env.Spec.RPO)
 	switch {
 	case nextDigest == "":
 		env.Spec.Requirements = nil

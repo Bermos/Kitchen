@@ -61,7 +61,7 @@ const (
 	// estate nobody has designated.
 	InputProjects Input = "projects"
 	InputBuilds   Input = "builds"
-	InputKitchen      Input = "kitchen"
+	InputKitchen  Input = "kitchen"
 
 	// From the telemetry store.
 	InputClusterEvents Input = "k8s_events"

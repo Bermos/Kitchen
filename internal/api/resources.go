@@ -388,6 +388,57 @@ type patchProjectRequest struct {
 	// than the API refusing the correction — and it is audit-logged with
 	// the previous value, as a privileged record.
 	DataClass *string `json:"dataClass,omitempty"`
+	// Criticality designates how much it matters that this project's function
+	// keeps working: nonCritical, important or critical; an empty string
+	// removes the designation. RTO and RPO are its disruption tolerances,
+	// as Go durations of whole hours and minutes ("4h", "30m"); empty
+	// removes them.
+	//
+	// All three are the institution's inputs, not the platform's judgement —
+	// Kitchen refuses nothing on them and gates no deployment behind them.
+	// What they change is the mapping (GET /compliance/criticality), what the
+	// policy engine can be asked, and how loudly this project's production
+	// environments alert. Each change is audit-logged with the previous
+	// value, as a privileged record, for the same reason a data class is.
+	Criticality *string `json:"criticality,omitempty"`
+	RTO         *string `json:"rto,omitempty"`
+	RPO         *string `json:"rpo,omitempty"`
+}
+
+// criticalityFromRequest validates one criticality value, empty meaning
+// undesignated. The refusal names the vocabulary, in order.
+func criticalityFromRequest(value string) (kitchenv1alpha1.Criticality, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", nil
+	}
+	designation := kitchenv1alpha1.Criticality(value)
+	if !designation.Designated() {
+		names := make([]string, 0, len(kitchenv1alpha1.Criticalities()))
+		for _, c := range kitchenv1alpha1.Criticalities() {
+			names = append(names, string(c))
+		}
+		return "", fmt.Errorf(
+			"criticality must be one of %s, in ascending order, or empty to remove the designation (got %q)",
+			strings.Join(names, ", "), value)
+	}
+	return designation, nil
+}
+
+// toleranceFromRequest validates one rto or rpo, empty meaning undeclared.
+// The refusal spells the format out rather than echoing the CRD's pattern,
+// because a caller who wrote "4 hours" needs to be told what to write instead.
+func toleranceFromRequest(field, value string) (kitchenv1alpha1.Tolerance, error) {
+	tolerance := kitchenv1alpha1.Tolerance(strings.TrimSpace(value))
+	if !tolerance.Declared() {
+		return "", nil
+	}
+	if !tolerance.Valid() {
+		return "", fmt.Errorf(
+			"%s must be a duration of whole hours and minutes — \"4h\", \"30m\", \"1h30m\", "+
+				"\"0m\" for none at all — or empty to remove it (got %q)", field, value)
+	}
+	return tolerance, nil
 }
 
 // dataClassFromRequest validates one dataClass value, empty meaning
@@ -686,10 +737,16 @@ func (s *Server) patchProject(w http.ResponseWriter, req *http.Request) {
 		}
 		nextClass = &class
 	}
-	details := projectSettingsDetails(project, body, nextClass)
+	continuity, err := continuityFromRequest(body.Criticality, body.RTO, body.RPO)
+	if err != nil {
+		badRequest(w, "%s", err.Error())
+		return
+	}
+	details := projectSettingsDetails(project, body, nextClass, continuity)
 	if nextClass != nil {
 		project.Spec.DataClass = *nextClass
 	}
+	continuity.apply(&project.Spec.Criticality, &project.Spec.RTO, &project.Spec.RPO)
 
 	if !s.recorded(w, req, audit.Transition{
 		Object:    project,
@@ -1576,13 +1633,22 @@ func projectSettingsDetails(
 	project *kitchenv1alpha1.Project,
 	body patchProjectRequest,
 	nextClass *kitchenv1alpha1.DataClass,
+	continuity continuityChange,
 ) map[string]any {
-	details := map[string]any{"fields": changedProjectFields(body)}
+	details := map[string]any{"fields": changedProjectFields(body, continuity)}
 	if nextClass != nil {
 		details["privileged"] = true
 		details["previousDataClass"] = string(project.Spec.DataClass)
 		details["dataClass"] = string(*nextClass)
 	}
+	// A criticality change is privileged for the same reason a class change
+	// is: it decides how loudly this project's environments alert and what a
+	// policy bundle may demand of them, so the trail has to show what it was.
+	continuity.recordInto(details, kitchenv1alpha1.Continuity{
+		Criticality: project.Spec.Criticality,
+		RTO:         project.Spec.RTO,
+		RPO:         project.Spec.RPO,
+	})
 	return details
 }
 
@@ -1594,7 +1660,7 @@ func projectSettingsDetails(
 // second place secrets live — which is precisely the sort of thing the log
 // exists to make impossible. What changed is the auditable fact; what it
 // changed to is on the object.
-func changedProjectFields(body patchProjectRequest) []string {
+func changedProjectFields(body patchProjectRequest, continuity continuityChange) []string {
 	fields := []string{}
 	for _, field := range []struct {
 		name    string
@@ -1617,5 +1683,5 @@ func changedProjectFields(body patchProjectRequest) []string {
 			fields = append(fields, field.name)
 		}
 	}
-	return fields
+	return append(fields, continuity.changedFields()...)
 }
