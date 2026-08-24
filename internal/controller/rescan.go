@@ -307,6 +307,16 @@ func (s *RescanSweeper) SweepOnce(ctx context.Context) (RescanSweepReport, error
 			// picks it up where it left off, and the others are still due.
 			log.Error(err, "the rescan of an environment could not be advanced",
 				"environment", env.Name, "release", env.Spec.ReleaseRef.Name)
+			// It is still counted here, by the same predicate the budget
+			// pre-pass counted it with. A pair whose publish keeps failing —
+			// an unreadable registry credential, a store that is down —
+			// stays Scanning and keeps holding its slot, and a status
+			// reporting `running: true, environments: 200, scanning: 0`
+			// while the budget is fully spent describes a sweep that is idle
+			// and healthy when it is neither doing anything nor able to.
+			if inFlight(env) {
+				report.Scanning++
+			}
 			continue
 		}
 		report.Started += outcome.started
@@ -387,35 +397,66 @@ func (s *RescanSweeper) advance(
 		// state the sweep would then have to keep honest.
 		return rescanOutcome{}, nil
 	}
-	if err := s.start(ctx, scanner, env); err != nil {
+	started, err := s.start(ctx, scanner, env)
+	if err != nil {
 		return rescanOutcome{}, err
+	}
+	if !started {
+		// Nothing is in flight, so nothing is counted and nothing is spent.
+		// The pair is due again next step, which is a minute away.
+		return rescanOutcome{}, nil
 	}
 	*budget--
 	return rescanOutcome{started: 1, scanning: 1}, nil
 }
 
 // start creates the scanner Job for one environment's deployed release and
-// stamps the environment Scanning.
+// stamps the environment Scanning. It answers whether a scan is now in flight:
+// false is not a failure, it is a pair that did not start and is due again
+// next step, and the caller must not spend budget on it.
+//
+// # Why a finished Job is not adopted
+//
+// The Job's name is deterministic on the pair (see rescanJobName), so a
+// Create that races itself finds the Job already there — which is the point,
+// and which is also how a *stale* Job gets adopted if AlreadyExists is simply
+// swallowed. The window is real: the interval floor and the Job TTL are both
+// an hour, so a pair can come due again in the moment before the TTL
+// controller collects the last scan's Job. Adopting it stamps the pair
+// Scanning against an already-Complete Job, `collect` reads the old pod's
+// termination message, and `publish` re-signs yesterday's findings under
+// yesterday's `dataSnapshot`. Worse, `scannedAt` is parsed from the report's
+// `finishedAt`, so the "new" scan is stamped with the old one's time and is
+// immediately due again — a loop that re-publishes one stale scan until the
+// TTL finally fires.
+//
+// So a Job that has already finished is deleted rather than adopted, and the
+// pair starts cleanly on a later step. That is the fix rather than shortening
+// the TTL, because it does not depend on the TTL controller being timely: a
+// cluster whose TTL controller is lagging is exactly the cluster this goes
+// wrong on.
 func (s *RescanSweeper) start(
 	ctx context.Context,
 	scanner kitchenv1alpha1.VulnerabilityScannerSpec,
 	env *kitchenv1alpha1.Environment,
-) error {
+) (bool, error) {
 	project := &kitchenv1alpha1.Project{}
 	if err := s.Client.Get(ctx, types.NamespacedName{
 		Namespace: env.Namespace, Name: env.Spec.ProjectRef.Name,
 	}, project); err != nil {
-		return err
+		return false, err
 	}
 	release := &kitchenv1alpha1.Release{}
 	if err := s.Client.Get(ctx, types.NamespacedName{
 		Namespace: env.Namespace, Name: env.Spec.ReleaseRef.Name,
 	}, release); err != nil {
-		return client.IgnoreNotFound(err)
+		return false, client.IgnoreNotFound(err)
 	}
 	repository, digest, byDigest := strings.Cut(release.Spec.Image, "@")
 	if !byDigest || digest == "" {
-		return s.record(ctx, env, kitchenv1alpha1.EnvironmentRescanStatus{
+		// Recorded as a failed scan rather than started as one: nothing is in
+		// flight, so this contributes nothing to the pass's counts either.
+		return false, s.record(ctx, env, kitchenv1alpha1.EnvironmentRescanStatus{
 			Phase:      kitchenv1alpha1.RescanFailed,
 			Release:    release.Name,
 			FinishedAt: ptr.To(metav1.NewTime(s.now())),
@@ -430,12 +471,18 @@ func (s *RescanSweeper) start(
 	job := rescanJob(name, appNS, project, env, release, scanner, artifact,
 		registrySecretName(project.Spec.Registry.ConnectionRef.Name), s.OperatorImage)
 
-	if err := s.Client.Create(ctx, job); err != nil && !apierrors.IsAlreadyExists(err) {
-		return err
+	if err := s.Client.Create(ctx, job); err != nil {
+		if !apierrors.IsAlreadyExists(err) {
+			return false, err
+		}
+		adopted, err := s.adopt(ctx, appNS, name)
+		if err != nil || !adopted {
+			return false, err
+		}
 	}
 	logf.FromContext(ctx).Info("rescan started",
 		"environment", env.Name, "release", release.Name, "artifact", artifact)
-	return s.record(ctx, env, kitchenv1alpha1.EnvironmentRescanStatus{
+	return true, s.record(ctx, env, kitchenv1alpha1.EnvironmentRescanStatus{
 		Phase:     kitchenv1alpha1.RescanScanning,
 		Release:   release.Name,
 		Artifact:  artifact,
@@ -443,6 +490,35 @@ func (s *RescanSweeper) start(
 		StartedAt: ptr.To(metav1.NewTime(s.now())),
 		Message:   "matching the artifact's bill of materials against " + scanner.Image,
 	})
+}
+
+// adopt decides what a Job that is already there is. One still running is this
+// pass's own work, seen twice, and is adopted. One that has already finished is
+// the *previous* scan of the same pair, which the TTL controller has not
+// collected yet — it is deleted, and the pair starts on a later step rather
+// than being stamped Scanning against a scan that is over.
+func (s *RescanSweeper) adopt(ctx context.Context, appNS, name string) (bool, error) {
+	job := &batchv1.Job{}
+	switch err := s.Client.Get(ctx, types.NamespacedName{Namespace: appNS, Name: name}, job); {
+	case apierrors.IsNotFound(err):
+		// Collected between the Create and the Get. Next step creates it.
+		return false, nil
+	case err != nil:
+		return false, err
+	}
+	if complete, failed, _ := jobOutcome(job); !complete && !failed {
+		return true, nil
+	}
+	logf.FromContext(ctx).V(1).Info(
+		"the previous scan's job is still here; it is removed rather than rescanned against",
+		"namespace", appNS, "job", name)
+	propagation := metav1.DeletePropagationBackground
+	if err := s.Client.Delete(ctx, job, &client.DeleteOptions{
+		PropagationPolicy: &propagation,
+	}); err != nil && !apierrors.IsNotFound(err) {
+		return false, err
+	}
+	return false, nil
 }
 
 // collect looks at an in-flight scan and, when it has finished, turns it into
