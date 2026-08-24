@@ -161,14 +161,194 @@ func TestMaxSeverityConsultsVEX(t *testing.T) {
 		t.Fatalf("both critical findings must fire, case-insensitively: %+v", result)
 	}
 
-	// A not_affected VEX statement suppresses exactly its vulnerability.
+	// A not_affected VEX statement, justified from the enumeration and signed
+	// by a key the platform holds, suppresses exactly its vulnerability.
 	input.VEX = []VEXStatement{
-		{Vulnerability: "CVE-2026-1", Status: "not_affected", Justification: "vulnerable_code_not_present"},
-		{Vulnerability: "CVE-2026-3", Status: "affected"},
+		{
+			Vulnerability: "CVE-2026-1",
+			Status:        "not_affected",
+			Justification: "vulnerable_code_not_present",
+			Author:        vexAuthor,
+			Verified:      true,
+		},
+		{Vulnerability: "CVE-2026-3", Status: "affected", Author: vexAuthor, Verified: true},
 	}
 	result = evaluate(t, input)
 	if len(result.Fired) != 1 || !strings.Contains(result.Fired[0].Message, "CVE-2026-3") {
 		t.Fatalf("only the unsuppressed finding may fire, got %+v", result.Fired)
+	}
+}
+
+// vexAuthor keeps the same name out of a dozen literals; goconst objects
+// otherwise and the vocabulary is the point.
+const vexAuthor = "security@shop.example"
+
+// vexScanEvidence is one vulnerability-scan attestation carrying one critical
+// finding, which is the smallest thing max-severity will object to.
+func vexScanEvidence() []Evidence {
+	return []Evidence{{
+		PredicateType: "https://kitchen.bermos.dev/attestation/vulnerability-scan/v1",
+		Verified:      true,
+		Predicate:     json.RawMessage(`{"findings":[{"vulnerability":"CVE-2026-1","severity":"critical"}]}`),
+	}}
+}
+
+// vexInput is that finding, a ceiling it exceeds, and one statement about it.
+func vexInput(statement VEXStatement) Input {
+	input := minimalInput(KindPromotion)
+	input.Parameters = map[string]string{"maxSeverity": "high"}
+	input.Evidence = vexScanEvidence()
+	input.VEX = []VEXStatement{statement}
+	return input
+}
+
+func suppressed(t *testing.T, input Input) bool {
+	t.Helper()
+	return len(evaluate(t, input).Fired) == 0
+}
+
+func TestNotAffectedNeedsAJustificationFromTheEnumeration(t *testing.T) {
+	// Free text is not a justification. The API refuses one at ingest; this
+	// is the half that also covers a document some other tool attached, and
+	// the reason the check exists in both places.
+	for _, justification := range []string{"", "we looked at it and it is fine", "not_exploitable"} {
+		input := vexInput(VEXStatement{
+			Vulnerability: "CVE-2026-1",
+			Status:        "not_affected",
+			Justification: justification,
+			Author:        vexAuthor,
+			Verified:      true,
+		})
+		if suppressed(t, input) {
+			t.Errorf("justification %q must not suppress anything", justification)
+		}
+	}
+
+	// Every one of OpenVEX's five does.
+	for _, justification := range []string{
+		"component_not_present",
+		"vulnerable_code_not_present",
+		"vulnerable_code_not_in_execute_path",
+		"vulnerable_code_cannot_be_controlled_by_adversary",
+		"inline_mitigations_already_exist",
+	} {
+		input := vexInput(VEXStatement{
+			Vulnerability: "CVE-2026-1",
+			Status:        "not_affected",
+			Justification: justification,
+			Author:        vexAuthor,
+			Verified:      true,
+		})
+		if !suppressed(t, input) {
+			t.Errorf("justification %q is in the enumeration and must suppress", justification)
+		}
+	}
+}
+
+func TestOnlyNotAffectedSuppresses(t *testing.T) {
+	for _, status := range []string{"affected", "fixed", "under_investigation"} {
+		input := vexInput(VEXStatement{
+			Vulnerability: "CVE-2026-1",
+			Status:        status,
+			Justification: "vulnerable_code_not_present",
+			Author:        vexAuthor,
+			Verified:      true,
+		})
+		if suppressed(t, input) {
+			t.Errorf("status %q must not suppress a finding", status)
+		}
+	}
+}
+
+func TestVEXFromAnUntrustedSignerIsRefusedByDefault(t *testing.T) {
+	unverified := VEXStatement{
+		Vulnerability: "CVE-2026-1",
+		Status:        "not_affected",
+		Justification: "vulnerable_code_not_present",
+		Author:        vexAuthor,
+	}
+
+	// A statement whose envelope no key the platform holds verified — a VEX
+	// document somebody pushed with cosign under their own key — is listed in
+	// the input and believed by nothing. That is the default.
+	if suppressed(t, vexInput(unverified)) {
+		t.Fatal("an unverified VEX statement must not suppress a finding by default")
+	}
+
+	// An installation that wants the looser reading says so, and gets it.
+	loose := vexInput(unverified)
+	loose.Parameters["vexRequireVerified"] = "false"
+	if !suppressed(t, loose) {
+		t.Fatal("vexRequireVerified=false must honour an unverified statement")
+	}
+}
+
+func TestVEXTrustedAuthorsNarrowsWhoIsBelieved(t *testing.T) {
+	statement := VEXStatement{
+		Vulnerability: "CVE-2026-1",
+		Status:        "not_affected",
+		Justification: "vulnerable_code_not_present",
+		Author:        vexAuthor,
+		Verified:      true,
+	}
+
+	named := vexInput(statement)
+	named.Parameters["vexTrustedAuthors"] = "vendor@upstream.example, " + vexAuthor
+	if !suppressed(t, named) {
+		t.Fatal("a named author's statement must suppress")
+	}
+
+	others := vexInput(statement)
+	others.Parameters["vexTrustedAuthors"] = "vendor@upstream.example"
+	if suppressed(t, others) {
+		t.Fatal("an author this environment does not name must not suppress")
+	}
+}
+
+func TestVEXMaxAgeDaysBoundsHowLongAStatementIsCurrent(t *testing.T) {
+	statement := VEXStatement{
+		Vulnerability: "CVE-2026-1",
+		Status:        "not_affected",
+		Justification: "vulnerable_code_not_present",
+		Author:        vexAuthor,
+		Verified:      true,
+		Timestamp:     evaluationTime.Add(-10 * 24 * time.Hour).Format(time.RFC3339),
+	}
+
+	within := vexInput(statement)
+	within.Parameters["vexMaxAgeDays"] = "30"
+	if !suppressed(t, within) {
+		t.Fatal("a statement inside the bound must suppress")
+	}
+
+	beyond := vexInput(statement)
+	beyond.Parameters["vexMaxAgeDays"] = "7"
+	if suppressed(t, beyond) {
+		t.Fatal("a statement older than the bound must stop suppressing")
+	}
+
+	// The age is judged against input.at, not against the reader's clock:
+	// replaying an old decision must suppress exactly what it suppressed.
+	replayed := beyond
+	replayed.At = evaluationTime.Add(-9 * 24 * time.Hour)
+	if !suppressed(t, replayed) {
+		t.Fatal("the bound must be judged against the evaluation's own clock")
+	}
+
+	// Under a bound, a statement nobody dated cannot be shown to be current.
+	undated := statement
+	undated.Timestamp = ""
+	input := vexInput(undated)
+	input.Parameters["vexMaxAgeDays"] = "30"
+	if suppressed(t, input) {
+		t.Fatal("an undated statement must not suppress while an age bound is set")
+	}
+
+	// A bound nobody can read bounds everything out.
+	nonsense := vexInput(statement)
+	nonsense.Parameters["vexMaxAgeDays"] = "a fortnight"
+	if suppressed(t, nonsense) {
+		t.Fatal("an unreadable vexMaxAgeDays must suppress nothing")
 	}
 }
 
