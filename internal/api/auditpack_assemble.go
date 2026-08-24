@@ -223,14 +223,17 @@ func packReproducibility() auditPackReproducibility {
 			"platform holds. Nothing in it is read off a clock, no list is in the order a store " +
 			"answered in, and every phase that would otherwise be judged \"now\" is judged at the " +
 			"end of the range. Two exports of the same range are the same bytes unless the " +
-			"evidence itself changed.",
+			"evidence itself changed. The two lists below say which sections the window alone " +
+			"decides, and which also read the estate as it stands — a change log entry's content " +
+			"is entirely historical, for instance, but a release running since before the window " +
+			"is in the document because it was running during it.",
 		RangeBound: []string{
-			"changeLog", "promotions", "decisions", "exceptions", "drift.history",
-			"auditLog", "signedRecords", "access.cycles",
+			"promotions", "decisions", "exceptions", "drift.history",
+			"auditLog", "access.cycles",
 		},
 		CurrentState: []string{
-			"inventory", "access.grants", "attestations", "drift.current",
-			"platform", "retention",
+			"inventory", "changeLog", "attestations", "access.grants",
+			"drift.current", "signedRecords", "platform", "retention",
 		},
 		Excluded: []string{
 			"The signature is not part of these bytes. It is a DSSE envelope served at " +
@@ -1301,7 +1304,12 @@ func packSignedRecords(
 			"is what its signature covers, so re-encoding it would break it. Each verifies on " +
 			"its own with the platform's public key and with Kitchen out of the loop, by the " +
 			"same procedure as the pack — decode `payload`, rebuild DSSE's pre-authentication " +
-			"encoding, check the signature. This table carries no retention at all.",
+			"encoding, check the signature. This table carries no retention at all. " +
+			"Two kinds of record are here and they are selected differently: a recertification " +
+			"cycle's artefact is here because the cycle is, and so follows the window; this " +
+			"project's own declarations are every one the platform holds, because they are the " +
+			"evidence behind the claims the inventory makes and an inventory row whose signed " +
+			"declaration predated the window would otherwise stand unsupported.",
 	}
 
 	mine, err := in.store.QuerySignedRecords(ctx, clickhouse.SignedRecordQuery{

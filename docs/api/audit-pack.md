@@ -32,7 +32,10 @@ is half-open — `from` is inside it, `to` is not — so consecutive quarters
 tile without overlapping and nothing is counted twice.
 
 `to` before `from` is a `400`. A project the caller cannot see is a `404`, like
-every other read of a project.
+every other read of a project. An installation with no telemetry store answers
+`503`: the audit log, the decision register and the signed statements all live
+in it, so what could be assembled without one would be an inventory wearing an
+audit pack's name.
 
 **It is the operator's.** Not caution — subject matter. A route's guard has to
 be the strictest thing in its body, and this body folds three operator-only
@@ -101,15 +104,32 @@ it:
 
 `pack.reproducibility` states this inside the document, because the document is
 read by somebody who has the file and not this page. It names which sections
-are **fixed by the range** (`changeLog`, `promotions`, `decisions`,
-`exceptions`, `drift.history`, `auditLog`, `signedRecords`, `access.cycles`)
-and which describe **the estate as it is now** (`inventory`, `access.grants`,
-`attestations`, `drift.current`, `platform`, `retention`).
+the **window alone decides** (`promotions`, `decisions`, `exceptions`,
+`drift.history`, `auditLog`, `access.cycles`) and which **also read the estate
+as it stands** (`inventory`, `changeLog`, `attestations`, `access.grants`,
+`drift.current`, `signedRecords`, `platform`, `retention`).
 
-That second list is the honest part. Kitchen reconciles the graph rather than
-versioning it, so "which environments existed in March" was never recorded and
-the platform will not pretend otherwise. Re-evaluating a historical state is
-what `decisions` and their stored inputs are for.
+That second list is the honest part, and two of its entries are worth reading
+carefully:
+
+- **`changeLog`.** Every entry's *content* is historical — the commit, the
+  approvers, the intervals the release was current. What is not decided by the
+  window alone is which entries are there: a release running continuously since
+  before `from` is in the document, because it was running during the window,
+  and leaving it out would answer "what was running" with a list that omits the
+  thing that was.
+- **`signedRecords`.** A recertification cycle's artefact is here because the
+  cycle is, and so follows the window. This project's own declarations are
+  every one the platform holds, because they are the evidence behind the claims
+  the inventory makes: an inventory row saying a database's data is
+  production-derived, whose signed declaration was made before the window and
+  therefore omitted, would stand unsupported in the one document meant to
+  support it.
+
+Kitchen reconciles the graph rather than versioning it, so "which environments
+existed in March" was never recorded and the platform will not pretend
+otherwise. Re-evaluating a historical state is what `decisions` and their
+stored inputs are for.
 
 **Not reproducible, and outside the signed bytes:** the DSSE envelope (an
 ECDSA signature carries a nonce, so two signings of identical bytes are two

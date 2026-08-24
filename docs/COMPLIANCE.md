@@ -1814,9 +1814,16 @@ a window and say so.
 The honest half. Kitchen **reconciles** the graph rather than versioning it, so
 "which environments existed in March" was never recorded anywhere and no export
 can produce it. The pack says so in its own bytes: `reproducibility.rangeBound`
-names the sections wholly determined by the window, and
-`reproducibility.currentState` names the sections that describe the estate as
-it is — the inventory, the evidence index, the current drift rows.
+names the sections the window alone decides, and
+`reproducibility.currentState` names the sections that also read the estate as
+it stands — the inventory, the evidence index, the current drift rows, and two
+that are easy to put in the wrong list. The change log's entries are entirely
+historical in content, but a release running since before the window is in the
+document because it was running *during* it; and this project's signed
+declarations are all of them rather than the window's, because they are the
+evidence behind the claims the inventory makes, and a row whose declaration
+predated the window would otherwise stand unsupported in the one document meant
+to support it.
 
 That is not a gap to close later. Re-evaluating a historical state is exactly
 what the decision register and its stored inputs are for (§4, §9.5): the
