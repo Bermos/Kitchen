@@ -88,6 +88,36 @@ func (f *fakeReporter) UpsertComment(_ context.Context, _ string, c gitprovider.
 	return "4242", nil
 }
 
+// fakeCommenter is a provider that reports commit statuses and comments but
+// keeps no deployment record — Gitea's shape, which has no deployments API.
+// It deliberately does not implement DeploymentPublisher.
+type fakeCommenter struct {
+	comments []gitprovider.Comment
+}
+
+func (f *fakeCommenter) EnsureWebhook(context.Context, string, gitprovider.WebhookSpec) (string, error) {
+	return "1", nil
+}
+
+func (f *fakeCommenter) DeleteWebhook(context.Context, string, string) error { return nil }
+
+func (f *fakeCommenter) ListDir(ctx context.Context, repo, ref, dir string) ([]gitprovider.DirEntry, error) {
+	return repoWithDockerfile().ListDir(ctx, repo, ref, dir)
+}
+
+func (f *fakeCommenter) ReadFile(ctx context.Context, repo, ref, path string) ([]byte, error) {
+	return repoWithDockerfile().ReadFile(ctx, repo, ref, path)
+}
+
+func (f *fakeCommenter) SetCommitStatus(context.Context, string, gitprovider.CommitStatus) error {
+	return nil
+}
+
+func (f *fakeCommenter) UpsertComment(_ context.Context, _ string, c gitprovider.Comment) (string, error) {
+	f.comments = append(f.comments, c)
+	return "4242", nil
+}
+
 func (f *fakeReporter) lastComment() gitprovider.Comment {
 	return f.comments[len(f.comments)-1]
 }
@@ -388,6 +418,37 @@ var _ = Describe("Deploy status on the commit", func() {
 			Expect(env.Status.GitReport.CommentID).To(Equal("4242"))
 			Expect(env.Status.GitReport.State).To(Equal(string(gitprovider.DeploymentSuccess)))
 			Expect(env.Status.GitReport.Error).To(BeEmpty())
+		})
+
+		It("still comments when the provider keeps no deployment record", func() {
+			// Gitea has no deployments API. Publishing used to be the first
+			// call and its failure returned early, so a provider without the
+			// half would have lost the comment a reviewer actually reads.
+			commenter := &fakeCommenter{}
+			quiet := &EnvironmentReconciler{
+				Client: k8sClient, Scheme: k8sClient.Scheme(),
+				GitProviders: func(*kitchenv1alpha1.Connection, string) (gitprovider.Provider, error) {
+					return commenter, nil
+				},
+			}
+
+			_, err := quiet.Reconcile(ctx, reconcile.Request{NamespacedName: envKey})
+			Expect(err).NotTo(HaveOccurred())
+			makeAvailable()
+			_, err = quiet.Reconcile(ctx, reconcile.Request{NamespacedName: envKey})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(commenter.comments).NotTo(BeEmpty())
+			last := commenter.comments[len(commenter.comments)-1]
+			Expect(last.PullRequest).To(Equal(int32(7)))
+			Expect(last.Body).To(ContainSubstring("https://gitshop-pr-7.apps.example.com"))
+
+			// Not publishing is not a failure: nothing is recorded as one.
+			env := &kitchenv1alpha1.Environment{}
+			Expect(k8sClient.Get(ctx, envKey, env)).To(Succeed())
+			Expect(env.Status.GitReport).NotTo(BeNil())
+			Expect(env.Status.GitReport.Error).To(BeEmpty())
+			Expect(env.Status.GitReport.CommentID).To(Equal("4242"))
 		})
 
 		It("does not post again when nothing about the deployment moved", func() {

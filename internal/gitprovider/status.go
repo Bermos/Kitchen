@@ -113,24 +113,44 @@ type Comment struct {
 	Body string
 }
 
-// StatusReporter is the statusChecks half of a git provider: everything the
-// platform posts back to a repository about what it did with a commit.
+// StatusReporter is the statusChecks half of a git provider: what the
+// platform posts back to a repository about a commit, and what it writes on
+// the pull request a preview belongs to.
 //
 // It is deliberately separate from Provider. A provider is useful as a source
 // long before it can report anything back, and the operator asks for this half
 // with a type assertion — so a new provider lands as a Provider first, gains
 // this later, and the platform degrades to posting nothing in between.
+//
+// Deployments are deliberately *not* here. Every forge has commit statuses and
+// pull request comments; a deployment record is GitHub's model, GitLab has a
+// near relative, and Gitea has nothing of the kind at all. Asking one
+// interface for all three would make Gitea implement a method it can only fail
+// — see DeploymentPublisher.
 type StatusReporter interface {
 	// SetCommitStatus posts a status check on a commit, replacing whatever
 	// the same context said before.
 	SetCommitStatus(ctx context.Context, repo string, status CommitStatus) error
-	// PublishDeployment records a deployment of a commit to an environment
-	// and the state it is in, creating the deployment on first use.
-	PublishDeployment(ctx context.Context, repo string, deployment Deployment) error
 	// UpsertComment writes the platform's comment on a pull request and
 	// returns its provider-side ID, so the next write can address it
 	// directly instead of searching for it.
 	UpsertComment(ctx context.Context, repo string, comment Comment) (string, error)
+}
+
+// DeploymentPublisher is the deployment-record half, split from
+// StatusReporter because it is the one piece of reporting the forges do not
+// agree on: GitHub keeps deployments with a history of statuses hanging off
+// them, GitLab keeps a flatter record with no way to retire one, and Gitea has
+// no deployments API at all.
+//
+// A provider without it is not degraded reporting — its commit statuses and
+// its pull request comment, which is what a reviewer actually reads, are
+// posted exactly the same. It only means the forge grows no deployment
+// record, and callers treat that as "publish nothing" rather than a failure.
+type DeploymentPublisher interface {
+	// PublishDeployment records a deployment of a commit to an environment
+	// and the state it is in, creating the deployment on first use.
+	PublishDeployment(ctx context.Context, repo string, deployment Deployment) error
 }
 
 // Reporter narrows a Provider to its status-reporting half. The second return
@@ -139,4 +159,12 @@ type StatusReporter interface {
 func Reporter(provider Provider) (StatusReporter, bool) {
 	reporter, ok := provider.(StatusReporter)
 	return reporter, ok
+}
+
+// Deployments narrows a Provider to its deployment-publishing half. The second
+// return is false for a forge with no deployment record to write, which is not
+// a failure and must not stop the rest of the reporting.
+func Deployments(provider Provider) (DeploymentPublisher, bool) {
+	publisher, ok := provider.(DeploymentPublisher)
+	return publisher, ok
 }
