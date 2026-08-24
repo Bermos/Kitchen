@@ -418,7 +418,7 @@ func TestRescanSignsTheFindingsWithTheDatabaseSnapshotAndStoresTheDecision(t *te
 	blob := "sha256:" + strings.Repeat("b", 64)
 	f.attester.blobs[blob] = []byte(grypeReport)
 	f.finishScan(t, rescanReport{
-		Scanner: "grype", Blob: blob, Bytes: len(grypeReport),
+		Blob: blob,
 		SBOM: "https://spdx.dev/Document", SBOMDigest: "sha256:" + strings.Repeat("c", 64),
 		FinishedAt: "2026-08-24T03:16:11Z",
 	})
@@ -563,7 +563,7 @@ func (f *rescanFixtures) scanThrough(t *testing.T) {
 	}
 	blob := "sha256:" + strings.Repeat("b", 64)
 	f.attester.blobs[blob] = []byte(grypeReport)
-	f.finishScan(t, rescanReport{Scanner: "grype", Blob: blob, FinishedAt: "2026-08-24T03:16:11Z"})
+	f.finishScan(t, rescanReport{Blob: blob, FinishedAt: "2026-08-24T03:16:11Z"})
 	if _, err := f.sweeper.SweepOnce(ctx); err != nil {
 		t.Fatal(err)
 	}
