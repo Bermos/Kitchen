@@ -335,7 +335,7 @@ type vexAnswer struct {
 
 // vexSubmission carries the OpenVEX document itself, as the exact bytes its
 // author wrote: the platform signs those bytes, and re-encoding somebody's
-// assertion into a shape of this CLI'"'"'s choosing would be the CLI editing it.
+// assertion into a shape of this CLI's choosing would be the CLI editing it.
 type vexSubmission struct {
 	Document json.RawMessage `json:"document"`
 }
@@ -733,7 +733,7 @@ func (c *client) submitGate(ctx context.Context, name string, body gateSubmissio
 	return answer, err
 }
 
-// vex reads the artifact'"'"'s exploitability assertions joined to the findings
+// vex reads the artifact's exploitability assertions joined to the findings
 // they modify.
 func (c *client) vex(ctx context.Context, name string) (*vexAnswer, error) {
 	answer := &vexAnswer{}
@@ -741,7 +741,7 @@ func (c *client) vex(ctx context.Context, name string) (*vexAnswer, error) {
 		http.MethodGet, "/builds/"+name+"/vex", nil, nil, answer)
 }
 
-// submitVEX attaches an OpenVEX document to the build'"'"'s artifact.
+// submitVEX attaches an OpenVEX document to the build's artifact.
 func (c *client) submitVEX(ctx context.Context, name string, body vexSubmission) (*vexAccepted, error) {
 	answer := &vexAccepted{}
 	err := c.do(ctx, "submitting a VEX document for "+name,

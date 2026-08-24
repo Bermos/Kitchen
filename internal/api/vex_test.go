@@ -366,7 +366,7 @@ func TestAVEXSubmissionIsRecordedBeforeItIsAttached(t *testing.T) {
 	h, registry, _ := gateHarness(t)
 
 	// A log that cannot append refuses the write it was asked to record.
-	// Attribution is the whole of what the platform adds to somebody else'"'"'s
+	// Attribution is the whole of what the platform adds to somebody else's
 	// assertion, so an assertion attached with nothing said about who filed it
 	// is the one outcome this endpoint must not have — over-recording is the
 	// acceptable direction, and this is which direction it fails in.
@@ -380,7 +380,7 @@ func TestAVEXSubmissionIsRecordedBeforeItIsAttached(t *testing.T) {
 		t.Error("a document nothing recorded was attached to the artifact anyway")
 	}
 
-	// And what is foreseeable is still decided in the caller'"'"'s own words: a
+	// And what is foreseeable is still decided in the caller's own words: a
 	// document the platform would refuse outright is refused as such rather
 	// than as a broken log.
 	unjustified := `{"@context":"https://openvex.dev/ns/v0.2.0","author":"security@shop.example",
