@@ -173,6 +173,7 @@ give.
 | `kitchen gates list/submit` | What ran over an artifact, and submitting a result from elsewhere | `GET /builds/{name}`, `POST /builds/{name}/gates` |
 | `kitchen vex list/submit` | What has been asserted about an artifact's findings applying here, and asserting it | `GET /builds/{name}/vex`, `POST /builds/{name}/vex` |
 | `kitchen decisions list/show/replay` | The stored policy decisions, and re-running one from its stored inputs | `GET /decisions`, `GET /decisions/{id}`, `POST /decisions/{id}/replay` |
+| `kitchen drift` | What is deployed right now that no longer meets its environment's bar | `GET /compliance/drift` |
 | `kitchen releases` | The project's releases — what there is to roll back to | `GET /projects/{name}/releases` |
 | `kitchen environments` | The project's environments and where they answer | `GET /projects/{name}/environments` |
 | `kitchen api` | Any endpoint of the API, authenticated | anything |
@@ -430,6 +431,41 @@ credential that sent it: the platform signs it but did not witness it, and a
 policy that trusts only what the platform ran itself can tell the difference.
 Do not pass the scanner a flag that makes it exit non-zero on findings — the
 pipeline would fail on a fact rather than on a decision.
+
+### Compliance drift
+
+```sh
+kitchen drift
+kitchen drift --project shop --all --json
+```
+
+What is deployed right now that would not be allowed to deploy today. Every
+deployed release is re-evaluated on a schedule against a current vulnerability
+database, through the same policy path a promotion uses — no rebuild and no
+redeploy — and this reads the result.
+
+The `status` column is the whole point of the view, because a blocked verdict
+looks the same whichever of these it is:
+
+- `newly-failing` — a rule that did not fire when this release was promoted
+  fires now. The artifact did not change; a vulnerability database did.
+- `waived-at-promotion` — a rule that fired at promotion too and was waived by
+  a break-glass grant that has since run out. Nothing new was found.
+- `waived` — still clearing the bar, but only because a grant is waiving what
+  fires. Compliant by grace, and dated.
+- `not-evaluated` — no current re-evaluation stands for this pair, either
+  because nothing has ever re-checked it or because the last scan did not run.
+  It is a finding about the platform rather than about the release, and it is
+  never counted as compliant.
+
+Compliant pairs are left out unless `--all` asks for them, and the answer leads
+with whether the pass is running at all: an empty table under a pass that is off
+means *nobody is looking*, which is not the same answer as nothing being wrong.
+
+The exit code stays zero on a non-empty answer. Drift is a finding, not a
+failure of the command — a command that failed on a finding gets turned off the
+first week it finds something — so a nightly `kitchen drift --json` that opens a
+ticket on a non-empty `items` is the shape this is for.
 
 ### Anything else
 
