@@ -151,12 +151,16 @@ A `gitlab` or `gitea` token registers the repository's webhook and clones the
 repository. GitLab takes a personal, project or group access token with the
 `api` scope, held by someone with **Maintainer** on the project — registering
 a hook is a maintainer's right. Gitea takes an access token with
-`write:repository`, held by an owner or administrator of the repository. Both
-are sources only: neither reports the `statusChecks` capability, so no commit
-status, deployment or pull-request comment is posted back, and neither
-enumerates repositories — the repository is typed as `owner/name` rather than
-picked from a list. A `neon` credential is an API key that can create
-projects.
+`write:repository`, held by an owner or administrator of the repository.
+
+Both report `gitSource` and `statusChecks`, so the build's check and the
+preview's comment are posted back as GitHub's are. Two things they do not do:
+Gitea keeps no deployment record — it has no such API, and GitLab's has no way
+to retire one, so a removed preview is announced in the comment alone — and
+neither enumerates repositories, so the repository is typed as `owner/name`
+rather than picked from a list.
+
+A `neon` credential is an API key that can create projects.
 
 `POST /connections/test` runs that credential past the provider **without
 storing anything**: no Secret is written and no connection is created, so a
