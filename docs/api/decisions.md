@@ -80,6 +80,57 @@ the stored row, out of the enforcement table's reach. `409` answers a
 decision that cannot be re-run: its input is unreadable, or its bundle is
 neither in the store nor still available.
 
+## Compliance drift
+
+```sh
+curl -H "authorization: Bearer $TOKEN" \
+  "https://api.kitchen.example.com/api/v1/compliance/drift"
+```
+
+The decision register read the other way round: not what was decided, but
+what those decisions say **today**. Every currently-deployed release is
+re-evaluated on a schedule against a current vulnerability database, through
+the same policy code path a promotion uses (docs/COMPLIANCE.md §9), and this
+joins the newest rescan decision for each deployed (environment, release)
+pair to the promotion decision that let the release in.
+
+Compliant pairs are left out; `?all=true` includes them. `?project=` and
+`?environment=` narrow it, and an answer is filtered to the caller's projects
+like every cross-project read here.
+
+```json
+{"generatedAt": "…", "rescanning": true, "drifting": 1,
+ "counts": {"compliant": 7, "newly-failing": 1},
+ "items": [{"project": "shop", "environment": "shop-production",
+            "release": "shop-rel-9f2c", "status": "newly-failing",
+            "verdict": "blocked", "scannedAt": "…",
+            "dataSnapshot": "grype-db:sha256:…", "findings": 41,
+            "decisionID": "…", "promotedVerdict": "allowed",
+            "rules": [{"rule": "max-severity", "message": "…", "since": "rescan"}]}]}
+```
+
+`status` is the finding, and it has five values because "is this compliant"
+has more than two answers:
+
+| | |
+|---|---|
+| `compliant` | the last rescan cleared the bar outright |
+| `waived` | it cleared only because an exception is waiving what fires — compliant by grace, and dated |
+| `newly-failing` | blocked now, and at least one rule standing in the way **did not fire at promotion**. The artifact did not change; a vulnerability database did |
+| `waived-at-promotion` | blocked now, and every rule standing in the way fired at promotion too and was waived by an exception that has since expired |
+| `not-evaluated` | nothing has re-checked this pair. That is a finding about the platform, not about the release, and it is never counted as compliant |
+
+Each entry in `rules` repeats the distinction: `since: "rescan"` for a rule
+that started failing after promotion, `since: "promotion"` for one that fired
+then too, with `exception` naming the grant that waived it. Collapsing the two
+would make an expired waiver read as a new vulnerability and send somebody
+hunting for a CVE that was never there.
+
+`rescanning` is whether the re-evaluation pass is running at all, and it is
+answered before anything else for a reason: an empty drift view under a pass
+that is off means *nobody is looking*, which is not the same answer as
+nothing being wrong.
+
 ## The policy bundles
 
 ```sh
@@ -108,5 +159,9 @@ depends on.
 
 ## CLI
 
-`kitchen decisions list|show|replay` cover the three reads and the replay;
+`kitchen decisions list|show|replay` cover the three reads and the replay,
+and `kitchen drift` the drift view — `--all` for the compliant rows,
+`--json` for a pipeline. Its exit code stays zero on a non-empty answer:
+drift is a finding, not a failure of the command, and a command that failed
+on a finding gets turned off the first week it finds something.
 `kitchen api GET /policy/bundles` reaches the bundle listing.

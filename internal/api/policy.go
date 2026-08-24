@@ -367,6 +367,12 @@ func (s *Server) routes() []route {
 		// It filters to the caller's projects like every cross-project read,
 		// and an operator's answer is the whole install in one request.
 		{"GET /api/v1/compliance/inventory", s.complianceInventory, acrossProjects()},
+		// Drift is the same shape of read and the same filtering: what is
+		// running right now that no longer meets its environment's bar. It
+		// joins the cluster's current state to the decision register, so it
+		// is scoped like the register — the caller's own projects, and the
+		// whole install for an operator.
+		{"GET /api/v1/compliance/drift", s.complianceDrift, acrossProjects()},
 		{"GET /api/v1/audit", s.listAuditRecords, acrossProjects()},
 		// Verifying the chain is a statement about the whole log, including
 		// the records of platform changes a member never sees.

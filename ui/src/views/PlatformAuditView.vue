@@ -2,6 +2,7 @@
 import { computed, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import DecisionsPanel from "../components/DecisionsPanel.vue";
+import DriftPanel from "../components/DriftPanel.vue";
 import ExceptionsPanel from "../components/ExceptionsPanel.vue";
 import { api, type AuditRecord } from "../lib/api";
 import { timeAgo } from "../lib/format";
@@ -375,6 +376,13 @@ const truncated = computed(() => {
          the same standard: every verdict is a stored record, and a stored
          record is one that can be checked. -->
     <DecisionsPanel />
+
+    <!-- Drift is the decision register read the other way round: not what was
+         decided, but what those decisions would say today. It sits under them
+         because it is derived from them, and above the inventory because
+         "what is running that no longer meets its bar" is the question this
+         whole screen is here to answer. -->
+    <DriftPanel />
 
     <!-- The classification inventory: every environment and claim with its
          class, its data's provenance and its location, in one request. The

@@ -213,6 +213,7 @@ name against `internal/api/policy.go`, so a route that moves fails them too.
 | GET | `/audit/verify` | Re-derive the chain's hashes over a run and report every break. `?from=`, `?limit=` | `operator` |
 | GET | `/compliance` | What the platform is producing: whether the audit log is recording, decisions are stored, and the key artifacts are signed under | `operator` |
 | GET | `/compliance/inventory` | Every environment and claim with its data class, provenance and residency — the classification inventory, exportable in one request | any account — filtered |
+| GET | `/compliance/drift` | Deployed releases measured against their environment's bar today: what is running that no longer meets it, and whether each rule started failing after promotion or was waived there. `?project=`, `?environment=`, `?all=true` | any account — filtered |
 | GET | `/decisions` | Stored policy decisions, newest first. `?project=`, `?environment=`, `?release=`, `?verdict=`, `?kind=`, `?since=`, `?until=`, `?limit=` | any account — filtered |
 | GET | `/decisions/{id}` | One decision whole, with the full input it can be replayed from | any account — filtered |
 | POST | `/decisions/{id}/replay` | Re-evaluate it from its stored inputs and compare the verdicts | `developer` on the decision's project, enforced by the handler |
@@ -274,7 +275,7 @@ such changes two changes to two different files.
 - [Logs and queries](api/logs.md) — reading them, following them live, querying them, and saving a query
 - [Metrics, traffic and traces](api/telemetry.md) — the golden signals, the request rows behind them, and the spans
 - [The activity feed and the audit log](api/audit.md) — what the platform did, best-effort and tamper-evident
-- [Policy decisions](api/decisions.md) — every verdict the policy engine reached, the bundles it evaluates, and replaying a decision
+- [Policy decisions](api/decisions.md) — every verdict the policy engine reached, the bundles it evaluates, replaying a decision, and the drift view over them
 - [Promotions](api/promotions.md) — the staged pipeline: asking for a release to land, and what the policy decided
 - [Exceptions](api/exceptions.md) — break-glass: bounded, two-person, per-rule waivers, and the register of every one
 - [Platform status and the operator's screens](api/platform.md) — whether the platform is healthy, and everything behind /platform

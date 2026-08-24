@@ -380,6 +380,51 @@ export interface ComplianceInventory {
   items: InventoryItem[];
 }
 
+/** One rule standing in the way of a release that is already deployed, and
+ *  whether it was standing there when the release was promoted. */
+export interface DriftRule {
+  rule: string;
+  message?: string;
+  /** "rescan" for a rule that started failing after promotion; "promotion"
+   *  for one that fired then too and was waived by an exception which has
+   *  since run out. The distinction is the whole point of the view. */
+  since: "rescan" | "promotion";
+  exception?: string;
+}
+
+/** One deployed (environment, release) pair measured against its bar today. */
+export interface DriftItem {
+  project: string;
+  environment: string;
+  release: string;
+  artifact?: string;
+  status: "compliant" | "waived" | "newly-failing" | "waived-at-promotion" | "not-evaluated";
+  verdict?: string;
+  scannedAt?: string;
+  /** The vulnerability database the finding was produced against. An
+   *  "unpinned:" prefix means the scanner could not name its own database and
+   *  the scan is dated rather than reproducible. */
+  dataSnapshot?: string;
+  findings?: number;
+  decisionID?: string;
+  promotedVerdict?: string;
+  promotedAt?: string;
+  rules: DriftRule[];
+  message?: string;
+}
+
+/** What is running right now that no longer meets its environment's bar.
+ *  `rescanning` false means nothing is checking, which is a different answer
+ *  from nothing being wrong — and the screen says which. */
+export interface ComplianceDrift {
+  generatedAt: string;
+  rescanning: boolean;
+  message?: string;
+  drifting: number;
+  items: DriftItem[];
+  counts?: Record<string, number>;
+}
+
 /** One rule a policy decision fired. A waived rule fired all the same — the
  *  exception changed the verdict, never the facts. */
 export interface FiredRule {
@@ -2530,6 +2575,17 @@ export const api = {
 
   compliance: () => request<Compliance>("GET", "/compliance"),
   complianceInventory: () => request<ComplianceInventory>("GET", "/compliance/inventory"),
+  // Drift: the deployed releases that no longer clear their bar. Compliant
+  // pairs are left out unless `all` asks for them, because the question the
+  // view exists for is what is not.
+  complianceDrift: (query: { project?: string; environment?: string; all?: boolean } = {}) => {
+    const params = new URLSearchParams();
+    if (query.project) params.set("project", query.project);
+    if (query.environment) params.set("environment", query.environment);
+    if (query.all) params.set("all", "true");
+    const search = params.toString();
+    return request<ComplianceDrift>("GET", `/compliance/drift${search ? `?${search}` : ""}`);
+  },
   audit: (query: AuditQuery = {}) => {
     const params: Record<string, string> = {};
     for (const [key, value] of Object.entries(query)) {
