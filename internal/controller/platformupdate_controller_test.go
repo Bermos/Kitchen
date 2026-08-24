@@ -24,6 +24,7 @@ import (
 	. "github.com/onsi/gomega"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -98,6 +99,34 @@ var _ = Describe("PlatformUpdate Controller", func() {
 		ExpectWithOffset(1, k8sClient.Status().Update(ctx, job)).To(Succeed())
 	}
 
+	// runPod stands in for the kubelet. Nothing is scheduled or pulled in
+	// envtest, so the pod the job would create is written here with the
+	// label the job's template carries and one container state on it — which
+	// is the only thing the reconciler reads it for.
+	runPod := func(updateName string, phase corev1.PodPhase, state corev1.ContainerState) {
+		pod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      selfUpdateJobName(updateName) + "-pod",
+				Namespace: PlatformNamespace,
+				Labels: map[string]string{
+					labelPlatformUpdate: updateName,
+					labelComponentKind:  selfUpdateComponent,
+				},
+			},
+			Spec: corev1.PodSpec{
+				RestartPolicy: corev1.RestartPolicyNever,
+				Containers:    []corev1.Container{{Name: "helm", Image: DefaultHelmImage}},
+			},
+		}
+		ExpectWithOffset(1, client.IgnoreAlreadyExists(k8sClient.Create(ctx, pod))).To(Succeed())
+		ExpectWithOffset(1, k8sClient.Get(ctx, client.ObjectKeyFromObject(pod), pod)).To(Succeed())
+		pod.Status.Phase = phase
+		pod.Status.ContainerStatuses = []corev1.ContainerStatus{
+			{Name: "helm", Image: DefaultHelmImage, State: state},
+		}
+		ExpectWithOffset(1, k8sClient.Status().Update(ctx, pod)).To(Succeed())
+	}
+
 	failJob := func(key types.NamespacedName, message string) {
 		job := &batchv1.Job{}
 		ExpectWithOffset(1, k8sClient.Get(ctx, key, job)).To(Succeed())
@@ -134,6 +163,13 @@ var _ = Describe("PlatformUpdate Controller", func() {
 			client.InNamespace(PlatformNamespace),
 			client.MatchingLabels{labelComponentKind: selfUpdateComponent},
 			client.PropagationPolicy(metav1.DeletePropagationBackground))).To(Succeed())
+		// The pods here are the spec's own rather than the job's, so nothing
+		// deletes them with it — and a pod left behind is state the next spec
+		// would read as its update's.
+		Expect(k8sClient.DeleteAllOf(ctx, &corev1.Pod{},
+			client.InNamespace(PlatformNamespace),
+			client.MatchingLabels{labelComponentKind: selfUpdateComponent},
+			client.GracePeriodSeconds(0))).To(Succeed())
 	})
 
 	Context("preflight", func() {
@@ -252,6 +288,80 @@ var _ = Describe("PlatformUpdate Controller", func() {
 			By("passing nothing through from the request but the version")
 			Expect(args).NotTo(ContainSubstring("--set"))
 			Expect(args).NotTo(ContainSubstring("--values"))
+
+			By("asking the kubelet for helm's own output when it exits non-zero")
+			Expect(container.TerminationMessagePolicy).To(
+				Equal(corev1.TerminationMessageFallbackToLogsOnError))
+		})
+
+		It("reports an upgrade that cannot start rather than the create-time message", func() {
+			reconcileOnce(r, key)
+			Expect(fetch(key).Status.Message).To(Equal("upgrading the platform to 0.2.1"))
+
+			runPod(updateName, corev1.PodPending, corev1.ContainerState{
+				Waiting: &corev1.ContainerStateWaiting{
+					Reason:  "ImagePullBackOff",
+					Message: `Back-off pulling image "` + DefaultHelmImage + `"`,
+				},
+			})
+
+			// A fresh reconciler again: the pod is found by the job's label,
+			// not remembered from the reconcile that created it.
+			res, err := reconcilerFor(enabledConfig).Reconcile(ctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+
+			update := fetch(key)
+			Expect(update.Status.Phase).To(Equal(kitchenv1alpha1.PlatformUpdateRunning))
+			Expect(update.Status.Message).To(ContainSubstring("ImagePullBackOff"))
+			Expect(update.Status.Message).To(ContainSubstring("Back-off pulling image"))
+
+			ready := meta.FindStatusCondition(update.Status.Conditions, condReady)
+			Expect(ready).NotTo(BeNil())
+			Expect(ready.Reason).To(Equal("UpgradeCannotStart"))
+			Expect(ready.Message).To(Equal(update.Status.Message))
+
+			By("coming back soon enough for whoever is watching the screen")
+			Expect(res.RequeueAfter).To(Equal(selfUpdateRunningRequeue))
+
+			By("writing nothing when the pod has not moved")
+			before := update.Status.Conditions
+			reconcileOnce(reconcilerFor(enabledConfig), key)
+			Expect(fetch(key).Status.Conditions).To(Equal(before))
+		})
+
+		It("says the upgrade is in flight once helm is running", func() {
+			reconcileOnce(r, key)
+
+			runPod(updateName, corev1.PodRunning, corev1.ContainerState{
+				Running: &corev1.ContainerStateRunning{StartedAt: metav1.Now()},
+			})
+			reconcileOnce(reconcilerFor(enabledConfig), key)
+
+			update := fetch(key)
+			Expect(update.Status.Phase).To(Equal(kitchenv1alpha1.PlatformUpdateRunning))
+			Expect(update.Status.Message).To(Equal("upgrading the platform to 0.2.1"))
+		})
+
+		It("reports why helm failed, not the job controller's account of it", func() {
+			reconcileOnce(r, key)
+
+			runPod(updateName, corev1.PodFailed, corev1.ContainerState{
+				Terminated: &corev1.ContainerStateTerminated{
+					ExitCode: 1,
+					Reason:   "Error",
+					Message: "Error: UPGRADE FAILED: cannot patch \"kitchen-clickhouse\" with kind StatefulSet: " +
+						"updates to statefulset spec for fields other than 'replicas' are forbidden\n",
+				},
+			})
+			failJob(jobKey, "BackoffLimitExceeded")
+			reconcileOnce(reconcilerFor(enabledConfig), key)
+
+			update := fetch(key)
+			Expect(update.Status.Phase).To(Equal(kitchenv1alpha1.PlatformUpdateFailed))
+			Expect(update.Status.Message).To(ContainSubstring("rolled back"))
+			Expect(update.Status.Message).To(ContainSubstring("UPGRADE FAILED"))
+			Expect(update.Status.Message).To(ContainSubstring("kitchen-clickhouse"))
+			Expect(update.Status.Message).NotTo(ContainSubstring("BackoffLimitExceeded"))
 		})
 
 		It("reports success from the job, not from what it remembers starting", func() {

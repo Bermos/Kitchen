@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/blang/semver/v4"
@@ -69,6 +70,18 @@ const (
 	// selfUpdateComponent names the job in collected logs, and is what the
 	// dashboard filters on to show an upgrade's output.
 	selfUpdateComponent = "self-update"
+
+	// selfUpdateRunningRequeue is how often a running update is re-read from
+	// the cluster. It is short because this is the one object somebody is
+	// sitting in front of a screen watching: every second between the pod's
+	// state changing and the status saying so is a second the dashboard shows
+	// a stale sentence about an upgrade that is already stuck.
+	selfUpdateRunningRequeue = 5 * time.Second
+
+	// maxUpdateMessage caps how much of helm's own output reaches the status.
+	// Generous next to maxComponentMessage, because what is quoted here is a
+	// failure an operator has to act on rather than a one-line health summary.
+	maxUpdateMessage = 1024
 
 	labelPlatformUpdate = "kitchen.bermos.dev/platform-update"
 
@@ -193,10 +206,11 @@ func (r *PlatformUpdateReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		update.Status.FromVersion = r.CurrentVersion
 		update.Status.JobName = jobName
 		update.Status.StartedAt = ptr.To(metav1.Now())
-		update.Status.Message = fmt.Sprintf("upgrading the platform to %s", update.Spec.Version)
+		reason, message := upgradeInFlight(update.Spec.Version)
+		update.Status.Message = message
 		meta.SetStatusCondition(&update.Status.Conditions, metav1.Condition{
-			Type: condReady, Status: metav1.ConditionFalse, Reason: "UpgradeRunning",
-			Message: update.Status.Message, ObservedGeneration: update.Generation,
+			Type: condReady, Status: metav1.ConditionFalse, Reason: reason,
+			Message: message, ObservedGeneration: update.Generation,
 		})
 		return ctrl.Result{}, r.Status().Update(ctx, update)
 	case err != nil:
@@ -211,18 +225,162 @@ func (r *PlatformUpdateReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		// --atomic means helm rolled the release back before the job
 		// reported failure, so the platform is on the version it started on.
 		return r.failUpdate(ctx, update, "UpgradeFailed",
-			fmt.Sprintf("the helm upgrade to %s failed and was rolled back: %s", update.Spec.Version, message))
+			fmt.Sprintf("the helm upgrade to %s failed and was rolled back: %s",
+				update.Spec.Version, r.failureDetail(ctx, update, message)))
 	default:
-		if update.Status.Phase != kitchenv1alpha1.PlatformUpdateRunning {
+		reason, message := r.updateProgress(ctx, update)
+		// Only when it has actually moved: this path runs every few seconds,
+		// and an unconditional status write would be a loop that re-triggers
+		// itself for as long as the upgrade lasts.
+		if update.Status.Phase != kitchenv1alpha1.PlatformUpdateRunning || update.Status.Message != message {
 			update.Status.Phase = kitchenv1alpha1.PlatformUpdateRunning
-			return ctrl.Result{}, r.Status().Update(ctx, update)
+			update.Status.Message = message
+			meta.SetStatusCondition(&update.Status.Conditions, metav1.Condition{
+				Type: condReady, Status: metav1.ConditionFalse, Reason: reason,
+				Message: message, ObservedGeneration: update.Generation,
+			})
+			if err := r.Status().Update(ctx, update); err != nil {
+				return ctrl.Result{}, err
+			}
 		}
 		// The operator is replaced part-way through its own upgrade, and the
 		// watch on Jobs does not survive the restart that the upgrade causes.
 		// Polling is what closes out an update whose completion event landed
-		// while this process did not exist.
-		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+		// while this process did not exist. It is polled hard because a
+		// running update is the one object somebody is watching a screen for,
+		// and because the pod's state — an image that will not pull — is not
+		// a Job event at all, so nothing else would wake this reconciler.
+		return ctrl.Result{RequeueAfter: selfUpdateRunningRequeue}, nil
 	}
+}
+
+// updatePod is the pod running an upgrade, or nil when there is none to read.
+//
+// It is found by the label the job puts on its template rather than
+// remembered, because the reconciler that watches an upgrade finish is a
+// different process — usually a different version — from the one that started
+// it. Everything reported about a running update has to be reconstructible
+// from the cluster alone.
+func (r *PlatformUpdateReconciler) updatePod(
+	ctx context.Context,
+	update *kitchenv1alpha1.PlatformUpdate,
+) *corev1.Pod {
+	pods := &corev1.PodList{}
+	if err := r.List(ctx, pods,
+		client.InNamespace(PlatformNamespace),
+		client.MatchingLabels{labelPlatformUpdate: update.Name}); err != nil {
+		return nil
+	}
+	// The backoff limit is zero, so there is normally exactly one. A node that
+	// lost a pod can still leave a predecessor behind, and the newest is the
+	// one whose state is the upgrade's.
+	var newest *corev1.Pod
+	for i := range pods.Items {
+		pod := &pods.Items[i]
+		if newest == nil || pod.CreationTimestamp.After(newest.CreationTimestamp.Time) {
+			newest = pod
+		}
+	}
+	return newest
+}
+
+// updateProgress says what the upgrade is doing now, in the terms of whoever
+// pressed the button rather than the cluster's.
+//
+// The job's own status says nothing at all until it finishes, so without this
+// an upgrade that can never start — the helm image will not pull — reads as
+// running for the whole of its deadline and then fails with a Job condition
+// that explains nothing.
+func (r *PlatformUpdateReconciler) updateProgress(
+	ctx context.Context,
+	update *kitchenv1alpha1.PlatformUpdate,
+) (reason, message string) {
+	version := update.Spec.Version
+
+	pod := r.updatePod(ctx, update)
+	if pod == nil {
+		return upgradeInFlight(version)
+	}
+
+	statuses := pod.Status.ContainerStatuses
+	// Never started, and never going to on its own: ImagePullBackOff,
+	// ErrImagePull, CreateContainerConfigError. This is the state the deadline
+	// eventually kills twenty minutes later, so it is worth saying the moment
+	// the kubelet knows it.
+	for i := range statuses {
+		waiting := statuses[i].State.Waiting
+		if waiting == nil || waiting.Reason == "" || waitingIsNormal[waiting.Reason] {
+			continue
+		}
+		return "UpgradeCannotStart", fmt.Sprintf(
+			"the upgrade to %s has not started: %s. Nothing has been applied.",
+			version, withMessage(waiting.Reason, waiting.Message))
+	}
+	for i := range statuses {
+		if statuses[i].State.Running != nil {
+			return upgradeInFlight(version)
+		}
+	}
+	// A pod with nothing to say yet is one the scheduler is still placing.
+	if pod.Status.Phase == corev1.PodPending && len(statuses) == 0 {
+		return "UpgradeScheduling", fmt.Sprintf("waiting for a node to run the upgrade to %s", version)
+	}
+	return upgradeInFlight(version)
+}
+
+// upgradeInFlight is what an upgrade with nothing wrong with it says, and is
+// also what the update is created with — one sentence for the whole ordinary
+// path, so that a pod appearing and starting is not two status writes saying
+// the same thing in two ways.
+func upgradeInFlight(version string) (reason, message string) {
+	return "UpgradeRunning", fmt.Sprintf("upgrading the platform to %s", version)
+}
+
+// failureDetail is why the upgrade failed, preferring what helm itself said.
+//
+// The Job's condition message is the batch controller's account of the
+// failure — "BackoffLimitExceeded" — which says that helm exited non-zero and
+// nothing about why. The container's termination message is the tail of helm's
+// own output, put there by the kubelet because the container asks for
+// FallbackToLogsOnError. That route matters because the other one does not
+// exist here: the logs are in ClickHouse, and ClickHouse is one of the
+// workloads the upgrade that just failed was rewriting.
+func (r *PlatformUpdateReconciler) failureDetail(
+	ctx context.Context,
+	update *kitchenv1alpha1.PlatformUpdate,
+	fallback string,
+) string {
+	pod := r.updatePod(ctx, update)
+	if pod == nil {
+		return fallback
+	}
+	for i := range pod.Status.ContainerStatuses {
+		terminated := pod.Status.ContainerStatuses[i].State.Terminated
+		if terminated == nil {
+			continue
+		}
+		if detail := trimUpdateMessage(terminated.Message); detail != "" {
+			return detail
+		}
+	}
+	return fallback
+}
+
+// trimUpdateMessage cuts helm's output down to what fits in a status.
+//
+// It keeps the *end*, which is the opposite of truncateMessage in
+// components.go and for the opposite reason: a pod's trouble is a headline
+// with detail after it, while helm prints its whole progress and then the
+// error it died of, so the last line is the one worth having.
+func trimUpdateMessage(message string) string {
+	message = strings.TrimSpace(message)
+	if len(message) > maxUpdateMessage {
+		// The cap is bytes and helm's output is not always ASCII, so the cut
+		// can land inside a rune; dropping the half-rune is what keeps the
+		// dashboard from opening the message with a replacement character.
+		return "…" + strings.ToValidUTF8(message[len(message)-maxUpdateMessage:], "")
+	}
+	return message
 }
 
 // preflight answers whether this upgrade can be attempted at all, before
@@ -391,6 +549,13 @@ func (r *PlatformUpdateReconciler) createJob(
 						Image:   image,
 						Command: []string{"helm"},
 						Args:    args,
+						// The kubelet copies the tail of helm's output into
+						// the container's terminated state when it exits
+						// non-zero, which is how the reason a failed upgrade
+						// failed reaches the status without ClickHouse being
+						// involved — the telemetry store is one of the things
+						// the upgrade was rewriting when it broke.
+						TerminationMessagePolicy: corev1.TerminationMessageFallbackToLogsOnError,
 						Env: []corev1.EnvVar{
 							// helm writes its cache, config and data under
 							// $HOME by default, which is not writable in the
