@@ -104,7 +104,18 @@ func deliverAs(
 	body []byte,
 	signature string,
 ) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(http.MethodPost, "/webhooks/git/gh", bytes.NewReader(body))
+	return deliverTo(provider, handler, "gh", event, body, signature)
+}
+
+func deliverTo(
+	provider string,
+	handler http.Handler,
+	connection string,
+	event string,
+	body []byte,
+	signature string,
+) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, "/webhooks/git/"+connection, bytes.NewReader(body))
 	switch provider {
 	case "gitlab":
 		req.Header.Set("X-Gitlab-Event", event)
@@ -306,5 +317,213 @@ func TestGiteaPullRequestCreatesBuild(t *testing.T) {
 	}
 	if build.Spec.Git.PullRequest == nil || *build.Spec.Git.PullRequest != 42 {
 		t.Errorf("expected pull request 42, got %+v", build.Spec.Git.PullRequest)
+	}
+}
+
+func TestPingIsAnsweredWithoutAConnection(t *testing.T) {
+	// The chart's own liveness probe pings /webhooks/git/none, and GitHub
+	// pings the moment a webhook is registered — before anything guarantees
+	// the Connection behind it is readable.
+	_, handler := newReceiver(t)
+
+	rec := deliverTo("github", handler, "none", "ping", []byte(`{}`), "")
+	if rec.Code != http.StatusOK || rec.Body.String() != "pong" {
+		t.Fatalf("expected 200 pong for a ping at an unknown connection, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestDeliveryForAMissingConnectionIsAccepted(t *testing.T) {
+	// A webhook outliving its Connection has no project behind it either.
+	// An error would only make the provider disable the hook.
+	r, handler := newReceiver(t)
+	body := []byte(`{"ref": "refs/heads/main", "after": "8f3a2c1d0abc456789ab", "repository": {"full_name": "acme/shop"}}`)
+
+	rec := deliverTo("github", handler, "gone", "push", body, sign(body))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", rec.Code, rec.Body.String())
+	}
+	builds := &kitchenv1alpha1.BuildList{}
+	if err := r.Client.List(context.Background(), builds); err != nil {
+		t.Fatalf("listing builds: %v", err)
+	}
+	if len(builds.Items) != 0 {
+		t.Errorf("expected no builds, got %d", len(builds.Items))
+	}
+}
+
+func TestGiteaPushCreatesBuild(t *testing.T) {
+	r, handler := newReceiverForProvider(t, "gitea")
+	body := []byte(`{
+		"ref": "refs/heads/main",
+		"after": "8f3a2c1d0abc456789ab",
+		"repository": {"full_name": "acme/shop"},
+		"head_commit": {"message": "Add checkout", "author": {"username": "bermos"}},
+		"pusher": {"login": "someone-else"}
+	}`)
+
+	rec := deliverAs("gitea", handler, "push", body, sign(body))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	build := &kitchenv1alpha1.Build{}
+	key := types.NamespacedName{Name: "shop-bld-8f3a2c1d0abc", Namespace: "default"}
+	if err := r.Client.Get(context.Background(), key, build); err != nil {
+		t.Fatalf("expected build to be created: %v", err)
+	}
+	if build.Spec.Git.Author != "bermos" || build.Spec.Git.Branch != "main" {
+		t.Errorf("unexpected git metadata %+v", build.Spec.Git)
+	}
+}
+
+func TestGiteaSynchronizedRebuildsThePreview(t *testing.T) {
+	// Gitea's word for "the branch moved" is "synchronized"; GitHub's is
+	// "synchronize". Reading only GitHub's leaves a preview stuck on the
+	// commit that opened it.
+	r, handler := newReceiverForProvider(t, "gitea")
+	body := []byte(`{
+		"action": "synchronized",
+		"number": 42,
+		"pull_request": {"head": {"ref": "feat/checkout", "sha": "ccccddddeeeeffff"}},
+		"repository": {"full_name": "acme/shop"}
+	}`)
+
+	rec := deliverAs("gitea", handler, "pull_request", body, sign(body))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	build := &kitchenv1alpha1.Build{}
+	key := types.NamespacedName{Name: "shop-bld-ccccddddeeee", Namespace: "default"}
+	if err := r.Client.Get(context.Background(), key, build); err != nil {
+		t.Fatalf("expected the new commit to build: %v", err)
+	}
+	if build.Spec.Git.PullRequest == nil || *build.Spec.Git.PullRequest != 42 {
+		t.Errorf("expected pull request 42, got %+v", build.Spec.Git.PullRequest)
+	}
+}
+
+func TestGitLabMergeRequestOpenedAndUpdated(t *testing.T) {
+	r, handler := newReceiverForProvider(t, "gitlab")
+	opened := []byte(`{
+		"object_attributes": {
+			"action": "open", "iid": 42, "source_branch": "feat/checkout",
+			"last_commit": {"id": "aaaabbbbccccdddd", "message": "Add checkout"}
+		},
+		"project": {"path_with_namespace": "acme/shop"},
+		"user": {"username": "bermos"}
+	}`)
+
+	rec := deliverAs("gitlab", handler, "Merge Request Hook", opened, webhookSecret)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", rec.Code, rec.Body.String())
+	}
+	build := &kitchenv1alpha1.Build{}
+	key := types.NamespacedName{Name: "shop-bld-aaaabbbbcccc", Namespace: "default"}
+	if err := r.Client.Get(context.Background(), key, build); err != nil {
+		t.Fatalf("expected build to be created: %v", err)
+	}
+	if build.Spec.Git.PullRequest == nil || *build.Spec.Git.PullRequest != 42 {
+		t.Errorf("expected merge request 42, got %+v", build.Spec.Git.PullRequest)
+	}
+
+	// An update that did not move the source branch — a label, a title, an
+	// assignee — carries no oldrev and must not redeploy the preview.
+	relabelled := []byte(`{
+		"object_attributes": {
+			"action": "update", "iid": 42, "source_branch": "feat/checkout",
+			"last_commit": {"id": "1111222233334444", "message": "Add checkout"}
+		},
+		"project": {"path_with_namespace": "acme/shop"},
+		"user": {"username": "bermos"}
+	}`)
+	rec = deliverAs("gitlab", handler, "Merge Request Hook", relabelled, webhookSecret)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", rec.Code, rec.Body.String())
+	}
+	err := r.Client.Get(context.Background(),
+		types.NamespacedName{Name: "shop-bld-111122223333", Namespace: "default"}, &kitchenv1alpha1.Build{})
+	if !errors.IsNotFound(err) {
+		t.Errorf("a merge request edit that moved nothing built anyway: %v", err)
+	}
+
+	// One that did move it carries oldrev, and builds.
+	pushed := []byte(`{
+		"object_attributes": {
+			"action": "update", "iid": 42, "source_branch": "feat/checkout",
+			"oldrev": "aaaabbbbccccdddd",
+			"last_commit": {"id": "1111222233334444", "message": "Fix the total"}
+		},
+		"project": {"path_with_namespace": "acme/shop"},
+		"user": {"username": "bermos"}
+	}`)
+	rec = deliverAs("gitlab", handler, "Merge Request Hook", pushed, webhookSecret)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if err := r.Client.Get(context.Background(),
+		types.NamespacedName{Name: "shop-bld-111122223333", Namespace: "default"}, build); err != nil {
+		t.Fatalf("expected the new commit to build: %v", err)
+	}
+}
+
+func TestGitLabMergeRequestMergedDeletesPreview(t *testing.T) {
+	env := &kitchenv1alpha1.Environment{
+		ObjectMeta: metav1.ObjectMeta{Name: "shop-pr-42", Namespace: "default"},
+		Spec: kitchenv1alpha1.EnvironmentSpec{
+			ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: "shop"},
+			Type:       kitchenv1alpha1.EnvironmentPreview,
+			ReleaseRef: kitchenv1alpha1.LocalObjectReference{Name: "shop-rel-1"},
+			Preview:    &kitchenv1alpha1.PreviewInfo{PullRequest: 42, Branch: "feat/checkout"},
+		},
+	}
+	r, handler := newReceiverForProvider(t, "gitlab", env)
+	body := []byte(`{
+		"object_attributes": {"action": "merge", "iid": 42, "source_branch": "feat/checkout"},
+		"project": {"path_with_namespace": "acme/shop"},
+		"user": {"username": "bermos"}
+	}`)
+
+	rec := deliverAs("gitlab", handler, "Merge Request Hook", body, webhookSecret)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", rec.Code, rec.Body.String())
+	}
+	err := r.Client.Get(context.Background(),
+		types.NamespacedName{Name: "shop-pr-42", Namespace: "default"}, &kitchenv1alpha1.Environment{})
+	if !errors.IsNotFound(err) {
+		t.Errorf("expected the preview to be torn down, got %v", err)
+	}
+}
+
+func TestSignatureIsCheckedInEachProvidersOwnScheme(t *testing.T) {
+	body := []byte(`{
+		"ref": "refs/heads/main", "after": "8f3a2c1d0abc456789ab",
+		"repository": {"full_name": "acme/shop"},
+		"project": {"path_with_namespace": "acme/shop"}
+	}`)
+
+	for _, tc := range []struct {
+		provider  string
+		event     string
+		signature string
+	}{
+		// GitLab compares the token whole; a valid HMAC of the body is not it.
+		{provider: "gitlab", event: "Push Hook", signature: sign(body)},
+		// Gitea signs the body; the bare secret is not a signature.
+		{provider: "gitea", event: "push", signature: webhookSecret},
+		{provider: "gitea", event: "push", signature: "deadbeef"},
+	} {
+		r, handler := newReceiverForProvider(t, tc.provider)
+		rec := deliverAs(tc.provider, handler, tc.event, body, tc.signature)
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("%s accepted the wrong credential: %d", tc.provider, rec.Code)
+		}
+		builds := &kitchenv1alpha1.BuildList{}
+		if err := r.Client.List(context.Background(), builds); err != nil {
+			t.Fatalf("listing builds: %v", err)
+		}
+		if len(builds.Items) != 0 {
+			t.Errorf("%s built from an unverified delivery", tc.provider)
+		}
 	}
 }
