@@ -243,6 +243,15 @@ type AuditQuery struct {
 	Project string
 	// Actor narrows to what one identity did.
 	Actor string
+	// Privileged narrows to the transitions that moved a control rather than
+	// a workload — a waiver, a requirement, a credential, a grant. It is read
+	// out of the details JSON rather than off a column of its own, because a
+	// new column would change the hash of every record ever written; see
+	// internal/audit/privilege.go for why that is the whole argument.
+	Privileged bool
+	// PrivilegeClass narrows further, to one class of privileged act. It
+	// implies Privileged.
+	PrivilegeClass string
 	// Since and Until bound the window; both are open when zero.
 	Since time.Time
 	Until time.Time
@@ -277,6 +286,19 @@ func (c *Client) QueryAuditRecords(ctx context.Context, query AuditQuery) ([]Aud
 		}
 		conditions = append(conditions, fmt.Sprintf("%s = {%s:String}", filter.column, filter.column))
 		params[filter.column] = filter.value
+	}
+	// The classification lives inside the hashed details, so the predicate is
+	// a JSON extraction rather than a column comparison. It costs a read of
+	// the `details` column over whatever the other filters left, which is
+	// affordable precisely because this table's row count is deploys and
+	// edits rather than requests.
+	if query.Privileged || query.PrivilegeClass != "" {
+		conditions = append(conditions, "JSONExtractBool(details, 'privileged') = 1")
+	}
+	if query.PrivilegeClass != "" {
+		conditions = append(conditions,
+			"JSONExtractString(details, 'privilegedClass') = {privilegedClass:String}")
+		params["privilegedClass"] = query.PrivilegeClass
 	}
 	if !query.Since.IsZero() {
 		conditions = append(conditions, "timestamp >= parseDateTime64BestEffort({since:String}, 3, 'UTC')")
@@ -337,6 +359,53 @@ FORMAT JSONEachRow`, auditColumns, quoteIdentifier(c.cfg.Database), quoteIdentif
 		return nil, err
 	}
 	return decodeAuditRows(body)
+}
+
+// ActorActivity is when each identity was last recorded doing something:
+// `actor` to the newest timestamp in the log, over the whole retention.
+//
+// It is the platform's honest answer to "who is still using this", and the
+// honesty is in what it does *not* see. The audit log records writes, so an
+// account that has only ever read — opened the dashboard, followed logs,
+// looked at a build — is indistinguishable here from one that never signed
+// in. That is a stated blind spot of the orphan survey rather than a defect
+// to work around: the alternative would be recording reads in the evidence
+// log, which would drown it.
+//
+// Service actors are excluded. `system:controller/build` is not an identity
+// anybody holds and would sit at the top of every answer.
+func (c *Client) ActorActivity(ctx context.Context) (map[string]time.Time, error) {
+	statement := fmt.Sprintf(`SELECT actor,
+    formatDateTime(max(timestamp), '%%Y-%%m-%%dT%%H:%%i:%%S.%%fZ', 'UTC') AS ts
+FROM %s.%s
+WHERE actor_kind = 'user'
+GROUP BY actor
+FORMAT JSONEachRow`, quoteIdentifier(c.cfg.Database), quoteIdentifier(AuditTable))
+
+	body, err := c.Query(ctx, statement)
+	if err != nil {
+		return nil, err
+	}
+	activity := map[string]time.Time{}
+	for _, raw := range strings.Split(body, "\n") {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		row := struct {
+			Actor string `json:"actor"`
+			TS    string `json:"ts"`
+		}{}
+		if err := json.Unmarshal([]byte(raw), &row); err != nil {
+			return nil, fmt.Errorf("unreadable actor activity row: %w", err)
+		}
+		timestamp, err := time.Parse("2006-01-02T15:04:05.999Z", row.TS)
+		if err != nil {
+			return nil, fmt.Errorf("unreadable actor activity timestamp %q: %w", row.TS, err)
+		}
+		activity[row.Actor] = timestamp
+	}
+	return activity, nil
 }
 
 func decodeAuditRows(body string) ([]AuditRecord, error) {

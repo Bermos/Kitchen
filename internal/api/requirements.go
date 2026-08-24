@@ -170,7 +170,6 @@ func requirementsTransition(
 	before kitchenv1alpha1.Continuity,
 ) audit.Transition {
 	details := map[string]any{
-		"privileged":           true,
 		"previousBundleDigest": previousDigest,
 		"bundleDigest":         nextDigest,
 	}
@@ -190,14 +189,15 @@ func requirementsTransition(
 	}
 	continuity.recordInto(details, before)
 	return audit.Transition{
-		Object:    env,
-		Kind:      audit.KindEnvironment,
-		Operation: clickhouse.AuditUpdate,
-		From:      previousDigest,
-		To:        nextDigest,
-		Project:   env.Spec.ProjectRef.Name,
-		Reason:    fmt.Sprintf("environment %s requirements changed", env.Name),
-		Details:   details,
+		Object:     env,
+		Kind:       audit.KindEnvironment,
+		Operation:  clickhouse.AuditUpdate,
+		Privileged: audit.PrivilegeRequirements,
+		From:       previousDigest,
+		To:         nextDigest,
+		Project:    env.Spec.ProjectRef.Name,
+		Reason:     fmt.Sprintf("environment %s requirements changed", env.Name),
+		Details:    details,
 	}
 }
 

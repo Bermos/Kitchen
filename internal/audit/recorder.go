@@ -110,6 +110,12 @@ type Transition struct {
 	// that cannot be marshalled fails the transition rather than being
 	// dropped quietly.
 	Details map[string]any
+
+	// Privileged classifies a transition that moved a control rather than a
+	// workload — see privilege.go. Empty is the ordinary case. The recorder
+	// materializes it into Details, so the classification is inside what the
+	// chain hashes rather than beside it.
+	Privileged Privilege
 }
 
 // Recorder appends transitions to the chain. A nil Recorder is valid and
@@ -249,9 +255,23 @@ func (t Transition) record() (clickhouse.AuditRecord, error) {
 		operation = clickhouse.AuditTransition
 	}
 
+	// The classification goes into the details rather than beside them: it is
+	// then covered by the chain, so a privileged marking cannot be added or
+	// taken off a stored record without the hash saying so. Writing it here
+	// rather than at each site is what keeps the spelling single.
+	fields := t.Details
+	if t.Privileged != "" {
+		fields = make(map[string]any, len(t.Details)+2)
+		for key, value := range t.Details {
+			fields[key] = value
+		}
+		fields[PrivilegedDetail] = true
+		fields[PrivilegeClassDetail] = string(t.Privileged)
+	}
+
 	details := ""
-	if len(t.Details) > 0 {
-		encoded, err := json.Marshal(t.Details)
+	if len(fields) > 0 {
+		encoded, err := json.Marshal(fields)
 		if err != nil {
 			return clickhouse.AuditRecord{}, fmt.Errorf("the audit record's details could not be encoded: %w", err)
 		}

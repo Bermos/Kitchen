@@ -29,6 +29,7 @@ import (
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/attestation"
+	"github.com/Bermos/Kitchen/internal/audit"
 	"github.com/Bermos/Kitchen/internal/policy"
 )
 
@@ -203,8 +204,8 @@ func TestTheRequirementsTransitionCarriesTheChangeByNameAndNotByValue(t *testing
 		t.Fatalf("the transition must run from the previous digest to the next: %q -> %q",
 			transition.From, transition.To)
 	}
-	if transition.Details["privileged"] != true {
-		t.Fatalf("a requirements change is privileged, got %v", transition.Details["privileged"])
+	if transition.Privileged != audit.PrivilegeRequirements {
+		t.Fatalf("a requirements change is privileged, got %q", transition.Privileged)
 	}
 	if transition.Details["previousBundleDigest"] != previous {
 		t.Fatalf("the previous digest must be recorded, got %v", transition.Details["previousBundleDigest"])

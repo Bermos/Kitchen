@@ -137,6 +137,7 @@ func exceptionExpiryTransition(exception *kitchenv1alpha1.Exception) audit.Trans
 		Object:     exception,
 		Kind:       audit.KindException,
 		Controller: actorExceptionController,
+		Privileged: audit.PrivilegeBreakGlass,
 		From:       string(kitchenv1alpha1.ExceptionActive),
 		To:         string(kitchenv1alpha1.ExceptionExpired),
 		Project:    exception.Spec.ProjectRef.Name,
@@ -144,7 +145,6 @@ func exceptionExpiryTransition(exception *kitchenv1alpha1.Exception) audit.Trans
 			"exception %s expired without being resolved: %v block again for %s",
 			exception.Name, exception.Spec.RuleIDs, exception.Spec.EnvironmentRef.Name),
 		Details: map[string]any{
-			"privileged":   true,
 			"environment":  exception.Spec.EnvironmentRef.Name,
 			"ruleIDs":      exception.Spec.RuleIDs,
 			"expiresAt":    exception.Spec.ExpiresAt.UTC().Format(time.RFC3339),

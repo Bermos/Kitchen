@@ -44,11 +44,41 @@ GET /audit?kind=Project&name=shop&actor=grace@example.com&since=2026-08-13T00:00
 ```
 
 Records are
-`{sequence, timestamp, actor, actorKind, correlation, operation, kind, name, project, fromState, toState, reason, details, prevHash, hash}`,
+`{sequence, timestamp, actor, actorKind, correlation, operation, kind, name, project, fromState, toState, reason, details, privileged, privilegeClass, prevHash, hash}`,
 newest first. `actorKind` is `user` or `service`; a transition the platform
 decided on its own is attributed to the reconciler that decided it
 (`system:controller/build`), never to "the operator". `correlation` ties every
 record from one cause together — for a deploy, the commit.
+
+### Privileged records
+
+Most of the log is what the platform is *running*: builds, releases, rollbacks,
+environment variables. A few records are what the platform will *allow*, and
+they are the ones a supervisor asks about. Those carry `privileged: true` and a
+`privilegeClass`:
+
+| Class | What moved |
+|---|---|
+| `break-glass` | an exception granted, relied on, resolved, or expiring unresolved |
+| `requirements` | what an environment demands — its bundle, its parameters, its owners |
+| `classification` | a data class or a residency |
+| `access` | who may do what: a project's grants, the operator list, a recertification decision |
+| `credential` | a credential the platform holds, written or replaced |
+| `integrity` | a write to a Kitchen-managed object that no reconcile made ([access](access.md#out-of-band-writes)) |
+
+```
+GET /audit?privileged=true&since=2026-01-01T00:00:00Z
+GET /audit?privilegeClass=break-glass
+```
+
+`privilegeClass` implies `privileged=true`, and a class that is not one of the
+six answers `400` with the list rather than an empty page.
+
+Both fields are a *reading* of the record and not a second source for it: the
+marking lives inside `details`, which is what the chain hashes, so a privileged
+marking added to or taken off a stored record breaks verification. It is
+deliberately not a column of its own — a new column would change the hash of
+every record ever written, and the whole log would stop verifying at once.
 
 The chain fields come back with every record on purpose. An audit view that
 hid them would be asking to be believed, and the point of a chain is that it

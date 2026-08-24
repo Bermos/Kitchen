@@ -249,6 +249,7 @@ func sourceBreakGlassTransition(
 		Object:      build,
 		Kind:        audit.KindBuild,
 		Controller:  actorBuildController,
+		Privileged:  audit.PrivilegeBreakGlass,
 		Correlation: correlationFor(build),
 		Project:     project.Name,
 		Reason: fmt.Sprintf(
@@ -256,7 +257,6 @@ func sourceBreakGlassTransition(
 				"requested by %s, approved by %s",
 			build.Spec.Git.SHA, exception.Name, exception.Spec.RequestedBy, exception.Spec.ApprovedBy),
 		Details: map[string]any{
-			"privileged":  true,
 			"exception":   exception.Name,
 			"rule":        RulePullRequest,
 			"commit":      build.Spec.Git.SHA,

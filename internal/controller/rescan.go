@@ -1005,6 +1005,7 @@ func (s *RescanSweeper) rollBack(
 		Object:      env,
 		Kind:        audit.KindEnvironment,
 		Controller:  actorRescanSweep,
+		Privileged:  audit.PrivilegeBreakGlass,
 		Correlation: exception.Name,
 		From:        release.Name,
 		To:          target,
@@ -1014,7 +1015,6 @@ func (s *RescanSweeper) rollBack(
 				"so %s retreats from release %s to %s",
 			exception.Name, env.Name, strings.Join(covered, ", "), env.Name, release.Name, target),
 		Details: map[string]any{
-			"privileged":   true,
 			"exception":    exception.Name,
 			"unmetRules":   covered,
 			"environment":  env.Name,

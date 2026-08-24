@@ -748,13 +748,21 @@ func (s *Server) patchProject(w http.ResponseWriter, req *http.Request) {
 	}
 	continuity.apply(&project.Spec.Criticality, &project.Spec.RTO, &project.Spec.RPO)
 
+	// A settings PATCH is ordinary — a branch, a preview policy — except when
+	// it moves the data class, which is an input to policy: the record is
+	// classified so the two are separable in the log.
+	privilege := audit.Privilege("")
+	if nextClass != nil {
+		privilege = audit.PrivilegeClassification
+	}
 	if !s.recorded(w, req, audit.Transition{
-		Object:    project,
-		Kind:      audit.KindProject,
-		Operation: clickhouse.AuditUpdate,
-		Project:   project.Name,
-		Reason:    fmt.Sprintf("project %s settings changed", project.Name),
-		Details:   details,
+		Object:     project,
+		Kind:       audit.KindProject,
+		Operation:  clickhouse.AuditUpdate,
+		Privileged: privilege,
+		Project:    project.Name,
+		Reason:     fmt.Sprintf("project %s settings changed", project.Name),
+		Details:    details,
 	}) {
 		return
 	}
@@ -1625,10 +1633,11 @@ func (s *Server) getClaim(w http.ResponseWriter, req *http.Request) {
 // projectSettingsDetails is the audit detail of a settings PATCH, built apart
 // from the recording so a test can hold it up to the light without a store.
 // Field names, never values — with one deliberate exception: a dataClass
-// change carries the previous class and the next, and is marked privileged,
-// because the class decides what promotions the policy engine will refuse and
-// the trail has to show what the bar was before. A classification is a label,
-// not a secret.
+// change carries the previous class and the next, because the class decides
+// what promotions the policy engine will refuse and the trail has to show
+// what the bar was before. A classification is a label, not a secret. The
+// record itself is classified `classification` at the call site, which is
+// where the privilege vocabulary lives.
 func projectSettingsDetails(
 	project *kitchenv1alpha1.Project,
 	body patchProjectRequest,
@@ -1637,7 +1646,6 @@ func projectSettingsDetails(
 ) map[string]any {
 	details := map[string]any{"fields": changedProjectFields(body, continuity)}
 	if nextClass != nil {
-		details["privileged"] = true
 		details["previousDataClass"] = string(project.Spec.DataClass)
 		details["dataClass"] = string(*nextClass)
 	}

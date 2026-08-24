@@ -193,3 +193,67 @@ func TestEnsureAuditSchemaIsNotPartOfTheTelemetrySchema(t *testing.T) {
 		t.Errorf("the telemetry schema touched the audit table:\n%s", store.transcript())
 	}
 }
+
+// The privileged filter is a predicate over the hashed details rather than a
+// column, because a column would change the hash of every record ever
+// written. What matters for the read is that the predicate is there and that
+// a class implies the boolean.
+func TestQueryAuditRecordsFiltersOnThePrivilegedMarking(t *testing.T) {
+	store := newFakeLogStore(t)
+	client := store.client(t)
+
+	if _, err := client.QueryAuditRecords(context.Background(), AuditQuery{Privileged: true}); err != nil {
+		t.Fatalf("QueryAuditRecords: %v", err)
+	}
+	if !strings.Contains(store.query, "JSONExtractBool(details, 'privileged') = 1") {
+		t.Errorf("a privileged-only page does not filter on the marking:\n%s", store.query)
+	}
+
+	// A class narrows further and implies the marking: a record carrying a
+	// class but not the boolean is not a shape the recorder can write, and a
+	// query that trusted the class alone would be trusting a hand-edited row.
+	if _, err := client.QueryAuditRecords(context.Background(),
+		AuditQuery{PrivilegeClass: "break-glass"}); err != nil {
+		t.Fatalf("QueryAuditRecords: %v", err)
+	}
+	if !strings.Contains(store.query, "JSONExtractBool(details, 'privileged') = 1") {
+		t.Errorf("a class filter must still require the marking:\n%s", store.query)
+	}
+	if !strings.Contains(store.query, "JSONExtractString(details, 'privilegedClass') = {privilegedClass:String}") {
+		t.Errorf("the class is not filtered on:\n%s", store.query)
+	}
+
+	// And an ordinary page asks for none of it.
+	if _, err := client.QueryAuditRecords(context.Background(), AuditQuery{Kind: "Project"}); err != nil {
+		t.Fatalf("QueryAuditRecords: %v", err)
+	}
+	if strings.Contains(store.query, "privileged") {
+		t.Errorf("an unfiltered page must not narrow to privileged records:\n%s", store.query)
+	}
+}
+
+// Orphan detection reads the log for who was last seen doing something. It
+// asks about people only: a controller actor would sit at the top of every
+// answer and is not an identity anybody holds.
+func TestActorActivityAnswersTheNewestRecordPerPerson(t *testing.T) {
+	store := newFakeLogStore(t)
+	store.rows = `{"actor":"grace@example.com","ts":"2026-03-01T09:30:00.000Z"}` + "\n" +
+		`{"actor":"heidi@example.com","ts":"2025-01-04T11:00:00.000Z"}`
+
+	activity, err := store.client(t).ActorActivity(context.Background())
+	if err != nil {
+		t.Fatalf("ActorActivity: %v", err)
+	}
+	if len(activity) != 2 {
+		t.Fatalf("want two actors, got %d", len(activity))
+	}
+	if !activity["grace@example.com"].Equal(time.Date(2026, 3, 1, 9, 30, 0, 0, time.UTC)) {
+		t.Errorf("grace's last activity read back as %v", activity["grace@example.com"])
+	}
+	if !strings.Contains(store.query, "actor_kind = 'user'") {
+		t.Errorf("the survey must ask about people, not controllers:\n%s", store.query)
+	}
+	if !strings.Contains(store.query, "GROUP BY actor") {
+		t.Errorf("the survey must be one row per identity:\n%s", store.query)
+	}
+}

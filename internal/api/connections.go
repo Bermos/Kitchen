@@ -248,12 +248,13 @@ func (s *Server) createConnection(w http.ResponseWriter, req *http.Request) {
 	// the secret is the part of this request that matters, and a credential
 	// on the cluster that no record mentions is the failure to avoid.
 	if !s.recorded(w, req, audit.Transition{
-		Object:    connection,
-		Kind:      audit.KindConnection,
-		Operation: clickhouse.AuditCreate,
-		To:        body.Provider,
-		Reason:    fmt.Sprintf("connection %s created for provider %s", body.Name, body.Provider),
-		Details:   map[string]any{"provider": body.Provider, "secret": secretName},
+		Object:     connection,
+		Kind:       audit.KindConnection,
+		Operation:  clickhouse.AuditCreate,
+		Privileged: audit.PrivilegeCredential,
+		To:         body.Provider,
+		Reason:     fmt.Sprintf("connection %s created for provider %s", body.Name, body.Provider),
+		Details:    map[string]any{"provider": body.Provider, "secret": secretName},
 	}) {
 		return
 	}
@@ -470,12 +471,13 @@ func (s *Server) patchConnection(w http.ResponseWriter, req *http.Request) {
 		// endpoint, so it is recorded as its own transition rather than
 		// folded into "the connection changed".
 		if !s.recorded(w, req, audit.Transition{
-			Object:    connection,
-			Kind:      audit.KindConnection,
-			Operation: clickhouse.AuditUpdate,
-			To:        connection.Spec.Provider,
-			Reason:    fmt.Sprintf("the credential for connection %s was replaced", connection.Name),
-			Details:   map[string]any{"provider": connection.Spec.Provider, "rotated": true},
+			Object:     connection,
+			Kind:       audit.KindConnection,
+			Operation:  clickhouse.AuditUpdate,
+			Privileged: audit.PrivilegeCredential,
+			To:         connection.Spec.Provider,
+			Reason:     fmt.Sprintf("the credential for connection %s was replaced", connection.Name),
+			Details:    map[string]any{"provider": connection.Spec.Provider, "rotated": true},
 		}) {
 			return
 		}

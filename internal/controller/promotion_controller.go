@@ -583,7 +583,6 @@ func breakGlassTransition(
 	waivedRules []string,
 ) audit.Transition {
 	details := map[string]any{
-		"privileged":  true,
 		"exception":   exception.Name,
 		"waivedRules": waivedRules,
 		"environment": promotion.Spec.EnvironmentRef.Name,
@@ -600,6 +599,7 @@ func breakGlassTransition(
 		Object:      promotion,
 		Kind:        audit.KindPromotion,
 		Controller:  actorPromotionController,
+		Privileged:  audit.PrivilegeBreakGlass,
 		Correlation: exception.Name,
 		To:          string(kitchenv1alpha1.PromotionAllowedWithException),
 		Project:     promotion.Spec.ProjectRef.Name,
