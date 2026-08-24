@@ -131,7 +131,12 @@ is what builds authenticate against:
 ```
 
 `config` is the provider's own configuration and passes through as given — a
-self-hosted GitHub names its API endpoint as `{"apiUrl": "https://github.internal/api/v3"}`.
+self-hosted forge names its API endpoint as `apiUrl`:
+`{"apiUrl": "https://github.internal/api/v3"}` for GitHub Enterprise,
+`{"apiUrl": "https://gitlab.internal/api/v4"}` for GitLab,
+`{"apiUrl": "https://git.internal/api/v1"}` for Gitea. Left out, each falls
+back to its hosted service — which is almost never what a Gitea connection
+means.
 
 A `github` token registers the repository's webhook, reads the repository, and
 posts the commit status, the deployment and the pull-request comment. As a
@@ -140,8 +145,18 @@ write**, and **Commit statuses**, **Deployments** and **Pull requests: read and
 write**; as a classic one the `repo` scope covers all of it, or `public_repo`
 where every repository is public. A token short of the reporting permissions
 still builds and deploys — the connection carries a warning saying what it
-cannot post, and nothing goes red. A `neon` credential is an API key that can
-create projects.
+cannot post, and nothing goes red.
+
+A `gitlab` or `gitea` token registers the repository's webhook and clones the
+repository. GitLab takes a personal, project or group access token with the
+`api` scope, held by someone with **Maintainer** on the project — registering
+a hook is a maintainer's right. Gitea takes an access token with
+`write:repository`, held by an owner or administrator of the repository. Both
+are sources only: neither reports the `statusChecks` capability, so no commit
+status, deployment or pull-request comment is posted back, and neither
+enumerates repositories — the repository is typed as `owner/name` rather than
+picked from a list. A `neon` credential is an API key that can create
+projects.
 
 `POST /connections/test` runs that credential past the provider **without
 storing anything**: no Secret is written and no connection is created, so a
