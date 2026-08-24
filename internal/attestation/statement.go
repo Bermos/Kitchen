@@ -78,6 +78,21 @@ const (
 	// what keeps developers out of threshold negotiation entirely.
 	PredicateQualityGate = "https://kitchen.bermos.dev/attestation/quality-gate/v1"
 
+	// PredicateVulnerabilityScan records that an artifact's bill of materials
+	// was matched against a vulnerability database *after the build*, and
+	// what came out: the scanner and its version, when it ran, the database
+	// snapshot it matched against, and the findings.
+	//
+	// It is the quality gate's predicate asked again, and the difference is
+	// the snapshot. A gate's findings are a statement about what was known on
+	// the day of the build; these are a statement about what is known today
+	// about an artifact nobody has touched since. Naming the snapshot is what
+	// makes the second claim reproducible rather than merely repeatable — and
+	// it is why this carries no verdict either. Whether a finding is
+	// disqualifying is still the environment's question, decided by the
+	// policy engine over this evidence.
+	PredicateVulnerabilityScan = "https://kitchen.bermos.dev/attestation/vulnerability-scan/v1"
+
 	// PredicatePromotionDecision records a policy decision about whether an
 	// artifact was allowed to move, together with everything needed to
 	// replay it. Reserved by the policy engine (issue #132); named here so

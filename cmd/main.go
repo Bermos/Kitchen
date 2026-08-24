@@ -98,9 +98,11 @@ func main() {
 	flag.StringVar(&gitWebhookAddr, "git-webhook-bind-address", ":8090",
 		"The address the git webhook receiver binds to.")
 	flag.StringVar(&qualityGateImage, "quality-gate-image", "",
-		"Image the publisher that carries a quality gate's findings out of its pod runs. It is this "+
-			"operator's own image — the publisher is another binary in it — and a pod cannot read its own "+
-			"image back, so the chart passes it in. Without it, configured gates never run.")
+		"Image the publisher that carries a quality gate's findings out of its pod runs, and the same "+
+			"image the continuous re-evaluation pass runs its two halves from. It is this "+
+			"operator's own image — all three are further binaries in it — and a pod cannot read its own "+
+			"image back, so the chart passes it in. Without it, configured gates never run and nothing "+
+			"is rescanned.")
 	flag.StringVar(&previewGateImage, "preview-gate-image", "",
 		"Image the forward-auth gate for protected previews runs. It is this operator's own image — "+
 			"the gate is a second binary in it — and a pod cannot read its own image back, so the chart passes it in. "+
@@ -525,6 +527,21 @@ func main() {
 	// existing watch into the history the Events screen and the crash report
 	// read. It idles until the Kitchen object names a store, so it too is
 	// added unconditionally.
+	// The continuous re-evaluation pass: every currently-deployed release,
+	// matched against a current vulnerability database on an interval and
+	// re-judged against its environment's own bar. It is leader-elected and
+	// idles until the Kitchen object turns it on and names a scanner, so it
+	// is added unconditionally like the collectors above.
+	if err := mgr.Add(&controller.RescanSweeper{
+		Client:        mgr.GetClient(),
+		Audit:         auditor,
+		Activity:      recorder,
+		OperatorImage: qualityGateImage,
+	}); err != nil {
+		setupLog.Error(err, "unable to add the rescan sweep to manager")
+		os.Exit(1)
+	}
+
 	if err := mgr.Add(&k8sevents.Recorder{
 		// The cached client, unlike the two collectors above: the recorder's
 		// watch is the event informer, and it resolves an event's project by

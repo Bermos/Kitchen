@@ -336,6 +336,14 @@ type ComplianceSpec struct {
 	// +kubebuilder:default={}
 	// +optional
 	Exceptions *ExceptionPolicySpec `json:"exceptions,omitempty"`
+
+	// Rescan is the continuous re-evaluation pass: what turns the promotion
+	// gate into an ongoing control. It lives here for the same reason Gates
+	// does — a team that chose how often its own running release was checked
+	// against today's vulnerability database would be marking its own
+	// homework, on a slower schedule.
+	// +optional
+	Rescan RescanSpec `json:"rescan,omitempty"`
 }
 
 // AuditStatus reports whether the audit log is actually recording, which is
@@ -403,4 +411,180 @@ type ComplianceStatus struct {
 
 	// +optional
 	Policy *PolicyStatus `json:"policy,omitempty"`
+
+	// +optional
+	Rescan *RescanStatus `json:"rescan,omitempty"`
+}
+
+// VulnerabilityScannerSpec is the matcher the continuous re-evaluation pass
+// runs over a deployed artifact's bill of materials.
+//
+// It is shaped like QualityGateSpec on purpose — an image, its arguments, the
+// version to record and the format to record it as — because it is the same
+// kind of thing: an image somebody else wrote, pointed at a file, whose output
+// the platform signs and never edits. What it is not is a gate: a gate runs
+// once, at build time, against the vulnerability database of that day. This
+// runs again and again against the database of *today*, which is the whole
+// difference between a gate and a control.
+//
+// There is deliberately no compiled-in default image. A scanner is pulled on
+// every scan of every environment, its database is refreshed on somebody
+// else's schedule, and an installation that has not chosen one has not decided
+// anything the platform should decide for it — so rescan with no scanner
+// configured reports itself as configured-and-inert rather than quietly
+// picking a scanner and a vendor.
+type VulnerabilityScannerSpec struct {
+	// Name identifies the scanner in its attestation, the way a gate's name
+	// does. It has to be stable: a decision that cites a scan cites this.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=40
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	// +kubebuilder:default=scanner
+	// +optional
+	Name string `json:"name,omitempty"`
+
+	// Image is the matcher. It is run as an unprivileged user with no access
+	// to the cluster and no service account token; what it is given is the
+	// bill of materials on a volume and a file to write its findings to.
+	// +kubebuilder:validation:MinLength=1
+	Image string `json:"image"`
+
+	// Args are passed to the image. Kubernetes' own `$(VAR)` expansion
+	// applies, exactly as it does for a gate, so the scanner names its inputs
+	// as `$(KITCHEN_SBOM)` and `$(KITCHEN_FINDINGS)` — and, where it can say
+	// so, `$(KITCHEN_DATA_SNAPSHOT)` for the file it writes its vulnerability
+	// database's identifier to.
+	//
+	// Nothing from an API request ever reaches this list: it is the platform
+	// operator's configuration, read off the singleton, and the pod is
+	// assembled from it and from the artifact reference alone.
+	// +optional
+	Args []string `json:"args,omitempty"`
+
+	// Version is what the scanner's own version is recorded as. It is not the
+	// same claim as the data snapshot and does not replace it: the binary and
+	// the database it matches against move on different schedules, and a
+	// finding is only reproducible against both.
+	// +optional
+	Version string `json:"version,omitempty"`
+
+	// Format names the shape of what the scanner writes, so the operator
+	// knows how to read a finding out of it: `grype-json`, `trivy-json` or
+	// `osv-json` are understood, and anything else is carried verbatim and
+	// normalized on a best-effort basis. The raw report is signed either way
+	// — the normalized list is the platform's reading of it, never a
+	// replacement for it.
+	// +optional
+	Format string `json:"format,omitempty"`
+
+	// TimeoutSeconds bounds one scan. A scanner that hangs must not hold a
+	// place in the sweep's concurrency budget forever.
+	// +kubebuilder:validation:Minimum=30
+	// +kubebuilder:default=900
+	// +optional
+	TimeoutSeconds int32 `json:"timeoutSeconds,omitempty"`
+}
+
+// RescanSpec configures the continuous re-evaluation pass: the thing that
+// makes this a control rather than a gate.
+//
+// An artifact compliant in March is not necessarily compliant in June, and
+// nothing about the artifact changed — the world did. So the platform walks
+// every currently-deployed release on an interval, matches its bill of
+// materials against a *current* vulnerability database, and re-runs the
+// environment's own bar through the same code path a promotion uses. No
+// rebuild, no redeploy: the artifact is untouched and what changes is the
+// evidence attached to it and the decision recorded about it.
+//
+// It also is the only thing that judges exception expiry. There is no expiry
+// engine: an expired grant simply stops appearing in the listing every
+// evaluation materializes its input from, the rules it waived fire unwaived,
+// and this pass is where that becomes a verdict somebody can read.
+type RescanSpec struct {
+	// Enabled walks every deployed release on Interval.
+	//
+	// Off by default, because it costs a scanner pod per environment per
+	// interval in the application's own namespace, and an installation should
+	// turn that on knowing it. Off does not mean the question goes unasked —
+	// it means nobody is asking it, which is a state
+	// `GET /api/v1/compliance/drift` reports rather than hides.
+	// +kubebuilder:default=false
+	// +optional
+	Enabled bool `json:"enabled"`
+
+	// Interval is how often each deployed release is re-evaluated.
+	//
+	// Daily is the default because vulnerability databases move daily; the
+	// floor is an hour, which is already far below the rate at which the
+	// answer can change. The interval is per (environment, release) pair and
+	// counted from the last scan that finished, so a sweep spreads itself out
+	// instead of firing every environment at the same minute forever.
+	// +kubebuilder:default="24h"
+	// +optional
+	Interval metav1.Duration `json:"interval,omitempty"`
+
+	// Scanner is the matcher run over each artifact's bill of materials.
+	// Absent, the pass is enabled and inert, and says so.
+	// +optional
+	Scanner *VulnerabilityScannerSpec `json:"scanner,omitempty"`
+
+	// Concurrency bounds how many scans are in flight at once, across the
+	// whole platform.
+	//
+	// It is here because the first sweep after an upgrade has every
+	// environment due at the same instant: two hundred environments would be
+	// two hundred image pulls into two hundred namespaces, which is a denial
+	// of service the platform performed on itself. Four at a time finishes a
+	// two-hundred-environment install inside an hour and is invisible while
+	// it does.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=64
+	// +kubebuilder:default=4
+	// +optional
+	Concurrency int32 `json:"concurrency,omitempty"`
+}
+
+// EffectiveInterval is the interval in force, with the compiled-in default
+// standing in for a singleton written before the field existed. Nil-safe.
+func (s *RescanSpec) EffectiveInterval() time.Duration {
+	if s == nil || s.Interval.Duration < time.Hour {
+		return 24 * time.Hour
+	}
+	return s.Interval.Duration
+}
+
+// EffectiveConcurrency is how many scans may be in flight, with the same
+// treatment of a zero written before the field existed.
+func (s *RescanSpec) EffectiveConcurrency() int {
+	if s == nil || s.Concurrency < 1 {
+		return 4
+	}
+	return int(s.Concurrency)
+}
+
+// RescanStatus reports whether the re-evaluation pass is actually running,
+// which — like AuditStatus and PolicyStatus — is a different question from
+// whether it is enabled: it needs a scanner configured, and a pass that is on
+// with nothing to run reports nothing rather than nothing being wrong.
+type RescanStatus struct {
+	// Running is true when the sweep is on and has a scanner to run.
+	Running bool `json:"running"`
+
+	// LastSweep is when the sweep last looked at the whole estate — not when
+	// it last scanned anything, which is per environment.
+	// +optional
+	LastSweep *metav1.Time `json:"lastSweep,omitempty"`
+
+	// Environments is how many deployed (environment, release) pairs the last
+	// pass considered, and Scanning how many had a scan in flight when it
+	// finished. Both are the sweep's own count, so a zero next to a running
+	// pass is a platform with nothing deployed rather than a broken sweep.
+	// +optional
+	Environments int32 `json:"environments,omitempty"`
+	// +optional
+	Scanning int32 `json:"scanning,omitempty"`
+
+	// Message explains a pass that is not running.
+	// +optional
+	Message string `json:"message,omitempty"`
 }

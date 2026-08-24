@@ -1145,6 +1145,77 @@ spec:
                 - Degraded
                 - Terminating
                 type: string
+              rescan:
+                description: |-
+                  Rescan is where the continuous re-evaluation pass (#134) keeps its
+                  place: what it last scanned, against which vulnerability database, and
+                  what the environment's own bar said about the result. It is the
+                  sweep's working state as much as its answer — the sweep is stateless
+                  between passes and reads its next move off this.
+                properties:
+                  artifact:
+                    type: string
+                  dataSnapshot:
+                    description: |-
+                      DataSnapshot identifies the vulnerability database the findings were
+                      produced against. It is the field that makes a scan reproducible: the
+                      same artifact matched against the same snapshot yields the same
+                      findings, and a decision that cannot name its snapshot can only be
+                      repeated, never reproduced.
+                    type: string
+                  decisionID:
+                    type: string
+                  findings:
+                    description: |-
+                      Findings is how many the scanner reported, after the platform's
+                      normalization. Zero with an Evaluated phase means a clean scan; zero
+                      with a Failed one means nothing was scanned.
+                    format: int32
+                    type: integer
+                  finishedAt:
+                    format: date-time
+                    type: string
+                  jobName:
+                    description: |-
+                      JobName is the scanner Job in the application's namespace while one is
+                      in flight. It is the sweep's own bookkeeping and is left behind after a
+                      pass so that a person can look at what happened before the Job's TTL
+                      collects it.
+                    type: string
+                  message:
+                    description: Message is the one line a person reads.
+                    type: string
+                  phase:
+                    description: Phase is where the pass stands.
+                    enum:
+                    - Scanning
+                    - Evaluated
+                    - Failed
+                    type: string
+                  release:
+                    description: |-
+                      Release is the release that was scanned, and Artifact the
+                      repository@digest it deploys. Both are recorded because a release can
+                      be deleted and the digest is what the evidence is attached to.
+                    type: string
+                  startedAt:
+                    description: |-
+                      StartedAt and FinishedAt time-stamp the scan itself. FinishedAt is what
+                      the sweep counts the interval from, so a scan that never finishes
+                      delays the next one rather than doubling it.
+                    format: date-time
+                    type: string
+                  unmetRules:
+                    items:
+                      type: string
+                    type: array
+                    x-kubernetes-list-type: atomic
+                  verdict:
+                    description: |-
+                      Verdict, UnmetRules and DecisionID are the re-evaluation's outcome and
+                      the way back to the stored decision that holds its whole input.
+                    type: string
+                type: object
               url:
                 description: Primary URL the Environment is reachable at.
                 type: string
@@ -2013,6 +2084,115 @@ spec:
                     items:
                       type: string
                     type: array
+                  rescan:
+                    description: |-
+                      Rescan is the continuous re-evaluation pass: what turns the promotion
+                      gate into an ongoing control. It lives here for the same reason Gates
+                      does — a team that chose how often its own running release was checked
+                      against today's vulnerability database would be marking its own
+                      homework, on a slower schedule.
+                    properties:
+                      concurrency:
+                        default: 4
+                        description: |-
+                          Concurrency bounds how many scans are in flight at once, across the
+                          whole platform.
+
+                          It is here because the first sweep after an upgrade has every
+                          environment due at the same instant: two hundred environments would be
+                          two hundred image pulls into two hundred namespaces, which is a denial
+                          of service the platform performed on itself. Four at a time finishes a
+                          two-hundred-environment install inside an hour and is invisible while
+                          it does.
+                        format: int32
+                        maximum: 64
+                        minimum: 1
+                        type: integer
+                      enabled:
+                        default: false
+                        description: |-
+                          Enabled walks every deployed release on Interval.
+
+                          Off by default, because it costs a scanner pod per environment per
+                          interval in the application's own namespace, and an installation should
+                          turn that on knowing it. Off does not mean the question goes unasked —
+                          it means nobody is asking it, which is a state
+                          `GET /api/v1/compliance/drift` reports rather than hides.
+                        type: boolean
+                      interval:
+                        default: 24h
+                        description: |-
+                          Interval is how often each deployed release is re-evaluated.
+
+                          Daily is the default because vulnerability databases move daily; the
+                          floor is an hour, which is already far below the rate at which the
+                          answer can change. The interval is per (environment, release) pair and
+                          counted from the last scan that finished, so a sweep spreads itself out
+                          instead of firing every environment at the same minute forever.
+                        type: string
+                      scanner:
+                        description: |-
+                          Scanner is the matcher run over each artifact's bill of materials.
+                          Absent, the pass is enabled and inert, and says so.
+                        properties:
+                          args:
+                            description: |-
+                              Args are passed to the image. Kubernetes' own `$(VAR)` expansion
+                              applies, exactly as it does for a gate, so the scanner names its inputs
+                              as `$(KITCHEN_SBOM)` and `$(KITCHEN_FINDINGS)` — and, where it can say
+                              so, `$(KITCHEN_DATA_SNAPSHOT)` for the file it writes its vulnerability
+                              database's identifier to.
+
+                              Nothing from an API request ever reaches this list: it is the platform
+                              operator's configuration, read off the singleton, and the pod is
+                              assembled from it and from the artifact reference alone.
+                            items:
+                              type: string
+                            type: array
+                          format:
+                            description: |-
+                              Format names the shape of what the scanner writes, so the operator
+                              knows how to read a finding out of it: `grype-json`, `trivy-json` or
+                              `osv-json` are understood, and anything else is carried verbatim and
+                              normalized on a best-effort basis. The raw report is signed either way
+                              — the normalized list is the platform's reading of it, never a
+                              replacement for it.
+                            type: string
+                          image:
+                            description: |-
+                              Image is the matcher. It is run as an unprivileged user with no access
+                              to the cluster and no service account token; what it is given is the
+                              bill of materials on a volume and a file to write its findings to.
+                            minLength: 1
+                            type: string
+                          name:
+                            default: scanner
+                            description: |-
+                              Name identifies the scanner in its attestation, the way a gate's name
+                              does. It has to be stable: a decision that cites a scan cites this.
+                            maxLength: 40
+                            minLength: 1
+                            pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                            type: string
+                          timeoutSeconds:
+                            default: 900
+                            description: |-
+                              TimeoutSeconds bounds one scan. A scanner that hangs must not hold a
+                              place in the sweep's concurrency budget forever.
+                            format: int32
+                            minimum: 30
+                            type: integer
+                          version:
+                            description: |-
+                              Version is what the scanner's own version is recorded as. It is not the
+                              same claim as the data snapshot and does not replace it: the binary and
+                              the database it matches against move on different schedules, and a
+                              finding is only reproducible against both.
+                            type: string
+                        required:
+                        - image
+                        type: object
+                    type: object
                 type: object
               ingress:
                 description: IngressSpec configures how traffic enters the cluster.
@@ -2442,6 +2622,40 @@ spec:
                         type: boolean
                     required:
                     - storing
+                    type: object
+                  rescan:
+                    description: |-
+                      RescanStatus reports whether the re-evaluation pass is actually running,
+                      which — like AuditStatus and PolicyStatus — is a different question from
+                      whether it is enabled: it needs a scanner configured, and a pass that is on
+                      with nothing to run reports nothing rather than nothing being wrong.
+                    properties:
+                      environments:
+                        description: |-
+                          Environments is how many deployed (environment, release) pairs the last
+                          pass considered, and Scanning how many had a scan in flight when it
+                          finished. Both are the sweep's own count, so a zero next to a running
+                          pass is a platform with nothing deployed rather than a broken sweep.
+                        format: int32
+                        type: integer
+                      lastSweep:
+                        description: |-
+                          LastSweep is when the sweep last looked at the whole estate — not when
+                          it last scanned anything, which is per environment.
+                        format: date-time
+                        type: string
+                      message:
+                        description: Message explains a pass that is not running.
+                        type: string
+                      running:
+                        description: Running is true when the sweep is on and has
+                          a scanner to run.
+                        type: boolean
+                      scanning:
+                        format: int32
+                        type: integer
+                    required:
+                    - running
                     type: object
                 type: object
               components:
