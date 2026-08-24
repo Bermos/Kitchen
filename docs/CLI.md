@@ -546,3 +546,13 @@ cannot write it carries on and exchanges every time.
   so `kitchen api POST /claims` reaches it, and a `kitchen claims` command
   would still be one command family for two kinds of claim rather than the
   other way round.
+- **`kitchen update`.** The platform's own upgrade — `GET /updates`,
+  `POST /updates`, `GET /updates/{name}` and now
+  `GET /updates/{name}/logs` — has no command family here, deliberately.
+  Upgrading the platform is the operator's, it is done once per release from
+  the settings page, and a CLI that could do it would be a fourth place to
+  keep the version arithmetic (what is published, what this installation would
+  accept, whether a minor crossing is allowed) in step. `kitchen api GET
+  /updates/update-0-2-1-h4k9c/logs --stream` follows helm's output the same way
+  `--stream` follows a build's, which is the whole of what a command would have
+  added.

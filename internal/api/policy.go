@@ -412,6 +412,7 @@ func (s *Server) routes() []route {
 		{"GET /api/v1/updates", s.listUpdates, operatorOnly("reading the platform's updates")},
 		{"POST /api/v1/updates", s.createUpdate, operatorOnly("upgrading the platform")},
 		{"GET /api/v1/updates/{name}", s.getUpdate, operatorOnly("reading a platform update")},
+		{"GET /api/v1/updates/{name}/logs", s.updateLogs, operatorOnly("reading a platform update's logs")},
 
 		// Connections hold the platform's credentials to everything else, so
 		// every one of these is the operator's — except the two the

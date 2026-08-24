@@ -126,17 +126,61 @@ apply anything at all with it. The operator builds the whole `helm upgrade`
 invocation itself.
 
 The answer is `201` with the created upgrade; watch it with
-`GET /updates/{name}` — or watch the version in the sidebar, which changes when
-the new operator comes up. `409` means self-update is not enabled on this
-installation. Everything else the platform refuses — a downgrade, a version it
-is already on, a minor crossing without `selfUpdate.allowMinor`, a second
-upgrade while one is in flight — is accepted here and refused by the operator,
-which records the reason on the `PlatformUpdate` rather than losing it: the
-checks are about the state of the cluster at the moment the job would start,
-not about the request.
+`GET /updates/{name}` for the phase, and `GET /updates/{name}/logs` for what
+helm is actually saying. The version in the sidebar changes when the new
+operator comes up, which is the last thing to happen rather than the thing to
+watch. `409` means self-update is not enabled on this installation.
+Everything else the platform refuses — a downgrade, a version it is already on,
+a minor crossing without `selfUpdate.allowMinor`, a second upgrade while one is
+in flight — is accepted here and refused by the operator, which records the
+reason on the `PlatformUpdate` rather than losing it: the checks are about the
+state of the cluster at the moment the job would start, not about the request.
 
 Requests are attributed: the caller's name is annotated onto the object and
 reported as `requestedBy`.
 
 See [Letting the platform update itself](../../charts/kitchen/README.md#letting-the-platform-update-itself)
 for what enabling it grants.
+
+### An upgrade's output
+
+`GET /updates/{name}/logs` is helm's own output for one upgrade, out of the
+telemetry store rather than off the pod:
+
+```json
+{"items": [{"timestamp": "2026-02-03T10:16:04.118Z", "source": "platform",
+            "pod": "kitchen-self-update-update-0-2-1-h4k9c-9v2pd", "container": "helm",
+            "stream": "stdout", "message": "Release \"kitchen\" has been upgraded. Happy Helming!"}]}
+```
+
+| Parameter | Meaning |
+|---|---|
+| `limit` | Lines to return, default 200, capped at 5000. The newest are kept |
+| `since` / `until` | RFC 3339 bounds on the window |
+| `search` | Keep only lines containing this substring, case-insensitively |
+
+The selection itself is composed from the update — the job's pod, in
+`kitchen-system`, in the container helm ran in — and is not a parameter.
+`q` and `where`, which [the log endpoints](logs.md) take, are not accepted
+here: this reads the platform's own namespace, where the API, the operator and
+the identity provider also write, so what the caller may say is what narrows.
+
+The job's pod is reclaimed an hour after it finishes and the lines outlive it,
+so an upgrade that ran last month answers as readily as the one running now.
+An update with no `status.jobName` — one that failed the operator's preflight,
+or that has not been reached yet — answers `200` with an empty `items`: it
+never had a pod, and what happened to it is on the record itself, in its phase
+and its message. An update that does not exist is a `404`, and an installation
+without a telemetry store is a `503`.
+
+The endpoint streams when asked to, exactly as the log endpoints do:
+`Accept: text/event-stream` answers the current page and then every line that
+arrives after it, one `data:` event per line; a plain GET on the same URL still
+answers the bounded page.
+
+Be honest about what there is to watch. The upgrade runs
+`helm upgrade --atomic --wait`, which says that it has started, and then says
+almost nothing until it has either finished or rolled back — there is no
+progress to render in between. This is where a *failure* is explained: which
+resource never became ready, what the rollback did. For "is it done yet", the
+phase on `GET /updates/{name}` is the answer.

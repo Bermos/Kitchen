@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/blang/semver/v4"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -31,6 +32,7 @@ import (
 	"github.com/Bermos/Kitchen/internal/audit"
 	"github.com/Bermos/Kitchen/internal/chartrepo"
 	"github.com/Bermos/Kitchen/internal/clickhouse"
+	"github.com/Bermos/Kitchen/internal/controller"
 )
 
 // The updates endpoints are the platform's own upgrades: what it is running,
@@ -272,4 +274,125 @@ func (s *Server) createUpdate(w http.ResponseWriter, req *http.Request) {
 	s.log().Info("platform update requested",
 		"caller", callerName(caller), "version", version, "update", update.Name)
 	writeJSON(w, http.StatusCreated, newUpdateView(update))
+}
+
+// selfUpdateContainer is the container that runs helm in the update job —
+// `internal/controller`'s createJob names it. Selecting on it keeps a sidecar
+// or an init container somebody adds to that pod later out of the upgrade's
+// output.
+const selfUpdateContainer = "helm"
+
+// updateLogSelection is the one upgrade's worth of lines, written in the log
+// query language: the job's own pod, in the platform namespace, and only the
+// container helm ran in.
+//
+// It is composed here rather than taken from the request. The route is the
+// operator's, but it reads the platform's own namespace — where the operator,
+// the API and the identity provider also write — so a caller-supplied `q` or
+// `where` would be a way to ask this endpoint for something that is not an
+// upgrade's output. What the caller may say is what narrows: a window, a
+// limit, and a substring, all of which compose with this rather than replace
+// it.
+//
+// The pod is `<jobName>-<suffix>`: a Job names its pods after itself, and `*`
+// is the query language's wildcard.
+func updateLogSelection(jobName, search string) string {
+	terms := []string{
+		"source:" + clickhouse.SourcePlatform,
+		"namespace:" + controller.PlatformNamespace,
+		"pod:" + jobName + "-*",
+		"container:" + selfUpdateContainer,
+	}
+	if search != "" {
+		// As a phrase, so that a search term with a space, a comma or a colon
+		// in it stays one term and its `*` stays an asterisk.
+		terms = append(terms, quotedLogTerm(search))
+	}
+	return strings.Join(terms, " ")
+}
+
+// quotedLogTerm writes a literal as the query language's quoted phrase.
+func quotedLogTerm(text string) string {
+	escaped := strings.ReplaceAll(text, `\`, `\\`)
+	escaped = strings.ReplaceAll(escaped, `"`, `\"`)
+	return `"` + escaped + `"`
+}
+
+// updateLogs is helm's output for one upgrade, bounded or followed.
+//
+// It is the endpoint the self-update job's logs were always collected for: the
+// job's TTL reclaims the pod an hour after it finishes, and the lines outlive
+// it in ClickHouse, so this answers for an upgrade that ran last month as
+// readily as for the one running now.
+func (s *Server) updateLogs(w http.ResponseWriter, req *http.Request) {
+	// The PlatformUpdate has to exist before its logs are worth looking for: a
+	// typo should say "no such update", not "no lines".
+	update := &kitchenv1alpha1.PlatformUpdate{}
+	key := types.NamespacedName{Name: req.PathValue("name")}
+	if err := s.Client.Get(req.Context(), key, update); err != nil {
+		s.writeError(w, err)
+		return
+	}
+
+	limit, err := intParam(req, "limit", clickhouse.DefaultLogLimit)
+	if err != nil {
+		badRequest(w, "%s", err.Error())
+		return
+	}
+	since, err := timeParam(req, "since")
+	if err != nil {
+		badRequest(w, "%s", err.Error())
+		return
+	}
+	until, err := timeParam(req, "until")
+	if err != nil {
+		badRequest(w, "%s", err.Error())
+		return
+	}
+	search := strings.TrimSpace(req.URL.Query().Get("search"))
+
+	// An update that failed preflight, or that the reconciler has not reached
+	// yet, has no job and therefore no pod to select over. That is an upgrade
+	// with no output rather than a missing one — the record itself says what
+	// happened, in its phase and its message — so it answers an empty page.
+	// Selecting over an empty pod name would be worse than useless: it would
+	// widen the query to the whole platform namespace.
+	if update.Status.JobName == "" {
+		writeList(w, []clickhouse.LogLine{})
+		return
+	}
+
+	store := s.openLogStore(w, req)
+	if store == nil {
+		return
+	}
+
+	filter := clickhouse.LogFilter{
+		LogSelection: clickhouse.LogSelection{
+			Query: updateLogSelection(update.Status.JobName, search),
+			Since: since,
+			Until: until,
+		},
+		Limit: limit,
+	}
+	if wantsEventStream(req) {
+		s.streamLogs(w, req, func(ctx context.Context, followSince time.Time) ([]clickhouse.LogLine, error) {
+			follow := filter
+			if !followSince.IsZero() {
+				follow.Since = followSince
+				follow.Limit = clickhouse.MaxLogLimit
+			}
+			return store.FilterLogs(ctx, follow)
+		})
+		return
+	}
+
+	lines, err := store.FilterLogs(req.Context(), filter)
+	if err != nil {
+		// The selection is this endpoint's own, not the caller's, so a query
+		// the store refuses is the platform's fault and is reported as one.
+		s.writeError(w, err)
+		return
+	}
+	writeList(w, lines)
 }
