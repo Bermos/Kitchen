@@ -237,6 +237,7 @@ name against `internal/api/policy.go`, so a route that moves fails them too.
 | GET | `/updates` | The platform's own version, what it can upgrade to, and every upgrade it has attempted. `?refresh=true` asks the registry again | `operator` |
 | POST | `/updates` | Upgrade the platform | `operator` |
 | GET | `/updates/{name}` | One upgrade | `operator` |
+| GET | `/updates/{name}/logs` | One upgrade's helm output. Streams with `Accept: text/event-stream` | `operator` |
 | GET | `/connections` | An operator: every connection (never their credentials). Anybody else: the picker — name, capabilities, readiness | any account — body varies |
 | GET | `/connections/{name}/repositories` | What this connection's credential can see, for the repository field of the create-a-project form | any account |
 | POST | `/connections/{name}/detect` | What the platform makes of a repository, read the way a build would, before the project exists | any account |
