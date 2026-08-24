@@ -28,6 +28,7 @@ import (
 	"github.com/Bermos/Kitchen/internal/attestation"
 	"github.com/Bermos/Kitchen/internal/controller"
 	"github.com/Bermos/Kitchen/internal/provider"
+	"github.com/Bermos/Kitchen/internal/retention"
 )
 
 // The compliance read surface: what the platform is producing, and what has
@@ -66,11 +67,18 @@ func defaultEvidenceReader(dockerConfig []byte, server string) (EvidenceReader, 
 // complianceBody is what the platform says about its own evidence production.
 type complianceBody struct {
 	Audit struct {
-		Enabled       bool   `json:"enabled"`
-		Recording     bool   `json:"recording"`
-		RetentionDays int32  `json:"retentionDays"`
-		Sequence      int64  `json:"sequence"`
-		Message       string `json:"message,omitempty"`
+		Enabled       bool  `json:"enabled"`
+		Recording     bool  `json:"recording"`
+		RetentionDays int32 `json:"retentionDays"`
+		Sequence      int64 `json:"sequence"`
+		// Immutable is whether the store has taken the audit table's
+		// mutation privileges away from the platform's own credential, so
+		// that a compromised operator or API can append to the log and
+		// cannot rewrite it. False is a smaller claim, not a fault, and
+		// ImmutabilityMessage says why.
+		Immutable           bool   `json:"immutable"`
+		ImmutabilityMessage string `json:"immutabilityMessage,omitempty"`
+		Message             string `json:"message,omitempty"`
 	} `json:"audit"`
 	Attestation struct {
 		Enabled bool   `json:"enabled"`
@@ -108,7 +116,10 @@ func (s *Server) getCompliance(w http.ResponseWriter, req *http.Request) {
 
 	body := complianceBody{}
 	body.Audit.Enabled = kitchen.Spec.Compliance.Audit.Enabled
-	body.Audit.RetentionDays = kitchen.Spec.Compliance.Audit.RetentionDays
+	// The audit class of the retention model rather than the spec field: the
+	// two are the same until somebody sets spec.retention.audit, and after
+	// that this has to answer with the one being enforced.
+	body.Audit.RetentionDays = retention.Resolve(kitchen).Days(retention.ClassAudit)
 	body.Attestation.Enabled = kitchen.Spec.Compliance.Attestation.Enabled
 
 	if status := kitchen.Status.Compliance; status != nil {
@@ -116,6 +127,8 @@ func (s *Server) getCompliance(w http.ResponseWriter, req *http.Request) {
 			body.Audit.Recording = status.Audit.Recording
 			body.Audit.Sequence = status.Audit.Sequence
 			body.Audit.Message = status.Audit.Message
+			body.Audit.Immutable = status.Audit.Immutable
+			body.Audit.ImmutabilityMessage = status.Audit.ImmutabilityMessage
 		}
 		if status.Attestation != nil {
 			body.Attestation.Signing = status.Attestation.Signing
