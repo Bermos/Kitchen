@@ -54,7 +54,13 @@ const (
 	InputRoutes       Input = "httproutes"
 	InputCertificates Input = "certificates"
 	InputEnvironments Input = "environments"
-	InputBuilds       Input = "builds"
+	// InputProjects is its own input rather than a rider on environments
+	// because the two fail separately and one rule needs both: an
+	// environment's criticality can fall back to its project's, and a project
+	// list that came back empty because it failed looks exactly like an
+	// estate nobody has designated.
+	InputProjects Input = "projects"
+	InputBuilds   Input = "builds"
 	InputKitchen      Input = "kitchen"
 
 	// From the telemetry store.

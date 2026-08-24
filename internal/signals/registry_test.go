@@ -44,6 +44,8 @@ var catalogueV1 = []ID{
 	SignalBuildQueueBackedUp, SignalBuildPodPending, SignalBuildFailingRepeated,
 	// Cross-project.
 	SignalLatencyCorrelated, SignalErrorCorrelated, SignalComponentUnhealthy,
+	// Continuity: the one rule whose threshold the institution sets (#141).
+	SignalRTOAtRisk,
 }
 
 func TestCatalogueHoldsEveryRowOfTheDesign(t *testing.T) {

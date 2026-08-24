@@ -131,7 +131,8 @@ func gatherCluster(ctx context.Context, sources Sources, snapshot *Snapshot) {
 	if sources.Client == nil {
 		for _, input := range []Input{
 			InputPods, InputWorkloads, InputNodes, InputClaims, InputGateways,
-			InputRoutes, InputCertificates, InputEnvironments, InputBuilds, InputKitchen,
+			InputRoutes, InputCertificates, InputEnvironments, InputProjects,
+			InputBuilds, InputKitchen,
 		} {
 			snapshot.MarkUnreadable(input, "no API server client is configured")
 		}
@@ -162,10 +163,20 @@ func gatherCluster(ctx context.Context, sources Sources, snapshot *Snapshot) {
 		snapshot.Environments = environments.Items
 	})
 
+	projects := &kitchenv1alpha1.ProjectList{}
+	listInto(ctx, sources.Client, snapshot, InputProjects, projects, func() {
+		snapshot.Projects = projects.Items
+	})
+
 	builds := &kitchenv1alpha1.BuildList{}
 	listInto(ctx, sources.Client, snapshot, InputBuilds, builds, func() {
 		snapshot.Builds = builds.Items
 	})
+
+	// The designations are folded once, here, from whichever of the two
+	// lists came back. A rule that could not have both is skipped by its
+	// Requires before it ever reads the map.
+	snapshot.Continuity = ContinuityFacts(snapshot.Projects, snapshot.Environments)
 }
 
 // gatherKitchen reads the singleton, which carries the configuration the rules
