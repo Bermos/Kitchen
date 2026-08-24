@@ -31,6 +31,7 @@ import (
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/attestation"
 	"github.com/Bermos/Kitchen/internal/controller"
+	"github.com/Bermos/Kitchen/internal/vex"
 )
 
 // Ingesting an exploitability assertion, and showing it beside what it
@@ -163,6 +164,131 @@ func TestASubmittedVEXDocumentIsSignedVerbatimAndAttributed(t *testing.T) {
 	}
 	if len(again.Status.VEX) != 1 {
 		t.Errorf("re-submitting the same document grew the index to %d rows", len(again.Status.VEX))
+	}
+}
+
+func TestADocumentWithNoIDStillSaysWhoSubmittedIt(t *testing.T) {
+	// `@id` is optional in OpenVEX and plenty of tooling omits it. Such a
+	// document is indexed under its envelope's digest — which is what the
+	// evidence set carries when it is read back — so the read surface can
+	// still join the row to the statement. Keying the join on `@id` alone
+	// would drop `submittedBy` for exactly the documents whose attribution is
+	// hardest to recover any other way: the audit record would have it and the
+	// screen, the CLI and the API would not.
+	h, registry, _ := gateHarness(t)
+
+	anonymous := `{
+		"@context": "https://openvex.dev/ns/v0.2.0",
+		"author": "security@shop.example",
+		"timestamp": "2026-08-24T09:00:00Z",
+		"statements": [
+			{"vulnerability": "CVE-2026-4", "status": "not_affected",
+			 "justification": "component_not_present"}
+		]
+	}`
+	if recorder := submitVEXDocument(t, h, anonymous); recorder.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if len(registry.attached) != 1 {
+		t.Fatalf("attached %d envelopes, want 1", len(registry.attached))
+	}
+	envelopeDigest, err := attestation.EnvelopeDigest(registry.attached[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stored := &kitchenv1alpha1.Build{}
+	if err := h.server.Client.Get(context.Background(),
+		types.NamespacedName{Namespace: testNamespace, Name: "shop-bld-9"}, stored); err != nil {
+		t.Fatal(err)
+	}
+	if len(stored.Status.VEX) != 1 || stored.Status.VEX[0].DocumentID != envelopeDigest {
+		t.Fatalf("an id-less document is not indexed under its envelope's digest: %+v", stored.Status.VEX)
+	}
+
+	// Read it back the way the evidence set delivers it: the envelope digest
+	// is the name both ends hold.
+	registry.set = attestation.EvidenceSet{
+		Verified: true,
+		Attestations: []attestation.Evidence{{
+			PredicateType: attestation.PredicateOpenVEX,
+			Verified:      true,
+			Digest:        envelopeDigest,
+			Statement:     attestation.Statement{Predicate: json.RawMessage(anonymous)},
+		}},
+	}
+	recorder := h.do(t, http.MethodGet, "/api/v1/builds/shop-bld-9/vex", "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	body := vexBody{}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Statements) != 1 {
+		t.Fatalf("want one statement, got %+v", body.Statements)
+	}
+	if body.Statements[0].SubmittedBy != testCaller {
+		t.Errorf("who submitted an id-less document was dropped on the read surface: %+v",
+			body.Statements[0])
+	}
+}
+
+func TestAnOlderOpenVEXDocumentIsAttestedUnderItsOwnContext(t *testing.T) {
+	// OpenVEX versions itself through `@context`, vex.Validate admits any of
+	// them, and the predicate type is the URI that says which vocabulary to
+	// read a document with. Attesting a v0.1.0 document as v0.2.0 would be the
+	// platform editing somebody else's assertion in the one field that decides
+	// how it is read.
+	h, registry, _ := gateHarness(t)
+
+	older := `{
+		"@context": "https://openvex.dev/ns/v0.1.0",
+		"@id": "https://shop.example/vex/older",
+		"author": "security@shop.example",
+		"timestamp": "2026-08-24T09:00:00Z",
+		"statements": [
+			{"vulnerability": "CVE-2026-5", "status": "not_affected",
+			 "justification": "component_not_present"}
+		]
+	}`
+	recorder := submitVEXDocument(t, h, older)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if registry.predicate != "https://openvex.dev/ns/v0.1.0" {
+		t.Errorf("a v0.1.0 document was attached under %q", registry.predicate)
+	}
+	accepted := vexAccepted{}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &accepted); err != nil {
+		t.Fatal(err)
+	}
+	if accepted.PredicateType != "https://openvex.dev/ns/v0.1.0" {
+		t.Errorf("the answer reports the predicate type as %q", accepted.PredicateType)
+	}
+
+	// One index row for OpenVEX whichever version arrives, carrying the one
+	// that arrived last: two versions of one vocabulary are one kind of
+	// evidence, not two.
+	if recorder := submitVEXDocument(t, h, vexDocument); recorder.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	stored := &kitchenv1alpha1.Build{}
+	if err := h.server.Client.Get(context.Background(),
+		types.NamespacedName{Namespace: testNamespace, Name: "shop-bld-9"}, stored); err != nil {
+		t.Fatal(err)
+	}
+	rows := 0
+	for _, evidence := range stored.Status.Artifact.Evidence {
+		if vex.IsOpenVEX(evidence.PredicateType) {
+			rows++
+			if evidence.PredicateType != attestation.PredicateOpenVEX {
+				t.Errorf("the index row does not carry the newest version: %q", evidence.PredicateType)
+			}
+		}
+	}
+	if rows != 1 {
+		t.Errorf("two OpenVEX versions grew the evidence index to %d rows", rows)
 	}
 }
 

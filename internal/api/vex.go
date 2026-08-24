@@ -219,6 +219,15 @@ func vexStatements(set attestation.EvidenceSet, build *kitchenv1alpha1.Build, at
 		if err != nil {
 			continue
 		}
+		// A document with no `@id` is indexed under its envelope's digest, so
+		// that is what it is looked up by here. Keying only on `@id` would
+		// drop `submittedBy` for exactly the documents whose attribution is
+		// hardest to recover any other way — the audit record would still have
+		// it and this surface would not, which is the wrong half to lose.
+		submitter := submitters[document.ID]
+		if submitter == "" {
+			submitter = submitters[entry.Digest]
+		}
 		for _, statement := range document.Statements {
 			identifier := statement.Vulnerability.String()
 			if identifier == "" {
@@ -232,7 +241,7 @@ func vexStatements(set attestation.EvidenceSet, build *kitchenv1alpha1.Build, at
 				Products:        vex.ProductIdentifiers(statement),
 				Justified:       vex.Justified(statement.Justification),
 				Author:          vex.AuthorOf(document, statement),
-				SubmittedBy:     submitters[document.ID],
+				SubmittedBy:     submitter,
 				DocumentID:      document.ID,
 				Timestamp:       vex.TimestampOf(document, statement),
 				Verified:        entry.Verified,
@@ -428,13 +437,31 @@ func (s *Server) submitVEX(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// The predicate type is the document's own `@context`, not the constant.
+	// OpenVEX versions itself through that URI and vex.Validate admits any of
+	// them, so signing a v0.1.0 document under v0.2.0 would be the platform
+	// asserting a version the author did not write — an edit to somebody
+	// else's assertion, in the one field that says which vocabulary to read it
+	// with. Every reader here matches by prefix (vex.IsOpenVEX), so nothing
+	// downstream needs the versions to be the same.
+	predicateType := strings.TrimSpace(document.Context)
 	statement, err := attestation.NewStatement(
-		artifact.Repository, artifact.Digest, attestation.PredicateOpenVEX, submission.Document)
+		artifact.Repository, artifact.Digest, predicateType, submission.Document)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, errorBody{Error: err.Error()})
 		return
 	}
 	envelope, err := attestation.Sign(ctx, statement, signer)
+	if err != nil {
+		s.writeError(w, err)
+		return
+	}
+	// The envelope's digest is how an `@id`-less document is indexed, so it is
+	// taken before the attach rather than from it: Attach answers with the
+	// attachment *manifest*, which holds every envelope attached to the
+	// artifact so far and therefore moves every time anything else is
+	// attached.
+	envelopeDigest, err := attestation.EnvelopeDigest(envelope)
 	if err != nil {
 		s.writeError(w, err)
 		return
@@ -445,7 +472,7 @@ func (s *Server) submitVEX(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	subject := attestation.ArtifactRef(artifact.Repository, artifact.Digest)
-	manifest, err := writer.Attach(ctx, subject, envelope, attestation.PredicateOpenVEX)
+	manifest, err := writer.Attach(ctx, subject, envelope, predicateType)
 	if err != nil {
 		s.log().Error(err, "attaching a VEX document failed", "build", build.Name)
 		writeJSON(w, http.StatusBadGateway, errorBody{
@@ -455,7 +482,7 @@ func (s *Server) submitVEX(w http.ResponseWriter, req *http.Request) {
 	}
 
 	now := metav1.Now()
-	recordIngestedVEX(build, document, vulnerabilities, submitter, manifest, now)
+	recordIngestedVEX(build, document, vulnerabilities, submitter, manifest, envelopeDigest, now)
 	if err := s.Client.Status().Update(ctx, build); err != nil {
 		// The evidence is attached and is the thing that matters; the Build's
 		// index of it is not. Saying so beats answering an error for a write
@@ -465,7 +492,7 @@ func (s *Server) submitVEX(w http.ResponseWriter, req *http.Request) {
 
 	writeJSON(w, http.StatusCreated, vexAccepted{
 		DocumentID:      document.ID,
-		PredicateType:   attestation.PredicateOpenVEX,
+		PredicateType:   predicateType,
 		Manifest:        manifest,
 		Subject:         subject,
 		Author:          document.Author,
@@ -526,7 +553,7 @@ func recordIngestedVEX(
 	build *kitchenv1alpha1.Build,
 	document vex.Document,
 	vulnerabilities []string,
-	submitter, manifest string,
+	submitter, manifest, envelopeDigest string,
 	now metav1.Time,
 ) {
 	ingested := kitchenv1alpha1.VEXStatus{
@@ -539,10 +566,14 @@ func recordIngestedVEX(
 		IngestedAt:      &now,
 	}
 	if ingested.DocumentID == "" {
-		// A document with no `@id` is indexed under the manifest it landed
-		// in: a row nothing can be matched back to the registry is not an
-		// index of anything.
-		ingested.DocumentID = manifest
+		// A document with no `@id` is indexed under its envelope's own digest:
+		// a row nothing can be matched back to the registry is not an index of
+		// anything, and this is the one name for it that a reader of the
+		// evidence set also holds (attestation.Evidence.Digest). The manifest
+		// digest is not — it names the whole accumulating attachment and moves
+		// whenever anything else is attached, so a row keyed on it would be
+		// unmatchable by the second submission and would grow a duplicate.
+		ingested.DocumentID = envelopeDigest
 	}
 	replaced := false
 	for index, existing := range build.Status.VEX {
@@ -563,14 +594,21 @@ func recordIngestedVEX(
 	// attachment manifest holds every envelope attached so far, so the newest
 	// digest names all of them and a row per document would be a growing list
 	// of the same answer.
+	//
+	// The match is on IsOpenVEX rather than on one constant, because the
+	// predicate type is the submitted document's own `@context` and an
+	// installation can be sent both v0.1.0 and v0.2.0 documents. They are one
+	// kind of evidence in one index row, carrying whichever version arrived
+	// last — which is what the row is for.
 	for index, evidence := range build.Status.Artifact.Evidence {
-		if evidence.PredicateType == attestation.PredicateOpenVEX {
+		if vex.IsOpenVEX(evidence.PredicateType) {
+			build.Status.Artifact.Evidence[index].PredicateType = predicateTypeOf(document)
 			build.Status.Artifact.Evidence[index].Manifest = manifest
 			return
 		}
 	}
 	build.Status.Artifact.Evidence = append(build.Status.Artifact.Evidence, kitchenv1alpha1.ArtifactEvidence{
-		PredicateType: attestation.PredicateOpenVEX,
+		PredicateType: predicateTypeOf(document),
 		Manifest:      manifest,
 		// The platform signed it; somebody else made the claim — the same
 		// distinction a submitted gate result draws, and the reason neither
@@ -578,6 +616,17 @@ func recordIngestedVEX(
 		// this field has, and a document nobody built is the platform's.
 		Source: "platform",
 	})
+}
+
+// predicateTypeOf is the predicate type a document is attested under: its own
+// `@context`, which is how OpenVEX versions itself. attestation.PredicateOpenVEX
+// is the current one and is the fallback for a document whose context somehow
+// reached here empty — vex.Validate refuses that, so this is a belt.
+func predicateTypeOf(document vex.Document) string {
+	if context := strings.TrimSpace(document.Context); context != "" {
+		return context
+	}
+	return attestation.PredicateOpenVEX
 }
 
 // decodeVEX reads a submission under this endpoint's own limit, refusing
