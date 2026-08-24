@@ -1384,6 +1384,22 @@ outside this repository.
   register — and when a statement lapses, the drift view reports the rule as
   `newly-failing`, because it never fired at promotion. §10.9 says why that is
   the honest reading rather than a sixth status.
+- **An operator upgrade moves the built-in bundle's digest, and every
+  environment pinned to the old one stops promoting.** A bundle is pinned by
+  digest and never by name, so a release that changes a compiled-in rule —
+  `internal/policy/bundles/default/promotion.rego` — produces a new digest, and
+  `policy.Resolver` refuses one matching neither the built-in bundle nor a
+  labelled ConfigMap. Promotions into a pinned environment then answer "the
+  environment's requirements could not be evaluated", which is a *refusal to
+  judge* rather than a verdict: a bar that cannot be read has not been cleared.
+  This is deliberate — it is the same rule that stops a ConfigMap edited in
+  place quietly changing what everything pinned to it demands — but it surfaces
+  as promotions failing across an install some time after the upgrade, which is
+  a long way from where the change was made. After an upgrade that touched the
+  built-in bundle, read `GET /api/v1/policy/bundles`, compare the `built-in`
+  digest against what each environment pins, and repin the ones that have
+  moved. `docs/api/decisions.md` describes the listing;
+  `charts/kitchen/README.md` says the same thing under Upgrade.
 - **`kitchen-audit-head` is load-bearing.** Deleting it does not lose the log —
   it is re-seeded from the table's own last record — but it does lose the
   anchor that would have shown a truncated tail.

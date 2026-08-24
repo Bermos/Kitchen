@@ -1083,6 +1083,28 @@ Removing a CRD field still needs care: the API server rejects a stored object
 that no longer validates, so land conversion work before shipping a breaking
 schema.
 
+### Pinned policy bundles after an upgrade
+
+An environment whose requirements pin a policy bundle pins it **by digest**,
+and the built-in bundle's digest is the digest of the operator's compiled-in
+rules. So a release that changes one of those rules changes the digest, and an
+environment still pinned to the previous one no longer resolves: its promotions
+answer *the environment's requirements could not be evaluated*, which is a
+refusal to judge rather than a verdict — a bar that cannot be read is not a bar
+that has been cleared.
+
+Nothing is silently substituted, deliberately: the same rule is what stops a
+ConfigMap bundle edited in place quietly changing what every environment pinned
+to it demands. But it surfaces as promotions failing some time after the
+upgrade, which is a long way from where the change was made.
+
+After an upgrade, read `GET /api/v1/policy/bundles` — `kitchen api GET
+/policy/bundles` reaches it from a terminal — for the `built-in` bundle's
+current digest, and repin the environments whose digest has moved on each
+environment's Requirements panel in the dashboard. Environments that pin
+nothing are unaffected, and the release notes say when a release touched the
+built-in bundle.
+
 ### Letting the platform update itself
 
 Off by default. With it on, an upgrade is a button on the dashboard's settings
