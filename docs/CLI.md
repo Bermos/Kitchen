@@ -171,6 +171,7 @@ give.
 | `kitchen builds` | The project's builds, newest first | `GET /projects/{name}/builds` |
 | `kitchen attestations` | The signed evidence attached to a build's artifact | `GET /builds/{name}/attestations` |
 | `kitchen gates list/submit` | What ran over an artifact, and submitting a result from elsewhere | `GET /builds/{name}`, `POST /builds/{name}/gates` |
+| `kitchen vex list/submit` | What has been asserted about an artifact's findings applying here, and asserting it | `GET /builds/{name}/vex`, `POST /builds/{name}/vex` |
 | `kitchen decisions list/show/replay` | The stored policy decisions, and re-running one from its stored inputs | `GET /decisions`, `GET /decisions/{id}`, `POST /decisions/{id}/replay` |
 | `kitchen releases` | The project's releases — what there is to roll back to | `GET /projects/{name}/releases` |
 | `kitchen environments` | The project's environments and where they answer | `GET /projects/{name}/environments` |
@@ -375,6 +376,38 @@ trivy image --format json shop:latest | kitchen gates submit shop-bld-7 --gate t
 and nothing is known either way. Neither says whether the findings were
 acceptable — that is decided at promotion, against the environment being
 deployed to.
+
+### Exploitability
+
+```sh
+kitchen vex list shop-bld-7
+kitchen vex submit shop-bld-7 --document @not-affected.openvex.json
+```
+
+A scanner says what was found; an OpenVEX statement says whether it applies
+here — the component is not present, the vulnerable code is not in the execute
+path, a mitigation already covers it. Without it, a daily rescan of a real
+dependency tree reports enough that people stop reading it.
+
+`list` prints every finding beside the statement covering it, its
+justification, its author, who submitted it, and one word for what the platform
+can establish: `current`, `expired`, `unverified` or `unjustified`. It is never
+the word "suppressed" — whether a statement suppresses anything is the target
+environment's policy's question, and the same statement can be honoured in
+staging and refused in production. A suppressed finding is still listed, which
+is the point of the view.
+
+`submit` sends the document as the exact bytes its author wrote; the platform
+signs those bytes and records, separately, the identity that sent them. A
+`not_affected` statement must give one of OpenVEX's five justifications —
+`component_not_present`, `vulnerable_code_not_present`,
+`vulnerable_code_not_in_execute_path`,
+`vulnerable_code_cannot_be_controlled_by_adversary`,
+`inline_mitigations_already_exist` — and free text alone is refused, because a
+suppression whose reason cannot be counted cannot be reviewed. Submitting needs
+`admin` on the project: an assertion that stops a finding counting is nearer to
+approving a break-glass exception than to reporting a scan, so a project's CI
+key cannot file one.
 
 ### Policy decisions
 
