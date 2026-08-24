@@ -658,6 +658,43 @@ access:
 {{- end }}
 
 {{/*
+kitchen.retentionBlock renders `spec.retention`, or nothing.
+
+Nothing is the important case. Every field on that block is optional and an
+absent one *inherits* — the telemetry classes from the ClickHouse retention,
+the audit class from the compliance one — so emitting a class the values did
+not set would turn "inherit" into a number nobody chose, and an installation
+that later moved the inherited knob would find eight classes ignoring it.
+*/}}
+{{- define "kitchen.retentionBlock" -}}
+{{- $retention := .Values.kitchen.retention -}}
+{{- $classes := list "containerLogs" "buildLogs" "flows" "metrics" "traces" "requests" "clusterEvents" "activity" "audit" -}}
+{{- $set := dict -}}
+{{- range $class := $classes -}}
+{{- $days := get $retention $class -}}
+{{- if $days -}}
+{{- $_ := set $set $class (int $days) -}}
+{{- end -}}
+{{- end -}}
+{{- $override := $retention.auditFloorOverride -}}
+{{- if or $set (and $override $override.reason) -}}
+retention:
+{{- range $class := $classes }}
+{{- if hasKey $set $class }}
+  {{ $class }}: {{ get $set $class }}
+{{- end }}
+{{- end }}
+{{- if and $override $override.reason }}
+  # The written decision to keep audit records for less than the platform's
+  # floor. Setting it is an audit record in its own right.
+  auditFloorOverride:
+    reason: {{ $override.reason | quote }}
+    approvedBy: {{ $override.approvedBy | quote }}
+{{- end }}
+{{- end -}}
+{{- end }}
+
+{{/*
 Guard rails. The operator resolves the platform namespace from a compiled-in
 constant, so a chart installed elsewhere would reconcile into a namespace it
 does not run in.
@@ -752,6 +789,28 @@ does not run in.
 {{- end }}
 {{- if and .Values.kitchen.compliance.audit.enabled (lt (int .Values.kitchen.compliance.audit.retentionDays) 90) }}
 {{- fail (printf "kitchen.compliance.audit.retentionDays must be at least 90 (got %d): the incident reporting duty the log exists to serve runs from when an institution became aware, which can be well after the transition that caused it, and a log that has already aged out cannot substantiate the report." (int .Values.kitchen.compliance.audit.retentionDays)) }}
+{{- end }}
+{{- $retention := .Values.kitchen.retention }}
+{{- $override := $retention.auditFloorOverride }}
+{{- range $class, $days := omit $retention "auditFloorOverride" }}
+{{- if and $days (lt (int $days) 1) }}
+{{- fail (printf "kitchen.retention.%s must be at least 1 day (got %v): there is no value meaning \"keep nothing\", and leaving the entry empty is how a class inherits." $class $days) }}
+{{- end }}
+{{- end }}
+{{- if and $retention.audit (lt (int $retention.audit) 90) (not $override.reason) }}
+{{- fail (printf "kitchen.retention.audit is %d, below the platform's 90-day floor, and kitchen.retention.auditFloorOverride names no reason: an incident reporting duty runs from when an institution became aware, which can be long after the transition that caused it, and a log that has already aged out cannot substantiate the report. Raise it to at least 90, or set the override's reason and approvedBy — the API server refuses the Kitchen object without them, so the install would fail on the singleton." (int $retention.audit)) }}
+{{- end }}
+{{- if and $override.reason (lt (len $override.reason) 20) }}
+{{- fail (printf "kitchen.retention.auditFloorOverride.reason is %d characters and the API server requires at least 20: it is the answer somebody gets when they ask why this installation's log does not go back far enough, and \"n/a\" is not an answer." (len $override.reason)) }}
+{{- end }}
+{{- if and $override.reason (not $override.approvedBy) }}
+{{- fail "kitchen.retention.auditFloorOverride.reason is set without approvedBy: an override with no name against it is a decision nobody made." }}
+{{- end }}
+{{- if and $override.reason (not $retention.audit) }}
+{{- fail "kitchen.retention.auditFloorOverride is set but kitchen.retention.audit is not: the override overrides nothing, and the API server refuses it on its own." }}
+{{- end }}
+{{- if lt (int .Values.kitchen.observability.clockSync.maxDriftSeconds) 1 }}
+{{- fail (printf "kitchen.observability.clockSync.maxDriftSeconds must be at least 1 (got %d): a threshold of zero reports every cluster as drifting, since no two clocks agree exactly." (int .Values.kitchen.observability.clockSync.maxDriftSeconds)) }}
 {{- end }}
 {{- range .Values.kitchen.compliance.exceptions.ladder }}
 {{- if not (has (default "" .role) (list "developer" "admin" "operator")) }}

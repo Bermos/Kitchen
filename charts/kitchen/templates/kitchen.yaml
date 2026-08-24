@@ -248,4 +248,18 @@ spec:
       # adding a language's SDK is the whole of instrumenting an app here.
       endpoint: {{ include "kitchen.otlpEndpoint" . | quote }}
       {{- end }}
+    clockSync:
+      # Whether the timestamps everything else here is stamped with mean the
+      # same thing on every node. The operator compares each kubelet's lease
+      # renewal with its own clock and reports drift as an unhealthy component
+      # — the survey being where an operator already looks.
+      enabled: {{ .Values.kitchen.observability.clockSync.enabled }}
+      maxDriftSeconds: {{ int .Values.kitchen.observability.clockSync.maxDriftSeconds }}
+  {{- with include "kitchen.retentionBlock" . }}
+  # How long each class of what the platform keeps is kept. Only the classes
+  # set in values appear here: an absent one inherits the telemetry or the
+  # audit retention, which is what keeps an upgraded installation reading
+  # exactly as it did.
+  {{- . | nindent 2 }}
+  {{- end }}
 {{- end }}
