@@ -398,6 +398,11 @@ var publishedShapes = map[string]struct {
 	"dependents": {"What breaks if one connection, or one third party, is unavailable: every " +
 		"affected environment worst-designation-first, how each depends on it, and the " +
 		"tightest recovery objective among them", dependents{}},
+	"retention": {"How long the platform keeps each class of what it holds, and how far back " +
+		"each class actually goes. `days` is the rule in force and `source` says whether " +
+		"somebody set it or it is inherited; `oldest` is the claim the rule makes, measured " +
+		"by the last sweep. The audit class has a floor of `auditFloorDays`, and an " +
+		"installation under it carries the override that says who decided so", retention{}},
 	"exception": {"One break-glass exception: who asked, who approved, the rules it waives, " +
 		"until when, and the promotions that relied on it. Phase is Active, Expired or Resolved", exception{}},
 	"exceptionList": {"A list of exceptions, soonest to expire first", list[exception]{}},

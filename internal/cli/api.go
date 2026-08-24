@@ -994,6 +994,47 @@ func (c *client) accessReview(ctx context.Context, name string) (*accessReview, 
 		http.MethodGet, "/access/reviews/"+name, nil, nil, answer)
 }
 
+// retentionClass is one class of what the platform keeps, as the retention
+// route answers it: the rule in force, and how far back the class actually
+// goes.
+type retentionClass struct {
+	Class       string     `json:"class"`
+	Label       string     `json:"label"`
+	Description string     `json:"description"`
+	Days        int32      `json:"days"`
+	Source      string     `json:"source"`
+	Enforced    bool       `json:"enforced"`
+	Rows        int64      `json:"rows,omitempty"`
+	Oldest      *time.Time `json:"oldest,omitempty"`
+	Expired     int64      `json:"expired,omitempty"`
+	Removed     int64      `json:"removed,omitempty"`
+	Message     string     `json:"message,omitempty"`
+}
+
+// retentionOverride is the written decision behind an audit retention under
+// the documented floor.
+type retentionOverride struct {
+	Reason     string `json:"reason"`
+	ApprovedBy string `json:"approvedBy"`
+}
+
+// retention is the whole model.
+type retention struct {
+	Classes              []retentionClass   `json:"classes"`
+	AuditFloorDays       int32              `json:"auditFloorDays"`
+	AuditFloorOverridden bool               `json:"auditFloorOverridden"`
+	AuditFloorOverride   *retentionOverride `json:"auditFloorOverride,omitempty"`
+	LastSweep            *time.Time         `json:"lastSweep,omitempty"`
+	Message              string             `json:"message,omitempty"`
+}
+
+// platformRetention asks how long the platform keeps each class.
+func (c *client) platformRetention(ctx context.Context) (*retention, error) {
+	answer := &retention{}
+	return answer, c.do(ctx, "reading the platform's retention",
+		http.MethodGet, "/platform/retention", nil, nil, answer)
+}
+
 func (c *client) exceptions(ctx context.Context, query url.Values) ([]exception, error) {
 	answer := &list[exception]{}
 	err := c.do(ctx, "listing exceptions", http.MethodGet, "/exceptions", query, nil, answer)
