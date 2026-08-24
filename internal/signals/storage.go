@@ -268,13 +268,17 @@ func evaluateStoreDisk(snapshot *Snapshot) []Finding {
 		EvidencePlatformStorage)}
 }
 
-// retentionClause names the knob, since retention is the one lever that
-// changes the store's size and it is a single number.
+// retentionClause names the lever, since retention is the one thing that
+// changes the store's size.
+//
+// It reports the *longest* telemetry class rather than a class each: a
+// finding is one line, and the number worth putting in it is the one bounding
+// the disk. The whole model is on `GET /platform/retention`.
 func retentionClause(snapshot *Snapshot) string {
 	if snapshot.Platform.RetentionDays <= 0 {
 		return ""
 	}
-	return fmt.Sprintf("retention is %d days", snapshot.Platform.RetentionDays)
+	return fmt.Sprintf("the longest telemetry retention is %d days", snapshot.Platform.RetentionDays)
 }
 
 // evaluateIngestStalled is node.silent asked of everybody at once.

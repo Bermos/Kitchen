@@ -2206,7 +2206,9 @@ export interface StoreHealth {
   usedFraction?: number;
   claim?: string;
   rowsPerSecond: number;
-  /** The one knob every table's TTL is derived from. */
+  /** The longest telemetry class's retention: the horizon past which the store
+   * holds nothing at all. The whole model, class by class, is
+   * `api.platformRetention()`. */
   retentionDays?: number;
   message?: string;
 }

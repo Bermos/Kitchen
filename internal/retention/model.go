@@ -274,6 +274,28 @@ func (m Model) Horizon(class Class, now time.Time) time.Time {
 	return now.UTC().AddDate(0, 0, -int(days))
 }
 
+// LongestTelemetry is whichever telemetry class keeps its data longest, which
+// is what actually bounds the store's disk.
+//
+// The audit class is left out: it is a records decision rather than a storage
+// one, and its table is a handful of human-scale rows beside a week of request
+// telemetry. It exists because a *finding* is one line and a screen's summary
+// is one number, and the number worth putting in either is the one that bounds
+// what is being complained about — the whole model is on
+// `GET /platform/retention` for anybody who wants it.
+func (m Model) LongestTelemetry() int32 {
+	longest := int32(0)
+	for _, class := range m.Classes() {
+		if class == ClassAudit {
+			continue
+		}
+		if days := m.Days(class); days > longest {
+			longest = days
+		}
+	}
+	return longest
+}
+
 // AuditBelowFloor is whether audit records are kept for less than the floor.
 func (m Model) AuditBelowFloor() bool {
 	return m.Days(ClassAudit) < AuditFloorDays
