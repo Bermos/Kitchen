@@ -28,6 +28,9 @@ import (
 const (
 	testRepo = "acme/shop"
 	testSHA  = "8f3a2c1d0abc456789ab"
+	// testStatusContext is what the platform names a build's check, which
+	// every provider has to carry through unchanged.
+	testStatusContext = "kitchen/shop"
 
 	// listDeployments is the lookup that turns a commit and an environment
 	// into the deployment the status hangs off.
@@ -54,14 +57,14 @@ func TestSetCommitStatusPostsToTheCommit(t *testing.T) {
 	err := gh.SetCommitStatus(context.Background(), testRepo, CommitStatus{
 		SHA:         testSHA,
 		State:       CommitSuccess,
-		Context:     "kitchen/shop",
+		Context:     testStatusContext,
 		Description: "image pushed",
 		TargetURL:   "https://kitchen.apps.example.com/builds/shop-bld-8f3a2c1d0abc",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if posted.State != "success" || posted.Context != "kitchen/shop" {
+	if posted.State != "success" || posted.Context != testStatusContext {
 		t.Errorf("unexpected status %+v", posted)
 	}
 	if posted.TargetURL == "" {
@@ -86,7 +89,7 @@ func TestCommitStatusDescriptionIsTruncated(t *testing.T) {
 	err := gh.SetCommitStatus(context.Background(), testRepo, CommitStatus{
 		SHA:         testSHA,
 		State:       CommitFailure,
-		Context:     "kitchen/shop",
+		Context:     testStatusContext,
 		Description: strings.Repeat("é", 400),
 	})
 	if err != nil {

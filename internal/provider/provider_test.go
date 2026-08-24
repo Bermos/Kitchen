@@ -214,9 +214,13 @@ func TestCapabilitiesMatchWhatThePlatformImplements(t *testing.T) {
 	if got := Capabilities("neon"); len(got) != 1 || got[0] != kitchenv1alpha1.CapabilityDatabase {
 		t.Errorf("unexpected neon capabilities %v", got)
 	}
+	// Every forge is both halves. What differs between them is the
+	// deployment record, which is not a capability — it is a narrower
+	// interface the operator asks each provider for.
 	for _, name := range []string{"gitlab", "gitea"} {
-		if got := Capabilities(name); len(got) != 1 || got[0] != kitchenv1alpha1.CapabilityGitSource {
-			t.Errorf("expected gitSource capability for %s, got %v", name, got)
+		if got := Capabilities(name); len(got) != 2 ||
+			got[0] != kitchenv1alpha1.CapabilityGitSource || got[1] != kitchenv1alpha1.CapabilityStatusChecks {
+			t.Errorf("unexpected %s capabilities %v", name, got)
 		}
 	}
 }
