@@ -89,16 +89,27 @@ func TestAnOperatorSeesEveryDecisionIncludingThePlatforms(t *testing.T) {
 	h := newHarness(t, nil, fixtures()...)
 	decisionFixtures(h)
 
-	recorder := h.do(t, http.MethodGet, "/api/v1/decisions?verdict=allowed&kind=rescan", "")
+	recorder := h.do(t, http.MethodGet, "/api/v1/decisions", "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	body := decode[listBody[decisionBody]](t, recorder)
+	if len(body.Items) != 3 {
+		t.Fatalf("an operator sees everything the store answered, got %d", len(body.Items))
+	}
+
+	// And the narrowing is the store's rather than the handler's: the filters
+	// reach it, and what comes back is what it selected.
+	recorder = h.do(t, http.MethodGet, "/api/v1/decisions?verdict=allowed&kind=rescan", "")
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
 	}
 	if h.logs.lastDecisions.Verdict != "allowed" || h.logs.lastDecisions.Kind != "rescan" {
 		t.Fatalf("the filters must reach the store, got %+v", h.logs.lastDecisions)
 	}
-	body := decode[listBody[decisionBody]](t, recorder)
-	if len(body.Items) != 3 {
-		t.Fatalf("an operator sees everything the store answered, got %d", len(body.Items))
+	body = decode[listBody[decisionBody]](t, recorder)
+	if len(body.Items) != 1 || body.Items[0].ID != "d-platform" {
+		t.Fatalf("an operator was not answered the store's own selection, got %+v", body.Items)
 	}
 }
 

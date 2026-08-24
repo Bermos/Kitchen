@@ -264,7 +264,7 @@ func (s *RescanSweeper) SweepOnce(ctx context.Context) (RescanSweepReport, error
 
 	report := s.check(kitchen)
 	if !report.Running {
-		s.publishStatus(ctx, kitchen, report)
+		s.publishStatus(ctx, report)
 		return report, nil
 	}
 	spec := kitchen.Spec.Compliance.Rescan
@@ -310,7 +310,7 @@ func (s *RescanSweeper) SweepOnce(ctx context.Context) (RescanSweepReport, error
 		report.Evaluated += outcome.evaluated
 	}
 
-	s.publishStatus(ctx, kitchen, report)
+	s.publishStatus(ctx, report)
 	return report, nil
 }
 
@@ -775,7 +775,10 @@ func (s *RescanSweeper) indexEvidence(
 // that expired without ever mattering leaves the workload where it is.
 //
 // The audit record comes first and is fail-closed, like every move this
-// platform makes on its own initiative.
+// platform makes on its own initiative — which means an audit log that refuses
+// leaves the workload running until the next interval. That is the safe
+// direction: the default consequence of an expiry is that nothing new goes
+// out, not that something running is yanked.
 func (s *RescanSweeper) rollBackForExpiry(
 	ctx context.Context,
 	project *kitchenv1alpha1.Project,
@@ -872,19 +875,37 @@ func (s *RescanSweeper) rollBack(
 		return err
 	}
 
-	env.Spec.ReleaseRef = kitchenv1alpha1.LocalObjectReference{Name: target}
-	if err := s.Client.Update(ctx, env); err != nil {
+	// Re-read before the move. The sweep has just written this object's status
+	// twice, and the copy it is holding is a scan's worth of wall-clock old —
+	// a spec write off a stale copy is how a rollback would silently lose to
+	// somebody deploying while the scanner was out.
+	current := &kitchenv1alpha1.Environment{}
+	if err := s.Client.Get(ctx, client.ObjectKeyFromObject(env), current); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	if current.Spec.ReleaseRef.Name != release.Name {
+		// Somebody moved it while the scan was out. The re-evaluation was
+		// about a release this environment no longer runs, and retreating from
+		// it now would undo their deploy.
+		log.Info("the environment moved while the scan was out; the rollback is dropped",
+			"environment", env.Name, "exception", exception.Name)
+		return nil
+	}
+	current.Spec.ReleaseRef = kitchenv1alpha1.LocalObjectReference{Name: target}
+	if err := s.Client.Update(ctx, current); err != nil {
 		return err
 	}
-	if env.RecordReleaseMove(release.Name, kitchenv1alpha1.ReleaseMoveRolledBack,
+	if current.RecordReleaseMove(release.Name, kitchenv1alpha1.ReleaseMoveRolledBack,
 		audit.ControllerActor(actorRescanSweep)) {
 		// The rescan status goes with it: the answer was about the artifact
 		// that has just stopped running.
-		env.Status.Rescan = nil
-		if err := s.Client.Status().Update(ctx, env); err != nil {
+		current.Status.Rescan = nil
+		if err := s.Client.Status().Update(ctx, current); err != nil {
 			return err
 		}
 	}
+	env.Spec.ReleaseRef = current.Spec.ReleaseRef
+	env.Status.Rescan = nil
 	s.Activity.Record(ctx, clickhouse.Event{
 		Type:        clickhouse.EventReleaseRolledBack,
 		Project:     project.Name,
@@ -943,9 +964,7 @@ func (s *RescanSweeper) record(
 // publishStatus keeps the singleton honest about whether the pass is running.
 // Best-effort and quiet: the sweep's job is the sweep, and a status write that
 // failed is not a reason to skip the next one.
-func (s *RescanSweeper) publishStatus(
-	ctx context.Context, kitchen *kitchenv1alpha1.Kitchen, report RescanSweepReport,
-) {
+func (s *RescanSweeper) publishStatus(ctx context.Context, report RescanSweepReport) {
 	status := &kitchenv1alpha1.RescanStatus{
 		Running:      report.Running,
 		LastSweep:    ptr.To(metav1.NewTime(s.now())),
