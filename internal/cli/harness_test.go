@@ -80,7 +80,10 @@ type platform struct {
 	decisions []decision
 	// The exception register: what /exceptions answers.
 	exceptions []exception
-	replay     *decisionReplay
+	// The criticality mapping, both directions.
+	criticality *criticalityMap
+	dependents  *dependents
+	replay      *decisionReplay
 
 	// The pipeline: what the project's promotions list answers, and — when
 	// set — the promotion an environment move becomes (the 202 an
@@ -178,6 +181,10 @@ func (p *platform) serve(w http.ResponseWriter, req *http.Request) {
 		p.answerBackup(w)
 	case strings.HasPrefix(path, "/decisions") || strings.HasPrefix(path, "/exceptions"):
 		p.answerRegisters(w, req, path)
+	case path == "/compliance/criticality":
+		writeAnswer(w, http.StatusOK, p.criticality)
+	case path == "/compliance/dependents":
+		writeAnswer(w, http.StatusOK, p.dependents)
 	case strings.HasPrefix(path, "/environments/"):
 		p.answerEnvironment(w, strings.TrimPrefix(path, "/environments/"))
 	default:
