@@ -45,6 +45,12 @@ import (
 // input after materializing — the promotion reconciler and the eligibility
 // preview both do — so every kind of evaluation waives the same grants the
 // same way.
+//
+// The artifact's OpenVEX statements (#135) are the other way round and are
+// set here, because they are a projection of the `evidence` argument rather
+// than a second thing to fetch: VEXFrom needs nothing this function does not
+// already hold. Setting them anywhere else would be a second materialization
+// site, and the two would drift the moment somebody added a third caller.
 func MaterializeInput(
 	kind string,
 	at time.Time,
@@ -73,6 +79,7 @@ func MaterializeInput(
 		},
 		Evidence: evidence,
 		Claims:   claims,
+		VEX:      VEXFrom(evidence, at),
 	}
 	if project != nil {
 		input.Project.DataClass = string(project.Spec.DataClass)

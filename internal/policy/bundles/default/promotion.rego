@@ -134,9 +134,10 @@ deny contains {
 }
 
 # --- max-severity -----------------------------------------------------------
-# Demands: no vulnerability-scan finding above the named severity, unless a
-# VEX statement says the product is not affected. Tuned by:
-# parameters["maxSeverity"] — one of none, low, medium, high, critical.
+# Demands: no vulnerability-scan finding above the named severity, unless a VEX
+# statement the environment trusts says this artifact is not affected. Tuned by:
+# parameters["maxSeverity"] — one of none, low, medium, high, critical — and,
+# for the suppression half, by the four vex* parameters below.
 # Matching is deliberately simple: severity strings compared through one rank
 # map, and suppression by vulnerability id against input.vex.
 severity_rank := {
@@ -196,10 +197,80 @@ vulnerability_of(finding) := "an unnamed finding" if {
 	object.get(finding, "id", "") == ""
 }
 
+# --- vex suppression --------------------------------------------------------
+# Not a rule of its own — no `deny` here — but the whole of what max-severity
+# consults before it fires, and the place an environment says whose word it
+# takes about exploitability.
+#
+# Four things must hold before a finding is suppressed, and each is one line
+# below: the statement says `not_affected`, it gives one of OpenVEX's five
+# justifications, its signature is acceptable, and it is current. Free text is
+# not a justification — a suppression whose reason cannot be counted cannot be
+# reviewed in aggregate, which is the whole of what an exception register is
+# for. The platform refuses an unjustified `not_affected` at ingest as well;
+# this is the half that also covers a document some other tool attached.
+#
+# Tuned by:
+#   parameters["vexRequireVerified"] — "false" honours a statement whose
+#       envelope the platform's key did not verify. Defaults to true, so a VEX
+#       document pushed by something else under a key nobody here holds is
+#       listed and never believed: that is "reject VEX from untrusted signers",
+#       on by default rather than opt-in.
+#   parameters["vexTrustedAuthors"] — comma-separated authors this environment
+#       takes the word of. Empty means every author the platform admitted at
+#       ingest, which is the operator's own narrower list.
+#   parameters["vexMaxAgeDays"] — how old a statement may be, judged against
+#       input.at so a replay suppresses exactly what the original suppressed.
+#       Empty means no bound. Under a bound, a statement carrying no timestamp
+#       is not current, and a parameter that is not a whole number of days
+#       suppresses nothing at all — a bound nobody can read bounds everything
+#       out, which is the fail-safe direction.
+vex_statements := object.get(input, "vex", [])
+
+vex_justifications := {
+	"component_not_present",
+	"vulnerable_code_not_present",
+	"vulnerable_code_not_in_execute_path",
+	"vulnerable_code_cannot_be_controlled_by_adversary",
+	"inline_mitigations_already_exist",
+}
+
+vex_require_verified if lower(trim_space(object.get(parameters, "vexRequireVerified", ""))) != "false"
+
+vex_trusted_authors := {author |
+	some part in split(object.get(parameters, "vexTrustedAuthors", ""), ",")
+	author := trim_space(part)
+	author != ""
+}
+
+vex_age_parameter := trim_space(object.get(parameters, "vexMaxAgeDays", ""))
+
 vex_not_affected(identifier) if {
-	some statement in object.get(input, "vex", [])
-	object.get(statement, "status", "") == "not_affected"
+	some statement in vex_statements
 	object.get(statement, "vulnerability", "") == identifier
+	object.get(statement, "status", "") == "not_affected"
+	object.get(statement, "justification", "") in vex_justifications
+	vex_signature_acceptable(statement)
+	vex_author_acceptable(statement)
+	vex_within_age(statement)
+}
+
+vex_signature_acceptable(_) if not vex_require_verified
+
+vex_signature_acceptable(statement) if object.get(statement, "verified", false) == true
+
+vex_author_acceptable(_) if count(vex_trusted_authors) == 0
+
+vex_author_acceptable(statement) if object.get(statement, "author", "") in vex_trusted_authors
+
+vex_within_age(_) if vex_age_parameter == ""
+
+vex_within_age(statement) if {
+	regex.match(`^[0-9]+$`, vex_age_parameter)
+	stamp := object.get(statement, "timestamp", "")
+	stamp != ""
+	age_ns := time.parse_rfc3339_ns(object.get(input, "at", "")) - time.parse_rfc3339_ns(stamp)
+	age_ns <= (to_number(vex_age_parameter) * 24) * 3600000000000
 }
 
 # --- dataclass-le-environment -----------------------------------------------

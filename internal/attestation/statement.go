@@ -119,6 +119,26 @@ const (
 	PredicateDataClass = "https://kitchen.bermos.dev/attestation/data-class/v1"
 )
 
+// PredicateOpenVEX is an OpenVEX document: somebody's assertion that a
+// vulnerability found in this artifact is or is not exploitable in it.
+//
+// It is **not** under kitchen.bermos.dev, and that is the rule above being
+// followed rather than an exception to it: OpenVEX is a standard vocabulary
+// with a specification, a URI of its own and tooling that already reads it, so
+// minting a Kitchen predicate type for the same claim would produce evidence
+// only Kitchen could interpret — the opposite of what §5.1 of
+// docs/COMPLIANCE.md keeps this whole layer standard for. The URI is the
+// document's own `@context`, which is how OpenVEX versions itself; older
+// documents carry an older one and are recognised by prefix (see
+// internal/vex.IsOpenVEX).
+//
+// The predicate is the submitted document, byte for byte. What the platform
+// adds is attribution — who submitted it, recorded on the Build and in the
+// audit log — and a signature meaning only that these bytes were submitted by
+// that identity at that moment and have not changed since. It is not a claim
+// that the assertion is true. Nothing can sign that.
+const PredicateOpenVEX = "https://openvex.dev/ns/v0.2.0"
+
 // predicateTypePrefix is the namespace Kitchen's own predicate types live
 // under. It is exported through KitchenPredicate so that a reader can ask
 // whether a predicate is Kitchen's without matching on the constants.
