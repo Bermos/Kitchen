@@ -411,6 +411,98 @@ type ComplianceSpec struct {
 	// homework, on a slower schedule.
 	// +optional
 	Rescan RescanSpec `json:"rescan,omitempty"`
+
+	// Access is the recertification cadence, the orphaned-identity window
+	// and the out-of-band write detection. It lives here rather than
+	// anywhere else for the reason everything here does: a team that decided
+	// how often its own access was reviewed would not be reviewed.
+	// +kubebuilder:default={}
+	// +optional
+	Access AccessComplianceSpec `json:"access,omitempty"`
+}
+
+// AccessComplianceSpec configures the access half of the compliance suite:
+// how often the platform asks somebody to look at who holds what, when an
+// identity counts as dormant, and whether it watches its own objects for
+// writes no reconcile made.
+//
+// None of it can block a deployment, and that is deliberate rather than
+// incidental. An access control that took a workload down when a review ran
+// late would be a control switched off within the month — so an overdue cycle
+// is reported, an orphaned identity is listed, and an out-of-band write is
+// recorded and surfaced. The consequence of all three is that somebody has to
+// look, which is what a recertification control is.
+type AccessComplianceSpec struct {
+	// Enabled runs the cadence, the orphan survey and the detection. Off
+	// leaves the routes answering and the register readable — a cycle
+	// somebody opens by hand still works — and stops the platform opening
+	// cycles or watching its own objects on its own.
+	// +kubebuilder:default=true
+	// +optional
+	Enabled bool `json:"enabled"`
+
+	// IntervalDays is how often a cycle opens: counted from the last cycle's
+	// close, so an installation that recertifies late does not immediately
+	// owe two.
+	//
+	// Ninety days is the default because it is what a quarterly control cycle
+	// means in practice, and the floor is 7 rather than 1 because a
+	// recertification nobody has time to finish before the next one opens is
+	// a queue rather than a control. Zero opens no cycle at all: the cadence
+	// is off, the surface stays, and an operator opens one when they need
+	// one.
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=3650
+	// +kubebuilder:default=90
+	// +optional
+	IntervalDays int32 `json:"intervalDays,omitempty"`
+
+	// DueDays is how long a cycle has from opening before it is Overdue.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:default=14
+	// +optional
+	DueDays int32 `json:"dueDays,omitempty"`
+
+	// InactivityDays is how long without a recorded action makes an identity
+	// dormant. Ninety days matches the review cadence on purpose: an account
+	// that did nothing between two reviews is exactly the one a reviewer
+	// should be asked about.
+	//
+	// Read it knowing what the log holds. The audit log records *writes*, so
+	// an account that only ever reads — opens the dashboard, follows logs,
+	// looks at a build — is dormant by this measure and is not dormant in
+	// fact. That is the honest limit of the evidence, and it is why dormancy
+	// alone is not an orphan.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:default=90
+	// +optional
+	InactivityDays int32 `json:"inactivityDays,omitempty"`
+
+	// DetectOutOfBandWrites watches Kitchen's own objects for changes no
+	// reconcile and no API call made — somebody with cluster access editing
+	// a Project, an Environment's requirements or the operator list
+	// directly.
+	//
+	// It is detection and never prevention: anybody holding cluster-admin can
+	// do all of it, and Kitchen's answer is to notice and say so loudly
+	// rather than to pretend it can refuse. See docs/COMPLIANCE.md §11.4 for
+	// what the mechanism sees and what it cannot.
+	// +kubebuilder:default=true
+	// +optional
+	DetectOutOfBandWrites bool `json:"detectOutOfBandWrites"`
+
+	// ExpectedManagers are Kubernetes field-manager names whose writes to
+	// Kitchen's objects are not out of band, in addition to the platform's
+	// own and Helm's.
+	//
+	// It exists because a real cluster has legitimate writers Kitchen has
+	// never heard of — a GitOps controller applying the singleton, a policy
+	// mutating webhook, a backup tool restoring. Naming them is the operator
+	// saying "this one is expected", which is a decision on the record rather
+	// than an alert everybody learns to ignore. Matched exactly.
+	// +optional
+	// +listType=atomic
+	ExpectedManagers []string `json:"expectedManagers,omitempty"`
 }
 
 // AuditStatus reports whether the audit log is actually recording, which is
@@ -481,6 +573,62 @@ type ComplianceStatus struct {
 
 	// +optional
 	Rescan *RescanStatus `json:"rescan,omitempty"`
+
+	// +optional
+	Access *AccessComplianceStatus `json:"access,omitempty"`
+}
+
+// AccessComplianceStatus is where the access controls stand: whether a
+// recertification is open and by when, how many identities look orphaned, and
+// how many writes the platform has seen that it did not make.
+//
+// It is on the singleton rather than anywhere else because all three are
+// facts about the installation, and because this is where an operator looks
+// when the dashboard says something is wrong. The counts are the survey's
+// last pass, not a live number — see the sweep in internal/controller.
+type AccessComplianceStatus struct {
+	// Reviewing is true when the cadence is on and has somewhere to run.
+	Reviewing bool `json:"reviewing"`
+
+	// OpenReview names the cycle currently open, and DueBy when it is
+	// expected to be closed. Both empty means there is none, which is the
+	// ordinary state between cycles.
+	// +optional
+	OpenReview string `json:"openReview,omitempty"`
+	// +optional
+	DueBy *metav1.Time `json:"dueBy,omitempty"`
+
+	// LastClosed is when a cycle last closed — the answer to "when was
+	// access last recertified here", which is the question that gets asked.
+	// +optional
+	LastClosed *metav1.Time `json:"lastClosed,omitempty"`
+
+	// Identities is how many grants the last survey found and Orphaned how
+	// many of them were dormant *and* unknown to the identity provider.
+	// +optional
+	Identities int32 `json:"identities,omitempty"`
+	// +optional
+	Orphaned int32 `json:"orphaned,omitempty"`
+
+	// OutOfBandWrites is how many Kitchen-managed objects currently carry a
+	// field manager the platform does not recognise, and LastOutOfBand when
+	// the newest such write was made.
+	//
+	// It is a standing count rather than a running total: a foreign manager
+	// stays on an object's managedFields until the platform writes those
+	// fields again, so this answers "what is currently marked" and the audit
+	// log answers "what happened".
+	// +optional
+	OutOfBandWrites int32 `json:"outOfBandWrites,omitempty"`
+	// +optional
+	LastOutOfBand *metav1.Time `json:"lastOutOfBand,omitempty"`
+
+	// Message explains a survey that is not running, or names what it could
+	// not read. The failure mode of evidence is silence, so a survey that
+	// could not reach the identity provider says so rather than reporting
+	// zero orphans.
+	// +optional
+	Message string `json:"message,omitempty"`
 }
 
 // VulnerabilityScannerSpec is the matcher the continuous re-evaluation pass

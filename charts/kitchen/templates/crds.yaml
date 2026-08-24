@@ -14,6 +14,438 @@ metadata:
     {{- end }}
   labels:
     {{- include "kitchen.labels" . | nindent 4 }}
+  name: accessreviews.kitchen.bermos.dev
+spec:
+  group: kitchen.bermos.dev
+  names:
+    kind: AccessReview
+    listKind: AccessReviewList
+    plural: accessreviews
+    singular: accessreview
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.scope
+      name: Scope
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.pending
+      name: Pending
+      type: integer
+    - jsonPath: .status.revoked
+      name: Revoked
+      type: integer
+    - jsonPath: .spec.dueBy
+      name: Due
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          AccessReview is the Schema for the accessreviews API: one recertification
+          cycle, retained after it closes so the register stays queryable
+          historically.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              AccessReviewSpec is what the cycle is: its scope, who is expected to review
+              it, and by when. It is immutable, for an Exception's reason — a
+              recertification is a record of what somebody looked at and decided, and a
+              record whose terms can be edited afterwards is not a record. What changes
+              during a cycle is its status, because a decision is an act rather than an
+              edit.
+            properties:
+              dueBy:
+                description: |-
+                  DueBy is when the cycle is expected to be closed. Passing it makes the
+                  cycle Overdue and is recorded; it does not revoke anything and does not
+                  stop a deployment. An access review that took a workload down would be
+                  a control nobody would leave switched on.
+                format: date-time
+                type: string
+              openedBy:
+                description: |-
+                  OpenedBy names who or what opened the cycle: an identity for one a
+                  person asked for, `system:controller/accessreview` for one the cadence
+                  opened.
+                minLength: 1
+                type: string
+              projectRef:
+                description: |-
+                  ProjectRef names the project, for a project-scoped cycle. Refused at
+                  admission on any other scope, and required on that one.
+                properties:
+                  name:
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+              reason:
+                description: |-
+                  Reason is why this cycle exists, in whoever opened it's words — the
+                  cadence, an audit, somebody leaving.
+                type: string
+              reviewers:
+                description: |-
+                  Reviewers are who is expected to decide. It is a list rather than one
+                  name because a review of the whole installation is rarely one person's
+                  afternoon, and because a reviewer who leaves mid-cycle must not take
+                  the cycle with them.
+
+                  It is an expectation and not an enforcement: the API admits a decision
+                  from any platform operator and records who actually made it, since a
+                  cycle that could only be closed by a named person is a cycle that
+                  stalls the week they are on holiday. Whether the decider was on this
+                  list is visible on every entry.
+                items:
+                  description: |-
+                    AccessSubject names the account an access entry is about.
+
+                    The canonical subject is the issuer's `sub`, which is opaque: the dashboard
+                    resolves an address to one when it writes an entry, and Email is carried
+                    beside it only so that a list of opaque strings still reads. Hand-written
+                    YAML may name an address in Subject instead, and the rule that tells the two
+                    apart is deliberately blunt: **a subject containing `@` is read as an email
+                    address**, matched case-insensitively (addresses are), and honoured only for
+                    a token whose `email_verified` claim is true.
+
+                    That last condition is the whole point. An unverified address is something
+                    the token holder said about themselves, so an unverified-email grant is a
+                    grant to whoever can get the identity provider to let them type that
+                    address — it resolves to no role at all rather than to the one written down.
+
+                    The rule has one corollary worth knowing: an issuer whose `sub` is itself an
+                    address cannot be named by `sub` here, because that spelling is read as the
+                    email it looks like. That is the conservative direction — it asks for a
+                    verified address rather than trusting an opaque string that happens to
+                    contain an `@`.
+                  properties:
+                    email:
+                      description: |-
+                        Email is informational: it is what makes a list of opaque subjects
+                        readable in `kubectl get -o yaml` and in a git diff. Nothing resolves
+                        against it — an entry that means to name an address puts the address in
+                        Subject, and accepts the verified-email condition that comes with it.
+                      type: string
+                    subject:
+                      description: |-
+                        Subject is the issuer's `sub` for the account, or an email address. A
+                        value containing `@` is treated as an address and resolves against the
+                        token's `email` claim only when `email_verified` is true, because an
+                        unverified-email grant is a grant to whoever can claim that address at
+                        the identity provider.
+                      minLength: 1
+                      type: string
+                  required:
+                  - subject
+                  type: object
+                minItems: 1
+                type: array
+                x-kubernetes-list-map-keys:
+                - subject
+                x-kubernetes-list-type: map
+              scope:
+                default: all
+                description: Scope is what this cycle covers.
+                enum:
+                - platform
+                - project
+                - all
+                type: string
+            required:
+            - dueBy
+            - openedBy
+            - reviewers
+            - scope
+            type: object
+            x-kubernetes-validations:
+            - message: 'AccessReview spec is immutable: a recertification cycle is
+                a record of what was reviewed; open a new cycle instead of editing
+                this one'
+              rule: self == oldSelf
+            - message: a project-scoped review must name the project it is about in
+                projectRef
+              rule: self.scope != 'project' || has(self.projectRef)
+            - message: 'projectRef belongs to a project-scoped review only: a platform
+                or all-scoped cycle covers every project'
+              rule: self.scope == 'project' || !has(self.projectRef)
+          status:
+            description: |-
+              AccessReviewStatus is the cycle itself: the snapshot, the decisions, the
+              tallies and the artefact.
+            properties:
+              artifact:
+                description: Artifact is the retained evidence this cycle produced.
+                properties:
+                  message:
+                    description: |-
+                      Message explains a cycle that closed with no artefact behind it — no
+                      signing key, or no store to keep it in. The cycle still closed and the
+                      decisions are still on the object and in the audit log; what is missing
+                      is the portable evidence, and saying so is better than a blank field.
+                    type: string
+                  predicateType:
+                    description: PredicateType is what kind of statement it is.
+                    type: string
+                  recordID:
+                    description: RecordID is the signed record's id in the store.
+                    type: string
+                  signedAt:
+                    description: SignedAt is when the envelope was minted.
+                    format: date-time
+                    type: string
+                  subject:
+                    description: |-
+                      Subject is the cycle's identity digest, which is the statement's
+                      subject: sha256 over namespace, name and UID.
+                    type: string
+                type: object
+              closedAt:
+                format: date-time
+                type: string
+              closedBy:
+                description: ClosedBy names who closed the cycle and ClosedAt when.
+                type: string
+              conditions:
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              confirmed:
+                format: int32
+                type: integer
+              entries:
+                description: Entries is every grant in scope at SnapshotAt, with its
+                  decision.
+                items:
+                  description: |-
+                    AccessReviewEntry is one grant as the cycle found it, plus what was decided
+                    about it and what became of that decision.
+
+                    The snapshot half is frozen when the cycle opens and never rewritten: a
+                    review is of what was true at an instant, and a row that drifted while
+                    somebody was reading it would be a review of nothing. A grant added after
+                    the cycle opened is simply not in this cycle — it is in the next one.
+                  properties:
+                    applied:
+                      description: |-
+                        Applied records that a revocation was actually carried out when the
+                        cycle closed, and ApplyMessage says why one was not. The pair exists
+                        because a revocation the platform declines — the last operator, a
+                        grant somebody already removed — must not read as one it performed.
+                      type: boolean
+                    applyMessage:
+                      type: string
+                    decidedAt:
+                      format: date-time
+                      type: string
+                    decidedBy:
+                      description: DecidedBy names who decided, DecidedAt when, and
+                        Note their words.
+                      type: string
+                    decision:
+                      description: |-
+                        Decision is what the reviewer said. Empty is undecided, which is what
+                        `pending` counts.
+                      enum:
+                      - confirm
+                      - revoke
+                      type: string
+                    email:
+                      description: |-
+                        Email is informational: it is what makes a list of opaque subjects
+                        readable in `kubectl get -o yaml` and in a git diff. Nothing resolves
+                        against it — an entry that means to name an address puts the address in
+                        Subject, and accepts the verified-email condition that comes with it.
+                      type: string
+                    grant:
+                      description: |-
+                        Grant says where the role is held: `platform` for the operator list,
+                        or the project's name.
+                      minLength: 1
+                      type: string
+                    inactive:
+                      description: Inactive is LastActive older than the configured
+                        window, or absent.
+                      type: boolean
+                    lastActive:
+                      description: |-
+                        LastActive is when this identity was last recorded doing something, out
+                        of the audit log. Absent means nothing has ever been recorded of them,
+                        which is not the same as "they never signed in": the log records
+                        writes, so somebody who only ever reads looks identical here. That
+                        blind spot is stated rather than papered over.
+                      format: date-time
+                      type: string
+                    note:
+                      type: string
+                    orphaned:
+                      description: |-
+                        Orphaned is Inactive and Unknown together: no recent activity and no
+                        owner. It is the pair rather than either alone because either alone has
+                        an innocent reading — a quiet quarter, or an issuer that answers no
+                        directory — and the pair does not.
+                      type: boolean
+                    role:
+                      description: |-
+                        Role is what is held there — `operator` on the platform, or one of the
+                        three project roles.
+                      minLength: 1
+                      type: string
+                    selfReview:
+                      description: |-
+                        SelfReview records that the decider is the subject of this entry. It is
+                        allowed and marked rather than refused — see the type comment — so that
+                        "who reviewed their own access" is a question with a written answer.
+                      type: boolean
+                    subject:
+                      description: |-
+                        Subject is the issuer's `sub` for the account, or an email address. A
+                        value containing `@` is treated as an address and resolves against the
+                        token's `email` claim only when `email_verified` is true, because an
+                        unverified-email grant is a grant to whoever can claim that address at
+                        the identity provider.
+                      minLength: 1
+                      type: string
+                    unknown:
+                      description: |-
+                        Unknown is the identity provider's directory holding no account for
+                        this subject — a grant pointing at nobody. It is only ever set when the
+                        directory actually answered: an installation federated to an issuer of
+                        its own serves no directory, and claiming every grant there was unknown
+                        would be a lie with a checkbox.
+                      type: boolean
+                  required:
+                  - grant
+                  - role
+                  - subject
+                  type: object
+                type: array
+                x-kubernetes-list-type: atomic
+              openedAt:
+                description: |-
+                  OpenedAt is when the cycle was stamped Open, and SnapshotAt the
+                  instant the grants below were frozen. They are usually the same and
+                  are two fields because they answer two questions: when the review
+                  started, and what moment it is a review *of*.
+                format: date-time
+                type: string
+              orphaned:
+                format: int32
+                type: integer
+              pending:
+                description: |-
+                  The tallies, so a list screen and a `kubectl get` need not add up a
+                  hundred entries to say where a cycle stands.
+                format: int32
+                type: integer
+              phase:
+                description: AccessReviewPhase is where a cycle is in its life.
+                enum:
+                - Open
+                - Overdue
+                - Closed
+                type: string
+              revoked:
+                format: int32
+                type: integer
+              selfReviewed:
+                format: int32
+                type: integer
+              snapshotAt:
+                format: date-time
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.17.2
+    {{- if .Values.crds.keep }}
+    helm.sh/resource-policy: keep
+    {{- end }}
+  labels:
+    {{- include "kitchen.labels" . | nindent 4 }}
   name: builds.kitchen.bermos.dev
 spec:
   group: kitchen.bermos.dev
@@ -1943,6 +2375,91 @@ spec:
                   Compliance configures the evidence the platform produces about its own
                   operation: the audit log and the attestations attached to artifacts.
                 properties:
+                  access:
+                    default: {}
+                    description: |-
+                      Access is the recertification cadence, the orphaned-identity window
+                      and the out-of-band write detection. It lives here rather than
+                      anywhere else for the reason everything here does: a team that decided
+                      how often its own access was reviewed would not be reviewed.
+                    properties:
+                      detectOutOfBandWrites:
+                        default: true
+                        description: |-
+                          DetectOutOfBandWrites watches Kitchen's own objects for changes no
+                          reconcile and no API call made — somebody with cluster access editing
+                          a Project, an Environment's requirements or the operator list
+                          directly.
+
+                          It is detection and never prevention: anybody holding cluster-admin can
+                          do all of it, and Kitchen's answer is to notice and say so loudly
+                          rather than to pretend it can refuse. See docs/COMPLIANCE.md §11.4 for
+                          what the mechanism sees and what it cannot.
+                        type: boolean
+                      dueDays:
+                        default: 14
+                        description: DueDays is how long a cycle has from opening
+                          before it is Overdue.
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      enabled:
+                        default: true
+                        description: |-
+                          Enabled runs the cadence, the orphan survey and the detection. Off
+                          leaves the routes answering and the register readable — a cycle
+                          somebody opens by hand still works — and stops the platform opening
+                          cycles or watching its own objects on its own.
+                        type: boolean
+                      expectedManagers:
+                        description: |-
+                          ExpectedManagers are Kubernetes field-manager names whose writes to
+                          Kitchen's objects are not out of band, in addition to the platform's
+                          own and Helm's.
+
+                          It exists because a real cluster has legitimate writers Kitchen has
+                          never heard of — a GitOps controller applying the singleton, a policy
+                          mutating webhook, a backup tool restoring. Naming them is the operator
+                          saying "this one is expected", which is a decision on the record rather
+                          than an alert everybody learns to ignore. Matched exactly.
+                        items:
+                          type: string
+                        type: array
+                        x-kubernetes-list-type: atomic
+                      inactivityDays:
+                        default: 90
+                        description: |-
+                          InactivityDays is how long without a recorded action makes an identity
+                          dormant. Ninety days matches the review cadence on purpose: an account
+                          that did nothing between two reviews is exactly the one a reviewer
+                          should be asked about.
+
+                          Read it knowing what the log holds. The audit log records *writes*, so
+                          an account that only ever reads — opens the dashboard, follows logs,
+                          looks at a build — is dormant by this measure and is not dormant in
+                          fact. That is the honest limit of the evidence, and it is why dormancy
+                          alone is not an orphan.
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      intervalDays:
+                        default: 90
+                        description: |-
+                          IntervalDays is how often a cycle opens: counted from the last cycle's
+                          close, so an installation that recertifies late does not immediately
+                          owe two.
+
+                          Ninety days is the default because it is what a quarterly control cycle
+                          means in practice, and the floor is 7 rather than 1 because a
+                          recertification nobody has time to finish before the next one opens is
+                          a queue rather than a control. Zero opens no cycle at all: the cadence
+                          is off, the surface stays, and an operator opens one when they need
+                          one.
+                        format: int32
+                        maximum: 3650
+                        minimum: 0
+                        type: integer
+                    type: object
                   attestation:
                     description: Attestation is the signed evidence attached to built
                       artifacts.
@@ -2698,6 +3215,70 @@ spec:
                   installation which believes it is producing evidence can find out that
                   it is not.
                 properties:
+                  access:
+                    description: |-
+                      AccessComplianceStatus is where the access controls stand: whether a
+                      recertification is open and by when, how many identities look orphaned, and
+                      how many writes the platform has seen that it did not make.
+
+                      It is on the singleton rather than anywhere else because all three are
+                      facts about the installation, and because this is where an operator looks
+                      when the dashboard says something is wrong. The counts are the survey's
+                      last pass, not a live number — see the sweep in internal/controller.
+                    properties:
+                      dueBy:
+                        format: date-time
+                        type: string
+                      identities:
+                        description: |-
+                          Identities is how many grants the last survey found and Orphaned how
+                          many of them were dormant *and* unknown to the identity provider.
+                        format: int32
+                        type: integer
+                      lastClosed:
+                        description: |-
+                          LastClosed is when a cycle last closed — the answer to "when was
+                          access last recertified here", which is the question that gets asked.
+                        format: date-time
+                        type: string
+                      lastOutOfBand:
+                        format: date-time
+                        type: string
+                      message:
+                        description: |-
+                          Message explains a survey that is not running, or names what it could
+                          not read. The failure mode of evidence is silence, so a survey that
+                          could not reach the identity provider says so rather than reporting
+                          zero orphans.
+                        type: string
+                      openReview:
+                        description: |-
+                          OpenReview names the cycle currently open, and DueBy when it is
+                          expected to be closed. Both empty means there is none, which is the
+                          ordinary state between cycles.
+                        type: string
+                      orphaned:
+                        format: int32
+                        type: integer
+                      outOfBandWrites:
+                        description: |-
+                          OutOfBandWrites is how many Kitchen-managed objects currently carry a
+                          field manager the platform does not recognise, and LastOutOfBand when
+                          the newest such write was made.
+
+                          It is a standing count rather than a running total: a foreign manager
+                          stays on an object's managedFields until the platform writes those
+                          fields again, so this answers "what is currently marked" and the audit
+                          log answers "what happened".
+                        format: int32
+                        type: integer
+                      reviewing:
+                        description: Reviewing is true when the cadence is on and
+                          has somewhere to run.
+                        type: boolean
+                    required:
+                    - reviewing
+                    type: object
                   attestation:
                     description: |-
                       AttestationStatus reports the identity evidence is signed under. The key id

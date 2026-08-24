@@ -28,6 +28,7 @@ package audit
 // that a record can be taken back to the object it is about without a
 // translation table.
 const (
+	KindAccessReview   = "AccessReview"
 	KindBuild          = "Build"
 	KindConnection     = "Connection"
 	KindDomain         = "Domain"

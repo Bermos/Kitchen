@@ -196,6 +196,20 @@ spec:
       scanner:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+    # Access recertification, orphaned identities, and the watch for writes to
+    # Kitchen's own objects that no reconcile made. None of it can refuse a
+    # deployment: an access control that took a workload down would be one
+    # nobody leaves switched on.
+    access:
+      enabled: {{ .Values.kitchen.compliance.access.enabled }}
+      intervalDays: {{ int .Values.kitchen.compliance.access.intervalDays }}
+      dueDays: {{ int .Values.kitchen.compliance.access.dueDays }}
+      inactivityDays: {{ int .Values.kitchen.compliance.access.inactivityDays }}
+      detectOutOfBandWrites: {{ .Values.kitchen.compliance.access.detectOutOfBandWrites }}
+      {{- with .Values.kitchen.compliance.access.expectedManagers }}
+      expectedManagers:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
     {{- with .Values.kitchen.compliance.gates }}
     # The quality gates run over every artifact. Each records what it found and
     # never whether that was acceptable: the verdict belongs to the environment

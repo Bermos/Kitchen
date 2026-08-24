@@ -488,6 +488,55 @@ kitchen:
       #   timeoutSeconds: 900
       # ```
       scanner: {}
+    access:
+      # -- Ask somebody, on a cadence, who holds what on this platform — and
+      # watch Kitchen's own objects for changes no reconcile made.
+      #
+      # A cycle opens, freezes a snapshot of every grant at that instant, is
+      # reviewed grant by grant by a named reviewer, and closes leaving a
+      # signed, timestamped artefact of what was decided. Revocations are
+      # carried out when the cycle closes, which is what makes this a control
+      # rather than a form somebody filled in.
+      #
+      # None of it can refuse a deployment, deliberately: an overdue review is
+      # reported, an orphaned identity is listed, an out-of-band write is
+      # recorded — and an access control that took a workload down when a
+      # review ran late would be switched off within the month. Off leaves the
+      # register readable and cycles openable by hand, and stops the platform
+      # opening or watching anything on its own.
+      enabled: true
+      # -- How often a cycle opens, counted from the last one's **close** — so
+      # an installation that recertifies late does not immediately owe two.
+      # Ninety days is a quarterly control cycle; 0 opens none automatically
+      # and leaves the surface for an operator to use when they need it.
+      intervalDays: 90
+      # -- How long a cycle has, from opening, before it is reported overdue.
+      dueDays: 14
+      # -- How long without a recorded action makes an identity dormant. An
+      # account that is dormant **and** unknown to the identity provider is
+      # reported as orphaned — the pair, because either alone has an innocent
+      # reading. Note what the evidence holds: the audit log records writes,
+      # so somebody who only ever reads looks dormant and is not.
+      inactivityDays: 90
+      # -- Watch Kitchen-managed objects for writes the platform did not make,
+      # by reading the field manager the API server recorded for each field.
+      #
+      # It is detection and never prevention. Anybody holding cluster-admin
+      # can edit any of it, and can name their own field manager anything they
+      # like — `kubectl --field-manager=kitchen` is invisible to this and
+      # always will be. Kitchen's answer to that residual risk is to notice
+      # what it can and say so loudly, which is documented in
+      # docs/COMPLIANCE.md rather than claimed away.
+      detectOutOfBandWrites: true
+      # -- Field-manager names whose writes to Kitchen's objects are expected,
+      # in addition to the platform's own and Helm's — a GitOps controller
+      # applying the singleton, a mutating webhook, a backup tool restoring.
+      #
+      # Naming one is the operator putting "this writer is expected" on the
+      # record, which is the alternative to an alert everybody learns to
+      # ignore. Matched exactly, with no patterns, for the same reason
+      # `machineIdentities` has none.
+      expectedManagers: []
     # Policy bundles are deliberately not a value here. The operator ships a
     # built-in bundle, and an institution distributes its own as ConfigMaps in
     # kitchen-system labelled `kitchen.bermos.dev/policy-bundle: "true"` (each
