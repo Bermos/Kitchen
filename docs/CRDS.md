@@ -295,8 +295,8 @@ credential the platform wrote and never reads back. Nothing downstream treats
 it as a special case — it is deletable, replaceable, and pickable exactly like
 one someone created on the connections page.
 
-First-party providers: `github` (capabilities `gitSource` and `statusChecks`),
-`gitlab` and `gitea` (capability `gitSource`), `dockerRegistry` (capability `imageStore`),
+First-party providers: `github`, `gitlab` and `gitea` (capabilities `gitSource` and
+`statusChecks`), `dockerRegistry` (capability `imageStore`),
 `neon` (capability `database`). The operator matches on **capabilities**, not provider names,
 so CloudNativePG can later implement `database` too.
 

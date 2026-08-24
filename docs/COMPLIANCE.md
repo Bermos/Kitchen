@@ -660,10 +660,10 @@ deadlock with itself. The requirement applies to the production branch alone.
 ### 8.8 What is not built
 
 **GitLab.** The acceptance criteria ask for GitHub and GitLab. GitLab and Gitea
-are now real providers — a credential probe, webhook registration, and verified
-push and merge-request deliveries — but only their `gitSource` half. Neither
-reports `statusChecks`, and neither implements `gitprovider.ChangeReader`, so
-nothing about a GitLab merge request's reviews reaches a decision here.
+are now real providers — a credential probe, webhook registration, verified push
+and merge-request deliveries, and the commit status and preview comment posted
+back. What neither implements is `gitprovider.ChangeReader`, so nothing about a
+GitLab merge request's reviews reaches a decision here.
 `ChangeReader` is a capability interface for exactly this reason, in the same
 shape as `SourceReader` and `StatusReporter`: a provider lands as a source
 first and gains the rest, and a Connection that cannot answer is told apart

@@ -80,7 +80,7 @@ export function providerGuidance(provider: string, apiUrl?: string): ProviderGui
       return {
         tokenLabel: "Access token",
         purpose:
-          "Kitchen registers the repository's push and merge-request webhook with this token and reads the repository to build it.",
+          "Kitchen registers the repository's push and merge-request webhook with this token, reads the repository to build it, and posts the build's status and the preview's comment back.",
         permissions: [
           "Personal, project, or group access token with the api scope, on the projects you deploy.",
           "Maintainer on each project: registering the webhook is a maintainer's right, not a reader's.",
@@ -91,7 +91,7 @@ export function providerGuidance(provider: string, apiUrl?: string): ProviderGui
       return {
         tokenLabel: "Access token",
         purpose:
-          "Kitchen registers the repository's push and pull-request webhook with this token and reads the repository to build it.",
+          "Kitchen registers the repository's push and pull-request webhook with this token, reads the repository to build it, and posts the build's status and the preview's comment back.",
         permissions: [
           "An access token with the write:repository scope on the repositories you deploy.",
           "Owner or administrator on each repository: Gitea lets only those register a webhook.",
