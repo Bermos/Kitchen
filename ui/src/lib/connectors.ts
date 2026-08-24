@@ -82,8 +82,8 @@ export function providerGuidance(provider: string, apiUrl?: string): ProviderGui
         purpose:
           "Kitchen registers the repository's push and merge-request webhook with this token and reads the repository to build it.",
         permissions: [
-          "Personal, project, or group access token with API access to the repositories you deploy.",
-          "The token is also used by webhook delivery checks (`X-Gitlab-Token`) and repository reads.",
+          "Personal, project, or group access token with the api scope, on the projects you deploy.",
+          "Maintainer on each project: registering the webhook is a maintainer's right, not a reader's.",
         ],
         link: { href: "https://gitlab.com/-/user_settings/personal_access_tokens", label: "Personal access tokens in GitLab" },
       };
@@ -93,7 +93,8 @@ export function providerGuidance(provider: string, apiUrl?: string): ProviderGui
         purpose:
           "Kitchen registers the repository's push and pull-request webhook with this token and reads the repository to build it.",
         permissions: [
-          "A Gitea access token with read access to the repository and webhook administration permissions.",
+          "An access token with the write:repository scope on the repositories you deploy.",
+          "Owner or administrator on each repository: Gitea lets only those register a webhook.",
         ],
       };
     case "dockerRegistry":
