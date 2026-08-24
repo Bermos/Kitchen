@@ -37,7 +37,12 @@ import (
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 )
 
-const webhookSecret = "hunter2"
+const (
+	webhookSecret = "hunter2"
+	// commitAuthor is who every fixture's commit is attributed to, asserted
+	// once per provider.
+	commitAuthor = "bermos"
+)
 
 func newReceiver(t *testing.T, objs ...runtime.Object) (*GitWebhookReceiver, http.Handler) {
 	return newReceiverForProvider(t, "github", objs...)
@@ -160,7 +165,7 @@ func TestPushCreatesBuild(t *testing.T) {
 	if build.Spec.Git.Branch != "main" || build.Spec.Git.SHA != "8f3a2c1d0abc456789ab" {
 		t.Errorf("unexpected git revision %+v", build.Spec.Git)
 	}
-	if build.Spec.Git.Author != "bermos" || build.Spec.Git.Message != "Add checkout" {
+	if build.Spec.Git.Author != commitAuthor || build.Spec.Git.Message != "Add checkout" {
 		t.Errorf("unexpected commit metadata %+v", build.Spec.Git)
 	}
 	if build.Spec.Git.PullRequest != nil {
@@ -291,7 +296,7 @@ func TestGitLabPushCreatesBuild(t *testing.T) {
 	if err := r.Client.Get(context.Background(), key, build); err != nil {
 		t.Fatalf("expected build to be created: %v", err)
 	}
-	if build.Spec.Git.Author != "bermos" || build.Spec.Git.Message != "Add checkout" {
+	if build.Spec.Git.Author != commitAuthor || build.Spec.Git.Message != "Add checkout" {
 		t.Errorf("unexpected git metadata %+v", build.Spec.Git)
 	}
 }
@@ -371,7 +376,7 @@ func TestGiteaPushCreatesBuild(t *testing.T) {
 	if err := r.Client.Get(context.Background(), key, build); err != nil {
 		t.Fatalf("expected build to be created: %v", err)
 	}
-	if build.Spec.Git.Author != "bermos" || build.Spec.Git.Branch != "main" {
+	if build.Spec.Git.Author != commitAuthor || build.Spec.Git.Branch != "main" {
 		t.Errorf("unexpected git metadata %+v", build.Spec.Git)
 	}
 }
