@@ -143,7 +143,10 @@ func Capabilities(providerName string) []kitchenv1alpha1.Capability {
 			kitchenv1alpha1.CapabilityStatusChecks,
 		}
 	case "gitlab", "gitea":
-		return []kitchenv1alpha1.Capability{kitchenv1alpha1.CapabilityGitSource}
+		return []kitchenv1alpha1.Capability{
+			kitchenv1alpha1.CapabilityGitSource,
+			kitchenv1alpha1.CapabilityStatusChecks,
+		}
 	case "dockerRegistry":
 		return []kitchenv1alpha1.Capability{kitchenv1alpha1.CapabilityImageStore}
 	case "neon":
