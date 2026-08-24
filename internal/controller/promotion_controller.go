@@ -25,7 +25,6 @@ import (
 	"strings"
 	"time"
 
-	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -42,7 +41,6 @@ import (
 	"github.com/Bermos/Kitchen/internal/audit"
 	"github.com/Bermos/Kitchen/internal/clickhouse"
 	"github.com/Bermos/Kitchen/internal/policy"
-	"github.com/Bermos/Kitchen/internal/provider"
 	"github.com/Bermos/Kitchen/internal/version"
 )
 
@@ -104,25 +102,6 @@ type PromotionReconciler struct {
 	// promotion. Nil means the real listing — ActiveExceptionsFor over the
 	// Exception objects in the platform namespace. Tests inject.
 	Exceptions func(ctx context.Context, promotion *kitchenv1alpha1.Promotion) ([]policy.Exception, error)
-}
-
-// activeExceptions is the Exceptions seam with its default behind it: the
-// one shared listing (ActiveExceptionsFor), scoped to the promotion's own
-// triple, judged at `at` — the same clock the engine's input carries, so
-// what is listed is exactly what ApplyExceptions will honour.
-func (r *PromotionReconciler) activeExceptions(
-	ctx context.Context, promotion *kitchenv1alpha1.Promotion, at time.Time,
-) ([]policy.Exception, error) {
-	if r.Exceptions != nil {
-		return r.Exceptions(ctx, promotion)
-	}
-	active, err := ActiveExceptionsFor(ctx, r.Client, promotion.Namespace,
-		promotion.Spec.ProjectRef.Name, promotion.Spec.EnvironmentRef.Name,
-		promotion.Spec.ReleaseRef.Name, at)
-	if err != nil {
-		return nil, err
-	}
-	return PolicyExceptions(active), nil
 }
 
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=promotions,verbs=get;list;watch;create;update;patch;delete
@@ -280,10 +259,16 @@ func (r *PromotionReconciler) resolve(
 	return project, env, release, "", nil
 }
 
-// evaluate materializes the input and asks the engine. Returns, in order: the
-// input and result and the bundle they came from, the sentence for status
-// .message, a permanent refusal (promotion goes Failed), and a transient
-// error (requeue).
+// evaluate asks the environment's bar about the release, through the one
+// implementation both this reconciler and the rescan sweep use
+// (PolicyEvaluator — see policyeval.go, and issue #134's "the same code path
+// as promotion"). Returns, in order: the input and result and the bundle they
+// came from, the sentence for status.message, a permanent refusal (promotion
+// goes Failed), and a transient error (requeue).
+//
+// What is added here and nowhere else is the expired-exception note: it is
+// worded from the Promotion's own triple, and it is the promotion's reader who
+// needs to be told that renewing a grant is the move.
 func (r *PromotionReconciler) evaluate(
 	ctx context.Context,
 	kitchen *kitchenv1alpha1.Kitchen,
@@ -292,94 +277,47 @@ func (r *PromotionReconciler) evaluate(
 	env *kitchenv1alpha1.Environment,
 	release *kitchenv1alpha1.Release,
 ) (policy.Input, policy.Result, policy.Bundle, string, string, error) {
-	none := policy.Input{}
-
-	build := &kitchenv1alpha1.Build{}
-	if err := r.Get(ctx, types.NamespacedName{
-		Namespace: promotion.Namespace, Name: release.Spec.BuildRef.Name,
-	}, build); err != nil {
-		if !apierrors.IsNotFound(err) {
-			return none, policy.Result{}, nil, "", "", err
-		}
-		// A pruned build leaves the release judged on what the registry still
-		// carries — honestly nothing, if the index is gone too.
-		build = nil
-	}
-
-	claims, err := r.claimFacts(ctx, env)
-	if err != nil {
-		return none, policy.Result{}, nil, "", "", err
-	}
-
-	requirements := env.Spec.Requirements
-	if requirements == nil {
-		// The hard check behind issue #137 guards this ungated door too: a
-		// classified project's release does not land on an environment rated
-		// below it, and with no bundle pinned there is no engine to say so —
-		// the refusal is this reconciler's own, permanent for this promotion,
-		// naming both classes and the fix.
-		if refusal := DataClassRefusal(project, env); refusal != "" {
-			return none, policy.Result{}, nil, "", refusal, nil
-		}
-		// An environment that declares no bar accepts anything — exactly
-		// today's behaviour, stated rather than implied: the decision is
-		// still recorded, with an empty bundle and no rules evaluated.
-		input := policy.MaterializeInput(policy.KindPromotion, time.Now().UTC(), project, env, release, build, nil, claims)
-		message := fmt.Sprintf(
-			"environment %s declares no requirements, so no rules were evaluated and the release is allowed",
-			env.Name)
-		return input, policy.Result{Verdict: policy.VerdictAllowed, Fired: []policy.FiredRule{}},
-			policy.Bundle{}, message, "", nil
-	}
-
-	resolver := &policy.Resolver{Client: r.Client, Namespace: PlatformNamespace}
-	info, err := resolver.Resolve(ctx, requirements.BundleDigest)
-	if err != nil {
-		// A bar that cannot be read is not a bar that is cleared: the
-		// promotion fails, naming the digest, rather than guessing in either
-		// direction. (Blocked would claim rules fired; none were evaluated.)
-		return none, policy.Result{}, nil, "",
-			"the environment's requirements could not be evaluated: " + err.Error(), nil
-	}
-
-	evidence, err := r.materializeEvidence(ctx, kitchen, project, build)
-	if err != nil {
-		return none, policy.Result{}, nil, "", "", err
-	}
-
 	at := time.Now().UTC()
-	exceptions, err := r.activeExceptions(ctx, promotion, at)
+	evaluation, err := r.evaluator(promotion).Evaluate(ctx, EvaluationRequest{
+		Kind:        policy.KindPromotion,
+		At:          at,
+		Kitchen:     kitchen,
+		Project:     project,
+		Environment: env,
+		Release:     release,
+	})
 	if err != nil {
-		return none, policy.Result{}, nil, "", "", err
+		return policy.Input{}, policy.Result{}, nil, "", "", err
+	}
+	if evaluation.Refusal != "" {
+		return policy.Input{}, policy.Result{}, nil, "", evaluation.Refusal, nil
 	}
 
-	input := policy.MaterializeInput(policy.KindPromotion, at, project, env, release, build, evidence, claims)
-	input.Exceptions = exceptions
-	result, err := policy.Evaluate(ctx, info.Bundle, input)
-	if err != nil {
-		// The bundle resolved and would not evaluate: a broken bundle, not a
-		// broken platform. Permanent for this promotion.
-		return none, policy.Result{}, nil, "",
-			"the environment's requirements could not be evaluated: " + err.Error(), nil
-	}
-
-	message := ""
-	switch result.Verdict {
-	case policy.VerdictAllowed:
-		message = fmt.Sprintf("the release clears bundle %s", requirements.BundleDigest)
-	case policy.VerdictAllowedWithException:
-		message = fmt.Sprintf("the release clears bundle %s, with every fired rule waived by an exception",
-			requirements.BundleDigest)
-	default:
-		message = fmt.Sprintf("blocked by bundle %s: %s", requirements.BundleDigest, firedSentence(result))
+	message := evaluation.Message
+	if evaluation.Result.Verdict == policy.VerdictBlocked {
 		// When an expired, unresolved exception would have waived what fired,
 		// the refusal says so: the reader's next move is to resolve or renew
 		// it, and a message that hid the connection would send them hunting.
-		if note := r.expiredExceptionNote(ctx, promotion, result, at); note != "" {
+		if note := r.expiredExceptionNote(ctx, promotion, evaluation.Result, at); note != "" {
 			message += "; " + note
 		}
 	}
-	return input, result, info.Bundle, message, "", nil
+	return evaluation.Input, evaluation.Result, evaluation.Bundle, message, "", nil
+}
+
+// evaluator builds the shared evaluator from this reconciler's own seams, so
+// that a test that injects here injects for the whole evaluation. The
+// exception seam is adapted rather than widened: this reconciler's is keyed on
+// the Promotion, because that is the object its tests hold.
+func (r *PromotionReconciler) evaluator(promotion *kitchenv1alpha1.Promotion) *PolicyEvaluator {
+	evaluator := &PolicyEvaluator{Client: r.Client, EvidenceReaders: r.EvidenceReaders}
+	if r.Exceptions != nil {
+		injected := r.Exceptions
+		evaluator.Exceptions = func(ctx context.Context, _, _, _ string, _ time.Time) ([]policy.Exception, error) {
+			return injected(ctx, promotion)
+		}
+	}
+	return evaluator
 }
 
 // expiredExceptionNote words the blocked-by-expired case: an exception that
@@ -418,77 +356,6 @@ func (r *PromotionReconciler) expiredExceptionNote(
 			strings.Join(covered, ", ")))
 	}
 	return strings.Join(notes, "; ")
-}
-
-// claimFacts materializes the project's resource claims for the target
-// environment — the data facts the dataclass and provenance rules judge.
-// Listing them here keeps the promotion's input the same input the
-// eligibility preview assembles: same claims, same facts, same answer.
-func (r *PromotionReconciler) claimFacts(
-	ctx context.Context, env *kitchenv1alpha1.Environment,
-) ([]policy.Claim, error) {
-	list := &kitchenv1alpha1.ResourceClaimList{}
-	if err := r.List(ctx, list, client.InNamespace(env.Namespace)); err != nil {
-		return nil, err
-	}
-	return policy.ClaimFacts(env, list.Items), nil
-}
-
-// materializeEvidence reads what the release's artifact carries, verified
-// against the platform's key — the registry is the source of truth, and a
-// registry that cannot be asked is a requeue rather than a judgement over a
-// guess. A release whose build or artifact is gone is judged on nothing.
-func (r *PromotionReconciler) materializeEvidence(
-	ctx context.Context,
-	kitchen *kitchenv1alpha1.Kitchen,
-	project *kitchenv1alpha1.Project,
-	build *kitchenv1alpha1.Build,
-) ([]policy.Evidence, error) {
-	if build == nil || build.Status.Artifact == nil || build.Status.Artifact.Digest == "" {
-		return policy.IndexedEvidence(build), nil
-	}
-	artifact := build.Status.Artifact
-
-	reader, err := r.evidenceReader(ctx, project)
-	if err != nil {
-		return nil, err
-	}
-	verifiers := []attestation.Verifier{}
-	if key, err := SigningKeyFor(ctx, r.Client, kitchen); err == nil && key != nil {
-		verifiers = append(verifiers, key)
-	}
-	set, err := reader.Evidence(ctx, artifact.Repository+"@"+artifact.Digest, verifiers...)
-	if err != nil {
-		return nil, fmt.Errorf("the artifact's evidence could not be read from the registry: %w", err)
-	}
-	return policy.EvidenceFrom(set, policy.EvidenceSources(build)), nil
-}
-
-// evidenceReader resolves the registry the project's artifacts live in — the
-// same resolution the DecisionRecorder's attester makes, for the read.
-func (r *PromotionReconciler) evidenceReader(
-	ctx context.Context, project *kitchenv1alpha1.Project,
-) (EvidenceSetReader, error) {
-	connection := &kitchenv1alpha1.Connection{}
-	if err := r.Get(ctx, types.NamespacedName{
-		Namespace: PlatformNamespace, Name: project.Spec.Registry.ConnectionRef.Name,
-	}, connection); err != nil {
-		return nil, err
-	}
-	registry, err := provider.Registry(connection)
-	if err != nil {
-		return nil, err
-	}
-	secret := &corev1.Secret{}
-	key := types.NamespacedName{Namespace: PlatformNamespace, Name: connection.Spec.CredentialsSecretRef.Name}
-	if err := r.Get(ctx, key, secret); err != nil {
-		return nil, fmt.Errorf("the registry credential could not be read: %w", err)
-	}
-	factory := r.EvidenceReaders
-	if factory == nil {
-		factory = defaultEvidenceSetReader
-	}
-	return factory(secret.Data[corev1.DockerConfigJsonKey], registry.Server)
 }
 
 // apply moves the environment onto the release — the same move the build
