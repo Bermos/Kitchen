@@ -181,9 +181,11 @@ carried byte for byte for exactly that reason.
 ## Contents, field by field
 
 Each row names the requirement it is there to satisfy. The GR codes are the
-compliance suite's own (see the sub-issues of #144 and, once it lands, #143);
-`GR-J3` (inspection readiness) and `GR-L1` (an artefact per control) are what
-this endpoint exists for and are not repeated on every row.
+compliance suite's own, and
+[COMPLIANCE.md §17.2](../COMPLIANCE.md) is the register: what each code asks
+for, what answers it, and the supervisory anchor behind it. `GR-J3` (inspection
+readiness) and `GR-L1` (an artefact per control) are what this endpoint exists
+for and are not repeated on every row.
 
 ### Header
 

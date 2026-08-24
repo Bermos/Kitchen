@@ -22,7 +22,10 @@ three, and the operator writes the flows and owns the schema under all of it.
   a person
 - [Backup and restore](docs/BACKUP.md) — what one archive holds, what it does not, and the tested way back
 - [Compliance](docs/COMPLIANCE.md) — evidence as a byproduct of deployment: the audit
-  log, and the attestations attached to every artifact
+  log, the attestations attached to every artifact, the policy that decides what may
+  move, and [§17, the requirement mapping](docs/COMPLIANCE.md#17-the-requirement-mapping-issue-143)
+  — what produces the evidence for each supervisory requirement, where it is read, and
+  what a platform structurally cannot do
 
 ## Layout
 
