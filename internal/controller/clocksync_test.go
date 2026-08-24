@@ -60,7 +60,7 @@ func clockFixtures(t *testing.T, threshold int32, offsets map[string]time.Durati
 	for name, offset := range offsets {
 		objects = append(objects, &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: name}})
 		objects = append(objects, &coordinationv1.Lease{
-			ObjectMeta: metav1.ObjectMeta{Namespace: nodeLeaseNamespace, Name: name},
+			ObjectMeta: metav1.ObjectMeta{Namespace: NodeLeaseNamespace, Name: name},
 			Spec: coordinationv1.LeaseSpec{
 				RenewTime: ptr.To(metav1.NewMicroTime(now.Add(offset))),
 			},

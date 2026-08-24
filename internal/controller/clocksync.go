@@ -217,7 +217,7 @@ func (r *KitchenReconciler) measureNodeClocks(ctx context.Context, now time.Time
 	}
 
 	leases := &coordinationv1.LeaseList{}
-	if err := r.List(ctx, leases, client.InNamespace(nodeLeaseNamespace)); err != nil {
+	if err := r.List(ctx, leases, client.InNamespace(NodeLeaseNamespace)); err != nil {
 		return nil, err
 	}
 	renewed := make(map[string]time.Time, len(leases.Items))
@@ -242,9 +242,14 @@ func (r *KitchenReconciler) measureNodeClocks(ctx context.Context, now time.Time
 	return measured, nil
 }
 
-// nodeLeaseNamespace is where the kubelet renews its heartbeat. It is
+// NodeLeaseNamespace is where the kubelet renews its heartbeat. It is
 // Kubernetes' own constant and not configurable.
-const nodeLeaseNamespace = "kube-node-lease"
+//
+// It is exported because the manager's cache is narrowed to it: the clock
+// check is the only thing here that reads a Lease, and an unrestricted
+// informer would hold every leader-election lease in the cluster to answer a
+// question about the nodes.
+const NodeLeaseNamespace = "kube-node-lease"
 
 // driftOf applies the renewal grace, in the past direction only.
 //
