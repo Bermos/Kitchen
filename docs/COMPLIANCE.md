@@ -1,11 +1,12 @@
 # Kitchen — Compliance Design
 
-> Status: **phases 1–4 implemented** (issues #126, #127, #128, #129, #130,
-> #131, #132, #133, #134, #135, #136), and phase 5 in part (#137, #138,
-> #139, #140, #141). What is designed and not built is the rest of phase 5 —
-> export (#142) — and the mapping document (#143). This document is written
-> so that adding them stays additive: each one attaches to something an
-> earlier phase put in place, and the places where it attaches are named.
+> Status: **phases 1–5 implemented** (issues #126, #127, #128, #129, #130,
+> #131, #132, #133, #134, #135, #136, #137, #138, #139, #140, #141, #142).
+> What remains is the mapping document (#143), which is the one deliverable
+> here that is prose rather than platform. Everything above it attaches to
+> something an earlier phase put in place, and the places where it attaches
+> are named — §13, the evidence export, is where all of it is read back out
+> in one request.
 
 Kitchen is not, and cannot be, "FINMA compliant". Compliance is a property of
 an institution, not of software. What Kitchen can demonstrate is that a
@@ -899,7 +900,7 @@ is the history; the drift view is only its newest row.
   year of near-identical statements on every artifact, and the register is
   already the record.
 - **The newest scan is the current claim, and the older ones are history.**
-  `status.artifact.evidence` is an index (§15), so a rescan replaces the
+  `status.artifact.evidence` is an index (§16), so a rescan replaces the
   vulnerability-scan entry rather than appending one — and the *evaluation*
   reads the same way: `policy.EvidenceFrom` collapses the vulnerability-scan
   predicate to its newest entry before the rules see any of them, ordered by
@@ -1241,7 +1242,7 @@ every decision, who made it, which were self-reviews, which revocations were
 actually carried out — as a DSSE envelope under
 `kitchen.bermos.dev/attestation/access-review/v1`, kept in the store's
 `signed_records` table under no TTL. It is the resource claim's data-class
-declaration exactly (§14): a review has no OCI repository, so the subject is
+declaration exactly (§15): a review has no OCI repository, so the subject is
 an identity digest over the object's namespace, name and UID, and the envelope
 is kept whole rather than attached to anything.
 
@@ -1752,7 +1753,216 @@ inside a week, and a check that is off is worth nothing at all.
 
 ---
 
-## 13. Configuration
+## 13. The audit pack (issue #142)
+
+This is the section every other one has been building towards, and it is worth
+being precise about what makes it worth having, because the mechanism is
+unremarkable: it is a `GET`.
+
+An institution asked to demonstrate a control does not fail because the
+evidence is absent. It fails because the evidence is in a git platform, a
+ticketing system, a spreadsheet and a log store, and the four do not agree —
+the pull request says one person approved, the ticket says another, the
+spreadsheet's inventory has an environment nobody has decommissioned, and the
+log store no longer goes back that far. The reconciliation gap **is** the
+finding, and closing it by hand is a project somebody runs for three weeks
+every year and gets slightly wrong each time.
+
+Kitchen has one reconciled graph. So the export is a read: `GET
+/api/v1/projects/{name}/audit-pack?from=&to=` answers with one project's whole
+compliance answer for one window — the inventory, the change log with the
+author and the approvers of every release, the promotions and the decisions
+behind them with the inputs they can be replayed from, the evidence attached to
+each artifact, the break-glass register, the recertification cycles that
+reviewed the project's access, what is running that no longer meets its bar,
+the project's slice of the tamper-evident log, and every signed statement that
+has no registry to live in. [docs/api/audit-pack.md](api/audit-pack.md) is the
+field-by-field mapping.
+
+### 13.1 Byte-reproducibility is the criterion that shapes the code
+
+"The pack for a range is byte-reproducible" sounds like a nicety and is the
+requirement that decided most of the implementation. Two exports of the same
+window must be the same bytes, and the failure mode is not a broken feature —
+it is a feature that works ninety-nine times and then produces a document
+somebody has to explain the difference in.
+
+Four things hold it, and each of them is a way it could have been lost:
+
+- **No timestamp is read off a clock inside the payload.** Every other read in
+  this API answers with a `generatedAt`, and the obvious first draft of this
+  one did too. A test refuses one being added back.
+- **Every list carries a total order**, by a key that cannot tie: a name, or a
+  timestamp with a name behind it. Nothing is left in the order a Go map
+  iterated or a store happened to answer in.
+- **Every phase is judged at the range's end.** An exception that expired
+  inside the window reads `Expired` in a pack taken the next day and in one
+  taken three years later, because `EffectivePhase` is asked about `to` and not
+  about `now`. The same for a recertification cycle. This is the one that is
+  easy to get wrong, because judging a phase against the clock is what every
+  other screen correctly does.
+- **Canonical JSON**: struct field order — so the layout of the Go struct *is*
+  the document's field order and is part of the format — sorted map keys, no
+  HTML escaping, no indentation, no trailing newline.
+
+And both ends of the window are required. A range ending "now" cannot be
+reproduced, so the API refuses one rather than filling it in; the clients pick
+a window and say so.
+
+### 13.2 What reproduces, and what the platform will not pretend about
+
+The honest half. Kitchen **reconciles** the graph rather than versioning it, so
+"which environments existed in March" was never recorded anywhere and no export
+can produce it. The pack says so in its own bytes: `reproducibility.rangeBound`
+names the sections wholly determined by the window, and
+`reproducibility.currentState` names the sections that describe the estate as
+it is — the inventory, the evidence index, the current drift rows.
+
+That is not a gap to close later. Re-evaluating a historical state is exactly
+what the decision register and its stored inputs are for (§4, §9.5): the
+verdicts are reproducible because their inputs were materialized and kept, not
+because the platform kept a copy of the cluster. A pack that presented a
+current inventory as a snapshot of a past instant would be making a claim
+nothing behind it supports, which is the failure mode this whole document is
+arranged against.
+
+### 13.3 Verifiable without Kitchen, as a procedure somebody can run
+
+§5.1 keeps the evidence layer on standards so that it survives the platform,
+and the pack is the same bargain applied to a document. The signature is a DSSE
+envelope wrapping an in-toto Statement whose **subject is the sha256 of the
+pack's own canonical bytes** — the same shape every attestation here has, with
+a file where a container usually is.
+
+The predicate is a manifest and not a copy. Putting the pack inside the payload
+would double every byte of it and still not save a reader the `sha256sum`,
+because what ties a file on disk to a signature is the digest either way. So
+the envelope is small, the pack stands beside it, and the two are joined by one
+hash a person can compute with a command they already know.
+
+**The procedure is four commands, it is carried inside the pack so it travels
+with the document, and a test runs it.** `TestThePublishedProcedureActuallyVerifies`
+takes the two documents the API served, rebuilds DSSE's pre-authentication
+encoding with `printf` and `cat` exactly as the published step says to, and
+hands the result to `openssl dgst -verify` with the published key — no Kitchen
+code anywhere in the verification path. A described intention would have been
+worth nothing; §5's exit story is only true if somebody has actually walked out
+of the door.
+
+The pack publishes the public key so that it reads as one document, and says in
+the same breath that a key taken out of the same file as the signature proves
+only internal consistency. Trust comes from the key the institution kept when
+the platform was installed. Stating that inside the document is the difference
+between evidence and a thing that looks like evidence.
+
+### 13.4 Three renderings, and why the server draws the human one
+
+One address, three formats. `?format=json` is the document and the only bytes
+the digest and the signature are about; `?format=dsse` is the envelope, freshly
+signed on every request because an ECDSA signature carries a nonce and two
+signings of identical bytes are two different envelopes; `?format=html` is the
+same document laid out for a reader.
+
+The rendering is the server's rather than the dashboard's, and the reason is
+what a pack is for: it *leaves*. It is emailed, printed, put in a data room and
+read by somebody who will never have a login on this platform. A rendering that
+needed the dashboard running and the reader signed in would not be a document
+that left — it would be a screen. So the page is one self-contained file with
+no script, no stylesheet and nothing to fetch, and it carries the pack's digest
+at the top, because a printout that cannot be tied back to bytes is decoration.
+
+The dashboard's own job is the other half, and it is the sentence the whole
+feature exists for: **an auditor presses a button.** Pick a project, pick a
+window, press Export, and the screen shows the three things that change what
+the document is worth before anything is saved — whether it is signed, whether
+retention has already eaten into the window, whether a section reached its
+limit — and offers all three files.
+
+### 13.5 What it cannot answer for, it says
+
+The suite's standing rule, applied where it bites hardest, because a pack is
+read by somebody who cannot ask a follow-up question.
+
+- **A window retention has already truncated is reported.** §12's whole
+  argument is that deletion is provable; the corollary is that an export
+  covering a range the store no longer holds must say so rather than answering
+  with less. `retention.truncated`, `retention.coveredFrom` and a sentence
+  naming both dates.
+- **A section that hit its cap says so.** The two store reads are bounded at
+  the store's own maxima — a thousand decisions, a thousand audit records —
+  and a pack that filled either carries `truncated` and the advice to take two
+  packs over narrower windows. The range is half-open precisely so that
+  consecutive windows tile without counting anything twice.
+- **An unsigned platform produces a pack that says it is unsigned**, rather
+  than one that looks signed. The evidence inside is unchanged; what is missing
+  is the means to check it somewhere else, and `verification.message` says
+  which.
+- **No credential is in it, and the absence is a word.** `connections[]`
+  carries the name, the provider and the capabilities, and
+  `connections[].credential` carries the sentence "held by the platform, never
+  in this document". A blank there would invite a reader to conclude there is
+  none.
+
+### 13.6 The evidence index, and the one place the pack is deliberately thin
+
+The attestation section is an **index**: predicate type, manifest digest, who
+made the claim, and the `cosign` command that fetches it. It does not carry the
+attestation bodies.
+
+That is two arguments at once and they point the same way. The performance one
+is the acceptance criterion: fanning out one registry round trip per artifact
+per predicate is what would put a quarter's export over a minute, and nothing
+else in the assembly grows with the project's history — five list calls against
+the operator's cache, three store queries, and two narrow store queries per
+deployed environment for the drift derivation. The honest one is §5.1: the
+whole point of attaching evidence to a content digest through OCI referrers is
+that the evidence does not need Kitchen, and a pack that copied it into itself
+would be quietly claiming the opposite.
+
+The section that *is* carried whole is `signedRecords` — the DSSE envelopes for
+things with no registry to live in, a claim's data-class declaration and a
+recertification cycle's closing artefact. Those have nowhere else to be, so
+they are in the pack byte for byte, and byte for byte is not a nicety: the
+payload inside an envelope is what its signature covers, so a re-encoded
+envelope does not verify.
+
+Where the pack does report a judgement rather than a fact, it reports **the
+platform's own**: `attestations[].newestScan` is the newest re-evaluation of
+that artifact, because `policy.NewestVulnerabilityScan` is what makes the
+engine judge an artifact on its newest scan. A pack that listed every scan and
+left the reader to order them would be a pack that could be read differently
+from the policy that was actually applied.
+
+### 13.7 It is the operator's, and taking one is recorded
+
+A route's guard has to be the strictest thing in its body. This body folds
+three operator-only reads into a project's evidence — the recertification
+cycles that reviewed its grants, whose signed artefacts cover other projects
+too and cannot be narrowed without breaking their signatures; the platform's
+retention model; and the audit chain's anchor. A project admin who could export
+a pack would read, in one file, what three routes refuse them separately.
+
+It is also who takes one. An audit pack is produced by the second line for
+somebody outside it, not by the team that deploys — and the application team is
+not left worse off, because every project-scoped part of it is already a
+viewer's read of its own.
+
+Taking one is an **audit record**, under a kind of its own
+(`EvidenceExport`), carrying the range, the digest, the size and the section
+counts. It is the second read in this platform recorded that way, after a
+platform backup, and for the same reason: "who took a copy of the evidence, for
+which window, and what did they get" is exactly the sentence the log exists to
+be able to produce. An export the log cannot record answers `503` and is not
+served, which is the write path's rule applied to the one read where it earns
+its keep.
+
+It is **not** privileged. It moves no control, and the six classes in §11 are a
+classification of authority rather than of importance; adding a seventh for a
+read would make the filter mean less, not more.
+
+---
+
+## 14. Configuration
 
 ```yaml
 kitchen:
@@ -1851,7 +2061,7 @@ full surface.
 
 ---
 
-## 14. Phases
+## 15. Phases
 
 | | |
 |---|---|
@@ -1859,7 +2069,7 @@ full surface.
 | **2 — Evidence production** | provenance + SBOM (#128), PR verification (#129), quality gates (#130) — **built** |
 | **3 — Policy** | environment ownership (#131), OPA engine (#132), staged promotion (#133) — **built** |
 | **4 — Continuous compliance** | rescan (#134), OpenVEX (#135), exceptions (#136) — **built** |
-| **5 — Institutional surface** | data class (#137) — **built**, resource contract (#138) — **built**, access (#139) — **built**, retention (#140) — **built**, criticality (#141) — **built**, export (#142) |
+| **5 — Institutional surface** | data class (#137), resource contract (#138), access (#139), retention (#140), criticality (#141), export (#142) — **built** |
 | **6 — The mapping doc** | #143, kept current |
 
 Phase 2 attaches to §5 exactly as expected: every attestation it produces is
@@ -1977,15 +2187,38 @@ attaches to §4 by making the log's own convention into a property of it: the
 classification with six named classes, materialized by the recorder and
 filterable in one request — inside the hashed details rather than in a column,
 because a new column would change the hash of every record ever written. It
-attaches to §14's `signed_records` at the seam that table's comment already
+attaches to §15's `signed_records` at the seam that table's comment already
 reserved for it: a closed recertification cycle is an envelope with no
 registry to live in, exactly as a claim's data-class declaration is. And it
 attaches to nothing at all in the promotion path, on purpose — §11.7 — because
 an access control that could refuse a deployment is one that gets switched off.
 
+The export (#142) closed the phase, and it closed it by attaching to
+**everything**: §13 is composition, not invention. It reads the classification
+inventory of #137, the provenance declarations of #138, the recertification
+artefacts of #139, the retention measurement and the clock of #140, the
+designations of #141, the decision register and its stored inputs from §4 and
+§9, the exception register from §4's own retained grants, the evidence index
+from §5, and the pull request provenance of §8 — and answers with all of it as
+one signed document for one half-open window. The only thing it adds is a
+signature over its own bytes, in the shape §5 already uses, and one audit kind
+so that "who took the evidence" is a query rather than an inference.
+
+Two things about it are worth carrying forward rather than reading as detail.
+The first is that **the honest gaps got louder rather than quieter** as the
+suite converged: a range retention has already truncated is a field, an
+inventory that is current state rather than a snapshot of the past says which
+it is, and an unsigned platform produces a pack that says it is unsigned. A
+document that closed those silently would have been easier to write and worth
+less than the four systems it replaces. The second is that
+**byte-reproducibility turned out to be a design constraint on the whole
+answer**, not a property of the encoder: it is what forced a phase to be judged
+at the range's end rather than against the clock, and that is a better answer
+in its own right — a pack of last quarter should not change its mind in April.
+
 ---
 
-## 15. Things that are true and easy to get wrong
+## 16. Things that are true and easy to get wrong
 
 - **A gap in the sequence is not always a deletion.** It is also an append that
   claimed its number and then died before the row landed. The head object and
@@ -2113,3 +2346,23 @@ an access control that could refuse a deployment is one that gets switched off.
   writes, so the orphan survey's `inactive` is "has made no *change* in the
   window". That is why an orphan needs the directory half as well: dormancy
   alone would flag every viewer on the platform.
+- **The pack reproduces; the envelope does not, and that is not a defect.** An
+  ECDSA signature carries a nonce, so signing identical bytes twice produces
+  two different envelopes. What has to reproduce is the thing signed — and the
+  envelope also carries the export's own timestamp, deliberately, because it is
+  the record of *this* export while the pack is the document. A future change
+  that tried to make the envelope stable would be solving the wrong half.
+- **A field added to the pack changes the format.** The canonical encoding is
+  Go's struct field order, so the layout of `auditPack` in
+  `internal/api/auditpack.go` *is* the document's field order, and reordering
+  the struct changes every future pack's digest without changing a byte of its
+  meaning. Append rather than insert, and never for tidiness.
+- **`generatedAt` is the field to keep out.** Every other read in the API
+  answers with one; this one must not, and a test refuses it. The same trap
+  wears three other names — `exportedAt`, `renderedAt`, `asOf` — and the test
+  refuses those too.
+- **A phase judged against the clock is the subtle version of the same bug.**
+  Every screen in this platform correctly asks `EffectivePhase(time.Now())`.
+  Inside a pack that would make a document of last quarter change its mind in
+  April, so the pack asks about the range's end, and anything new that carries
+  a phase into an export has to do the same.
