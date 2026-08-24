@@ -140,10 +140,13 @@ const (
 // rescanReport is what cmd/rescan leaves on the pod: where the findings are,
 // which bill of materials they are about, and whatever the scanner was able
 // to say about its own database.
+//
+// It is a deliberate subset of what the publisher writes. The report also
+// echoes the scanner's name, which is on the pod for a person reading a
+// termination message; this end configured the scanner and already knows which
+// one ran, so decoding it here would be a field nothing reads.
 type rescanReport struct {
-	Scanner      string `json:"scanner"`
 	Blob         string `json:"blob"`
-	Bytes        int    `json:"bytes"`
 	DataSnapshot string `json:"dataSnapshot,omitempty"`
 	SBOM         string `json:"sbom,omitempty"`
 	SBOMDigest   string `json:"sbomDigest,omitempty"`

@@ -114,14 +114,22 @@ var sbomPredicateTypes = []string{
 
 // report is what the operator reads off the pod. It is small on purpose: the
 // findings are in the registry and this says where.
+//
+// There is no size field. One was carried and claimed to make "the scanner
+// wrote nothing" distinguishable from "the output went missing", and it never
+// could: publish refuses an empty file outright, so a report is only ever
+// written for findings that exist and the distinction is made by Error rather
+// than by a number nobody read.
 type report struct {
+	// Scanner is the name the platform gave the scanner, echoed back so that a
+	// person reading a termination message on the pod can see which one
+	// produced it. The operator does not read it — it configured the scanner
+	// and knows — and the failure report in main() carries it for the same
+	// reason.
 	Scanner string `json:"scanner"`
 	// Blob is the digest the findings are stored under, in the artifact's own
 	// repository.
 	Blob string `json:"blob"`
-	// Bytes is how large they were, so a scanner that wrote nothing is
-	// distinguishable from one whose output went missing.
-	Bytes int `json:"bytes"`
 	// DataSnapshot is what the scanner said about its vulnerability database,
 	// where it said anything. Empty is ordinary and the operator fills it in
 	// from what it can establish.
@@ -270,7 +278,6 @@ func publish(ctx context.Context) error {
 	answer := report{
 		Scanner:      scanner,
 		Blob:         digest,
-		Bytes:        len(body),
 		DataSnapshot: readSnapshot(),
 		FinishedAt:   time.Now().UTC().Format(time.RFC3339),
 	}
