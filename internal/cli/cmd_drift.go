@@ -108,7 +108,7 @@ Compliant pairs are left out unless --all asks for them.`),
 				}
 				rows := make([][]string, 0, len(answer.Items))
 				for _, item := range answer.Items {
-					scanned := "—"
+					scanned := noValue
 					if item.ScannedAt != nil {
 						scanned = item.ScannedAt.Local().Format("2006-01-02 15:04")
 					}

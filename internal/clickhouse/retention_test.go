@@ -62,6 +62,14 @@ func kitchenWithRetention(days map[retention.Class]int32) *kitchenv1alpha1.Kitch
 	return kitchen
 }
 
+// singleLogTTL is the log table's DDL as it reads with one date for both
+// classes, which is what several of these tests start from.
+const singleLogTTL = "MergeTree TTL toDateTime(Timestamp) + toIntervalDay(30)"
+
+// splitLogTTL is the same table once the two classes disagree.
+const splitLogTTL = singleLogTTL + " DELETE WHERE source != 'build', " +
+	"toDateTime(Timestamp) + toIntervalDay(90) DELETE WHERE source = 'build'"
+
 // Per-class retention where it is enforced: the store.
 //
 // Two classes share the log table, which is the whole of what is interesting
@@ -118,7 +126,7 @@ func TestTheTwoConditionsAreExactComplements(t *testing.T) {
 // and moving one class has to rewrite the whole TTL and the setting with it.
 func TestASplitRetentionIsAppliedToAnExistingTable(t *testing.T) {
 	store := newFakeStore(t)
-	store.engine = "MergeTree TTL toDateTime(Timestamp) + toIntervalDay(30)"
+	store.engine = singleLogTTL
 
 	if err := store.client(t).EnsureLogsSchema(context.Background(), 30, 90); err != nil {
 		t.Fatalf("EnsureLogsSchema: %v", err)
@@ -137,8 +145,7 @@ func TestASplitRetentionIsAppliedToAnExistingTable(t *testing.T) {
 // performed on itself.
 func TestAMatchingSplitRetentionIsLeftAlone(t *testing.T) {
 	store := newFakeStore(t)
-	store.engine = "MergeTree TTL toDateTime(Timestamp) + toIntervalDay(30) DELETE WHERE source != 'build', " +
-		"toDateTime(Timestamp) + toIntervalDay(90) DELETE WHERE source = 'build'"
+	store.engine = splitLogTTL
 
 	if err := store.client(t).EnsureLogsSchema(context.Background(), 30, 90); err != nil {
 		t.Fatalf("EnsureLogsSchema: %v", err)
@@ -153,8 +160,7 @@ func TestAMatchingSplitRetentionIsLeftAlone(t *testing.T) {
 // for it forever.
 func TestGoingBackToOneDateRestoresThePartDropMode(t *testing.T) {
 	store := newFakeStore(t)
-	store.engine = "MergeTree TTL toDateTime(Timestamp) + toIntervalDay(30) DELETE WHERE source != 'build', " +
-		"toDateTime(Timestamp) + toIntervalDay(90) DELETE WHERE source = 'build'"
+	store.engine = splitLogTTL
 
 	if err := store.client(t).EnsureLogsSchema(context.Background(), 30, 30); err != nil {
 		t.Fatalf("EnsureLogsSchema: %v", err)

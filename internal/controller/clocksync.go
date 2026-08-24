@@ -163,12 +163,12 @@ func (r *KitchenReconciler) surveyClockSync(
 	}
 
 	status := &kitchenv1alpha1.ClockSyncStatus{
-		Checked:         ptr.To(metav1.NewTime(now)),
-		Method:          clockMethod,
-		Nodes:           int32(len(measured)), //nolint:gosec // a node count is not a security boundary
-		Drifted:         int32(drifted),       //nolint:gosec // ditto
-		MaxDriftSeconds: spec.DriftThreshold(),
-		WorstNode:       worst.node,
+		Checked:          ptr.To(metav1.NewTime(now)),
+		Method:           clockMethod,
+		Nodes:            int32(len(measured)), //nolint:gosec // a node count is not a security boundary
+		Drifted:          int32(drifted),       //nolint:gosec // ditto
+		MaxDriftSeconds:  spec.DriftThreshold(),
+		WorstNode:        worst.node,
 		WorstDriftMillis: worst.offset.Milliseconds(),
 	}
 

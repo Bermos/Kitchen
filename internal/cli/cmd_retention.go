@@ -108,7 +108,7 @@ func renderRetention(s tui.Styles, answer *retention) string {
 
 	rows := make([][]string, 0, len(answer.Classes))
 	for _, class := range answer.Classes {
-		oldest := "—"
+		oldest := noValue
 		if class.Oldest != nil {
 			oldest = class.Oldest.Local().Format("2006-01-02")
 		}

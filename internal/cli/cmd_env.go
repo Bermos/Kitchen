@@ -485,5 +485,5 @@ func envPreview(s tui.Styles, variable envVar) string {
 	if variable.PreviewSet {
 		return s.OK.Render("set")
 	}
-	return s.Subtle.Render("—")
+	return s.Subtle.Render(noValue)
 }
