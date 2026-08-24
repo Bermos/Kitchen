@@ -2499,12 +2499,12 @@ export interface AuditPack {
  * printed page be tied back to the bytes that were signed. */
 export async function downloadAuditPack(
   project: string,
-  window: { from: string; to: string },
+  range: { from: string; to: string },
   format: "json" | "dsse" | "html" = "json",
 ): Promise<{ blob: Blob; filename: string; digest: string }> {
   const config = await loadConfig();
-  const base = config.apiURL === window_origin() ? "" : config.apiURL;
-  const params = new URLSearchParams({ from: window.from, to: window.to });
+  const base = config.apiURL === window.location.origin ? "" : config.apiURL;
+  const params = new URLSearchParams({ from: range.from, to: range.to });
   if (format !== "json") params.set("format", format);
   const res = await authorized((bearer) =>
     fetch(`${base}/api/v1/projects/${encodeURIComponent(project)}/audit-pack?${params}`, {
@@ -2529,11 +2529,6 @@ export async function downloadAuditPack(
   };
 }
 
-/** The page's own origin, named so `downloadAuditPack`'s `window` parameter —
- *  which is the time window, not the browser's — cannot shadow it. */
-function window_origin(): string {
-  return globalThis.location.origin;
-}
 
 const list =
   <T>(path: string) =>
