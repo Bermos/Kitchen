@@ -175,6 +175,18 @@ spec:
       ladder:
         {{- toYaml . | nindent 8 }}
     {{- end }}
+    # The continuous re-evaluation pass: every deployed release, matched
+    # against a current vulnerability database on an interval and re-judged
+    # against its environment's own bar. No rebuild and no redeploy — what is
+    # scanned is the bill of materials the build already attested.
+    rescan:
+      enabled: {{ .Values.kitchen.compliance.rescan.enabled }}
+      interval: {{ .Values.kitchen.compliance.rescan.interval | quote }}
+      concurrency: {{ int .Values.kitchen.compliance.rescan.concurrency }}
+      {{- with .Values.kitchen.compliance.rescan.scanner }}
+      scanner:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
     {{- with .Values.kitchen.compliance.gates }}
     # The quality gates run over every artifact. Each records what it found and
     # never whether that was acceptable: the verdict belongs to the environment

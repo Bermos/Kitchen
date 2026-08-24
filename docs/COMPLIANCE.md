@@ -686,7 +686,221 @@ no exception, no review, no build.
 
 ---
 
-## 9. Configuration
+## 9. Continuous re-evaluation (issue #134)
+
+### 9.1 The difference between a gate and a control
+
+Everything up to here happens once. A gate scans an artifact on the day it is
+built; a promotion judges that scan on the day it is promoted. Both are
+statements about a moment, and both were true when they were made.
+
+An artifact compliant in March is not necessarily compliant in June, and
+nothing about the artifact has changed — the world has. **"What is running
+right now that no longer meets its environment's bar?"** is the question
+almost no institution can answer about its own estate, and it is the question
+this section exists to make routine.
+
+So the platform walks every currently-deployed release on an interval, matches
+the bill of materials the build already attested against a **current**
+vulnerability database, signs what comes out onto the artifact's digest, and
+re-runs the environment's own bar over the enlarged evidence set. The artifact
+is not rebuilt, not redeployed, not even pulled. What changes is the evidence
+attached to it and the decision recorded about it.
+
+### 9.2 The same code path as promotion, and why that is load-bearing
+
+The rescan does not have a policy engine of its own, a materializer of its
+own, an evidence read of its own or an exception listing of its own. It calls
+`PolicyEvaluator` — the one implementation, which the promotion reconciler was
+refactored onto in the same change — with a different `kind`, a different
+clock and a data snapshot.
+
+That is not tidiness. Two implementations would eventually disagree about
+something small: which claims are in scope, whether an absent field is a
+failure, how an unreadable evidence set is judged. The disagreement would
+surface as **drift** — a release that "went non-compliant" the moment nobody
+touched it — and a compliance control whose findings can be artefacts of its
+own second code path is worse than no control, because somebody will act on
+one.
+
+The only field the rescan sets that a promotion does not is `dataSnapshot`,
+and the eligibility preview deliberately does not set it either: a preview
+whose input digest differed from the promotion's by a field the preview
+invented would be a second opinion rather than the same evaluation.
+
+### 9.3 A sweep, not a reconciler
+
+The idiomatic shape in this repository is a reconciler with a `RequeueAfter`,
+and it is the wrong one here for two reasons, both of which are about the word
+*sweep*:
+
+- A rescan must happen **once per interval across the platform**. A Runnable
+  that declares `NeedLeaderElection` says so about itself, rather than
+  inheriting the claim from the manager.
+- The pass has a **platform-wide budget**. The first sweep after an upgrade
+  has every environment due at the same instant, and two hundred scanner pods
+  pulling two hundred images is a denial of service the platform performed on
+  itself. `concurrency` bounds what is in flight, and a per-object requeue has
+  no vantage point from which to count.
+
+The per-pair *state* still lives on the object, at `status.rescan`, and the
+sweep is stateless between passes. The interval is counted from each pair's
+own last **finished** scan, which is what makes it self-spreading: an estate
+scanned four at a time stays four at a time instead of re-converging on one
+minute of the day. A scan that never finishes delays the next one rather than
+doubling it.
+
+### 9.4 The scanner is a pod, and it is given a file
+
+Everything §7.3 says about a gate applies here: the scanner is an image
+somebody else wrote, running in an application's namespace, with no service
+account token, no cluster access, every capability dropped, `backoffLimit: 0`,
+and its arguments taken from the platform operator's own configuration —
+nothing from an API request reaches its argv.
+
+What it is *not* given is the artifact. It is given the **bill of materials**,
+fetched onto an `emptyDir` by an init container (`cmd/rescan fetch`) with the
+credential the pod already holds, and the scanner is pointed at it —
+`trivy sbom`, `grype sbom:`, `osv-scanner --sbom`. That is what makes "no
+rebuild and no redeploy" literally true rather than nearly true: the image is
+never pulled, so a scan costs a scanner pod and an SBOM, not a layer download
+per environment per day.
+
+The findings come back the way a gate's do and for the same three reasons
+(§7.4): a registry blob under the artifact's own repository, reported as a
+digest through the pod's termination message by a second container
+(`cmd/rescan publish`). They are unsigned while they sit there. They become
+evidence in the operator, where the key is.
+
+`backoffLimit: 0` here has a second edge over §7.6's: the retry is the next
+interval, and it is honest about being a different scan against a different
+database.
+
+### 9.5 The snapshot is what makes a finding reproducible
+
+`kitchen.bermos.dev/attestation/vulnerability-scan/v1` records the scanner,
+its version, when it ran, the findings, and the **vulnerability database
+snapshot** they were produced against. Without the last one a scan can be
+repeated but never reproduced: matching the same SBOM tomorrow is a different
+question, and a decision that cannot say what the world knew when it was made
+is a decision nobody can check.
+
+Three sources, in descending order of what the platform can stand behind:
+
+1. what the scanner wrote to `$(KITCHEN_DATA_SNAPSHOT)` — its own word about
+   its own database;
+2. what its report carries. Grype's `descriptor.db` is the only one of the
+   three understood formats that says;
+3. the scanner and the day, prefixed **`unpinned:`**. That is not a database
+   identifier and does not pretend to be, and the prefix is there so a reader
+   can tell a snapshot that reproduces a scan from one that merely dates it.
+
+The snapshot travels on the attestation, on `status.rescan`, on the stored
+decision (`data_snapshot`), and in the decision's audit record.
+
+### 9.6 Findings are normalized, and the raw report is signed beside them
+
+This is the one place the platform's "never transcode evidence" rule (§6.5) is
+bent, deliberately and in one direction.
+
+The reason is that phase 3 already fixed the contract: the default bundle's
+`max-severity` rule reads `predicate.findings[]` and wants `.severity` and
+`.vulnerability`, and no rule can be written once against three scanners whose
+reports agree about nothing. So the signed statement carries **both** — the
+scanner's own bytes verbatim under `report`, and the platform's reading of
+them under `findings` — and the platform's signature covers exactly that
+division. A report shape nobody recognises yields no normalized findings at
+all, and a policy that requires a scan then fires on an artifact whose
+evidence the platform could not read, which is the honest outcome rather than
+the quiet one.
+
+Like a gate's, the predicate carries **no verdict**. Whether a finding is
+disqualifying is still the environment's question.
+
+### 9.7 Exception expiry, and no expiry engine
+
+This pass is the only thing that judges exception expiry, and it needs no
+machinery for it. `ActiveExceptionsFor` excludes an expired grant, the rules
+it waived fire unwaived, and the verdict is Blocked. The exception controller
+is the clock and this is the consequence.
+
+`spec.autoRollback` is acted on here and nowhere else — the exception
+controller carries the flag and deliberately leaves the acting to the pass
+that has a re-evaluation in hand. It fires on all four of: the verdict is
+Blocked, an exception covering this pair has expired without being resolved,
+it asked for the rollback, and it waived a rule that is now firing unwaived.
+There must also be a previous release to go back to. Anything looser would
+turn a grant somebody took out to ship a hotfix into a mechanism that yanks a
+running workload for an unrelated reason, which is the failure §2's design
+rules call worse than the disease. The audit record comes first and is
+fail-closed; the default is off.
+
+### 9.8 Drift is a join, not a table
+
+`GET /api/v1/compliance/drift` derives its answer on the request, from the
+cluster's current state and the decision register. Nothing about it is stored,
+because everything it needs already is.
+
+It exists to draw one distinction, between two things that look identical on a
+blocked verdict:
+
+- **newly failing** — a rule that did not fire when this release was promoted
+  and fires now. Nothing about the artifact changed; a vulnerability database
+  did.
+- **failing at promotion under exception** — a rule that fired at promotion
+  too, waived by a break-glass grant that has since run out. Nothing new was
+  discovered; a decision somebody made deliberately, with an expiry, reached
+  its expiry.
+
+Collapsing them would make an expired waiver read as a new vulnerability and
+send somebody hunting for a CVE that was never there. So `status` is one of
+five words — `compliant`, `waived`, `newly-failing`, `waived-at-promotion`,
+`not-evaluated` — and every rule in the answer repeats the distinction in its
+`since` field.
+
+`not-evaluated` is the one that matters most and is easiest to leave out. A
+pair nothing has re-checked is a finding about the *platform*, not about the
+release, and it is never counted as compliant. For the same reason the answer
+leads with `rescanning`: an empty drift view under a pass that is off means
+*nobody is looking*, which is not the same answer as nothing being wrong.
+
+Historical scans are retained without anything special being done about it:
+every rescan is a stored decision, timestamped, under the audit retention
+(§4.7) rather than the telemetry one, and every scan's findings stay attached
+to the artifact's digest in the registry. `GET /api/v1/decisions?kind=rescan`
+is the history; the drift view is only its newest row.
+
+### 9.9 The awkward parts, said out loud
+
+- **Base-image drift after build is not detected by SBOM rescan alone.** The
+  bill of materials describes the image as it was built. If the base image's
+  publisher ships a fixed package under the same tag, the running artifact
+  still contains the old one and the SBOM still says so — which is correct.
+  But the reverse is the gap: a vulnerability *introduced* into the base image
+  after the build is invisible here, because nothing rescans the base image's
+  own supply chain, and so is anything the SBOM never described (§6.6's first
+  limitation, now on a schedule). Detecting that needs a scan of the image
+  filesystem, not of its bill of materials, and that is a different and much
+  more expensive pass — a gate configured to run over the image, or a
+  registry-side scanner. It is not this.
+- **A rescan re-attests nothing about the decision.** The findings are
+  attested; the verdict is a stored decision and an audit record and stops
+  there. A promotion-decision attestation on every daily rescan would put a
+  year of near-identical statements on every artifact, and the register is
+  already the record.
+- **The evidence index names the newest scan, not every scan.**
+  `status.artifact.evidence` is an index (§11), so a rescan replaces the
+  vulnerability-scan entry rather than appending one. The registry holds them
+  all.
+- **Nothing here refuses a deployment.** The pass records, surfaces and — for
+  a grant that asked for it — rolls back. A blocked rescan does not stop the
+  running workload, and that is deliberate: the consequence of missing
+  evidence belongs at promotion, and yanking production because a database
+  updated overnight is how a compliance control gets switched off.
+
+---
+
+## 10. Configuration
 
 ```yaml
 kitchen:
@@ -696,7 +910,7 @@ kitchen:
       retentionDays: 365       # minimum 90
     attestation:
       enabled: true
-      signingKeySecretName: "" # empty: the operator generates one
+      signingKeyRef: {}        # {name: …}; empty: the operator generates one
       build:
         provenance: true       # ask the builder how it built it
         sbom: true             # ask the builder what is in it
@@ -704,29 +918,55 @@ kitchen:
     machineIdentities:         # exempt from a project's pull request requirement
       - renovate[bot]
       - release-please[bot]
+    exceptions:                # who may approve a break-glass waiver, by duration
+      ladder:                  # empty: up to 24h developer, up to 720h admin,
+        - maxDuration: 24h     # anything longer an operator
+          role: developer
+        - maxDuration: 720h
+          role: admin
     gates:                     # what runs over every artifact; findings, never verdicts
       - name: trivy
         image: aquasec/trivy:0.58.0
         version: "0.58.0"
         format: trivy-json
         args: [image, --format=json, --output=$(KITCHEN_FINDINGS), $(KITCHEN_ARTIFACT)]
+    rescan:                    # re-evaluate what is deployed, against today's database
+      enabled: false
+      interval: 24h            # per (environment, release) pair, from its last scan
+      concurrency: 4           # scans in flight across the whole platform
+      scanner:                 # matched against the SBOM, never against the image
+        name: grype
+        image: anchore/grype:v0.87.0
+        version: "0.87.0"
+        format: grype-json
+        args: [-o, json, --file, $(KITCHEN_FINDINGS), sbom:$(KITCHEN_SBOM)]
+        timeoutSeconds: 900
 ```
 
-Both live on the platform singleton rather than on a Project, because both are
-the operator's word rather than the application team's. A team that could turn
-its own audit log off, or sign its own evidence with a key it chose, would be
-attesting to nothing.
+All of it lives on the platform singleton rather than on a Project, because
+all of it is the operator's word rather than the application team's. A team
+that could turn its own audit log off, sign its own evidence with a key it
+chose, or decide how often its own running release was checked against today's
+vulnerability database would be attesting to nothing.
+
+`rescan` has no compiled-in default scanner, deliberately. A scanner is pulled
+on every scan of every environment and its database is refreshed on somebody
+else's schedule; an installation that has not chosen one has not decided
+something the platform should decide for it. Enabled with no scanner, the pass
+reports itself as configured-and-inert on
+`Kitchen.status.compliance.rescan.message` and on `GET /compliance/drift`
+rather than quietly picking a vendor.
 
 ---
 
-## 10. Phases
+## 11. Phases
 
 | | |
 |---|---|
 | **1 — Foundations** | audit log (#126), artifact identity (#127) — **built** |
 | **2 — Evidence production** | provenance + SBOM (#128), PR verification (#129), quality gates (#130) — **built** |
 | **3 — Policy** | environment ownership (#131), OPA engine (#132), staged promotion (#133) — **built** |
-| **4 — Continuous compliance** | rescan (#134), OpenVEX (#135), exceptions (#136 — **built**) |
+| **4 — Continuous compliance** | rescan (#134 — **built**), OpenVEX (#135), exceptions (#136 — **built**) |
 | **5 — Institutional surface** | data class (#137) — **built**, resource contract (#138) — **built**, access (#139), retention (#140), criticality (#141), export (#142) |
 | **6 — The mapping doc** | #143, kept current |
 
@@ -734,8 +974,14 @@ Phase 2 attaches to §5 exactly as expected: every attestation it produces is
 another envelope against the same digest, and the store accumulates them
 without changing. Phase 3 attaches to §5.4: an environment that requires
 evidence reads the evidence set and refuses an artifact that does not carry it.
-Phase 4 attaches to §4: a re-evaluation is a decision, and a decision is an
-audit record.
+Phase 4 attaches to §4 exactly as promised: a re-evaluation is a decision, and
+a decision is an audit record — the rescan sweep records through the same
+`DecisionRecorder` a promotion does, fail-closed, before it acts on anything.
+It attaches to §5 too: a scan is another envelope against the same digest.
+What is left of the phase is #135, and the seam is already there —
+`policy.Input.VEX` is materialized into every evaluation and populated by
+nothing yet, so ingested VEX statements reach the rescan's decisions the day
+something writes them.
 
 Phase 5's data classification (#137) makes the classification a schema field
 rather than documentation, because a schema field is what the platform can
@@ -774,7 +1020,7 @@ outside this repository.
 
 ---
 
-## 11. Things that are true and easy to get wrong
+## 12. Things that are true and easy to get wrong
 
 - **A gap in the sequence is not always a deletion.** It is also an append that
   claimed its number and then died before the row landed. The head object and
@@ -805,6 +1051,22 @@ outside this repository.
   `slsa.dev/provenance/v0.2` unless told `version=v1`, and its `builder.id` is
   the empty string unless told `builder-id=`. Both are silent: the attestation
   is produced, verifies, and says nothing useful.
+- **Base-image drift after build is not detected by SBOM rescan alone.** The
+  bill of materials describes the image as it was built, so a vulnerability
+  introduced into the base image afterwards is invisible to a matcher run
+  against that SBOM. Catching it needs a scan of the image filesystem rather
+  than of its bill of materials — a gate over the image, or a registry-side
+  scanner — which is a different and far more expensive pass. §9.9 says what
+  this does and does not cover.
+- **A rescan's data snapshot may be `unpinned:`.** Most scanners do not report
+  which vulnerability database they matched against, and a snapshot that names
+  the scanner and the day dates a finding without reproducing it. The prefix
+  is the whole point: a reader must be able to tell the two apart, and a
+  bundle that requires reproducibility can match on it.
+- **A blocked rescan does not stop anything running.** It records, surfaces
+  and — only for an expired exception that asked for it — rolls back. Reading
+  "blocked" as "the platform will take this down" is the wrong way round; the
+  consequence of missing evidence lives at promotion.
 - **`kitchen-audit-head` is load-bearing.** Deleting it does not lose the log —
   it is re-seeded from the table's own last record — but it does lose the
   anchor that would have shown a truncated tail.

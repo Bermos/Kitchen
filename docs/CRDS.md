@@ -118,6 +118,17 @@ spec:
         version: "0.58.0"               # what a finding is reproducible against
         format: trivy-json
         args: [image, --format=json, --output=$(KITCHEN_FINDINGS), $(KITCHEN_ARTIFACT)]
+    rescan:                             # re-evaluate what is deployed, against today's database
+      enabled: false                    # off: it costs a scanner pod per environment per interval
+      interval: 24h                     # per (environment, release) pair, from its last finished scan
+      concurrency: 4                    # scans in flight across the whole platform
+      scanner:                          # matched against the SBOM, never against the image
+        name: grype
+        image: anchore/grype:v0.87.0
+        version: "0.87.0"
+        format: grype-json              # grype-json, trivy-json or osv-json
+        args: [-o, json, --file, $(KITCHEN_FINDINGS), "sbom:$(KITCHEN_SBOM)"]
+        timeoutSeconds: 900
   observability:
     clickhouse:
       retentionDays: 30                 # TTL the operator keeps on every telemetry table,
@@ -153,6 +164,11 @@ status:
       signing: true
       keyID: 9f2c...                    # SHA-256 of the public key's DER encoding
       secretName: kitchen-attestation-key
+    rescan:
+      running: true                     # false with a message: off, no scanner, or nothing to sign with
+      lastSweep: 2026-08-24T03:14:00Z
+      environments: 42                  # deployed pairs the last pass considered
+      scanning: 4                       # how many had a scan in flight when it finished
 ```
 
 `scaleToZero.install` is the second thing the operator installs that the chart
@@ -243,8 +259,22 @@ over an in-toto statement, through OCI referrers, so the evidence is readable
 by anything that speaks those and by nothing that has to speak Kitchen. Both
 report on `status.compliance`, because the failure mode of evidence is
 silence: an installation that believes it is producing evidence and is not
-should find that out from the platform rather than from an auditor. See
-[COMPLIANCE.md](COMPLIANCE.md).
+should find that out from the platform rather than from an auditor.
+
+`compliance.rescan` is the same argument extended in time. A gate scans an
+artifact on the day it is built and a promotion judges that scan on the day it
+is promoted; both were true when they were made, and neither is a statement
+about what is running today. The rescan pass walks every currently-deployed
+release on `interval`, matches the bill of materials the build already
+attested against a **current** vulnerability database, signs the result onto
+the artifact's digest and re-runs the environment's own bar over it — through
+the same evaluator a promotion uses, so the two cannot disagree. It needs no
+rebuild and no redeploy, because the image is never pulled. It is also the
+only thing that judges exception expiry, and the only thing that acts on an
+Exception's `autoRollback`. `status.compliance.rescan` reports whether it is
+running at all, for the same reason the other two report: an installation
+that believes it is being re-checked and is not should hear it from the
+platform. See [COMPLIANCE.md](COMPLIANCE.md) §9.
 
 `observability` is one retention over a store that two things write. An
 OpenTelemetry collector DaemonSet fills the logs, traces and metrics tables
@@ -715,6 +745,19 @@ status:
     commentID: "204819274"              # the PR comment that is rewritten in place
     error: ""                           # why the last post did not land
     at: "2026-08-14T10:30:04Z"
+  rescan:                               # what the continuous re-evaluation pass last found
+    phase: Evaluated                    # Scanning | Evaluated | Failed — Failed is "nothing is
+    release: my-shop-rel-000042         # known", never "it found problems"
+    artifact: registry.apps.example.com/my-shop@sha256:...
+    jobName: my-shop-pr-42-scan-my-shop-rel-000042
+    startedAt: "2026-08-24T03:14:00Z"
+    finishedAt: "2026-08-24T03:16:11Z"  # the interval is counted from this
+    dataSnapshot: grype-db:sha256:...   # which vulnerability database; `unpinned:` = dated, not
+    findings: 41                        # reproducible
+    verdict: blocked                    # allowed | allowed-with-exception | blocked
+    unmetRules: [max-severity]
+    decisionID: 0d9a1f7e-...            # the stored decision, with the whole input
+    message: blocked by bundle sha256:...
   conditions: [...]                     # Ready, RouteProgrammed, WorkloadAvailable,
                                         # PreviewProtected (previews only),
                                         # ScaleToZero (where the platform idles anything)
@@ -725,6 +768,14 @@ release. `promoted` — a fresh build's release was auto-promoted over it; `roll
 someone moved the environment back to an older release; `superseded` — anything else
 replaced it (a manual move forward through the API, or a direct spec edit, where `by`
 stays empty).
+
+`rescan` is both the answer and the working state of the continuous
+re-evaluation pass: it is where the sweep reads its next move, which is what
+lets the sweep itself be stateless between passes and the interval be counted
+per pair rather than platform-wide. A release move clears it — the answer was
+about the artifact that was running, and carrying it forward would report a
+scan that never happened. `GET /compliance/drift` is the same information
+across the estate, joined to what was decided at promotion.
 
 `gitReport` is bookkeeping for [deploy status](#deploy-status-back-on-the-commit): an
 Environment reconciles far more often than it changes, and without a record of what was
