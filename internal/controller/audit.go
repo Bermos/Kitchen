@@ -40,6 +40,11 @@ const (
 	actorPromotionController     = "promotion"
 	actorReleaseController       = "release"
 	actorResourceClaimController = "resourceclaim"
+	// actorRetentionSweep attributes the daily retention record: what every
+	// class held, against the horizon its own configuration put there, and
+	// what the pass removed. Nobody asks for it, so it is the pass's own
+	// name like every other thing the platform decided on its own.
+	actorRetentionSweep = "retention"
 	// actorRescanSweep attributes what the continuous re-evaluation pass does
 	// on its own initiative — today, the rollback an expired exception asked
 	// for. The decisions it produces are the policy engine's and carry

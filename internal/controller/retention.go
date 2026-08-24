@@ -79,11 +79,6 @@ const (
 	// just been restarted, or has just been given a store, should not wait
 	// most of a day to make its first record.
 	retentionStepInterval = 10 * time.Minute
-
-	// actorRetentionSweep attributes the deletion evidence. Like every other
-	// controller actor it is the pass's own name, so that "who recorded
-	// this" answers with something an operator can go and read.
-	actorRetentionSweep = "retention"
 )
 
 // RetentionSweeper measures every retention class on an interval and records
