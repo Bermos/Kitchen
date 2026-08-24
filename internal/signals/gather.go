@@ -57,7 +57,7 @@ import (
 // Sources is where a snapshot comes from.
 type Sources struct {
 	// Client reads the API server. In the operator it is the manager's cached
-	// client, which is what makes thirty-six rules over the cluster's objects
+	// client, which is what makes thirty-odd rules over the cluster's objects
 	// cost nothing per evaluation.
 	Client client.Client
 

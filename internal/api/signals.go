@@ -36,7 +36,7 @@ import (
 // the same round that is about it.
 //
 // Nothing is evaluated on a timer. A screen asks, the gatherer reads the API
-// server and the store once, and the thirty-six rules run over the value it
+// server and the store once, and the thirty-odd rules run over the value it
 // produced — which is what makes them free to be pure, and what makes this
 // endpoint the same shape as the inbox that will one day read
 // `signal_transitions` instead.

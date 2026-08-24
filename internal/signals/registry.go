@@ -114,7 +114,7 @@ func (r *Registry) Lookup(id ID) (Signal, bool) {
 // sorted worst first.
 //
 // The availability check lives here rather than in the rules because there is
-// exactly one right answer to "my input is missing" and thirty-six chances to
+// exactly one right answer to "my input is missing" and thirty-odd chances to
 // get it subtly wrong: a rule whose store query failed must say so, not return
 // an empty slice that every screen above it will render as health. So a rule
 // with an unreadable requirement is not called at all, and answers with one
@@ -145,7 +145,7 @@ func (r *Registry) Evaluate(snapshot *Snapshot) Findings {
 }
 
 // stamped applies the two things every finding carries that the rule producing
-// it cannot know, in one place rather than in thirty-six.
+// it cannot know, in one place rather than in thirty-odd.
 //
 // [Finding.Since] is the first. Most rules date a finding from something the
 // snapshot can prove — a condition's last transition, an event's first

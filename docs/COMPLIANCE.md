@@ -1,9 +1,9 @@
 # Kitchen — Compliance Design
 
 > Status: **phases 1–4 implemented** (issues #126, #127, #128, #129, #130,
-> #131, #132, #133, #134, #135, #136), and phase 5 in part (#137, #138). What
-> is designed and not built is the rest of phase 5 — access review (#139),
-> retention (#140), criticality (#141), export (#142) — and the mapping
+> #131, #132, #133, #134, #135, #136), and phase 5 in part (#137, #138,
+> #141). What is designed and not built is the rest of phase 5 — access
+> review (#139), retention (#140), export (#142) — and the mapping
 > document (#143). This document is written so that adding them stays
 > additive: each one attaches to something an earlier phase put in place, and
 > the places where it attaches are named.
@@ -1260,7 +1260,7 @@ rather than quietly picking a vendor.
 | **2 — Evidence production** | provenance + SBOM (#128), PR verification (#129), quality gates (#130) — **built** |
 | **3 — Policy** | environment ownership (#131), OPA engine (#132), staged promotion (#133) — **built** |
 | **4 — Continuous compliance** | rescan (#134), OpenVEX (#135), exceptions (#136) — **built** |
-| **5 — Institutional surface** | data class (#137) — **built**, resource contract (#138) — **built**, access (#139), retention (#140), criticality (#141), export (#142) |
+| **5 — Institutional surface** | data class (#137) — **built**, resource contract (#138) — **built**, criticality (#141) — **built**, access (#139), retention (#140), export (#142) |
 | **6 — The mapping doc** | #143, kept current |
 
 Phase 2 attaches to §5 exactly as expected: every attestation it produces is
@@ -1313,6 +1313,64 @@ claim identity digest (claims have no OCI repository), kept in the store's
 `signed_records` table. The contract itself is documented in
 [CRDS.md](CRDS.md) so a masking or synthetic-data provisioner can be written
 outside this repository.
+
+Criticality (#141) is the third institutional input, and the one where the
+line in §3 has to be drawn hardest. **Kitchen cannot decide what is critical.**
+That is a board's judgement about the institution's own functions, and a
+platform that appeared to have an opinion about it — by defaulting an absent
+designation, by refusing a deployment on one, by inferring criticality from
+traffic — would be a platform somebody eventually cites as the source of a
+determination nobody made. So `criticality` (`nonCritical < important <
+critical`) and the `rto`/`rpo` tolerances are carried on the Project and the
+Environment, absent means *undesignated* and is answered as that word, and
+nothing anywhere refuses anything because of them.
+
+What the platform contributes instead is the **mapping**, and that is the part
+worth having: "which systems support this critical function, and which third
+parties are behind them" is among the most commonly cited supervisory
+findings, and every institution cited for it was maintaining the answer by
+hand across four systems. Kitchen gets it nearly free, because the answer is a
+traversal of a graph that is reconciled rather than maintained: `GET
+/compliance/criticality` walks Project → Environment → Release and Project →
+ResourceClaim/Connection/Domain and answers with everything behind each
+designated function in one request, and `GET /compliance/dependents` walks the
+same edges backwards from one Connection or one provider to every environment
+that would break, worst designation first, with the tightest RTO among them.
+Neither is cached, because there is nothing to keep in step; both carry the
+honest depth of their own traversal in the answer, because a third party an
+application calls from its own code is not a Connection and the platform
+cannot see it.
+
+**Criticality deliberately does not inherit the way a data class does, and
+this is the most load-bearing difference between the two fields.** A data
+class is a *containment* property — whatever holds classified data must be
+rated to hold it — which is what makes narrowing-never-widening the right
+rule and a ceiling the right enforcement. Criticality is a property of
+*consequence*: what breaks in the outside world when this stops working. That
+is not contained by anything. A preview environment of a payments service is
+not a critical function — nobody's payment fails while a pull request's
+preview is down — and copying the project's designation onto it would be the
+one design choice guaranteed to get the whole feature switched off, because it
+would page somebody at 03:00 for a preview. So a preview inherits nothing,
+ever; a *production* environment declaring nothing reads its project's
+designation, derived and marked as inherited rather than written back; and
+there is no ceiling in either direction, because a `nonCritical` project may
+perfectly well own the staging environment four teams integrate against. Every
+change is a privileged audit record carrying the previous value, exactly as a
+reclassification is.
+
+The tolerances are not decorative, which is the criterion this feature is
+easiest to fail. The declared RTO **is** the threshold `env.rto-at-risk` fires
+against — half of it warns, past it is critical — so changing the number
+changes when the pager goes off, and two environments with the same outage and
+different objectives get different answers. Designating an environment
+`critical` raises every warning about it to a critical finding, applied once
+over the whole round rather than in each of thirty-odd rules. The RPO is
+carried, mapped and reachable by a policy bundle, and **alerts on nothing**:
+measuring a recovery point needs a recovery point to measure, no provider on
+this platform declares one, and a rule that always passed would be worse than
+no rule because it would read as evidence.
+[OBSERVABILITY.md](OBSERVABILITY.md) §7 says what would close that.
 
 ---
 
@@ -1403,3 +1461,21 @@ outside this repository.
 - **`kitchen-audit-head` is load-bearing.** Deleting it does not lose the log —
   it is re-seeded from the table's own last record — but it does lose the
   anchor that would have shown a truncated tail.
+- **`nonCritical` and undesignated are different answers, and so are
+  `unclassified` and blank.** Somebody having looked at a function and decided
+  it supports nothing critical is a determination; nobody having looked is a
+  gap. Both read as "not critical" to a careless eye, which is why every
+  answer words the absence — *undesignated* — rather than leaving a cell
+  empty, and why `?criticality=nonCritical` matches the first and never the
+  second.
+- **Criticality is not capped by the project's, and that is deliberate.** The
+  data-class rule is narrow-never-widen; criticality has no ceiling in either
+  direction, because a `nonCritical` project can own the environment four
+  teams integrate against and a critical project can own a preview that
+  matters to nobody. Reading the two fields as the same shape of rule is the
+  easiest mistake to make here.
+- **An RTO of `0m` is a tolerance somebody set, and an absent RTO is not.**
+  The first says no downtime is acceptable and is treated as declared
+  everywhere; the second means nothing has been decided. The signal skips a
+  zero objective rather than firing on the first blink of a rollout, and says
+  so where it does.
