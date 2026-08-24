@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { api, type Environment } from "../lib/api";
+import { api, CRITICALITIES, type Environment } from "../lib/api";
 import { callerFor, isOperator, me } from "../lib/me";
 import { may } from "../lib/policy";
 import {
@@ -60,14 +60,37 @@ const editing = ref(false);
 const digest = ref("");
 const parameters = ref("");
 const owners = ref("");
+const criticality = ref("");
+const rto = ref("");
+const rpo = ref("");
 const saving = ref(false);
+
+const criticalityOptions = [
+  { label: "undesignated", value: "" },
+  ...CRITICALITIES.map((value) => ({ label: value, value: value as string })),
+];
 
 function openEditor() {
   digest.value = props.environment.requirements?.bundleDigest ?? "";
   parameters.value = formatParameters(props.environment.requirements?.parameters);
   owners.value = (props.environment.owners ?? []).join("\n");
+  criticality.value = props.environment.criticality ?? "";
+  rto.value = props.environment.rto ?? "";
+  rpo.value = props.environment.rpo ?? "";
   editing.value = true;
 }
+
+/** The environment's own designation as one line. Absent is a word, not a
+ *  blank: this environment declaring nothing is a different state from
+ *  nothing applying to it — production reads its project's designation, and
+ *  the criticality map on the compliance screen answers with that resolved. */
+const declared = computed(() => {
+  const parts: string[] = [];
+  if (props.environment.criticality) parts.push(props.environment.criticality);
+  if (props.environment.rto) parts.push(`RTO ${props.environment.rto}`);
+  if (props.environment.rpo) parts.push(`RPO ${props.environment.rpo}`);
+  return parts.join(" · ");
+});
 
 const digestProblem = computed(() => bundleDigestProblem(digest.value));
 const parameterProblem = computed(() => parseParameters(parameters.value).problem);
@@ -81,6 +104,9 @@ async function save() {
       bundleDigest: trimmed,
       ...(trimmed !== "" ? { parameters: parseParameters(parameters.value).parameters } : {}),
       owners: parseOwners(owners.value),
+      criticality: criticality.value,
+      rto: rto.value.trim(),
+      rpo: rpo.value.trim(),
     });
     toast.add({ title: "Requirements updated", color: "success", icon: "i-lucide-shield-check" });
     editing.value = false;
@@ -146,6 +172,24 @@ async function save() {
           </div>
           <p v-else class="text-xs text-dimmed">—</p>
         </div>
+      </div>
+
+      <!-- The environment's own continuity designation, beside the bar
+           because it is the same kind of declaration by the same people. -->
+      <div class="border-t border-default px-5 py-4">
+        <div class="flex items-baseline gap-3 flex-wrap">
+          <p class="text-xs text-muted">Continuity</p>
+          <p v-if="declared" class="text-xs font-mono text-toned">{{ declared }}</p>
+          <p v-else class="text-xs text-dimmed">
+            this environment declares nothing — a production environment then reads its project's
+            designation, a preview reads none
+          </p>
+        </div>
+        <p class="text-xs text-dimmed mt-1 max-w-3xl">
+          Kitchen does not decide what is critical and does not set the tolerances — the institution does.
+          Setting an RTO here changes when an outage of this environment wakes somebody; designating it
+          critical raises every warning about it to a critical finding. Neither refuses a deployment.
+        </p>
       </div>
 
       <!-- The deployed release against the bar. -->
@@ -224,6 +268,22 @@ async function save() {
           <UFormField label="Owners" help="One per line: an issuer subject, or a verified email address. Empty leaves changes to platform operators alone.">
             <UTextarea v-model="owners" class="w-full font-mono" :rows="3" placeholder="risk-officer@example.com" />
           </UFormField>
+          <div class="grid gap-3 sm:grid-cols-3">
+            <UFormField label="Criticality" help="The institution's designation, not Kitchen's.">
+              <USelect v-model="criticality" :items="criticalityOptions" class="w-full" />
+            </UFormField>
+            <UFormField label="RTO" help="4h, 30m, 1h30m.">
+              <UInput v-model="rto" class="w-full font-mono" placeholder="unset" />
+            </UFormField>
+            <UFormField label="RPO" help="Same spelling.">
+              <UInput v-model="rpo" class="w-full font-mono" placeholder="unset" />
+            </UFormField>
+          </div>
+          <p class="text-xs text-dimmed">
+            Kitchen does not decide what is critical and does not set the tolerances. A preview of a critical
+            project is not a critical function, and nothing here is capped by the project's designation —
+            this environment is designated on its own terms.
+          </p>
         </div>
       </template>
       <template #footer>

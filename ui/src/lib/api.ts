@@ -78,6 +78,12 @@ export interface Project {
    * public, internal, confidential or strictlyConfidential. Absent means
    * unclassified — shown as such, never defaulted. */
   dataClass?: string;
+  /** How much it matters that this project's function keeps working, and the
+   * tolerances that come with it. Absent means undesignated: the institution
+   * has not said, and Kitchen does not decide. */
+  criticality?: string;
+  rto?: string;
+  rpo?: string;
 }
 
 /** The classification vocabulary, in ascending sensitivity — the order the
@@ -147,6 +153,12 @@ export interface ProjectSettings {
    * in the inventory and at promotion, rather than the correction being
    * refused. Audit-logged with the previous value. */
   dataClass?: string;
+  /** Designate the project's function and its tolerances; "" removes each.
+   * Always allowed, and never a gate — criticality is an input to alerting
+   * and to policy. Audit-logged with the previous values. */
+  criticality?: string;
+  rto?: string;
+  rpo?: string;
 }
 
 export interface NewProject {
@@ -378,6 +390,103 @@ export interface ComplianceInventory {
   /** The platform's declared default residency — declared, not observed. */
   defaultResidency?: string;
   items: InventoryItem[];
+}
+
+/** The criticality vocabulary, ascending. Kitchen carries the designation;
+ *  it never decides it. Absent is answered as the word "undesignated". */
+export const CRITICALITIES = ["nonCritical", "important", "critical"] as const;
+
+/** One environment under a designated function, with the designation that
+ *  actually applies to it. `inherited` names the fields that came from the
+ *  project rather than from the environment, so nothing on a screen reads as
+ *  a declaration nobody made. */
+export interface CriticalityEnvironment {
+  name: string;
+  type: string;
+  criticality: string;
+  rto?: string;
+  rpo?: string;
+  inherited?: string[];
+  url?: string;
+  release?: string;
+  image?: string;
+  domains?: string[];
+}
+
+/** One provisioned resource under a function, with the third party behind it. */
+export interface CriticalityClaim {
+  name: string;
+  type: string;
+  connection?: string;
+  provider?: string;
+  phase?: string;
+  dataClass: string;
+  residency: string;
+}
+
+/** One third-party relationship a function depends on, and what for. */
+export interface CriticalityConnection {
+  name: string;
+  provider: string;
+  usedFor: string[];
+}
+
+/** One designated function and everything the platform can see behind it. */
+export interface CriticalityFunction {
+  project: string;
+  criticality: string;
+  rto?: string;
+  rpo?: string;
+  environments: CriticalityEnvironment[];
+  claims: CriticalityClaim[];
+  connections: CriticalityConnection[];
+  thirdParties: string[];
+}
+
+/** The function-to-resource mapping in one request. */
+export interface CriticalityMap {
+  generatedAt: string;
+  minimum?: string;
+  functions: CriticalityFunction[];
+  /** How many visible projects carry no designation anywhere — the number
+   *  that says whether a short map is a small estate or an unfinished
+   *  designation exercise. */
+  undesignated: number;
+  /** How far the traversal follows, in the answer's own words. */
+  depth: string;
+}
+
+/** One environment that would be affected, and how it reaches the subject. */
+export interface CriticalityDependent {
+  project: string;
+  environment: string;
+  type: string;
+  criticality: string;
+  rto?: string;
+  rpo?: string;
+  inherited?: string[];
+  through: string[];
+}
+
+/** What the reverse query was asked about. */
+export interface CriticalitySubject {
+  kind: "connection" | "provider";
+  name: string;
+  provider?: string;
+  connections?: string[];
+}
+
+/** What breaks if one connection, or one third party, is unavailable. */
+export interface CriticalityDependents {
+  generatedAt: string;
+  subject: CriticalitySubject;
+  affected: CriticalityDependent[];
+  counts: Record<string, number>;
+  /** The smallest recovery objective among the affected environments: how
+   *  long this third party may be gone before the first declared tolerance
+   *  is breached. */
+  tightestRTO?: string;
+  depth: string;
 }
 
 /** One rule standing in the way of a release that is already deployed, and
@@ -640,6 +749,13 @@ export interface Environment {
   /** Where this environment's data is declared to be — declared, not
    * observed. Absent falls back to the platform's declared residency. */
   residency?: string;
+  /** What this environment itself declares. Absent means it declares
+   * nothing, which is not the same as nothing applying: a production
+   * environment reads its project's designation, and a preview reads none.
+   * GET /compliance/criticality answers with that resolved. */
+  criticality?: string;
+  rto?: string;
+  rpo?: string;
   history?: ReleaseHistoryEntry[];
   createdAt: string;
   conditions?: Condition[];
@@ -2406,6 +2522,9 @@ export const api = {
       owners?: string[];
       dataClass?: string;
       residency?: string;
+      criticality?: string;
+      rto?: string;
+      rpo?: string;
     },
   ) => request<Environment>("PATCH", `/environments/${name}/requirements`, body),
   environmentEligibility: (name: string, release?: string) =>
@@ -2654,6 +2773,21 @@ export const api = {
     if (query.all) params.set("all", "true");
     const search = params.toString();
     return request<ComplianceDrift>("GET", `/compliance/drift${search ? `?${search}` : ""}`);
+  },
+  // The criticality mapping (#141). Both are traversals of the reconciled
+  // graph made on the request, so neither is cached here either.
+  complianceCriticality: (query: { criticality?: string; project?: string } = {}) => {
+    const params = new URLSearchParams();
+    if (query.criticality) params.set("criticality", query.criticality);
+    if (query.project) params.set("project", query.project);
+    const search = params.toString();
+    return request<CriticalityMap>("GET", `/compliance/criticality${search ? `?${search}` : ""}`);
+  },
+  complianceDependents: (subject: { connection?: string; provider?: string }) => {
+    const params = new URLSearchParams();
+    if (subject.connection) params.set("connection", subject.connection);
+    if (subject.provider) params.set("provider", subject.provider);
+    return request<CriticalityDependents>("GET", `/compliance/dependents?${params}`);
   },
   audit: (query: AuditQuery = {}) => {
     const params: Record<string, string> = {};
