@@ -891,10 +891,20 @@ is the history; the drift view is only its newest row.
   there. A promotion-decision attestation on every daily rescan would put a
   year of near-identical statements on every artifact, and the register is
   already the record.
-- **The evidence index names the newest scan, not every scan.**
+- **The newest scan is the current claim, and the older ones are history.**
   `status.artifact.evidence` is an index (§13), so a rescan replaces the
-  vulnerability-scan entry rather than appending one. The registry holds them
-  all.
+  vulnerability-scan entry rather than appending one — and the *evaluation*
+  reads the same way: `policy.EvidenceFrom` collapses the vulnerability-scan
+  predicate to its newest entry before the rules see any of them, ordered by
+  `scannedAt` and tied on the envelope digest so the input digest is
+  reproducible. Nothing else is collapsed, because nothing else is a
+  restatement: a gate result, a provenance, an SBOM and a VEX document are each
+  a distinct claim made once, and dropping the older of two of those would be
+  dropping a fact. Feeding every scan to the rules would leave a CVE that day
+  one reported and day forty does not — withdrawn, re-rated, fixed in the
+  database — still firing `max-severity`, escapable only by a VEX statement
+  about a finding that no longer exists. The registry holds every scan
+  regardless, and `GET /api/v1/decisions?kind=rescan` is the history.
 - **Nothing here refuses a deployment.** The pass records, surfaces and — for
   a grant that asked for it — rolls back. A blocked rescan does not stop the
   running workload, and that is deliberate: the consequence of missing

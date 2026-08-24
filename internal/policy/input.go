@@ -20,6 +20,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/Bermos/Kitchen/internal/attestation"
@@ -199,9 +200,36 @@ func (in Input) Digest() (string, error) {
 // shape: predicate bytes verbatim, verification state carried through, and
 // the source looked up from the build's own index by predicate type — the
 // registry knows what is attached, the index knows whose claim it was.
+//
+// One predicate type is collapsed to its newest entry, and only one: the
+// vulnerability scan. A scan is a **restatement of the same claim about the
+// same artifact** — "these are the findings against today's database" — and
+// the continuous re-evaluation pass (§9) attaches a fresh one every interval,
+// so an artifact that has been up for a year carries three hundred and
+// sixty-five of them. A quality gate, a provenance, an SBOM and a VEX
+// document are each a distinct claim made once, so nothing is collapsed for
+// them and nothing should be: dropping the older of two gate results would
+// be dropping a fact, where dropping the older of two scans is dropping a
+// superseded reading.
+//
+// Feeding all of them to the rules is not merely wasteful; it is wrong. A CVE
+// reported on day one and absent from day forty's scan — withdrawn, re-rated,
+// or matched by a database that has since been fixed — is still in day one's
+// predicate, so max-severity fires on a finding no scanner reports any more
+// and the only escape is a VEX statement about something that does not exist.
+// The evidence index already names the newest scan alone (§9.9); this is the
+// same rule applied where the decision is actually made.
+//
+// The registry keeps every scan regardless — history is retained, which is an
+// acceptance criterion of #134. What is collapsed is the evaluation's view of
+// it, not the evidence.
 func EvidenceFrom(set attestation.EvidenceSet, sourceByPredicateType map[string]string) []Evidence {
+	newest, scanned := NewestVulnerabilityScan(set.Attestations)
 	out := make([]Evidence, 0, len(set.Attestations))
-	for _, entry := range set.Attestations {
+	for index, entry := range set.Attestations {
+		if scanned && index != newest && entry.PredicateType == attestation.PredicateVulnerabilityScan {
+			continue
+		}
 		out = append(out, Evidence{
 			PredicateType: entry.PredicateType,
 			Source:        sourceByPredicateType[entry.PredicateType],
@@ -210,4 +238,74 @@ func EvidenceFrom(set attestation.EvidenceSet, sourceByPredicateType map[string]
 		})
 	}
 	return out
+}
+
+// NewestVulnerabilityScan picks the vulnerability-scan attestation that is the
+// artifact's current claim about its findings, answering its index in the set
+// and whether there was one at all. It is exported because the evaluation and
+// the read surface that shows a person the same findings
+// (GET /builds/{name}/vex) have to agree about which scan is *the* scan —
+// two implementations of "the newest" would eventually disagree, and the
+// screen would then explain a decision that was made about something else.
+//
+// **The order is total and deterministic, deliberately.** The input digest is
+// the reproduction contract every stored decision cites, so identical evidence
+// has to produce an identical input however the registry happened to list it:
+//
+//   - newest `scannedAt` wins;
+//   - a tie is broken on the envelope's own digest, which is total because two
+//     envelopes with the same digest are the same bytes and the store attaches
+//     those once (Attach is idempotent by content).
+//
+// A predicate carrying no readable `scannedAt` is treated as **infinitely
+// old**: it loses to anything dated, and among nothing but undated entries the
+// digest tie-break still decides. That is a deliberate choice in the one
+// direction that cannot go badly wrong — an undated scan that won would shadow
+// every dated rescan for as long as it stayed attached, which is a stale
+// finding set with no way out. Kitchen's own scans always carry the field
+// (see RescanSweeper.attest), so this covers a scan attested by something
+// else under Kitchen's predicate type, and such a scan is dropped from the
+// evaluation rather than merged into it.
+func NewestVulnerabilityScan(attestations []attestation.Evidence) (int, bool) {
+	newest := -1
+	var newestAt time.Time
+	for index, entry := range attestations {
+		if entry.PredicateType != attestation.PredicateVulnerabilityScan {
+			continue
+		}
+		at := scannedAt(entry.Statement.Predicate)
+		if newest < 0 || laterScan(at, entry.Digest, newestAt, attestations[newest].Digest) {
+			newest, newestAt = index, at
+		}
+	}
+	return newest, newest >= 0
+}
+
+// laterScan is the one comparison NewestVulnerabilityScan orders by, lifted
+// out so the tie-break is visible rather than buried in a condition.
+func laterScan(at time.Time, digest string, against time.Time, againstDigest string) bool {
+	if !at.Equal(against) {
+		return at.After(against)
+	}
+	return digest > againstDigest
+}
+
+// scannedAt reads when a vulnerability-scan predicate says it ran. An absent,
+// unparseable or non-RFC3339 stamp answers the zero time, which the ordering
+// above reads as infinitely old.
+func scannedAt(predicate json.RawMessage) time.Time {
+	if len(predicate) == 0 {
+		return time.Time{}
+	}
+	carried := struct {
+		ScannedAt string `json:"scannedAt"`
+	}{}
+	if err := json.Unmarshal(predicate, &carried); err != nil {
+		return time.Time{}
+	}
+	stamp, err := time.Parse(time.RFC3339, strings.TrimSpace(carried.ScannedAt))
+	if err != nil {
+		return time.Time{}
+	}
+	return stamp.UTC()
 }
