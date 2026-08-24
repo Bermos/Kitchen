@@ -203,6 +203,55 @@ type ArtifactEvidence struct {
 	Source string `json:"source,omitempty"`
 }
 
+// VEXStatus is one ingested OpenVEX document, as the Build indexes it.
+//
+// It records what the document said about itself and what the platform
+// observed about its arrival, and it keeps the two apart on purpose. `Author`
+// is the document's own claim about who wrote it; `SubmittedBy` is the
+// authenticated identity that sent it, which is the platform's own
+// observation and the only half it can vouch for. Conflating them would let
+// anyone with a developer's key file an assertion under a security team's
+// name and have it read exactly like theirs.
+type VEXStatus struct {
+	// DocumentID is the document's `@id`. It is how a re-submission of the
+	// same document replaces its row rather than adding one; a document
+	// carrying no `@id` is indexed under the digest of its envelope instead,
+	// because a row nothing can be matched back to is not an index.
+	// +optional
+	DocumentID string `json:"documentID,omitempty"`
+
+	// Author is the document's declared author, per OpenVEX. Where a
+	// statement named its own supplier, that supplier is the author of that
+	// statement and this is the author of the document collecting it.
+	// +optional
+	Author string `json:"author,omitempty"`
+
+	// SubmittedBy is the authenticated identity that handed the document to
+	// the platform.
+	// +optional
+	SubmittedBy string `json:"submittedBy,omitempty"`
+
+	// Statements is how many assertions the document carries, and
+	// Vulnerabilities which ones they are about — enough for a reader to see
+	// what a document touches without fetching it.
+	// +optional
+	Statements int32 `json:"statements,omitempty"`
+	// +optional
+	// +listType=atomic
+	Vulnerabilities []string `json:"vulnerabilities,omitempty"`
+
+	// Manifest is the digest of the manifest that now refers to the artifact
+	// and holds this evidence.
+	// +optional
+	Manifest string `json:"manifest,omitempty"`
+
+	// IngestedAt is when the platform signed and attached it. It is not the
+	// document's own timestamp, which is the author's claim about when they
+	// decided — both matter and neither substitutes for the other.
+	// +optional
+	IngestedAt *metav1.Time `json:"ingestedAt,omitempty"`
+}
+
 // SourceProvenanceStatus is what the git provider said about how the commit
 // arrived, recorded at the moment it was asked.
 //
@@ -389,6 +438,21 @@ type BuildStatus struct {
 	// +listType=map
 	// +listMapKey=name
 	Gates []QualityGateStatus `json:"gates,omitempty"`
+
+	// VEX indexes the OpenVEX documents somebody has attached to this
+	// artifact: the exploitability assertions that can stop a finding
+	// disqualifying it.
+	//
+	// The documents themselves are in the registry, attached to the digest
+	// and readable by anything that speaks OCI referrers — this is an index,
+	// for the same reason `Artifact.Evidence` is one. What it adds that the
+	// registry cannot is **who submitted it**: the document names its own
+	// author, and the authenticated identity that handed it to the platform
+	// is a second and different fact. The audit log carries it too; this
+	// carries it on an installation whose audit log is off.
+	// +optional
+	// +listType=atomic
+	VEX []VEXStatus `json:"vex,omitempty"`
 
 	// Source is how the commit reached the branch: through review, or not.
 	// +optional

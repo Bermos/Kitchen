@@ -249,6 +249,24 @@ func (s *Server) routes() []route {
 		// exactly one project.
 		{"POST /api/v1/builds/{name}/gates", s.submitGate,
 			onProject(access.ProjectDeveloper, ofBuild, "submitting a quality gate result")},
+		// Exploitability assertions. Reading them is a viewer's read like any
+		// other evidence — and it is the read that makes a suppression
+		// visible, so it is deliberately no harder to get at than the
+		// findings themselves.
+		//
+		// Submitting one is **admin's**, and that is the one place this
+		// endpoint parts company with the gate it otherwise resembles. A gate
+		// result is a fact about an artifact; a not_affected statement is an
+		// assertion whose effect is to make a finding stop counting, which is
+		// nearer to approving a break-glass exception than to reporting a
+		// scan. A CI key is a developer on exactly one project and therefore
+		// cannot file one, which is intended: an artifact's own pipeline
+		// asserting that its own findings do not apply is precisely the
+		// self-marked homework the suite is arranged to prevent.
+		{"GET /api/v1/builds/{name}/vex", s.listVEX,
+			onProject(access.ProjectViewer, ofBuild, "reading an artifact's VEX statements")},
+		{"POST /api/v1/builds/{name}/vex", s.submitVEX,
+			onProject(access.ProjectAdmin, ofBuild, "submitting a VEX statement about an artifact")},
 
 		// Releases.
 		{"GET /api/v1/releases", s.listReleases, acrossProjects()},

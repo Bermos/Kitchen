@@ -74,6 +74,8 @@ export type Route =
   | "GET /api/v1/builds/{name}/logs"
   | "GET /api/v1/builds/{name}/attestations"
   | "POST /api/v1/builds/{name}/gates"
+  | "GET /api/v1/builds/{name}/vex"
+  | "POST /api/v1/builds/{name}/vex"
   | "GET /api/v1/releases"
   | "GET /api/v1/releases/{name}"
   | "GET /api/v1/projects/{name}/promotions"
@@ -183,6 +185,8 @@ export const POLICY: Readonly<Record<Route, Requirement>> = {
   "GET /api/v1/builds/{name}/logs": { kind: "projectRole", role: "viewer", doing: "reading a build's logs" },
   "GET /api/v1/builds/{name}/attestations": { kind: "projectRole", role: "viewer", doing: "reading a build's attestations" },
   "POST /api/v1/builds/{name}/gates": { kind: "projectRole", role: "developer", doing: "submitting a quality gate result" },
+  "GET /api/v1/builds/{name}/vex": { kind: "projectRole", role: "viewer", doing: "reading an artifact's VEX statements" },
+  "POST /api/v1/builds/{name}/vex": { kind: "projectRole", role: "admin", doing: "submitting a VEX statement about an artifact" },
   "GET /api/v1/releases": { kind: "visibleProjects" },
   "GET /api/v1/releases/{name}": { kind: "projectRole", role: "viewer", doing: "reading a release" },
   "GET /api/v1/projects/{name}/promotions": { kind: "projectRole", role: "viewer", doing: "reading a project's promotions" },
