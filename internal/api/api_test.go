@@ -653,7 +653,26 @@ func (s *stubLogs) QueryDecisions(
 	if s.decisionErr != nil {
 		return nil, s.decisionErr
 	}
-	return s.decisions, nil
+	// The filters the real store applies, applied here too: a handler that
+	// asks for one kind of decision about one pair must not be handed the
+	// whole table, or a test would pass on rows the store would never have
+	// sent. Rows are seeded newest-first, like the store answers.
+	matched := []clickhouse.Decision{}
+	for _, decision := range s.decisions {
+		switch {
+		case query.Project != "" && decision.Project != query.Project,
+			query.Environment != "" && decision.Environment != query.Environment,
+			query.Release != "" && decision.Release != query.Release,
+			query.Verdict != "" && decision.Verdict != query.Verdict,
+			query.Kind != "" && decision.Kind != query.Kind:
+			continue
+		}
+		if query.Limit > 0 && len(matched) >= query.Limit {
+			break
+		}
+		matched = append(matched, decision)
+	}
+	return matched, nil
 }
 
 func (s *stubLogs) Decision(_ context.Context, id string) (clickhouse.Decision, bool, error) {
