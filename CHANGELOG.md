@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.13.0](https://github.com/Bermos/Kitchen/compare/v0.12.0...v0.13.0) (2026-08-24)
+
+
+### Features
+
+* **git:** implement gitlab and gitea as gitSource providers ([1ef1189](https://github.com/Bermos/Kitchen/commit/1ef11890afd490a8600cba2fd5ebb1b6419a9f0e))
+* **git:** report build status back to gitlab and gitea ([cd50259](https://github.com/Bermos/Kitchen/commit/cd50259eafb1ec623e211214791a551f35995770))
+
+
+### Bug fixes
+
+* **chart:** guard missing upgrade values ([f84c074](https://github.com/Bermos/Kitchen/commit/f84c074230455b598c1fc8273d3c31bbd0a24462))
+* **chart:** use safe values merge for documented upgrades ([93304d0](https://github.com/Bermos/Kitchen/commit/93304d0a36f1dd009f6def3ea382c63b30969fe7))
+* **gitprovider:** let gitlab and gitea read a repository ([49615f5](https://github.com/Bermos/Kitchen/commit/49615f591245473f68b6ee66d272b6b4cb54b9e6))
+* **receiver:** answer the ping, and follow each provider's own vocabulary ([84c8228](https://github.com/Bermos/Kitchen/commit/84c8228e3605cf884f7791cff0f9a68574de5223))
+* **ui:** say what a gitlab or gitea token actually needs ([fcf9202](https://github.com/Bermos/Kitchen/commit/fcf9202a78ae7cd8ab223bc5c7e24f29c4e1dd76))
+
+
+### Refactoring
+
+* **gitprovider:** resolve the api url in one place ([7598f34](https://github.com/Bermos/Kitchen/commit/7598f34924646e33524fa7ae5b3c0affb6e755f4))
+* **gitprovider:** split the deployment record out of StatusReporter ([36cc8e6](https://github.com/Bermos/Kitchen/commit/36cc8e60a8a412923235bb8db5ea74bf69450f4e))
+
+
+### Documentation
+
+* **git:** record gitlab and gitea as landed sources ([cbb3cea](https://github.com/Bermos/Kitchen/commit/cbb3cea428092541eaeb2da09593d7873059405d))
+* **git:** say that gitlab and gitea now report back ([a790256](https://github.com/Bermos/Kitchen/commit/a79025692f3628671e9723e09063c9c2d90956aa))
+
 ## [0.12.0](https://github.com/Bermos/Kitchen/compare/v0.11.0...v0.12.0) (2026-08-22)
 
 
