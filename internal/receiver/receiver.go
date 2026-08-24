@@ -56,6 +56,11 @@ const (
 	actionOpened   = "opened"
 	actionReopened = "reopened"
 	actionClosed   = "closed"
+	// GitHub spells a pull request's new commits "synchronize"; Gitea spells
+	// the same thing "synchronized". Missing the second one is a preview that
+	// never updates after the branch that opened it moves.
+	actionSynchronize  = "synchronize"
+	actionSynchronized = "synchronized"
 )
 
 // GitWebhookReceiver serves POST /webhooks/git/<connection> and creates Build
@@ -132,10 +137,11 @@ type prPayload struct {
 }
 
 type gitlabPushPayload struct {
-	Ref     string `json:"ref"`
-	After   string `json:"after"`
-	User    string `json:"user_name"`
-	Project struct {
+	Ref      string `json:"ref"`
+	After    string `json:"after"`
+	User     string `json:"user_name"`
+	Username string `json:"user_username"`
+	Project  struct {
 		PathWithNamespace string `json:"path_with_namespace"`
 	} `json:"project"`
 	Commits []struct {
@@ -153,7 +159,11 @@ type gitlabMRPayload struct {
 		State        string `json:"state"`
 		IID          int32  `json:"iid"`
 		SourceBranch string `json:"source_branch"`
-		LastCommit   struct {
+		// OldRev is set only when the update moved the source branch. Every
+		// other edit to a merge request — a label, a title, an assignee —
+		// arrives as the same "update" action with this empty.
+		OldRev     string `json:"oldrev"`
+		LastCommit struct {
 			ID      string `json:"id"`
 			Message string `json:"message"`
 		} `json:"last_commit"`
@@ -197,17 +207,32 @@ func (r *GitWebhookReceiver) handleGitEvent(w http.ResponseWriter, req *http.Req
 		return
 	}
 
-	providerName, err := r.connectionProvider(ctx, connection)
-	if err != nil {
-		http.Error(w, "failed to load connection", http.StatusBadRequest)
-		return
-	}
-	event := webhookEvent(providerName, req.Header)
-	if event == eventPing {
+	// A ping is answered before anything is resolved. GitHub sends one the
+	// moment a webhook is registered — which is before the Project that owns
+	// it is reconciled — and the platform's own liveness probe sends one at
+	// an address no Connection exists for at all.
+	if isPing(req.Header) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("pong"))
 		return
 	}
+
+	providerName, err := r.connectionProvider(ctx, connection)
+	if apierrors.IsNotFound(err) {
+		// A delivery for a Connection that is gone has no project behind it
+		// either. Answering 202 rather than an error keeps the provider from
+		// disabling the webhook over it, exactly as an unmatched repository
+		// already does.
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = fmt.Fprintf(w, "no connection %s", connection)
+		return
+	}
+	if err != nil {
+		log.Error(err, "failed to load connection", "connection", connection)
+		http.Error(w, "failed to load connection", http.StatusInternalServerError)
+		return
+	}
+	event := webhookEvent(providerName, req.Header)
 	if event != eventPush && event != eventPullRequest {
 		w.WriteHeader(http.StatusAccepted)
 		_, _ = fmt.Fprintf(w, "event %q ignored", event)
@@ -317,7 +342,7 @@ func (r *GitWebhookReceiver) dispatchGitHub(
 			return nil, err
 		}
 		switch payload.Action {
-		case actionOpened, "synchronize", actionReopened:
+		case actionOpened, actionSynchronize, actionReopened:
 			return r.createBuild(ctx, project,
 				payload.PullRequest.Head.SHA, payload.PullRequest.Head.Ref, "", "", &payload.Number)
 		case actionClosed:
@@ -357,7 +382,7 @@ func (r *GitWebhookReceiver) dispatchGitLab(
 		}
 		branch := strings.TrimPrefix(payload.Ref, "refs/heads/")
 		message := ""
-		author := payload.User
+		author := prefer(payload.Username, payload.User)
 		if n := len(payload.Commits); n > 0 {
 			last := payload.Commits[n-1]
 			message = last.Message
@@ -373,18 +398,26 @@ func (r *GitWebhookReceiver) dispatchGitLab(
 		if err := json.Unmarshal(body, &payload); err != nil {
 			return nil, err
 		}
-		action := strings.ToLower(payload.ObjectAttributes.Action)
+		attrs := payload.ObjectAttributes
+		action := strings.ToLower(attrs.Action)
+		// GitLab's one "update" action covers every edit a merge request can
+		// take, and only the ones that moved the source branch carry oldrev.
+		// Building on the rest would redeploy a preview because somebody
+		// relabelled it.
+		if (action == "update" || action == "updated") && attrs.OldRev == "" {
+			return nil, nil
+		}
 		switch action {
-		case "open", actionOpened, "update", "updated", "reopen", actionReopened:
+		case "open", actionOpened, "reopen", actionReopened, "update", "updated":
 			return r.createBuild(ctx, project,
-				payload.ObjectAttributes.LastCommit.ID,
-				payload.ObjectAttributes.SourceBranch,
-				payload.ObjectAttributes.LastCommit.Message,
+				attrs.LastCommit.ID,
+				attrs.SourceBranch,
+				attrs.LastCommit.Message,
 				prefer(payload.User.Username, payload.User.Name),
-				&payload.ObjectAttributes.IID)
+				&attrs.IID)
 		case "close", actionClosed, "merge", "merged":
 			env := &kitchenv1alpha1.Environment{ObjectMeta: metav1.ObjectMeta{
-				Name:      fmt.Sprintf("%s-pr-%d", project.Name, payload.ObjectAttributes.IID),
+				Name:      fmt.Sprintf("%s-pr-%d", project.Name, attrs.IID),
 				Namespace: project.Namespace,
 			}}
 			if err := r.Client.Delete(ctx, env); err != nil && !apierrors.IsNotFound(err) {
@@ -424,7 +457,7 @@ func (r *GitWebhookReceiver) dispatchGitea(
 			return nil, err
 		}
 		switch payload.Action {
-		case actionOpened, "synchronize", actionReopened:
+		case actionOpened, actionSynchronized, actionSynchronize, actionReopened:
 			return r.createBuild(ctx, project,
 				payload.PullRequest.Head.SHA, payload.PullRequest.Head.Ref, "", "", &payload.Number)
 		case actionClosed:
@@ -541,6 +574,19 @@ func repoFullName(providerName, event string, body []byte) (string, error) {
 	return envelope.Repository.FullName, nil
 }
 
+// isPing reports whether the delivery is a webhook handshake rather than a
+// repository event. Only GitHub has one — GitLab's and Gitea's test buttons
+// send a real push — so the other two headers are read for symmetry alone,
+// and cost nothing.
+func isPing(header http.Header) bool {
+	for _, name := range []string{"X-GitHub-Event", "X-Gitea-Event", "X-Gitlab-Event"} {
+		if strings.EqualFold(header.Get(name), eventPing) {
+			return true
+		}
+	}
+	return false
+}
+
 func webhookEvent(providerName string, header http.Header) string {
 	switch providerName {
 	case gitprovider.ProviderGitLab:
@@ -549,8 +595,6 @@ func webhookEvent(providerName string, header http.Header) string {
 			return eventPush
 		case "Merge Request Hook":
 			return eventPullRequest
-		case "System Hook":
-			return eventPing
 		default:
 			return ""
 		}
