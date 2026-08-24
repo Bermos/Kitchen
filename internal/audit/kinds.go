@@ -47,4 +47,31 @@ const (
 	// about while its correlation carries the decision id — which is the
 	// translation table back to the stored row.
 	KindPromotionDecision = "PromotionDecision"
+
+	// KindRetention is the second such kind, and it is here for the reason
+	// the log has kinds at all: "show me the evidence that data was deleted
+	// when it expired" has to be one query. The sweep's records are about
+	// the platform singleton, so recording them as KindKitchen would be
+	// defensible and would bury them among every settings change ever made.
+	// They are their own kind instead, and the record's name is the
+	// singleton's.
+	KindRetention = "Retention"
+)
+
+// The `change` key a record's details carry, which is what makes one kind of
+// edit findable among the rest. They are strings in the details rather than
+// columns because the log's columns are the same for every record; a reader
+// filters on the kind first and on this second.
+const (
+	// ChangeRetentionSweep marks the deletion evidence one retention sweep
+	// produced: every class, the horizon each was measured against, and what
+	// the pass removed.
+	ChangeRetentionSweep = "retention-sweep"
+
+	// ChangeAuditFloorOverride marks a write that put the audit retention
+	// below its documented floor, with the reason and the approver. It is
+	// its own value because "who decided we keep less evidence than the
+	// platform recommends, and why" is a question that must be answerable
+	// from the log alone.
+	ChangeAuditFloorOverride = "audit-floor-override"
 )

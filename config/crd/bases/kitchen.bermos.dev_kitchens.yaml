@@ -872,6 +872,43 @@ spec:
                         - name
                         type: object
                     type: object
+                  clockSync:
+                    default: {}
+                    description: |-
+                      ClockSync measures how far the cluster's clocks are from the
+                      operator's own, because every timestamp in the store is only worth
+                      what the clock that stamped it is worth. The empty-object default is
+                      what turns it on for an installation that predates the field, for the
+                      reason spelled out above Metrics.
+                    properties:
+                      enabled:
+                        default: true
+                        description: |-
+                          Enabled measures node clock drift on every platform reconcile.
+
+                          The empty-object default on the block above is what turns it on for an
+                          installation that predates it; this pointer is what lets somebody turn
+                          it off again, on a cluster whose kubelets renew their leases so
+                          slowly that the measurement says nothing useful.
+                        type: boolean
+                      maxDriftSeconds:
+                        default: 5
+                        description: |-
+                          MaxDriftSeconds is how far a node's clock may be from the operator's
+                          before the survey calls the check unhealthy.
+
+                          Five seconds is the default and it is chosen against the *use*, not
+                          against NTP's accuracy: a correlation in an incident report is built
+                          from log lines, a request trace and an audit record that were stamped
+                          on three different machines, and five seconds is roughly where "these
+                          happened in this order" stops being safe to say. A properly
+                          synchronised cluster sits three orders of magnitude inside it, so a
+                          breach means time sync is broken rather than merely imprecise.
+                        format: int32
+                        maximum: 3600
+                        minimum: 1
+                        type: integer
+                    type: object
                   hubble:
                     description: |-
                       HubbleSpec configures the network flow pipeline. Cilium is the platform's
@@ -1019,6 +1056,144 @@ spec:
                   that reports its actual placement gets that recorded on the claim's
                   status, which takes precedence over any declaration.
                 type: string
+              retention:
+                description: |-
+                  Retention is how long each class of what the platform keeps is kept.
+
+                  It is here, at the top of the object, rather than inside
+                  `observability` or inside `compliance`, because it spans both and
+                  belongs to neither: container logs are telemetry, audit records are
+                  evidence, and "how long do you keep it" is one question asked of the
+                  whole platform. It deliberately carries no `+kubebuilder:default={}` —
+                  an absent block means every class inherits the knob it used to have,
+                  which is exactly what an upgraded installation should keep doing.
+                properties:
+                  activity:
+                    description: |-
+                      Activity is how long the dashboard's activity feed is kept. It is
+                      prose for a person catching up rather than evidence — the audit log is
+                      the evidence — so it is the one class where a short window costs
+                      nothing but convenience.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  audit:
+                    description: |-
+                      Audit is how long audit records and the policy decisions they gate are
+                      kept. The two share a retention deliberately: a decision and the audit
+                      record that gated it substantiate each other, and aging them out
+                      separately would leave whichever survives pointing at nothing.
+
+                      The floor is AuditFloorDays and the way under it is the override
+                      below, not a smaller number.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  auditFloorOverride:
+                    description: |-
+                      AuditFloorOverride is the written decision to keep audit records for
+                      less than the floor.
+
+                      It exists because a floor with no way past it is a floor somebody
+                      eventually removes from the code. An installation that genuinely
+                      cannot keep ninety days — a demonstration cluster, a jurisdiction
+                      whose data-minimisation rule bites first — should be able to say so
+                      *in the object*, with a reason and a name against it, rather than by
+                      patching the platform.
+
+                      Setting it is a privileged audit record in its own right, recorded
+                      with the number and the reason, so "who decided we keep sixty days"
+                      has a written answer.
+                    properties:
+                      approvedBy:
+                        description: |-
+                          ApprovedBy is who decided it, as an address or a name a person can be
+                          found by. The platform does not resolve it against the identity
+                          provider — an override may well be approved by somebody who has no
+                          account here — so it is recorded as written.
+                        maxLength: 200
+                        minLength: 1
+                        type: string
+                      reason:
+                        description: |-
+                          Reason is why this installation keeps less than the floor. It is read
+                          by whoever asks why the log does not go back far enough.
+                        maxLength: 500
+                        minLength: 20
+                        type: string
+                    required:
+                    - approvedBy
+                    - reason
+                    type: object
+                  buildLogs:
+                    description: |-
+                      BuildLogs is how long a build's own output is kept.
+
+                      It is its own class because it answers a different question. A
+                      container log is operational — what was this process doing on Tuesday
+                      — and a build log is part of the account of how an artifact came to
+                      exist, which is read months later beside the artifact's provenance.
+                      Installations routinely want the second kept longer than the first.
+
+                      Both live in the same table, which has a consequence worth knowing
+                      before setting them apart: see docs/COMPLIANCE.md §14.2.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  clusterEvents:
+                    description: |-
+                      ClusterEvents is how long the cluster's Warning-event history is kept
+                      — the API server expires the originals about an hour after they
+                      happen, so this is the only copy.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  containerLogs:
+                    description: |-
+                      ContainerLogs is how long the stdout and stderr of application,
+                      platform and cluster containers are kept.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  flows:
+                    description: |-
+                      Flows is how long observed network flows are kept — who talked to
+                      whom, which is what the traffic view draws.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  metrics:
+                    description: Metrics is how long metric series and their rollups
+                      are kept.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  requests:
+                    description: |-
+                      Requests is how long HTTP request telemetry is kept. It is the one
+                      class the store scales rather than applies: raw rows are the densest
+                      thing in it and live a week or this window, whichever is shorter, and
+                      the hourly rollup keeps twelve of these windows so a year-scale view
+                      has something to read. Those two ratios are not configurable.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  traces:
+                    description: Traces is how long spans are kept.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                type: object
+                x-kubernetes-validations:
+                - message: 'spec.retention.audit is below the 90-day floor: an incident
+                    reporting duty runs from when an institution became aware, which
+                    can be long after the transition that caused it. Raise it to at
+                    least 90, or set spec.retention.auditFloorOverride with a reason
+                    and an approver — the override is itself an audit record'
+                  rule: '!has(self.audit) || self.audit >= 90 || has(self.auditFloorOverride)'
+                - message: 'spec.retention.auditFloorOverride overrides nothing: it
+                    is only meaningful beside spec.retention.audit'
+                  rule: '!has(self.auditFloorOverride) || has(self.audit)'
               scaleToZero:
                 default: {}
                 description: |-
@@ -1170,6 +1345,50 @@ spec:
           status:
             description: KitchenStatus defines the observed state of the platform.
             properties:
+              clockSync:
+                description: |-
+                  ClockSync reports the last measurement of node clock drift. The
+                  *consequence* of drift is a component in the survey above; this is the
+                  measurement behind it, including the method, because no number here
+                  should be read without the caveat that belongs to it.
+                properties:
+                  checked:
+                    description: Checked is when the measurement was taken.
+                    format: date-time
+                    type: string
+                  drifted:
+                    description: Drifted is how many of them are beyond the threshold.
+                    format: int32
+                    type: integer
+                  maxDriftSeconds:
+                    description: MaxDriftSeconds is the threshold that was applied.
+                    format: int32
+                    type: integer
+                  message:
+                    description: |-
+                      Message is what to do about it, for a check that is failing, and why
+                      nothing was measured, for one that could not run.
+                    type: string
+                  method:
+                    description: |-
+                      Method names how it was taken, so a number is never read without the
+                      caveat that belongs to it.
+                    type: string
+                  nodes:
+                    description: Nodes measured.
+                    format: int32
+                    type: integer
+                  worstDriftMillis:
+                    format: int64
+                    type: integer
+                  worstNode:
+                    description: |-
+                      WorstNode is the node furthest from the operator's clock, and
+                      WorstDriftMillis how far. Milliseconds because a healthy cluster's
+                      answer is a two-digit number of them and rounding it to seconds would
+                      report every healthy cluster as perfect.
+                    type: string
+                type: object
               compliance:
                 description: |-
                   Compliance reports the audit log and the signing identity, so that an
@@ -1272,6 +1491,23 @@ spec:
                       store, and an installation configured without one records nothing however
                       the spec reads.
                     properties:
+                      immutabilityMessage:
+                        description: |-
+                          ImmutabilityMessage explains an audit table whose mutation privileges
+                          are still held by the platform's own user.
+                        type: string
+                      immutable:
+                        description: |-
+                          Immutable is true when the store has taken the audit table's mutation
+                          privileges away from the platform's own credential — so a compromised
+                          operator or API can append to the log and cannot rewrite it.
+
+                          False is not a fault and does not stop anything: it means the claim
+                          this installation can make about its log is the hash chain's alone,
+                          which is a smaller claim and an honest one. The message says why the
+                          revoke did not take. docs/COMPLIANCE.md §14.3 states exactly what the
+                          true case does and does not cover.
+                        type: boolean
                       message:
                         description: Message explains a log that is not recording.
                         type: string
@@ -1359,14 +1595,16 @@ spec:
                     chart) asked for is actually running.
                   properties:
                     available:
-                      description: Available pods right now.
+                      description: |-
+                        Available pods right now. For the clock-sync entry: nodes inside the
+                        drift threshold.
                       format: int32
                       type: integer
                     desired:
                       description: |-
                         Desired pods. For a DaemonSet this is however many nodes it selects,
                         so it moves with the cluster rather than with any configured replica
-                        count.
+                        count. For the clock-sync entry: nodes measured.
                       format: int32
                       type: integer
                     healthy:
@@ -1374,8 +1612,14 @@ spec:
                         is available.
                       type: boolean
                     kind:
-                      description: 'Kind of workload backing it: Deployment, StatefulSet
-                        or DaemonSet.'
+                      description: |-
+                        Kind of workload backing it: Deployment, StatefulSet or DaemonSet.
+
+                        One entry is not a workload at all. The clock-sync check reports
+                        itself here under kind `Node`, because a cluster whose clocks disagree
+                        is broken in exactly the way this list exists to surface — invisibly,
+                        until somebody tries to correlate two timestamps in an incident
+                        report — and because this is the list an operator already reads.
                       type: string
                     message:
                       description: |-
@@ -1473,6 +1717,101 @@ spec:
                     type: string
                   host:
                     description: Host the registry is published on.
+                    type: string
+                type: object
+              retention:
+                description: |-
+                  Retention reports the retention model as it is actually in force, per
+                  class, with what each class currently holds and how far back it goes.
+                properties:
+                  auditFloorOverridden:
+                    description: |-
+                      AuditFloorOverridden is true when audit records are kept for less than
+                      AuditFloorDays under a written override. It is on the status as well
+                      as in the spec so that a reader who came for "is this installation
+                      keeping its evidence" gets the answer without having to know which
+                      field to look at.
+                    type: boolean
+                  classes:
+                    description: Classes is every class, in name order.
+                    items:
+                      description: |-
+                        RetentionClassStatus is what the platform is actually doing about one class,
+                        as opposed to what it was asked to do.
+                      properties:
+                        class:
+                          description: Class names the class, in the vocabulary the
+                            spec uses.
+                          type: string
+                        days:
+                          description: |-
+                            Days is the retention in force — the configured value, or the knob it
+                            inherits from.
+                          format: int32
+                          type: integer
+                        enforced:
+                          description: |-
+                            Enforced is true when the store is holding the retention this class
+                            asks for. False means the platform asked and the store has not (yet)
+                            agreed — the message says why.
+                          type: boolean
+                        expired:
+                          description: |-
+                            Expired counts rows still present on the wrong side of the horizon at
+                            the last sweep. It is normally zero or one partition's worth; a number
+                            that stays large means the store is holding data past its date, which
+                            is a thing this platform reports rather than hides.
+                          format: int64
+                          type: integer
+                        message:
+                          description: |-
+                            Message explains a class that is not being enforced, or a store that
+                            could not be asked.
+                          type: string
+                        oldest:
+                          description: |-
+                            Oldest surviving row, as of the last sweep. This is the claim
+                            retention actually makes: nothing about this class is older than this.
+                          format: date-time
+                          type: string
+                        removed:
+                          description: |-
+                            Removed is how many rows the last sweep deleted itself. It is the one
+                            number here that is exact rather than observed: the sweep only ever
+                            drops a partition every row of which is past the horizon, so it can
+                            count them. Everything the store expired on its own schedule is
+                            invisible to it, and §14.4 says so.
+                          format: int64
+                          type: integer
+                        rows:
+                          description: Rows the class currently holds, as of the last
+                            sweep.
+                          format: int64
+                          type: integer
+                        source:
+                          description: |-
+                            Source says where Days came from: `retention` for this block, or the
+                            legacy field it fell back to. It is here because an operator reading
+                            "30" wants to know whether anybody chose it.
+                          type: string
+                      required:
+                      - class
+                      - days
+                      - enforced
+                      type: object
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - class
+                    x-kubernetes-list-type: map
+                  lastSweep:
+                    description: LastSweep is when the retention sweep last completed
+                      a pass.
+                    format: date-time
+                    type: string
+                  message:
+                    description: |-
+                      Message explains a model that is configured and not being enforced —
+                      an installation with no telemetry store, most often.
                     type: string
                 type: object
               scaleToZero:

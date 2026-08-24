@@ -18,7 +18,6 @@ package controller
 
 import (
 	"context"
-	"fmt"
 	"sort"
 	"time"
 
@@ -42,6 +41,7 @@ import (
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/audit"
 	"github.com/Bermos/Kitchen/internal/clickhouse"
+	"github.com/Bermos/Kitchen/internal/retention"
 )
 
 const (
@@ -98,10 +98,6 @@ const (
 	condPreviewGateReady  = "PreviewGateReady"
 	condCertificateReady  = "CertificateReady"
 	condComponentsHealthy = "ComponentsHealthy"
-
-	// defaultRetentionDays matches the CRD default, for Kitchen objects
-	// written before the field existed.
-	defaultRetentionDays = 30
 
 	labelComponentKey = "app.kubernetes.io/name"
 )
@@ -239,23 +235,34 @@ func (r *KitchenReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 }
 
 // reconcileTelemetrySchema creates the telemetry tables in ClickHouse and
-// keeps their TTL in step with spec.observability.clickhouse.retentionDays.
-// The store is where the collectors ship to and where the operator API reads
-// logs from, but nothing in the request path depends on it, so a store that
-// is still starting up (or gone) surfaces as a condition and a retry rather
-// than a failed reconcile.
+// keeps their TTLs in step with the retention model — spec.retention, with the
+// old spec.observability.clickhouse.retentionDays as the default every class
+// inherits. The store is where the collectors ship to and where the operator
+// API reads logs from, but nothing in the request path depends on it, so a
+// store that is still starting up (or gone) surfaces as a condition and a
+// retry rather than a failed reconcile.
 func (r *KitchenReconciler) reconcileTelemetrySchema(
 	ctx context.Context,
 	kitchen *kitchenv1alpha1.Kitchen,
 	setCond func(string, metav1.ConditionStatus, string, string),
 ) bool {
+	// The configured half of the retention status is published whether or
+	// not there is a store to enforce it in: what an installation has
+	// *decided* to keep is worth reading back even where nothing is being
+	// kept, and it is what the API's retention route answers from.
+	model := retention.Resolve(kitchen)
+
 	ref := kitchen.Spec.Observability.ClickHouse.SecretRef
 	if ref == nil {
 		// Installed without a telemetry store. Nothing to manage, and
 		// nothing to complain about on every reconcile.
+		applyRetentionStatus(kitchen, model, "this installation has no telemetry store, "+
+			"so there is nothing for a retention to be enforced over")
 		meta.RemoveStatusCondition(&kitchen.Status.Conditions, condTelemetrySchema)
 		return true
 	}
+
+	applyRetentionStatus(kitchen, model, "")
 
 	secret := &corev1.Secret{}
 	key := types.NamespacedName{Namespace: PlatformNamespace, Name: ref.Name}
@@ -269,17 +276,13 @@ func (r *KitchenReconciler) reconcileTelemetrySchema(
 		return false
 	}
 
-	retention := kitchen.Spec.Observability.ClickHouse.RetentionDays
-	if retention < 1 {
-		retention = defaultRetentionDays
-	}
-	if err := clickhouse.New(cfg).EnsureTelemetrySchema(ctx, retention); err != nil {
+	if err := clickhouse.New(cfg).EnsureTelemetrySchema(ctx, model); err != nil {
 		setCond(condTelemetrySchema, metav1.ConditionFalse, "SchemaNotApplied", err.Error())
 		return false
 	}
 
 	setCond(condTelemetrySchema, metav1.ConditionTrue, "SchemaApplied",
-		fmt.Sprintf("telemetry schema is in place, retaining %d days", retention))
+		describeTelemetryRetention(model))
 	return true
 }
 
