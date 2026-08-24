@@ -138,6 +138,13 @@ type projectView struct {
 	// handles. Absent means unclassified — a state the screens show as such,
 	// never a default.
 	DataClass string `json:"dataClass,omitempty"`
+	// Criticality is how much it matters that this project's function keeps
+	// working, and RTO/RPO the tolerances that come with it. Absent means
+	// undesignated — the institution has not said, and Kitchen does not
+	// decide.
+	Criticality string `json:"criticality,omitempty"`
+	RTO         string `json:"rto,omitempty"`
+	RPO         string `json:"rpo,omitempty"`
 }
 
 func newProjectView(project *kitchenv1alpha1.Project, role access.ProjectRole) projectView {
@@ -182,6 +189,9 @@ func newProjectView(project *kitchenv1alpha1.Project, role access.ProjectRole) p
 		}
 	}
 	view.DataClass = string(project.Spec.DataClass)
+	view.Criticality = string(project.Spec.Criticality)
+	view.RTO = string(project.Spec.RTO)
+	view.RPO = string(project.Spec.RPO)
 	return view
 }
 
@@ -630,11 +640,19 @@ type environmentView struct {
 	// DataClass is the highest sensitivity class this environment is rated
 	// to hold, declared by its owners; absent means unrated. Residency is
 	// where its data is declared to be — declared, not observed.
-	DataClass  string               `json:"dataClass,omitempty"`
-	Residency  string               `json:"residency,omitempty"`
-	History    []releaseHistoryView `json:"history,omitempty"`
-	CreatedAt  time.Time            `json:"createdAt"`
-	Conditions []conditionView      `json:"conditions,omitempty"`
+	DataClass string `json:"dataClass,omitempty"`
+	Residency string `json:"residency,omitempty"`
+	// Criticality, RTO and RPO are what this environment itself declares —
+	// absent means it declares nothing, which is not the same as nothing
+	// applying. What applies is the effective designation, which a production
+	// environment inherits from its project; GET /compliance/criticality
+	// answers with that, resolved, and says which fields were inherited.
+	Criticality string               `json:"criticality,omitempty"`
+	RTO         string               `json:"rto,omitempty"`
+	RPO         string               `json:"rpo,omitempty"`
+	History     []releaseHistoryView `json:"history,omitempty"`
+	CreatedAt   time.Time            `json:"createdAt"`
+	Conditions  []conditionView      `json:"conditions,omitempty"`
 }
 
 func newEnvironmentView(env *kitchenv1alpha1.Environment) environmentView {
@@ -650,6 +668,9 @@ func newEnvironmentView(env *kitchenv1alpha1.Environment) environmentView {
 		Requirements:    newRequirementsView(env.Spec.Requirements),
 		DataClass:       string(env.Spec.DataClass),
 		Residency:       env.Spec.Residency,
+		Criticality:     string(env.Spec.Criticality),
+		RTO:             string(env.Spec.RTO),
+		RPO:             string(env.Spec.RPO),
 		CreatedAt:       env.CreationTimestamp.Time,
 		Conditions:      conditionViews(env.Status.Conditions),
 	}

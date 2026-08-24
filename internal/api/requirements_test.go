@@ -197,7 +197,8 @@ func TestTheRequirementsTransitionCarriesTheChangeByNameAndNotByValue(t *testing
 	)
 
 	transition := requirementsTransition(env, previous, testBundleDigest, changed, &owners,
-		&dataClassChange{previous: "", next: inventoryClassConfidential}, nil)
+		&dataClassChange{previous: "", next: inventoryClassConfidential}, nil,
+		continuityChange{}, kitchenv1alpha1.Continuity{})
 	if transition.From != previous || transition.To != testBundleDigest {
 		t.Fatalf("the transition must run from the previous digest to the next: %q -> %q",
 			transition.From, transition.To)

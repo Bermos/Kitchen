@@ -1035,7 +1035,8 @@ func TestReclassifyingAProjectIsRecordedWithThePreviousValue(t *testing.T) {
 		Spec: kitchenv1alpha1.ProjectSpec{DataClass: kitchenv1alpha1.DataClassConfidential},
 	}
 	class := "internal"
-	details := projectSettingsDetails(before, patchProjectRequest{DataClass: &class}, &next)
+	details := projectSettingsDetails(before, patchProjectRequest{DataClass: &class}, &next,
+		continuityChange{})
 	if details["privileged"] != true ||
 		details["previousDataClass"] != inventoryClassConfidential || details["dataClass"] != "internal" {
 		t.Fatalf("the record must carry the previous value, privileged: %v", details)
