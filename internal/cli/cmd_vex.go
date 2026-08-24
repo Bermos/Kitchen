@@ -144,7 +144,7 @@ func vexTable(s tui.Styles, answer *vexAnswer) string {
 // about it, and by whom.
 func vexNote(statement *vexStatement) string {
 	if statement == nil {
-		return "—"
+		return noValue
 	}
 	note := statement.Status
 	if statement.Author != "" {

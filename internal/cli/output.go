@@ -24,6 +24,12 @@ import (
 	"github.com/Bermos/Kitchen/internal/cli/tui"
 )
 
+// noValue is what a text table prints where a field is absent. An em dash
+// rather than an empty cell, so that "nothing here" reads as a deliberate
+// answer rather than as a column that failed to render — and one constant
+// rather than one per command, so the tables agree with each other.
+const noValue = "—"
+
 // The output contract, which is the whole reason this CLI is worth a machine's
 // time. It has exactly two modes and they never mix:
 //
