@@ -31,7 +31,7 @@ func TestGitLabListDirReadsTheRepositoryRoot(t *testing.T) {
 		if r.URL.EscapedPath() != gitlabTreePath {
 			t.Errorf("unexpected path %q", r.URL.EscapedPath())
 		}
-		if got := r.URL.Query().Get("ref"); got != "deadbeefcafe" {
+		if got := r.URL.Query().Get("ref"); got != detectRef {
 			t.Errorf("listed ref %q, want the commit under build", got)
 		}
 		if _, ok := r.URL.Query()["path"]; ok {
@@ -45,7 +45,7 @@ func TestGitLabListDirReadsTheRepositoryRoot(t *testing.T) {
 	defer server.Close()
 
 	gl := &GitLab{APIURL: server.URL, Token: "tok"}
-	entries, err := gl.ListDir(context.Background(), "acme/shop", "deadbeefcafe", "")
+	entries, err := gl.ListDir(context.Background(), "acme/shop", detectRef, "")
 	if err != nil {
 		t.Fatal(err)
 	}

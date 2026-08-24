@@ -25,12 +25,16 @@ import (
 	"testing"
 )
 
+// detectRef is the commit under build that every source-reading test lists
+// at: detection never asks for a branch, only for the revision it was handed.
+const detectRef = "deadbeefcafe"
+
 func TestListDirReadsTheRepositoryRoot(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/repos/acme/shop/contents" {
 			t.Errorf("unexpected path %q", r.URL.Path)
 		}
-		if got := r.URL.Query().Get("ref"); got != "deadbeefcafe" {
+		if got := r.URL.Query().Get("ref"); got != detectRef {
 			t.Errorf("listed ref %q, want the commit under build", got)
 		}
 		_, _ = w.Write([]byte(`[
@@ -41,7 +45,7 @@ func TestListDirReadsTheRepositoryRoot(t *testing.T) {
 	defer server.Close()
 
 	gh := &GitHub{APIURL: server.URL, Token: "tok"}
-	entries, err := gh.ListDir(context.Background(), "acme/shop", "deadbeefcafe", "")
+	entries, err := gh.ListDir(context.Background(), "acme/shop", detectRef, "")
 	if err != nil {
 		t.Fatal(err)
 	}

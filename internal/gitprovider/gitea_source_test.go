@@ -29,7 +29,7 @@ func TestGiteaListDirReadsTheRepositoryRoot(t *testing.T) {
 		if r.URL.Path != "/repos/acme/shop/contents" {
 			t.Errorf("unexpected path %q", r.URL.Path)
 		}
-		if got := r.URL.Query().Get("ref"); got != "deadbeefcafe" {
+		if got := r.URL.Query().Get("ref"); got != detectRef {
 			t.Errorf("listed ref %q, want the commit under build", got)
 		}
 		_, _ = w.Write([]byte(`[
@@ -40,7 +40,7 @@ func TestGiteaListDirReadsTheRepositoryRoot(t *testing.T) {
 	defer server.Close()
 
 	gt := &Gitea{APIURL: server.URL, Token: "tok"}
-	entries, err := gt.ListDir(context.Background(), "acme/shop", "deadbeefcafe", "")
+	entries, err := gt.ListDir(context.Background(), "acme/shop", detectRef, "")
 	if err != nil {
 		t.Fatal(err)
 	}
