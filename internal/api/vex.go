@@ -34,6 +34,7 @@ import (
 	"github.com/Bermos/Kitchen/internal/audit"
 	"github.com/Bermos/Kitchen/internal/clickhouse"
 	"github.com/Bermos/Kitchen/internal/controller"
+	"github.com/Bermos/Kitchen/internal/policy"
 	"github.com/Bermos/Kitchen/internal/vex"
 )
 
@@ -259,33 +260,40 @@ func vexStatements(set attestation.EvidenceSet, build *kitchenv1alpha1.Build, at
 // findings. The platform wrote that list when it signed the scan (§9.6), so
 // nothing is re-derived here — a second normalizer would be a second opinion
 // about what the scanner said.
+//
+// Which scan is the newest is policy.NewestVulnerabilityScan's answer and not
+// a second one: the artifact accumulates a scan per rescan interval, and this
+// screen exists so a person can see the findings the policy engine judged.
+// Reading all of them here would print a persistent CVE once per day it has
+// been up — N duplicate rows, N duplicate Vue keys, N lines from
+// `kitchen vex list` — on the one view whose whole purpose is that a
+// suppression is legible.
 func scanFindings(set attestation.EvidenceSet) []vexFindingView {
 	findings := []vexFindingView{}
-	for _, entry := range set.Attestations {
-		if entry.PredicateType != attestation.PredicateVulnerabilityScan {
-			continue
-		}
-		predicate := struct {
-			Findings []struct {
-				Vulnerability string `json:"vulnerability"`
-				Severity      string `json:"severity"`
-				Package       string `json:"package"`
-				Version       string `json:"version"`
-				FixedIn       string `json:"fixedIn"`
-			} `json:"findings"`
-		}{}
-		if err := json.Unmarshal(entry.Statement.Predicate, &predicate); err != nil {
-			continue
-		}
-		for _, finding := range predicate.Findings {
-			findings = append(findings, vexFindingView{
-				Vulnerability: finding.Vulnerability,
-				Severity:      finding.Severity,
-				Package:       finding.Package,
-				Version:       finding.Version,
-				FixedIn:       finding.FixedIn,
-			})
-		}
+	newest, scanned := policy.NewestVulnerabilityScan(set.Attestations)
+	if !scanned {
+		return findings
+	}
+	predicate := struct {
+		Findings []struct {
+			Vulnerability string `json:"vulnerability"`
+			Severity      string `json:"severity"`
+			Package       string `json:"package"`
+			Version       string `json:"version"`
+			FixedIn       string `json:"fixedIn"`
+		} `json:"findings"`
+	}{}
+	if err := json.Unmarshal(set.Attestations[newest].Statement.Predicate, &predicate); err != nil {
+		return findings
+	}
+	for _, finding := range predicate.Findings {
+		findings = append(findings, vexFindingView{
+			Vulnerability: finding.Vulnerability,
+			Severity:      finding.Severity,
+			Package:       finding.Package,
+			Version:       finding.Version,
+			FixedIn:       finding.FixedIn,
+		})
 	}
 	return findings
 }

@@ -329,6 +329,60 @@ func TestVEXStatementsAreShownBesideTheFindingsTheyModify(t *testing.T) {
 	}
 }
 
+func TestARescannedArtifactShowsOneRowPerFindingRatherThanOnePerScan(t *testing.T) {
+	// The pass attaches a scan per interval and the registry keeps them all,
+	// so a release that has been up for forty days carries forty scans of the
+	// same artifact. This view shows the findings the policy engine judged,
+	// which is the newest scan's — anything else prints a persistent CVE once
+	// per day it has been up, on the one screen whose whole purpose is that a
+	// suppression is legible.
+	h, registry, _ := gateHarness(t)
+
+	scan := func(digest, scannedAt, findings string) attestation.Evidence {
+		return attestation.Evidence{
+			PredicateType: attestation.PredicateVulnerabilityScan,
+			Verified:      true,
+			Digest:        digest,
+			Statement: attestation.Statement{Predicate: json.RawMessage(
+				`{"scannedAt":"` + scannedAt + `","findings":` + findings + `}`)},
+		}
+	}
+	persistent := `[{"vulnerability":"CVE-2026-1","severity":"critical","package":"libfoo"}]`
+	registry.set = attestation.EvidenceSet{
+		Verified: true,
+		Attestations: []attestation.Evidence{
+			scan("sha256:"+strings.Repeat("1", 64), "2026-07-01T09:00:00Z", persistent),
+			scan("sha256:"+strings.Repeat("2", 64), "2026-08-08T09:00:00Z", persistent),
+			scan("sha256:"+strings.Repeat("3", 64), "2026-08-09T09:00:00Z",
+				`[{"vulnerability":"CVE-2026-1","severity":"critical","package":"libfoo"},
+				  {"vulnerability":"CVE-2026-7","severity":"high","package":"libnew"}]`),
+		},
+	}
+
+	recorder := h.do(t, http.MethodGet, "/api/v1/builds/shop-bld-9/vex", "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	body := vexBody{}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Findings) != 2 {
+		t.Fatalf("three scans of one artifact answered %d findings, want the newest scan's two: %+v",
+			len(body.Findings), body.Findings)
+	}
+	seen := map[string]int{}
+	for _, finding := range body.Findings {
+		seen[finding.Vulnerability]++
+	}
+	if seen["CVE-2026-1"] != 1 {
+		t.Errorf("a finding every scan reports was answered %d times", seen["CVE-2026-1"])
+	}
+	if seen["CVE-2026-7"] != 1 {
+		t.Errorf("the newest scan's own finding is missing: %+v", body.Findings)
+	}
+}
+
 func TestAnUnverifiedVEXDocumentIsListedAndSaidToBeUnverified(t *testing.T) {
 	h, registry, _ := gateHarness(t)
 
