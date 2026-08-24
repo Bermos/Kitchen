@@ -304,7 +304,12 @@ written answers `502`.
 ```
 
 Every finding from the artifact's newest vulnerability scan is listed, whether
-or not something suppresses it, with the statement covering it. `justified`,
+or not something suppresses it, with the statement covering it. **The newest
+scan alone**: the re-evaluation pass attaches one per interval and the registry
+keeps them all, so reading every scan would answer a persistent CVE once per
+day the release has been up. It is the same scan the policy engine judges —
+one implementation of "the newest" — so this view explains the decision that
+was actually made. `justified`,
 `expired` and `verified` are facts about the statement and not a verdict:
 whether it suppresses anything is the target environment's policy's question,
 and the same statement can be honoured in staging and refused in production.
