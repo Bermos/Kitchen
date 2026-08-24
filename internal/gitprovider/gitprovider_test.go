@@ -79,6 +79,36 @@ func TestDefaultResolvesGitProviders(t *testing.T) {
 	}
 }
 
+func TestDefaultFallsBackToTheHostedAPI(t *testing.T) {
+	// A Connection naming no apiUrl is the hosted service. Every provider
+	// here is one somebody can self-host, so this is the path a fumbled
+	// default would break quietly.
+	for provider, want := range map[string]string{
+		"github": "https://api.github.com",
+		"gitlab": "https://gitlab.com/api/v4",
+		"gitea":  "https://gitea.com/api/v1",
+	} {
+		t.Run(provider, func(t *testing.T) {
+			p, err := Default(providerConnection(provider, ""), "token")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got string
+			switch impl := p.(type) {
+			case *GitHub:
+				got = impl.APIURL
+			case *GitLab:
+				got = impl.APIURL
+			case *Gitea:
+				got = impl.APIURL
+			}
+			if got != want {
+				t.Errorf("api url is %q, want %q", got, want)
+			}
+		})
+	}
+}
+
 func TestDefaultRejectsUnsupportedProviders(t *testing.T) {
 	_, err := Default(providerConnection("svn", ""), "tok")
 	if !errors.Is(err, ErrUnsupportedProvider) {
