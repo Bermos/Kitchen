@@ -401,8 +401,16 @@ var publishedShapes = map[string]struct {
 	"exception": {"One break-glass exception: who asked, who approved, the rules it waives, " +
 		"until when, and the promotions that relied on it. Phase is Active, Expired or Resolved", exception{}},
 	"exceptionList": {"A list of exceptions, soonest to expire first", list[exception]{}},
-	"release":       {"An immutable snapshot of an image and its configuration", release{}},
-	"releaseList":   {"A list of releases, newest first", list[release]{}},
+	"identitySurvey": {"Who holds what on the platform: one row per grant, with when that " +
+		"identity was last recorded doing something. `orphaned` is dormant AND unknown to the " +
+		"identity provider, never either alone; `directoryConsulted` false means nothing is " +
+		"claimed about ownership at all", identitySurvey{}},
+	"accessReview": {"One access recertification cycle: the grants it froze, what was decided " +
+		"about each and by whom, and — once closed — the retained artefact. Phase is Open, " +
+		"Overdue or Closed, judged against the clock", accessReview{}},
+	"accessReviewList": {"A list of recertification cycles, newest first", list[accessReview]{}},
+	"release":          {"An immutable snapshot of an image and its configuration", release{}},
+	"releaseList":      {"A list of releases, newest first", list[release]{}},
 	"promotion": {"One request to move a release into an environment, with what the policy " +
 		"decided about it. Phase is Pending, Evaluating, Allowed, AllowedWithException, " +
 		"Blocked, Applied or Failed; a Blocked one names the unmet rules by id", promotion{}},

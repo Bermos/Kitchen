@@ -74,6 +74,19 @@ func (d *stubDirectory) AccountByEmail(_ context.Context, email string) (*idp.Ac
 	return &account, nil
 }
 
+// Accounts is the whole directory, which is what the access survey asks so it
+// can say whether a grant belongs to anybody at all.
+func (d *stubDirectory) Accounts(_ context.Context) ([]idp.Account, error) {
+	if d.err != nil {
+		return nil, d.err
+	}
+	accounts := make([]idp.Account, 0, len(d.accounts))
+	for _, account := range d.accounts {
+		accounts = append(accounts, account)
+	}
+	return accounts, nil
+}
+
 // withDirectory points the harness at a directory holding one account: anna,
 // who is who every test here adds.
 func (h *harness) withDirectory() *stubDirectory {

@@ -887,6 +887,113 @@ func (c *client) dependents(ctx context.Context, query url.Values) (*dependents,
 		http.MethodGet, "/compliance/dependents", query, nil, answer)
 }
 
+// identity is one account's one role in one place, as the access survey
+// reports it: what is held where, when that identity was last recorded doing
+// something, and whether anything is still behind it.
+type identity struct {
+	Subject string `json:"subject"`
+	Email   string `json:"email,omitempty"`
+	Grant   string `json:"grant"`
+	Role    string `json:"role"`
+
+	LastActive *time.Time `json:"lastActive,omitempty"`
+	Inactive   bool       `json:"inactive,omitempty"`
+	Unknown    bool       `json:"unknown,omitempty"`
+	Orphaned   bool       `json:"orphaned,omitempty"`
+}
+
+// name is the account as a person reads it: the address where there is one,
+// the opaque subject otherwise.
+func (i identity) name() string {
+	if i.Email != "" {
+		return i.Email
+	}
+	return i.Subject
+}
+
+// identitySurvey is who holds what on the platform, whole. DirectoryConsulted
+// is load-bearing: false means nothing is claimed about whether a grant
+// belongs to anybody, because the identity provider could not be asked.
+type identitySurvey struct {
+	GeneratedAt        time.Time  `json:"generatedAt"`
+	InactivityDays     int32      `json:"inactivityDays"`
+	DirectoryConsulted bool       `json:"directoryConsulted"`
+	Identities         []identity `json:"identities"`
+	Orphans            int        `json:"orphans"`
+	Message            string     `json:"message,omitempty"`
+}
+
+// accessReviewEntry is one grant inside a recertification cycle, with what
+// was decided about it and what became of that decision.
+type accessReviewEntry struct {
+	Subject string `json:"subject"`
+	Email   string `json:"email,omitempty"`
+	Grant   string `json:"grant"`
+	Role    string `json:"role"`
+
+	Orphaned bool `json:"orphaned,omitempty"`
+
+	Decision   string `json:"decision,omitempty"`
+	DecidedBy  string `json:"decidedBy,omitempty"`
+	Note       string `json:"note,omitempty"`
+	SelfReview bool   `json:"selfReview,omitempty"`
+
+	Applied      bool   `json:"applied,omitempty"`
+	ApplyMessage string `json:"applyMessage,omitempty"`
+}
+
+// accessReviewArtifact points at the signed record a closed cycle left in the
+// store. Message is what to read when a cycle closed without one.
+type accessReviewArtifact struct {
+	RecordID string     `json:"recordID,omitempty"`
+	Subject  string     `json:"subject,omitempty"`
+	SignedAt *time.Time `json:"signedAt,omitempty"`
+	Message  string     `json:"message,omitempty"`
+}
+
+// accessReview is one recertification cycle as the register serves it. Phase
+// is judged against the clock server-side, so Overdue here means overdue now.
+type accessReview struct {
+	Name      string   `json:"name"`
+	Scope     string   `json:"scope"`
+	Project   string   `json:"project,omitempty"`
+	Reviewers []string `json:"reviewers"`
+	OpenedBy  string   `json:"openedBy"`
+	Reason    string   `json:"reason,omitempty"`
+
+	DueBy    time.Time  `json:"dueBy"`
+	ClosedBy string     `json:"closedBy,omitempty"`
+	ClosedAt *time.Time `json:"closedAt,omitempty"`
+
+	Phase        string `json:"phase"`
+	Pending      int32  `json:"pending"`
+	Confirmed    int32  `json:"confirmed"`
+	Revoked      int32  `json:"revoked"`
+	SelfReviewed int32  `json:"selfReviewed"`
+	Orphaned     int32  `json:"orphaned"`
+
+	Entries  []accessReviewEntry   `json:"entries"`
+	Artifact *accessReviewArtifact `json:"artifact,omitempty"`
+}
+
+func (c *client) identities(ctx context.Context) (*identitySurvey, error) {
+	answer := &identitySurvey{}
+	return answer, c.do(ctx, "reading who holds what",
+		http.MethodGet, "/access/identities", nil, nil, answer)
+}
+
+func (c *client) accessReviews(ctx context.Context, query url.Values) ([]accessReview, error) {
+	answer := &list[accessReview]{}
+	err := c.do(ctx, "listing access recertifications", http.MethodGet, "/access/reviews", query, nil, answer)
+	return answer.Items, err
+}
+
+func (c *client) accessReview(ctx context.Context, name string) (*accessReview, error) {
+	answer := &accessReview{}
+	return answer, c.do(ctx, "reading the access recertification "+name,
+		http.MethodGet, "/access/reviews/"+name, nil, nil, answer)
+}
+
 func (c *client) exceptions(ctx context.Context, query url.Values) ([]exception, error) {
 	answer := &list[exception]{}
 	err := c.do(ctx, "listing exceptions", http.MethodGet, "/exceptions", query, nil, answer)
