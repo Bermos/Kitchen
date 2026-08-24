@@ -134,6 +134,7 @@ rules:
 - apiGroups:
   - kitchen.bermos.dev
   resources:
+  - accessreviews
   - builds
   - connections
   - domains
@@ -157,21 +158,7 @@ rules:
 - apiGroups:
   - kitchen.bermos.dev
   resources:
-  - builds/finalizers
-  - connections/finalizers
-  - domains/finalizers
-  - environments/finalizers
-  - kitchens/finalizers
-  - platformupdates/finalizers
-  - projects/finalizers
-  - promotions/finalizers
-  - releases/finalizers
-  - resourceclaims/finalizers
-  verbs:
-  - update
-- apiGroups:
-  - kitchen.bermos.dev
-  resources:
+  - accessreviews/status
   - builds/status
   - connections/status
   - domains/status
@@ -186,6 +173,21 @@ rules:
   verbs:
   - get
   - patch
+  - update
+- apiGroups:
+  - kitchen.bermos.dev
+  resources:
+  - builds/finalizers
+  - connections/finalizers
+  - domains/finalizers
+  - environments/finalizers
+  - kitchens/finalizers
+  - platformupdates/finalizers
+  - projects/finalizers
+  - promotions/finalizers
+  - releases/finalizers
+  - resourceclaims/finalizers
+  verbs:
   - update
 - apiGroups:
   - snapshot.storage.k8s.io

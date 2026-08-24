@@ -20,6 +20,11 @@ package controller
 // decided the transition itself. They are the reconciler's own names, so that
 // "who did this" answers with something an operator can go and read.
 const (
+	// actorAccessReviewController attributes what the recertification
+	// machinery does on its own: opening a cycle on the cadence, stamping
+	// one overdue, applying the revocations a closed cycle decided, and
+	// reporting a write to a Kitchen object that no reconcile made.
+	actorAccessReviewController   = "accessreview"
 	actorBuildController          = "build"
 	actorConnectionController     = "connection"
 	actorDomainController         = "domain"

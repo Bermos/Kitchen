@@ -415,6 +415,14 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "Exception")
 		os.Exit(1)
 	}
+	if err = (&controller.AccessReviewReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+		Audit:  auditor,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "AccessReview")
+		os.Exit(1)
+	}
 	if err = (&controller.DomainReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
@@ -534,6 +542,19 @@ func main() {
 		OperatorImage: qualityGateImage,
 	}); err != nil {
 		setupLog.Error(err, "unable to add the rescan sweep to manager")
+		os.Exit(1)
+	}
+
+	// The access sweep: the recertification cadence, the orphaned-identity
+	// survey, and the watch for writes to Kitchen's own objects that no
+	// reconcile made. Leader-elected, and it idles until the Kitchen object
+	// turns it on, so it is added unconditionally like the collectors above.
+	if err := mgr.Add(&controller.AccessSweeper{
+		Client:    mgr.GetClient(),
+		Audit:     auditor,
+		Namespace: operatorNamespace,
+	}); err != nil {
+		setupLog.Error(err, "unable to add the access sweep to manager")
 		os.Exit(1)
 	}
 

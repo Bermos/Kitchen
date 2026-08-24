@@ -113,6 +113,12 @@ type Kind struct {
 // spot (expiry lives in spec), but a *resolved*, still-unexpired one comes
 // back Active until somebody resolves it again. The resolution itself is in
 // the audit log, which is the authoritative history either way.
+//
+// AccessReview is carried for the same reason and with the same caveat: a
+// recertification cycle is a record. Note what a restore does *not* need to
+// carry — the artefact each closed cycle produced is a signed envelope in the
+// store's signed_records table, kept there precisely so that the evidence does
+// not depend on the object surviving.
 var Kinds = []Kind{
 	{Kind: "Kitchen", Plural: "kitchens", ClusterScoped: true},
 	{Kind: "Connection", Plural: "connections"},
@@ -123,6 +129,7 @@ var Kinds = []Kind{
 	{Kind: "Domain", Plural: "domains"},
 	{Kind: "ResourceClaim", Plural: "resourceclaims"},
 	{Kind: "Exception", Plural: "exceptions"},
+	{Kind: "AccessReview", Plural: "accessreviews"},
 	{Kind: "SavedQuery", Plural: "savedqueries"},
 }
 

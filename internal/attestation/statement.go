@@ -117,6 +117,20 @@ const (
 	// the store's signed_records table rather than in any registry, for the
 	// same reason.
 	PredicateDataClass = "https://kitchen.bermos.dev/attestation/data-class/v1"
+
+	// PredicateAccessReview is a closed recertification cycle: what the
+	// platform's access looked like at the instant the cycle opened, who
+	// reviewed it, and what they decided about each grant. Its subject is
+	// the cycle's identity digest — sha256 over the AccessReview's
+	// namespace, name and UID — for ResourceClaim's reason: a review has no
+	// image repository, so there is no content digest to attach to and the
+	// envelope is kept whole in the store's signed_records table.
+	//
+	// It is the artefact the whole cycle exists to produce. The object is
+	// the workflow and can be deleted; this is the evidence and is kept
+	// under no TTL, verifiable with `cosign verify-blob` against the
+	// platform's published public key and with Kitchen out of the loop.
+	PredicateAccessReview = "https://kitchen.bermos.dev/attestation/access-review/v1"
 )
 
 // PredicateOpenVEX is an OpenVEX document: somebody's assertion that a
