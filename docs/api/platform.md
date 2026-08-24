@@ -382,6 +382,85 @@ The counts come from whichever replica answers the request, and the follower
 runs on the leader alone: a replica that never followed reports no loss because
 it did no following.
 
+### Retention
+
+`GET /platform/retention` is how long each class of what the platform keeps is
+kept, and — the half that matters — how far back each one actually goes:
+
+```json
+{"classes": [
+   {"class": "containerLogs", "label": "Container logs",
+    "description": "stdout and stderr from application, platform and cluster containers",
+    "days": 14, "source": "retention", "enforced": true,
+    "rows": 41203311, "oldest": "2026-08-10T04:11:02Z", "expired": 0},
+   {"class": "buildLogs", "label": "Build logs", "description": "…",
+    "days": 180, "source": "retention", "enforced": true,
+    "rows": 88214, "oldest": "2026-02-26T12:00:41Z"},
+   {"class": "audit", "label": "Audit log", "description": "…",
+    "days": 365, "source": "compliance.audit.retentionDays", "enforced": true,
+    "rows": 90112, "oldest": "2025-08-24T09:00:00Z"}],
+ "auditFloorDays": 90, "auditFloorOverridden": false,
+ "lastSweep": "2026-08-24T03:00:00Z"}
+```
+
+`source` is the field the number came from: `retention` when somebody set that
+class, and the name of the knob it inherits otherwise
+(`observability.clickhouse.retentionDays` for a telemetry class,
+`compliance.audit.retentionDays` for the audit one). It is served because an
+operator reading "30" wants to know whether anybody chose it.
+
+`oldest` is the claim retention actually makes — nothing of this class is older
+than this — and it is a *measurement*, taken by the daily retention sweep,
+rather than a restatement of `days`. `expired` counts rows still on the wrong
+side of the horizon at that moment; a small number is normal (a day-partitioned
+table keeps at most the partition the horizon falls inside) and a number that
+stays large is the store holding data past its date, which is a thing this API
+reports rather than hides. Both are absent until a sweep has run, and
+`enforced` is false while they are: what the platform has *decided* to keep is
+answered from the moment it is configured, and what it is *doing* is answered
+once something has looked.
+
+`auditFloorDays` is served rather than assumed by the client, so the dashboard
+is not a second copy of the number.
+
+`PATCH /platform/retention` changes any subset of the classes. Every field is
+optional and an absent one is left alone, so a form can send only what moved:
+
+```json
+{"buildLogs": 180, "flows": 7}
+```
+
+Zero is refused rather than interpreted: there is no value meaning "keep
+nothing", and the way a class goes back to inheriting is `kubectl`-free but not
+this route's — it is clearing the field on the singleton.
+
+**The audit floor is the one refusal worth reading.** An audit retention under
+90 days without an override is answered `400` with the field, the number, the
+floor and the way past it, by this route *and* by a CEL rule on the CRD — so a
+`kubectl apply` behind the platform's back is refused too:
+
+```json
+{"audit": 60,
+ "auditFloorOverride": {"reason": "demonstration cluster; holds no production data at all",
+                        "approvedBy": "cto@example.com"}}
+```
+
+The override is read back in full by `GET`. That is deliberate and is not the
+API reading a credential back: the whole value of the field is that somebody
+outside the platform can see who signed off on keeping less evidence. A write
+that uses it is recorded in the audit log under kind `Retention` with
+`details.change` `audit-floor-override`, carrying the number, the floor, the
+reason and the approver — which is what "the override is itself an audit
+record" means. Removing it is `{"clearAuditFloorOverride": true}`, and clearing
+one while the retention is still under the floor is refused for the same reason
+setting the retention low without one is.
+
+The daily sweep's own record is the other half of this surface, and it is in
+the audit log rather than here: one record a pass, kind `Retention`,
+`details.change` `retention-sweep`, carrying every class with the horizon it
+was measured against and what the pass removed. Read it with
+`GET /audit?kind=Retention`.
+
 ### Backup
 
 `GET /platform/backup` is what an archive taken now would hold, before anybody
