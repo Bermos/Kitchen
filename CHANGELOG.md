@@ -1,5 +1,87 @@
 # Changelog
 
+## [0.14.0](https://github.com/Bermos/Kitchen/compare/v0.13.0...v0.14.0) (2026-08-24)
+
+
+### Features
+
+* **api:** answer what is deployed and no longer compliant ([b21bdba](https://github.com/Bermos/Kitchen/commit/b21bdba4f32bdda5dd41e89e6793826e1c657301))
+* **api:** answer what supports a critical function, and what breaks without it ([a966752](https://github.com/Bermos/Kitchen/commit/a966752fcde1878d755f0e9c0872ff7e42d7a4cf))
+* **api:** classify privileged transitions in the audit log ([73befde](https://github.com/Bermos/Kitchen/commit/73befde20d34d829248030f1cc5fe1c2c79b82c7)), closes [#139](https://github.com/Bermos/Kitchen/issues/139)
+* **api:** export a project's audit pack ([a9a6cca](https://github.com/Bermos/Kitchen/commit/a9a6cca113140fc1fe8938c041ec085479b27fac))
+* **api:** ingest OpenVEX documents as signed evidence on the artifact ([2b8a5c7](https://github.com/Bermos/Kitchen/commit/2b8a5c7d8f3d6e982961bcae0e61b1b0d034f2c6)), closes [#135](https://github.com/Bermos/Kitchen/issues/135)
+* **api:** read and change the platform's retention model ([b55b671](https://github.com/Bermos/Kitchen/commit/b55b6711b9e0bdd94e761c5d70f521dea8cf89a8))
+* **api:** serve a platform update's helm output ([441a3f3](https://github.com/Bermos/Kitchen/commit/441a3f38656df0ace5c92c53fa7386c16dc9e1af))
+* **api:** the access recertification and identity routes, and kitchen access ([d29e9a0](https://github.com/Bermos/Kitchen/commit/d29e9a091fcf2abebc94ae4b10dfed70aa183751)), closes [#139](https://github.com/Bermos/Kitchen/issues/139)
+* **cli:** read and submit exploitability assertions from a terminal ([65bc799](https://github.com/Bermos/Kitchen/commit/65bc799997a8fc121cceb0715d105ac7d8598cc6)), closes [#135](https://github.com/Bermos/Kitchen/issues/135)
+* **cli:** read the criticality map and the reverse query from a terminal ([055fb99](https://github.com/Bermos/Kitchen/commit/055fb99554123e391f7204aa21b8d069af724883))
+* **cli:** read the platform's retention model from a terminal ([69700cd](https://github.com/Bermos/Kitchen/commit/69700cd2f58b5a0d2c084ee2e94b4453bffe5c0d))
+* **cli:** take a project's audit pack from a terminal ([7f589df](https://github.com/Bermos/Kitchen/commit/7f589df88acdeca5bfca326254d550618ee71dcb))
+* **operator:** access recertification cycles, orphan survey and out-of-band detection ([534abdc](https://github.com/Bermos/Kitchen/commit/534abdc4eb3b93c77d0fed2260c01165802ff65e)), closes [#139](https://github.com/Bermos/Kitchen/issues/139)
+* **operator:** carry criticality and disruption tolerance on projects and environments ([8ae1010](https://github.com/Bermos/Kitchen/commit/8ae1010696f6ed743bf510f807b377428f7f17dd))
+* **operator:** enforce retention per class in the telemetry store ([b2a79d8](https://github.com/Bermos/Kitchen/commit/b2a79d85e7fbb1e51a3312b9ec5f1975c47e32e6))
+* **operator:** make a declared recovery objective the threshold it fires against ([1197be7](https://github.com/Bermos/Kitchen/commit/1197be7e97e3fbe22c5cbdda2d946373f7ac1104))
+* **operator:** measure node clock drift and report it as a component ([10214ff](https://github.com/Bermos/Kitchen/commit/10214ff074669e0dd024a3491380f8f94e4f4537))
+* **operator:** one retention model for every class the platform keeps ([d021500](https://github.com/Bermos/Kitchen/commit/d02150014b8815f775a2b7dc0e782b9b06bd1e43))
+* **operator:** re-evaluate every deployed release on a schedule ([0594ece](https://github.com/Bermos/Kitchen/commit/0594ecea344bd6d14ccde7a490bbd050f6e26720))
+* **operator:** record what retention expiry removed, once a day ([dece991](https://github.com/Bermos/Kitchen/commit/dece99199f37b8ccb37f7bfa9dcb3724d418c5d9))
+* **operator:** report what a self-update is actually doing ([20a4a8c](https://github.com/Bermos/Kitchen/commit/20a4a8c3c8838f6620336a7da6687cdc7798996f))
+* **policy:** consult ingested OpenVEX statements when judging findings ([a1b0ceb](https://github.com/Bermos/Kitchen/commit/a1b0ceba7dad80e7c25401eb3d12c8a49ecf3af9)), closes [#135](https://github.com/Bermos/Kitchen/issues/135)
+* **policy:** materialize the criticality the input has been reserving ([961e6e3](https://github.com/Bermos/Kitchen/commit/961e6e3fbf233b81a51e0d5868d6506d132ea751))
+* **store:** read the signed records back, filtered and whole ([71ee584](https://github.com/Bermos/Kitchen/commit/71ee584f0cac9838f1133f8ed4a0d00f8fe444c7))
+* **ui:** an auditor presses a button ([5bba46a](https://github.com/Bermos/Kitchen/commit/5bba46a888436a5a177ef2d842335c4b3ee9d179))
+* **ui:** carry the criticality map, the reverse query and the boundary on the screen ([9e6e36e](https://github.com/Bermos/Kitchen/commit/9e6e36e50a339bff7ea86adec5337db8ea7baa05))
+* **ui:** file an exploitability assertion from the build screen ([3580fd9](https://github.com/Bermos/Kitchen/commit/3580fd961ad5677aa14f86a1417c3f0b15c3cdec))
+* **ui:** follow a platform upgrade while it happens ([ee0461c](https://github.com/Bermos/Kitchen/commit/ee0461c1a37e4816adec030a8a56874720d5ad63))
+* **ui:** show every finding beside the assertion that covers it ([0979a9b](https://github.com/Bermos/Kitchen/commit/0979a9bf19687920702d81f3a4019b1b73812a6c)), closes [#135](https://github.com/Bermos/Kitchen/issues/135)
+* **ui:** show what each class is kept for and how far back it goes ([48a4613](https://github.com/Bermos/Kitchen/commit/48a4613ca99bd64178591517fe02a104d564d903))
+* **ui:** the access recertification panel and a privileged-only audit filter ([70949de](https://github.com/Bermos/Kitchen/commit/70949de40f291abf90938a86f97a6274c0258795)), closes [#139](https://github.com/Bermos/Kitchen/issues/139)
+
+
+### Bug fixes
+
+* **api:** answer one row per finding rather than one per rescan ([c78d384](https://github.com/Bermos/Kitchen/commit/c78d384314a7ef2b03bdc6baa6d4e183458fb7c3))
+* **api:** keep a VEX document's submitter, and attest it under its own context ([59d5f04](https://github.com/Bermos/Kitchen/commit/59d5f0428b77c90fbd927e49be8a32f4033b25cc))
+* **api:** make a drift row say what it is actually reporting ([83489c3](https://github.com/Bermos/Kitchen/commit/83489c3b13f8fdefe993f14a81230b5e9520d839))
+* **api:** put the change log and the signed records in the list they belong to ([a10cdc5](https://github.com/Bermos/Kitchen/commit/a10cdc50a89cbf1c0d385718eb160274730bd79a))
+* **api:** retry the snapshot write a reconcile can race, and pin the detection end to end ([94ac02a](https://github.com/Bermos/Kitchen/commit/94ac02a08b4699a212382e233f07cb6ecfed1bc4)), closes [#139](https://github.com/Bermos/Kitchen/issues/139)
+* **operator:** refuse an auto-rollback for a release the grant never let out ([c6f4cb2](https://github.com/Bermos/Kitchen/commit/c6f4cb26adf24abff0c8751075cc13062e7920de))
+* **operator:** stop a stuck pair and a finished job stalling the rescan sweep ([3c0b633](https://github.com/Bermos/Kitchen/commit/3c0b63385db6953403267ea7d90f3af225ffc69f))
+* **policy:** judge an artifact on its newest vulnerability scan alone ([6fde6b7](https://github.com/Bermos/Kitchen/commit/6fde6b7f1235abf2485e445842eb0a710595e11a))
+* **policy:** match vexTrustedAuthors case-insensitively, as the platform's list does ([c13419f](https://github.com/Bermos/Kitchen/commit/c13419fcb023b3568dcd13178b17ca9dd4313a17))
+
+
+### Refactoring
+
+* **api:** lift the build and runtime half of a project patch out of the handler ([827448a](https://github.com/Bermos/Kitchen/commit/827448ad044046edbfd70a32f611dc1f5762db59))
+* **operator:** drop the scan report fields nothing reads ([923beb0](https://github.com/Bermos/Kitchen/commit/923beb0652962fa2f5b370e69f889f293dd6e110))
+* **operator:** lift the promotion bar check into one shared evaluator ([218e017](https://github.com/Bermos/Kitchen/commit/218e017f5ecfbc9ca3109badcd461ec014e14334))
+* **operator:** narrow the lease informer to the node-lease namespace ([84f8945](https://github.com/Bermos/Kitchen/commit/84f8945dd879a4367a5abf73f430824602781f70))
+* **operator:** put the retention sweep's actor with the other actors ([06c079b](https://github.com/Bermos/Kitchen/commit/06c079b531f9ec4bd44e193aa5ce268034e5ea31))
+* **operator:** read the retention model where the old knob was read ([b4bccd5](https://github.com/Bermos/Kitchen/commit/b4bccd5c0007ff53b5143a1af261cab8a95f161f))
+* **ui:** stop the pack's time window shadowing the browser's ([c348595](https://github.com/Bermos/Kitchen/commit/c348595c8daf030ded914a1b76584ca7a53c32be))
+
+
+### Documentation
+
+* **api:** the audit pack, field by field and mapped to the requirement each satisfies ([7fc7204](https://github.com/Bermos/Kitchen/commit/7fc72043b6228b3fce5382e846afcb3343aa5af7))
+* **cli:** say what kitchen drift does ([8bc8d9c](https://github.com/Bermos/Kitchen/commit/8bc8d9ce91beb1ec89f459c7094aad6d35800b37))
+* **cli:** say what kitchen vex does and who may run it ([24963c3](https://github.com/Bermos/Kitchen/commit/24963c352c7ba7f3b60349f84b820eeb99b12f05)), closes [#135](https://github.com/Bermos/Kitchen/issues/135)
+* **compliance:** access, privilege, and the cluster-admin residual risk ([5e5f3dd](https://github.com/Bermos/Kitchen/commit/5e5f3dd2516e96c6080de296140961241df03c0e)), closes [#139](https://github.com/Bermos/Kitchen/issues/139)
+* **compliance:** point the retention comments at the section that exists ([300180e](https://github.com/Bermos/Kitchen/commit/300180ec8f85da305b39ff031d34071dfbe8eaa6))
+* **compliance:** the requirement mapping, phase six of [#144](https://github.com/Bermos/Kitchen/issues/144) ([#185](https://github.com/Bermos/Kitchen/issues/185)) ([3e75a95](https://github.com/Bermos/Kitchen/commit/3e75a95508e9f27a4fd03b94bdf6d547a366ea91))
+* **compliance:** write down retention, immutability and the clock ([119344b](https://github.com/Bermos/Kitchen/commit/119344bf0f7ee98c62474cd95402e678917a6cac))
+* **compliance:** write down the audit pack, and close phase 5 ([e63bbb5](https://github.com/Bermos/Kitchen/commit/e63bbb57af25231a76b23a5b6c79d87ebcec5836))
+* **compliance:** write down the continuous re-evaluation pass ([ff3e65f](https://github.com/Bermos/Kitchen/commit/ff3e65f626f2023bf16e05ff3753e464d3e43d18))
+* **compliance:** write down what a vulnerability finding means here ([28583b7](https://github.com/Bermos/Kitchen/commit/28583b7ec802df0908b48f4bb141031dea24cb86)), closes [#135](https://github.com/Bermos/Kitchen/issues/135)
+* **compliance:** write down what Kitchen may and may not say about criticality ([f7c4cfc](https://github.com/Bermos/Kitchen/commit/f7c4cfc8a5fdf3ff13d0430fc7103b316fb4e69d))
+* **crds:** show the retention block and the clock-sync measurement ([563b89c](https://github.com/Bermos/Kitchen/commit/563b89ccdfcda29434a55ceafc780c4ee838ee0e))
+* **observability:** say how retention became a model, and how the clock is checked ([3d350c6](https://github.com/Bermos/Kitchen/commit/3d350c6f6062e099a846483728f60ea25f4b0a7b))
+* **operator:** say why the scan is attached before it is judged ([bebecca](https://github.com/Bermos/Kitchen/commit/bebecca958c58c753c81d6761413d15a737356e1))
+* **policy:** name where ingested VEX statements will attach ([b52e67f](https://github.com/Bermos/Kitchen/commit/b52e67fe42233a0b2019dd62af883f93c3f9db77))
+* **policy:** say what an operator upgrade does to a pinned built-in bundle ([24b1344](https://github.com/Bermos/Kitchen/commit/24b1344393b21748afff679d19d88faf9d9a5ecd)), closes [#135](https://github.com/Bermos/Kitchen/issues/135)
+* warn where an operator looks that an upgrade moves the built-in bundle's digest ([cb2911e](https://github.com/Bermos/Kitchen/commit/cb2911e8c5ba7ed52d4f72f166ef688b12a11823))
+
 ## [0.13.0](https://github.com/Bermos/Kitchen/compare/v0.12.0...v0.13.0) (2026-08-24)
 
 
