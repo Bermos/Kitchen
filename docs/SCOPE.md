@@ -226,16 +226,27 @@ have to rediscover it:
   a docs site and is not one, because the interesting half is that Kitchen already knows
   which commit each environment is running. Collect `docs/**` at build time (the builder
   already reads the repository at the commit through the project's git Connection to
-  detect its framework), attach the result to the Release, and three things fall out with
-  no versioning model of their own: the docs an environment shows are the docs of the
+  detect its framework), attach the result to what that build produced, and three things
+  fall out with no versioning model of their own: the docs an environment shows are the docs of the
   code it is running, switching environments is switching which release you are reading,
   and a rollback rolls the documentation back with the deploy because it never moved
   separately in the first place. Serving them is the platform's job rather than the
   application's, for the reason that matters: the moment anyone needs the runbook is the
   moment the app is down.
 
-  Then the sweet part — a runbook linked from the page that tells you when to run it,
-  started from there by people allowed to start it, with an audit trail. Notes:
+  **The docs half is scoped as issue #187**, and scoping it settled three things. The
+  renderer is an image — so zensical, Hugo or anything else is the project's choice and
+  never the platform's, and what the platform owes is a pinned default so that plain
+  markdown with no configuration still renders. The rendered site is an OCI referrer on
+  the build's own artifact, which is where `internal/attestation` already puts megabytes
+  that came out of a pod, so the feature adds no storage, no PVC and no dependency on
+  object storage (#81), and is backed up exactly as much as the image it belongs to. And
+  it is served on its own origin behind the preview gate rather than from the dashboard:
+  a rendered site is project-authored HTML and script, and same-origin hosting would hand
+  any doc page the reader's session.
+
+  Then the sweet part, still parked — a runbook linked from the page that tells you when
+  to run it, started from there by people allowed to start it, with an audit trail:
 
   - **The language question dissolves.** A runbook is an entrypoint into an image plus
     typed parameters, not an interpreter the platform embeds — so Go, Node, a shell
