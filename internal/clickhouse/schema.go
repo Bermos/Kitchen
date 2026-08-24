@@ -313,7 +313,7 @@ func (c *Client) EnsureTelemetrySchema(ctx context.Context, model retention.Mode
 // dropped at the *longer* of the two dates and the shorter class would be a
 // promise the store was not keeping. Off, expiry is a row-level delete during
 // merge, which costs merge time and keeps the promise. See COMPLIANCE.md
-// §14.2.
+// §12.2.
 func (c *Client) EnsureLogsSchema(ctx context.Context, containerDays, buildDays int32) error {
 	rules := logRetentionRules(containerDays, buildDays)
 	return c.ensureTableRules(ctx, LogsTable,
