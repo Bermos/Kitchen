@@ -1396,7 +1396,7 @@ kubectl delete namespace kitchen-system
 | `kitchen.compliance.access.inactivityDays` | `90` | How long without a recorded action makes an identity dormant. Dormant **and** unknown to the identity provider is orphaned. The audit log records writes, so a read-only account looks dormant and is not. |
 | `kitchen.compliance.access.detectOutOfBandWrites` | `true` | Read the field manager the API server recorded on Kitchen's objects and report writes the platform did not make. Detection, never prevention — anybody with cluster-admin can name their field manager anything, and docs/COMPLIANCE.md says so rather than claiming otherwise. |
 | `kitchen.compliance.access.expectedManagers` | `[]` | Field-manager names whose writes are expected, beyond the platform's own and Helm's — a GitOps controller, a mutating webhook, a restore tool. Matched exactly, no patterns. |
-| `kitchen.observability.clickhouse.retentionDays` | `30` | Telemetry retention. |
+| `kitchen.observability.clickhouse.retentionDays` | `30` | The retention every telemetry class inherits when `kitchen.retention` does not set it. |
 | `kitchen.observability.hubble.relayAddress` | `""` | host:port of Hubble Relay's gRPC endpoint (e.g. `hubble-relay.kube-system.svc.cluster.local:80`). When set, the operator ships flow observations into the telemetry store for the dashboard's traffic view. Empty disables flow collection. |
 | `kitchen.observability.metrics.enabled` | `true` | The operator's half of the environment history: restarts, OOM kills, configured limits and replica counts, sampled off the API server and exported to the agent over OTLP. CPU and memory come from the agent's kubelet scrape instead. |
 | `kitchen.observability.metrics.intervalSeconds` | `30` | Seconds between samples. |
@@ -1404,6 +1404,19 @@ kubectl delete namespace kitchen-system
 | `kitchen.observability.traces.port` | `4318` | Port applications export to: the agent's OTLP/HTTP receiver and its Service — OTLP/HTTP's registered one. |
 | `kitchen.observability.traces.endpoint` | `""` | What applications are told to export to. Empty means the agent's own in-cluster Service. |
 | `kitchen.observability.traces.service.annotations` | `{}` | |
+| `kitchen.observability.clockSync.enabled` | `true` | Measure how far the cluster's clocks are from the operator's own, and report drift as an unhealthy component. Every correlation in an incident report is timestamps from several machines, so clocks that disagree make the order wrong silently. |
+| `kitchen.observability.clockSync.maxDriftSeconds` | `5` | Seconds a node's clock may be from the operator's before the check reports it. Chosen against the use rather than against NTP's accuracy: five seconds is roughly where "these happened in this order" stops being safe to say across machines. |
+| `kitchen.retention.containerLogs` | `~` | Days to retain application, platform and cluster container logs. Empty inherits `kitchen.observability.clickhouse.retentionDays`, as every entry below does. |
+| `kitchen.retention.buildLogs` | `~` | Days to retain build output. Its own class because a build log is read months later beside an artifact's provenance. It shares a table with the container logs, so setting the two apart costs that table its cheap part-drop expiry — see docs/COMPLIANCE.md §14.2. |
+| `kitchen.retention.flows` | `~` | Days to retain observed network flows. |
+| `kitchen.retention.metrics` | `~` | Days to retain metric series and their rollups. |
+| `kitchen.retention.traces` | `~` | Days to retain spans. |
+| `kitchen.retention.requests` | `~` | Days to retain HTTP request telemetry. Raw rows live a week or this window, whichever is shorter, and the hourly rollup twelve of these windows; those ratios are not configurable. |
+| `kitchen.retention.clusterEvents` | `~` | Days to retain the cluster's Warning-event history, of which this is the only copy — the API server expires the originals after about an hour. |
+| `kitchen.retention.activity` | `~` | Days to retain the dashboard's activity feed. Prose rather than evidence, so a short window costs only convenience. |
+| `kitchen.retention.audit` | `~` | Days to retain audit records and the policy decisions they gate. Empty inherits `kitchen.compliance.audit.retentionDays`. The floor is 90 and the only way under it is the override below. |
+| `kitchen.retention.auditFloorOverride.reason` | `""` | Why this installation keeps audit records for less than the 90-day floor. At least 20 characters — it is the answer somebody gets when they ask why the log does not go back far enough. Setting it is itself an audit record. |
+| `kitchen.retention.auditFloorOverride.approvedBy` | `""` | Who decided it, as a name or an address. Recorded as written; the platform does not resolve it. |
 | `clickhouse.enabled` | `true` | Run a single-node ClickHouse in the release. |
 | `clickhouse.image.repository` / `.tag` | `clickhouse/clickhouse-server` / `26.3.17.110-alpine` | Current LTS line. |
 | `clickhouse.auth.database` / `.username` | `kitchen` / `kitchen` | Created on first start. |

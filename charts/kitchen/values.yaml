@@ -584,6 +584,72 @@ kitchen:
       endpoint: ""
       service:
         annotations: {}
+    clockSync:
+      # -- Measure how far the cluster's clocks are from the operator's own,
+      # and report drift beyond the threshold as an unhealthy component. Every
+      # correlation in an incident report is timestamps from several machines,
+      # so clocks that disagree make the *order* wrong silently. Off is for a
+      # cluster whose kubelets renew their leases so slowly that the
+      # measurement says nothing useful.
+      enabled: true
+      # -- Seconds a node's clock may be from the operator's before the check
+      # reports it. Five is chosen against the use, not against NTP's
+      # accuracy: five seconds is roughly where "these happened in this order"
+      # stops being safe to say across machines. A synchronised cluster sits
+      # three orders of magnitude inside it.
+      maxDriftSeconds: 5
+  # How long each class of what the platform keeps is kept, in days. Every
+  # entry is optional and an empty one *inherits*: the telemetry classes from
+  # `kitchen.observability.clickhouse.retentionDays`, and `audit` from
+  # `kitchen.compliance.audit.retentionDays`. That is what keeps an
+  # installation predating this block reading exactly as it did.
+  #
+  # It is all editable afterwards from the dashboard's settings screen and
+  # through `PATCH /api/v1/platform/retention`, so these are a seed rather
+  # than the source of truth — the Kitchen object is created once, on install.
+  retention:
+    # -- Days to retain the stdout and stderr of application, platform and
+    # cluster containers.
+    containerLogs: ~
+    # -- Days to retain build output. Its own class because a build log is
+    # part of the account of how an artifact came to exist and is read months
+    # later beside its provenance, where a container log is operational.
+    # Container logs and build logs share one table, so setting these apart
+    # costs the table its cheap part-drop expiry — see docs/COMPLIANCE.md
+    # §14.2.
+    buildLogs: ~
+    # -- Days to retain observed network flows — the traffic view.
+    flows: ~
+    # -- Days to retain metric series and their rollups.
+    metrics: ~
+    # -- Days to retain spans.
+    traces: ~
+    # -- Days to retain HTTP request telemetry. Raw rows live a week or this
+    # window, whichever is shorter, and the hourly rollup twelve of these
+    # windows; those two ratios are not configurable.
+    requests: ~
+    # -- Days to retain the cluster's Warning-event history. The API server
+    # expires the originals after about an hour, so this is the only copy.
+    clusterEvents: ~
+    # -- Days to retain the dashboard's activity feed. Prose for a person
+    # catching up rather than evidence, so a short window costs only
+    # convenience.
+    activity: ~
+    # -- Days to retain audit records and the policy decisions they gate. The
+    # floor is 90 and the only way under it is `auditFloorOverride` below.
+    audit: ~
+    # The written decision to keep audit records for less than the 90-day
+    # floor. Both fields are required together, and setting them is itself an
+    # audit record — an override nobody can see is not an override, it is a
+    # setting.
+    auditFloorOverride:
+      # -- Why this installation keeps less than the floor. It is the answer
+      # somebody gets when they ask why the log does not go back far enough,
+      # so it needs to be one — at least 20 characters.
+      reason: ""
+      # -- Who decided it, as a name or an address. Recorded as written: an
+      # override may well be approved by somebody with no account here.
+      approvedBy: ""
 
 # The operator's REST API: what the Kitchen UI, the CLI and CI talk to. Every
 # endpoint sits behind the platform's identity provider, so the API is only

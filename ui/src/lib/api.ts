@@ -88,7 +88,12 @@ export interface Project {
 
 /** The classification vocabulary, in ascending sensitivity — the order the
  * platform compares classes in. */
-export const DATA_CLASSES = ["public", "internal", "confidential", "strictlyConfidential"] as const;
+export const DATA_CLASSES = [
+  "public",
+  "internal",
+  "confidential",
+  "strictlyConfidential",
+] as const;
 
 /** One rung of a project's promotion ladder. */
 export interface PromotionStage {
@@ -521,7 +526,12 @@ export interface DriftItem {
   environment: string;
   release: string;
   artifact?: string;
-  status: "compliant" | "waived" | "newly-failing" | "waived-at-promotion" | "not-evaluated";
+  status:
+    | "compliant"
+    | "waived"
+    | "newly-failing"
+    | "waived-at-promotion"
+    | "not-evaluated";
   verdict?: string;
   scannedAt?: string;
   /** The vulnerability database the finding was produced against. An
@@ -736,7 +746,11 @@ export interface Evidence {
     predicateType: string;
     predicate: unknown;
   };
-  envelope: { payloadType: string; payload: string; signatures: { keyid?: string; sig: string }[] };
+  envelope: {
+    payloadType: string;
+    payload: string;
+    signatures: { keyid?: string; sig: string }[];
+  };
   verified: boolean;
   keyIDs?: string[];
   digest: string;
@@ -913,10 +927,20 @@ export interface Workload {
   /** Empty when nothing has been materialized yet; `message` says why. */
   deployment?: string;
   image?: string;
-  replicas: { desired: number; ready: number; available: number; updated: number };
+  replicas: {
+    desired: number;
+    ready: number;
+    available: number;
+    updated: number;
+  };
   restarts: number;
   startedAt?: string;
-  resources?: { cpuRequest?: string; cpuLimit?: string; memoryRequest?: string; memoryLimit?: string };
+  resources?: {
+    cpuRequest?: string;
+    cpuLimit?: string;
+    memoryRequest?: string;
+    memoryLimit?: string;
+  };
   pods?: WorkloadPod[];
   message?: string;
 }
@@ -958,7 +982,12 @@ export interface ComponentStatus {
  * `tunnel === undefined` means "you are not allowed to know" and
  * `tunnel.enabled === false` means "no tunnel is configured". */
 export interface PlatformStatus {
-  cluster: { name?: string; nodes?: number; readyNodes?: number; message?: string };
+  cluster: {
+    name?: string;
+    nodes?: number;
+    readyNodes?: number;
+    message?: string;
+  };
   tunnel?: { enabled: boolean; connected: boolean; message?: string };
   builds: {
     running: number;
@@ -969,7 +998,12 @@ export interface PlatformStatus {
     /** The queued builds themselves, longest wait first — narrowed to the
      * caller's own projects, while the counts above are the whole gate's. An
      * operator holds every project, so theirs is the whole queue. */
-    waiting?: { name: string; project: string; queuedAt: string; waitSeconds: number }[];
+    waiting?: {
+      name: string;
+      project: string;
+      queuedAt: string;
+      waitSeconds: number;
+    }[];
   };
   gateway?: { address?: string; programmed: boolean; message?: string };
   components?: ComponentStatus[];
@@ -2199,6 +2233,60 @@ export interface PlatformStorage {
   usageMessage?: string;
 }
 
+/** One class of what the platform keeps: the rule in force, where the number
+ * came from, and what the last retention sweep measured. `oldest` is the claim
+ * retention actually makes — nothing of this class is older than this. */
+export interface RetentionClass {
+  class: string;
+  label: string;
+  description: string;
+  days: number;
+  /** `retention` when somebody set this class, otherwise the legacy field it
+   * inherits from. */
+  source: string;
+  enforced: boolean;
+  rows?: number;
+  oldest?: string;
+  expired?: number;
+  removed?: number;
+  message?: string;
+}
+
+/** The written decision behind an audit retention under the documented floor.
+ * It is not a credential and is read back whole: the whole value of the field
+ * is that somebody can see who signed off on keeping less evidence. */
+export interface RetentionOverride {
+  reason: string;
+  approvedBy: string;
+}
+
+export interface PlatformRetention {
+  classes: RetentionClass[];
+  /** The documented minimum for the audit class, served rather than hard-coded
+   * here — the API is the source of that number. */
+  auditFloorDays: number;
+  auditFloorOverridden: boolean;
+  auditFloorOverride?: RetentionOverride;
+  lastSweep?: string;
+  message?: string;
+}
+
+/** A retention change. Every field is optional: an absent class is left alone,
+ * which is what lets this form send only what moved. */
+export interface PlatformRetentionPatch {
+  containerLogs?: number;
+  buildLogs?: number;
+  flows?: number;
+  metrics?: number;
+  traces?: number;
+  requests?: number;
+  clusterEvents?: number;
+  activity?: number;
+  audit?: number;
+  auditFloorOverride?: RetentionOverride;
+  clearAuditFloorOverride?: boolean;
+}
+
 export interface EventFacetValue {
   value: string;
   count: number;
@@ -2281,7 +2369,9 @@ export class APIError extends Error {
  * A 401 that survives the retry is a session that is over, and the caller
  * routes back to the login.
  */
-async function authorized(send: (bearer: string) => Promise<Response>): Promise<Response> {
+async function authorized(
+  send: (bearer: string) => Promise<Response>,
+): Promise<Response> {
   const bearer = await token();
   if (!bearer) {
     void signOut();
@@ -2337,7 +2427,11 @@ export interface Backup {
   filename: string;
 }
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+async function request<T>(
+  method: string,
+  path: string,
+  body?: unknown,
+): Promise<T> {
   const config = await loadConfig();
   const base = config.apiURL === window.location.origin ? "" : config.apiURL;
   const res = await authorized((bearer) =>
@@ -2376,7 +2470,10 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
  * and this is the request the audit log records as "somebody took a copy of
  * everything".
  */
-export async function downloadBackup(): Promise<{ blob: Blob; filename: string }> {
+export async function downloadBackup(): Promise<{
+  blob: Blob;
+  filename: string;
+}> {
   const config = await loadConfig();
   const base = config.apiURL === window.location.origin ? "" : config.apiURL;
   const res = await authorized((bearer) =>
@@ -2396,13 +2493,19 @@ export async function downloadBackup(): Promise<{ blob: Blob; filename: string }
   }
   const disposition = res.headers.get("content-disposition") ?? "";
   const named = /filename="?([^";]+)"?/.exec(disposition);
-  return { blob: await res.blob(), filename: named?.[1] ?? "kitchen-backup.tar.gz" };
+  return {
+    blob: await res.blob(),
+    filename: named?.[1] ?? "kitchen-backup.tar.gz",
+  };
 }
 
 const list =
   <T>(path: string) =>
   async (query?: Record<string, string>): Promise<T[]> => {
-    const qs = query && Object.keys(query).length ? `?${new URLSearchParams(query)}` : "";
+    const qs =
+      query && Object.keys(query).length
+        ? `?${new URLSearchParams(query)}`
+        : "";
     const body = await request<{ items: T[] }>("GET", `${path}${qs}`);
     return body.items;
   };
@@ -2418,16 +2521,27 @@ const list =
  * the edge's requests — are the same loop over different rows, on the server
  * as much as here.
  */
-async function streamRows<T>(path: string, onRow: (row: T) => void, signal: AbortSignal): Promise<void> {
+async function streamRows<T>(
+  path: string,
+  onRow: (row: T) => void,
+  signal: AbortSignal,
+): Promise<void> {
   const config = await loadConfig();
   const base = config.apiURL === window.location.origin ? "" : config.apiURL;
   const res = await authorized((bearer) =>
     fetch(`${base}/api/v1${path}`, {
-      headers: { authorization: `Bearer ${bearer}`, accept: "text/event-stream" },
+      headers: {
+        authorization: `Bearer ${bearer}`,
+        accept: "text/event-stream",
+      },
       signal,
     }),
   );
-  if (!res.ok || !res.body || !(res.headers.get("content-type") ?? "").includes("text/event-stream")) {
+  if (
+    !res.ok ||
+    !res.body ||
+    !(res.headers.get("content-type") ?? "").includes("text/event-stream")
+  ) {
     throw new APIError(res.status, `streaming unavailable (${res.status})`);
   }
 
@@ -2521,7 +2635,8 @@ export const api = {
   me: () => request<Me>("GET", "/me"),
 
   projects: list<Project>("/projects"),
-  createProject: (project: NewProject) => request<Project>("POST", "/projects", project),
+  createProject: (project: NewProject) =>
+    request<Project>("POST", "/projects", project),
   project: (name: string) => request<Project>("GET", `/projects/${name}`),
   updateProject: (name: string, changes: ProjectSettings) =>
     request<Project>("PATCH", `/projects/${name}`, changes),
@@ -2533,7 +2648,8 @@ export const api = {
   // second read.
   updateProjectEnv: (name: string, env: EnvVarWrite[]) =>
     request<Project>("PATCH", `/projects/${name}/env`, { env }),
-  deleteProject: (name: string) => request<Project>("DELETE", `/projects/${name}`),
+  deleteProject: (name: string) =>
+    request<Project>("DELETE", `/projects/${name}`),
   // A project's people. Reading the list is a viewer's — knowing who else is
   // on a project is part of knowing what the project is — and the three
   // writes are an admin's. They name the member in the body rather than in
@@ -2553,17 +2669,24 @@ export const api = {
   // shown. Listing carries the prefix and never a key value; issuing answers
   // the key **once**, which is the one response in this whole client whose
   // body must not be kept.
-  projectKeys: (project: string) => list<ProjectKey>(`/projects/${project}/keys`)(),
-  createKey: (project: string, key: NewKey) => request<IssuedKey>("POST", `/projects/${project}/keys`, key),
+  projectKeys: (project: string) =>
+    list<ProjectKey>(`/projects/${project}/keys`)(),
+  createKey: (project: string, key: NewKey) =>
+    request<IssuedKey>("POST", `/projects/${project}/keys`, key),
   // Answers 204. Revokes the credential first and takes the grant off after:
   // a grant naming an account that no longer exists is a line to tidy up, and
   // a key that still works is not.
   deleteKey: (project: string, name: string) =>
-    request<void>("DELETE", `/projects/${project}/keys/${encodeURIComponent(name)}`),
+    request<void>(
+      "DELETE",
+      `/projects/${project}/keys/${encodeURIComponent(name)}`,
+    ),
 
   projectBuilds: (name: string) => list<Build>(`/projects/${name}/builds`)(),
-  projectReleases: (name: string) => list<Release>(`/projects/${name}/releases`)(),
-  projectEnvironments: (name: string) => list<Environment>(`/projects/${name}/environments`)(),
+  projectReleases: (name: string) =>
+    list<Release>(`/projects/${name}/releases`)(),
+  projectEnvironments: (name: string) =>
+    list<Environment>(`/projects/${name}/environments`)(),
   rebuild: (project: string, revision?: { sha: string; branch?: string }) =>
     request<Build>("POST", `/projects/${project}/builds`, revision ?? {}),
 
@@ -2571,8 +2694,13 @@ export const api = {
   // nothing else; every other decision is the operator's.
   // `refresh` skips the hour-long cache in front of the chart registry and
   // asks it again, which is what the settings page's re-check does.
-  updates: (refresh = false) => request<PlatformUpdates>("GET", `/updates${refresh ? "?refresh=true" : ""}`),
-  startUpdate: (version: string) => request<PlatformUpdate>("POST", "/updates", { version }),
+  updates: (refresh = false) =>
+    request<PlatformUpdates>(
+      "GET",
+      `/updates${refresh ? "?refresh=true" : ""}`,
+    ),
+  startUpdate: (version: string) =>
+    request<PlatformUpdate>("POST", "/updates", { version }),
   // What helm said while it upgraded the platform — the same LogLine rows and
   // the same bounded-then-followed pair as a build's output, over the
   // self-update job's pod. The job is reaped an hour after it finishes and the
@@ -2580,41 +2708,69 @@ export const api = {
   // the one running now; an update that never started a job answers with an
   // empty page rather than an error.
   updateLogs: (name: string, query: LogQuery = {}) =>
-    request<{ items: LogLine[] }>("GET", `/updates/${name}/logs${logQuery(query)}`).then((b) => b.items),
-  streamUpdateLogs: (name: string, query: LogQuery, onLine: (line: LogLine) => void, signal: AbortSignal) =>
-    streamRows<LogLine>(`/updates/${name}/logs${logQuery(query)}`, onLine, signal),
+    request<{ items: LogLine[] }>(
+      "GET",
+      `/updates/${name}/logs${logQuery(query)}`,
+    ).then((b) => b.items),
+  streamUpdateLogs: (
+    name: string,
+    query: LogQuery,
+    onLine: (line: LogLine) => void,
+    signal: AbortSignal,
+  ) =>
+    streamRows<LogLine>(
+      `/updates/${name}/logs${logQuery(query)}`,
+      onLine,
+      signal,
+    ),
 
   builds: list<Build>("/builds"),
   build: (name: string) => request<Build>("GET", `/builds/${name}`),
-  cancelBuild: (name: string) => request<Build>("POST", `/builds/${name}/cancel`),
+  cancelBuild: (name: string) =>
+    request<Build>("POST", `/builds/${name}/cancel`),
   buildLogs: (name: string, query: LogQuery = {}) =>
-    request<{ items: LogLine[] }>("GET", `/builds/${name}/logs${logQuery(query)}`).then((b) => b.items),
+    request<{ items: LogLine[] }>(
+      "GET",
+      `/builds/${name}/logs${logQuery(query)}`,
+    ).then((b) => b.items),
 
   releases: list<Release>("/releases"),
 
   // Promotions: asking for a release to land on an environment, and reading
   // what became of the asking. The POST answers 201 with the promotion,
   // phase Pending — the policy engine decides from there.
-  projectPromotions: (name: string, query: { environment?: string; release?: string; phase?: string } = {}) => {
+  projectPromotions: (
+    name: string,
+    query: { environment?: string; release?: string; phase?: string } = {},
+  ) => {
     const params = new URLSearchParams();
     if (query.environment) params.set("environment", query.environment);
     if (query.release) params.set("release", query.release);
     if (query.phase) params.set("phase", query.phase);
     const suffix = params.size ? `?${params.toString()}` : "";
-    return request<{ items: Promotion[] }>("GET", `/projects/${name}/promotions${suffix}`).then((b) => b.items);
+    return request<{ items: Promotion[] }>(
+      "GET",
+      `/projects/${name}/promotions${suffix}`,
+    ).then((b) => b.items);
   },
-  promote: (project: string, body: { environment: string; release: string; reason?: string }) =>
-    request<Promotion>("POST", `/projects/${project}/promotions`, body),
+  promote: (
+    project: string,
+    body: { environment: string; release: string; reason?: string },
+  ) => request<Promotion>("POST", `/projects/${project}/promotions`, body),
   promotion: (name: string) => request<Promotion>("GET", `/promotions/${name}`),
 
   environments: list<Environment>("/environments"),
-  environment: (name: string) => request<Environment>("GET", `/environments/${name}`),
+  environment: (name: string) =>
+    request<Environment>("GET", `/environments/${name}`),
   // The answer is the environment after the move — or, when the environment
   // declares requirements, the promotion the move became (202): the policy
   // engine decides, and the promotions list is where the verdict lands.
   moveEnvironment: (name: string, release: string) =>
-    request<Environment | Promotion>("PATCH", `/environments/${name}`, { release }),
-  deleteEnvironment: (name: string) => request<Environment>("DELETE", `/environments/${name}`),
+    request<Environment | Promotion>("PATCH", `/environments/${name}`, {
+      release,
+    }),
+  deleteEnvironment: (name: string) =>
+    request<Environment>("DELETE", `/environments/${name}`),
   // The requirements write is the environment's owners' (or an operator's):
   // the API enforces it in the handler, so `may()` alone cannot decide this
   // control — the screen also checks the owners list against the caller.
@@ -2630,31 +2786,45 @@ export const api = {
       rto?: string;
       rpo?: string;
     },
-  ) => request<Environment>("PATCH", `/environments/${name}/requirements`, body),
+  ) =>
+    request<Environment>("PATCH", `/environments/${name}/requirements`, body),
   environmentEligibility: (name: string, release?: string) =>
     request<EnvironmentEligibility>(
       "GET",
       `/environments/${name}/eligibility${release ? `?release=${encodeURIComponent(release)}` : ""}`,
     ),
-  environmentWorkload: (name: string) => request<Workload>("GET", `/environments/${name}/workload`),
+  environmentWorkload: (name: string) =>
+    request<Workload>("GET", `/environments/${name}/workload`),
   // What the workload endpoint cannot be: the same environment over time.
-  environmentMetrics: (name: string, query: { since?: string; until?: string; points?: number } = {}) => {
+  environmentMetrics: (
+    name: string,
+    query: { since?: string; until?: string; points?: number } = {},
+  ) => {
     const params = new URLSearchParams();
     if (query.since) params.set("since", query.since);
     if (query.until) params.set("until", query.until);
     if (query.points) params.set("points", String(query.points));
-    return request<ResourceSeries>("GET", `/environments/${name}/metrics?${params}`);
+    return request<ResourceSeries>(
+      "GET",
+      `/environments/${name}/metrics?${params}`,
+    );
   },
-  environmentObjects: (name: string) => request<EnvironmentObjects>("GET", `/environments/${name}/objects`),
+  environmentObjects: (name: string) =>
+    request<EnvironmentObjects>("GET", `/environments/${name}/objects`),
   environmentLogs: (name: string, query: LogQuery = {}) =>
-    request<{ items: LogLine[] }>("GET", `/environments/${name}/logs${logQuery(query)}`).then((b) => b.items),
+    request<{ items: LogLine[] }>(
+      "GET",
+      `/environments/${name}/logs${logQuery(query)}`,
+    ).then((b) => b.items),
 
   // The observability surface. An empty selection is a legitimate question —
   // everything in the window — so nothing has to be typed to ask it.
   logs: (selection: LogSelection, limit?: number) => {
     const params = selectionParams(selection);
     if (limit) params.set("limit", String(limit));
-    return request<{ items: LogLine[] }>("GET", `/logs?${params}`).then((b) => b.items);
+    return request<{ items: LogLine[] }>("GET", `/logs?${params}`).then(
+      (b) => b.items,
+    );
   },
 
   // The same selection, asked three other ways: when, what else is in it, and
@@ -2670,28 +2840,56 @@ export const api = {
     // A facet no line in the window holds has no values. An operator running
     // an older API against this dashboard gets `null` there rather than an
     // empty list, so it is normalised here and the type stays honest.
-    return request<{ items: LogFacet[] }>("GET", `/logs/facets?${params}`).then((b) =>
-      b.items.map((facet) => ({ ...facet, values: facet.values ?? [] })),
+    return request<{ items: LogFacet[] }>("GET", `/logs/facets?${params}`).then(
+      (b) => b.items.map((facet) => ({ ...facet, values: facet.values ?? [] })),
     );
   },
   logPatterns: (selection: LogSelection, limit?: number) => {
     const params = selectionParams(selection);
     if (limit) params.set("limit", String(limit));
-    return request<{ items: LogPattern[] }>("GET", `/logs/patterns?${params}`).then((b) => b.items);
+    return request<{ items: LogPattern[] }>(
+      "GET",
+      `/logs/patterns?${params}`,
+    ).then((b) => b.items);
   },
 
   // A question worth keeping. The URL already makes any selection a link;
   // this is what makes one findable by whoever did not get the link.
   savedQueries: list<SavedQuery>("/logs/saved"),
-  saveQuery: (query: NewSavedQuery) => request<SavedQuery>("POST", "/logs/saved", query),
-  deleteSavedQuery: (name: string) => request<SavedQuery>("DELETE", `/logs/saved/${encodeURIComponent(name)}`),
+  saveQuery: (query: NewSavedQuery) =>
+    request<SavedQuery>("POST", "/logs/saved", query),
+  deleteSavedQuery: (name: string) =>
+    request<SavedQuery>("DELETE", `/logs/saved/${encodeURIComponent(name)}`),
 
   // Live tails of the same log endpoints, as Server-Sent Events.
-  streamBuildLogs: (name: string, query: LogQuery, onLine: (line: LogLine) => void, signal: AbortSignal) =>
-    streamRows<LogLine>(`/builds/${name}/logs${logQuery(query)}`, onLine, signal),
-  streamEnvironmentLogs: (name: string, query: LogQuery, onLine: (line: LogLine) => void, signal: AbortSignal) =>
-    streamRows<LogLine>(`/environments/${name}/logs${logQuery(query)}`, onLine, signal),
-  streamLogs: (selection: LogSelection, limit: number, onLine: (line: LogLine) => void, signal: AbortSignal) => {
+  streamBuildLogs: (
+    name: string,
+    query: LogQuery,
+    onLine: (line: LogLine) => void,
+    signal: AbortSignal,
+  ) =>
+    streamRows<LogLine>(
+      `/builds/${name}/logs${logQuery(query)}`,
+      onLine,
+      signal,
+    ),
+  streamEnvironmentLogs: (
+    name: string,
+    query: LogQuery,
+    onLine: (line: LogLine) => void,
+    signal: AbortSignal,
+  ) =>
+    streamRows<LogLine>(
+      `/environments/${name}/logs${logQuery(query)}`,
+      onLine,
+      signal,
+    ),
+  streamLogs: (
+    selection: LogSelection,
+    limit: number,
+    onLine: (line: LogLine) => void,
+    signal: AbortSignal,
+  ) => {
     const params = selectionParams(selection);
     if (limit) params.set("limit", String(limit));
     return streamRows<LogLine>(`/logs?${params}`, onLine, signal);
@@ -2702,22 +2900,35 @@ export const api = {
   // listing off the raw rows, which are kept for the shorter of a week and the
   // platform's retention.
   requestSummary: (name: string, window: RequestWindow = {}) =>
-    request<RequestSummary>("GET", `/environments/${name}/requests/summary?${requestParams(window)}`),
-  requestSeries: (name: string, window: RequestWindow & { buckets?: number } = {}) => {
+    request<RequestSummary>(
+      "GET",
+      `/environments/${name}/requests/summary?${requestParams(window)}`,
+    ),
+  requestSeries: (
+    name: string,
+    window: RequestWindow & { buckets?: number } = {},
+  ) => {
     const params = requestParams(window);
     if (window.buckets) params.set("buckets", String(window.buckets));
-    return request<RequestSeries>("GET", `/environments/${name}/requests/series?${params}`);
+    return request<RequestSeries>(
+      "GET",
+      `/environments/${name}/requests/series?${params}`,
+    );
   },
   // The sort travels to the server because it decides which rows survive the
   // limit: the ten busiest routes and the ten slowest are not the same ten.
-  requestRoutes: (name: string, window: RequestWindow & { sort?: RouteSort; limit?: number } = {}) => {
+  requestRoutes: (
+    name: string,
+    window: RequestWindow & { sort?: RouteSort; limit?: number } = {},
+  ) => {
     const params = requestParams(window);
     if (window.sort) params.set("sort", window.sort);
     if (window.limit) params.set("limit", String(window.limit));
-    return request<{ items: RequestRoute[]; environment: string; edge: EdgeStatus }>(
-      "GET",
-      `/environments/${name}/requests/routes?${params}`,
-    );
+    return request<{
+      items: RequestRoute[];
+      environment: string;
+      edge: EdgeStatus;
+    }>("GET", `/environments/${name}/requests/routes?${params}`);
   },
   // The rows themselves, newest first. The body is an object rather than a
   // bare collection because the edge's answer belongs beside them: an empty
@@ -2730,16 +2941,31 @@ export const api = {
     ),
   // The same listing followed live, over the same loop the log tails use. The
   // server sends its page oldest first and then every request as it lands.
-  streamRequests: (name: string, query: RequestListQuery, onRow: (row: RequestRow) => void, signal: AbortSignal) =>
-    streamRows<RequestRow>(`/environments/${name}/requests?${requestListParams(query)}`, onRow, signal),
+  streamRequests: (
+    name: string,
+    query: RequestListQuery,
+    onRow: (row: RequestRow) => void,
+    signal: AbortSignal,
+  ) =>
+    streamRows<RequestRow>(
+      `/environments/${name}/requests?${requestListParams(query)}`,
+      onRow,
+      signal,
+    ),
 
   // The crash report: exit code and reason, the last lines, the memory series
   // leading up to it, the cluster's warnings and the edge's requests, joined.
-  environmentDiagnostics: (name: string, sizes: { logs?: number; requests?: number } = {}) => {
+  environmentDiagnostics: (
+    name: string,
+    sizes: { logs?: number; requests?: number } = {},
+  ) => {
     const params = new URLSearchParams();
     if (sizes.logs) params.set("logs", String(sizes.logs));
     if (sizes.requests) params.set("requests", String(sizes.requests));
-    return request<Diagnostics>("GET", `/environments/${name}/diagnostics?${params}`);
+    return request<Diagnostics>(
+      "GET",
+      `/environments/${name}/diagnostics?${params}`,
+    );
   },
 
   // The platform's recent activity, newest first.
@@ -2752,7 +2978,10 @@ export const api = {
 
   // The dashboard's numbers, pre-aggregated server-side.
   metricsOverview: (project?: string) =>
-    request<MetricsOverview>("GET", `/metrics/overview${project ? `?project=${encodeURIComponent(project)}` : ""}`),
+    request<MetricsOverview>(
+      "GET",
+      `/metrics/overview${project ? `?project=${encodeURIComponent(project)}` : ""}`,
+    ),
 
   // Traces, from applications that instrument themselves. The two filters are
   // the two reasons anyone opens a trace list: something failed, or it was
@@ -2782,10 +3011,13 @@ export const api = {
   },
   // No window: a trace id arrives from a log line or from the list, and
   // needing to know when it happened would break that link.
-  trace: (traceId: string) => request<TraceDetail>("GET", `/traces/${encodeURIComponent(traceId)}`),
+  trace: (traceId: string) =>
+    request<TraceDetail>("GET", `/traces/${encodeURIComponent(traceId)}`),
 
   // The service map's aggregated edges for a window.
-  traffic: (query: { project?: string; since?: string; until?: string } = {}) => {
+  traffic: (
+    query: { project?: string; since?: string; until?: string } = {},
+  ) => {
     const params: Record<string, string> = {};
     if (query.project) params.project = query.project;
     if (query.since) params.since = query.since;
@@ -2800,21 +3032,30 @@ export const api = {
     request<Connection>("PATCH", `/connections/${name}`, changes),
   testConnection: (test: ConnectionTestRequest) =>
     request<ConnectionTestResult>("POST", "/connections/test", test),
-  deleteConnection: (name: string) => request<void>("DELETE", `/connections/${name}`),
+  deleteConnection: (name: string) =>
+    request<void>("DELETE", `/connections/${name}`),
   // What this connection's credential can see, for the repository field of
   // the create-a-project form. Any account may ask: creating a project is
   // self-service, and this is the field after the connection.
   connectionRepositories: (name: string) =>
-    request<ConnectionRepositories>("GET", `/connections/${encodeURIComponent(name)}/repositories`),
+    request<ConnectionRepositories>(
+      "GET",
+      `/connections/${encodeURIComponent(name)}/repositories`,
+    ),
   // The field after the repository: read it the way a build would and say what
   // the platform makes of it, while the build context is still a form field.
   // It writes nothing, which is why a form may ask it on every keystroke's
   // worth of settling.
   detectRepository: (name: string, target: DetectRequest) =>
-    request<Detection>("POST", `/connections/${encodeURIComponent(name)}/detect`, target),
+    request<Detection>(
+      "POST",
+      `/connections/${encodeURIComponent(name)}/detect`,
+      target,
+    ),
   domains: list<Domain>("/domains"),
   domain: (name: string) => request<Domain>("GET", `/domains/${name}`),
-  createDomain: (domain: NewDomain) => request<Domain>("POST", "/domains", domain),
+  createDomain: (domain: NewDomain) =>
+    request<Domain>("POST", "/domains", domain),
   deleteDomain: (name: string) => request<Domain>("DELETE", `/domains/${name}`),
   claims: list<Claim>("/claims"),
   createClaim: (claim: NewClaim) => request<Claim>("POST", "/claims", claim),
@@ -2828,7 +3069,8 @@ export const api = {
   // What is wrong with one environment right now — the diagnostics strip. The
   // same catalogue and the same shape the problems list answers in, narrowed to
   // this environment and its project.
-  environmentSignals: (name: string) => request<SignalsAnswer>("GET", `/environments/${name}/signals`),
+  environmentSignals: (name: string) =>
+    request<SignalsAnswer>("GET", `/environments/${name}/signals`),
 
   // The operator's screens. Everything platform-scoped lives under this one
   // prefix and nothing project-scoped does, which is what makes the
@@ -2836,7 +3078,10 @@ export const api = {
   platformSignals: () => request<SignalsAnswer>("GET", "/platform/signals"),
   // `node` narrows to one, which is where the findings' evidence links point.
   platformNodes: (query: { node?: string } = {}) =>
-    request<PlatformNodes>("GET", `/platform/nodes${query.node ? `?node=${encodeURIComponent(query.node)}` : ""}`),
+    request<PlatformNodes>(
+      "GET",
+      `/platform/nodes${query.node ? `?node=${encodeURIComponent(query.node)}` : ""}`,
+    ),
   platformWorkloads: (query: { namespace?: string; limit?: number } = {}) => {
     const params = new URLSearchParams();
     if (query.namespace) params.set("namespace", query.namespace);
@@ -2845,7 +3090,9 @@ export const api = {
   },
   // The window bounds the traffic tables; the Gateway, the tunnel and the
   // certificates are read as they are, whatever it says.
-  platformEdge: (query: { since?: string; until?: string; limit?: number } = {}) => {
+  platformEdge: (
+    query: { since?: string; until?: string; limit?: number } = {},
+  ) => {
     const params = new URLSearchParams();
     if (query.since) params.set("since", query.since);
     if (query.until) params.set("until", query.until);
@@ -2861,22 +3108,35 @@ export const api = {
     return request<PlatformEvents>("GET", `/platform/events?${params}`);
   },
   platformIngest: () => request<PlatformIngest>("GET", "/platform/ingest"),
+  // How long each class is kept, and how far back each one goes. The PATCH
+  // refuses an audit retention under the floor unless the body carries the
+  // override, and says so in the error rather than leaving admission to.
+  platformRetention: () =>
+    request<PlatformRetention>("GET", "/platform/retention"),
+  updatePlatformRetention: (body: PlatformRetentionPatch) =>
+    request<PlatformRetention>("PATCH", "/platform/retention", body),
   // What an export would carry. Taking one is downloadBackup, which answers a
   // gzip stream rather than JSON and so cannot live in this table.
   backup: () => request<Backup>("GET", "/platform/backup"),
 
   compliance: () => request<Compliance>("GET", "/compliance"),
-  complianceInventory: () => request<ComplianceInventory>("GET", "/compliance/inventory"),
+  complianceInventory: () =>
+    request<ComplianceInventory>("GET", "/compliance/inventory"),
   // Drift: the deployed releases that no longer clear their bar. Compliant
   // pairs are left out unless `all` asks for them, because the question the
   // view exists for is what is not.
-  complianceDrift: (query: { project?: string; environment?: string; all?: boolean } = {}) => {
+  complianceDrift: (
+    query: { project?: string; environment?: string; all?: boolean } = {},
+  ) => {
     const params = new URLSearchParams();
     if (query.project) params.set("project", query.project);
     if (query.environment) params.set("environment", query.environment);
     if (query.all) params.set("all", "true");
     const search = params.toString();
-    return request<ComplianceDrift>("GET", `/compliance/drift${search ? `?${search}` : ""}`);
+    return request<ComplianceDrift>(
+      "GET",
+      `/compliance/drift${search ? `?${search}` : ""}`,
+    );
   },
   // The criticality mapping (#141). Both are traversals of the reconciled
   // graph made on the request, so neither is cached here either.
@@ -2900,7 +3160,8 @@ export const api = {
     }
     return list<AuditRecord>("/audit")(params);
   },
-  verifyAudit: (from = 1) => request<AuditVerification>("GET", `/audit/verify?from=${from}`),
+  verifyAudit: (from = 1) =>
+    request<AuditVerification>("GET", `/audit/verify?from=${from}`),
   decisions: (query: DecisionQuery = {}) => {
     const params: Record<string, string> = {};
     for (const [key, value] of Object.entries(query)) {
@@ -2908,12 +3169,23 @@ export const api = {
     }
     return list<Decision>("/decisions")(params);
   },
-  decision: (id: string) => request<Decision>("GET", `/decisions/${encodeURIComponent(id)}`),
-  replayDecision: (id: string) => request<DecisionReplay>("POST", `/decisions/${encodeURIComponent(id)}/replay`),
+  decision: (id: string) =>
+    request<Decision>("GET", `/decisions/${encodeURIComponent(id)}`),
+  replayDecision: (id: string) =>
+    request<DecisionReplay>(
+      "POST",
+      `/decisions/${encodeURIComponent(id)}/replay`,
+    ),
   policyBundles: () => list<PolicyBundle>("/policy/bundles")(),
   // The exception register: active grants by default, the whole history with
   // historical. Resolving is the one write — an auditable act with a reason.
-  exceptions: (query: { project?: string; environment?: string; historical?: boolean } = {}) => {
+  exceptions: (
+    query: {
+      project?: string;
+      environment?: string;
+      historical?: boolean;
+    } = {},
+  ) => {
     const params: Record<string, string> = {};
     if (query.project) params.project = query.project;
     if (query.environment) params.environment = query.environment;
@@ -2939,13 +3211,15 @@ export const api = {
   // what keeps a suppression from being silent: it is the one place a person
   // can see that a critical finding is not blocking, who said it does not
   // apply here, and on what grounds.
-  vex: (build: string) => request<VEXAnswer>("GET", `/builds/${encodeURIComponent(build)}/vex`),
+  vex: (build: string) =>
+    request<VEXAnswer>("GET", `/builds/${encodeURIComponent(build)}/vex`),
   submitVEX: (build: string, document: unknown) =>
-    request<{ documentID?: string; author: string; submittedBy: string; vulnerabilities: string[] }>(
-      "POST",
-      `/builds/${encodeURIComponent(build)}/vex`,
-      { document },
-    ),
+    request<{
+      documentID?: string;
+      author: string;
+      submittedBy: string;
+      vulnerabilities: string[];
+    }>("POST", `/builds/${encodeURIComponent(build)}/vex`, { document }),
 
   settings: () => request<Settings>("GET", "/settings"),
   // Fields left out stay as they are, `operators` included — a settings patch
@@ -2954,8 +3228,13 @@ export const api = {
   // be in it.
   updateSettings: (
     changes: Partial<
-      Pick<Settings, "buildStrategy" | "buildConcurrency" | "releaseRetention" | "logRetentionDays">
+      Pick<
+        Settings,
+        | "buildStrategy"
+        | "buildConcurrency"
+        | "releaseRetention"
+        | "logRetentionDays"
+      >
     > & { operators?: OperatorWrite[] },
-  ) =>
-    request<Settings>("PATCH", "/settings", changes),
+  ) => request<Settings>("PATCH", "/settings", changes),
 };
