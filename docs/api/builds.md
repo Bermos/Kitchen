@@ -250,9 +250,14 @@ to the build's artifact:
 ```
 
 The document is carried **verbatim** into a signed attestation under OpenVEX's
-own predicate type — `https://openvex.dev/ns/v0.2.0`, not a Kitchen one, so
-`cosign download attestation` reads it back with the platform out of the loop.
-Statuses are `not_affected`, `affected`, `fixed` and `under_investigation`.
+own predicate type — not a Kitchen one, so `cosign download attestation` reads
+it back with the platform out of the loop. The predicate type is the submitted
+document's own `@context`, which is how OpenVEX versions itself: a v0.1.0
+document is attested as v0.1.0 rather than relabelled, because the URI is what
+says which vocabulary to read a document with and rewriting it would be the
+platform editing somebody else's assertion. `predicateType` on the `201` says
+which one was used, and every reader here matches by prefix. Statuses are
+`not_affected`, `affected`, `fixed` and `under_investigation`.
 
 **`not_affected` requires a justification from OpenVEX's enumeration**:
 `component_not_present`, `vulnerable_code_not_present`,
@@ -273,7 +278,12 @@ still shown, marked, so that a finding coming back has a visible cause.
 The submission is **audit-recorded before it is attached**, naming the
 authenticated caller, the document's author and every vulnerability it touches,
 and the Build records both: `author` is the document's claim about itself,
-`submittedBy` is the platform's own observation. Who may submit at all is
+`submittedBy` is the platform's own observation. The index row is keyed on the
+document's `@id`, so a corrected document restating the same assertions
+replaces its row rather than adding one; `@id` is optional in OpenVEX, and a
+document without one is keyed on its **envelope's digest** — the one name for
+it that a reader of the evidence set also holds, and stable, unlike the
+attachment manifest, which moves whenever anything else is attached. Who may submit at all is
 `compliance.vex` on the platform singleton; whose statements an environment then
 takes the word of is that environment's bundle parameters.
 

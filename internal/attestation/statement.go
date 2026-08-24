@@ -130,7 +130,9 @@ const (
 // docs/COMPLIANCE.md keeps this whole layer standard for. The URI is the
 // document's own `@context`, which is how OpenVEX versions itself; older
 // documents carry an older one and are recognised by prefix (see
-// internal/vex.IsOpenVEX).
+// internal/vex.IsOpenVEX). This constant names the version Kitchen validates
+// against and is not what a submission is attested under: the ingest path uses
+// the document's own context, so a v0.1.0 document stays a v0.1.0 document.
 //
 // The predicate is the submitted document, byte for byte. What the platform
 // adds is attribution — who submitted it, recorded on the Build and in the

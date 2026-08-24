@@ -368,6 +368,28 @@ func readEnvelopes(image v1.Image, seen map[string]bool, verifiers []Verifier) (
 	return found, nil
 }
 
+// EnvelopeDigest is the digest an envelope is attached under, computed from
+// the envelope alone — the same value Evidence.Digest carries when the same
+// bytes are read back out of the registry.
+//
+// It exists because a writer needs a stable name for what it just attached and
+// the manifest digest is not one: the attachment manifest accumulates every
+// envelope attached to the artifact, so its digest moves every time anything
+// else is attached. The envelope's own digest is content-addressed and does
+// not. It is computed through the same layer constructor Attach pushes with,
+// so the two cannot drift.
+func EnvelopeDigest(envelope Envelope) (string, error) {
+	body, err := json.Marshal(envelope)
+	if err != nil {
+		return "", fmt.Errorf("the attestation envelope could not be encoded: %w", err)
+	}
+	digest, err := static.NewLayer(body, mediaTypeDSSE).Digest()
+	if err != nil {
+		return "", err
+	}
+	return digest.String(), nil
+}
+
 func hasLayer(image v1.Image, digest v1.Hash) (bool, error) {
 	manifest, err := image.Manifest()
 	if err != nil {
