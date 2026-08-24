@@ -420,10 +420,12 @@ jobs:
               exit 1
             }
           }
-          # Reused values from a release before self-update existed should
+          # Reused values from a release before these blocks existed should
           # explain how to pick up the new chart defaults, not panic.
-          expect_failure_with "selfUpdate values are missing: upgrade with --reset-then-reuse-values" \
-            kitchen-system ${CHART_BASE} ${CHART_ACME} --set-json selfUpdate=null
+          for values in selfUpdate restore scaleToZero collector clickhouse; do
+            expect_failure_with "${values} values are missing: upgrade with --reset-then-reuse-values" \
+              kitchen-system ${CHART_BASE} ${CHART_ACME} --set-json "${values}=null"
+          done
           # No base domain for the Kitchen singleton.
           expect_failure kitchen-system
           # Installed outside the operator's platform namespace.
