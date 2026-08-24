@@ -2,11 +2,11 @@
 
 > Status: **phases 1–4 implemented** (issues #126, #127, #128, #129, #130,
 > #131, #132, #133, #134, #135, #136), and phase 5 in part (#137, #138,
-> #141). What is designed and not built is the rest of phase 5 — access
-> review (#139), retention (#140), export (#142) — and the mapping
-> document (#143). This document is written so that adding them stays
-> additive: each one attaches to something an earlier phase put in place, and
-> the places where it attaches are named.
+> #139, #141). What is designed and not built is the rest of phase 5 —
+> retention (#140), export (#142) — and the mapping document (#143). This
+> document is written so that adding them stays additive: each one attaches
+> to something an earlier phase put in place, and the places where it
+> attaches are named.
 
 Kitchen is not, and cannot be, "FINMA compliant". Compliance is a property of
 an institution, not of software. What Kitchen can demonstrate is that a
@@ -900,7 +900,7 @@ is the history; the drift view is only its newest row.
   year of near-identical statements on every artifact, and the register is
   already the record.
 - **The newest scan is the current claim, and the older ones are history.**
-  `status.artifact.evidence` is an index (§13), so a rescan replaces the
+  `status.artifact.evidence` is an index (§14), so a rescan replaces the
   vulnerability-scan entry rather than appending one — and the *evaluation*
   reads the same way: `policy.EvidenceFrom` collapses the vulnerability-scan
   predicate to its newest entry before the rules see any of them, ordered by
@@ -1182,7 +1182,252 @@ ran out, and the date it ran out on.
 
 ---
 
-## 11. Configuration
+## 11. Access, and the platform's own operators (issue #139)
+
+This is the hardest control in the suite and the one a supervisor cares about
+most, for a reason that is worth stating before anything else is built on top
+of it: **anyone with cluster-admin bypasses every control described above.**
+They can edit an environment's requirements, delete an Exception, rewrite a
+Project's access list, or apply a Deployment that no Release ever produced. A
+platform that gates application changes but not its own operators has a
+decorative control, and pretending otherwise would be the worst kind of
+evidence — the kind that reads as an assurance.
+
+So this section is arranged around what can honestly be claimed. Kitchen can
+ask, on a cadence, who holds what and make somebody answer for each of it. It
+can separate the acts that move a control from the four hundred deploys
+between them. It can notice a write it did not make. It cannot stop somebody
+who already has the cluster, and §11.5 says so in as many words.
+
+### 11.1 Recertification is a cycle object, not a cron
+
+The evidence is the point. A cron that emailed a list would produce a list;
+what an examiner asks for is *who reviewed this, when, and what did they
+decide about each entry* — which is a document, with a beginning and an end.
+
+So a cycle **opens**, freezes a snapshot of every grant at that instant, is
+reviewed grant by grant, and **closes**. It is an `AccessReview` custom
+resource, for three reasons that are all this repository's existing shapes
+rather than new arguments:
+
+- A cycle has a reconciler. It opens, it comes due, it closes, and something
+  has to notice each of those on a clock — which is a RequeueAfter, and is
+  exactly what the Exception reconciler already is (§9.7's "no expiry
+  engine": the clock is the object's own).
+- A decision is a write, and a write surface waits for its reconciler. A
+  revocation has to actually take the grant off a Project, which is a
+  reconcile over cluster objects and not a row in a table.
+- It is in the platform backup with everything else. A table would need its
+  own export, and the one artefact an auditor asks for would be the one thing
+  not in the archive.
+
+One cycle at a time over the same grants. Two open cycles would be two
+reviewers deciding the same question, and a close that applied one set of
+revocations while the other still showed the grant.
+
+The snapshot is frozen and never rewritten. A review is of what was true at an
+instant; a grant made after the cycle opened is simply in the next cycle, and
+a decision naming one is refused with a sentence saying so.
+
+### 11.2 The artefact outlives the object
+
+A closed cycle carries the whole review on its status, and that would be
+enough if the object were forever. It is not: objects get deleted, clusters
+get rebuilt, and an institution asked to show the access review it did last
+March cannot answer with a custom resource that has since been
+garbage-collected.
+
+So closing mints a **signed statement of the whole cycle** — the snapshot,
+every decision, who made it, which were self-reviews, which revocations were
+actually carried out — as a DSSE envelope under
+`kitchen.bermos.dev/attestation/access-review/v1`, kept in the store's
+`signed_records` table under no TTL. It is the resource claim's data-class
+declaration exactly (§13): a review has no OCI repository, so the subject is
+an identity digest over the object's namespace, name and UID, and the envelope
+is kept whole rather than attached to anything.
+
+It verifies against the public key `GET /compliance` publishes, with Kitchen
+out of the loop. That is the same exit story §5.1 buys for artifact evidence,
+applied to the one document that is about people rather than about images.
+
+An undecided grant is **in** the artefact, worded as `undecided` rather than
+omitted. "Nobody looked at this one" is precisely the finding an examiner is
+reading it for, and an artefact that quietly dropped the unreviewed rows would
+read better than the review was.
+
+Best-effort-loud, like every other signed record here: a platform with no
+signing key or no store still closes the cycle, still applies the revocations
+and still writes the audit records. What it cannot do is leave portable
+evidence, and `status.artifact.message` says so rather than leaving a blank
+field open to a generous reading.
+
+### 11.3 The reviewer may be the reviewed, and it is recorded
+
+Segregation of duties is the whole subject of this issue, so the temptation is
+to refuse a decision somebody makes about their own grant. The answer here is
+§8.4's, for §8.4's reason: **it is recorded, not filtered.**
+
+An installation with one operator has exactly one person who can review that
+operator's grant. Refusing would either make the control unsatisfiable — a
+cycle that can never be closed is a cycle nobody opens again — or push
+somebody into creating a second account to satisfy it, which is worse evidence
+rather than better. So a self-review is stamped on the entry, counted on the
+cycle, carried into the artefact, named in the audit record, and shown on the
+dashboard in the colour the rest of the platform uses for "look at this".
+
+The same reasoning decides the reviewers list: it is an **expectation, not an
+enforcement**. Any platform operator may decide, and who actually did is on
+every entry. A cycle only a named person could close is a cycle that stalls the
+week they are on holiday, and a control that stalls is a control that gets
+switched off.
+
+### 11.4 Out-of-band writes: detection, and what it cannot see
+
+The operator reads `metadata.managedFields` — the API server's own record of
+which field manager last wrote each field — on the **six kinds whose content
+is a control**: `Kitchen`, `Project`, `Environment`, `Exception`,
+`Connection`, `AccessReview`. A manager the platform does not recognise on one
+of those is a write no reconcile and no API call made, and it becomes a
+privileged `integrity` audit record and a count on
+`status.compliance.access`.
+
+Six kinds and not all of them, deliberately. A Build or a Release edited
+behind the platform's back is a curiosity; the operator list, a project's
+grants, an environment's requirements, a break-glass grant and a credential's
+connection are the five places somebody with cluster access would actually go
+to make the platform permit something it otherwise would not. Watching those
+and being read is worth more than watching everything and being ignored.
+
+What the mechanism does not see, stated rather than glossed:
+
+- **A caller may name their own field manager anything.** `kubectl edit
+  --field-manager=kitchen` is invisible to this and always will be. There is
+  no fix inside Kubernetes' own model: the manager name is a string the client
+  chooses. This is the single largest hole and it is why the whole feature is
+  called detection.
+- **Status writes are skipped.** Every controller writes status, including
+  ones that legitimately watch Kitchen's objects, and a status write cannot
+  change what the platform allows. What is looked for is a write to the spec.
+- **A foreign entry disappears when the platform writes those fields again.**
+  So the count is a *standing* count of what is currently marked, not a
+  running total — the audit log is what answers "what happened", and the two
+  are different questions.
+- **A restarted operator re-records what it has already seen.** The dedup is
+  in memory on purpose: writing a marker onto the watched object would itself
+  be a write to the thing being watched, and the detection would start finding
+  its own footprints. Over-recording is §4.6's acceptable direction.
+- **False positives are real and are the operator's to name.** A GitOps
+  controller applying the singleton, a mutating webhook, a restore tool: all
+  of them are legitimate and none of them is Kitchen. They go in
+  `spec.compliance.access.expectedManagers`, matched exactly, which is the
+  operator putting "this writer is expected" on the record — the alternative
+  being an alert everybody learns to ignore within a fortnight.
+
+An alert nobody can see is not an alert, so the result surfaces three ways:
+the privileged audit record, the count and timestamp on the Kitchen
+singleton's `status.compliance.access`, and the audit screen's privileged
+filter — where `integrity` is one click.
+
+### 11.5 The residual risk, said plainly
+
+**Cluster-admin bypasses everything in this document.** Not "in principle" and
+not "in a poorly configured installation" — by construction. The controls
+described in §4 through §10 are enforced by an operator reconciling custom
+resources, and anyone who can write those resources, or write Deployments
+directly, or read the ClickHouse credentials out of a Secret, is outside every
+one of them. The audit log itself lives in a database whose password is a
+Secret in the same namespace.
+
+What Kitchen does about it:
+
+- **Detect.** §11.4, with its stated blind spots.
+- **Record.** Reconcilers record the transitions they *observe*, not only the
+  ones the API made (§4.5), so a change made with `kubectl` behind the
+  platform's back still lands in the log — attributed to the reconciler that
+  noticed it, which is honest about how it was learned.
+- **Bound.** The chain's anchor lives outside the table (§4.3), so a log
+  truncated from the end is visible without reading the log.
+- **Surface.** The privileged classification exists so that the handful of
+  records that matter are one filter away rather than buried under deploys.
+- **Recertify.** The operator list is reviewed on the same cadence as
+  everything else, so "who can do all of this" is a question with a dated,
+  signed answer rather than a property of whoever last edited a values file.
+
+What Kitchen cannot do, and does not claim:
+
+- It cannot prevent a cluster-admin write. Admission control could refuse
+  *some* of them, and would refuse the operator's own writes along with them
+  unless the operator were exempted — at which point impersonating the
+  operator's service account is the bypass, and the platform has bought
+  complexity rather than a control.
+- It cannot detect a write that names itself as the platform (§11.4).
+- It cannot detect a *read*. Somebody with cluster access can read every
+  environment variable and every credential the installation holds, and
+  nothing here would show it.
+- It cannot make its own log unfalsifiable to somebody holding the store's
+  credentials. §4.3 is precise about what hash-chaining catches and what it
+  does not; anchoring to a transparency log is the next step and is
+  deliberately not in this cut.
+
+The honest framing, which belongs in a control document rather than in a
+release note: **cluster access is operator access**, exactly as
+[AUTH.md](AUTH.md) has said since before any of this existed. The mitigations
+that actually bound it are institutional rather than technical — how few
+people hold kubeconfigs, whether those are issued just-in-time, and whether
+the cluster's own API server audit log is shipped somewhere Kitchen's
+operators cannot reach. Kitchen's contribution is to make the *inside* of the
+platform reviewable and to make going round it leave marks. It is not, and
+cannot be, a control over the people who own the cluster it runs on.
+
+### 11.6 Orphaned identities, and why one flag is not enough
+
+An identity is **orphaned** when it has done nothing recently *and* the
+identity provider holds no account for it. Both halves, never either alone:
+
+- Dormant but known is somebody who had a quiet quarter.
+- Active but unknown is a machine account, or an entry written by `sub` for an
+  account the directory answers about by address.
+
+The pair has no innocent reading: it is a grant pointing at nobody. The
+window is `spec.compliance.access.inactivityDays`, 90 by default, which
+matches the review cadence on purpose — an account that did nothing between
+two reviews is exactly the one a reviewer should be asked about.
+
+Two limits travel with it. **Activity is the audit log's, and the audit log
+records writes**, so an account that only ever reads is dormant by this measure
+and is not dormant in fact; the alternative is recording reads in the evidence
+log, which would drown it. And an installation federated to an issuer of its
+own serves **no account directory at all**, so nothing there is reported as
+unknown and therefore nothing is reported as orphaned —
+`directoryConsulted: false` says so, because "we could not ask" and "nobody is
+behind it" are different sentences and only one of them is evidence.
+
+### 11.7 Nothing here blocks a deployment
+
+Worth stating as its own line, because every other section in this document
+describes something that can refuse a promotion. This one cannot, anywhere:
+
+- An **overdue** cycle is a phase and a condition. The rules it has not
+  reviewed still apply; nothing is revoked because a review ran late.
+- An **orphaned** identity is a row on a list. The grant still works.
+- An **out-of-band write** is a record and a count.
+
+An access control that took a workload down when a review ran late is a
+control that gets switched off within the month, and a control nobody leaves
+on is worth nothing. The consequence of all of this is that somebody has to
+look, which is what a recertification control *is*.
+
+The one thing that does take something away is a **revocation somebody
+decided**, carried out when the cycle closes — and even that has a floor: the
+platform will not remove its own last operator, because a platform with none
+refuses every operator-only route to everybody, the route that names an
+operator included, and there is no way back that does not involve `kubectl`. A
+compliance control that can lock an institution out of its own platform is one
+that gets turned off.
+
+---
+
+## 12. Configuration
 
 ```yaml
 kitchen:
@@ -1227,6 +1472,13 @@ kitchen:
         format: grype-json
         args: [-o, json, --file, $(KITCHEN_FINDINGS), sbom:$(KITCHEN_SBOM)]
         timeoutSeconds: 900
+    access:                    # ask who holds what, and watch our own objects
+      enabled: true
+      intervalDays: 90         # from the last cycle's close; 0 opens none
+      dueDays: 14              # before a cycle is reported overdue
+      inactivityDays: 90       # dormant AND unknown ⇒ orphaned
+      detectOutOfBandWrites: true
+      expectedManagers: []     # writers that are not Kitchen and are expected
 ```
 
 All of it lives on the platform singleton rather than on a Project, because
@@ -1250,9 +1502,18 @@ reports itself as configured-and-inert on
 `Kitchen.status.compliance.rescan.message` and on `GET /compliance/drift`
 rather than quietly picking a vendor.
 
+`access` is on by default, unlike `rescan`, and the difference is what each
+costs. A rescan pulls a scanner image per environment per interval; a
+recertification cycle costs one object and somebody's attention, and an
+installation that has never been asked who holds what is the installation this
+is for. Turning it off leaves the register readable and a cycle openable by
+hand — what it stops is the platform opening one, or watching its own objects,
+on its own initiative. `intervalDays: 0` is the middle position: no cadence,
+full surface.
+
 ---
 
-## 12. Phases
+## 13. Phases
 
 | | |
 |---|---|
@@ -1260,7 +1521,7 @@ rather than quietly picking a vendor.
 | **2 — Evidence production** | provenance + SBOM (#128), PR verification (#129), quality gates (#130) — **built** |
 | **3 — Policy** | environment ownership (#131), OPA engine (#132), staged promotion (#133) — **built** |
 | **4 — Continuous compliance** | rescan (#134), OpenVEX (#135), exceptions (#136) — **built** |
-| **5 — Institutional surface** | data class (#137) — **built**, resource contract (#138) — **built**, criticality (#141) — **built**, access (#139), retention (#140), export (#142) |
+| **5 — Institutional surface** | data class (#137) — **built**, resource contract (#138) — **built**, access (#139) — **built**, criticality (#141) — **built**, retention (#140), export (#142) |
 | **6 — The mapping doc** | #143, kept current |
 
 Phase 2 attaches to §5 exactly as expected: every attestation it produces is
@@ -1372,9 +1633,21 @@ this platform declares one, and a rule that always passed would be worse than
 no rule because it would read as evidence.
 [OBSERVABILITY.md](OBSERVABILITY.md) §7 says what would close that.
 
+Access (#139) is §11, and it attaches in three places rather than one. It
+attaches to §4 by making the log's own convention into a property of it: the
+`details.privileged` marking six sites had been setting by hand becomes a
+classification with six named classes, materialized by the recorder and
+filterable in one request — inside the hashed details rather than in a column,
+because a new column would change the hash of every record ever written. It
+attaches to §13's `signed_records` at the seam that table's comment already
+reserved for it: a closed recertification cycle is an envelope with no
+registry to live in, exactly as a claim's data-class declaration is. And it
+attaches to nothing at all in the promotion path, on purpose — §11.7 — because
+an access control that could refuse a deployment is one that gets switched off.
+
 ---
 
-## 13. Things that are true and easy to get wrong
+## 14. Things that are true and easy to get wrong
 
 - **A gap in the sequence is not always a deletion.** It is also an append that
   claimed its number and then died before the row landed. The head object and
@@ -1479,3 +1752,26 @@ no rule because it would read as evidence.
   everywhere; the second means nothing has been decided. The signal skips a
   zero objective rather than firing on the first blink of a rollout, and says
   so where it does.
+
+- **The privileged marking is inside the hashed details, and that is the whole
+  argument for it.** A `privileged` column would be the obvious shape and would
+  change `ChainHash`, so every record ever written would stop verifying at
+  once. In the details it is covered by the chain instead: a marking added to
+  or taken off a stored record breaks verification, which is the property that
+  makes the marking worth anything. `GET /audit?privileged=true` is a JSON
+  extraction over the column, affordable because this table's row count is
+  deploys and edits rather than requests.
+- **A recertification cycle's evidence is not the object.** The object is the
+  workflow and can be deleted; the artefact is a signed envelope in
+  `signed_records`, kept under no TTL. Reading `status.artifact` as the
+  evidence would be reading the index for the document — the same mistake as
+  reading `status.artifact.evidence` for an artifact's attestations.
+- **Out-of-band detection reads a string the writer chose.**
+  `metadata.managedFields[].manager` is set by the client, so
+  `kubectl --field-manager=kitchen` is invisible to it. It is detection, not
+  prevention, and §11.5 says what that leaves standing rather than arguing it
+  away.
+- **An identity that only ever reads looks dormant.** The audit log records
+  writes, so the orphan survey's `inactive` is "has made no *change* in the
+  window". That is why an orphan needs the directory half as well: dormancy
+  alone would flag every viewer on the platform.
