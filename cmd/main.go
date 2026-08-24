@@ -522,11 +522,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	// The event recorder keeps the cluster's Warning events, which the API
-	// server expires about an hour after they happen — turning the operator's
-	// existing watch into the history the Events screen and the crash report
-	// read. It idles until the Kitchen object names a store, so it too is
-	// added unconditionally.
 	// The continuous re-evaluation pass: every currently-deployed release,
 	// matched against a current vulnerability database on an interval and
 	// re-judged against its environment's own bar. It is leader-elected and
@@ -542,6 +537,11 @@ func main() {
 		os.Exit(1)
 	}
 
+	// The event recorder keeps the cluster's Warning events, which the API
+	// server expires about an hour after they happen — turning the operator's
+	// existing watch into the history the Events screen and the crash report
+	// read. It idles until the Kitchen object names a store, so it too is
+	// added unconditionally.
 	if err := mgr.Add(&k8sevents.Recorder{
 		// The cached client, unlike the two collectors above: the recorder's
 		// watch is the event informer, and it resolves an event's project by
