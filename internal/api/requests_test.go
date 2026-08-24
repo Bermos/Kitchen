@@ -281,7 +281,7 @@ func TestRequestsStreamAsServerSentEvents(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, requestsPath, nil)
 	req.Header.Set("Authorization", "Bearer "+h.issuer.token(t))
-	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("Accept", eventStream)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	req = req.WithContext(ctx)
@@ -296,7 +296,7 @@ func TestRequestsStreamAsServerSentEvents(t *testing.T) {
 	cancel()
 	<-done
 
-	if got := recorder.Header().Get("Content-Type"); got != "text/event-stream" {
+	if got := recorder.Header().Get("Content-Type"); got != eventStream {
 		t.Fatalf("Content-Type = %q, want text/event-stream (body: %s)", got, recorder.Body.String())
 	}
 	body := recorder.Body.String()

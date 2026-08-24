@@ -369,7 +369,7 @@ func TestAnUpdatesLogsStreamAsServerSentEvents(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, testUpdateLogs, nil)
 	req.Header.Set("Authorization", "Bearer "+h.issuer.token(t))
-	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("Accept", eventStream)
 	// The tail follows until the client goes away; a cancelled context is the
 	// client going away, and the deadline is only a backstop.
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -386,7 +386,7 @@ func TestAnUpdatesLogsStreamAsServerSentEvents(t *testing.T) {
 	cancel()
 	<-done
 
-	if got := recorder.Header().Get("Content-Type"); got != "text/event-stream" {
+	if got := recorder.Header().Get("Content-Type"); got != eventStream {
 		t.Fatalf("Content-Type = %q, want text/event-stream (body: %s)", got, recorder.Body.String())
 	}
 	if body := recorder.Body.String(); !strings.Contains(body, "has been upgraded") {

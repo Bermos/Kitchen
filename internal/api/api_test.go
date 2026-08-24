@@ -60,6 +60,12 @@ const (
 	// otherProject is the second project the fixtures know about: the one a
 	// read must not return, which is what most of the scoping assertions are.
 	otherProject = "blog"
+	// eventStream is the media type every live tail is negotiated with and
+	// answers in. Three endpoints follow their rows now — a build's logs, the
+	// edge's requests and an upgrade's output — and each asserts both halves
+	// of that exchange, which is more repetitions of one string than goconst
+	// tolerates.
+	eventStream = "text/event-stream"
 )
 
 // issuer is a stand-in for the platform's identity provider: it serves the
