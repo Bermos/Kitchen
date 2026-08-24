@@ -428,7 +428,12 @@ var publishedShapes = map[string]struct {
 	"linked":          {"What a directory was linked to, and where the fact was written", linked{}},
 	"forgotten":       {"Which installations this machine no longer holds a credential for", forgotten{}},
 	"backupTaken":     {"An archive that was taken: where it went, and what the platform put in it", backupTaken{}},
-	"schema":          {"This document", schema{}},
+	"auditPackTaken": {"An audit pack that was exported: the two documents on disk, the sha256 of " +
+		"the bytes that were written, and what the pack holds by count. `truncated` means the " +
+		"pack answers for less than it was asked for — retention removed part of the window, or " +
+		"a section hit its cap — and `signed` false means the platform holds no key, so there " +
+		"is no envelope beside it", auditPackTaken{}},
+	"schema": {"This document", schema{}},
 }
 
 // addShape puts a named shape into the document, along with every shape it

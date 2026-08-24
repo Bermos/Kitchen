@@ -19,6 +19,8 @@ package cli
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -69,6 +71,14 @@ type platform struct {
 	// the API refuses a member.
 	backup         []byte
 	backupFilename string
+
+	// auditPack is the document GET /projects/{name}/audit-pack answers with,
+	// auditPackEnvelope the DSSE signature over it, and auditPackHTML the
+	// reader's rendering. A nil pack is refused the way the API refuses
+	// anybody who is not an operator.
+	auditPack         []byte
+	auditPackEnvelope []byte
+	auditPackHTML     []byte
 
 	// connections is what GET /connections answers, and detected what the
 	// preflight makes of a repository. A nil detection is a platform whose
@@ -167,6 +177,8 @@ func (p *platform) serve(w http.ResponseWriter, req *http.Request) {
 		writeAnswer(w, http.StatusOK, list[promotion]{Items: p.promotions})
 	case strings.HasPrefix(path, "/promotions/"):
 		p.answerPromotion(w, strings.TrimPrefix(path, "/promotions/"))
+	case strings.HasSuffix(path, "/audit-pack"):
+		p.answerAuditPack(w, req)
 	case strings.HasSuffix(path, "/env") && req.Method == http.MethodPatch:
 		p.patchEnv(w, body)
 	case strings.HasPrefix(path, "/projects/"):
@@ -230,6 +242,38 @@ func (p *platform) answerBackup(w http.ResponseWriter) {
 	w.Header().Set("Content-Disposition", `attachment; filename="`+p.backupFilename+`"`)
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(p.backup)
+}
+
+// answerAuditPack serves the three renderings the API serves, each with the
+// digest header and the filename the API sets — because those two headers are
+// what the command decides where to write and what to check against.
+func (p *platform) answerAuditPack(w http.ResponseWriter, req *http.Request) {
+	if p.auditPack == nil {
+		writeAnswer(w, http.StatusForbidden, errorBody{
+			Error: "exporting a project's audit pack needs the operator role; you are a member"})
+		return
+	}
+	body, kind, extension := p.auditPack, "application/json", "json"
+	switch req.URL.Query().Get("format") {
+	case "dsse":
+		if p.auditPackEnvelope == nil {
+			writeAnswer(w, http.StatusConflict, errorBody{
+				Error: "this platform holds no signing key"})
+			return
+		}
+		body, extension = p.auditPackEnvelope, "dsse.json"
+	case "html":
+		body, kind, extension = p.auditPackHTML, "text/html; charset=utf-8", "html"
+	}
+	// The digest is always of the *pack*, whichever rendering is being
+	// served: it identifies the document, not the response.
+	sum := sha256.Sum256(p.auditPack)
+	w.Header().Set("Content-Type", kind)
+	w.Header().Set("X-Kitchen-Pack-Digest", "sha256:"+hex.EncodeToString(sum[:]))
+	w.Header().Set("Content-Disposition",
+		`attachment; filename="kitchen-audit-pack-shop-2026-01-01-2026-04-01.`+extension+`"`)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(body)
 }
 
 // createProject answers POST /projects the way the API does: the project as

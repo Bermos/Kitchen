@@ -178,6 +178,7 @@ give.
 | `kitchen access identities` | Who holds what on the platform, and which grants look like they belong to nobody | `GET /access/identities` |
 | `kitchen access reviews/show` | The recertification cycles and what each one decided | `GET /access/reviews`, `GET /access/reviews/{name}` |
 | `kitchen retention` | How long the platform keeps each class, and how far back each one goes | `GET /platform/retention` |
+| `kitchen audit-pack` | Export one project's whole compliance answer for a window, signed, as files on disk | `GET /projects/{name}/audit-pack` |
 | `kitchen releases` | The project's releases — what there is to roll back to | `GET /projects/{name}/releases` |
 | `kitchen environments` | The project's environments and where they answer | `GET /projects/{name}/environments` |
 | `kitchen api` | Any endpoint of the API, authenticated | anything |
@@ -573,6 +574,56 @@ kitchen api PATCH /platform/retention --data '{"audit": 60,
 
 See [docs/api/platform.md](api/platform.md) for the bodies and what the floor
 refuses.
+
+### The audit pack
+
+```sh
+kitchen audit-pack --project shop --from 2026-01-01 --to 2026-04-01
+kitchen audit-pack --project shop --from 2026-01-01 --to 2026-04-01 --format html
+```
+
+One project's whole compliance answer for one window, as files on disk: the
+inventory, the change log with the author and the approvers of every release,
+the promotions and the decisions behind them with the full inputs they can be
+replayed from, the evidence attached to each artifact, the break-glass
+exceptions, the recertification cycles that reviewed this project's access,
+what is running that no longer meets its bar, the project's slice of the audit
+log, and every signed statement the platform holds that has no registry to
+live in.
+
+**Two files by default**, and that is the whole reason this is a command
+rather than a `kitchen api` invocation: the pack and the DSSE envelope that
+signs it are one deliverable and useless apart, and somebody assembling them
+out of two `curl`s eventually ships the pack without the envelope. The pack's
+own verification block carries the four commands that check them with this
+platform switched off.
+
+**Both ends of the window are required.** A pack that ended "now" could not be
+reproduced, and reproducibility is the point: two exports of the same window
+are the same bytes unless the evidence changed. A bare date is read as midnight
+UTC, since that is what a quarter's boundaries actually are.
+
+The dashboard has the button, and the button is the point of the feature — an
+auditor should not need a terminal. This is for the other half of the same
+problem: evidence produced quarterly is produced on a schedule, and a pack that
+only happens when somebody remembers to click is one somebody will eventually
+not remember to click.
+
+```sh
+# fail the job when the window is not fully covered
+kitchen audit-pack --project shop --from 2026-01-01 --to 2026-04-01 --json |
+  jq -e '.truncated | not'
+```
+
+`truncated` is true when the pack answers for less than it was asked for —
+retention has removed part of the window, or a section hit its cap — and
+`coverage` carries the platform's own words for it. `digest` is computed from
+the bytes that were written rather than taken from the platform's header, so a
+mismatch with `servedDigest` is visible rather than assumed away.
+
+It needs the operator role, for the reason the route does: a pack folds three
+operator-only reads into a project's evidence. See
+[docs/api/audit-pack.md](api/audit-pack.md).
 
 ### Anything else
 
