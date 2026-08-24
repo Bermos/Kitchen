@@ -146,8 +146,15 @@ type PlatformFacts struct {
 	// it. platform.component-unhealthy folds it into the same feed rather than
 	// re-deriving it.
 	Components []kitchenv1alpha1.ComponentStatus
-	// RetentionDays is the store's configured retention, which is what the
-	// store's disk usage should be read against.
+	// RetentionDays is the longest telemetry retention in force, which is
+	// what the store's disk usage should be read against.
+	//
+	// The longest rather than any one class's: retention became a model of
+	// nine classes in #140, and what bounds the disk is whichever of them
+	// keeps its data longest. A single number is still the right shape for a
+	// finding's one-line explanation — the whole model is served by
+	// `GET /platform/retention`, and the finding's job is to name the lever
+	// that moves the number it is complaining about.
 	RetentionDays int32
 }
 

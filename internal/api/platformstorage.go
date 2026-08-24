@@ -30,6 +30,7 @@ import (
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/controller"
+	"github.com/Bermos/Kitchen/internal/retention"
 	"github.com/Bermos/Kitchen/internal/signals"
 )
 
@@ -208,8 +209,11 @@ type storeHealthView struct {
 	// writes and the collector fills. Zero while pods run is the store's own
 	// stalled-ingest symptom.
 	RowsPerSecond float64 `json:"rowsPerSecond"`
-	// RetentionDays is the one knob every table's TTL is derived from — the
-	// horizon past which the store deliberately holds nothing.
+	// RetentionDays is the longest telemetry class's retention — the horizon
+	// past which the store deliberately holds nothing at all. Retention is a
+	// model of nine classes since #140 and this screen is about the disk, so
+	// what it wants is the one that bounds it; `GET /platform/retention` has
+	// the whole of it, class by class.
 	RetentionDays int32 `json:"retentionDays,omitempty"`
 	// Message says why the numbers are missing, and is empty when they are not.
 	Message string `json:"message,omitempty"`
@@ -281,7 +285,7 @@ func (s *Server) storeHealth(ctx context.Context, claims []corev1.PersistentVolu
 	}
 	kitchen := &kitchenv1alpha1.Kitchen{}
 	if err := s.Client.Get(ctx, types.NamespacedName{Name: controller.KitchenSingletonName}, kitchen); err == nil {
-		view.RetentionDays = kitchen.Spec.Observability.ClickHouse.RetentionDays
+		view.RetentionDays = retention.Resolve(kitchen).LongestTelemetry()
 	}
 
 	store, err := s.logStore(ctx)

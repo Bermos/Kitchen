@@ -41,6 +41,7 @@ import (
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/clickhouse"
 	"github.com/Bermos/Kitchen/internal/controller"
+	"github.com/Bermos/Kitchen/internal/retention"
 )
 
 // The impure half. Everything that talks to the API server, the store or the
@@ -194,7 +195,7 @@ func gatherKitchen(ctx context.Context, reader client.Client, snapshot *Snapshot
 		GatewayAddress:     kitchen.Status.GatewayAddress,
 		CloudflaredEnabled: kitchen.Spec.Ingress.Cloudflared.Enabled,
 		Components:         kitchen.Status.Components,
-		RetentionDays:      kitchen.Spec.Observability.ClickHouse.RetentionDays,
+		RetentionDays:      retention.Resolve(kitchen).LongestTelemetry(),
 	}
 }
 
