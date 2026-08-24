@@ -1,12 +1,12 @@
 # Kitchen — Compliance Design
 
-> Status: **phases 1–5 implemented** (issues #126, #127, #128, #129, #130,
-> #131, #132, #133, #134, #135, #136, #137, #138, #139, #140, #141, #142).
-> What remains is the mapping document (#143), which is the one deliverable
-> here that is prose rather than platform. Everything above it attaches to
-> something an earlier phase put in place, and the places where it attaches
-> are named — §13, the evidence export, is where all of it is read back out
-> in one request.
+> Status: **complete** (issues #126 through #143). Every phase attaches to
+> something an earlier one put in place, and the places where it attaches are
+> named — §13, the evidence export, is where all of it is read back out in one
+> request, and **§17 is the requirement mapping**: what produces the evidence
+> for each supervisory requirement, where it is read, and what it does not
+> cover. If you are here to find out what this platform can be shown to
+> demonstrate, read §17 first and §17.1 before that.
 
 Kitchen is not, and cannot be, "FINMA compliant". Compliance is a property of
 an institution, not of software. What Kitchen can demonstrate is that a
@@ -59,11 +59,23 @@ all.
 
 ## 3. What is explicitly out of scope
 
-Institutional obligations. A platform can carry inputs for them, never the
-obligation itself: identification of critical functions and disruption
-tolerances, outsourcing materiality determination, what counts as critical
-data, the incident reporting decision, business impact analysis, backup and
-restore of application state.
+Institutional obligations. A platform can carry inputs for one, never the
+obligation itself — and the six below are not a hedge, they are the boundary
+the rest of this document is only credible because it draws.
+
+| The obligation | Whose it is, and why it cannot be this platform's | What Kitchen carries for it |
+|---|---|---|
+| **Identifying critical functions** | A judgement about what the institution does for the outside world, made by people accountable for it. A platform that defaulted, inferred or refused on a designation would become the source of a determination nobody made | `criticality` on Project and Environment, carried and answered as *undesignated* where nobody has decided (#141) |
+| **Setting disruption tolerances** | The same judgement, in units of time, and it is the board's | `rto` / `rpo` as declared values — and the RTO is wired to alerting rather than filed, so the number somebody chose is the number that pages them (#141) |
+| **Determining that an outsourcing is material** | A determination under the outsourcing circular, made against the institution's own risk appetite | The inventory of what is outsourced and what depends on it: Connections, ResourceClaims, providers, and the reverse traversal from any one of them (`GET /compliance/dependents`) |
+| **Deciding what counts as critical data** | A classification of the institution's data, not of a database | `dataClass` and `residency` across the graph, inherited and narrowable, with `unclassified` answered as a word rather than left blank (#137) |
+| **Judging that an incident is of substantial importance** | The reporting decision under Art. 29(2) FINMAG and the NCSC duty under Art. 74b ISG. A platform cannot make it, and one that appeared to would be worse than one that does not | The evidence the report is written from, inside the clock that starts at awareness: the audit log, its 90-day floor, and a pack that says when a window has been truncated (§4.7, §12.5, §13.5) |
+| **Business impact analysis** | An analysis of the business, done by the business | The dependency graph a BIA would otherwise be assembled from by hand, and the tolerances once they are declared |
+| **Backing up and restoring application state** | An application's data is its own; the platform never holds it | The platform's own state, and only that — [BACKUP.md](BACKUP.md) says exactly what one archive holds and what it does not |
+
+§17.5 says the same thing from the mapping table's side: these are the rows
+that are absent on purpose, and saying so is part of what makes the rows that
+are there worth reading.
 
 ---
 
@@ -2077,7 +2089,7 @@ full surface.
 | **3 — Policy** | environment ownership (#131), OPA engine (#132), staged promotion (#133) — **built** |
 | **4 — Continuous compliance** | rescan (#134), OpenVEX (#135), exceptions (#136) — **built** |
 | **5 — Institutional surface** | data class (#137), resource contract (#138), access (#139), retention (#140), criticality (#141), export (#142) — **built** |
-| **6 — The mapping doc** | #143, kept current |
+| **6 — The mapping doc** | #143 — **built**, and §17.7 is what keeps it current |
 
 Phase 2 attaches to §5 exactly as expected: every attestation it produces is
 another envelope against the same digest, and the store accumulates them
@@ -2222,6 +2234,19 @@ less than the four systems it replaces. The second is that
 answer**, not a property of the encoder: it is what forced a phase to be judged
 at the range's end rather than against the clock, and that is a better answer
 in its own right — a pack of last quarter should not change its mind in April.
+
+Phase 6 (#143) is §17, and it is the one deliverable here that is prose rather
+than platform. It attaches to everything by naming it: the `GR-` codes the
+sub-issues have carried since the day they were written, and that
+`docs/api/audit-pack.md` cites field by field, had no register until this
+phase — §17.2 is the register they were pointing at. What that turned up is
+worth recording. Writing the mapping out in one table is the first time every
+component was read against the requirement it claims to answer, and the
+honest column is the last one: **what it does not cover** is on every row, and
+each entry in it was already documented somewhere above. A mapping table whose
+last column was empty would have been the easiest version of this document to
+write and the one an examiner would have stopped believing in the first ten
+minutes.
 
 ---
 
@@ -2368,8 +2393,232 @@ in its own right — a pack of last quarter should not change its mind in April.
   answers with one; this one must not, and a test refuses it. The same trap
   wears three other names — `exportedAt`, `renderedAt`, `asOf` — and the test
   refuses those too.
+- **A margin number in §17 is an anchor, not a citation.** The `Kap.` and `Rz`
+  references are the ones the sub-issues carried, circulars get revised, and
+  paragraph numbers move when they do. Every anchor names a chapter as well as
+  a number so that a renumbering leaves it pointing at the right place, and
+  §17.1 says the rest: verify against the published text before any of it is
+  put in front of somebody who will act on it. A confidently wrong margin
+  number costs more than an absent one, because it is the kind of error a
+  reader generalizes from.
 - **A phase judged against the clock is the subtle version of the same bug.**
   Every screen in this platform correctly asks `EffectivePhase(time.Now())`.
   Inside a pack that would make a document of last quarter change its mind in
   April, so the pack asks about the range's end, and anything new that carries
   a phase into an export has to do the same.
+
+---
+
+## 17. The requirement mapping (issue #143)
+
+Everything above this section describes a mechanism. This one is the other
+half, and it is the reason the rest is legible: for each supervisory
+requirement the suite was built against, what in the platform produces the
+evidence, where it is read, and what it does not cover.
+
+It is also the deliverable most likely to be read by somebody who will never
+open the code, so it is written to stand on its own — and the one that decays
+fastest, because a mapping is worth something only while it is current. §17.7
+is what holds it there.
+
+### 17.1 Three things to read before the table
+
+**Kitchen is not, and cannot be, "FINMA compliant."** Compliance is a property
+of an institution: its governance, its risk appetite, its people and the
+judgements they make. Software cannot hold that property, and a platform
+claiming it would be selling the one thing it is structurally unable to
+deliver. What this table claims is narrower and checkable — that the evidence
+these requirements ask an institution to be able to produce is produced here as
+a byproduct of deploying, rather than assembled by hand afterwards.
+
+**A margin number is an anchor, not a citation.** The `Kap.` and `Rz`
+references below are the ones the suite's own issues carried while it was being
+built. They are approximate by construction: a circular gets revised, margin
+numbers move when it does, and a reference written against one revision points
+somewhere slightly different in the next. Every anchor therefore names a
+chapter as well as a number, because the chapter survives a renumbering that
+the paragraph does not. Nothing here is a quotation, and no number here has
+been checked by anybody with a supervisory mandate. **Verify every reference
+against the official circular before this document reaches an examiner, an
+internal audit function, or anything that gets filed** — and where a paraphrase
+here and the published text disagree, the published text is right and this
+document is wrong.
+
+**The table claims evidence, not adequacy.** A row says: this requirement asks
+an institution to be able to show something, and *this* is the thing that shows
+it. Whether the control behind it is adequate — whether the bar an environment
+sets is high enough, whether the reviewers are the right reviewers, whether 90
+days of audit log is long enough for this institution — is a judgement about
+the institution and no table can make it. What a platform can do is remove the
+excuse that the evidence is unobtainable. That is all it does here, and it is
+worth more than it sounds.
+
+### 17.2 The requirement codes
+
+The `GR-` codes are the compliance suite's own shorthand, not a supervisory
+numbering. Each sub-issue of #144 carried its codes from the day it was
+written, and `docs/api/audit-pack.md` cites them field by field; this is the
+register they have been pointing at.
+
+A gap in the lettering is not a missing row. The register lists the codes
+something on this platform actually answers — a requirement no component of a
+deployment platform touches was never given a code here in the first place.
+
+| Code | What it asks an institution to be able to show | What answers it here |
+|---|---|---|
+| GR-A2 | The first line owns its own controls, rather than a central function owning them on its behalf | Environment owners declare the bar for their own environment, and the application team cannot grant itself eligibility (#131) |
+| GR-A4 | Which controls apply where, and a documented decision each time one was applied | The policy engine's stored decisions, with the bundle digest, input digest, data snapshot and rules fired — replayable (#132, §9.2) |
+| GR-B1 | An inventory of assets, including software and where it is held | The reconciled graph itself: projects, environments, releases, claims, connections and domains, plus what each artifact is made of (#128, `GET /compliance/inventory`) |
+| GR-C1 | Which functions are critical | The designation, carried and never inferred. Kitchen refuses to have an opinion about it (#141, §15) |
+| GR-C2 | A declared tolerance for disruption, used rather than filed | `rto` / `rpo` on Project and Environment; the RTO *is* the threshold `env.rto-at-risk` fires against (#141) |
+| GR-C4 | Which systems and third parties support each critical function | `GET /compliance/criticality` forwards, `GET /compliance/dependents` backwards, both traversals of the graph rather than a maintained list (#141) |
+| GR-D1 | That every change to production is traceable to a person and to an artifact | The hash-chained log (§4), the artifact's identity and its evidence (§5), and the review the change came through (§8) |
+| GR-D2 | Environments separated, including their data | One digest promoted through ordered stages and never rebuilt (#133), plus the provenance of what a provisioner handed a preview (#138) |
+| GR-D4 | Vulnerability and defect management, risk-tiered and ongoing | Gates record findings (§7), the rescan re-runs them against today's database (§9), VEX says what does not apply (§10) |
+| GR-D8 | Log integrity, and timestamps worth reading | The chain and its verifier (§4.3, §4.8), the immutability claim as it is actually made (§12.3), and the measured clock drift behind every timestamp (§12.6) |
+| GR-E1 | Access control over the platform and what it holds | Project roles and platform roles as the API enforces them, and the grant list as the pack reports it (§11, `GET /access/identities`) |
+| GR-E2 | Recertification of access with retained evidence, and segregation of duties | Recertification cycles closing to a signed artefact (§11.1, §11.2), and the four-eyes record on every release (§8) |
+| GR-E3 | Privileged access treated as its own domain | Six named privileged classes materialized inside the hashed details, filterable in one request (§11, `GET /audit?privileged=true`) |
+| GR-E5 | Machine identities named, and their exemptions visible | The allowlist a bot commit is exempted under, recorded on the release rather than implied (§8.5) |
+| GR-F2 | A posture driven by today's threat picture, not by the day of the build | Continuous re-evaluation, with the vulnerability database snapshot stored beside each finding (§9, §9.5) |
+| GR-G1 | Critical data identified and classified | `dataClass` on Project, Environment and ResourceClaim — inherited, narrowable, never defaulted, `unclassified` answered as a word (#137) |
+| GR-G2 | Where that data sits, continuously | `residency` declared on the environment and *recorded* from the provider's actual placement on a claim (#137, `GET /compliance/inventory`) |
+| GR-G4 | Protection proportionate to the classification | The class ceiling refused on every path, and the provenance of provisioned data — `production`, `masked`, `synthetic`, or `undeclared` read as the worst case (#137, #138) |
+| GR-G6 | Retention and deletion that can be proved rather than asserted | One retention model per class with a documented floor and a recorded override, and the sweep's own deletion evidence (§12.1, §12.4, §12.5) |
+| GR-I4 | An orderly exit: the evidence outlives the platform that produced it | DSSE envelopes on OCI referrers, verifiable with cosign and openssl by an institution that has switched Kitchen off (§5.1, §13.3) |
+| GR-J3 | Readiness for an inspection, without a three-week project first | `GET /projects/{name}/audit-pack` — one window, one signed document, byte-reproducible (§13) |
+| GR-L1 | An artefact per control, not a screenshot of a screen | Every decision is a record, every closed cycle an envelope, every artifact an evidence set — all of it exportable (§5, §13) |
+| GR-L3 | Evidence sufficient to substantiate an incident report inside the reporting clock | The audit retention floor exists for exactly this (§4.7), and the pack reports a window retention has already truncated rather than answering with less (§13.5) |
+| GR-L4 | An exception register with owner, expiry, reasoning and compensating control | The Exception object and its escalation ladder (#136), read back through `GET /exceptions`; a VEX suppression is deliberately *not* in it, and §10.9 says why |
+
+### 17.3 The anchors
+
+Carried from the sub-issues, and subject in full to the caveat in §17.1.
+FINMA-RS 2023/1 replaced 2008/21 with effect from 1 January 2024, so a mapping
+that lands on the old circular's annexes is pointing at a document that no
+longer governs.
+
+| Anchor | What it covers | Components mapped to it |
+|---|---|---|
+| FINMA-RS 2023/1, Kap. IV.A (~Rz 22–46) | Operational risk controls, their applicability, and how exceptions to them are handled | #131, #132, #135, #136 |
+| FINMA-RS 2023/1, Kap. IV.B | ICT and change management, and the logging under it | #126, #127, #128, #129, #133, #134, #139, #140 |
+| FINMA-RS 2023/1, Kap. IV.C | Cyber risk management | #126, #130, #134 |
+| FINMA-RS 2023/1, Kap. IV.D (~Rz 71–82) | Critical data: identification, classification, and where it is held | #137, #138, #140 |
+| FINMA-RS 2023/1, Kap. V (~Rz 102 ff.) | Operational resilience: critical functions, tolerances, and what supports them | #141 |
+| FINMA-RS 2018/3, Rz 18, 18.1 | Outsourcing: portability and an orderly return of what the provider holds | #127 |
+| FINMA-RS 2017/1 | Corporate governance and the internal control system — the three lines behind "segregation of duties" | #129, #131, #139 |
+| FINMA-RS 2013/3 | Audit, and the evidence an audit firm asks an institution for | #142 |
+| Art. 29(2) FINMAG, and Art. 74b ISG for the NCSC duty | Reporting incidents of substantial importance, against a clock that starts at awareness | #126, #140 |
+
+The last row is the one worth dwelling on, because it is where a platform
+detail turns into an institutional failure. The reporting clock runs from when
+the institution *became aware*, which can be well after the transition that
+caused the incident. A log that has already aged out cannot substantiate the
+report that duty demands — which is why the audit retention floor is 90 days
+and why going under it takes a written, read-back-in-full override (§12.5).
+
+### 17.4 Component by component
+
+Every component the suite shipped, in the order it was built. "Reads as" names
+the surface an answer comes out of; the CLI reaches all of them, and
+`kitchen api` reaches anything without a command of its own.
+
+| Component | Answers | Anchor | What it produces | Reads as | What it does not cover |
+|---|---|---|---|---|---|
+| **Audit log** (#126, §4) | GR-D8, GR-L1, GR-L3 | 2023/1 Kap. IV.B/C; FINMAG 29(2) | One hash-chained row per state transition, attributed to a person or to the named reconciler that decided it, appended before the transition is allowed to stand | `GET /audit`, `GET /audit/verify`, the Platform → Audit screen, the pack's `auditLog` | Changes made outside the platform. §11.4 detects some of them and says plainly what it cannot see |
+| **Artifact identity** (#127, §5) | GR-D1, GR-I4 | 2023/1 Kap. IV.B; 2018/3 Rz 18 | DSSE envelopes wrapping in-toto Statements, attached to the image digest through OCI referrers | `GET /builds/{name}/attestations`, the Build screen, `cosign verify-attestation` with no Kitchen involved | Anything about a *tag*. Evidence is bound to content, and a tag reference is refused outright |
+| **Provenance and SBOM** (#128, §6) | GR-B1, GR-D1, GR-D4 | 2023/1 Kap. IV.B | SLSA provenance from the builder itself, and a bill of materials, both countersigned by the platform | `GET /builds/{name}/attestations`, the Build screen | Runtime dynamic loads, and base-image drift after the build (§9.9) |
+| **Review provenance** (#129, §8) | GR-D1, GR-E2, GR-E5 | 2023/1 Kap. IV.A/B; 2017/1 | Author, merger and the approvals that still stood — asked of the provider while the answer is still true, and recorded with whose claim it is | The pack's `changeLog.review`, the Build screen | Whether self-approval is acceptable. It is recorded as such, never filtered — that judgement is the institution's (§8.4) |
+| **Quality gates** (#130, §7) | GR-D4 | 2023/1 Kap. IV.B/C | Signed findings from a gate that is given nothing and decides nothing | `POST /builds/{name}/gates`, `kitchen gates`, the Build screen | Verdicts. A gate that emitted one would be deciding the environment's business (§7.1) |
+| **Environment requirements** (#131) | GR-A2, GR-C2, GR-E1 | 2017/1; 2023/1 Kap. IV.A | The bar an environment sets, changeable only by its owners and recorded with the digest it replaced | `PATCH /environments/{name}/requirements`, `GET /environments/{name}/eligibility`, the environment's Requirements panel | An application team's opinion of its own eligibility. That is the point of it |
+| **Policy engine** (#132, §9.2) | GR-A4, GR-L1 | 2023/1 Kap. IV.A | A stored decision per evaluation: bundle digest, input digest, data snapshot, verdict, rules fired, and the canonical input verbatim | `GET /decisions`, `GET /decisions/{id}`, `POST /decisions/{id}/replay`, `GET /policy/bundles`, `kitchen decisions` | Fetching anything during evaluation. A decision that reached out cannot be replayed, so the engine cannot (§2) |
+| **Staged promotion** (#133) | GR-D1, GR-D2 | 2023/1 Kap. IV.B | One digest moving through ordered stages, each boundary a decision; three verdicts and no fourth | `POST /projects/{name}/promotions`, `GET /promotions/{name}`, `kitchen promote`, the project's pipeline | A rebuild between stages. There isn't one, which is what makes the rest true |
+| **Continuous re-evaluation** (#134, §9) | GR-D4, GR-F2 | 2023/1 Kap. IV.B/C | A scan of what is deployed against today's database, re-run through the promotion code path, and the drift between then and now | `GET /compliance/drift`, `kitchen drift`, the drift panel | Taking anything down. Blocked means recorded and surfaced; the consequence of missing evidence lives at promotion (§16) |
+| **Exploitability** (#135, §10) | GR-L4 | 2023/1 Kap. IV.A | OpenVEX documents as attestations, with an enumerated justification for `not_affected` and the author recorded twice | `GET /builds/{name}/vex`, `POST /builds/{name}/vex`, `kitchen vex`, the VEX panel | The exception register. A suppression removes a finding before a rule sees it, so nothing is waived (§10.9) |
+| **Exceptions and break-glass** (#136) | GR-L4 | 2023/1 Kap. IV.A | A per-rule waiver with requester, approver, incident reference and expiry, on a ladder that escalates with duration | `POST /projects/{name}/exceptions`, `GET /exceptions`, `GET /exceptions/{name}`, `PATCH /exceptions/{name}` to close one early, `kitchen exceptions`, the exceptions panel | Blocking the emergency. It is allowed, recorded loudly, and expires (§2) |
+| **Data classification** (#137) | GR-G1, GR-G2, GR-G4, GR-B1 | 2023/1 Kap. IV.D | `dataClass` and `residency` across the graph, inherited and narrowable, with every change a privileged record carrying the previous value | `GET /compliance/inventory`, the pack's `inventory` | Deciding what is confidential. It carries the classification the institution made |
+| **Provider data contract** (#138) | GR-D2, GR-G4 | 2023/1 Kap. IV.B/D | A provisioner's declaration of what the data derives from — `production`, `masked` or `synthetic` — signed, and `undeclared` treated as the worst case | The claim's status, the bind's audit record, the pack's `claims[].provenance` | Masking anything. It defines the contract; a masking provisioner is written against it ([CRDS.md](CRDS.md)) |
+| **Access recertification** (#139, §11) | GR-E2, GR-E3, GR-E5, GR-E1 | 2023/1 Kap. IV.B; 2017/1 | Cycles that close to a signed artefact, privileged actions as their own class, orphan detection, and out-of-band write detection | `GET /access/identities`, `GET /access/reviews`, `POST /access/reviews`, `PATCH /access/reviews/{name}`, `kitchen access` | Preventing a cluster-admin bypass. §11.5 states the residual risk rather than arguing it away, and §11.7 says why none of it blocks a deploy |
+| **Retention and the clock** (#140, §12) | GR-D8, GR-G6, GR-L3 | 2023/1 Kap. IV.B/D | One retention model over every class, a floor under the audit log, deletion evidence, and a measured answer to whether the clocks agree | `GET /platform/retention`, `PATCH /platform/retention`, `kitchen retention`, the retention panel | Immutability the platform does not have. §12.3 states exactly what the claim is, and `auditImmutable: false` is a smaller claim rather than a fault |
+| **Criticality** (#141) | GR-C1, GR-C2, GR-C4 | 2023/1 Kap. V | The designation and its tolerances, the function-to-resource mapping forwards, and the blast radius of one provider backwards | `GET /compliance/criticality`, `GET /compliance/dependents`, `kitchen criticality`, the criticality panel | Deciding what is critical, and RPO alerting — no provider declares a recovery point, and a rule that always passed would read as evidence |
+| **Audit pack** (#142, §13) | GR-J3, GR-L1 | 2023/1 throughout; 2013/3 | One project's whole answer for one window, byte-reproducible, in three renderings of one address — the JSON the digest is about, a DSSE envelope over it, and a self-contained page for a reader who is not an engineer | `GET /projects/{name}/audit-pack`, `kitchen audit-pack`, the pack panel | The gaps it names out loud: a truncated window, an inventory that is current state, an unsigned platform (§13.5) |
+| **This mapping** (#143, §17) | Meta | — | The document that makes the rest legible, and the register the GR codes point at | `docs/COMPLIANCE.md` §17, linked from the README | Being right about margin numbers on its own authority. §17.1 |
+
+### 17.5 What has no row, and why
+
+§3 is the list, and it is specific on purpose. The short version: this platform
+carries inputs for institutional obligations and never the obligation. Nothing
+here identifies a critical function, determines that an outsourcing is
+material, decides what counts as critical data, judges that an incident is of
+substantial importance, performs a business impact analysis, or backs up and
+restores an application's own state. Those are the institution's, every one of
+them, and a platform that appeared to have an opinion about any of them would
+become the thing somebody later cites as the source of a determination nobody
+made.
+
+Saying so plainly is not a disclaimer. It is what makes the rest of the table
+worth reading: a document that claimed all six would be claiming the parts a
+platform structurally cannot do, and an examiner would find that out in the
+first ten minutes.
+
+### 17.6 The question, and the one request that answers it
+
+The rows above are the mapping. This is what it looks like from the other side
+of the table — the questions that cost an institution three weeks of
+reconciliation, and what each one is here.
+
+| Asked | Answered by |
+|---|---|
+| "What is running in production right now, and what is it made of?" | `GET /compliance/inventory`, and the evidence set on each artifact |
+| "Who approved this change, and were they somebody other than its author?" | The pack's `changeLog.review`, per release — `independent` is the field four-eyes actually asks about |
+| "Why was this release allowed into this environment in March?" | `GET /decisions/{id}`, and `POST /decisions/{id}/replay` to re-run it against the bundle bytes kept beside it |
+| "What is deployed that would no longer be allowed in today?" | `GET /compliance/drift`, with `newly-failing` separated from what was waived at promotion |
+| "What is currently being ignored, on whose authority, and until when?" | `GET /exceptions` for waivers; `GET /builds/{name}/vex` for suppressions, which are not the same thing (§10.9) |
+| "Who has access to this project, and when did somebody last check?" | `GET /access/reviews`, and the signed artefact each closed cycle left behind |
+| "Which environments break if this provider goes down, and how long have we got?" | `GET /compliance/dependents`, worst designation first, with the tightest RTO among them |
+| "Give me all of it, for last quarter." | `GET /projects/{name}/audit-pack?from=&to=` |
+| "Was the platform recording, signing and re-evaluating at all while this happened?" | `GET /compliance` — the posture behind every answer above, because a pack from a platform that was not recording is a very different document |
+
+### 17.7 Keeping it current
+
+A stale mapping is worse than none: it is read as a claim about a platform that
+no longer exists, and every row a reader checks and finds wrong costs the rows
+they did not check. The rule is therefore the same one the rest of this
+repository uses for the links a test cannot hold — make it fail rather than
+make it somebody's job to remember.
+
+`TestTheMappingCoversEveryComplianceSurface` in `internal/api` reads this
+document and refuses two kinds of drift:
+
+- **A compliance endpoint nobody mapped.** Every route in the API's own
+  enforcement table (`api.PolicyTable()`) whose path is one of this suite's —
+  `/audit`, `/compliance/…`, `/decisions`, `/exceptions`, `/access/…`,
+  `/policy/bundles`, `/platform/retention`, an artifact's attestations, gates
+  and VEX, an environment's requirements and eligibility, promotions, and the
+  audit pack — has to be named in §17. Adding one and not mapping it fails the
+  API's tests, in the same shape as `TestEveryCallNamesARealAPIRoute` failing a
+  CLI command that names a route which has moved.
+- **A component with no row.** Every issue this document gives a section to
+  has to appear in §17.4, so a phase that adds a section without adding its row
+  is a failing build rather than a quiet omission.
+
+What a test cannot hold is whether a row is *true* — whether the anchor is the
+right anchor and the paraphrase is a fair one. That is the walk in
+[CLAUDE.md](../CLAUDE.md)'s final pass, and §17.1 is what a reader is owed in
+the meantime.
+
+### 17.8 The same evidence answers more than one regime
+
+Nothing in the mechanism is Swiss. The reference regime is specific because a
+specific one forces real decisions, but the evidence layer is deliberately
+built out of standards rather than out of Kitchen: in-toto Statements, DSSE
+envelopes, OCI referrers, SLSA provenance, SPDX or CycloneDX, OpenVEX, Rego.
+
+The practical consequence is that mapping this platform to a second regime is a
+second table over the same evidence, not a second implementation. An
+institution under DORA's ICT risk requirements, an operator inside NIS2's
+scope, a vendor asked for NIST SSDF practices or an ISO 27001 audit of change
+and access management is asking for artifacts this platform already produces
+and can already export. Whoever writes that table gets §17.4's middle columns
+unchanged and rewrites only the anchors — which is the whole argument for
+having used somebody else's formats in the first place (§5.1).
