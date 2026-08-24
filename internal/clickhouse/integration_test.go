@@ -25,6 +25,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Bermos/Kitchen/internal/retention"
 )
 
 // The tests in this package answer "did we build the statement we meant to"
@@ -115,16 +117,16 @@ func TestIntegrationSchemaApplies(t *testing.T) {
 	client := integrationClient(t)
 	ctx := context.Background()
 
-	if err := client.EnsureTelemetrySchema(ctx, integrationRetained); err != nil {
+	if err := client.EnsureTelemetrySchema(ctx, retention.Uniform(integrationRetained)); err != nil {
 		t.Fatalf("EnsureTelemetrySchema: %v", err)
 	}
-	if err := client.EnsureTelemetrySchema(ctx, integrationRetained); err != nil {
+	if err := client.EnsureTelemetrySchema(ctx, retention.Uniform(integrationRetained)); err != nil {
 		t.Fatalf("EnsureTelemetrySchema is not idempotent: %v", err)
 	}
 	// And that a retention change is applied rather than refused — each MODIFY
 	// TTL has to name that table's own time column, and there are five spellings
 	// of it across these tables.
-	if err := client.EnsureTelemetrySchema(ctx, 9); err != nil {
+	if err := client.EnsureTelemetrySchema(ctx, retention.Uniform(9)); err != nil {
 		t.Fatalf("EnsureTelemetrySchema at a new retention: %v", err)
 	}
 	for _, table := range retainedTables() {
@@ -132,8 +134,8 @@ func TestIntegrationSchemaApplies(t *testing.T) {
 		if err != nil {
 			t.Fatalf("reading %s's retention: %v", table, err)
 		}
-		if days != 9 {
-			t.Errorf("%s retains %d days, want 9", table, days)
+		if len(days) != 1 || days[0] != 9 {
+			t.Errorf("%s retains %v days, want [9]", table, days)
 		}
 	}
 	// The request tables scale the knob rather than applying it, so a MODIFY
@@ -144,11 +146,11 @@ func TestIntegrationSchemaApplies(t *testing.T) {
 		if err != nil {
 			t.Fatalf("reading %s's retention: %v", table, err)
 		}
-		if days != want {
-			t.Errorf("%s retains %d days, want %d", table, days, want)
+		if len(days) != 1 || days[0] != want {
+			t.Errorf("%s retains %v days, want [%d]", table, days, want)
 		}
 	}
-	if err := client.EnsureTelemetrySchema(ctx, integrationRetained); err != nil {
+	if err := client.EnsureTelemetrySchema(ctx, retention.Uniform(integrationRetained)); err != nil {
 		t.Fatalf("EnsureTelemetrySchema back to %d: %v", integrationRetained, err)
 	}
 }
@@ -164,7 +166,7 @@ func TestIntegrationSchemaApplies(t *testing.T) {
 func TestIntegrationTheExporterCanWriteEveryTable(t *testing.T) {
 	client := integrationClient(t)
 	ctx := context.Background()
-	if err := client.EnsureTelemetrySchema(ctx, integrationRetained); err != nil {
+	if err := client.EnsureTelemetrySchema(ctx, retention.Uniform(integrationRetained)); err != nil {
 		t.Fatalf("EnsureTelemetrySchema: %v", err)
 	}
 
@@ -476,7 +478,7 @@ func TestIntegrationTraceIDLookup(t *testing.T) {
 func TestIntegrationLogQuery(t *testing.T) {
 	client := integrationClient(t)
 	ctx := context.Background()
-	if err := client.EnsureLogsSchema(ctx, integrationRetained); err != nil {
+	if err := client.EnsureLogsSchema(ctx, integrationRetained, integrationRetained); err != nil {
 		t.Fatalf("EnsureLogsSchema: %v", err)
 	}
 
@@ -586,7 +588,7 @@ func TestIntegrationLogQuery(t *testing.T) {
 func TestIntegrationMetricsOverview(t *testing.T) {
 	client := integrationClient(t)
 	ctx := context.Background()
-	if err := client.EnsureTelemetrySchema(ctx, integrationRetained); err != nil {
+	if err := client.EnsureTelemetrySchema(ctx, retention.Uniform(integrationRetained)); err != nil {
 		t.Fatalf("EnsureTelemetrySchema: %v", err)
 	}
 
@@ -892,7 +894,7 @@ func TestIntegrationClusterEvents(t *testing.T) {
 func TestIntegrationTelemetryFreshness(t *testing.T) {
 	client := integrationClient(t)
 	ctx := context.Background()
-	if err := client.EnsureTelemetrySchema(ctx, integrationRetained); err != nil {
+	if err := client.EnsureTelemetrySchema(ctx, retention.Uniform(integrationRetained)); err != nil {
 		t.Fatalf("EnsureTelemetrySchema: %v", err)
 	}
 

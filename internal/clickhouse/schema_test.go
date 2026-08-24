@@ -29,6 +29,8 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"github.com/Bermos/Kitchen/internal/retention"
 )
 
 // The fixture connection every test in this package builds a client from.
@@ -95,6 +97,18 @@ func (s *fakeStore) sent(fragment string) bool {
 	return false
 }
 
+// sentNear is sent() for two fragments that have to be in the *same*
+// statement. A DDL that names one table and a TTL that belongs to another
+// would satisfy two separate sent() calls and mean nothing.
+func (s *fakeStore) sentNear(first, second string) bool {
+	for _, query := range s.queries {
+		if strings.Contains(query, first) && strings.Contains(query, second) {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *fakeStore) transcript() string {
 	return strings.Join(s.queries, "\n---\n")
 }
@@ -109,7 +123,7 @@ func TestEnsureLogsSchemaCreatesTheTable(t *testing.T) {
 	// A table that does not exist yet reports no engine at all.
 	store.engine = ""
 
-	if err := store.client(t).EnsureLogsSchema(context.Background(), 14); err != nil {
+	if err := store.client(t).EnsureLogsSchema(context.Background(), 14, 14); err != nil {
 		t.Fatalf("EnsureLogsSchema: %v", err)
 	}
 
@@ -133,7 +147,7 @@ func TestEnsureLogsSchemaCreatesTheTable(t *testing.T) {
 // ordering key, and it is absent from every INSERT column list, which is what
 // lets a stock exporter write this table without knowing Kitchen exists.
 func TestKitchenColumnsAreMaterializedAndOrderable(t *testing.T) {
-	ddl := createLogsTable(testDatabase, 30)
+	ddl := createLogsTable(testDatabase, 30, 30)
 
 	for _, want := range []string{
 		"project     LowCardinality(String) MATERIALIZED ResourceAttributes['kitchen.project']",
@@ -153,7 +167,7 @@ func TestKitchenColumnsAreMaterializedAndOrderable(t *testing.T) {
 	// Every OTel table carries the same set, because every one of them is read
 	// per project.
 	for name, table := range map[string]string{
-		LogsTable:         createLogsTable(testDatabase, 30),
+		LogsTable:         createLogsTable(testDatabase, 30, 30),
 		TracesTable:       createTracesTable(testDatabase, 30),
 		MetricsGaugeTable: metricsTableDDL(testDatabase, 30)[MetricsGaugeTable],
 	} {
@@ -167,7 +181,7 @@ func TestKitchenColumnsAreMaterializedAndOrderable(t *testing.T) {
 // A column missing here is every insert failing at runtime, which is invisible
 // until a collector is actually running.
 func TestTheLogTableCarriesTheExportersColumns(t *testing.T) {
-	ddl := createLogsTable(testDatabase, 30)
+	ddl := createLogsTable(testDatabase, 30, 30)
 	for _, column := range []string{
 		"Timestamp DateTime64(9)", "TraceId String", "SpanId String", "TraceFlags UInt8",
 		"SeverityText LowCardinality(String)", "SeverityNumber UInt8",
@@ -195,7 +209,7 @@ func TestTheSchemaNoLongerPatchesColumnsInPlace(t *testing.T) {
 	store := newFakeStore(t)
 	store.engine = "MergeTree TTL toDateTime(Timestamp) + toIntervalDay(30)"
 
-	if err := store.client(t).EnsureTelemetrySchema(context.Background(), 30); err != nil {
+	if err := store.client(t).EnsureTelemetrySchema(context.Background(), retention.Uniform(30)); err != nil {
 		t.Fatalf("EnsureTelemetrySchema: %v", err)
 	}
 	if store.sent("ADD COLUMN") {
@@ -214,7 +228,7 @@ func TestEnsureLogsSchemaAltersTTLWhenRetentionChanges(t *testing.T) {
 	store.engine = "MergeTree PARTITION BY toDate(Timestamp) ORDER BY (project, environment, Timestamp) " +
 		"TTL toDateTime(Timestamp) + toIntervalDay(30)"
 
-	if err := store.client(t).EnsureLogsSchema(context.Background(), 7); err != nil {
+	if err := store.client(t).EnsureLogsSchema(context.Background(), 7, 7); err != nil {
 		t.Fatalf("EnsureLogsSchema: %v", err)
 	}
 
@@ -228,7 +242,7 @@ func TestEnsureLogsSchemaLeavesAMatchingTTLAlone(t *testing.T) {
 	store := newFakeStore(t)
 	store.engine = "MergeTree TTL toDateTime(Timestamp) + toIntervalDay(30)"
 
-	if err := store.client(t).EnsureLogsSchema(context.Background(), 30); err != nil {
+	if err := store.client(t).EnsureLogsSchema(context.Background(), 30, 30); err != nil {
 		t.Fatalf("EnsureLogsSchema: %v", err)
 	}
 
@@ -251,7 +265,7 @@ func TestEveryTableGetsItsOwnTimeColumnInTheTTL(t *testing.T) {
 	store := newFakeStore(t)
 	store.engine = ""
 
-	if err := store.client(t).EnsureTelemetrySchema(context.Background(), 9); err != nil {
+	if err := store.client(t).EnsureTelemetrySchema(context.Background(), retention.Uniform(9)); err != nil {
 		t.Fatalf("EnsureTelemetrySchema: %v", err)
 	}
 
@@ -418,7 +432,7 @@ func TestEnsureTelemetrySchemaCreatesEveryTable(t *testing.T) {
 	store := newFakeStore(t)
 	store.engine = ""
 
-	if err := store.client(t).EnsureTelemetrySchema(context.Background(), 14); err != nil {
+	if err := store.client(t).EnsureTelemetrySchema(context.Background(), retention.Uniform(14)); err != nil {
 		t.Fatalf("EnsureTelemetrySchema: %v", err)
 	}
 
@@ -485,7 +499,7 @@ func TestTheRollupIsFedFromBothMetricTables(t *testing.T) {
 func TestEnsureLogsSchemaRejectsNonsenseRetention(t *testing.T) {
 	store := newFakeStore(t)
 
-	if err := store.client(t).EnsureLogsSchema(context.Background(), 0); err == nil {
+	if err := store.client(t).EnsureLogsSchema(context.Background(), 0, 0); err == nil {
 		t.Fatal("expected a retention of 0 days to be rejected")
 	}
 	if len(store.queries) != 0 {
@@ -497,7 +511,7 @@ func TestEnsureLogsSchemaSurfacesStoreErrors(t *testing.T) {
 	store := newFakeStore(t)
 	store.failWith = "Code: 516. DB::Exception: kitchen: Authentication failed"
 
-	err := store.client(t).EnsureLogsSchema(context.Background(), 30)
+	err := store.client(t).EnsureLogsSchema(context.Background(), 30, 30)
 	if err == nil {
 		t.Fatal("expected the store's error to surface")
 	}

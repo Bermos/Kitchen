@@ -22,6 +22,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Bermos/Kitchen/internal/retention"
 )
 
 // The audit row goes out and comes back through the same field names. The
@@ -186,7 +188,7 @@ func TestEnsureAuditSchemaIsNotPartOfTheTelemetrySchema(t *testing.T) {
 	store := newFakeLogStore(t)
 	store.rows = ""
 
-	if err := store.client(t).EnsureTelemetrySchema(context.Background(), 30); err != nil {
+	if err := store.client(t).EnsureTelemetrySchema(context.Background(), retention.Uniform(30)); err != nil {
 		t.Fatalf("EnsureTelemetrySchema: %v", err)
 	}
 	if store.sawQuery(AuditTable) {
