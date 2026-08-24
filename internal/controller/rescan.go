@@ -525,6 +525,11 @@ func (s *RescanSweeper) publish(
 	snapshot := dataSnapshot(report.DataSnapshot, fromReport, scanner, scannedAt)
 
 	// The findings become evidence here, where the key is — never in the pod.
+	//
+	// And they are attached *before* the evaluation, which is the ordering the
+	// whole pass turns on: the evaluator materializes the artifact's evidence
+	// from the registry, so a scan signed after the evaluation would be judged
+	// a day late, by tomorrow's sweep, against tomorrow's database.
 	manifest, err := s.attest(ctx, kitchen, attester, scanner, state, report,
 		findings, raw, snapshot, scannedAt)
 	if err != nil {
