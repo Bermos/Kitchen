@@ -3,7 +3,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 import { api } from "../lib/api";
 import { user, signOut } from "../lib/auth";
-import { loadConfig } from "../lib/config";
+import { loadConfig, platformVersion } from "../lib/config";
 import { callerFor, forgetMe, meError } from "../lib/me";
 import { canSwitchMode, operatorMode } from "../lib/mode";
 import { may } from "../lib/policy";
@@ -194,9 +194,15 @@ const builds = computed(() => {
 // The release the operator was built from — the platform's version, since one
 // release publishes the chart and both images. It rides in /config.json, so it
 // is there before anyone signs in and costs no extra request.
-const platform = useAsync(() => loadConfig());
+//
+// It is read off `platformVersion` rather than the loaded config because it is
+// the one field of that config that can change under an open page: a platform
+// upgrade replaces the operator serving it, and the settings page re-reads
+// /config.json while the upgrade lands. The number here moves with it instead
+// of staying on the old release until somebody reloads.
+void loadConfig();
 const version = computed(() => {
-  const v = platform.data.value?.version;
+  const v = platformVersion.value;
   if (!v) return null;
   return v === "dev" ? "dev" : `v${v}`;
 });
