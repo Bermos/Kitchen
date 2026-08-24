@@ -27,6 +27,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/access"
 	"github.com/Bermos/Kitchen/internal/attestation"
 	"github.com/Bermos/Kitchen/internal/clickhouse"
 	"github.com/Bermos/Kitchen/internal/policy"
@@ -612,7 +613,7 @@ func packReview(
 		entry := &review.Status.Entries[i]
 		// A platform grant is a grant on this project — an operator holds
 		// admin everywhere — so both belong here and nothing else does.
-		if entry.Grant != project && entry.Grant != "platform" {
+		if entry.Grant != project && entry.Grant != access.PlatformGrant {
 			omitted++
 			continue
 		}
