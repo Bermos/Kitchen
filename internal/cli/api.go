@@ -388,8 +388,13 @@ type driftRule struct {
 	// Since is "rescan" for a rule that started failing after promotion, and
 	// "promotion" for one that fired then too and was waived by an exception
 	// which has since run out.
-	Since     string `json:"since"`
-	Exception string `json:"exception,omitempty"`
+	Since string `json:"since"`
+	// Exception is the grant waiving this rule in the evaluation the row
+	// reports; WaivedAtPromotion is the grant that waived it when the release
+	// was promoted. They are two questions, and a rule firing unwaived now
+	// answers only the second.
+	Exception         string `json:"exception,omitempty"`
+	WaivedAtPromotion string `json:"waivedAtPromotion,omitempty"`
 }
 
 // driftItem is one deployed (environment, release) pair as the drift view
@@ -401,12 +406,16 @@ type driftItem struct {
 	Artifact    string `json:"artifact,omitempty"`
 	// Status is compliant, waived, newly-failing, waived-at-promotion or
 	// not-evaluated.
-	Status          string      `json:"status"`
-	Verdict         string      `json:"verdict,omitempty"`
-	ScannedAt       *time.Time  `json:"scannedAt,omitempty"`
-	DataSnapshot    string      `json:"dataSnapshot,omitempty"`
-	Findings        int32       `json:"findings,omitempty"`
-	DecisionID      string      `json:"decisionID,omitempty"`
+	Status       string     `json:"status"`
+	Verdict      string     `json:"verdict,omitempty"`
+	ScannedAt    *time.Time `json:"scannedAt,omitempty"`
+	DataSnapshot string     `json:"dataSnapshot,omitempty"`
+	Findings     int32      `json:"findings,omitempty"`
+	DecisionID   string     `json:"decisionID,omitempty"`
+	// ScanFailed is why the most recent scan attempt did not run, where it did
+	// not. A row carrying it is answering with something older than the
+	// failure, whatever its verdict says.
+	ScanFailed      string      `json:"scanFailed,omitempty"`
 	PromotedVerdict string      `json:"promotedVerdict,omitempty"`
 	PromotedAt      *time.Time  `json:"promotedAt,omitempty"`
 	Rules           []driftRule `json:"rules,omitempty"`

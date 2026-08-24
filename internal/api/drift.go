@@ -73,9 +73,10 @@ const (
 	// driftWasWaived: blocked now, and every rule standing in the way fired at
 	// promotion too and was waived there. The exception ran out.
 	driftWasWaived = "waived-at-promotion"
-	// driftUnknown: nothing has re-evaluated this pair. It is not a finding
-	// about the release; it is a finding about the platform, and it is said
-	// out loud rather than counted as compliant.
+	// driftUnknown: no current re-evaluation stands for this pair — nothing
+	// has ever re-checked it, or the last attempt did not run. It is not a
+	// finding about the release; it is a finding about the platform, and it is
+	// said out loud rather than counted as compliant.
 	driftUnknown = "not-evaluated"
 )
 
@@ -86,10 +87,20 @@ type driftRuleView struct {
 	// Since is "rescan" for a rule that started failing after promotion, and
 	// "promotion" for one that fired at promotion and was waived there.
 	Since string `json:"since"`
-	// Exception names the grant that waived it at promotion, where there was
-	// one. It is the reader's next stop: renew it, resolve it, or fix the
-	// finding.
+	// Exception names the grant waiving this rule **in the evaluation this row
+	// reports** — the one currently holding the release up. It is empty on a
+	// rule that is firing unwaived, which is every rule on a blocked row.
 	Exception string `json:"exception,omitempty"`
+	// WaivedAtPromotion names the grant that waived this rule **when the
+	// release was promoted**, where there was one. On a blocked row that is
+	// the grant which has since run out, and it is the reader's next stop:
+	// renew it, resolve it, or fix the finding.
+	//
+	// The two are separate fields because they answer different questions and
+	// a single one answered whichever the branch happened to set — a `waived`
+	// row would name the expired grant and a blocked row the current one, both
+	// under the same key.
+	WaivedAtPromotion string `json:"waivedAtPromotion,omitempty"`
 }
 
 // driftItemView is one deployed (environment, release) pair.
@@ -111,6 +122,12 @@ type driftItemView struct {
 	DataSnapshot string     `json:"dataSnapshot,omitempty"`
 	Findings     int32      `json:"findings,omitempty"`
 	DecisionID   string     `json:"decisionID,omitempty"`
+	// ScanFailed is why the most recent attempt on this pair did not run,
+	// where it did not. It is a separate field from Message because it is a
+	// fact about the *platform* that survives whatever the row's verdict says:
+	// a reader has to be able to see that the answer beside it is older than
+	// the failure.
+	ScanFailed string `json:"scanFailed,omitempty"`
 
 	// PromotedVerdict and PromotedAt are what was decided when this release
 	// was let in, which is the other half of every comparison here.
@@ -249,11 +266,21 @@ func (s *Server) driftFor(
 		Message: "this release has not been re-evaluated since it was promoted, " +
 			"so nothing here is a statement about it today",
 	}
+	// scanFailed is the reason the last attempt on this pair did not run,
+	// where there was one. It is carried past the verdict switch rather than
+	// written into the message there and then: the switch reads the newest
+	// *stored decision*, which is the last scan that succeeded, so a pair
+	// whose Tuesday scan failed would otherwise read `compliant` as of
+	// Monday — §9.8's "not-evaluated is never counted as compliant" quietly
+	// broken by the one case that produces a stale answer rather than none.
+	scanFailed := ""
 	if state := env.Status.Rescan; state != nil && state.Release == release {
 		item.Artifact = state.Artifact
 		item.DataSnapshot = state.DataSnapshot
 		item.Findings = state.Findings
 		if state.Phase == kitchenv1alpha1.RescanFailed {
+			scanFailed = state.Message
+			item.ScanFailed = state.Message
 			item.Message = "the last scan of this release did not run: " + state.Message
 		}
 	}
@@ -300,17 +327,34 @@ func (s *Server) driftFor(
 	}
 
 	switch latest.Verdict {
-	case policy.VerdictAllowed:
-		item.Status = driftCompliant
-		item.Message = "re-evaluated and still clears its environment's bar"
-		return item, nil
-	case policy.VerdictAllowedWithException:
+	case policy.VerdictAllowed, policy.VerdictAllowedWithException:
+		// A clearing verdict says the artifact cleared the bar *when that scan
+		// ran*. If the scan after it did not run, that is no longer a
+		// statement about today, and it must not be the row's answer — a view
+		// reading `compliant` with a `scannedAt` from before the scanner
+		// started failing is the one shape of this endpoint that would be
+		// worse than having no endpoint.
+		if scanFailed != "" {
+			item.Status = driftUnknown
+			item.Message = "the last scan of this release did not run, so nothing here is a statement " +
+				"about it today — the newest answer is older than the failure: " + scanFailed
+			return item, nil
+		}
+		if latest.Verdict == policy.VerdictAllowed {
+			item.Status = driftCompliant
+			item.Message = "re-evaluated and still clears its environment's bar"
+			return item, nil
+		}
 		item.Status = driftWaived
 		item.Message = "re-evaluated as blocked, with every rule waived by an exception that has not " +
 			"yet expired — compliant by grace, and dated"
 		for _, rule := range now {
 			item.Rules = append(item.Rules, driftRuleView{
-				Rule: rule.Rule, Message: rule.Message, Since: sinceOf(rule, then), Exception: rule.Exception,
+				Rule:              rule.Rule,
+				Message:           rule.Message,
+				Since:             sinceOf(rule, then),
+				Exception:         rule.Exception,
+				WaivedAtPromotion: waivedAtPromotion(rule, then),
 			})
 		}
 		return item, nil
@@ -325,12 +369,14 @@ func (s *Server) driftFor(
 		if since == driftSinceRescan {
 			newly++
 		}
-		waivedBy := ""
-		if earlier, found := then[rule.Rule]; found {
-			waivedBy = earlier.Exception
-		}
 		item.Rules = append(item.Rules, driftRuleView{
-			Rule: rule.Rule, Message: rule.Message, Since: since, Exception: waivedBy,
+			Rule:    rule.Rule,
+			Message: rule.Message,
+			Since:   since,
+			// No Exception: a rule reaching this loop is firing unwaived, so
+			// there is no grant currently holding it. What there may be is the
+			// grant that waived it at promotion and has since expired.
+			WaivedAtPromotion: waivedAtPromotion(rule, then),
 		})
 	}
 	switch {
@@ -358,6 +404,17 @@ const (
 	driftSinceRescan    = "rescan"
 	driftSincePromotion = "promotion"
 )
+
+// waivedAtPromotion names the grant that waived this rule when the release was
+// promoted, where the rule fired then and something waived it. Empty covers
+// both "did not fire at promotion" and "fired and was not waived".
+func waivedAtPromotion(rule firedRule, atPromotion map[string]firedRule) string {
+	earlier, found := atPromotion[rule.Rule]
+	if !found || !earlier.Waived {
+		return ""
+	}
+	return earlier.Exception
+}
 
 // sinceOf answers whether a rule was already firing at promotion. A rule that
 // fired then — waived or not — is not news; one that did not is.

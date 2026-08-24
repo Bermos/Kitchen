@@ -60,8 +60,11 @@ for:
                        break-glass exception which has since expired
   waived               still clearing the bar, but only because an exception
                        is waiving what fires — compliant by grace, and dated
-  not-evaluated        nothing has re-checked this pair; that is a finding
-                       about the platform, not about the release
+  not-evaluated        no current re-evaluation stands for this pair: either
+                       nothing has ever re-checked it, or the last scan did
+                       not run. That is a finding about the platform, not
+                       about the release, and it is never counted as
+                       compliant
 
 Compliant pairs are left out unless --all asks for them.`),
 		Args: cobra.NoArgs,
@@ -111,10 +114,21 @@ Compliant pairs are left out unless --all asks for them.`),
 					}
 					rules := make([]string, 0, len(item.Rules))
 					for _, rule := range item.Rules {
-						rules = append(rules, rule.Rule+" ("+rule.Since+")")
+						// The grant is the reader's next stop — renew it,
+						// resolve it, or fix the finding — so the row names
+						// whichever of the two there is: the one waiving the
+						// rule now, or the one that waived it at promotion and
+						// has since run out.
+						rules = append(rules, rule.Rule+" ("+rule.Since+driftGrant(rule)+")")
+					}
+					status := item.Status
+					if item.ScanFailed != "" {
+						// The row is answering with something older than the
+						// failure, so the failure travels with the word.
+						status += " · last scan failed"
 					}
 					rows = append(rows, []string{
-						item.Project, item.Environment, item.Release, item.Status,
+						item.Project, item.Environment, item.Release, status,
 						scanned, strconv.Itoa(int(item.Findings)), strings.Join(rules, ", "),
 					})
 				}
@@ -125,6 +139,7 @@ Compliant pairs are left out unless --all asks for them.`),
 		}),
 	}
 	cmd.Flags().StringVar(&environment, "environment", "", "only this environment")
+
 	cmd.Flags().BoolVar(&all, "all", false, "include the pairs that are still compliant")
 
 	return describe(cmd, meta{
@@ -137,4 +152,19 @@ Compliant pairs are left out unless --all asks for them.`),
 				"kitchen drift --project shop --all --json"},
 		},
 	})
+}
+
+// driftGrant names the exception on a rule, where there is one: the grant
+// waiving it now, or — for a rule now firing unwaived — the grant that waived
+// it at promotion and has since run out. The two are different facts and the
+// answer keeps them in different fields; a table column has room for one, and
+// only ever one of them is set.
+func driftGrant(rule driftRule) string {
+	if rule.Exception != "" {
+		return ", waived by " + rule.Exception
+	}
+	if rule.WaivedAtPromotion != "" {
+		return ", was waived by " + rule.WaivedAtPromotion
+	}
+	return ""
 }

@@ -118,13 +118,34 @@ has more than two answers:
 | `waived` | it cleared only because an exception is waiving what fires — compliant by grace, and dated |
 | `newly-failing` | blocked now, and at least one rule standing in the way **did not fire at promotion**. The artifact did not change; a vulnerability database did |
 | `waived-at-promotion` | blocked now, and every rule standing in the way fired at promotion too and was waived by an exception that has since expired |
-| `not-evaluated` | nothing has re-checked this pair. That is a finding about the platform, not about the release, and it is never counted as compliant |
+| `not-evaluated` | no current re-evaluation stands for this pair — nothing has ever re-checked it, or the last scan did not run. That is a finding about the platform, not about the release, and it is never counted as compliant |
 
 Each entry in `rules` repeats the distinction: `since: "rescan"` for a rule
 that started failing after promotion, `since: "promotion"` for one that fired
-then too, with `exception` naming the grant that waived it. Collapsing the two
-would make an expired waiver read as a new vulnerability and send somebody
-hunting for a CVE that was never there.
+then too. Collapsing the two would make an expired waiver read as a new
+vulnerability and send somebody hunting for a CVE that was never there.
+
+A rule names its grant in one of two fields, because "what is waiving this
+now" and "what waived this when the release was promoted" are different
+questions and a single field would answer whichever the row happened to be:
+
+- `exception` — the grant waiving this rule **in the evaluation this row
+  reports**, which is the one currently holding the release up. Present on a
+  `waived` row; absent on a blocked one, where every rule listed is firing
+  unwaived.
+- `waivedAtPromotion` — the grant that waived this rule **at promotion**. On a
+  `waived-at-promotion` row that is the grant which has since run out, and it
+  is the reader's next stop: renew it, resolve it, or fix the finding.
+
+`scanFailed`, where it is present, is why the **most recent scan attempt** on
+this pair did not run. It is a separate field from the verdict because the
+verdict comes from the newest stored *decision*, which is the last scan that
+succeeded: a pair whose Monday scan allowed the release and whose Tuesday
+scanner could not pull its image would otherwise answer `compliant` with a
+`scannedAt` from before the failure. A row carrying `scanFailed` is never
+`compliant` — a clearing verdict on it becomes `not-evaluated`, and a blocking
+one stands, because a failed scan does not soften a finding, it only refuses to
+invent a clean one.
 
 `rescanning` is whether the re-evaluation pass is running at all, and it is
 answered before anything else for a reason: an empty drift view under a pass
