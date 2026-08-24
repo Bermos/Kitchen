@@ -373,6 +373,11 @@ type stubLogs struct {
 	decisionErr       error
 	bundles           map[string]string
 
+	// The signed records, which only the audit pack reads.
+	records     []clickhouse.SignedRecord
+	lastRecords clickhouse.SignedRecordQuery
+	recordErr   error
+
 	nodeUsage       []clickhouse.NodeUsage
 	lastNodeUsage   clickhouse.NodeUsageQuery
 	nodeUsageErr    error
@@ -701,6 +706,37 @@ func (s *stubLogs) InsertDecision(_ context.Context, decision clickhouse.Decisio
 	}
 	s.insertedDecisions = append(s.insertedDecisions, decision)
 	return nil
+}
+
+// QuerySignedRecords applies the same filters the real store does, for the
+// reason QueryDecisions does: an audit pack asks this table two different
+// questions in one request, and a stub that answered both with everything
+// would let the pack pass on rows the store would never have sent.
+func (s *stubLogs) QuerySignedRecords(
+	_ context.Context,
+	query clickhouse.SignedRecordQuery,
+) ([]clickhouse.SignedRecord, error) {
+	s.lastRecords = query
+	if s.recordErr != nil {
+		return nil, s.recordErr
+	}
+	matched := []clickhouse.SignedRecord{}
+	for _, record := range s.records {
+		switch {
+		case query.Subject != "" && record.Subject != query.Subject,
+			query.Type != "" && record.Type != query.Type,
+			query.Project != "" && record.Project != query.Project:
+			continue
+		}
+		if !query.Since.IsZero() && record.Timestamp.Before(query.Since) {
+			continue
+		}
+		if !query.Until.IsZero() && !record.Timestamp.Before(query.Until) {
+			continue
+		}
+		matched = append(matched, record)
+	}
+	return matched, nil
 }
 
 func (s *stubLogs) PolicyBundle(_ context.Context, digest string) (string, bool, error) {

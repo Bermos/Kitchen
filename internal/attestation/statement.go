@@ -131,6 +131,20 @@ const (
 	// under no TTL, verifiable with `cosign verify-blob` against the
 	// platform's published public key and with Kitchen out of the loop.
 	PredicateAccessReview = "https://kitchen.bermos.dev/attestation/access-review/v1"
+
+	// PredicateAuditPack is a signature over an exported audit pack (#142):
+	// which project, which half-open range, and how many bytes the pack is.
+	// Its subject is the sha256 of the pack's own canonical bytes, so the
+	// statement is a claim *about a document* rather than about an image —
+	// the same in-toto shape, with a file where a container usually is.
+	//
+	// The predicate is a manifest and not a copy. Putting the pack inside
+	// the payload would double every byte of it and would still not save a
+	// reader the `sha256sum`, because what ties a file on disk to a
+	// signature is the digest either way. So the envelope is small, the pack
+	// stands beside it, and the two are joined by one hash a person can
+	// compute with a command they already know.
+	PredicateAuditPack = "https://kitchen.bermos.dev/attestation/audit-pack/v1"
 )
 
 // PredicateOpenVEX is an OpenVEX document: somebody's assertion that a

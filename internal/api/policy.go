@@ -202,6 +202,27 @@ func (s *Server) routes() []route {
 			onProject(access.ProjectViewer, ofProject, "reading a project's releases")},
 		{"GET /api/v1/projects/{name}/environments", s.listProjectEnvironments,
 			onProject(access.ProjectViewer, ofProject, "reading a project's environments")},
+		// The audit pack (#142): one project's whole compliance answer for
+		// one window, as a document that leaves the platform.
+		//
+		// **Operator, and it is the subject matter rather than caution.** A
+		// route's guard has to be the strictest thing in its body, and this
+		// body folds three operator-only reads into a project's evidence:
+		// the recertification cycles that looked at this project's grants —
+		// whose signed artefacts cover every other project's too, carried
+		// verbatim because a re-encoded envelope does not verify — the
+		// platform's retention model, and the audit chain's anchor. A
+		// project admin who could export it would read, in one file, what
+		// three routes refuse them separately.
+		//
+		// It is also who takes one. An audit pack is produced by the
+		// institution's second line for somebody outside it, not by the team
+		// that deploys; and the application team is not left worse off,
+		// because every project-scoped part of it — the inventory, the
+		// promotions, the decisions, the exceptions, the drift, the project's
+		// own audit records — is already a viewer's read of its own.
+		{"GET /api/v1/projects/{name}/audit-pack", s.projectAuditPack,
+			operatorOnly("exporting a project's audit pack")},
 
 		// Membership. It is the project's own admin who adds and removes
 		// people, which is the whole point: an operator holds admin on every
