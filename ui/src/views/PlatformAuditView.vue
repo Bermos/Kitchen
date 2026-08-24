@@ -2,6 +2,7 @@
 import { computed, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import DecisionsPanel from "../components/DecisionsPanel.vue";
+import CriticalityPanel from "../components/CriticalityPanel.vue";
 import DriftPanel from "../components/DriftPanel.vue";
 import ExceptionsPanel from "../components/ExceptionsPanel.vue";
 import { api, type AuditRecord } from "../lib/api";
@@ -383,6 +384,13 @@ const truncated = computed(() => {
          "what is running that no longer meets its bar" is the question this
          whole screen is here to answer. -->
     <DriftPanel />
+
+    <!-- The criticality mapping. It sits beside the classification inventory
+         because they are the same kind of answer about two different
+         institutional inputs — what the data is worth, and what its
+         continuing to work is worth — and both are derived from the graph
+         rather than maintained. -->
+    <CriticalityPanel />
 
     <!-- The classification inventory: every environment and claim with its
          class, its data's provenance and its location, in one request. The

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { api, DATA_CLASSES, type Claim, type Project, type Release } from "../lib/api";
+import { api, CRITICALITIES, DATA_CLASSES, type Claim, type Project, type Release } from "../lib/api";
 import { duration, shortImage, shortSHA, timeAgo } from "../lib/format";
 import { callerFor } from "../lib/me";
 import { operatorMode } from "../lib/mode";
@@ -229,6 +229,11 @@ const settings = reactive({
   memory: "",
   // "" is unclassified — a state shown as such, never a default.
   dataClass: "",
+  // "" is undesignated, for the same reason: Kitchen does not decide what is
+  // critical, so it must not appear to have an opinion by defaulting one.
+  criticality: "",
+  rto: "",
+  rpo: "",
 });
 // An empty port field is not an unconfigured one: it is the framework's,
 // decided per build, so the field shows nothing and says where the number
@@ -257,6 +262,11 @@ const dataClassOptions = [
   { label: "unclassified", value: "" },
   ...DATA_CLASSES.map((value) => ({ label: value, value: value as string })),
 ];
+
+const criticalityOptions = [
+  { label: "undesignated", value: "" },
+  ...CRITICALITIES.map((value) => ({ label: value, value: value as string })),
+];
 function loadSettings(from: Project) {
   settings.loadedFor = from.name;
   settings.productionBranch = from.productionBranch;
@@ -271,6 +281,9 @@ function loadSettings(from: Project) {
   settings.cpu = from.cpu ?? "";
   settings.memory = from.memory ?? "";
   settings.dataClass = from.dataClass ?? "";
+  settings.criticality = from.criticality ?? "";
+  settings.rto = from.rto ?? "";
+  settings.rpo = from.rpo ?? "";
 }
 watch(project, (value) => {
   if (value && value.name !== settings.loadedFor) loadSettings(value);
@@ -293,6 +306,9 @@ async function saveSettings() {
       cpu: settings.cpu,
       memory: settings.memory,
       dataClass: settings.dataClass,
+      criticality: settings.criticality,
+      rto: settings.rto,
+      rpo: settings.rpo,
     });
     loadSettings(saved);
     toast.add({
@@ -863,6 +879,44 @@ function host(url?: string): string {
             >
               <USelect v-model="settings.dataClass" :items="dataClassOptions" class="w-full max-w-60" />
             </UFormField>
+          </div>
+
+          <!-- Continuity. The copy leads with what Kitchen does not do,
+               because a form that asked "how critical is this?" without
+               saying whose question it is would read as the platform having
+               an opinion about the institution's functions. It does not. -->
+          <div class="rounded-md border border-default bg-muted p-5 space-y-4">
+            <div>
+              <h2 class="text-sm font-semibold text-highlighted">Continuity</h2>
+              <p class="text-xs text-muted mt-1 max-w-3xl">
+                <span class="text-toned font-medium">Kitchen does not decide what is critical, and does not
+                set these tolerances.</span>
+                They are the institution's — a board's judgement about its own functions — and this is where
+                that judgement is recorded. What the platform does with it: map the function onto everything
+                serving it, and alert against the tolerance. Nothing here refuses a deployment, and an absent
+                designation is never defaulted to anything.
+              </p>
+            </div>
+            <div class="grid gap-4 sm:grid-cols-3">
+              <UFormField
+                label="Criticality"
+                help="How much it matters that this function keeps working. Production environments read this where they declare nothing of their own; previews never do."
+              >
+                <USelect v-model="settings.criticality" :items="criticalityOptions" class="w-full" />
+              </UFormField>
+              <UFormField
+                label="RTO"
+                help="How long it may be unavailable. Whole hours and minutes: 4h, 30m, 1h30m. It is the threshold the outage alert fires against."
+              >
+                <UInput v-model="settings.rto" placeholder="unset" class="w-full font-mono" />
+              </UFormField>
+              <UFormField
+                label="RPO"
+                help="How much data it may lose. Same spelling. Carried and mapped; nothing alerts on it yet, because the platform observes no recovery points."
+              >
+                <UInput v-model="settings.rpo" placeholder="unset" class="w-full font-mono" />
+              </UFormField>
+            </div>
           </div>
 
           <div class="rounded-md border border-default bg-muted p-5 space-y-4">
