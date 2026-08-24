@@ -27,6 +27,7 @@ import (
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
+	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -294,6 +295,14 @@ func main() {
 				// unaffected — it reads events through the uncached reader,
 				// because field selectors are not served by the cache.
 				&corev1.Event{}: {Field: fields.OneTermEqualSelector("type", corev1.EventTypeWarning)},
+				// Leases are read for one thing only: the clock-sync check
+				// compares each kubelet's heartbeat with the operator's own
+				// clock. Narrowing the informer to the node-lease namespace
+				// keeps it from holding every leader-election lease in the
+				// cluster to answer a question about the nodes.
+				&coordinationv1.Lease{}: {
+					Namespaces: map[string]cache.Config{controller.NodeLeaseNamespace: {}},
+				},
 			},
 		},
 		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
