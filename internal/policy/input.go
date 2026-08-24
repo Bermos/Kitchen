@@ -91,11 +91,18 @@ type Input struct {
 // ProjectFacts is what the engine knows about the project.
 type ProjectFacts struct {
 	Name string `json:"name"`
-	// DataClass is the project's declared classification (#137); Criticality
-	// stays empty until #141 lands. Rules treat absence as unclassified,
-	// never as a default.
+	// DataClass is the project's declared classification (#137) and
+	// Criticality its declared designation (#141). Rules treat absence as
+	// unclassified and undesignated respectively, never as a default.
 	DataClass   string `json:"dataClass,omitempty"`
 	Criticality string `json:"criticality,omitempty"`
+	// RTO and RPO are the project's declared disruption tolerances, verbatim
+	// ("4h", "30m"). They are here so a bundle can require of a critical
+	// project what it does not require of the rest — evidence, a reviewer,
+	// an environment that declares an RTO at all — rather than every such
+	// rule having to be a second copy of the designation.
+	RTO string `json:"rto,omitempty"`
+	RPO string `json:"rpo,omitempty"`
 }
 
 // EnvironmentFacts is what the engine knows about the target environment.
@@ -106,7 +113,13 @@ type EnvironmentFacts struct {
 	Type        string `json:"type,omitempty"`
 	DataClass   string `json:"dataClass,omitempty"`
 	Residency   string `json:"residency,omitempty"`
+	// Criticality, RTO and RPO are the designation that *applies here*, which
+	// for a production environment declaring none is its project's — resolved
+	// by v1alpha1.EffectiveContinuity, the one implementation, so a rule and
+	// a screen never disagree about whether a preview is critical. It is not.
 	Criticality string `json:"criticality,omitempty"`
+	RTO         string `json:"rto,omitempty"`
+	RPO         string `json:"rpo,omitempty"`
 }
 
 // ReleaseFacts is what the engine knows about the artifact being judged.
