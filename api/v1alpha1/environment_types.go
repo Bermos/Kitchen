@@ -370,8 +370,30 @@ type EnvironmentStatus struct {
 	// +optional
 	Rescan *EnvironmentRescanStatus `json:"rescan,omitempty"`
 
+	// Processes is what the reconciler last saw of this environment's workers
+	// and scheduled jobs: how many replicas are ready, when each schedule
+	// last fired, and — the field the feature lives or dies on — the most
+	// recent run that failed. A CronJob whose pods fail silently is the
+	// classic way this disappoints, so the failure is carried on the object
+	// the project page and the API already read.
+	// +optional
+	// +listType=map
+	// +listMapKey=name
+	Processes []ProcessStatus `json:"processes,omitempty"`
+
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+// FindProcessStatus returns this Environment's status for the named process,
+// or nil.
+func (e *Environment) FindProcessStatus(name string) *ProcessStatus {
+	for i := range e.Status.Processes {
+		if e.Status.Processes[i].Name == name {
+			return &e.Status.Processes[i]
+		}
+	}
+	return nil
 }
 
 // RecordReleaseMove prepends a history entry for the Release the Environment

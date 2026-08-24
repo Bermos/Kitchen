@@ -245,6 +245,208 @@ spec:
                       pull request closes.
                     type: string
                 type: object
+              processes:
+                description: |-
+                  Processes are the project's other processes: the queue workers and the
+                  scheduled jobs that share the web process's image and environment and
+                  are started differently. The web process itself is `spec.runtime` and
+                  is not listed here — see [ProcessType] for why it cannot be.
+
+                  The list is snapshotted into every Release, so a rollback runs the
+                  processes that release declared rather than the ones the project
+                  declares now. Removing a process from the list is how it is deleted:
+                  the environment reconciler tears down anything it materialized that
+                  the current Release no longer names.
+
+                  Entries merge per name rather than by position (listType=map), so two
+                  people adding two workers do not drop each other's.
+                items:
+                  description: |-
+                    ProcessSpec is one process of a Project besides its web process: the same
+                    image, the same environment, started differently.
+
+                    The Release is already the right unit — an immutable image plus a config
+                    snapshot — so a worker and a scheduled job are not another build. They are
+                    the build's image run with another command, which is why this list is
+                    snapshotted into the Release along with the environment variables and the
+                    runtime: rolling back runs the processes the rollback target declared, not
+                    the ones the Project declares today.
+
+                    The two rules test `has(self.schedule)` rather than comparing to an empty
+                    string, and it is not only shorter: the field is `omitempty`, so an absent
+                    schedule is an absent key and `has` is the exact question.
+                  properties:
+                    args:
+                      items:
+                        type: string
+                      type: array
+                      x-kubernetes-list-type: atomic
+                    command:
+                      description: |-
+                        Command replaces the image's entrypoint, and Args its arguments. Both
+                        are optional and both are exec form — a list of words, never a shell
+                        line — which is the same reason the build jobs take two containers
+                        instead of an `sh -c`: a string that reaches a shell is a string
+                        somebody can put a `;` in.
+
+                        A worker whose image already starts the right process needs neither. A
+                        buildpacks-built image does: the buildpack chose a web server, and
+                        `command: ["node", "worker.js"]` is how the same image becomes the
+                        worker.
+                      items:
+                        type: string
+                      type: array
+                      x-kubernetes-list-type: atomic
+                    concurrencyPolicy:
+                      default: Forbid
+                      description: |-
+                        ConcurrencyPolicy is what happens when a run is due and the last one
+                        has not finished.
+                      enum:
+                      - Allow
+                      - Forbid
+                      - Replace
+                      type: string
+                    name:
+                      description: |-
+                        Name identifies the process within the project. It is a DNS label
+                        because it appears in the name of everything the process
+                        materializes — `<environment>-<name>` — and in the log query
+                        vocabulary as `process:<name>`.
+
+                        `web` is refused: the web process is `spec.runtime`, and a second
+                        spelling of it would be a process nothing routes to answering to the
+                        name of the one that is routed to.
+                      maxLength: 48
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                      type: string
+                      x-kubernetes-validations:
+                      - message: the web process is spec.runtime, not a named process
+                        rule: self != 'web'
+                    previews:
+                      default: false
+                      description: |-
+                        Previews says whether this process runs in preview environments too.
+
+                        **It is off, and that is the decision rather than an omission.** A
+                        preview that emails customers nightly is a bad afternoon, and a
+                        preview worker draining the production queue is a worse one — the
+                        preview shares the project's environment variables, so it is pointed
+                        at whatever the production process is pointed at unless somebody
+                        overrode it. One rule for both types, opted into per process: a
+                        preview that should run its worker says so.
+                      type: boolean
+                    replicas:
+                      default: 1
+                      description: |-
+                        Replicas is how many copies of a worker run. It is meaningless for a
+                        scheduled process — how many run at once is ConcurrencyPolicy's
+                        answer — and is ignored there rather than refused, so that changing a
+                        process's type does not require deleting a field first.
+                      format: int32
+                      minimum: 0
+                      type: integer
+                    resources:
+                      description: Resources is what one replica, or one run, asks
+                        for.
+                      properties:
+                        claims:
+                          description: |-
+                            Claims lists the names of resources, defined in spec.resourceClaims,
+                            that are used by this container.
+
+                            This is an alpha field and requires enabling the
+                            DynamicResourceAllocation feature gate.
+
+                            This field is immutable. It can only be set for containers.
+                          items:
+                            description: ResourceClaim references one entry in PodSpec.ResourceClaims.
+                            properties:
+                              name:
+                                description: |-
+                                  Name must match the name of one entry in pod.spec.resourceClaims of
+                                  the Pod where this field is used. It makes that resource available
+                                  inside a container.
+                                type: string
+                              request:
+                                description: |-
+                                  Request is the name chosen for a request in the referenced claim.
+                                  If empty, everything from the claim is made available, otherwise
+                                  only the result of this request.
+                                type: string
+                            required:
+                            - name
+                            type: object
+                          type: array
+                          x-kubernetes-list-map-keys:
+                          - name
+                          x-kubernetes-list-type: map
+                        limits:
+                          additionalProperties:
+                            anyOf:
+                            - type: integer
+                            - type: string
+                            pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                            x-kubernetes-int-or-string: true
+                          description: |-
+                            Limits describes the maximum amount of compute resources allowed.
+                            More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                          type: object
+                        requests:
+                          additionalProperties:
+                            anyOf:
+                            - type: integer
+                            - type: string
+                            pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                            x-kubernetes-int-or-string: true
+                          description: |-
+                            Requests describes the minimum amount of compute resources required.
+                            If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
+                            otherwise to an implementation-defined value. Requests cannot exceed Limits.
+                            More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                          type: object
+                      type: object
+                    schedule:
+                      description: |-
+                        Schedule is the cron expression a scheduled process runs on, in the
+                        five-field form `batch/v1` takes, interpreted in UTC. Required for a
+                        cron process and refused on a worker, both at admission.
+                      type: string
+                    timeout:
+                      description: |-
+                        Timeout is how long one run may take before the platform stops it.
+                        Defaults to an hour; see DefaultRunTimeout.
+                      type: string
+                    type:
+                      description: |-
+                        ProcessType is how one of a Project's processes runs.
+
+                        There is deliberately no `web` here. A Project's web process is
+                        `spec.runtime` — the port, the replica count and the resources of the thing
+                        with the URL — and it is singular because the URL is: an Environment
+                        publishes one hostname, one Service and one route, and a second process
+                        claiming to be the web one would have to be told which of those it got. So
+                        this list is what a Project has *besides* its web process, which is exactly
+                        the gap #78 was filed for: a queue worker and a nightly job that today have
+                        to be a second Project with a port nothing talks to.
+                      enum:
+                      - worker
+                      - cron
+                      type: string
+                  required:
+                  - name
+                  - type
+                  type: object
+                  x-kubernetes-validations:
+                  - message: a cron process needs a schedule
+                    rule: self.type != 'cron' || has(self.schedule)
+                  - message: a worker runs continuously and has no schedule; use type
+                      cron
+                    rule: self.type != 'worker' || !has(self.schedule)
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
               promotion:
                 description: |-
                   Promotion is the project's staged pipeline, absent for the default

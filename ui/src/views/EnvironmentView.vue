@@ -23,6 +23,7 @@ import DomainsPanel from "../components/DomainsPanel.vue";
 import FindingList from "../components/FindingList.vue";
 import LogViewer from "../components/LogViewer.vue";
 import PhaseBadge from "../components/PhaseBadge.vue";
+import ProcessesPanel from "../components/ProcessesPanel.vue";
 import RequestsPanel from "../components/RequestsPanel.vue";
 import RequirementsPanel from "../components/RequirementsPanel.vue";
 import ResourceHistory from "../components/ResourceHistory.vue";
@@ -518,6 +519,12 @@ function historyBy(entry: { reason: string; by?: string }): string {
           </table>
         </div>
       </div>
+
+      <!-- What else this environment runs: the workers and the scheduled jobs.
+           Above the domains because a failing nightly job is a thing to trip
+           over, and below the workload because the web process is still what
+           most people came for. -->
+      <ProcessesPanel :environment="environment.name" :role="data?.project.role" />
 
       <DomainsPanel :environment="environment.name" :role="data?.project.role" />
 

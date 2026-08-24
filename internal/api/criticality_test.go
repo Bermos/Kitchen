@@ -98,7 +98,7 @@ func TestTheFunctionToResourceMappingIsOneRequest(t *testing.T) {
 	if len(env.Inherited) == 0 {
 		t.Fatalf("an inherited designation must say it was inherited, got %+v", env)
 	}
-	if env.Release != testRelease || env.Image != "registry.example.com/shop@sha256:1111" {
+	if env.Release != testRelease || env.Image != testReleaseImage {
 		t.Fatalf("the release and its artifact must be here, got %+v", env)
 	}
 	if len(env.Domains) != 1 || env.Domains[0] != "shop.example.com" {

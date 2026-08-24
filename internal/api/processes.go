@@ -1,0 +1,522 @@
+/*
+Copyright 2026.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package api
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"sort"
+	"strings"
+	"time"
+
+	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/audit"
+	"github.com/Bermos/Kitchen/internal/clickhouse"
+	"github.com/Bermos/Kitchen/internal/controller"
+)
+
+// A Project's workers and scheduled jobs, over the API (#78).
+//
+// The list itself is a project setting, written through PATCH /projects/{name}
+// beside the port and the replica count it belongs with: what a project runs
+// and how much of it is one decision, made by the same person, and a second
+// route for half of it would only be a second place to look. What is *not* a
+// project setting is what those processes are doing right now, which is a fact
+// about an environment and answered per environment — a preview runs the
+// project's process list minus everything that did not opt in.
+//
+// The runs are read out of the cluster and their output out of the log store,
+// which is the division that makes a run findable after the Job that was it
+// has been collected: the Job's name is the log store's `run:`, so a failure
+// from three weeks ago still has its output even though nothing in the cluster
+// remembers it happened.
+
+// processRequest is one entry of the list a settings PATCH replaces.
+//
+// Resources are the two strings the runtime already takes — `cpu` and
+// `memory`, applied as request and limit alike — rather than the full
+// Kubernetes ResourceRequirements, because the project's own runtime is
+// written that way and a process asking for its capacity in a second
+// vocabulary would be the incoherence, not the saving.
+type processRequest struct {
+	Name    string   `json:"name"`
+	Type    string   `json:"type"`
+	Command []string `json:"command,omitempty"`
+	Args    []string `json:"args,omitempty"`
+	// Replicas is a worker's copy count. Zero is allowed and means a worker
+	// that is declared and parked, which is how one is turned off without
+	// losing its command.
+	Replicas *int32 `json:"replicas,omitempty"`
+	CPU      string `json:"cpu,omitempty"`
+	Memory   string `json:"memory,omitempty"`
+	// Schedule is a cron process's five-field expression, read in UTC.
+	Schedule string `json:"schedule,omitempty"`
+	// ConcurrencyPolicy is Allow, Forbid or Replace; empty means Forbid.
+	ConcurrencyPolicy string `json:"concurrencyPolicy,omitempty"`
+	// Timeout is a Go duration ("30m") bounding one run. Empty means an hour.
+	Timeout string `json:"timeout,omitempty"`
+	// Previews opts this process into preview environments. It is off unless
+	// asked for; see ProcessSpec.Previews for why that is the decision and
+	// not an omission.
+	Previews bool `json:"previews,omitempty"`
+}
+
+// processesFromRequest validates a whole process list and turns it into the
+// spec. It replaces rather than merges, like the promotion stages and unlike
+// the environment variables: the list is short, ordered by nothing, and a
+// merge would leave no way to delete an entry.
+func processesFromRequest(requests []processRequest) ([]kitchenv1alpha1.ProcessSpec, error) {
+	if len(requests) == 0 {
+		return nil, nil
+	}
+	processes := make([]kitchenv1alpha1.ProcessSpec, 0, len(requests))
+	seen := map[string]bool{}
+	for _, request := range requests {
+		process, err := processFromRequest(request)
+		if err != nil {
+			return nil, err
+		}
+		if seen[process.Name] {
+			return nil, fmt.Errorf("process %q is listed twice", process.Name)
+		}
+		seen[process.Name] = true
+		processes = append(processes, process)
+	}
+	return processes, nil
+}
+
+func processFromRequest(request processRequest) (kitchenv1alpha1.ProcessSpec, error) {
+	process := kitchenv1alpha1.ProcessSpec{
+		Name:     strings.TrimSpace(request.Name),
+		Type:     kitchenv1alpha1.ProcessType(strings.TrimSpace(request.Type)),
+		Command:  request.Command,
+		Args:     request.Args,
+		Previews: request.Previews,
+	}
+	if err := validateProcessName(process.Name); err != nil {
+		return process, err
+	}
+	switch process.Type {
+	case kitchenv1alpha1.ProcessWorker, kitchenv1alpha1.ProcessCron:
+	default:
+		return process, fmt.Errorf("process %q: type must be worker or cron (got %q)", process.Name, request.Type)
+	}
+
+	schedule := strings.TrimSpace(request.Schedule)
+	switch {
+	case process.Type == kitchenv1alpha1.ProcessCron && schedule == "":
+		return process, fmt.Errorf("process %q: a cron process needs a schedule", process.Name)
+	case process.Type == kitchenv1alpha1.ProcessWorker && schedule != "":
+		return process, fmt.Errorf(
+			"process %q: a worker runs continuously and has no schedule — give it type cron to run it on one", process.Name)
+	}
+	process.Schedule = schedule
+
+	if policy := strings.TrimSpace(request.ConcurrencyPolicy); policy != "" {
+		switch kitchenv1alpha1.ConcurrencyPolicy(policy) {
+		case kitchenv1alpha1.ConcurrencyAllow, kitchenv1alpha1.ConcurrencyForbid, kitchenv1alpha1.ConcurrencyReplace:
+			process.ConcurrencyPolicy = kitchenv1alpha1.ConcurrencyPolicy(policy)
+		default:
+			return process, fmt.Errorf(
+				"process %q: concurrencyPolicy must be Allow, Forbid or Replace (got %q)", process.Name, policy)
+		}
+	}
+	if timeout := strings.TrimSpace(request.Timeout); timeout != "" {
+		parsed, err := time.ParseDuration(timeout)
+		if err != nil || parsed <= 0 {
+			return process, fmt.Errorf(
+				"process %q: timeout must be a positive Go duration like 30m or 2h (got %q)", process.Name, timeout)
+		}
+		process.Timeout = &metav1.Duration{Duration: parsed}
+	}
+	if request.Replicas != nil {
+		if *request.Replicas < 0 {
+			return process, fmt.Errorf("process %q: replicas cannot be negative (got %d)", process.Name, *request.Replicas)
+		}
+		process.Replicas = request.Replicas
+	}
+	if err := applyProcessResources(&process, request); err != nil {
+		return process, err
+	}
+	return process, nil
+}
+
+func applyProcessResources(process *kitchenv1alpha1.ProcessSpec, request processRequest) error {
+	for name, value := range map[corev1.ResourceName]string{
+		corev1.ResourceCPU:    strings.TrimSpace(request.CPU),
+		corev1.ResourceMemory: strings.TrimSpace(request.Memory),
+	} {
+		if value == "" {
+			continue
+		}
+		if _, err := resource.ParseQuantity(value); err != nil {
+			return fmt.Errorf("process %q: %s must be a Kubernetes quantity like 250m or 512Mi (got %q)",
+				process.Name, name, value)
+		}
+		if err := applyResource(&process.Resources, name, value); err != nil {
+			return fmt.Errorf("process %q: %w", process.Name, err)
+		}
+	}
+	return nil
+}
+
+// validateProcessName is the DNS-label rule the CRD states, checked here so
+// the refusal is a sentence rather than an admission-webhook message.
+func validateProcessName(name string) error {
+	if name == "" {
+		return fmt.Errorf("every process needs a name")
+	}
+	if name == "web" {
+		return fmt.Errorf(
+			"a process cannot be called \"web\": the web process is the project's own runtime " +
+				"(its port, replicas and resources), and this list is what the project runs besides it")
+	}
+	if err := validateProjectName(name); err != nil {
+		return fmt.Errorf("process %q: %w", name, err)
+	}
+	return nil
+}
+
+// processView is one process of one environment: what the release declared,
+// and what the cluster is doing about it.
+type processView struct {
+	Name     string   `json:"name"`
+	Type     string   `json:"type"`
+	Command  []string `json:"command,omitempty"`
+	Args     []string `json:"args,omitempty"`
+	Schedule string   `json:"schedule,omitempty"`
+	// ConcurrencyPolicy and Timeout are a scheduled process's; Replicas is a
+	// worker's declared count and ReadyReplicas what is actually up.
+	ConcurrencyPolicy string `json:"concurrencyPolicy,omitempty"`
+	Timeout           string `json:"timeout,omitempty"`
+	Replicas          int32  `json:"replicas,omitempty"`
+	ReadyReplicas     int32  `json:"readyReplicas,omitempty"`
+	CPU               string `json:"cpu,omitempty"`
+	Memory            string `json:"memory,omitempty"`
+	// Workload is the Deployment or CronJob behind it, absent for a process
+	// this environment does not run.
+	Workload string `json:"workload,omitempty"`
+	// Suspended is a process the project declares that this environment does
+	// not run: a preview whose process did not opt in. It is listed with the
+	// reason rather than left out, so a preview's process list is the
+	// project's with an explanation beside each entry.
+	Suspended bool   `json:"suspended,omitempty"`
+	Reason    string `json:"reason,omitempty"`
+	// Active is how many runs of a schedule are in flight.
+	Active int32 `json:"active,omitempty"`
+	// LastRun and LastFailure are the two a person actually asks for. The
+	// failure is kept until a later failure replaces it, never until a
+	// success does: a job that fails four nights in five must not read as
+	// healthy on the fifth.
+	LastRun     *processRunView `json:"lastRun,omitempty"`
+	LastFailure *processRunView `json:"lastFailure,omitempty"`
+	// Healthy is false for a worker with no ready replica and for a schedule
+	// whose most recent run failed. It is the one derived field here, and it
+	// is derived at the API rather than in each client so that the dashboard
+	// and the CLI cannot disagree about what a red dot means.
+	Healthy bool `json:"healthy"`
+}
+
+// processRunView is one run of a scheduled process.
+type processRunView struct {
+	Name       string     `json:"name"`
+	Phase      string     `json:"phase"`
+	StartedAt  *time.Time `json:"startedAt,omitempty"`
+	FinishedAt *time.Time `json:"finishedAt,omitempty"`
+	// DurationSeconds is how long it took, absent while it is still going.
+	DurationSeconds *float64 `json:"durationSeconds,omitempty"`
+	Message         string   `json:"message,omitempty"`
+}
+
+func newProcessRunView(run *kitchenv1alpha1.ProcessRun) *processRunView {
+	if run == nil {
+		return nil
+	}
+	view := &processRunView{Name: run.Name, Phase: string(run.Phase), Message: run.Message}
+	if run.StartedAt != nil {
+		view.StartedAt = &run.StartedAt.Time
+	}
+	if run.FinishedAt != nil {
+		view.FinishedAt = &run.FinishedAt.Time
+		if run.StartedAt != nil {
+			seconds := run.FinishedAt.Sub(run.StartedAt.Time).Seconds()
+			view.DurationSeconds = &seconds
+		}
+	}
+	return view
+}
+
+// newProcessView joins what the Release declared to what the reconciler last
+// saw. The declaration is the Release's, not the Project's, for the same
+// reason the reconciler works from it: an environment on an older release runs
+// that release's processes, and reporting today's would describe something
+// that is not there.
+func newProcessView(process kitchenv1alpha1.ProcessSpec, status *kitchenv1alpha1.ProcessStatus) processView {
+	view := processView{
+		Name:     process.Name,
+		Type:     string(process.Type),
+		Command:  process.Command,
+		Args:     process.Args,
+		Schedule: process.Schedule,
+		Healthy:  true,
+	}
+	if process.Type == kitchenv1alpha1.ProcessCron {
+		view.ConcurrencyPolicy = string(process.EffectiveConcurrency())
+		view.Timeout = (time.Duration(process.TimeoutSeconds()) * time.Second).String()
+	} else {
+		view.Replicas = process.ReplicaCount()
+	}
+	if quantity, ok := process.Resources.Limits[corev1.ResourceCPU]; ok {
+		view.CPU = quantity.String()
+	}
+	if quantity, ok := process.Resources.Limits[corev1.ResourceMemory]; ok {
+		view.Memory = quantity.String()
+	}
+	if status == nil {
+		// The reconciler has not been round since this release landed. Not an
+		// error, and deliberately not reported as unhealthy: nothing is known
+		// yet, which is a different thing from something being wrong.
+		return view
+	}
+
+	view.Workload = status.Workload
+	view.Suspended = status.Suspended
+	view.Active = status.Active
+	view.LastRun = newProcessRunView(status.LastRun)
+	view.LastFailure = newProcessRunView(status.LastFailure)
+	switch {
+	case status.Suspended:
+		view.Reason = "this process does not run in preview environments — set previews on it to opt in"
+	case process.Type == kitchenv1alpha1.ProcessCron:
+		view.Healthy = status.LastRun == nil || status.LastRun.Phase != kitchenv1alpha1.RunFailed
+	default:
+		view.ReadyReplicas = status.ReadyReplicas
+		view.Replicas = status.Replicas
+		view.Healthy = status.Replicas == 0 || status.ReadyReplicas > 0
+	}
+	return view
+}
+
+// environmentProcesses answers what this environment runs besides its web
+// process, and what each of them is doing.
+func (s *Server) environmentProcesses(w http.ResponseWriter, req *http.Request) {
+	ctx := req.Context()
+
+	env := &kitchenv1alpha1.Environment{}
+	if err := s.get(ctx, req.PathValue("name"), env); err != nil {
+		s.writeError(w, err)
+		return
+	}
+	declared, err := s.declaredProcesses(ctx, env)
+	if err != nil {
+		s.writeError(w, err)
+		return
+	}
+	views := make([]processView, 0, len(declared))
+	for _, process := range declared {
+		views = append(views, newProcessView(process, env.FindProcessStatus(process.Name)))
+	}
+	writeList(w, views)
+}
+
+// declaredProcesses is the process list of the Release this environment is on.
+// A missing Release is an empty list rather than an error: the environment's
+// own conditions already say the release is gone, and this endpoint answering
+// 500 for it would be a second, less informative way of hearing about it.
+func (s *Server) declaredProcesses(
+	ctx context.Context,
+	env *kitchenv1alpha1.Environment,
+) ([]kitchenv1alpha1.ProcessSpec, error) {
+	release := &kitchenv1alpha1.Release{}
+	key := types.NamespacedName{Namespace: env.Namespace, Name: env.Spec.ReleaseRef.Name}
+	if err := s.Client.Get(ctx, key, release); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return release.Spec.ConfigSnapshot.Processes, nil
+}
+
+// processRuns lists a scheduled process's recent runs, newest first.
+//
+// What is listed is what the cluster still holds — the CronJob keeps a few
+// finished Jobs and collects the rest — which is why a run's *output* is
+// asked for separately, from the log store, where it outlives the Job by the
+// whole container-log retention.
+func (s *Server) processRuns(w http.ResponseWriter, req *http.Request) {
+	ctx := req.Context()
+
+	env := &kitchenv1alpha1.Environment{}
+	if err := s.get(ctx, req.PathValue("name"), env); err != nil {
+		s.writeError(w, err)
+		return
+	}
+	process, ok := s.scheduledProcess(w, ctx, env, req.PathValue("process"))
+	if !ok {
+		return
+	}
+
+	jobs := &batchv1.JobList{}
+	if err := s.reader().List(ctx, jobs,
+		client.InNamespace(controller.AppNamespace(env.Spec.ProjectRef.Name)),
+		client.MatchingLabels{
+			controller.LabelEnvironment: env.Name,
+			controller.LabelProcess:     process.Name,
+		},
+	); err != nil {
+		s.writeError(w, err)
+		return
+	}
+
+	runs := make([]kitchenv1alpha1.ProcessRun, 0, len(jobs.Items))
+	for i := range jobs.Items {
+		runs = append(runs, controller.RunOf(&jobs.Items[i]))
+	}
+	sort.Slice(runs, func(a, b int) bool {
+		if runs[a].StartedAt == nil || runs[b].StartedAt == nil {
+			return runs[b].StartedAt == nil
+		}
+		return runs[a].StartedAt.After(runs[b].StartedAt.Time)
+	})
+
+	views := make([]processRunView, 0, len(runs))
+	for i := range runs {
+		views = append(views, *newProcessRunView(&runs[i]))
+	}
+	writeList(w, views)
+}
+
+// triggerProcessRun starts one run of a scheduled process now, off its
+// schedule.
+//
+// It is a copy of the CronJob's own job template rather than anything this
+// handler composes, so a manual run is the same run the schedule would have
+// made — same image, same command, same timeout. Nothing from the request
+// reaches it: the body is empty and the only caller-supplied values are the
+// two names in the path, both of which resolve to objects before anything is
+// created.
+func (s *Server) triggerProcessRun(w http.ResponseWriter, req *http.Request) {
+	ctx := req.Context()
+
+	env := &kitchenv1alpha1.Environment{}
+	if err := s.get(ctx, req.PathValue("name"), env); err != nil {
+		s.writeError(w, err)
+		return
+	}
+	process, ok := s.scheduledProcess(w, ctx, env, req.PathValue("process"))
+	if !ok {
+		return
+	}
+
+	appNS := controller.AppNamespace(env.Spec.ProjectRef.Name)
+	workload := controller.ProcessWorkloadName(env.Name, process.Name)
+	cron := &batchv1.CronJob{}
+	if err := s.Client.Get(ctx, types.NamespacedName{Namespace: appNS, Name: workload}, cron); err != nil {
+		if apierrors.IsNotFound(err) {
+			badRequest(w, "nothing is scheduled for process %q on environment %q yet: "+
+				"the platform has not materialized it — the environment's conditions say why",
+				process.Name, env.Name)
+			return
+		}
+		s.writeError(w, err)
+		return
+	}
+
+	job := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			// A generated suffix rather than a timestamp: two people pressing
+			// the button in the same second get two runs, which is what they
+			// each asked for, instead of one 409.
+			GenerateName: workload + "-manual-",
+			Namespace:    appNS,
+			Labels:       cron.Spec.JobTemplate.Labels,
+			Annotations:  cron.Spec.JobTemplate.Annotations,
+		},
+		Spec: *cron.Spec.JobTemplate.Spec.DeepCopy(),
+	}
+	if !s.recorded(w, req, audit.Transition{
+		Object:    env,
+		Kind:      audit.KindEnvironment,
+		Operation: clickhouse.AuditCreate,
+		Project:   env.Spec.ProjectRef.Name,
+		Reason:    fmt.Sprintf("a run of scheduled job %s was started by hand on %s", process.Name, env.Name),
+		Details:   map[string]any{"process": process.Name, "environment": env.Name},
+	}) {
+		return
+	}
+	if err := s.Client.Create(ctx, job); err != nil {
+		s.writeError(w, err)
+		return
+	}
+
+	caller, _ := CallerFrom(ctx)
+	run := controller.RunOf(job)
+	s.log().Info("scheduled job run through the api",
+		"environment", env.Name, "process", process.Name, "run", job.Name, "caller", callerName(caller))
+	s.Activity.Record(ctx, clickhouse.Event{
+		Type:        clickhouse.EventRunStarted,
+		Project:     env.Spec.ProjectRef.Name,
+		Environment: env.Name,
+		Process:     process.Name,
+		Run:         job.Name,
+		Actor:       callerName(caller),
+		Message:     fmt.Sprintf("scheduled job %s was run by hand", process.Name),
+	})
+	writeJSON(w, http.StatusAccepted, newProcessRunView(&run))
+}
+
+// scheduledProcess resolves the named process of an environment's release and
+// insists it is a scheduled one, writing the refusal itself.
+//
+// A worker is refused rather than quietly accepted: "run it now" has no
+// meaning for a process that is already running, and a 404 would suggest the
+// process does not exist when it plainly does.
+func (s *Server) scheduledProcess(
+	w http.ResponseWriter,
+	ctx context.Context,
+	env *kitchenv1alpha1.Environment,
+	name string,
+) (kitchenv1alpha1.ProcessSpec, bool) {
+	declared, err := s.declaredProcesses(ctx, env)
+	if err != nil {
+		s.writeError(w, err)
+		return kitchenv1alpha1.ProcessSpec{}, false
+	}
+	process := kitchenv1alpha1.FindProcess(declared, name)
+	if process == nil {
+		s.writeError(w, apierrors.NewNotFound(
+			kitchenv1alpha1.GroupVersion.WithResource("processes").GroupResource(), name))
+		return kitchenv1alpha1.ProcessSpec{}, false
+	}
+	if process.Type != kitchenv1alpha1.ProcessCron {
+		badRequest(w, "process %q is a worker, not a scheduled job: it has no runs, "+
+			"and it is already running — its replicas are on GET /environments/%s/processes",
+			name, env.Name)
+		return kitchenv1alpha1.ProcessSpec{}, false
+	}
+	return *process, true
+}

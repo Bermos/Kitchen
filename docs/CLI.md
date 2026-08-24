@@ -163,6 +163,7 @@ give.
 | `kitchen deploy` | Build this commit and follow the deploy | `POST /projects/{name}/builds` and the follow |
 | `kitchen cancel` | Stop a build that is still running | `POST /builds/{name}/cancel` |
 | `kitchen logs` | An environment's or a build's logs, `--follow` to tail | `GET /environments/{name}/logs`, `GET /builds/{name}/logs` |
+| `kitchen processes` | The workers and scheduled jobs an environment runs, and (`runs`, `run`) one job's history and running it now | `GET /environments/{name}/processes`, `GET`/`POST /environments/{name}/processes/{process}/runs` |
 | `kitchen env list/set/rm` | The project's environment variables | `PATCH /projects/{name}/env` |
 | `kitchen rollback` | Put an environment back on an earlier release | `PATCH /environments/{name}` |
 | `kitchen promote` | Ask for a release to land on an environment; the policy decides | `POST /projects/{name}/promotions` |
@@ -308,12 +309,56 @@ kitchen logs --follow                         # and everything after them
 kitchen logs --since 1h --search error --json
 kitchen logs --build shop-bld-abc123def456-xk2p9
 kitchen logs --environment shop-pr-42 --follow --timeout 10m
+kitchen logs --process worker --since 15m       # one of the project's workers
+kitchen logs --run shop-production-nightly-report-29387520
 ```
 
 `--since` and `--until` take an RFC 3339 timestamp or a duration (`15m`, `2h`)
 read as "that long ago". A bounded page and a followed tail answer the same
 shape — one line per log line — so `--follow` changes how long the command runs
 and nothing else.
+
+`--process` narrows to one of the project's workers or scheduled jobs, and
+`--run` to one firing of a schedule. A run's output outlives the run itself:
+the platform keeps a handful of finished Jobs and collects the rest, but the
+lines stay for the whole container-log retention, so last month's failed report
+is still readable by name.
+
+### Workers and scheduled jobs
+
+A project deploys a web process, and it may also declare workers — which run
+continuously and are never addressed — and scheduled jobs, which run on a cron
+expression in UTC. They share the release's image and environment and differ
+only in how they are started.
+
+```sh
+kitchen processes                             # what production runs besides the web process
+kitchen processes --environment shop-pr-42    # a preview's, including what it will not run
+kitchen processes runs nightly-report         # that job's recent runs, newest first
+kitchen processes run nightly-report          # run it now, off the schedule
+```
+
+What is listed is the *release's* process list, so an environment that has been
+rolled back lists the processes that release declared. A preview lists the
+project's whole list, with the ones it does not run marked suspended: a process
+runs in previews only if it was opted in, because a preview that emails
+customers nightly is a bad afternoon.
+
+Declaring the list has no command of its own. It is a list of records with
+commands, schedules and resources in it, and a flag-shaped spelling would be
+worse than the JSON body — so it goes through `kitchen api`, alongside the rest
+of the project's settings:
+
+```sh
+kitchen api PATCH /projects/shop --data '{"processes":[
+  {"name":"worker","type":"worker","command":["node","worker.js"],"replicas":2},
+  {"name":"nightly-report","type":"cron","schedule":"0 3 * * *","command":["node","report.js"]}
+]}'
+```
+
+It replaces the whole list, and — like the environment variables and the port —
+it reaches an environment through the next release. What is running keeps its
+own processes until something builds.
 
 ### Rolling back
 

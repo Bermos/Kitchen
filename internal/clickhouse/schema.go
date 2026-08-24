@@ -490,6 +490,9 @@ func (c *Client) ensureTableRules(ctx context.Context, table, ddl, column string
 	if err := c.Exec(ctx, ddl); err != nil {
 		return err
 	}
+	if err := c.ensureAddedColumns(ctx, table, ddl); err != nil {
+		return err
+	}
 
 	current, err := c.tableRetentionDays(ctx, table)
 	if err != nil {
@@ -509,6 +512,76 @@ func (c *Client) ensureTableRules(ctx context.Context, table, ddl, column string
 	// cannot be left in it.
 	return c.Exec(ctx, fmt.Sprintf("ALTER TABLE %s.%s MODIFY SETTING ttl_only_drop_parts = %d",
 		db, quoteIdentifier(table), onlyDropParts(rules)))
+}
+
+// addedColumn is a column a later version of Kitchen puts on a table an
+// earlier one created.
+type addedColumn struct {
+	name       string
+	definition string
+}
+
+// kitchenProjectColumn is how a table is recognized as carrying kitchenColumns
+// without the DDL having to say so twice. Any table whose CREATE mentions it
+// is one of the OTel tables Kitchen widened, and gets the same additions.
+const kitchenProjectColumn = "ResourceAttributes['kitchen.project']"
+
+// The columns #78 added. `process` and `run` are how a Project's workers and
+// scheduled jobs are found in the telemetry, and in the activity feed they are
+// what an entry about a run names.
+var (
+	kitchenColumnsAdded = []addedColumn{
+		{"process", "LowCardinality(String) MATERIALIZED ResourceAttributes['kitchen.process'] CODEC(ZSTD(1))"},
+		{"run", "LowCardinality(String) MATERIALIZED ResourceAttributes['kitchen.run'] CODEC(ZSTD(1))"},
+	}
+	eventColumnsAdded = []addedColumn{
+		{"process", "LowCardinality(String)"},
+		{"run", "LowCardinality(String)"},
+	}
+)
+
+// columnsAddedLater is what a table gains beyond what its CREATE would give an
+// installation that already has it.
+//
+// `CREATE TABLE IF NOT EXISTS` does not reshape an existing table, which is
+// stated where the rollup's schema is frozen and is true of every table here:
+// an installation that upgrades keeps the table it has, columns and all. So a
+// column added to the DDL reaches a fresh install and nowhere else unless it
+// is also altered on, and this is where that is said once rather than in each
+// of the six Ensure functions.
+//
+// The definitions are deliberately identical to the ones in the CREATE — a
+// test asserts it, because two spellings of one column is how a fresh install
+// and an upgraded one come to disagree about what a query means.
+func columnsAddedLater(table, ddl string) []addedColumn {
+	if table == EventsTable {
+		return eventColumnsAdded
+	}
+	if strings.Contains(ddl, kitchenProjectColumn) {
+		return kitchenColumnsAdded
+	}
+	return nil
+}
+
+// ensureAddedColumns alters on whatever the table is missing. `IF NOT EXISTS`
+// makes it a no-op on the fresh table the CREATE just made, so this costs one
+// statement per column per reconcile and changes nothing until it has to.
+//
+// A MATERIALIZED column added this way is not written into the parts that
+// already exist; ClickHouse evaluates its expression on read for those, which
+// is exactly right here — the attribute it reads was already in the row's
+// ResourceAttributes map, so old rows answer the new column correctly without
+// a rewrite of the table.
+func (c *Client) ensureAddedColumns(ctx context.Context, table, ddl string) error {
+	db := quoteIdentifier(c.cfg.Database)
+	for _, column := range columnsAddedLater(table, ddl) {
+		statement := fmt.Sprintf("ALTER TABLE %s.%s ADD COLUMN IF NOT EXISTS %s %s",
+			db, quoteIdentifier(table), quoteIdentifier(column.name), column.definition)
+		if err := c.Exec(ctx, statement); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // ttlRule is one TTL expression: how many days, and which rows it covers. An
@@ -615,10 +688,19 @@ func ttlExpressionRules(column string, rules []ttlRule) string {
 //
 // `pod` is a plain String because a pod name is nearly unique per row and a
 // LowCardinality dictionary of nearly-unique values costs more than it saves.
+//
+// `process` and `run` are what a Project's workers and scheduled jobs are found
+// by (#78). `run` is the Job's name — the label the Job controller stamps on
+// every pod it creates — and it is LowCardinality rather than a plain String
+// because a schedule produces one value per firing, not one per row: a nightly
+// job is 365 values a year, which is exactly what a dictionary is for. The web
+// process writes neither, so every query that predates them is unchanged.
 const kitchenColumns = `
     project     LowCardinality(String) MATERIALIZED ResourceAttributes['kitchen.project'] CODEC(ZSTD(1)),
     environment LowCardinality(String) MATERIALIZED ResourceAttributes['deployment.environment.name'] CODEC(ZSTD(1)),
     build       LowCardinality(String) MATERIALIZED ResourceAttributes['kitchen.build'] CODEC(ZSTD(1)),
+    process     LowCardinality(String) MATERIALIZED ResourceAttributes['kitchen.process'] CODEC(ZSTD(1)),
+    run         LowCardinality(String) MATERIALIZED ResourceAttributes['kitchen.run'] CODEC(ZSTD(1)),
     source      LowCardinality(String) MATERIALIZED ResourceAttributes['kitchen.source'] CODEC(ZSTD(1)),
     namespace   LowCardinality(String) MATERIALIZED ResourceAttributes['k8s.namespace.name'] CODEC(ZSTD(1)),
     pod         String                 MATERIALIZED ResourceAttributes['k8s.pod.name'] CODEC(ZSTD(1)),
@@ -912,8 +994,9 @@ TTL %s
 
 // createEventsTable is the activity feed's schema: one row per thing that
 // happened on the platform. The object columns (build, environment, release,
-// claim) name what the entry is about, so a feed entry can link to it; `value`
-// carries the one number some events have (a build's duration in seconds).
+// claim, process, run) name what the entry is about, so a feed entry can link
+// to it; `value` carries the one number some events have (a build's duration
+// in seconds, a scheduled run's).
 //
 // The feed is read newest-first and per-project, which is what the ordering
 // key serves. Volume is human-scale — deploys and builds, not requests — so
@@ -928,6 +1011,8 @@ func createEventsTable(database string, retentionDays int32) string {
     build       LowCardinality(String),
     release     LowCardinality(String),
     claim       LowCardinality(String),
+    process     LowCardinality(String),
+    run         LowCardinality(String),
     message     String,
     actor       LowCardinality(String),
     value       Float64

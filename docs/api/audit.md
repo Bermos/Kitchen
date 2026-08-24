@@ -17,14 +17,24 @@ GET /events?project=shop&limit=50&since=2026-08-13T00:00:00Z
 ```
 
 Entries are
-`{timestamp, type, project, environment, build, release, claim, message, actor, value}` —
+`{timestamp, type, project, environment, build, release, claim, process, run, message, actor, value}` —
 the object fields name what the entry is about so a client can link to it,
 `actor` is the authenticated caller for API-driven changes and `operator` for
 things the reconcilers decided on their own, and `value` carries the one
-number some events have (a finished build's duration in seconds). Types:
+number some events have (a finished build's duration in seconds, a scheduled
+run's). Types:
 `build.succeeded`, `build.failed`, `release.promoted`, `release.rolledBack`,
 `preview.created`, `preview.removed`, `project.created`, `project.deleted`,
-`claim.created`, `claim.deleted`, `claim.bound`, `claim.failed`.
+`claim.created`, `claim.deleted`, `claim.bound`, `claim.failed`,
+`run.started`, `run.succeeded`, `run.failed`.
+
+The three `run.` types are one firing of a
+[scheduled job](processes.md); `process` and `run` name which, and `run` is
+what the log store keys that firing's output by. Both outcomes are in the feed
+rather than only the failure, because "it ran at 03:00 and took nine seconds"
+is the entry that makes the *absence* of an entry mean something. Only a run
+somebody started by hand announces its start — a schedule firing is not news
+until it has an outcome.
 
 The feed is written by the reconcilers and the API into the events table of
 the telemetry store, under the same retention as the logs. Kubernetes Events

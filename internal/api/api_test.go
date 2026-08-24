@@ -48,7 +48,10 @@ const (
 	testBuild = "shop-bld-abc123def456"
 	// testRelease is the release production runs in the fixtures;
 	// testPreviousRelease is the older one a rollback retreats to.
-	testRelease         = "shop-rel-1"
+	testRelease = "shop-rel-1"
+	// testReleaseImage is what testRelease deploys, named because four tests
+	// assert on it and a fifth builds a pod from it.
+	testReleaseImage    = "registry.example.com/shop@sha256:1111"
 	testPreviousRelease = "shop-rel-0"
 	// testEnvironment is the fixtures' production environment: the one that
 	// is rolled back, read for logs, and introspected.
@@ -212,7 +215,7 @@ func fixtures() []runtime.Object {
 		Spec: kitchenv1alpha1.ReleaseSpec{
 			ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: "shop"},
 			BuildRef:   kitchenv1alpha1.LocalObjectReference{Name: testBuild},
-			Image:      "registry.example.com/shop@sha256:1111",
+			Image:      testReleaseImage,
 		},
 	}
 	previous := &kitchenv1alpha1.Release{

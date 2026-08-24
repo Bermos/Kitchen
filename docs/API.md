@@ -194,6 +194,9 @@ name against `internal/api/policy.go`, so a route that moves fails them too.
 | DELETE | `/environments/{name}` | Tear down a stuck preview. Previews only | `developer` |
 | GET | `/environments/{name}/logs` | That environment's runtime logs | `viewer` |
 | GET | `/environments/{name}/workload` | What it is running: replicas, restarts, uptime, resources, pods | `viewer` |
+| GET | `/environments/{name}/processes` | Its workers and scheduled jobs, and how each is getting on | `viewer` |
+| GET | `/environments/{name}/processes/{process}/runs` | One scheduled job's recent runs, newest first | `viewer` |
+| POST | `/environments/{name}/processes/{process}/runs` | Run a scheduled job now, off its schedule | `developer` |
 | GET | `/environments/{name}/metrics` | What it *has been* running: CPU, memory, replicas and restarts over a window | `viewer` |
 | GET | `/environments/{name}/requests/summary` | The golden-signal header: traffic, error rate and latency over a window | `viewer` |
 | GET | `/environments/{name}/requests/series` | The same signals over time — the charts | `viewer` |
@@ -284,6 +287,7 @@ such changes two changes to two different files.
 - [Projects](api/projects.md) — settings, environment variables, membership, CI keys, and deletion
 - [Builds](api/builds.md) — starting and cancelling one, what it reused, and the evidence it left
 - [Environments and releases](api/environments.md) — rolling back, what is running, what is wrong with it, and the bar an environment sets
+- [Workers and scheduled jobs](api/processes.md) — the processes a project runs besides its web one, their runs, and running one now
 - [Connections and claims](api/connections.md) — the credentials the platform holds, and asking one for a resource
 - [Custom domains](api/domains.md) — putting an environment on an address of its own
 - [Logs and queries](api/logs.md) — reading them, following them live, querying them, and saving a query

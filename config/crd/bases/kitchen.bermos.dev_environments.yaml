@@ -360,6 +360,158 @@ spec:
                 - Degraded
                 - Terminating
                 type: string
+              processes:
+                description: |-
+                  Processes is what the reconciler last saw of this environment's workers
+                  and scheduled jobs: how many replicas are ready, when each schedule
+                  last fired, and — the field the feature lives or dies on — the most
+                  recent run that failed. A CronJob whose pods fail silently is the
+                  classic way this disappoints, so the failure is carried on the object
+                  the project page and the API already read.
+                items:
+                  description: |-
+                    ProcessStatus is what an Environment's reconciler last saw of one process.
+
+                    A `CronJob` whose pods fail silently is the classic way this feature
+                    disappoints, so the failure is carried here — on the Environment, which is
+                    what the project page and the API read — rather than left in
+                    `kubectl get jobs`.
+                  properties:
+                    active:
+                      description: Active is how many runs are in flight.
+                      format: int32
+                      type: integer
+                    lastFailure:
+                      description: |-
+                        ProcessRun is one run of a scheduled process: the Job that ran it, when, and
+                        what came of it.
+                      properties:
+                        finishedAt:
+                          format: date-time
+                          type: string
+                        message:
+                          description: |-
+                            Message is the one line a person reads: why it failed, or nothing at
+                            all when it did not.
+                          type: string
+                        name:
+                          description: |-
+                            Name is the Job in the application namespace. It is also the value the
+                            log pipeline keys on as `run:<name>`, which is what makes a run's
+                            output queryable after the pods are gone.
+                          minLength: 1
+                          type: string
+                        phase:
+                          description: RunPhase is how one run of a scheduled process
+                            ended, or that it has not.
+                          enum:
+                          - Running
+                          - Succeeded
+                          - Failed
+                          type: string
+                        startedAt:
+                          format: date-time
+                          type: string
+                      required:
+                      - name
+                      - phase
+                      type: object
+                    lastRun:
+                      description: |-
+                        LastRun is the most recent run that started, whatever it did next, and
+                        LastFailure the most recent one that failed. Both are kept because the
+                        question a person asks is "is it working" and the question they ask
+                        next is "when did it stop" — and a job that has been failing for a week
+                        answers the first with a green tick if only the last run is recorded.
+
+                        There is deliberately no "next run": computing it means parsing the
+                        cron expression, and a whole scheduling library carried for one
+                        display string is not a trade worth making when the schedule itself is
+                        right there beside it.
+                      properties:
+                        finishedAt:
+                          format: date-time
+                          type: string
+                        message:
+                          description: |-
+                            Message is the one line a person reads: why it failed, or nothing at
+                            all when it did not.
+                          type: string
+                        name:
+                          description: |-
+                            Name is the Job in the application namespace. It is also the value the
+                            log pipeline keys on as `run:<name>`, which is what makes a run's
+                            output queryable after the pods are gone.
+                          minLength: 1
+                          type: string
+                        phase:
+                          description: RunPhase is how one run of a scheduled process
+                            ended, or that it has not.
+                          enum:
+                          - Running
+                          - Succeeded
+                          - Failed
+                          type: string
+                        startedAt:
+                          format: date-time
+                          type: string
+                      required:
+                      - name
+                      - phase
+                      type: object
+                    name:
+                      minLength: 1
+                      type: string
+                    readyReplicas:
+                      format: int32
+                      type: integer
+                    replicas:
+                      description: |-
+                        Replicas and ReadyReplicas are a worker's, and are left at zero for a
+                        scheduled process.
+                      format: int32
+                      type: integer
+                    schedule:
+                      description: |-
+                        Schedule is a scheduled process's, echoed so a reader does not have to
+                        hold the Release open beside this.
+                      type: string
+                    suspended:
+                      description: |-
+                        Suspended marks a process this environment declares but deliberately
+                        does not run: a preview whose process did not opt in. Nothing is
+                        materialized for it at all — the flag is what stops a preview's process
+                        list reading like a shorter version of the project's.
+                      type: boolean
+                    type:
+                      description: |-
+                        ProcessType is how one of a Project's processes runs.
+
+                        There is deliberately no `web` here. A Project's web process is
+                        `spec.runtime` — the port, the replica count and the resources of the thing
+                        with the URL — and it is singular because the URL is: an Environment
+                        publishes one hostname, one Service and one route, and a second process
+                        claiming to be the web one would have to be told which of those it got. So
+                        this list is what a Project has *besides* its web process, which is exactly
+                        the gap #78 was filed for: a queue worker and a nightly job that today have
+                        to be a second Project with a port nothing talks to.
+                      enum:
+                      - worker
+                      - cron
+                      type: string
+                    workload:
+                      description: |-
+                        Workload is the Deployment or CronJob the process materialized as, in
+                        the project's application namespace.
+                      type: string
+                  required:
+                  - name
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
               rescan:
                 description: |-
                   Rescan is where the continuous re-evaluation pass (#134) keeps its

@@ -184,6 +184,12 @@ one the reconciler has not reached — answers `200` with no `deployment` and a
 `message` saying so. That is a state, not an error; the environment's own
 conditions carry why.
 
+This route is the **web process** alone: the Deployment behind the URL. The
+workers and scheduled jobs an environment also runs are
+`GET /environments/{name}/processes` — see
+[Workers and scheduled jobs](processes.md), which also covers a scheduled job's
+runs and running one now.
+
 ## What an environment has been running
 
 `GET /environments/{name}/workload` answers the instant. `GET

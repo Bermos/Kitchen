@@ -410,6 +410,18 @@ spec:
     port: 3000                          # omit to take the detected framework's
     replicas: 2                         # previews always get 1
     resources: { cpu: 500m, memory: 512Mi }
+  processes:                            # what it runs *besides* the web process
+    - name: worker                      # a Deployment with no Service, no route
+      type: worker
+      command: [node, worker.js]
+      replicas: 2
+    - name: nightly-report              # a batch/v1 CronJob; one firing is a run
+      type: cron
+      schedule: "0 3 * * *"             # five fields, read in UTC
+      command: [node, report.js]
+      timeout: 30m                      # becomes activeDeadlineSeconds
+      concurrencyPolicy: Forbid         # Allow | Forbid | Replace
+      previews: false                   # the default, and a decision
 status:
   conditions: [...]                     # Ready, SourceConnected, WebhookRegistered,
                                         # InitialBuild
@@ -451,6 +463,21 @@ address is something the token holder said about themselves, so an
 unverified-email grant is a grant to whoever can get the identity provider to
 let them type that address — it resolves to no role rather than to the one
 written down.
+
+`processes` is what the project runs besides its web process, and there is
+deliberately no `web` entry: the web process is `runtime` above, singular
+because the URL is — an Environment publishes one hostname, one Service and
+one route, and a second process claiming to be the web one would have to be
+told which of those it got. A `worker` runs continuously and is never
+addressed; a `cron` runs on its schedule and each firing is a Job. Both share
+the Release's image and resolved environment and differ only in how they are
+started, which is why this is a field rather than a second build.
+
+`previews` is `false` unless a process asks otherwise, for both types alike. A
+preview shares the project's environment variables, so a preview that emails
+customers nightly is a bad afternoon and a preview worker draining the
+production queue is a worse one. The list merges per `name`, so two people
+adding two workers do not drop each other's.
 
 Reconcile: ensure per-project namespace, register the git webhook via the Connection
 (signing secret generated per project), validate that the referenced Connections carry
@@ -667,11 +694,13 @@ spec:                                   # fully immutable (CEL rule on the CRD)
   projectRef: { name: my-shop }
   buildRef: { name: my-shop-bld-8f3a2c1 }
   image: harbor.example.com/kitchen/my-shop@sha256:ab12...
-  configSnapshot:                       # frozen copy of Project.spec.env + runtime
-    env: [...]
+  configSnapshot:                       # frozen copy of Project.spec.env,
+    env: [...]                          # runtime and processes
     runtime: { port: 3000, resources: {...} }   # port resolved: a project that
                                                 # named none gets the detected
                                                 # framework's, frozen here
+    processes: [...]                    # the workers and scheduled jobs as they
+                                        # stood at build time
 status:
   environments: [my-shop-production, my-shop-pr-42]   # where it's live (informational)
 ```
@@ -788,6 +817,25 @@ status:
     unmetRules: [max-severity]
     decisionID: 0d9a1f7e-...            # the stored decision, with the whole input
     message: blocked by bundle sha256:...
+  processes:                            # the workers and scheduled jobs, as last seen
+    - name: worker
+      type: worker
+      workload: my-shop-pr-42-worker    # the Deployment or CronJob it materialized as
+      replicas: 2
+      readyReplicas: 2
+    - name: nightly-report
+      type: cron
+      workload: my-shop-production-nightly-report
+      schedule: "0 3 * * *"
+      suspended: false                  # true on a preview that did not opt in
+      active: 0                         # runs in flight
+      lastRun:                          # whatever it did
+        name: my-shop-production-nightly-report-29387520
+        phase: Failed                   # Running | Succeeded | Failed
+        startedAt: "2026-08-24T03:00:04Z"
+        finishedAt: "2026-08-24T03:00:37Z"
+        message: "BackoffLimitExceeded: Job has reached the specified backoff limit"
+      lastFailure: {...}                # the most recent one that failed
   conditions: [...]                     # Ready, RouteProgrammed, WorkloadAvailable,
                                         # PreviewProtected (previews only),
                                         # ScaleToZero (where the platform idles anything)
@@ -806,6 +854,14 @@ per pair rather than platform-wide. A release move clears it — the answer was
 about the artifact that was running, and carrying it forward would report a
 scan that never happened. `GET /compliance/drift` is the same information
 across the estate, joined to what was decided at promotion.
+
+`processes` is why a scheduled job that stopped working is something a person
+trips over rather than something they have to go and check. `lastFailure` is
+kept until a **later failure** replaces it, never until a success does: a job
+that fails four nights in five would otherwise read as healthy on the fifth,
+and a `CronJob` whose pods fail silently is the classic way the feature
+disappoints. Every terminal run also lands in the activity feed as
+`run.succeeded` or `run.failed`, naming the process and the run.
 
 `gitReport` is bookkeeping for [deploy status](#deploy-status-back-on-the-commit): an
 Environment reconciles far more often than it changes, and without a record of what was
@@ -827,6 +883,27 @@ requests land on the platform login and only signed-in ones reach the applicatio
 needs no changes — see [AUTH.md](AUTH.md). Production environments are never gated. If
 protection is asked for on a platform that runs no gate, the Environment gets **no route
 at all** rather than a public one, and says so in `PreviewProtected`.
+
+The same pass materializes the Release's `processes`: a **worker** becomes a
+plain Deployment named `<environment>-<process>` with no Service and no route —
+nothing addresses it, so there is nothing to publish and no certificate to
+want — and a **cron** becomes a `batch/v1` CronJob of the same name, with the
+process's schedule in UTC, its concurrency policy, and its timeout as
+`activeDeadlineSeconds`. Both get the Release's image, the environment's
+resolved variables, the registry pull secret the web process uses and one
+variable of their own, `KITCHEN_PROCESS`: a single image serving three roles
+has no other way of telling which one it is.
+
+A run is not retried. `backoffLimit` is zero and the restart policy is `Never`,
+so a scheduled run that failed is a failed run and the schedule is what tries
+again; the platform keeps the last three successful runs and the last five
+failed ones so a person can look at what happened. Everything a process
+materializes carries `kitchen.bermos.dev/process`, which is how the pruning
+finds what a Release no longer declares (the web process's own Deployment
+carries no such label and so can never be caught by it) and how the collector
+keys the log store — beside `kitchen.run`, which it lifts off the Job name the
+Job controller stamps on every pod. A preview materializes only the processes
+that opted in; the rest are reported `suspended` rather than silently dropped.
 
 Where the platform idles environments (`Kitchen.spec.scaleToZero.enabled`) and the
 Project's `spec.scaleToZero` covers this type, the reconciler also writes an

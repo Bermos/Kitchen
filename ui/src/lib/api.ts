@@ -905,6 +905,47 @@ export interface WorkloadPod {
   message?: string;
 }
 
+/** One firing of a scheduled job. `name` is the Job that was the run, and it
+ * is also what the log store keys the run's output by — which is why a run
+ * that the cluster has long since collected still has readable logs. */
+export interface ProcessRun {
+  name: string;
+  phase: string;
+  startedAt?: string;
+  finishedAt?: string;
+  durationSeconds?: number;
+  message?: string;
+}
+
+/** One of a project's processes besides its web process, as one environment
+ * runs it: a worker (continuous, never addressed) or a scheduled job.
+ *
+ * `healthy` is the platform's own verdict rather than something the dashboard
+ * derives, so that this screen and the CLI cannot disagree about what a red
+ * dot means. `suspended` is a process the environment declares and does not
+ * run — a preview whose process was not opted in — which is listed with its
+ * reason rather than left out. */
+export interface Process {
+  name: string;
+  type: string;
+  command?: string[];
+  args?: string[];
+  schedule?: string;
+  concurrencyPolicy?: string;
+  timeout?: string;
+  replicas?: number;
+  readyReplicas?: number;
+  cpu?: string;
+  memory?: string;
+  workload?: string;
+  suspended?: boolean;
+  reason?: string;
+  active?: number;
+  lastRun?: ProcessRun;
+  lastFailure?: ProcessRun;
+  healthy: boolean;
+}
+
 /** What an environment is actually running, as opposed to what it was asked
  * to run: the Deployment's replica counts, its pods and their restarts. */
 export interface Workload {
@@ -1742,6 +1783,11 @@ export interface PlatformEvent {
   build?: string;
   release?: string;
   claim?: string;
+  /** One of a project's workers or scheduled jobs, and — for a scheduled
+   * one — the Job that was the run. `run` is what the log store keys that
+   * firing's output by. */
+  process?: string;
+  run?: string;
   message: string;
   actor?: string;
   value?: number;
@@ -2768,6 +2814,20 @@ export const api = {
       `/environments/${name}/eligibility${release ? `?release=${encodeURIComponent(release)}` : ""}`,
     ),
   environmentWorkload: (name: string) => request<Workload>("GET", `/environments/${name}/workload`),
+  // The workers and scheduled jobs (#78). It is per environment, not per
+  // project, because what runs is the *release's* process list: an environment
+  // that has been rolled back runs what that release declared.
+  environmentProcesses: (name: string) =>
+    request<{ items: Process[] }>("GET", `/environments/${name}/processes`).then((body) => body.items),
+  processRuns: (environment: string, process: string) =>
+    request<{ items: ProcessRun[] }>(
+      "GET",
+      `/environments/${environment}/processes/${encodeURIComponent(process)}/runs`,
+    ).then((body) => body.items),
+  // No body: nothing about a manual run is the caller's to choose. It is a
+  // copy of what the schedule would have run.
+  startProcessRun: (environment: string, process: string) =>
+    request<ProcessRun>("POST", `/environments/${environment}/processes/${encodeURIComponent(process)}/runs`),
   // What the workload endpoint cannot be: the same environment over time.
   environmentMetrics: (name: string, query: { since?: string; until?: string; points?: number } = {}) => {
     const params = new URLSearchParams();

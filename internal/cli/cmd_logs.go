@@ -44,6 +44,8 @@ func newLogsCommand(r *Runtime) *cobra.Command {
 		until           string
 		search          string
 		container       string
+		processName     string
+		runName         string
 	)
 
 	cmd := &cobra.Command{
@@ -60,12 +62,18 @@ and --limit keeps the last N of them.
 the page, until the command is interrupted or --timeout runs out.
 
 --since and --until take an RFC 3339 timestamp or a duration ("15m", "2h"),
-which is read as "that long ago".`),
+which is read as "that long ago".
+
+--process narrows an environment's lines to one of the project's workers or
+scheduled jobs, and --run to one firing of a schedule. A run's output outlives
+the run: the platform stops keeping the Job long before it stops keeping the
+lines, so last month's failed report is still readable by name.`),
 		Args: cobra.NoArgs,
 		RunE: run(func(cmd *cobra.Command, _ []string) error {
 			return readLogs(commandContext(cmd), r, logOptions{
 				environment: environmentName, build: buildName, follow: follow,
 				limit: limit, since: since, until: until, search: search, container: container,
+				process: processName, run: runName,
 			})
 		}),
 	}
@@ -80,6 +88,10 @@ which is read as "that long ago".`),
 	flags.StringVar(&until, "until", "", "only lines before this: an RFC 3339 timestamp, or a duration ago")
 	flags.StringVar(&search, "search", "", "only lines whose message contains this, case-insensitively")
 	flags.StringVar(&container, "container", "", "only one container of the pod")
+	flags.StringVar(&processName, "process", "",
+		"only one of the project's workers or scheduled jobs. `kitchen processes` lists them")
+	flags.StringVar(&runName, "run", "",
+		"only one run of a scheduled job. `kitchen processes runs <name>` lists them")
 
 	return describe(cmd, meta{
 		Calls: []string{
@@ -99,6 +111,8 @@ which is read as "that long ago".`),
 				"kitchen logs --environment shop-pr-42 --follow --timeout 10m --json"},
 			{"Errors in the last hour", "kitchen logs --since 1h --search error --json"},
 			{"A build's output", "kitchen logs --build shop-bld-abc123def456-xk2p9 --json"},
+			{"What last night's report job printed",
+				"kitchen logs --process nightly-report --run shop-production-nightly-report-29387520 --json"},
 		},
 	})
 }
@@ -113,6 +127,8 @@ type logOptions struct {
 	until       string
 	search      string
 	container   string
+	process     string
+	run         string
 }
 
 func readLogs(parent context.Context, r *Runtime, options logOptions) error {
@@ -147,6 +163,8 @@ func readLogs(parent context.Context, r *Runtime, options logOptions) error {
 		[2]string{"until", until},
 		[2]string{"search", options.search},
 		[2]string{"container", options.container},
+		[2]string{"process", options.process},
+		[2]string{"run", options.run},
 	)
 
 	printer := r.printer()

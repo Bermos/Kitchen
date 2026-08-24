@@ -23,9 +23,11 @@ GET /environments/{name}/logs?limit=200&container=app
 | `since` / `until` | RFC 3339 bounds |
 | `search` | Case-insensitive substring of the message |
 | `container` | One container of the pod |
+| `process` | One of the project's workers or scheduled jobs. Runtime logs only — a build's lines carry no process |
+| `run` | One firing of a scheduled job, by the Job's name |
 
 Lines come back oldest first — a log reads forwards — as
-`{timestamp, source, project, environment, build, pod, container, stream, level, message, fields}`.
+`{timestamp, source, project, environment, build, process, run, pod, container, stream, level, message, fields}`.
 `level` is the collector's best-effort read of the line's severity, folded to
 lower case (`trace`/`debug`/`info`/`warn`/`error`/`fatal`) so that `error` is
 one value however the line spelled it, and empty when the line said nothing.
@@ -115,8 +117,9 @@ each other are `AND`ed:
 | `-source:cluster` | Negation. `NOT` and `!` are the same |
 | `a OR b`, `(a b) OR c` | Alternation and grouping |
 
-Columns are `source`, `project`, `environment`, `build`, `namespace`, `pod`,
-`container`, `node`, `stream`, `level`, `message`, `traceId` and `spanId`, plus
+Columns are `source`, `project`, `environment`, `build`, `process`, `run`,
+`namespace`, `pod`, `container`, `node`, `stream`, `level`, `message`,
+`traceId` and `spanId`, plus
 the aliases `service`/`app` for `project`, `env` for `environment`, `msg` for
 `message` and the usual spellings of the two id columns (`trace_id`,
 `trace.id`, `span_id`). `timestamp` is deliberately not addressable: the window
@@ -129,6 +132,14 @@ a stock OTel exporter whose column names are not Kitchen's to rename, so
 translation lives in the operator rather than in `ALIAS` columns, which keeps
 the table the standard shape any OTel-aware tool expects. It only shows through
 in `where` below.
+
+`process` and `run` are a project's workers and scheduled jobs (see
+[Workers and scheduled jobs](processes.md)). `run` is the Job one firing of a
+schedule produced, which is what makes "show me what last night's report job
+printed" one query rather than a hunt through an environment's whole output —
+and it stays answerable long after the platform has collected the Job itself.
+The web process writes neither, so an environment's logs mean what they always
+meant.
 
 Anything that is not a column is a **structured field** of the line, so
 `http.status:500` reads `LogAttributes['http.status']`. `labels.tier:web`
@@ -150,8 +161,8 @@ GET /logs?where=match(Body, 'GET /works\?page=\d+') AND environment = 'shop-prod
 Its vocabulary is `otel_logs`'s own, which is the price of a store any
 OTel-shaped tool can read: `Body`, `SeverityText`, `LogAttributes['…']` where
 the query language says `message`, `level` and a field name. Kitchen's own
-columns — `project`, `environment`, `build`, `source`, `namespace`, `pod`,
-`container`, `node` — are real columns here and mean what they mean everywhere
+columns — `project`, `environment`, `build`, `process`, `run`, `source`,
+`namespace`, `pod`, `container`, `node` — are real columns here and mean what they mean everywhere
 else, because they are what the table is ordered by.
 
 It reaches ClickHouse as query text, which is the point — and why it runs pinned
