@@ -176,6 +176,8 @@ name against `internal/api/policy.go`, so a route that moves fails them too.
 | GET | `/builds/{name}/logs` | That build's output | `viewer` |
 | GET | `/builds/{name}/attestations` | The signed evidence attached to that build's artifact | `viewer` |
 | POST | `/builds/{name}/gates` | Submit a quality gate result produced elsewhere | `developer` |
+| GET | `/builds/{name}/vex` | The artifact's OpenVEX statements, joined to the findings they modify | `viewer` |
+| POST | `/builds/{name}/vex` | Attach an OpenVEX document to that build's artifact | `admin` |
 | GET | `/releases` | Every release. `?project=` filters | any account — filtered |
 | GET | `/releases/{name}` | One release | `viewer` |
 | GET | `/projects/{name}/promotions` | That project's promotions, newest first. `?environment=`, `?release=`, `?phase=` | `viewer` |

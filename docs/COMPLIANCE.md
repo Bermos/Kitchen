@@ -1,9 +1,12 @@
 # Kitchen — Compliance Design
 
-> Status: **phase 1 implemented** (issues #126, #127). Phases 2–6 are designed
-> for and not built; this document is written so that adding them is
-> additive — each one attaches to something phase 1 put in place, and the
-> places where it attaches are named.
+> Status: **phases 1–4 implemented** (issues #126, #127, #128, #129, #130,
+> #131, #132, #133, #134, #135, #136), and phase 5 in part (#137, #138). What
+> is designed and not built is the rest of phase 5 — access review (#139),
+> retention (#140), criticality (#141), export (#142) — and the mapping
+> document (#143). This document is written so that adding them stays
+> additive: each one attaches to something an earlier phase put in place, and
+> the places where it attaches are named.
 
 Kitchen is not, and cannot be, "FINMA compliant". Compliance is a property of
 an institution, not of software. What Kitchen can demonstrate is that a
@@ -889,7 +892,7 @@ is the history; the drift view is only its newest row.
   year of near-identical statements on every artifact, and the register is
   already the record.
 - **The evidence index names the newest scan, not every scan.**
-  `status.artifact.evidence` is an index (§11), so a rescan replaces the
+  `status.artifact.evidence` is an index (§13), so a rescan replaces the
   vulnerability-scan entry rather than appending one. The registry holds them
   all.
 - **Nothing here refuses a deployment.** The pass records, surfaces and — for
@@ -900,7 +903,265 @@ is the history; the drift view is only its newest row.
 
 ---
 
-## 10. Configuration
+## 10. Exploitability (issue #135)
+
+### 10.1 What makes §9 survive a real dependency tree
+
+The rescan pass asks a current vulnerability database about a bill of
+materials nobody has touched. On a real application it comes back with
+somewhere between eighty and four hundred findings, of which a handful are
+reachable from anything the process actually runs. That is not a defect of the
+scanner; it is what a transitive dependency graph looks like when it is matched
+against every advisory ever published about it.
+
+A control that reports four hundred things every morning is read for a week
+and then rubber-stamped, and a rubber-stamped control is worse than no control,
+because somebody is relying on it. **VEX is what makes the other three hundred
+and ninety stop asking.** It is the vendor's or the security team's assertion
+that a vulnerability which is genuinely present in the image is not exploitable
+in it: the component is not present in the running application, the vulnerable
+function is not in the execute path, an inline mitigation already covers it.
+
+So this is not a nice-to-have bolted on after the rescan controller. It is the
+half of the rescan controller that makes daily re-evaluation something an
+institution can actually leave switched on.
+
+### 10.2 The document is the predicate, and the URI is OpenVEX's
+
+An ingested document is attached to the artifact's digest as a signed
+attestation like everything else in §5 — and the predicate type is
+`https://openvex.dev/ns/v0.2.0`, which is OpenVEX's own context URI and not
+one of Kitchen's.
+
+That follows §5.3's rule rather than bending it: a Kitchen predicate type is an
+admission that no standard covers the claim, and OpenVEX covers this one with a
+specification, a vocabulary and tooling that already reads it. Minting
+`kitchen.bermos.dev/attestation/vex/v1` for the same assertion would produce
+evidence only Kitchen could interpret, which is the exact opposite of why this
+layer is standards all the way down.
+
+The predicate is the submitted document **byte for byte** — decoded for
+validation, never re-encoded — for the reason §6.4 gives about a harvested
+provenance predicate. A statement rebuilt from a decoded map reorders keys and
+renumbers numbers, and the platform's signature would then be over a claim
+nobody made. Older context spellings are recognised by prefix, because a
+document is written by whatever tool its author runs and the first drafts of
+the specification are still in circulation.
+
+### 10.3 `not_affected` has to say why, and from a list
+
+OpenVEX permits `not_affected` to be explained by an `impact_statement` in free
+text. **Kitchen refuses that**, at ingest and again in the default bundle.
+
+The reason is the same one the exception register exists for. "The vulnerable
+code is not in the execute path" is a claim a reviewer can check against the
+artifact and an auditor can count across a hundred suppressions; "we looked at
+it and it's fine" is a sentence. A suppression whose reason cannot be counted
+cannot be reviewed in aggregate, and a register of a thousand of them is a
+register of nothing.
+
+So a `not_affected` statement carries one of the five:
+`component_not_present`, `vulnerable_code_not_present`,
+`vulnerable_code_not_in_execute_path`,
+`vulnerable_code_cannot_be_controlled_by_adversary`,
+`inline_mitigations_already_exist`. Free text is carried too — `status_notes`
+and `impact_statement` are shown wherever the statement is — beside the
+justification rather than instead of it.
+
+The check is in **two** places on purpose, which is not duplication. The API
+refuses an unjustified document at ingest, with a message naming the
+enumeration and saying where prose belongs. The bundle refuses to act on one
+whatever attached it, because `Store.Evidence` merges the registry's referrers
+listing with cosign's attachment tag: a VEX document pushed with
+`cosign attest` by something that never spoke to Kitchen is visible to the
+policy engine, and a rule that trusted the ingest path to have already checked
+would be trusting a path that document never took.
+
+### 10.4 Whose word it is, recorded twice
+
+§7.5's model — *what changes is not the predicate but the attribution* —
+applies here and matters more, because a submitted scan result is a claim about
+what a tool found and a submitted VEX statement is a claim that something does
+not count.
+
+Two facts are kept apart and neither substitutes for the other:
+
+- **The author** is the document's own claim about itself. OpenVEX requires
+  one, and a statement may name its own `supplier` where a document collects
+  somebody else's assertions — an aggregator's name on a vendor's statement
+  would attribute it to the wrong party, so authorship is resolved per
+  statement.
+- **The submitter** is the authenticated identity that handed the document to
+  the platform, which is the only half the platform witnessed. It is recorded
+  on `Build.status.vex[]` and in the audit record, and it is never written into
+  the document.
+
+The audit record comes **before** the attach and is fail-closed, like every
+other write the API makes: it names the caller, the author, the document id,
+and every vulnerability and justification asserted, so that "what has been
+waived on this platform and by whom" is answerable from the log alone without a
+registry to hand. The Build's index carries the same attribution for an
+installation whose audit log is off, which §4.6 permits.
+
+The platform's signature means what it always means: that these bytes were
+submitted by that identity at that moment and have not changed since. It is not
+a claim that the assertion is true. Nothing can sign that.
+
+### 10.5 Whose word is believed, at two levels
+
+Trust is a different question from attribution, and it is answered twice
+because it has two legitimate owners.
+
+- **The platform admits.** `compliance.vex.trustedAuthors` on the singleton is
+  the closed list of document authors anything may be attached for, and
+  `compliance.vex.enabled` turns the door off altogether. It is the operator's
+  word, on the operator's object, for the reason §7.3 gives about gates: an
+  application team that decided unaided whose word suppressed its own
+  vulnerabilities would be marking its own homework at the one point where the
+  marking matters.
+- **The environment believes.** `parameters["vexRequireVerified"]` (**on by
+  default**) refuses a statement whose envelope no key the platform holds
+  accepted, `parameters["vexTrustedAuthors"]` narrows to named authors, and
+  `parameters["vexMaxAgeDays"]` bounds how long a statement stays current
+  without being restated. Production can be stricter than the platform;
+  nothing can be looser than it.
+
+`vexRequireVerified` defaulting to on is the answer to "policy can be
+configured to reject VEX from untrusted signers", inverted: rejection is the
+default and acceptance is the configuration. A document somebody pushed to the
+registry under their own key is listed, shown, and believed by nothing.
+
+Submitting is an **admin's** write on the project rather than a developer's,
+which is the one place this endpoint parts company with the gate submission it
+otherwise resembles. A gate result is a fact about an artifact; a
+`not_affected` statement is an assertion whose effect is to stop a finding
+counting, which is nearer to approving a break-glass exception than to
+reporting a scan.
+
+### 10.6 Expiry, and still no expiry engine
+
+A statement can carry `expires`, per statement or per document. **That is
+Kitchen's term and not OpenVEX's**, which has no expiry field at all, and it
+lives inside the signed bytes rather than beside them: an expiry supplied out
+of band would be an unattributable edit to somebody else's assertion.
+
+It is judged exactly as an exception's is, and by the same mechanism as §9.7 —
+which is to say by no mechanism. `policy.VEXFrom` does not list an expired
+statement, the finding it was covering fires unsuppressed, and the pass that
+notices is the one that was going to re-evaluate anyway. Judging it against
+`input.at` rather than against the reader's clock is what makes a replayed
+decision suppress exactly what the original suppressed.
+
+`vexMaxAgeDays` is the other half of the same idea and belongs to the
+environment rather than to the author: an assertion nobody has restated in a
+year is an assertion about a dependency tree that has moved. Under a bound, a
+statement carrying no timestamp is not current, and a bound that is not a whole
+number of days makes nothing current — a bound nobody can read bounds
+everything out, which is the fail-safe direction.
+
+### 10.7 Materialized in one place, and why it is not the seam #134 left
+
+Issue #134 left a named seam in `policyeval.go`, beside where the exception
+listing is attached, on the reasoning that applied to exceptions: which grants
+are in scope is a *listing* rather than a materialization, so each caller that
+evaluates for real attaches its own.
+
+That reasoning does not carry over, and following it would have been a
+mistake. An artifact's VEX statements are already in the evidence set — they
+are attestations on the digest — so materializing them needs the `evidence`
+argument `MaterializeInput` already holds and the clock it already carries.
+Nothing is fetched. Putting the call at the seam instead would have created a
+second materialization site, and the promotion, the rescan, the replay and the
+API's eligibility preview would then have differed by whichever one somebody
+remembered to update — which is the bug the whole epic exists to prevent, and
+which the eligibility preview has already had once.
+
+So `MaterializeInput` calls `policy.VEXFrom`, every evaluation path gets the
+same statements from the same bytes, and the preview needed no change at all.
+
+The materializer judges nothing. An unjustified `not_affected`, a statement
+from an author nobody trusts and one whose envelope did not verify all reach
+`input.vex` with their facts intact, and the bundle is what refuses them. A
+statement dropped in the materializer would be a suppression decision taken
+where no rule could be read and no reader could see it.
+
+### 10.8 Visible, never silently applied
+
+`GET /builds/{name}/vex` answers the artifact's statements **joined to the
+findings they modify**: every finding from the newest vulnerability scan,
+whether or not anything suppresses it, each carrying the statement about it,
+its justification, its author, who submitted it, and whether it is justified,
+current and verified. The dashboard draws it on the build view and
+`kitchen vex list` prints it.
+
+The join reports facts and not a verdict, which is the same line §7.1 holds for
+gates: it never says "suppressed", because whether a statement suppresses
+anything is the target environment's bundle's question and the same statement
+can be honoured in staging and refused in production. What it does say is why a
+statement is one no policy would act on — expired, unverified, or
+`not_affected` without a justification — in a sentence rather than a badge.
+
+An expired statement is shown rather than dropped, which is the one place this
+view deliberately differs from the policy input. The evaluation must not act on
+it; a person asking why a finding has come back needs to see the assertion that
+ran out, and the date it ran out on.
+
+### 10.9 The awkward parts, said out loud
+
+- **Product matching is not implemented.** A statement's `products` are
+  carried into the input and shown on every surface, and the default bundle
+  matches on the vulnerability identifier alone. Kitchen names artifacts by
+  digest; an OpenVEX document names products by whatever package URL its
+  author chose, frequently for the source package rather than the image. A
+  rule that demanded they line up would refuse honest documents far more often
+  than it caught careless ones. What actually binds a statement to an artifact
+  is the attestation's subject — a document is attached to a digest and read
+  back from that digest — and a bundle that wants more has `products` in the
+  input to match on.
+- **`expires` is Kitchen's, so every other reader ignores it.** A document
+  carrying one is still a valid OpenVEX document, and a tool that has never
+  heard of the term treats the statement as unbounded. That is the direction
+  JSON-LD fails in and it is not the safe one; it is accepted because the
+  alternative was an expiry outside the signature, which is worse.
+- **The platform verifies with its own key and nobody else's.** A vendor's
+  OpenVEX document signed by the vendor is listed and never verified, so the
+  default parameters believe none of it. In practice a vendor document reaches
+  an artifact by being re-submitted through the API, which means the platform's
+  signature attests that *this identity submitted these bytes* and the vendor's
+  own signature is not checked at all — the chain of custody is the submitter,
+  not the author. Naming external verification keys on the singleton is the
+  obvious next step and is deliberately not in this cut.
+- **An expired statement reads as *newly failing* in the drift view.** §9.8's
+  distinction is drawn between a rule that fired at promotion and one that did
+  not, and a rule a VEX statement was suppressing never fired at all — so when
+  the statement lapses, drift reports a rule that did not fire then and fires
+  now, which is exactly what `newly-failing` means and is not the whole story.
+  The cause is on the build's VEX view, one click away, and naming a third
+  status would mean the drift join reading every deployed artifact's VEX
+  documents out of the registry on a view whose entire design is that it joins
+  things already stored.
+- **A suppression is not a waiver, and the register does not merge them.** An
+  Exception waives a *rule* that fired; a VEX statement removes a *finding*
+  before any rule sees it. So a release whose every finding is suppressed
+  reads as plainly compliant — no exception, no waived rule, nothing in the
+  register — which is correct and is also the thing to watch. The question
+  "what is this environment ignoring, and on whose say-so" is answered by the
+  build's VEX view and by the audit log, not by the exception register.
+- **A CI key cannot file one.** A project's CI key is a developer on exactly
+  one project, and submitting VEX is admin's. An organisation that generates
+  VEX in its own pipeline has to grant that pipeline an admin credential
+  deliberately — which is friction, and is the point: an artifact's own build
+  pipeline asserting that its own findings do not apply is precisely the
+  self-marked homework the suite is arranged around.
+- **Nothing here checks that the assertion is true.** The platform signs that
+  these bytes were submitted by that identity at that moment. Whether the
+  vulnerable code really is unreachable is a claim about an application, made
+  by a person, and the only thing that makes it accountable is that their name
+  is on it and the date is beside it.
+
+---
+
+## 11. Configuration
 
 ```yaml
 kitchen:
@@ -930,6 +1191,10 @@ kitchen:
         version: "0.58.0"
         format: trivy-json
         args: [image, --format=json, --output=$(KITCHEN_FINDINGS), $(KITCHEN_ARTIFACT)]
+    vex:                       # who may assert that a finding does not apply here
+      enabled: true
+      trustedAuthors: []       # empty: any authenticated caller's document is admitted,
+                               # and the attribution is the control
     rescan:                    # re-evaluate what is deployed, against today's database
       enabled: false
       interval: 24h            # per (environment, release) pair, from its last scan
@@ -949,6 +1214,13 @@ that could turn its own audit log off, sign its own evidence with a key it
 chose, or decide how often its own running release was checked against today's
 vulnerability database would be attesting to nothing.
 
+`vex` is admission and not belief. It says whose documents may be attached to
+an artifact at all; whose statements a given environment then takes the word of
+is that environment's bundle parameters — `vexRequireVerified` (on by default),
+`vexTrustedAuthors` and `vexMaxAgeDays`. Production can be stricter than the
+platform and nothing can be looser than it, which is the same shape as a
+project narrowing an inherited data class.
+
 `rescan` has no compiled-in default scanner, deliberately. A scanner is pulled
 on every scan of every environment and its database is refreshed on somebody
 else's schedule; an installation that has not chosen one has not decided
@@ -959,14 +1231,14 @@ rather than quietly picking a vendor.
 
 ---
 
-## 11. Phases
+## 12. Phases
 
 | | |
 |---|---|
 | **1 — Foundations** | audit log (#126), artifact identity (#127) — **built** |
 | **2 — Evidence production** | provenance + SBOM (#128), PR verification (#129), quality gates (#130) — **built** |
 | **3 — Policy** | environment ownership (#131), OPA engine (#132), staged promotion (#133) — **built** |
-| **4 — Continuous compliance** | rescan (#134 — **built**), OpenVEX (#135), exceptions (#136 — **built**) |
+| **4 — Continuous compliance** | rescan (#134), OpenVEX (#135), exceptions (#136) — **built** |
 | **5 — Institutional surface** | data class (#137) — **built**, resource contract (#138) — **built**, access (#139), retention (#140), criticality (#141), export (#142) |
 | **6 — The mapping doc** | #143, kept current |
 
@@ -978,10 +1250,13 @@ Phase 4 attaches to §4 exactly as promised: a re-evaluation is a decision, and
 a decision is an audit record — the rescan sweep records through the same
 `DecisionRecorder` a promotion does, fail-closed, before it acts on anything.
 It attaches to §5 too: a scan is another envelope against the same digest.
-What is left of the phase is #135, and the seam is already there —
-`policy.Input.VEX` is materialized into every evaluation and populated by
-nothing yet, so ingested VEX statements reach the rescan's decisions the day
-something writes them.
+#135 closed the phase, and it closed it by attaching to §5 as well: an
+OpenVEX document is another envelope against the same digest, under the
+standard's own predicate type. What it changed everywhere else was one line —
+`MaterializeInput` now calls `policy.VEXFrom` over the evidence it was already
+handed — so the statements reach the promotion, the rescan, a replay and the
+eligibility preview through the one materializer, and the seam #134 had
+reserved for them turned out to be a place they should not go (§10.7).
 
 Phase 5's data classification (#137) makes the classification a schema field
 rather than documentation, because a schema field is what the platform can
@@ -1020,7 +1295,7 @@ outside this repository.
 
 ---
 
-## 12. Things that are true and easy to get wrong
+## 13. Things that are true and easy to get wrong
 
 - **A gap in the sequence is not always a deletion.** It is also an append that
   claimed its number and then died before the row landed. The head object and
@@ -1067,6 +1342,27 @@ outside this repository.
   and — only for an expired exception that asked for it — rolls back. Reading
   "blocked" as "the platform will take this down" is the wrong way round; the
   consequence of missing evidence lives at promotion.
+- **A `not_affected` VEX statement without an enumerated justification
+  suppresses nothing, and that is checked in two places.** The API refuses one
+  at ingest; the default bundle refuses to act on one however it arrived. The
+  second is not belt and braces — the evidence read merges the registry's
+  referrers listing with cosign's attachment tag, so a document pushed by
+  something that never spoke to Kitchen is visible to the policy engine, and a
+  rule trusting the ingest path would be trusting a path that document never
+  took.
+- **`expires` on a VEX statement is Kitchen's term and not OpenVEX's.** It is
+  read from inside the signed document, because an expiry beside the signature
+  would be an unattributable edit to somebody else's assertion — and every
+  other OpenVEX reader ignores it and treats the statement as unbounded.
+- **A VEX suppression is not an exception and does not appear in the
+  register.** An Exception waives a rule that fired; a VEX statement removes a
+  finding before any rule sees it, so a release whose findings are all
+  suppressed reads as plainly compliant with nothing waived. "What is this
+  environment ignoring, and on whose say-so" is answered by
+  `GET /builds/{name}/vex` and by the audit log, not by the exception
+  register — and when a statement lapses, the drift view reports the rule as
+  `newly-failing`, because it never fired at promotion. §10.9 says why that is
+  the honest reading rather than a sixth status.
 - **`kitchen-audit-head` is load-bearing.** Deleting it does not lose the log —
   it is re-seeded from the table's own last record — but it does lose the
   anchor that would have shown a truncated tail.

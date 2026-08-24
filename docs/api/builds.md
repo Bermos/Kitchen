@@ -216,3 +216,97 @@ A build with no artifact digest answers `409`; a registry that cannot be
 written answers `502`; an installation holding no signing key answers `409`,
 because storing an unsigned result would leave something in the registry that
 looks like evidence and is not.
+
+## Exploitability assertions (VEX)
+
+A gate or a rescan says what was **found**. A VEX statement says whether the
+finding **applies here**: the component is not present, the vulnerable code is
+not in the execute path, a mitigation is already in place. Without it, a daily
+rescan of a real dependency tree produces enough noise that people stop
+reading it.
+
+`POST /builds/{name}/vex` attaches an [OpenVEX](https://openvex.dev) document
+to the build's artifact:
+
+```json
+{
+  "document": {
+    "@context": "https://openvex.dev/ns/v0.2.0",
+    "@id": "https://shop.example/vex/2026-08-24",
+    "author": "security@shop.example",
+    "timestamp": "2026-08-24T09:00:00Z",
+    "statements": [
+      {
+        "vulnerability": {"name": "CVE-2026-1"},
+        "products": [{"@id": "pkg:oci/shop@sha256:…"}],
+        "status": "not_affected",
+        "justification": "vulnerable_code_not_in_execute_path",
+        "impact_statement": "the parser is never reached from our entry points",
+        "expires": "2026-11-24T00:00:00Z"
+      }
+    ]
+  }
+}
+```
+
+The document is carried **verbatim** into a signed attestation under OpenVEX's
+own predicate type — `https://openvex.dev/ns/v0.2.0`, not a Kitchen one, so
+`cosign download attestation` reads it back with the platform out of the loop.
+Statuses are `not_affected`, `affected`, `fixed` and `under_investigation`.
+
+**`not_affected` requires a justification from OpenVEX's enumeration**:
+`component_not_present`, `vulnerable_code_not_present`,
+`vulnerable_code_not_in_execute_path`,
+`vulnerable_code_cannot_be_controlled_by_adversary` or
+`inline_mitigations_already_exist`. Free text in `impact_statement` or
+`status_notes` is carried beside a justification and never instead of one — a
+suppression whose reason cannot be counted cannot be reviewed in aggregate — and
+a document that gives only free text answers `400` naming the enumeration.
+
+`expires` is **Kitchen's term and not OpenVEX's**, read off a statement or off
+the document as a default for all of its statements. It is inside the signed
+bytes rather than beside them: an expiry supplied out of band would be an
+unattributable edit to somebody else's assertion. An expired statement stops
+suppressing at the next evaluation — a promotion, or the rescan pass — and is
+still shown, marked, so that a finding coming back has a visible cause.
+
+The submission is **audit-recorded before it is attached**, naming the
+authenticated caller, the document's author and every vulnerability it touches,
+and the Build records both: `author` is the document's claim about itself,
+`submittedBy` is the platform's own observation. Who may submit at all is
+`compliance.vex` on the platform singleton; whose statements an environment then
+takes the word of is that environment's bundle parameters.
+
+Refusals: a build with no artifact digest answers `409`; a platform with VEX
+turned off answers `409`; an author the platform does not admit answers `403`;
+a platform holding no signing key answers `409`, because an unsigned document in
+the registry would look like evidence and not be; a registry that cannot be
+written answers `502`.
+
+`GET /builds/{name}/vex` is the other half:
+
+```json
+{
+  "subject": "registry.example.com/shop@sha256:…",
+  "verification": "verified",
+  "statements": [
+    {"vulnerability": "CVE-2026-1", "status": "not_affected",
+     "justification": "vulnerable_code_not_in_execute_path", "justified": true,
+     "author": "security@shop.example", "submittedBy": "grace@example.com",
+     "expiresAt": "2026-11-24T00:00:00Z", "expired": false, "verified": true}
+  ],
+  "findings": [
+    {"vulnerability": "CVE-2026-1", "severity": "critical", "package": "libfoo",
+     "vex": {"status": "not_affected", "author": "security@shop.example", …}},
+    {"vulnerability": "CVE-2026-3", "severity": "low", "package": "libbaz"}
+  ]
+}
+```
+
+Every finding from the artifact's newest vulnerability scan is listed, whether
+or not something suppresses it, with the statement covering it. `justified`,
+`expired` and `verified` are facts about the statement and not a verdict:
+whether it suppresses anything is the target environment's policy's question,
+and the same statement can be honoured in staging and refused in production.
+`verification` is `listed` rather than `verified` when the platform holds no key
+to check signatures with.

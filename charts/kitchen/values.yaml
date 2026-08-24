@@ -394,6 +394,36 @@ kitchen:
       #     role: admin
       # ```
       ladder: []
+    vex:
+      # -- Admit OpenVEX documents: somebody's assertion that a vulnerability
+      # found in an artifact is not exploitable in it — the component is not
+      # present, the vulnerable code is not in the execute path, a mitigation
+      # already covers it.
+      #
+      # This is what makes continuous rescanning survive a real dependency
+      # tree. A daily report of four hundred findings of which four matter is
+      # read for a week and then rubber-stamped, and a rubber-stamped control
+      # is worse than none. Off means every finding counts, which is a
+      # defensible position and not a broken one.
+      #
+      # A `not_affected` statement must give one of OpenVEX's five
+      # justifications; free text alone is refused, because a suppression
+      # whose reason cannot be counted cannot be reviewed. Whether a statement
+      # actually suppresses anything is the target environment's policy's
+      # question, tuned by its bundle parameters `vexRequireVerified` (on by
+      # default), `vexTrustedAuthors` and `vexMaxAgeDays`.
+      enabled: true
+      # -- Document authors whose statements the platform will sign and attach
+      # at all — admission, platform-wide, and the operator's word rather than
+      # an application team's. Empty admits any authenticated caller's
+      # document and leaves the attribution as the control: every submission
+      # is an audit record naming who sent it, what it asserted and about
+      # which vulnerabilities.
+      #
+      # Matched exactly and case-insensitively, with no patterns, for the same
+      # reason `machineIdentities` has none: a glob here would eventually
+      # admit more than whoever wrote it meant.
+      trustedAuthors: []
     rescan:
       # -- Re-evaluate every currently-deployed release on a schedule, against
       # a **current** vulnerability database, through the same policy code
