@@ -30,6 +30,7 @@ import (
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/attestation"
 	"github.com/Bermos/Kitchen/internal/clickhouse"
+	"github.com/Bermos/Kitchen/internal/retention"
 )
 
 // The platform singleton's half of the compliance suite: the audit log's
@@ -44,20 +45,20 @@ import (
 
 const (
 	condComplianceReady = "ComplianceReady"
-
-	// defaultAuditRetentionDays matches the CRD default, for Kitchen objects
-	// written before the field existed.
-	defaultAuditRetentionDays = 365
 )
 
 // reconcileCompliance creates the audit log's table, keeps its retention in
-// step with spec.compliance.audit.retentionDays, and publishes what the audit
-// recorder and the signer are doing.
+// step with the audit class of the retention model, takes the table's mutation
+// privileges away from the platform's own credential, and publishes what the
+// audit recorder and the signer are doing.
 //
 // It is separate from reconcileTelemetrySchema even though both talk to the
-// same store, because they answer to different settings: telemetry retention
-// is a disk decision and audit retention is a records one, and an installation
-// that turns collection down must not thereby shorten its evidence.
+// same store and now read the same model, because the two answer to different
+// settings within it: telemetry retention is a disk decision and audit
+// retention is a records one, and an installation that turns collection down
+// must not thereby shorten its evidence. That separation is exactly what the
+// model preserves — `audit` inherits spec.compliance.audit.retentionDays and
+// every other class inherits the telemetry knob.
 func (r *KitchenReconciler) reconcileCompliance(
 	ctx context.Context,
 	kitchen *kitchenv1alpha1.Kitchen,
@@ -105,20 +106,28 @@ func (r *KitchenReconciler) reconcileCompliance(
 		return false
 	}
 
-	retention := kitchen.Spec.Compliance.Audit.RetentionDays
-	if retention < 1 {
-		retention = defaultAuditRetentionDays
-	}
-	if err := clickhouse.New(cfg).EnsureAuditSchema(ctx, retention); err != nil {
+	days := retention.Resolve(kitchen).Days(retention.ClassAudit)
+	store := clickhouse.New(cfg)
+	if err := store.EnsureAuditSchema(ctx, days); err != nil {
 		status.Audit = &kitchenv1alpha1.AuditStatus{Message: err.Error()}
 		setCond(condComplianceReady, metav1.ConditionFalse, "SchemaNotApplied", err.Error())
 		return false
 	}
 
+	// Immutability is attempted on every reconcile and never fails one. It is
+	// idempotent — a privilege already revoked revokes again for nothing —
+	// and a store that refuses the revoke is an installation whose log rests
+	// on the hash chain alone, which is a thing to publish rather than a
+	// thing to stop for. See clickhouse.EnsureAuditImmutability for the exact
+	// size of the claim.
+	immutability := store.EnsureAuditImmutability(ctx)
+
 	recording := r.Audit.Status()
 	status.Audit = &kitchenv1alpha1.AuditStatus{
-		Recording: recording.Recording,
-		Message:   recording.Message,
+		Recording:           recording.Recording,
+		Message:             recording.Message,
+		Immutable:           immutability.Revoked,
+		ImmutabilityMessage: immutability.Message,
 	}
 	// The sequence published here is the chain's, read from the head object
 	// rather than from whatever this replica last appended — the number is
@@ -127,7 +136,7 @@ func (r *KitchenReconciler) reconcileCompliance(
 		status.Audit.Sequence = sequence
 	}
 
-	message := fmt.Sprintf("audit log is in place, retaining %d days", retention)
+	message := fmt.Sprintf("audit log is in place, retaining %d days", days)
 	if !signing.Signing {
 		setCond(condComplianceReady, metav1.ConditionFalse, "NotSigning", signing.Message)
 		return false
@@ -173,12 +182,8 @@ func (r *KitchenReconciler) reconcilePolicyStore(
 			Message: "policy decisions are evaluated but not stored: " + err.Error(),
 		}
 	}
-	retention := kitchen.Spec.Compliance.Audit.RetentionDays
-	if retention < 1 {
-		retention = defaultAuditRetentionDays
-	}
 	store := clickhouse.New(cfg)
-	if err := store.EnsurePolicySchema(ctx, retention); err != nil {
+	if err := store.EnsurePolicySchema(ctx, retention.Resolve(kitchen).Days(retention.ClassAudit)); err != nil {
 		return &kitchenv1alpha1.PolicyStatus{
 			Message: "policy decisions are evaluated but not stored: " + err.Error(),
 		}

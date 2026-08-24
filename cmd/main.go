@@ -558,6 +558,20 @@ func main() {
 		os.Exit(1)
 	}
 
+	// The retention sweep: once a day, what every telemetry class actually
+	// holds, measured against the horizon its own configuration puts there
+	// and recorded in the audit log. Enforcement is the store's TTL and would
+	// go on without this; what this produces is the evidence that expiry
+	// happened. Leader-elected, and it idles with a message on an
+	// installation that has no store.
+	if err := mgr.Add(&controller.RetentionSweeper{
+		Client: mgr.GetClient(),
+		Audit:  auditor,
+	}); err != nil {
+		setupLog.Error(err, "unable to add the retention sweep to manager")
+		os.Exit(1)
+	}
+
 	// The event recorder keeps the cluster's Warning events, which the API
 	// server expires about an hour after they happen — turning the operator's
 	// existing watch into the history the Events screen and the crash report
