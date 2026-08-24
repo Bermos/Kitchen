@@ -519,6 +519,23 @@ type AuditStatus struct {
 	// +optional
 	Sequence int64 `json:"sequence,omitempty"`
 
+	// Immutable is true when the store has taken the audit table's mutation
+	// privileges away from the platform's own credential — so a compromised
+	// operator or API can append to the log and cannot rewrite it.
+	//
+	// False is not a fault and does not stop anything: it means the claim
+	// this installation can make about its log is the hash chain's alone,
+	// which is a smaller claim and an honest one. The message says why the
+	// revoke did not take. docs/COMPLIANCE.md §14.3 states exactly what the
+	// true case does and does not cover.
+	// +optional
+	Immutable bool `json:"immutable,omitempty"`
+
+	// ImmutabilityMessage explains an audit table whose mutation privileges
+	// are still held by the platform's own user.
+	// +optional
+	ImmutabilityMessage string `json:"immutabilityMessage,omitempty"`
+
 	// Message explains a log that is not recording.
 	// +optional
 	Message string `json:"message,omitempty"`

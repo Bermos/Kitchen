@@ -431,6 +431,15 @@ type ObservabilitySpec struct {
 	// +kubebuilder:default={}
 	// +optional
 	Traces TracesSpec `json:"traces,omitempty"`
+
+	// ClockSync measures how far the cluster's clocks are from the
+	// operator's own, because every timestamp in the store is only worth
+	// what the clock that stamped it is worth. The empty-object default is
+	// what turns it on for an installation that predates the field, for the
+	// reason spelled out above Metrics.
+	// +kubebuilder:default={}
+	// +optional
+	ClockSync ClockSyncSpec `json:"clockSync,omitempty"`
 }
 
 // APISpec configures how the operator's API is exposed.
@@ -597,6 +606,18 @@ type KitchenSpec struct {
 	// +optional
 	Compliance ComplianceSpec `json:"compliance,omitempty"`
 
+	// Retention is how long each class of what the platform keeps is kept.
+	//
+	// It is here, at the top of the object, rather than inside
+	// `observability` or inside `compliance`, because it spans both and
+	// belongs to neither: container logs are telemetry, audit records are
+	// evidence, and "how long do you keep it" is one question asked of the
+	// whole platform. It deliberately carries no `+kubebuilder:default={}` —
+	// an absent block means every class inherits the knob it used to have,
+	// which is exactly what an upgraded installation should keep doing.
+	// +optional
+	Retention RetentionSpec `json:"retention,omitempty"`
+
 	// Residency declares where this installation's data is located — the
 	// region or jurisdiction of the cluster itself, in the operator's own
 	// vocabulary ("CH", "eu-central-1"). It is the platform-wide default an
@@ -624,17 +645,24 @@ type ComponentStatus struct {
 	Name string `json:"name"`
 
 	// Kind of workload backing it: Deployment, StatefulSet or DaemonSet.
+	//
+	// One entry is not a workload at all. The clock-sync check reports
+	// itself here under kind `Node`, because a cluster whose clocks disagree
+	// is broken in exactly the way this list exists to surface — invisibly,
+	// until somebody tries to correlate two timestamps in an incident
+	// report — and because this is the list an operator already reads.
 	Kind string `json:"kind"`
 
 	// Healthy is true when every pod the workload wants is available.
 	Healthy bool `json:"healthy"`
 
-	// Available pods right now.
+	// Available pods right now. For the clock-sync entry: nodes inside the
+	// drift threshold.
 	Available int32 `json:"available"`
 
 	// Desired pods. For a DaemonSet this is however many nodes it selects,
 	// so it moves with the cluster rather than with any configured replica
-	// count.
+	// count. For the clock-sync entry: nodes measured.
 	Desired int32 `json:"desired"`
 
 	// Message explains an unhealthy component, and carries the reason from
@@ -725,6 +753,18 @@ type KitchenStatus struct {
 	// or found it. Absent while nothing idles.
 	// +optional
 	ScaleToZero *ScaleToZeroStatus `json:"scaleToZero,omitempty"`
+
+	// Retention reports the retention model as it is actually in force, per
+	// class, with what each class currently holds and how far back it goes.
+	// +optional
+	Retention *RetentionStatus `json:"retention,omitempty"`
+
+	// ClockSync reports the last measurement of node clock drift. The
+	// *consequence* of drift is a component in the survey above; this is the
+	// measurement behind it, including the method, because no number here
+	// should be read without the caveat that belongs to it.
+	// +optional
+	ClockSync *ClockSyncStatus `json:"clockSync,omitempty"`
 }
 
 // +kubebuilder:object:root=true
