@@ -8,6 +8,7 @@ import { operatorMode } from "../lib/mode";
 import { may } from "../lib/policy";
 import { useAsync, usePoll } from "../lib/useAsync";
 import ConditionsTable from "../components/ConditionsTable.vue";
+import VEXPanel from "../components/VEXPanel.vue";
 import LogViewer from "../components/LogViewer.vue";
 import PhaseBadge from "../components/PhaseBadge.vue";
 
@@ -381,6 +382,13 @@ const logStreamer = (query: LogQuery, onLine: (line: LogLine) => void, signal: A
           </div>
         </div>
       </div>
+
+      <!-- What has been asserted about the findings applying here. It sits
+           after the gates on purpose: a gate says what was found, and this
+           says what somebody claims about it — and a suppression that could
+           not be seen beside the finding it suppresses would be the one thing
+           this feature must not be. -->
+      <VEXPanel v-if="build.artifact?.digest" :build="build.name" />
 
       <ConditionsTable v-if="operatorMode" :conditions="build.conditions" />
 

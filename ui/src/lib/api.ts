@@ -519,6 +519,55 @@ export interface Evidence {
   digest: string;
 }
 
+/** One OpenVEX statement about an artifact, as the API joins it to the
+ *  findings.
+ *
+ *  `justified`, `expired` and `verified` are facts about the statement, never
+ *  a verdict: whether it actually suppresses anything is the target
+ *  environment's policy's question, and the same statement can be honoured in
+ *  staging and refused in production. */
+export interface VEXStatement {
+  vulnerability: string;
+  status: string;
+  justification?: string;
+  products?: string[];
+  justified: boolean;
+  author?: string;
+  /** Who handed the document to the platform, which is a different fact from
+   *  who the document says wrote it. */
+  submittedBy?: string;
+  documentID?: string;
+  timestamp?: string;
+  expiresAt?: string;
+  expired: boolean;
+  verified: boolean;
+  statusNotes?: string;
+  impactStatement?: string;
+  actionStatement?: string;
+}
+
+/** One finding from the artifact's newest vulnerability scan, beside the
+ *  statement covering it. A suppressed finding is still a finding. */
+export interface VEXFinding {
+  vulnerability: string;
+  severity?: string;
+  package?: string;
+  version?: string;
+  fixedIn?: string;
+  vex?: VEXStatement;
+}
+
+export interface VEXAnswer {
+  subject: string;
+  /** "verified" when signatures were checked, "listed" when there was no key
+   *  to check them with — a reader that cannot tell the two apart will
+   *  eventually treat one as the other. */
+  verification: string;
+  statements: VEXStatement[];
+  findings: VEXFinding[];
+  caveat?: string;
+}
+
 export interface EvidenceSet {
   subject: string;
   /** Whether signatures were checked at all. A listing and a verification are
@@ -2626,6 +2675,17 @@ export const api = {
   resolveException: (name: string, reason: string) =>
     request<Exception>("PATCH", `/exceptions/${encodeURIComponent(name)}`, { resolved: true, reason }),
   attestations: (build: string) => request<EvidenceSet>("GET", `/builds/${encodeURIComponent(build)}/attestations`),
+  // Exploitability assertions, joined to the findings they modify. The read is
+  // what keeps a suppression from being silent: it is the one place a person
+  // can see that a critical finding is not blocking, who said it does not
+  // apply here, and on what grounds.
+  vex: (build: string) => request<VEXAnswer>("GET", `/builds/${encodeURIComponent(build)}/vex`),
+  submitVEX: (build: string, document: unknown) =>
+    request<{ documentID?: string; author: string; submittedBy: string; vulnerabilities: string[] }>(
+      "POST",
+      `/builds/${encodeURIComponent(build)}/vex`,
+      { document },
+    ),
 
   settings: () => request<Settings>("GET", "/settings"),
   // Fields left out stay as they are, `operators` included — a settings patch
