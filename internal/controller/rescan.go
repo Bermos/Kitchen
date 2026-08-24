@@ -197,6 +197,10 @@ func (s *RescanSweeper) now() time.Time {
 	return time.Now().UTC()
 }
 
+// Promotions are read here (rollBackForExpiry's fifth guard) under the grant
+// the promotion reconciler's own markers already carry, so there is no marker
+// for them below: a narrower one would generate a second rule for the same
+// resource rather than adding anything.
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=environments,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=environments/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=kitchens/status,verbs=get;update;patch
@@ -774,10 +778,32 @@ func (s *RescanSweeper) indexEvidence(
 //
 // The exception reconciler carries the flag and deliberately does not act on
 // it: rolling a workload back is a decision to make with the re-evaluation in
-// hand, which is here. The conditions are all four of: the verdict is Blocked,
+// hand, which is here. The conditions are all five of: the verdict is Blocked,
 // an exception covering this pair has expired without being resolved, it asked
-// for the rollback, and it waived a rule that is now firing unwaived. A grant
-// that expired without ever mattering leaves the workload where it is.
+// for the rollback, it waived a rule that is now firing unwaived, and **this
+// release actually went out under it**. A grant that expired without ever
+// mattering leaves the workload where it is.
+//
+// The fifth condition is the one that makes the other four narrow rather than
+// merely specific. `Covers` answers about a *pair* and matches any release when
+// the grant names none; `EffectivePhase` answers `Expired` forever, because the
+// register deliberately retains a grant after it ends. So without it, a 24-hour
+// waiver taken out in March to ship a hotfix and never resolved is still an
+// armed rollback in August: an unrelated release deployed since, blocked by an
+// unrelated CVE that happens to fire the same rule id, retreats production
+// citing a five-month-old grant nobody involved has heard of. `status.usedBy`
+// is the honest link — the register's own record of which promotions leaned on
+// the grant — and a grant this release never leaned on has no business moving
+// it. That is the whole difference between acting on the consequence of an
+// expiry and having a mechanism that yanks a running workload for an unrelated
+// reason.
+//
+// It fails safe in both awkward directions. A Promotion that has been pruned
+// cannot be matched, so the rollback does not happen: nothing new going out is
+// the default consequence of an expiry, and a workload left running is the
+// recoverable outcome. A release promoted *before* the grant existed was never
+// waived by it and is not in `usedBy` either, which is the same answer for the
+// same reason.
 //
 // The audit record comes first and is fail-closed, like every move this
 // platform makes on its own initiative — which means an audit log that refuses
@@ -815,9 +841,51 @@ func (s *RescanSweeper) rollBackForExpiry(
 		if len(covered) == 0 {
 			continue
 		}
+		relied, err := s.reliedOnBy(ctx, exception, env, release)
+		if err != nil {
+			return err
+		}
+		if !relied {
+			logf.FromContext(ctx).V(1).Info(
+				"an expired grant asked for a rollback of a release that never went out under it",
+				"environment", env.Name, "exception", exception.Name, "release", release.Name)
+			continue
+		}
 		return s.rollBack(ctx, project, env, release, exception, covered, decisionID)
 	}
 	return nil
+}
+
+// reliedOnBy answers whether the release currently deployed here is one that
+// went out under this grant — whether one of the promotions in
+// `status.usedBy` was a promotion of this release into this environment.
+//
+// The list holds Promotion names rather than release names because a grant is
+// leaned on by a *move*, not by an artifact, so the objects are read back. One
+// that is gone answers no: an unmatchable record is not a link, and refusing to
+// act on it leaves a workload running, which is the recoverable direction.
+func (s *RescanSweeper) reliedOnBy(
+	ctx context.Context,
+	exception *kitchenv1alpha1.Exception,
+	env *kitchenv1alpha1.Environment,
+	release *kitchenv1alpha1.Release,
+) (bool, error) {
+	for _, name := range exception.Status.UsedBy {
+		promotion := &kitchenv1alpha1.Promotion{}
+		if err := s.Client.Get(ctx, types.NamespacedName{
+			Namespace: exception.Namespace, Name: name,
+		}, promotion); err != nil {
+			if apierrors.IsNotFound(err) {
+				continue
+			}
+			return false, err
+		}
+		if promotion.Spec.EnvironmentRef.Name == env.Name &&
+			promotion.Spec.ReleaseRef.Name == release.Name {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // rollBack retreats the environment to the release it was on before this one.
