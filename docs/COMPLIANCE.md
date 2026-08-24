@@ -659,14 +659,16 @@ deadlock with itself. The requirement applies to the production branch alone.
 
 ### 8.8 What is not built
 
-**GitLab.** The acceptance criteria ask for GitHub and GitLab, and Kitchen has
-no GitLab provider at all — `gitlab` and `gitea` are names the Connection CRD
-admits with nothing behind them. `gitprovider.ChangeReader` is a capability
-interface for exactly this reason, in the same shape as `SourceReader` and
-`StatusReporter`: a provider lands as a source first and gains the rest, and a
-Connection that cannot answer is told apart from one that answers "no pull
-request". GitLab's `CommitProvenance` is a method on a type that does not exist
-yet.
+**GitLab.** The acceptance criteria ask for GitHub and GitLab. GitLab and Gitea
+are now real providers — a credential probe, webhook registration, and verified
+push and merge-request deliveries — but only their `gitSource` half. Neither
+reports `statusChecks`, and neither implements `gitprovider.ChangeReader`, so
+nothing about a GitLab merge request's reviews reaches a decision here.
+`ChangeReader` is a capability interface for exactly this reason, in the same
+shape as `SourceReader` and `StatusReporter`: a provider lands as a source
+first and gains the rest, and a Connection that cannot answer is told apart
+from one that answers "no pull request". GitLab's `CommitProvenance` is a
+method on a type that exists now and does not implement it.
 
 **Break-glass now exists** (#136). A direct push during an incident used to be
 a hard refusal where the project requires review; it is now *allowed and loudly
