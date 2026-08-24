@@ -17,6 +17,7 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"strings"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -204,6 +205,65 @@ type QualityGateSpec struct {
 	TimeoutSeconds int32 `json:"timeoutSeconds,omitempty"`
 }
 
+// VEXSpec configures what the platform will admit as an exploitability
+// assertion about an artifact.
+//
+// It is here, on the operator's own object, for the reason Gates is: a VEX
+// statement is the one piece of evidence whose effect is to make a finding
+// stop counting, and a team that could decide unaided whose word suppresses
+// its own vulnerabilities would be marking its own homework at the one point
+// where the marking matters.
+//
+// The division of labour is deliberate and is two levels rather than one.
+// **This** list says whose documents may be attached to an artifact at all —
+// platform-wide admission, the operator's word. The environment's bundle
+// parameter `vexTrustedAuthors` says whose statements *that environment*
+// then takes the word of, out of what was admitted. Neither replaces the
+// other: production can be stricter than the platform, and nothing can be
+// looser than it.
+type VEXSpec struct {
+	// Enabled admits OpenVEX documents through POST /builds/{name}/vex.
+	//
+	// Off is a defensible position and not a broken one: an installation that
+	// wants every finding to count, or that has not decided who may assert
+	// otherwise, turns it off and gets a refusal at ingest naming this field.
+	// Documents already attached stay attached and stay readable — evidence
+	// is never retracted by a setting — and whether they suppress anything is
+	// still the environment's bundle's question.
+	// +kubebuilder:default=true
+	// +optional
+	Enabled bool `json:"enabled"`
+
+	// TrustedAuthors, when non-empty, is the closed list of document authors
+	// the platform will sign and attach anything for. A document whose author
+	// is not on it is refused at ingest, naming the list.
+	//
+	// Empty means the platform admits any authenticated caller's document and
+	// the attribution is the control — which is the right default for an
+	// installation that has not yet decided, and the wrong one for an
+	// installation that has. Matching is exact and case-insensitive, with no
+	// patterns, for the same reason MachineIdentities has none: a glob here
+	// would eventually admit more than whoever wrote it meant.
+	// +optional
+	// +listType=atomic
+	TrustedAuthors []string `json:"trustedAuthors,omitempty"`
+}
+
+// AdmitsAuthor reports whether a document by this author may be attached.
+// Nil-safe, like every accessor on an optional spec block, and empty means
+// every author.
+func (s *VEXSpec) AdmitsAuthor(author string) bool {
+	if s == nil || len(s.TrustedAuthors) == 0 {
+		return true
+	}
+	for _, trusted := range s.TrustedAuthors {
+		if strings.EqualFold(strings.TrimSpace(trusted), strings.TrimSpace(author)) {
+			return true
+		}
+	}
+	return false
+}
+
 // ExceptionApproverRole is who may approve an exception of a given duration:
 // a project role, or the platform's operators for the longest grants.
 // +kubebuilder:validation:Enum=developer;admin;operator
@@ -336,6 +396,13 @@ type ComplianceSpec struct {
 	// +kubebuilder:default={}
 	// +optional
 	Exceptions *ExceptionPolicySpec `json:"exceptions,omitempty"`
+
+	// VEX is what the platform will admit as an exploitability assertion:
+	// the OpenVEX documents that can stop a finding disqualifying an
+	// artifact. It lives here for the same reason Gates and Rescan do.
+	// +kubebuilder:default={}
+	// +optional
+	VEX *VEXSpec `json:"vex,omitempty"`
 
 	// Rescan is the continuous re-evaluation pass: what turns the promotion
 	// gate into an ongoing control. It lives here for the same reason Gates

@@ -694,6 +694,42 @@ spec:
                         - image
                         type: object
                     type: object
+                  vex:
+                    default: {}
+                    description: |-
+                      VEX is what the platform will admit as an exploitability assertion:
+                      the OpenVEX documents that can stop a finding disqualifying an
+                      artifact. It lives here for the same reason Gates and Rescan do.
+                    properties:
+                      enabled:
+                        default: true
+                        description: |-
+                          Enabled admits OpenVEX documents through POST /builds/{name}/vex.
+
+                          Off is a defensible position and not a broken one: an installation that
+                          wants every finding to count, or that has not decided who may assert
+                          otherwise, turns it off and gets a refusal at ingest naming this field.
+                          Documents already attached stay attached and stay readable — evidence
+                          is never retracted by a setting — and whether they suppress anything is
+                          still the environment's bundle's question.
+                        type: boolean
+                      trustedAuthors:
+                        description: |-
+                          TrustedAuthors, when non-empty, is the closed list of document authors
+                          the platform will sign and attach anything for. A document whose author
+                          is not on it is refused at ingest, naming the list.
+
+                          Empty means the platform admits any authenticated caller's document and
+                          the attribution is the control — which is the right default for an
+                          installation that has not yet decided, and the wrong one for an
+                          installation that has. Matching is exact and case-insensitive, with no
+                          patterns, for the same reason MachineIdentities has none: a glob here
+                          would eventually admit more than whoever wrote it meant.
+                        items:
+                          type: string
+                        type: array
+                        x-kubernetes-list-type: atomic
+                    type: object
                 type: object
               ingress:
                 description: IngressSpec configures how traffic enters the cluster.
