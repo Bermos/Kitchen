@@ -386,57 +386,6 @@ the operator keeps every table's DDL and TTL. New tables follow the house
 ordering-key rule — every product query is project-scoped, so keys lead
 `(project, environment, …)`.
 
-### 5.1 Retention is per class, not per table
-
-`spec.retention` on the Kitchen singleton says how long each *class* of what
-the platform keeps is kept — container logs, build logs, flows, metrics,
-traces, requests, cluster events, the activity feed and the audit log — and
-`internal/retention` resolves it into the one model everything else reads.
-Every field is optional and an absent one inherits: the telemetry classes from
-`observability.clickhouse.retentionDays`, the audit class from
-`compliance.audit.retentionDays`. An installation that predates the block reads
-exactly as it did.
-
-Class and table are not the same thing, and the two places they come apart are
-worth knowing:
-
-- **Container logs and build logs share `otel_logs`**, told apart by the
-  materialized `source` column. Configure them the same and the table carries
-  one TTL and keeps `ttl_only_drop_parts = 1`, so expiry is a metadata drop of
-  a whole day-partition. Configure them apart and it carries two conditional
-  TTLs and the setting comes off — a part holding both classes is never wholly
-  expired, so only-drop-parts would silently expire the shorter class at the
-  longer date. Two retentions in one table cost merge time; one costs nothing.
-  docs/COMPLIANCE.md §14.2 has the whole of it.
-- **A class can span several tables.** The metrics class applies to five point
-  types and the rollup; the traces class to the spans and the id lookup; the
-  requests class to the raw table and both rollups, scaled by the ratios below.
-  The TTL is applied to all of them.
-
-A daily leader-elected sweep then measures each class against the horizon its
-own configuration puts there and records the result in the audit log — how far
-back the class actually goes, not merely how far back it is configured to go.
-`GET /api/v1/platform/retention` and `kitchen retention` answer from it, and
-docs/COMPLIANCE.md §14.4 says why it is a claim about what is *left* rather
-than an observation of what was deleted.
-
-### 5.2 Whether the timestamps mean anything
-
-`spec.observability.clockSync` measures how far each node's clock is from the
-operator's own, by comparing the kubelet's node lease `renewTime` — stamped
-from the node's clock — with the operator's. Drift beyond
-`maxDriftSeconds` (default 5) appears in the component survey as an unhealthy
-`clock-sync` entry of kind `Node`, with a message naming the worst node and
-what to check.
-
-It is in this document as well as in the compliance one because it is a
-property of the telemetry: every query here joins rows stamped on different
-machines, and a cluster whose clocks disagree makes the *order* of those rows
-wrong without making any single row wrong. The method's limits are real and
-stated — it measures disagreement within the cluster rather than agreement with
-UTC, and it forgives a renewal period in the past direction — see
-docs/COMPLIANCE.md §14.6.
-
 **`http_requests`** — one row per edge-observed request. Verified DDL
 (ClickHouse 25.8; see verification record):
 
@@ -544,6 +493,57 @@ column exists precisely to avoid needing one later. (Known, pre-existing
 debt worth recording: `events`' ordering key `(timestamp)` does not serve
 its own per-project read pattern; not worth a migration alone, worth folding
 into any future one.)
+
+### 5.1 Retention is per class, not per table
+
+`spec.retention` on the Kitchen singleton says how long each *class* of what
+the platform keeps is kept — container logs, build logs, flows, metrics,
+traces, requests, cluster events, the activity feed and the audit log — and
+`internal/retention` resolves it into the one model everything else reads.
+Every field is optional and an absent one inherits: the telemetry classes from
+`observability.clickhouse.retentionDays`, the audit class from
+`compliance.audit.retentionDays`. An installation that predates the block reads
+exactly as it did.
+
+Class and table are not the same thing, and the two places they come apart are
+worth knowing:
+
+- **Container logs and build logs share `otel_logs`**, told apart by the
+  materialized `source` column. Configure them the same and the table carries
+  one TTL and keeps `ttl_only_drop_parts = 1`, so expiry is a metadata drop of
+  a whole day-partition. Configure them apart and it carries two conditional
+  TTLs and the setting comes off — a part holding both classes is never wholly
+  expired, so only-drop-parts would silently expire the shorter class at the
+  longer date. Two retentions in one table cost merge time; one costs nothing.
+  docs/COMPLIANCE.md §14.2 has the whole of it.
+- **A class can span several tables.** The metrics class applies to five point
+  types and the rollup; the traces class to the spans and the id lookup; the
+  requests class to the raw table and both rollups, scaled by the ratios below.
+  The TTL is applied to all of them.
+
+A daily leader-elected sweep then measures each class against the horizon its
+own configuration puts there and records the result in the audit log — how far
+back the class actually goes, not merely how far back it is configured to go.
+`GET /api/v1/platform/retention` and `kitchen retention` answer from it, and
+docs/COMPLIANCE.md §14.4 says why it is a claim about what is *left* rather
+than an observation of what was deleted.
+
+### 5.2 Whether the timestamps mean anything
+
+`spec.observability.clockSync` measures how far each node's clock is from the
+operator's own, by comparing the kubelet's node lease `renewTime` — stamped
+from the node's clock — with the operator's. Drift beyond
+`maxDriftSeconds` (default 5) appears in the component survey as an unhealthy
+`clock-sync` entry of kind `Node`, with a message naming the worst node and
+what to check.
+
+It is in this document as well as in the compliance one because it is a
+property of the telemetry: every query here joins rows stamped on different
+machines, and a cluster whose clocks disagree makes the *order* of those rows
+wrong without making any single row wrong. The method's limits are real and
+stated — it measures disagreement within the cluster rather than agreement with
+UTC, and it forgives a renewal period in the past direction — see
+docs/COMPLIANCE.md §14.6.
 
 ---
 
