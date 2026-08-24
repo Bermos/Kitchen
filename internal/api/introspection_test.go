@@ -57,7 +57,7 @@ func workloadFixtures() []runtime.Object {
 			Template: corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{Containers: []corev1.Container{{
 					Name:  controller.AppContainerName,
-					Image: "registry.example.com/shop@sha256:1111",
+					Image: testReleaseImage,
 					Resources: corev1.ResourceRequirements{
 						Requests: corev1.ResourceList{
 							corev1.ResourceCPU:    resource.MustParse("100m"),
@@ -161,7 +161,7 @@ func TestWorkloadReportsWhatIsRunning(t *testing.T) {
 		workload.Resources.MemoryRequest != "128Mi" || workload.Resources.MemoryLimit != "256Mi" {
 		t.Fatalf("want the container's resources as written, got %+v", workload.Resources)
 	}
-	if workload.Image != "registry.example.com/shop@sha256:1111" {
+	if workload.Image != testReleaseImage {
 		t.Fatalf("want the running image, got %q", workload.Image)
 	}
 	// Uptime is measured from the oldest running pod, not from the newest.

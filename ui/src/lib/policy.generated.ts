@@ -92,6 +92,9 @@ export type Route =
   | "DELETE /api/v1/environments/{name}"
   | "GET /api/v1/environments/{name}/logs"
   | "GET /api/v1/environments/{name}/workload"
+  | "GET /api/v1/environments/{name}/processes"
+  | "GET /api/v1/environments/{name}/processes/{process}/runs"
+  | "POST /api/v1/environments/{name}/processes/{process}/runs"
   | "GET /api/v1/environments/{name}/metrics"
   | "GET /api/v1/environments/{name}/objects"
   | "GET /api/v1/environments/{name}/requests"
@@ -214,6 +217,9 @@ export const POLICY: Readonly<Record<Route, Requirement>> = {
   "DELETE /api/v1/environments/{name}": { kind: "projectRole", role: "developer", doing: "deleting an environment" },
   "GET /api/v1/environments/{name}/logs": { kind: "projectRole", role: "viewer", doing: "reading an environment's logs" },
   "GET /api/v1/environments/{name}/workload": { kind: "projectRole", role: "viewer", doing: "reading an environment's workload" },
+  "GET /api/v1/environments/{name}/processes": { kind: "projectRole", role: "viewer", doing: "reading an environment's processes" },
+  "GET /api/v1/environments/{name}/processes/{process}/runs": { kind: "projectRole", role: "viewer", doing: "reading a scheduled job's runs" },
+  "POST /api/v1/environments/{name}/processes/{process}/runs": { kind: "projectRole", role: "developer", doing: "running a scheduled job" },
   "GET /api/v1/environments/{name}/metrics": { kind: "projectRole", role: "viewer", doing: "reading an environment's metrics" },
   "GET /api/v1/environments/{name}/objects": { kind: "operator", doing: "reading an environment's Kubernetes objects" },
   "GET /api/v1/environments/{name}/requests": { kind: "projectRole", role: "viewer", doing: "reading an environment's requests" },

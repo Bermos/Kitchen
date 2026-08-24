@@ -369,6 +369,24 @@ type ProjectSpec struct {
 
 	// +optional
 	Runtime RuntimeSpec `json:"runtime,omitempty"`
+
+	// Processes are the project's other processes: the queue workers and the
+	// scheduled jobs that share the web process's image and environment and
+	// are started differently. The web process itself is `spec.runtime` and
+	// is not listed here — see [ProcessType] for why it cannot be.
+	//
+	// The list is snapshotted into every Release, so a rollback runs the
+	// processes that release declared rather than the ones the project
+	// declares now. Removing a process from the list is how it is deleted:
+	// the environment reconciler tears down anything it materialized that
+	// the current Release no longer names.
+	//
+	// Entries merge per name rather than by position (listType=map), so two
+	// people adding two workers do not drop each other's.
+	// +optional
+	// +listType=map
+	// +listMapKey=name
+	Processes []ProcessSpec `json:"processes,omitempty"`
 }
 
 // ProjectStatus defines the observed state of a Project.

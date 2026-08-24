@@ -308,6 +308,17 @@ data:
             - tag_name: kitchen.build
               key: kitchen.bermos.dev/build
               from: pod
+            # A Project's workers and scheduled jobs. The process label is
+            # Kitchen's own, stamped on everything a named process
+            # materializes; the run is the Job's name, which the Job
+            # controller — not Kitchen — puts on every pod it creates, and
+            # which is what makes one firing of a schedule one query.
+            - tag_name: kitchen.process
+              key: kitchen.bermos.dev/process
+              from: pod
+            - tag_name: kitchen.run
+              key: batch.kubernetes.io/job-name
+              from: pod
         # In order of how much they are trusted: the uid a log file's path
         # carried, then the address an exporter connected from, then the
         # connection itself.

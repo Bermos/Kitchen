@@ -333,6 +333,23 @@ func (s *Server) routes() []route {
 			onProject(access.ProjectViewer, ofEnvironment, "reading an environment's logs")},
 		{"GET /api/v1/environments/{name}/workload", s.environmentWorkload,
 			onProject(access.ProjectViewer, ofEnvironment, "reading an environment's workload")},
+		// A Project's workers and scheduled jobs (#78). Reading what they are
+		// and how they are getting on is a viewer's read like the workload
+		// beside it — a failing nightly job is exactly what a viewer is
+		// looking at the project to find out.
+		//
+		// Starting one off its schedule is a developer's write, the same bar
+		// as redeploying and for the same reason: it runs the project's own
+		// code, with the project's own credentials, at a moment of somebody's
+		// choosing. There is no admin case to make — a person who may push a
+		// commit that changes what the job does cannot be meaningfully
+		// stopped from running the job.
+		{"GET /api/v1/environments/{name}/processes", s.environmentProcesses,
+			onProject(access.ProjectViewer, ofEnvironment, "reading an environment's processes")},
+		{"GET /api/v1/environments/{name}/processes/{process}/runs", s.processRuns,
+			onProject(access.ProjectViewer, ofEnvironment, "reading a scheduled job's runs")},
+		{"POST /api/v1/environments/{name}/processes/{process}/runs", s.triggerProcessRun,
+			onProject(access.ProjectDeveloper, ofEnvironment, "running a scheduled job")},
 		{"GET /api/v1/environments/{name}/metrics", s.environmentMetrics,
 			onProject(access.ProjectViewer, ofEnvironment, "reading an environment's metrics")},
 		// Operator-only, and a developer needing it is a bug: it answers with

@@ -369,6 +369,15 @@ var publishedShapes = map[string]struct {
 		"`detected` false is advice, not a refusal", detection{}},
 	"build":     {"One build. Phase is Queued, Running, Succeeded, Failed or Cancelled", build{}},
 	"buildList": {"A list of builds, newest first", list[build]{}},
+	"processList": {"What an environment runs besides its web process: workers, which run " +
+		"continuously and are never addressed, and scheduled jobs, which run on a cron " +
+		"expression in UTC. `suspended` is a process the environment declares and does not " +
+		"run — a preview whose process was not opted in", list[process]{}},
+	"processRun": {"One firing of a scheduled job. Phase is Running, Succeeded or Failed, and " +
+		"`name` is what `kitchen logs --run` reads its output by, for as long as the logs are " +
+		"kept — which outlasts the run itself", processRun{}},
+	"processRunList": {"A scheduled job's recent runs, newest first. Only what the cluster " +
+		"still holds: the platform keeps the last few and collects the rest", list[processRun]{}},
 	"gateList": {"The quality gates that ran over an artifact. Completed means the gate ran, " +
 		"whatever it found; Failed means it did not run", list[gate]{}},
 	"gateAccepted": {"Where a submitted gate result was attached, and whose word it is recorded as",

@@ -134,6 +134,11 @@ type projectView struct {
 	// PromotionStages is the project's staged pipeline, in promotion order.
 	// Absent for the default build-straight-to-production flow.
 	PromotionStages []promotionStageView `json:"promotionStages,omitempty"`
+	// Processes are the project's workers and scheduled jobs as it declares
+	// them *now* — what an environment is actually running is its release's
+	// list, on GET /environments/{name}/processes, and the two differ for as
+	// long as it takes something to build.
+	Processes []processView `json:"processes,omitempty"`
 	// DataClass is the sensitivity classification of the data this project
 	// handles. Absent means unclassified — a state the screens show as such,
 	// never a default.
@@ -187,6 +192,9 @@ func newProjectView(project *kitchenv1alpha1.Project, role access.ProjectRole) p
 				AutoPromote: stage.AutoPromote,
 			})
 		}
+	}
+	for _, process := range project.Spec.Processes {
+		view.Processes = append(view.Processes, newProcessView(process, nil))
 	}
 	view.DataClass = string(project.Spec.DataClass)
 	view.Criticality = string(project.Spec.Criticality)

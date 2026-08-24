@@ -646,6 +646,48 @@ type environment struct {
 	Conditions      []condition      `json:"conditions,omitempty"`
 }
 
+// process is one of a project's workers or scheduled jobs, as one environment
+// is running it.
+type process struct {
+	Name     string   `json:"name"`
+	Type     string   `json:"type"`
+	Command  []string `json:"command,omitempty"`
+	Args     []string `json:"args,omitempty"`
+	Schedule string   `json:"schedule,omitempty"`
+	// ConcurrencyPolicy and Timeout are a scheduled job's; Replicas and
+	// ReadyReplicas are a worker's declared and actual counts.
+	ConcurrencyPolicy string `json:"concurrencyPolicy,omitempty"`
+	Timeout           string `json:"timeout,omitempty"`
+	Replicas          int32  `json:"replicas,omitempty"`
+	ReadyReplicas     int32  `json:"readyReplicas,omitempty"`
+	CPU               string `json:"cpu,omitempty"`
+	Memory            string `json:"memory,omitempty"`
+	Workload          string `json:"workload,omitempty"`
+	// Suspended is a process this environment declares and does not run: a
+	// preview whose process was not opted in. Reason says so in a sentence.
+	Suspended bool   `json:"suspended,omitempty"`
+	Reason    string `json:"reason,omitempty"`
+	Active    int32  `json:"active,omitempty"`
+	// LastRun and LastFailure are a scheduled job's. The failure is kept until
+	// a later failure replaces it, never until a success does.
+	LastRun     *processRun `json:"lastRun,omitempty"`
+	LastFailure *processRun `json:"lastFailure,omitempty"`
+	// Healthy is the platform's own verdict — a worker with no ready replica,
+	// a schedule whose last run failed — so that this CLI and the dashboard
+	// cannot disagree about what red means.
+	Healthy bool `json:"healthy"`
+}
+
+// processRun is one firing of a scheduled job.
+type processRun struct {
+	Name            string     `json:"name"`
+	Phase           string     `json:"phase"`
+	StartedAt       *time.Time `json:"startedAt,omitempty"`
+	FinishedAt      *time.Time `json:"finishedAt,omitempty"`
+	DurationSeconds *float64   `json:"durationSeconds,omitempty"`
+	Message         string     `json:"message,omitempty"`
+}
+
 // logLine is one line out of the telemetry store, from a build or from
 // something running.
 type logLine struct {
@@ -804,6 +846,36 @@ func (c *client) projectEnvironments(ctx context.Context, name string) ([]enviro
 	err := c.do(ctx, "listing "+name+"'s environments",
 		http.MethodGet, "/projects/"+name+"/environments", nil, nil, answer)
 	return answer.Items, err
+}
+
+func (c *client) environmentProcesses(ctx context.Context, name string) ([]process, error) {
+	answer := &list[process]{}
+	err := c.do(ctx, "listing "+name+"'s processes",
+		http.MethodGet, "/environments/"+name+"/processes", nil, nil, answer)
+	if answer.Items == nil {
+		answer.Items = []process{}
+	}
+	return answer.Items, err
+}
+
+func (c *client) processRuns(ctx context.Context, environment, name string) ([]processRun, error) {
+	answer := &list[processRun]{}
+	err := c.do(ctx, "listing "+name+"'s runs",
+		http.MethodGet, "/environments/"+environment+"/processes/"+name+"/runs", nil, nil, answer)
+	if answer.Items == nil {
+		answer.Items = []processRun{}
+	}
+	return answer.Items, err
+}
+
+// startProcessRun runs a scheduled job now. The body is empty on purpose:
+// nothing about the run is the caller's to choose — it is a copy of what the
+// schedule would have run.
+func (c *client) startProcessRun(ctx context.Context, environment, name string) (*processRun, error) {
+	answer := &processRun{}
+	err := c.do(ctx, "running "+name,
+		http.MethodPost, "/environments/"+environment+"/processes/"+name+"/runs", nil, nil, answer)
+	return answer, err
 }
 
 // startBuild is the deploy. An empty sha rebuilds whatever the project built

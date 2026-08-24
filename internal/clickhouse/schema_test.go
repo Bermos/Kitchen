@@ -202,23 +202,75 @@ func TestTheLogTableCarriesTheExportersColumns(t *testing.T) {
 	}
 }
 
-// The schema no longer patches columns into a table an older Kitchen created:
-// the old `logs` table is not this one, and an ALTER against it would be a
-// statement about a table nothing writes any more.
-func TestTheSchemaNoLongerPatchesColumnsInPlace(t *testing.T) {
+// The pre-collector tables are left alone. The old `logs`, `traces` and
+// `metrics` tables are not the ones this schema owns, so neither an ALTER nor a
+// DROP against them would be a statement about anything Kitchen still writes —
+// they age out on their own TTL, and an operator who wants the disk back can
+// drop them by hand.
+func TestTheSchemaLeavesThePreCollectorTablesAlone(t *testing.T) {
 	store := newFakeStore(t)
-	store.engine = "MergeTree TTL toDateTime(Timestamp) + toIntervalDay(30)"
+	store.engine = singleLogTTL
 
 	if err := store.client(t).EnsureTelemetrySchema(context.Background(), retention.Uniform(30)); err != nil {
 		t.Fatalf("EnsureTelemetrySchema: %v", err)
 	}
-	if store.sent("ADD COLUMN") {
-		t.Errorf("no column is migrated in place any more, got:\n%s", store.transcript())
+	for _, table := range []string{"logs", "traces", "metrics"} {
+		for _, statement := range []string{"ALTER TABLE " + qualified(table), "DROP TABLE " + qualified(table)} {
+			if store.sent(statement) {
+				t.Errorf("the pre-collector tables are not touched, got %q in:\n%s", statement, store.transcript())
+			}
+		}
 	}
-	// And the tables it replaced are left to their own TTL rather than dropped
-	// out from under whatever is still reading them.
-	if store.sent("DROP TABLE") {
-		t.Errorf("the pre-collector tables age out, they are not dropped, got:\n%s", store.transcript())
+}
+
+// A column added to a table an earlier Kitchen already created reaches that
+// installation only through an ALTER: `CREATE TABLE IF NOT EXISTS` does not
+// reshape an existing table. So the ADD COLUMNs go out on every pass — they are
+// `IF NOT EXISTS` and cost nothing on the table the CREATE just made — and this
+// is what says so.
+func TestTheSchemaAddsLaterColumnsToTablesThatPredateThem(t *testing.T) {
+	store := newFakeStore(t)
+	store.engine = singleLogTTL
+
+	if err := store.client(t).EnsureTelemetrySchema(context.Background(), retention.Uniform(30)); err != nil {
+		t.Fatalf("EnsureTelemetrySchema: %v", err)
+	}
+	for _, want := range []string{
+		"ALTER TABLE " + qualified(LogsTable) + " ADD COLUMN IF NOT EXISTS `process`",
+		"ALTER TABLE " + qualified(LogsTable) + " ADD COLUMN IF NOT EXISTS `run`",
+		"ALTER TABLE " + qualified(EventsTable) + " ADD COLUMN IF NOT EXISTS `process`",
+		"ALTER TABLE " + qualified(EventsTable) + " ADD COLUMN IF NOT EXISTS `run`",
+	} {
+		if !store.sent(want) {
+			t.Errorf("the schema never sent %q:\n%s", want, store.transcript())
+		}
+	}
+}
+
+// Two spellings of one column is how a fresh installation and an upgraded one
+// come to disagree about what a query means, so the ALTER's definition has to
+// be the CREATE's, character for character.
+func TestTheAddedColumnsMatchTheirCreateDefinitions(t *testing.T) {
+	// The DDL pads its columns into a readable block; the comparison is over
+	// what the statement says, not over how it is laid out.
+	defines := func(ddl string, column addedColumn) bool {
+		return strings.Contains(strings.Join(strings.Fields(ddl), " "),
+			column.name+" "+strings.Join(strings.Fields(column.definition), " "))
+	}
+	for _, table := range []struct {
+		ddl     string
+		columns []addedColumn
+	}{
+		{createLogsTable(testDatabase, 30, 30), kitchenColumnsAdded},
+		{createTracesTable(testDatabase, 30), kitchenColumnsAdded},
+		{createEventsTable(testDatabase, 30), eventColumnsAdded},
+	} {
+		for _, column := range table.columns {
+			if !defines(table.ddl, column) {
+				t.Errorf("a CREATE does not define %q as the ALTER does (%q):\n%s",
+					column.name, column.definition, table.ddl)
+			}
+		}
 	}
 }
 
@@ -240,7 +292,7 @@ func TestEnsureLogsSchemaAltersTTLWhenRetentionChanges(t *testing.T) {
 
 func TestEnsureLogsSchemaLeavesAMatchingTTLAlone(t *testing.T) {
 	store := newFakeStore(t)
-	store.engine = "MergeTree TTL toDateTime(Timestamp) + toIntervalDay(30)"
+	store.engine = singleLogTTL
 
 	if err := store.client(t).EnsureLogsSchema(context.Background(), 30, 30); err != nil {
 		t.Fatalf("EnsureLogsSchema: %v", err)

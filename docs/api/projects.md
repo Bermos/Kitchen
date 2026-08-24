@@ -89,6 +89,16 @@ an empty string clears one. The repository and the two connections are
 deliberately not editable: rebinding a project to another repository is a
 different project.
 
+`processes` is what the project runs *besides* its web process — its queue
+workers and its scheduled jobs, which share the release's image and
+environment and are started with another command. It belongs on this route
+rather than one of its own because it is the same decision as the port and the
+replica count above it: what this project runs, and how much of it. The write
+replaces the whole list, and an empty list removes every process. See
+[Workers and scheduled jobs](processes.md) for the fields, for why a preview
+runs none of them unless a process opts in, and for reading what an
+environment is actually running.
+
 `dataClass` classifies the data the project handles — `public`, `internal`,
 `confidential` or `strictlyConfidential`, in ascending order; `""` removes
 the classification, and absent means unclassified, shown as such and never

@@ -391,3 +391,58 @@ func TestALineKeepsItsMicroseconds(t *testing.T) {
 		t.Fatalf("want %s, got %s", want, lines[0].Timestamp)
 	}
 }
+
+// One firing of a scheduled job is one query, which is the whole reason the
+// pipeline learned about processes and runs (#78). The run outlives the Job it
+// names — the platform keeps a handful of finished Jobs and the lines for the
+// whole container-log retention — so this is what makes a failure from three
+// weeks ago readable at all.
+func TestSearchLogsNarrowsToOneProcessAndOneRun(t *testing.T) {
+	store := newFakeLogStore(t)
+
+	_, err := store.client(t).SearchLogs(context.Background(), LogQuery{
+		Source:      SourceRuntime,
+		Project:     "shop",
+		Environment: "shop-production",
+		Process:     "nightly",
+		Run:         "shop-production-nightly-29387520",
+	})
+	if err != nil {
+		t.Fatalf("SearchLogs: %v", err)
+	}
+
+	for _, condition := range []string{"`process` = {process:String}", "`run` = {run:String}"} {
+		if !strings.Contains(store.query, condition) {
+			t.Errorf("the query does not filter on %s:\n%s", condition, store.query)
+		}
+	}
+	for name, want := range map[string]string{
+		"param_process": "nightly",
+		"param_run":     "shop-production-nightly-29387520",
+	} {
+		if got := store.params.Get(name); got != want {
+			t.Errorf("%s: want %q, got %q", name, want, got)
+		}
+	}
+	if !strings.Contains(store.query, "process, run") {
+		t.Errorf("a line does not carry the process and run it came from:\n%s", store.query)
+	}
+}
+
+// An environment's logs meant every line the environment wrote before either
+// field existed, and they still do: the web process writes neither column, so
+// an unfiltered read is not quietly "the web process only".
+func TestSearchLogsWithoutAProcessIsStillEveryLine(t *testing.T) {
+	store := newFakeLogStore(t)
+
+	_, err := store.client(t).SearchLogs(context.Background(), LogQuery{
+		Source:      SourceRuntime,
+		Environment: "shop-production",
+	})
+	if err != nil {
+		t.Fatalf("SearchLogs: %v", err)
+	}
+	if strings.Contains(store.query, "{process:String}") || strings.Contains(store.query, "{run:String}") {
+		t.Fatalf("an unasked-for filter reached the query:\n%s", store.query)
+	}
+}

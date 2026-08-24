@@ -208,3 +208,27 @@ func paramValues(compiled LogQueryExpression) []string {
 	}
 	return values
 }
+
+// `process:` and `run:` are terms in the query language, not only parameters
+// on the environment endpoint: the observability view is where somebody asks
+// "which of these lines are the nightly job's" without leaving the page.
+func TestTheQueryLanguageKnowsProcessesAndRuns(t *testing.T) {
+	compiled, err := CompileLogQuery("process:nightly run:shop-production-nightly-1 level:error")
+	if err != nil {
+		t.Fatalf("CompileLogQuery: %v", err)
+	}
+	for _, column := range []string{"process = {", "run = {"} {
+		if !strings.Contains(compiled.Expression, column) {
+			t.Errorf("%s is not a column of the query language: %s", column, compiled.Expression)
+		}
+	}
+	values := map[string]bool{}
+	for _, value := range compiled.Params {
+		values[value] = true
+	}
+	for _, want := range []string{"nightly", "shop-production-nightly-1"} {
+		if !values[want] {
+			t.Errorf("%q did not travel as a parameter: %+v", want, compiled.Params)
+		}
+	}
+}

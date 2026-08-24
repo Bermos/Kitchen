@@ -789,8 +789,9 @@ func (r *BuildReconciler) succeed(
 			BuildRef:   kitchenv1alpha1.LocalObjectReference{Name: build.Name},
 			Image:      image,
 			ConfigSnapshot: kitchenv1alpha1.ConfigSnapshot{
-				Env:     project.Spec.Env,
-				Runtime: runtimeFor(project, build),
+				Env:       project.Spec.Env,
+				Runtime:   runtimeFor(project, build),
+				Processes: project.Spec.Processes,
 			},
 		},
 	}

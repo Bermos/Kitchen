@@ -45,6 +45,17 @@ const (
 	EventDomainAttached    = "domain.attached"
 	EventDomainRemoved     = "domain.removed"
 
+	// One run of a scheduled process. Both outcomes are in the feed rather
+	// than only the failure, because "it ran at 03:00 and took nine seconds"
+	// is the entry that makes the absence of an entry mean something.
+	EventRunSucceeded = "run.succeeded"
+	EventRunFailed    = "run.failed"
+	// A run somebody started by hand, off the schedule. Only the manual ones
+	// are announced at their start: a schedule firing is not news until it
+	// has an outcome, and a person pressing the button wants to see that the
+	// press landed.
+	EventRunStarted = "run.started"
+
 	// Break-glass exceptions. Granting one is exactly the kind of thing a
 	// person scanning "what happened recently" should trip over.
 	EventExceptionGranted  = "exception.granted"
@@ -77,7 +88,12 @@ type Event struct {
 	Build       string    `json:"build,omitempty"`
 	Release     string    `json:"release,omitempty"`
 	Claim       string    `json:"claim,omitempty"`
-	Message     string    `json:"message"`
+	// Process and Run name one of a project's workers or scheduled jobs and,
+	// for a scheduled one, the Job that was the run. They are the join back to
+	// that run's output, which the log store keys the same way.
+	Process string `json:"process,omitempty"`
+	Run     string `json:"run,omitempty"`
+	Message string `json:"message"`
 	// Actor is who caused it: an authenticated API caller by name, or
 	// "operator" for things the reconcilers decided on their own.
 	Actor string `json:"actor,omitempty"`
@@ -96,6 +112,8 @@ type eventRow struct {
 	Build       string  `json:"build"`
 	Release     string  `json:"release"`
 	Claim       string  `json:"claim"`
+	Process     string  `json:"process"`
+	Run         string  `json:"run"`
 	Message     string  `json:"message"`
 	Actor       string  `json:"actor"`
 	Value       float64 `json:"value"`
@@ -115,6 +133,8 @@ func (c *Client) InsertEvent(ctx context.Context, event Event) error {
 		"build":       event.Build,
 		"release":     event.Release,
 		"claim":       event.Claim,
+		"process":     event.Process,
+		"run":         event.Run,
 		"message":     event.Message,
 		"actor":       event.Actor,
 		"value":       event.Value,
@@ -162,7 +182,7 @@ func (c *Client) QueryEvents(ctx context.Context, query EventQuery) ([]Event, er
 
 	statement := fmt.Sprintf(`SELECT
     formatDateTime(timestamp, '%%Y-%%m-%%dT%%H:%%i:%%S.%%fZ', 'UTC') AS %s,
-    type, project, environment, build, release, claim, message, actor, value
+    type, project, environment, build, release, claim, process, run, message, actor, value
 FROM %s.%s
 WHERE %s
 ORDER BY timestamp DESC
@@ -197,6 +217,8 @@ FORMAT JSONEachRow`,
 			Build:       row.Build,
 			Release:     row.Release,
 			Claim:       row.Claim,
+			Process:     row.Process,
+			Run:         row.Run,
 			Message:     row.Message,
 			Actor:       row.Actor,
 			Value:       row.Value,

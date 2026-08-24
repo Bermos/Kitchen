@@ -82,11 +82,17 @@ var logQueryColumns = map[string]string{
 	"project":     "project",
 	"environment": "environment",
 	"build":       "build",
-	"namespace":   "namespace",
-	"pod":         "pod",
-	"container":   "container",
-	"node":        "node",
-	"stream":      "stream",
+	// A Project's workers and scheduled jobs (#78). `run` is the Job one
+	// firing of a schedule produced, which is what makes "show me what last
+	// night's report job printed" one query rather than a hunt through an
+	// environment's whole output.
+	"process":   "process",
+	"run":       "run",
+	"namespace": "namespace",
+	"pod":       "pod",
+	"container": "container",
+	"node":      "node",
+	"stream":    "stream",
 
 	// The exporter's, under its names.
 	"traceId": "TraceId",

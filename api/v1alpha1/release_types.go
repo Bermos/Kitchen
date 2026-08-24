@@ -31,6 +31,15 @@ type ConfigSnapshot struct {
 
 	// +optional
 	Runtime RuntimeSpec `json:"runtime,omitempty"`
+
+	// Processes are the project's workers and scheduled jobs as they stood
+	// when this Release was built. They are here for the same reason the
+	// environment variables are: a rollback that ran today's worker command
+	// against yesterday's image would not be a rollback.
+	// +optional
+	// +listType=map
+	// +listMapKey=name
+	Processes []ProcessSpec `json:"processes,omitempty"`
 }
 
 // ReleaseSpec is an immutable snapshot: an image digest plus the configuration

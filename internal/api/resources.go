@@ -403,6 +403,18 @@ type patchProjectRequest struct {
 	Criticality *string `json:"criticality,omitempty"`
 	RTO         *string `json:"rto,omitempty"`
 	RPO         *string `json:"rpo,omitempty"`
+	// Processes replaces the project's workers and scheduled jobs wholesale;
+	// an empty list removes them all. It is here, on the settings route,
+	// rather than on a route of its own because what a project runs and how
+	// much of it it runs is one decision — the same admin who sets the
+	// replica count and the resources of the web process sets the workers'.
+	//
+	// The list is the project's declaration, so it reaches an environment only
+	// through the next Release: an existing environment keeps running the
+	// processes its release declared until something builds. That is the same
+	// rule the port and the replica count follow, and it is what makes a
+	// rollback exact.
+	Processes *[]processRequest `json:"processes,omitempty"`
 }
 
 // criticalityFromRequest validates one criticality value, empty meaning
@@ -737,6 +749,14 @@ func (s *Server) patchProject(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 		project.Spec.Promotion = stages
+	}
+	if body.Processes != nil {
+		processes, err := processesFromRequest(*body.Processes)
+		if err != nil {
+			badRequest(w, "%s", err.Error())
+			return
+		}
+		project.Spec.Processes = processes
 	}
 	var nextClass *kitchenv1alpha1.DataClass
 	if body.DataClass != nil {
@@ -1695,6 +1715,7 @@ func changedProjectFields(body patchProjectRequest, continuity continuityChange)
 		{"cpu", body.CPU != nil},
 		{"memory", body.Memory != nil},
 		{"promotionStages", body.PromotionStages != nil},
+		{"processes", body.Processes != nil},
 		{"dataClass", body.DataClass != nil},
 	} {
 		if field.changed {

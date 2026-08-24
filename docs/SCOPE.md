@@ -85,10 +85,25 @@ These aren't nice-to-haves — the first three are the product.
 
 10. **Self-hosting hygiene.** Helm upgrade path incl. CRD migrations, backup/restore of platform state. The upgrade path itself is shipped, and optionally self-serve: `selfUpdate.enabled` grants a Job cluster-admin and the platform upgrades its own release from the dashboard (`PlatformUpdate`). Off by default — the grant is real — and it runs helm in a Job rather than in the operator, which does not survive applying its own new Deployment. ✅ Backup/restore is shipped: one archive carrying the CRs, every Secret in `kitchen-system` and a data dump of the identity provider's Postgres, taken from the dashboard and put back by a Job the chart renders — a Job rather than a screen because a restore happens into a cluster whose accounts are gone, so there is nobody left to log in. Telemetry is explicitly *not* in it and is not expected to survive; PVC snapshots are offered where the cluster actually has a snapshot class, checked rather than assumed (#64). CRD migrations are still the open half — no conversion webhook exists, the API is `v1alpha1`, and an archive is bound to the release that wrote it. See [BACKUP.md](BACKUP.md). NetworkPolicies between app namespaces are lower priority given the trusted-team model, but keep the platform namespace protected.
 
+11. **Processes beyond the web one.** ✅ Decided and shipped: a Project declares
+   workers and scheduled jobs alongside its web process, and they are the same
+   Release — the same image and the same environment, started with another
+   command — so they are a modelling change rather than a build one. A worker
+   is a Deployment with no Service and no route; a scheduled job is a
+   `batch/v1` CronJob and one firing is a run. The list is snapshotted into
+   every Release, so a rollback runs the processes that release declared. The
+   two decisions worth having written down are that a preview runs none of them
+   unless a process opts in (a preview that emails customers nightly is a bad
+   afternoon), and that a failed run is carried out of the cluster rather than
+   left in `kubectl get jobs`: into the activity feed, onto the environment's
+   status, and onto the environment screen. The log pipeline keys on the
+   process and the run, so one firing's output is one query for as long as the
+   lines are kept — which outlasts the Job. See
+   [Workers and scheduled jobs](api/processes.md).
+
 ### Nice-to-haves (later)
 
 - Deploy notifications/webhooks (Slack, generic)
-- Cron jobs / background workers per project
 - Edge config / feature flags
 - Additional plugins: S3-compatible object storage, Redis/Valkey, CloudNativePG as a self-hosted alternative to Neon
 
@@ -174,4 +189,4 @@ have to rediscover it:
 
 - **MVP**: operator + CRDs, Helm chart, git webhook → BuildKit build → registry → Deployment + Gateway route, generated URLs on a wildcard domain, build/runtime logs in ClickHouse, minimal Vue UI, local-admin auth.
 - **v1**: preview deployments, custom domains + cert-manager/cloudflared, Infisical integration, Neon + registry plugins as a proper plugin interface, metrics dashboards, rollbacks, OIDC + teams.
-- **Later**: more plugins, notifications, cron jobs. The CLI landed here ([CLI.md](CLI.md)) — it needed no platform surface of its own, being a client of an API that already existed.
+- **Later**: more plugins, notifications. The CLI landed here ([CLI.md](CLI.md)) — it needed no platform surface of its own, being a client of an API that already existed. So did cron jobs and background workers, which needed one field on the Project and one on the Release rather than a platform surface of their own ([processes](api/processes.md)).

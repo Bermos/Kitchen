@@ -24,6 +24,7 @@ import (
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -130,6 +131,12 @@ func (r *EnvironmentReconciler) git() gitReporting {
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=batch,resources=cronjobs,verbs=get;list;watch;create;update;patch;delete
+// `deletecollection` is what DeleteAllOf asks for, and it is not implied by
+// `delete`: tearing an environment down removes its runs by label rather than
+// by name, because a run started by hand is owned by nothing and would
+// otherwise be the one thing left in the namespace.
+// +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;delete;deletecollection
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=referencegrants,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=http.keda.sh,resources=httpscaledobjects,verbs=get;list;watch;create;update;patch;delete
@@ -241,6 +248,19 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, err
 	}
 
+	// The processes are materialized before the route, and before the
+	// unpublishable branch below, because they have nothing to do with the
+	// route: a worker is not addressed and a scheduled job is not either. A
+	// preview the platform will not publish still runs whatever its project
+	// asked it to run.
+	processes, err := r.reconcileProcesses(ctx, env, project, release, appNS, labels, podEnv)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	// Assigned after the recording pass inside, which compares against what
+	// the status still holds from the previous reconcile.
+	env.Status.Processes = processes
+
 	if unprotectable {
 		if err := r.deleteRoute(ctx, appNS, env.Name); err != nil {
 			return ctrl.Result{}, err
@@ -288,6 +308,12 @@ func (r *EnvironmentReconciler) finalize(ctx context.Context, env *kitchenv1alph
 	// idled has none, and a platform without the HTTP add-on has no API to
 	// ask, neither of which is a failure to tear down.
 	if err := r.deleteHTTPScaledObject(ctx, appNS, env.Name); err != nil {
+		return ctrl.Result{}, err
+	}
+	// So do the workers and the scheduled jobs, which are named after the
+	// environment and the process rather than after the environment alone and
+	// so are found by their label instead of being listed above.
+	if err := r.deleteProcesses(ctx, env, appNS); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -1049,6 +1075,11 @@ func (r *EnvironmentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&kitchenv1alpha1.Environment{}).
 		Watches(&appsv1.Deployment{}, handler.EnqueueRequestsFromMapFunc(r.mapChildToEnvironment)).
+		// A run finishing is the event this feature is about, and a Job is
+		// where it lands. Both carry the environment label the mapper reads,
+		// because the CronJob stamps it on the Jobs it creates.
+		Watches(&batchv1.CronJob{}, handler.EnqueueRequestsFromMapFunc(r.mapChildToEnvironment)).
+		Watches(&batchv1.Job{}, handler.EnqueueRequestsFromMapFunc(r.mapChildToEnvironment)).
 		Watches(&kitchenv1alpha1.Kitchen{}, handler.EnqueueRequestsFromMapFunc(r.mapPlatformToEnvironments)).
 		Watches(&kitchenv1alpha1.Domain{}, handler.EnqueueRequestsFromMapFunc(r.mapDomainToEnvironment)).
 		Named("environment").

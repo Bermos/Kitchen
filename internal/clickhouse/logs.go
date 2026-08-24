@@ -77,6 +77,12 @@ type LogQuery struct {
 	// Project and Environment scope runtime logs.
 	Project     string
 	Environment string
+	// Process narrows to one of the project's workers or scheduled jobs, and
+	// Run to one firing of a scheduled one. An empty Process is not "the web
+	// process": it is every process, because the web process is what the
+	// environment's logs already meant before either field existed.
+	Process string
+	Run     string
 	// Container narrows to one container of the pod.
 	Container string
 	// Since and Until bound the window. Zero values are open ends.
@@ -96,6 +102,8 @@ type LogLine struct {
 	Project     string    `json:"project,omitempty"`
 	Environment string    `json:"environment,omitempty"`
 	Build       string    `json:"build,omitempty"`
+	Process     string    `json:"process,omitempty"`
+	Run         string    `json:"run,omitempty"`
 	Pod         string    `json:"pod,omitempty"`
 	Container   string    `json:"container,omitempty"`
 	Stream      string    `json:"stream,omitempty"`
@@ -121,6 +129,8 @@ type logRow struct {
 	Project     string            `json:"project"`
 	Environment string            `json:"environment"`
 	Build       string            `json:"build"`
+	Process     string            `json:"process"`
+	Run         string            `json:"run"`
 	Pod         string            `json:"pod"`
 	Container   string            `json:"container"`
 	Stream      string            `json:"stream"`
@@ -141,7 +151,7 @@ type logRow struct {
 // these names. The rest is renaming, except `level`, which is folded to lower
 // case; see logLevelColumn for why that is the API's shape and not a
 // convenience.
-const logColumns = "source, project, environment, build, pod, container, stream, " +
+const logColumns = "source, project, environment, build, process, run, pod, container, stream, " +
 	logLevelColumn + " AS level, " +
 	"TraceId AS traceId, SpanId AS spanId, " +
 	logMessageColumn + " AS message, LogAttributes AS fields"
@@ -173,6 +183,8 @@ func (c *Client) SearchLogs(ctx context.Context, query LogQuery) ([]LogLine, err
 	filter("build", "String", "build", query.Build)
 	filter("project", "String", "project", query.Project)
 	filter("environment", "String", "environment", query.Environment)
+	filter("process", "String", "process", query.Process)
+	filter("run", "String", "run", query.Run)
 	filter("container", "String", "container", query.Container)
 
 	if !query.Since.IsZero() {
@@ -358,6 +370,8 @@ func parseLogLines(body string, capacity int) ([]LogLine, error) {
 			Project:     row.Project,
 			Environment: row.Environment,
 			Build:       row.Build,
+			Process:     row.Process,
+			Run:         row.Run,
 			Pod:         row.Pod,
 			Container:   row.Container,
 			Stream:      row.Stream,
