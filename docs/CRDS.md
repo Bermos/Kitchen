@@ -129,10 +129,17 @@ spec:
         format: grype-json              # grype-json, trivy-json or osv-json
         args: [-o, json, --file, $(KITCHEN_FINDINGS), "sbom:$(KITCHEN_SBOM)"]
         timeoutSeconds: 900
+  retention:                            # how long each class is kept; absent = inherit
+    containerLogs: 14                   # empty inherits observability.clickhouse.retentionDays,
+    buildLogs: 180                      # as flows, metrics, traces, requests, clusterEvents
+    audit: 365                          # and activity do; audit inherits compliance.audit.retentionDays
+    auditFloorOverride:                 # the only way under the 90-day floor, and an audit record
+      reason: demonstration cluster; holds no production data at all
+      approvedBy: cto@example.com
   observability:
     clickhouse:
-      retentionDays: 30                 # TTL the operator keeps on every telemetry table,
-                                        # the collector's included
+      retentionDays: 30                 # the retention every telemetry class inherits when
+                                        # spec.retention does not set it
       secretRef: { name: kitchen-clickhouse }   # written by the chart; the store's connection details
     hubble:
       relayAddress: hubble-relay.kube-system.svc.cluster.local:80   # flow collection; empty disables it
@@ -143,6 +150,10 @@ spec:
       enabled: true                     # tell applications where to send their spans
       endpoint: http://kitchen-otlp.kitchen-system.svc.cluster.local:4318   # the collector, and where
                                         # the operator exports its own samples
+    clockSync:
+      enabled: true                     # do the clocks that stamp all of this agree with each other?
+      maxDriftSeconds: 5                # measured off the kubelet node leases; drift beyond this is
+                                        # an unhealthy `clock-sync` entry in status.components
 status:
   conditions: [...]                     # Ready, GatewayProgrammed, TunnelConnected,
                                         # TelemetrySchemaReady, PreviewGateReady, RegistryReady,
@@ -169,6 +180,25 @@ status:
       lastSweep: 2026-08-24T03:14:00Z
       environments: 42                  # deployed pairs the last pass considered
       scanning: 4                       # how many had a scan in flight when it finished
+  retention:
+    lastSweep: 2026-08-24T03:00:00Z
+    auditFloorOverridden: false
+    classes:
+      - class: containerLogs
+        days: 14
+        source: retention               # or the legacy field this class inherits from
+        enforced: true                  # false until a sweep has measured it
+        rows: 41203311
+        oldest: 2026-08-10T04:11:02Z    # the claim the rule makes: nothing older than this
+        expired: 0                      # rows still past the horizon; a small number is normal
+  clockSync:
+    checked: 2026-08-24T09:00:00Z
+    method: kubelet node lease renewTime, compared with the operator's own clock
+    nodes: 3
+    drifted: 0
+    maxDriftSeconds: 5
+    worstNode: node-b
+    worstDriftMillis: 42
 ```
 
 `scaleToZero.install` is the second thing the operator installs that the chart
