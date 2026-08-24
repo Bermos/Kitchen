@@ -19,6 +19,7 @@ package clickhouse
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -72,4 +73,71 @@ func TestSignedRecordsTableCarriesNoTTL(t *testing.T) {
 	if !strings.Contains(ddl, "ORDER BY (subject, type, timestamp)") {
 		t.Fatalf("the ordering key must lead with the subject: %s", ddl)
 	}
+}
+
+// The read half. An audit pack asks this table three questions — one claim's
+// declarations, one cycle's artefact, one project's evidence — and the answer
+// has to carry the envelope back exactly as it went in, because the bytes are
+// what the signature covers.
+func TestQuerySignedRecordsFiltersAndKeepsTheEnvelopeVerbatim(t *testing.T) {
+	envelope := `{"payloadType":"application/vnd.in-toto+json","payload":"e30=","signatures":[{"keyid":"k","sig":"s"}]}`
+	store := newFakeLogStore(t)
+	store.rows = `{"id":"r1","ts":"2026-08-21T09:00:00.000Z",` +
+		`"type":"https://kitchen.bermos.dev/attestation/access-review/v1",` +
+		`"subject":"sha256:` + strings.Repeat("d", 64) + `","project":"shop",` +
+		`"envelope":` + mustJSONString(t, envelope) + `}`
+
+	records, err := store.client(t).QuerySignedRecords(context.Background(), SignedRecordQuery{
+		Project: "shop",
+		Type:    "https://kitchen.bermos.dev/attestation/access-review/v1",
+		Since:   time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC),
+		Until:   time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("QuerySignedRecords: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("want one record, got %d", len(records))
+	}
+	if records[0].Envelope != envelope {
+		t.Fatalf("the envelope must come back verbatim, got %q", records[0].Envelope)
+	}
+	if !records[0].Timestamp.Equal(time.Date(2026, 8, 21, 9, 0, 0, 0, time.UTC)) {
+		t.Fatalf("the timestamp must round-trip, got %s", records[0].Timestamp)
+	}
+	for _, fragment := range []string{
+		"project = {project:String}",
+		"type = {type:String}",
+		"timestamp >= parseDateTime64BestEffort({since:String}, 3, 'UTC')",
+		// Half-open, like the audit pack's own range: a record stamped
+		// exactly at `until` belongs to the next window, not to this one.
+		"timestamp < parseDateTime64BestEffort({until:String}, 3, 'UTC')",
+	} {
+		if !strings.Contains(store.query, fragment) {
+			t.Errorf("the statement misses %q: %s", fragment, store.query)
+		}
+	}
+}
+
+// The limit is capped rather than trusted, like every other read of an
+// evidence table here.
+func TestQuerySignedRecordsCapsTheLimit(t *testing.T) {
+	store := newFakeLogStore(t)
+	if _, err := store.client(t).QuerySignedRecords(context.Background(),
+		SignedRecordQuery{Limit: MaxSignedRecordLimit * 10}); err != nil {
+		t.Fatalf("QuerySignedRecords: %v", err)
+	}
+	if got := store.params.Get("param_limit"); got != strconv.Itoa(MaxSignedRecordLimit) {
+		t.Fatalf("want the limit capped at %d, got %q", MaxSignedRecordLimit, got)
+	}
+}
+
+// mustJSONString quotes a string the way a JSONEachRow row carries it.
+func mustJSONString(t *testing.T, value string) string {
+	t.Helper()
+	quoted, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(quoted)
 }

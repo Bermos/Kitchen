@@ -20,6 +20,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -116,4 +118,134 @@ ENGINE = MergeTree
 PARTITION BY toYYYYMM(timestamp)
 ORDER BY (subject, type, timestamp)`,
 		quoteIdentifier(database), quoteIdentifier(SignedRecordsTable))
+}
+
+// Signed-record limits, mirroring the decision register's for the same
+// reason: the envelope column is wide, and the reads that matter are narrow.
+const (
+	DefaultSignedRecordLimit = 100
+	MaxSignedRecordLimit     = 1000
+)
+
+// SignedRecordQuery selects kept envelopes. The zero value answers the newest
+// page of everything, and every field is an equality filter — the reads this
+// table serves are "this claim's declarations", "every access review's
+// artefact", "this project's evidence", and an audit pack asking for all
+// three of them at once.
+type SignedRecordQuery struct {
+	// Subject narrows to one identity digest, Type to one predicate, and
+	// Project to one project's records. A record with no project is about
+	// the platform — a platform-scoped recertification cycle — and is
+	// answered only when Project is empty.
+	Subject string
+	Type    string
+	Project string
+	// Since and Until bound the window; both are open when zero.
+	Since time.Time
+	Until time.Time
+	// Limit caps the page, defaulting to DefaultSignedRecordLimit.
+	Limit int
+}
+
+// signedRecordColumns is the SELECT list every read of the table uses, aliased
+// to the JSON names signedRecordRow decodes. The timestamp is formatted rather
+// than returned raw for the reason the decision register's is: the store's own
+// rendering of a DateTime64 is not the one time.Parse reads.
+const signedRecordColumns = `
+    id,
+    formatDateTime(timestamp, '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS ts,
+    type, subject, project, envelope`
+
+// signedRecordRow is the wire shape coming back.
+type signedRecordRow struct {
+	ID        string `json:"id"`
+	Timestamp string `json:"ts"`
+	Type      string `json:"type"`
+	Subject   string `json:"subject"`
+	Project   string `json:"project"`
+	Envelope  string `json:"envelope"`
+}
+
+// QuerySignedRecords reads a page of kept envelopes, newest first.
+//
+// The order is (timestamp, id) descending rather than the table's own
+// ordering key, because every caller wants "the most recent statements about
+// this" and an audit pack sorts what it keeps for itself anyway — a stable
+// total order is the export's problem, not the store's.
+func (c *Client) QuerySignedRecords(ctx context.Context, query SignedRecordQuery) ([]SignedRecord, error) {
+	limit := query.Limit
+	if limit < 1 {
+		limit = DefaultSignedRecordLimit
+	}
+	if limit > MaxSignedRecordLimit {
+		limit = MaxSignedRecordLimit
+	}
+
+	conditions := []string{"1 = 1"}
+	params := map[string]string{"limit": strconv.Itoa(limit)}
+	// Ordered rather than ranged over a map, for the reason the audit and
+	// decision queries are: the same filters must build the same statement
+	// every time.
+	for _, filter := range []struct{ column, value string }{
+		{"subject", query.Subject},
+		{"type", query.Type},
+		{"project", query.Project},
+	} {
+		if filter.value == "" {
+			continue
+		}
+		conditions = append(conditions, fmt.Sprintf("%s = {%s:String}", filter.column, filter.column))
+		params[filter.column] = filter.value
+	}
+	if !query.Since.IsZero() {
+		conditions = append(conditions, "timestamp >= parseDateTime64BestEffort({since:String}, 3, 'UTC')")
+		params["since"] = query.Since.UTC().Format(time.RFC3339Nano)
+	}
+	if !query.Until.IsZero() {
+		conditions = append(conditions, "timestamp < parseDateTime64BestEffort({until:String}, 3, 'UTC')")
+		params["until"] = query.Until.UTC().Format(time.RFC3339Nano)
+	}
+
+	statement := fmt.Sprintf(`SELECT %s
+FROM %s.%s
+WHERE %s
+ORDER BY timestamp DESC, id DESC
+LIMIT {limit:UInt32}
+FORMAT JSONEachRow`, signedRecordColumns,
+		quoteIdentifier(c.cfg.Database), quoteIdentifier(SignedRecordsTable),
+		strings.Join(conditions, " AND "))
+
+	body, err := c.QueryWithParams(ctx, statement, params)
+	if err != nil {
+		return nil, err
+	}
+	return decodeSignedRecordRows(body)
+}
+
+// decodeSignedRecordRows reads the JSONEachRow answer.
+func decodeSignedRecordRows(body string) ([]SignedRecord, error) {
+	records := make([]SignedRecord, 0, 16)
+	for _, raw := range strings.Split(body, "\n") {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		row := signedRecordRow{}
+		if err := json.Unmarshal([]byte(raw), &row); err != nil {
+			return nil, fmt.Errorf("unreadable signed record row: %w", err)
+		}
+		timestamp, err := time.Parse("2006-01-02T15:04:05.999Z", row.Timestamp)
+		if err != nil {
+			return nil, fmt.Errorf("unreadable signed record timestamp %q: %w", row.Timestamp, err)
+		}
+		records = append(records, SignedRecord{
+			ID:        row.ID,
+			Timestamp: timestamp,
+			Type:      row.Type,
+			Subject:   row.Subject,
+			Project:   row.Project,
+			Envelope:  row.Envelope,
+		})
+	}
+	return records, nil
 }
