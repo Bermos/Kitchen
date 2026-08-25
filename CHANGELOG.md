@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.15.0](https://github.com/Bermos/Kitchen/compare/v0.14.0...v0.15.0) (2026-08-25)
+
+
+### Features
+
+* **api:** say what a move between two releases would change ([36ac481](https://github.com/Bermos/Kitchen/commit/36ac4813ee18fcccd975821fd6155a398809afd9)), closes [#181](https://github.com/Bermos/Kitchen/issues/181)
+* **cli:** show what a rollback changes before asking ([039e0af](https://github.com/Bermos/Kitchen/commit/039e0affe2ac11043b2879a074dc164e4a82f5b9)), closes [#181](https://github.com/Bermos/Kitchen/issues/181)
+* **operator:** cron jobs and background workers per project ([#189](https://github.com/Bermos/Kitchen/issues/189)) ([b4fc869](https://github.com/Bermos/Kitchen/commit/b4fc869d90fecf497aee35c7e1cc74686347d561)), closes [#78](https://github.com/Bermos/Kitchen/issues/78)
+* **ui:** make rollback pick, review the diff, then verify ([1a5a7ae](https://github.com/Bermos/Kitchen/commit/1a5a7ae35168b18f179e51fd4be3a08d5139805b)), closes [#181](https://github.com/Bermos/Kitchen/issues/181)
+
+
+### Documentation
+
+* the rollback diff, on the API and the CLI pages ([04744b3](https://github.com/Bermos/Kitchen/commit/04744b386d26ba019662101027e5bfa70b4cfcdd)), closes [#181](https://github.com/Bermos/Kitchen/issues/181)
+
 ## [0.14.0](https://github.com/Bermos/Kitchen/compare/v0.13.0...v0.14.0) (2026-08-24)
 
 
