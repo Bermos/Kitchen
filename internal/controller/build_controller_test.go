@@ -132,6 +132,43 @@ var _ = Describe("Build Controller", func() {
 			ExpectWithOffset(1, k8sClient.Status().Update(ctx, pod)).To(Succeed())
 		}
 
+		// A buildpacks pod as one looks when the build failed: a clone that
+		// worked, and the builder behind it that did not. Reading it in order
+		// finds the clone, which is the whole reason the reconciler does not.
+		createFailedBuildPod := func(exitCode int32, reason string) {
+			pod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      buildName + "-pod",
+					Namespace: appNS,
+					Labels:    map[string]string{"job-name": buildName},
+				},
+				Spec: corev1.PodSpec{
+					RestartPolicy:  corev1.RestartPolicyNever,
+					InitContainers: []corev1.Container{{Name: "clone", Image: GitCloneImage}},
+					Containers:     []corev1.Container{{Name: "creator", Image: BuildpacksBuilderImage}},
+				},
+			}
+			ExpectWithOffset(1, client.IgnoreAlreadyExists(k8sClient.Create(ctx, pod))).To(Succeed())
+			pod.Status = corev1.PodStatus{
+				Phase: corev1.PodFailed,
+				InitContainerStatuses: []corev1.ContainerStatus{{
+					Name:  "clone",
+					Image: GitCloneImage,
+					State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{
+						ExitCode: 0, Reason: "Completed",
+					}},
+				}},
+				ContainerStatuses: []corev1.ContainerStatus{{
+					Name:  "creator",
+					Image: BuildpacksBuilderImage,
+					State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{
+						ExitCode: exitCode, Reason: reason,
+					}},
+				}},
+			}
+			ExpectWithOffset(1, k8sClient.Status().Update(ctx, pod)).To(Succeed())
+		}
+
 		BeforeEach(func() {
 			source = repoWithDockerfile()
 			registryHolds = &fakeCacheProbe{}
@@ -864,6 +901,48 @@ var _ = Describe("Build Controller", func() {
 
 			err := k8sClient.Get(ctx, types.NamespacedName{Name: releaseName(projectName, sha), Namespace: namespace}, &kitchenv1alpha1.Release{})
 			Expect(err).To(HaveOccurred(), "no release should exist for a failed build")
+		})
+
+		It("records which container failed the build, and what it printed", func() {
+			var askedFor []string
+			reconciler.PodLogs = func(_ context.Context, ns, pod, container string, _ int64) (string, error) {
+				askedFor = append(askedFor, ns+"/"+pod+"/"+container)
+				return "installing dependencies\nERROR: failed to build: exit status 1\n", nil
+			}
+
+			reconcileOnce()
+			createFailedBuildPod(51, "Error")
+
+			job := &batchv1.Job{}
+			Expect(k8sClient.Get(ctx, jobKey, job)).To(Succeed())
+			now := metav1.Now()
+			job.Status.StartTime = &now
+			job.Status.Failed = 1
+			job.Status.Conditions = []batchv1.JobCondition{
+				{Type: batchv1.JobFailureTarget, Status: corev1.ConditionTrue},
+				{Type: batchv1.JobFailed, Status: corev1.ConditionTrue,
+					Message: "Job has reached the specified backoff limit"},
+			}
+			Expect(k8sClient.Status().Update(ctx, job)).To(Succeed())
+
+			reconcileOnce()
+
+			build := &kitchenv1alpha1.Build{}
+			Expect(k8sClient.Get(ctx, buildKey, build)).To(Succeed())
+			Expect(build.Status.Phase).To(Equal(kitchenv1alpha1.BuildFailed))
+			Expect(build.Status.Failure).NotTo(BeNil())
+			Expect(build.Status.Failure.Container).To(Equal("creator"),
+				"the clone succeeded; the builder is what failed")
+			Expect(build.Status.Failure.ExitCode).To(Equal(ptr.To(int32(51))))
+			Expect(build.Status.Failure.Reason).To(Equal("Error"))
+			Expect(build.Status.Failure.Log).To(ContainElement("ERROR: failed to build: exit status 1"))
+			Expect(askedFor).To(ContainElement(appNS + "/" + buildName + "-pod/creator"))
+
+			// The condition says the failure rather than the Job's sentence,
+			// which is the same sentence for every build that ever failed.
+			cond := build.Status.Conditions[0]
+			Expect(cond.Message).To(ContainSubstring("creator exited 51"))
+			Expect(cond.Message).NotTo(ContainSubstring("backoff limit"))
 		})
 
 		It("queues the build while the concurrency limit is reached", func() {

@@ -32,6 +32,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -170,6 +171,12 @@ type BuildReconciler struct {
 	// layer cache is there. Nil asks the real one; tests answer without a
 	// registry at all.
 	CacheProbes CacheProbeFactory
+
+	// PodLogs reads the tail of a failing build container's output, which is
+	// what turns "the job failed" into a diagnosis. SetupWithManager fills it
+	// in from the manager's own configuration; tests answer without a
+	// kubelet. Nil records the failure without its log rather than failing.
+	PodLogs PodLogReader
 }
 
 // buildTarget is where a build pushed and how: the registry, the credential
@@ -214,6 +221,7 @@ func (r *BuildReconciler) git() gitReporting {
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=exceptions,verbs=get;list;watch
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=pods/log,verbs=get
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch
 
 // Reconcile drives a Build from Queued through a BuildKit Job to a Release.
@@ -366,7 +374,13 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	case complete:
 		return r.succeed(ctx, build, project, job, target)
 	case failed:
-		return r.fail(ctx, build, project, reasonBuildFailed, gitCreds.explain(message))
+		// The Job's own message names no container and no exit code, so the
+		// pod is asked before it is collected: what failed, how, and the last
+		// thing it printed. It is written onto the Build because the pod is
+		// deleted with the job and the Build is not.
+		build.Status.Failure = r.diagnoseJobFailure(ctx, appNS, job.Name, message)
+		return r.fail(ctx, build, project, reasonBuildFailed,
+			gitCreds.explain(failureMessage(build.Status.Failure, message)))
 	default:
 		if build.Status.Phase != kitchenv1alpha1.BuildRunning {
 			build.Status.Phase = kitchenv1alpha1.BuildRunning
@@ -1424,6 +1438,17 @@ func (r *BuildReconciler) mapJobToBuild(_ context.Context, obj client.Object) []
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *BuildReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	// Container logs are a subresource the kubelet serves, which the
+	// manager's cached client does not speak. The typed client is built here
+	// rather than passed in so that every caller gets one without knowing it
+	// needs one — a test that has set its own is left alone.
+	if r.PodLogs == nil {
+		clientset, err := kubernetes.NewForConfig(mgr.GetConfig())
+		if err != nil {
+			return err
+		}
+		r.PodLogs = clientsetPodLogs(clientset)
+	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&kitchenv1alpha1.Build{}).
 		Watches(&batchv1.Job{}, handler.EnqueueRequestsFromMapFunc(r.mapJobToBuild)).

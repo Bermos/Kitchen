@@ -410,6 +410,56 @@ type QualityGateStatus struct {
 	Message string `json:"message,omitempty"`
 }
 
+// BuildFailureStatus is why a build failed, in the words of whatever failed.
+//
+// The Job's own condition says "Job has reached the specified backoff limit",
+// which is true of every failed build and explains none of them. What explains
+// one is a container: which of the pod's containers stopped the build, how it
+// exited, and the last thing it printed before it did.
+//
+// All of it is read off the pod at the moment the failure is observed and
+// written down here, because the pod is deleted with the job's TTL and the
+// Build is what outlives it. It is on the Build rather than only on the pod
+// for a second reason: a pod is the operator's to read, and a build that
+// failed is the developer's to fix.
+type BuildFailureStatus struct {
+	// Container that ended the build. Init containers count — a clone that
+	// cannot authenticate fails the build as surely as a compiler does — and
+	// naming it is what separates "the source never arrived" from "the source
+	// arrived and would not build".
+	// +optional
+	Container string `json:"container,omitempty"`
+
+	// ExitCode the container exited with. Absent when nothing exited: a pod
+	// evicted before it ran, or a container that never started because its
+	// image could not be pulled.
+	// +optional
+	ExitCode *int32 `json:"exitCode,omitempty"`
+
+	// Reason is Kubernetes' own word for the ending — Error, OOMKilled,
+	// Evicted, DeadlineExceeded, ImagePullBackOff. It is kept unchanged
+	// rather than translated: it is what everything else written about the
+	// cluster calls this, and a search for it should find this build.
+	// +optional
+	Reason string `json:"reason,omitempty"`
+
+	// Message is the failure in one line, assembled from the container, its
+	// exit and whatever the kubelet said about it.
+	// +optional
+	Message string `json:"message,omitempty"`
+
+	// Log is the tail of the failing container's output, oldest line first.
+	//
+	// It is a copy, not the log: the whole build log is in the telemetry
+	// store and outlives this. What this is for is the case the log store
+	// cannot serve — a collector that never started, a build that failed
+	// before its first line was shipped — where the last few lines are the
+	// difference between a diagnosis and a shrug.
+	// +optional
+	// +listType=atomic
+	Log []string `json:"log,omitempty"`
+}
+
 // BuildStatus defines the observed state of a Build.
 type BuildStatus struct {
 	// +optional
@@ -457,6 +507,12 @@ type BuildStatus struct {
 	// Source is how the commit reached the branch: through review, or not.
 	// +optional
 	Source *SourceProvenanceStatus `json:"source,omitempty"`
+
+	// Failure is why this build failed, when it did. It is set on the
+	// transition into Failed and never cleared, because a Build is never
+	// rebuilt — a rebuild is another Build.
+	// +optional
+	Failure *BuildFailureStatus `json:"failure,omitempty"`
 
 	// +optional
 	StartedAt *metav1.Time `json:"startedAt,omitempty"`
