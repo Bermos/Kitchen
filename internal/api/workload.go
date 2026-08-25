@@ -43,6 +43,7 @@ import (
 // pod's restart count, and one that lagged would be worse than none.
 
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=pods/log,verbs=get
 
 // environmentWorkload answers what is running for one Environment.
 func (s *Server) environmentWorkload(w http.ResponseWriter, req *http.Request) {
@@ -171,33 +172,118 @@ func newPodView(pod *corev1.Pod) podView {
 			view.Ready = condition.Status == corev1.ConditionTrue
 		}
 	}
-	for i := range pod.Status.ContainerStatuses {
-		status := &pod.Status.ContainerStatuses[i]
-		view.Restarts += status.RestartCount
-		if view.Message == "" {
-			view.Message = containerMessage(status)
+	for _, statuses := range podContainerStatuses(pod) {
+		for i := range statuses {
+			view.Restarts += statuses[i].RestartCount
 		}
 	}
-	if view.Message == "" && !view.Ready {
-		view.Message = pod.Status.Message
-	}
+	view.Message = podMessage(pod)
 	return view
 }
 
-// containerMessage is why a container is not serving: the waiting reason a
-// pull failure or a crash loop leaves behind, or the exit that ended the last
-// run. A container that is running has nothing to explain.
-func containerMessage(status *corev1.ContainerStatus) string {
-	if waiting := status.State.Waiting; waiting != nil {
-		if waiting.Message != "" {
-			return fmt.Sprintf("%s: %s", waiting.Reason, waiting.Message)
+// podContainerStatuses is every container a pod has, init containers first,
+// which is the order they ran in.
+func podContainerStatuses(pod *corev1.Pod) [][]corev1.ContainerStatus {
+	return [][]corev1.ContainerStatus{pod.Status.InitContainerStatuses, pod.Status.ContainerStatuses}
+}
+
+// Container messages, ranked by how much they explain. A failure outranks a
+// wait, and a wait outranks a clean exit — which is the whole of the ordering
+// and the reason it exists.
+const (
+	explainsNothing = iota
+	explainsProgress
+	explainsFailure
+)
+
+// podMessage is why a pod is not doing its job, in the words of whichever of
+// its containers has the most to answer for.
+//
+// The order is not the pod's own. Containers are listed init first, and taking
+// the first one with anything to say reports the step that succeeded rather
+// than the step that failed: a build pod whose clone completes and whose
+// builder exits 51 reads as "Completed: exit code 0" next to a phase of
+// Failed, which is the one message worse than no message at all.
+//
+// A pod that has been ended from outside — evicted, deadline exceeded, lost
+// with its node — has no container to blame, and the verdict on the pod is
+// then the only thing that explains it.
+func podMessage(pod *corev1.Pod) string {
+	best, rank := "", explainsNothing
+	for _, condition := range pod.Status.Conditions {
+		if condition.Type == corev1.PodScheduled && condition.Status == corev1.ConditionFalse {
+			// The scheduler's reason for a pod it can place nowhere, which is
+			// the one explanation that is on the pod and not on a container.
+			best, rank = withReason(condition.Reason, condition.Message), explainsFailure
 		}
-		return waiting.Reason
+	}
+	// Which container spoke only matters when there is more than one to
+	// choose between. A single-container pod names nothing, because there the
+	// name is the pod's own and saying it twice is noise.
+	named := podContainerCount(pod) > 1
+	for _, statuses := range podContainerStatuses(pod) {
+		for i := range statuses {
+			message, at := containerMessage(&statuses[i])
+			if message == "" || at <= rank {
+				continue
+			}
+			if named {
+				message = statuses[i].Name + ": " + message
+			}
+			best, rank = message, at
+		}
+	}
+	if rank < explainsFailure && pod.Status.Reason != "" {
+		return withReason(pod.Status.Reason, pod.Status.Message)
+	}
+	if best == "" && pod.Status.Phase == corev1.PodFailed {
+		return pod.Status.Message
+	}
+	return best
+}
+
+// withReason joins a reason and a message the way every screen here shows them.
+func withReason(reason, message string) string {
+	switch {
+	case reason == "":
+		return message
+	case message == "":
+		return reason
+	default:
+		return reason + ": " + message
+	}
+}
+
+// podContainerCount is how many containers a pod has reported on.
+func podContainerCount(pod *corev1.Pod) int {
+	return len(pod.Status.InitContainerStatuses) + len(pod.Status.ContainerStatuses)
+}
+
+// containerMessage is why a container is not serving, and how much that
+// explains: the waiting reason a pull failure or a crash loop leaves behind,
+// or the exit that ended the last run. A container that is running has nothing
+// to explain.
+func containerMessage(status *corev1.ContainerStatus) (string, int) {
+	if waiting := status.State.Waiting; waiting != nil {
+		if waiting.Reason == "" {
+			return "", explainsNothing
+		}
+		// Waiting behind an init container is not a complaint; it is the
+		// answer to "what is the *other* container doing".
+		rank := explainsFailure
+		if waiting.Reason == reasonPodInitializing {
+			rank = explainsProgress
+		}
+		return withReason(waiting.Reason, waiting.Message), rank
 	}
 	if terminated := status.State.Terminated; terminated != nil {
-		return fmt.Sprintf("%s: exit code %d", terminated.Reason, terminated.ExitCode)
+		message := fmt.Sprintf("%s: exit code %d", terminated.Reason, terminated.ExitCode)
+		if terminated.ExitCode == 0 {
+			return message, explainsProgress
+		}
+		return message, explainsFailure
 	}
-	return ""
+	return "", explainsNothing
 }
 
 // environmentObjects answers with the Kubernetes objects the reconciler

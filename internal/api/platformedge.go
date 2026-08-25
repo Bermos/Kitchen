@@ -440,11 +440,10 @@ func (s *Server) tunnelView(ctx context.Context) *edgeTunnelView {
 	}
 	for i := range pods.Items {
 		for j := range pods.Items[i].Status.ContainerStatuses {
-			status := &pods.Items[i].Status.ContainerStatuses[j]
-			view.Restarts += status.RestartCount
-			if view.Message == "" {
-				view.Message = containerMessage(status)
-			}
+			view.Restarts += pods.Items[i].Status.ContainerStatuses[j].RestartCount
+		}
+		if view.Message == "" {
+			view.Message = podMessage(&pods.Items[i])
 		}
 	}
 	return view

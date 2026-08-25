@@ -70,6 +70,12 @@ const (
 // other, because the fix is a limit rather than a bug.
 const reasonOOMKilled = "OOMKilled"
 
+// reasonPodInitializing is the waiting reason of every container that is
+// simply behind an init container. It is progress, not a fault, and telling
+// the two apart is what keeps a pod whose *init* container failed from
+// reporting the wait instead of the failure.
+const reasonPodInitializing = "PodInitializing"
+
 // The two answers there is no report for. They are separate sentences because
 // they send the reader somewhere different: one to the environment's own
 // conditions, the other nowhere at all.
@@ -385,7 +391,7 @@ func crashOf(
 		crash.StartedAt = &started
 	}
 	if status.State.Waiting != nil {
-		crash.Waiting = containerMessage(status)
+		crash.Waiting, _ = containerMessage(status)
 	}
 	return crash
 }
