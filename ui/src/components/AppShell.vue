@@ -421,7 +421,14 @@ const userMenu = computed(() => [
       </header>
 
       <main class="flex-1 overflow-y-auto">
-        <div class="max-w-6xl mx-auto px-4 sm:px-6 py-5 sm:py-6 space-y-5">
+        <!-- The content column. It was 72rem, which is a comfortable measure
+             for prose and too narrow for a table: every list on the platform
+             has a commit subject, a phase, a duration and a time in it, and at
+             72rem the subject is clipped and the rest is behind a horizontal
+             scrollbar. The screens here are dashboards before they are
+             documents, so the column is wide enough to hold a table and
+             capped where a line of text would stop being readable. -->
+        <div class="max-w-[110rem] mx-auto px-4 sm:px-6 py-5 sm:py-6 space-y-5">
           <!-- What the dashboard renders is decided by the role /me answers
                with, so a /me that never answered is worth saying out loud:
                without it every screen is the narrowest one, and a missing

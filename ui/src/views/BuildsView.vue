@@ -1,9 +1,24 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
-import { api } from "../lib/api";
+import { useRouter } from "vue-router";
+import { api, type Build } from "../lib/api";
+import { buildFailureLine } from "../lib/builds";
 import { duration, formatDurationSeconds, shortSHA, timeAgo } from "../lib/format";
 import { useAsync, usePoll } from "../lib/useAsync";
 import PhaseBadge from "../components/PhaseBadge.vue";
+
+const router = useRouter();
+
+/** Opening a build from anywhere on its row, without stealing the clicks that
+ *  already mean something: a link the row contains, and the modifier clicks a
+ *  browser opens in a new tab with. */
+function open(name: string, event: MouseEvent) {
+  if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
+  if ((event.target as HTMLElement | null)?.closest("a")) return;
+  void router.push({ name: "build", params: { name } });
+}
+
+const failureOf = (build: Build) => buildFailureLine(build);
 
 const { data, error, loading, refresh } = useAsync(() => api.builds());
 usePoll(() => void refresh(), 10000, () => true);
@@ -102,7 +117,17 @@ const visible = computed(() => (project.value ? (data.value ?? []).filter((b) =>
           <tr v-if="!visible.length">
             <td colspan="5" class="px-4 py-8 text-center text-muted">{{ loading ? "Loading…" : "No builds yet." }}</td>
           </tr>
-          <tr v-for="build in visible" :key="build.name" class="border-b border-muted last:border-0 hover:bg-elevated/40">
+          <!-- The whole row opens the build. A row that is nine tenths dead
+               space with one word in it that navigates reads as a list that
+               does nothing when you click it, which is what this was. The
+               anchor stays for the keyboard and the middle click; the row
+               handler is for the other nine tenths. -->
+          <tr
+            v-for="build in visible"
+            :key="build.name"
+            class="border-b border-muted last:border-0 hover:bg-elevated/40 cursor-pointer"
+            @click="open(build.name, $event)"
+          >
             <td class="px-4 py-3">
               <RouterLink :to="{ name: 'build', params: { name: build.name } }" class="group">
                 <span class="text-highlighted group-hover:underline">{{ build.git.message || build.name }}</span>
@@ -111,6 +136,11 @@ const visible = computed(() => (project.value ? (data.value ?? []).filter((b) =>
                   }}<span v-if="build.git.pullRequest"> · #{{ build.git.pullRequest }}</span>
                 </span>
               </RouterLink>
+              <!-- Why it failed, on the row, so that a list of failures is
+                   readable as a list of *different* failures. -->
+              <span v-if="failureOf(build)" class="block text-xs text-error mt-1 break-words">
+                {{ failureOf(build) }}
+              </span>
             </td>
             <td class="px-4 py-3">
               <RouterLink :to="{ name: 'project', params: { name: build.project } }" class="text-toned hover:underline">

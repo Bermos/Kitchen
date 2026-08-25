@@ -151,6 +151,44 @@ function gateBadge(ran: QualityGate): "warning" | "neutral" {
   return ran.phase === "Failed" ? "warning" : "neutral";
 }
 
+// Why the build failed, in the words of whatever failed.
+//
+// The condition on a failed build used to be the Job's own sentence — "Job has
+// reached the specified backoff limit" — which is true of every failed build
+// there has ever been. The operator now reads the pod before it is collected
+// and writes down which container stopped, how it exited and the last of what
+// it printed, and this is where that is shown: at the top of the page, above
+// the log, because it is the reason the page was opened.
+const failure = computed(() => (build.value?.phase === "Failed" ? (build.value.failure ?? null) : null));
+
+/** What the failure is called on screen. The container is the useful half —
+ *  "clone" and "creator" are different diagnoses — so it leads. */
+const failureTitle = computed(() => {
+  const detail = failure.value;
+  if (!detail) return "";
+  if (detail.container && detail.exitCode !== undefined) {
+    return `${detail.container} exited ${detail.exitCode}`;
+  }
+  if (detail.container) return `${detail.container} did not run`;
+  return detail.reason || "The build failed";
+});
+
+/** The failure's own line, when it says more than the title already does. The
+ *  message usually *is* the title — "creator exited 51" — and printing it
+ *  twice would be the panel repeating itself; it earns its place when the
+ *  kubelet had something to add. */
+const failureDetail = computed(() => {
+  const message = failure.value?.message ?? "";
+  return message && message !== failureTitle.value ? message : "";
+});
+
+/** The condition the reconciler left, for a build that failed before it ever
+ *  had a pod: a strategy the platform does not support, a commit that was
+ *  refused for want of review. There is no container to name in either case. */
+const failedCondition = computed(() =>
+  build.value?.conditions?.find((c) => c.type === "Ready" && c.status === "False"),
+);
+
 const logFetcher = (query: LogQuery) => api.buildLogs(name.value, query);
 const logStreamer = (query: LogQuery, onLine: (line: LogLine) => void, signal: AbortSignal) =>
   api.streamBuildLogs(name.value, query, onLine, signal);
@@ -213,6 +251,47 @@ const logStreamer = (query: LogQuery, onLine: (line: LogLine) => void, signal: A
         <div class="sm:col-span-2 min-w-0">
           <p class="text-xs text-muted mb-1">Image</p>
           <p class="text-sm text-toned font-mono truncate" :title="build.image">{{ build.image || "not pushed yet" }}</p>
+        </div>
+      </div>
+
+      <!-- Why it failed. First on the page, because on a failed build it is
+           the only thing anybody came here for. -->
+      <div
+        v-if="build.phase === 'Failed'"
+        class="rounded-md border border-error/40 bg-error/5 px-5 py-4 space-y-3"
+      >
+        <div class="flex items-start gap-2">
+          <UIcon name="i-lucide-triangle-alert" class="size-4 text-error mt-0.5 shrink-0" />
+          <div class="min-w-0 space-y-1">
+            <p class="text-sm font-medium text-highlighted">
+              {{ failureTitle || "The build failed" }}
+              <UBadge v-if="failure?.reason" color="error" variant="subtle" size="sm" class="ml-1 font-mono">
+                {{ failure.reason }}
+              </UBadge>
+            </p>
+            <p v-if="failureDetail" class="text-xs text-toned font-mono break-words">{{ failureDetail }}</p>
+            <p v-else-if="!failure && failedCondition?.message" class="text-xs text-toned break-words">
+              {{ failedCondition.message }}
+            </p>
+            <p v-else-if="!failure && !failedCondition" class="text-xs text-muted">
+              The platform recorded no detail for this failure. The build log below is what is left of it.
+            </p>
+          </div>
+        </div>
+
+        <!-- The last lines the failing container printed, copied onto the
+             build when the failure was seen. The whole log is below and comes
+             from the log store; this is what there is when the store has
+             nothing — a collector that never started, or a build that failed
+             before its first line was shipped. -->
+        <div v-if="failure?.log?.length">
+          <p class="text-[11px] text-muted mb-1">
+            The last {{ failure.log.length }} lines
+            <template v-if="failure.container">{{ failure.container }}</template> printed
+          </p>
+          <pre
+            class="text-[11px] leading-relaxed font-mono text-toned bg-default/60 border border-default rounded p-3 overflow-x-auto whitespace-pre"
+          >{{ failure.log.join("\n") }}</pre>
         </div>
       </div>
 

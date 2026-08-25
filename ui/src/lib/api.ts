@@ -193,10 +193,38 @@ export interface Build {
   cache?: BuildCache;
   gates?: QualityGate[];
   source?: SourceProvenance;
+  /** Why the build failed, when it did. Absent on every build that did not. */
+  failure?: BuildFailure;
   startedAt?: string;
   completedAt?: string;
   createdAt: string;
   conditions?: Condition[];
+}
+
+/** A failed build's own account of itself.
+ *
+ *  The Job behind a build says only "Job has reached the specified backoff
+ *  limit", which is true of every failed build there has ever been. This is
+ *  the answer to the question that sentence leaves: which container stopped
+ *  the build, how it exited, and the last of what it printed.
+ *
+ *  It is on the build rather than only on the pod, which means a developer can
+ *  read it — a pod is the operator's screen, and a build that failed is not
+ *  the operator's problem. */
+export interface BuildFailure {
+  /** The container that ended the build — the clone as readily as the builder. */
+  container?: string;
+  /** What it exited with. Absent when nothing exited: a pod evicted before it
+   *  ran, or an image that would not pull. */
+  exitCode?: number;
+  /** Kubernetes' own word for the ending, kept unchanged so that a search for
+   *  it finds this build. */
+  reason?: string;
+  /** The failure in one line. */
+  message?: string;
+  /** The tail of that container's output, oldest line first. A copy taken when
+   *  the failure was seen, for the case the log store cannot serve. */
+  log?: string[];
 }
 
 /** What the layer cache did for a build. A cold build had nothing to reuse,
