@@ -98,6 +98,16 @@ export const router = createRouter({
       meta: { requires: "POST /api/v1/platform/backup" },
     },
     {
+      // The platform's own configuration — the `Kitchen` singleton — which is
+      // as platform-scoped as anything under this prefix and used to sit in
+      // the general navigation, where the one thing it told a developer was
+      // that the platform has settings they may not read.
+      path: "/platform/settings",
+      name: "platform-settings",
+      component: () => import("./views/PlatformSettingsView.vue"),
+      meta: { requires: "GET /api/v1/settings" },
+    },
+    {
       // The audit log itself is filtered to what the caller can see, but this
       // screen is built around the compliance posture and the chain
       // verification beside it, and both of those are the operator's.
@@ -121,12 +131,9 @@ export const router = createRouter({
       component: () => import("./views/ConnectionsView.vue"),
       meta: { requires: "GET /api/v1/connections/{name}" },
     },
-    {
-      path: "/settings",
-      name: "settings",
-      component: () => import("./views/SettingsView.vue"),
-      meta: { requires: "GET /api/v1/settings" },
-    },
+    // Where the settings screen lived before it moved under the platform
+    // prefix it belongs to. A bookmark is the whole reason this is here.
+    { path: "/settings", redirect: { name: "platform-settings" } },
     { path: "/:pathMatch(.*)*", name: "not-found", component: () => import("./views/NotFoundView.vue") },
   ],
 });

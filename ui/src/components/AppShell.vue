@@ -75,10 +75,13 @@ function previewCount(name: string): number {
 
 // The navigation is the role's, not the mode's. Everything down to Traces is
 // filtered server-side to the caller's own projects, so it is everybody's
-// screen with everybody's answer in it; Connections and Settings are the
-// operator's outright, and a member gets no entry rather than an entry that
-// leads to a refusal. Each one names the API route it stands for, so this and
-// the route guard are the same decision made twice from the same table.
+// screen with everybody's answer in it; Connections is the operator's
+// outright, and a member gets no entry rather than an entry that leads to a
+// refusal. Each one names the API route it stands for, so this and the route
+// guard are the same decision made twice from the same table.
+//
+// The platform's own settings are not here: they are platform-scoped, and
+// they live in the Platform section below with everything else that is.
 const nav = computed(() =>
   [
     {
@@ -115,14 +118,6 @@ const nav = computed(() =>
       count: undefined,
       shown: may("GET /api/v1/connections/{name}", callerFor()),
     },
-    {
-      label: "Settings",
-      icon: "i-lucide-settings-2",
-      to: "/settings",
-      name: "settings",
-      count: undefined,
-      shown: may("GET /api/v1/settings", callerFor()),
-    },
   ].filter((item) => item.shown),
 );
 
@@ -151,6 +146,10 @@ const platformNav = [
   { label: "Storage", icon: "i-lucide-hard-drive", to: "/platform/storage", name: "platform-storage" },
   { label: "Events", icon: "i-lucide-list", to: "/platform/events", name: "platform-events" },
   { label: "Backup", icon: "i-lucide-archive", to: "/platform/backup", name: "platform-backup" },
+  // The installation's own configuration. It is the platform's, so it is
+  // here: nothing on that screen is a developer's to read, let alone change,
+  // and an entry above the fold only told them the platform has settings.
+  { label: "Settings", icon: "i-lucide-settings-2", to: "/platform/settings", name: "platform-settings" },
 ];
 
 const activeProject = computed(() => {

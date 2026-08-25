@@ -84,6 +84,11 @@ const strategies = [
 <template>
   <div class="space-y-6 max-w-3xl">
     <div>
+      <div class="flex items-center gap-2 text-xs text-muted mb-1">
+        <RouterLink to="/platform" class="hover:text-highlighted">Platform</RouterLink>
+        <span>/</span>
+        <span class="text-toned">Settings</span>
+      </div>
       <h1 class="text-xl font-semibold text-highlighted">Settings</h1>
       <p class="text-xs text-muted mt-1">
         The platform's runtime configuration — the <span class="font-mono">Kitchen</span> singleton the operator

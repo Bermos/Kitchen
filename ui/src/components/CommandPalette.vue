@@ -111,7 +111,16 @@ const groups = () => {
           ? [{ label: "Connections", icon: "i-lucide-plug", onSelect: () => go({ name: "connections" }) }]
           : []),
         ...(may("GET /api/v1/settings", callerFor())
-          ? [{ label: "Settings", icon: "i-lucide-settings-2", onSelect: () => go({ name: "settings" }) }]
+          ? [
+              {
+                // The screen is the platform's own, and lives under that
+                // prefix; it is still listed here because the palette is a
+                // jump list and the guard admits an operator in either mode.
+                label: "Platform settings",
+                icon: "i-lucide-settings-2",
+                onSelect: () => go({ name: "platform-settings" }),
+              },
+            ]
           : []),
       ],
     },
