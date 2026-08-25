@@ -724,6 +724,52 @@ spec:
                 description: Framework detected by the auto strategy (e.g. nextjs,
                   vite, static).
                 type: string
+              failure:
+                description: |-
+                  Failure is why this build failed, when it did. It is set on the
+                  transition into Failed and never cleared, because a Build is never
+                  rebuilt — a rebuild is another Build.
+                properties:
+                  container:
+                    description: |-
+                      Container that ended the build. Init containers count — a clone that
+                      cannot authenticate fails the build as surely as a compiler does — and
+                      naming it is what separates "the source never arrived" from "the source
+                      arrived and would not build".
+                    type: string
+                  exitCode:
+                    description: |-
+                      ExitCode the container exited with. Absent when nothing exited: a pod
+                      evicted before it ran, or a container that never started because its
+                      image could not be pulled.
+                    format: int32
+                    type: integer
+                  log:
+                    description: |-
+                      Log is the tail of the failing container's output, oldest line first.
+
+                      It is a copy, not the log: the whole build log is in the telemetry
+                      store and outlives this. What this is for is the case the log store
+                      cannot serve — a collector that never started, a build that failed
+                      before its first line was shipped — where the last few lines are the
+                      difference between a diagnosis and a shrug.
+                    items:
+                      type: string
+                    type: array
+                    x-kubernetes-list-type: atomic
+                  message:
+                    description: |-
+                      Message is the failure in one line, assembled from the container, its
+                      exit and whatever the kubelet said about it.
+                    type: string
+                  reason:
+                    description: |-
+                      Reason is Kubernetes' own word for the ending — Error, OOMKilled,
+                      Evicted, DeadlineExceeded, ImagePullBackOff. It is kept unchanged
+                      rather than translated: it is what everything else written about the
+                      cluster calls this, and a search for it should find this build.
+                    type: string
+                type: object
               gates:
                 description: |-
                   Gates is what each quality gate did, which is not the same question as
