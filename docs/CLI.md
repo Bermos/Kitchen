@@ -169,7 +169,7 @@ give.
 | `kitchen promote` | Ask for a release to land on an environment; the policy decides | `POST /projects/{name}/promotions` |
 | `kitchen promotions` | What promotions were asked for and what became of them | `GET /projects/{name}/promotions`, `GET /promotions/{name}` |
 | `kitchen projects` | The projects this account can see, with its role on each | `GET /projects` |
-| `kitchen builds` | The project's builds, newest first | `GET /projects/{name}/builds` |
+| `kitchen builds` | The project's builds, newest first, and why the failed ones failed | `GET /projects/{name}/builds` |
 | `kitchen attestations` | The signed evidence attached to a build's artifact | `GET /builds/{name}/attestations` |
 | `kitchen gates list/submit` | What ran over an artifact, and submitting a result from elsewhere | `GET /builds/{name}`, `POST /builds/{name}/gates` |
 | `kitchen vex list/submit` | What has been asserted about an artifact's findings applying here, and asserting it | `GET /builds/{name}/vex`, `POST /builds/{name}/vex` |
