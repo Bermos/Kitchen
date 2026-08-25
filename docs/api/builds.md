@@ -66,6 +66,51 @@ one; without a message it is an installation that asked for no caching.
 `mode` is empty on a buildpacks build: the lifecycle has one cache image and no
 `max`/`min` to choose between.
 
+## Why a build failed
+
+A build in phase `Failed` carries `failure`:
+
+```json
+{
+  "container": "creator",
+  "exitCode": 51,
+  "reason": "Error",
+  "message": "creator exited 51",
+  "log": [
+    "Paketo Buildpack for Web Servers 0.24.0",
+    "ERROR: failed to build: exit status 1"
+  ]
+}
+```
+
+The Kubernetes Job behind a build reports `Job has reached the specified
+backoff limit`, which is true of every failed build there has ever been. This
+is the answer to the question that sentence leaves.
+
+`container` is the one that ended the build, and it is the useful half:
+Kitchen's build pods clone in an init container and build in another, so
+`clone` and `creator` are two different diagnoses. `exitCode` is absent when
+nothing exited — a pod evicted before it ran, or an image that would not pull —
+and `reason` is then the kubelet's or the scheduler's own word for it
+(`Evicted`, `DeadlineExceeded`, `ImagePullBackOff`, `Unschedulable`), kept
+unchanged so that searching for it finds this build.
+
+`log` is a copy of the last lines that container printed, taken when the
+failure was observed. It is not the log: the whole of it is at
+`GET /builds/{name}/logs`, which is what to read while a build is running and
+afterwards. What the copy is for is the case the log store cannot serve — a log
+collector that never started, or a build that failed before its first line was
+shipped — where those lines are the difference between a diagnosis and a
+shrug.
+
+Not every failed build has one. A build refused before it ever had a pod — an
+unsupported strategy, a commit refused for want of review — has no container to
+name, and its `Ready` condition carries the reason instead.
+
+The field is on the build, which means it is readable by anyone who may read
+the project. Reading the pod it was taken from is the operator's, and a build
+that failed is not the operator's problem.
+
 ## An artifact's evidence
 
 `GET /builds/{name}/attestations` answers everything attached to what the

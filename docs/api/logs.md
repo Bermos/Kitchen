@@ -1,7 +1,9 @@
 # Kitchen — Logs and queries
 
 Logs are read from the telemetry store rather than from the pods, so they
-outlive the pod that wrote them and can be asked questions.
+outlive the pod that wrote them and can be asked questions. The one exception
+is a build whose pod is still running and whose lines have not reached the
+store — see [below](#a-build-while-its-pod-is-still-there).
 
 Part of the [REST API](../API.md), which carries the authentication, the
 authorization model and the full route table these sections belong to.
@@ -45,6 +47,27 @@ node, so this is a real distinction and not a formality:
 | `runtime` | A deployed app, or anything else in a project's namespace |
 | `platform` | Kitchen's own components, in `kitchen-system` |
 | `cluster` | Everything else the cluster runs — the CNI, CSI sidecars, whatever was installed alongside |
+
+### A build, while its pod is still there
+
+`GET /builds/{name}/logs` is the one read with a second source behind it. The
+telemetry store answers first and is the source of record — it is what makes a
+build's output outlive its pod — but when it has *no* lines for the build and
+the build's pod is still in the cluster, the pod is read directly.
+
+This is not a preference for the pod; it is the case where the store's answer
+is wrong. The collector is a DaemonSet, and a DaemonSet whose pods are refused
+at admission has no pods at all: it looks healthy and files nothing. A build
+that fails in its first seconds can also finish before its first line has been
+shipped. Either way the build that most needs a log is the one that has none,
+and the pod has it.
+
+The lines are the same shape and the same order, so nothing distinguishes them
+on the wire, and `--follow`/`text/event-stream` tails both the same way. The
+container read is the builder, or the clone while the builder has not started —
+a build pod's two containers are two steps, and interleaving them by timestamp
+would produce a log that is neither. Once the job's TTL collects the pod there
+is only the store, which is the normal state of every finished build.
 
 `cluster` lines are collected deliberately: a node whose storage or networking
 is failing is exactly when Kitchen looks broken, and the answer is in someone

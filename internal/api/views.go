@@ -353,6 +353,50 @@ type buildView struct {
 
 	// Source is how the commit reached the branch: through review, or not.
 	Source *sourceView `json:"source,omitempty"`
+
+	// Failure is why this build failed, when it did: the container that
+	// stopped it, how it exited, and the last of what it printed. Absent on
+	// every build that did not fail.
+	Failure *buildFailureView `json:"failure,omitempty"`
+}
+
+// buildFailureView is a failed build's own account of itself.
+//
+// The Kubernetes Job behind a build says only "Job has reached the specified
+// backoff limit", which is true of every failed build there has ever been.
+// This is the answer to the question that sentence leaves: which container,
+// what exit, and what it said on the way out.
+//
+// It is on the build rather than only on the pod because the pod is deleted
+// with the job's TTL, and because a pod is the operator's to read while a
+// build that failed is the developer's to fix.
+type buildFailureView struct {
+	// Container that ended the build — the clone as readily as the builder.
+	Container string `json:"container,omitempty"`
+	// ExitCode it exited with, absent when nothing exited: a pod evicted
+	// before it ran, or a container whose image would not pull.
+	ExitCode *int32 `json:"exitCode,omitempty"`
+	// Reason is Kubernetes' own word for the ending, kept unchanged.
+	Reason string `json:"reason,omitempty"`
+	// Message is the failure in one line.
+	Message string `json:"message,omitempty"`
+	// Log is the tail of that container's output, oldest line first. It is a
+	// copy taken when the failure was observed, for the case the log store
+	// cannot serve — the whole log is at /api/v1/builds/{name}/logs.
+	Log []string `json:"log,omitempty"`
+}
+
+func newBuildFailureView(failure *kitchenv1alpha1.BuildFailureStatus) *buildFailureView {
+	if failure == nil {
+		return nil
+	}
+	return &buildFailureView{
+		Container: failure.Container,
+		ExitCode:  failure.ExitCode,
+		Reason:    failure.Reason,
+		Message:   failure.Message,
+		Log:       failure.Log,
+	}
 }
 
 // sourceView is what the git provider said about how the commit arrived.
@@ -556,6 +600,7 @@ func newBuildView(build *kitchenv1alpha1.Build) buildView {
 		Cache:             newBuildCacheView(build.Status.Cache),
 		Gates:             gateViews(build.Status.Gates),
 		Source:            newSourceView(build.Status.Source),
+		Failure:           newBuildFailureView(build.Status.Failure),
 		CreatedAt:         build.CreationTimestamp.Time,
 		Conditions:        conditionViews(build.Status.Conditions),
 	}
