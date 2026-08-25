@@ -97,7 +97,11 @@ List the linked project's builds, newest first.
 
 A build is the history of who asked for what: it is never mutated, so a rebuild
 of the same commit is another build rather than a changed one, and a cancelled
-build stays in the list saying so.`),
+build stays in the list saying so.
+
+A failed build gets a WHY column: the container that stopped it and how it
+exited. The whole failure, including the last lines that container printed, is
+on --json and on "kitchen logs --build".`),
 		Args: cobra.NoArgs,
 		RunE: run(func(cmd *cobra.Command, _ []string) error {
 			client, err := r.client()
@@ -124,12 +128,27 @@ build stays in the list saying so.`),
 					return "No builds yet.\n"
 				}
 				rows := make([][]string, 0, len(builds))
+				// WHY is only ever populated for a failed build, and it is
+				// the column the list exists for on a bad day: without it
+				// every failure reads as the same failure.
+				failures := false
 				for _, b := range builds {
-					rows = append(rows, []string{
-						b.Name, s.Phase(b.Phase), short(b.Git.SHA), b.Git.Branch, since(b.CreatedAt),
-					})
+					if b.why() != "" {
+						failures = true
+					}
 				}
-				return s.Table([]string{"NAME", "PHASE", "COMMIT", "BRANCH", "STARTED"}, rows)
+				for _, b := range builds {
+					row := []string{b.Name, s.Phase(b.Phase), short(b.Git.SHA), b.Git.Branch, since(b.CreatedAt)}
+					if failures {
+						row = append(row, b.why())
+					}
+					rows = append(rows, row)
+				}
+				headers := []string{"NAME", "PHASE", "COMMIT", "BRANCH", "STARTED"}
+				if failures {
+					headers = append(headers, "WHY")
+				}
+				return s.Table(headers, rows)
 			})
 		}),
 	}
@@ -390,10 +409,24 @@ func status(parent context.Context, r *Runtime, recentBuilds int) error {
 		if len(builds) > 0 {
 			out.WriteString("\n")
 			rows := make([][]string, 0, len(builds))
+			failures := false
 			for _, b := range builds {
-				rows = append(rows, []string{b.Name, s.Phase(b.Phase), short(b.Git.SHA), since(b.CreatedAt)})
+				if b.why() != "" {
+					failures = true
+				}
 			}
-			out.WriteString(s.Table([]string{"BUILD", "PHASE", "COMMIT", "STARTED"}, rows))
+			for _, b := range builds {
+				row := []string{b.Name, s.Phase(b.Phase), short(b.Git.SHA), since(b.CreatedAt)}
+				if failures {
+					row = append(row, b.why())
+				}
+				rows = append(rows, row)
+			}
+			headers := []string{"BUILD", "PHASE", "COMMIT", "STARTED"}
+			if failures {
+				headers = append(headers, "WHY")
+			}
+			out.WriteString(s.Table(headers, rows))
 		}
 		return out.String()
 	})

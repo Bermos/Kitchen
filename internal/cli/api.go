@@ -19,8 +19,10 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -227,6 +229,69 @@ type build struct {
 	Cache             *buildCache `json:"cache,omitempty"`
 	Gates             []gate      `json:"gates,omitempty"`
 	Source            *source     `json:"source,omitempty"`
+	// Failure is why a failed build failed: which container stopped it, how
+	// it exited, and the last of what it printed. Absent on every build that
+	// did not fail.
+	Failure *buildFailure `json:"failure,omitempty"`
+}
+
+// buildFailure is a failed build's own account of itself.
+//
+// The Job behind a build reports "Job has reached the specified backoff
+// limit", which is the same sentence for every build that ever failed. This is
+// what the platform read off the pod before it was collected, and it is the
+// difference between a list of failures and a list of one failure repeated.
+type buildFailure struct {
+	Container string   `json:"container,omitempty"`
+	ExitCode  *int32   `json:"exitCode,omitempty"`
+	Reason    string   `json:"reason,omitempty"`
+	Message   string   `json:"message,omitempty"`
+	Log       []string `json:"log,omitempty"`
+}
+
+// why is a failed build in one line, bounded so that a table stays a table.
+//
+// A build that failed before it ever had a pod — an unsupported strategy, a
+// commit refused for want of review — has no container to name, and the Ready
+// condition the reconciler left is the answer instead.
+func (b build) why() string {
+	if b.Phase != "Failed" {
+		return ""
+	}
+	line := ""
+	switch {
+	case b.Failure != nil && b.Failure.Message != "":
+		line = b.Failure.Message
+	case b.Failure != nil && b.Failure.Container != "" && b.Failure.ExitCode != nil:
+		line = fmt.Sprintf("%s exited %d", b.Failure.Container, *b.Failure.ExitCode)
+	case b.Failure != nil && b.Failure.Container != "":
+		line = b.Failure.Container + " did not run"
+	default:
+		for _, c := range b.Conditions {
+			if c.Type == "Ready" && c.Status == "False" {
+				line = c.Message
+				break
+			}
+		}
+	}
+	return firstLine(line, buildWhyWidth)
+}
+
+// buildWhyWidth is how much of a failure a table column may take. The whole of
+// it is on `kitchen builds --json`, and on the build's own page; this is the
+// column that has to sit next to four others.
+const buildWhyWidth = 56
+
+// firstLine is one line of somebody else's text, bounded.
+func firstLine(s string, width int) string {
+	if i := strings.IndexAny(s, "\r\n"); i >= 0 {
+		s = s[:i]
+	}
+	s = strings.TrimSpace(s)
+	if len(s) > width {
+		return s[:width-1] + "…"
+	}
+	return s
 }
 
 // source is how the commit reached the branch: through review, or not.
