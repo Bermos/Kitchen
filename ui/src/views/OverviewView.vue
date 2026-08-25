@@ -2,6 +2,7 @@
 import { computed, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { api, type Build, type Environment, type PlatformEvent, type ProjectTraffic } from "../lib/api";
+import { buildFailureLine } from "../lib/builds";
 import { compactCount, formatSeconds, timeAgo } from "../lib/format";
 import { callerFor } from "../lib/me";
 import { refusal } from "../lib/policy";
@@ -301,6 +302,15 @@ function host(url?: string): string {
                 <span class="text-xs text-muted">{{ timeAgo(row.latestBuild.createdAt) }}</span>
               </RouterLink>
               <span v-else class="text-dimmed">—</span>
+              <!-- Why it failed, next to the badge that says it did. A row
+                   that reports "Failed" and nothing else is a row whose only
+                   use is to be clicked. -->
+              <p
+                v-if="row.latestBuild && buildFailureLine(row.latestBuild)"
+                class="text-xs text-error mt-1 break-words"
+              >
+                {{ buildFailureLine(row.latestBuild) }}
+              </p>
             </td>
             <td v-if="anyProjectTraffic" class="px-4 py-3">
               <div class="flex items-center gap-2">
