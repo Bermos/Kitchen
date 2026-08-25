@@ -181,6 +181,7 @@ name against `internal/api/policy.go`, so a route that moves fails them too.
 | POST | `/builds/{name}/vex` | Attach an OpenVEX document to that build's artifact | `admin` |
 | GET | `/releases` | Every release. `?project=` filters | any account — filtered |
 | GET | `/releases/{name}` | One release | `viewer` |
+| GET | `/releases/{name}/config-diff` | What moving to this release would change about the configuration another one is running with. `?against=` names that other release, and is required | `viewer` |
 | GET | `/projects/{name}/promotions` | That project's promotions, newest first. `?environment=`, `?release=`, `?phase=` | `viewer` |
 | POST | `/projects/{name}/promotions` | Ask for a release to land on an environment; the policy decides | `developer` |
 | GET | `/promotions/{name}` | One promotion: the phase, the verdict, and the unmet rules by id | `viewer` |
