@@ -3,6 +3,7 @@ import { onMounted, onUnmounted, ref, shallowRef } from "vue";
 import { useRouter } from "vue-router";
 import { api, type Build, type Domain, type Environment, type Project } from "../lib/api";
 import { callerFor } from "../lib/me";
+import { operatorMode } from "../lib/mode";
 import { may } from "../lib/policy";
 
 // The mockup's "Jump to project, release, domain… ⌘K": one palette over
@@ -110,8 +111,20 @@ const groups = () => {
         ...(may("GET /api/v1/connections/{name}", callerFor())
           ? [{ label: "Connections", icon: "i-lucide-plug", onSelect: () => go({ name: "connections" }) }]
           : []),
-        ...(may("GET /api/v1/settings", callerFor())
-          ? [{ label: "Settings", icon: "i-lucide-settings-2", onSelect: () => go({ name: "settings" }) }]
+        // The one page here that is the platform's rather than an account's,
+        // and so the one asked of the mode as well as of the table: an
+        // operator looking at the platform the way a developer does is not
+        // offered the settings the Platform section is not offering them
+        // either. The route still admits them — a pasted link lands — but
+        // finding it is switching back.
+        ...(operatorMode.value && may("GET /api/v1/settings", callerFor())
+          ? [
+              {
+                label: "Platform settings",
+                icon: "i-lucide-settings-2",
+                onSelect: () => go({ name: "platform-settings" }),
+              },
+            ]
           : []),
       ],
     },
