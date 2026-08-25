@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.16.0](https://github.com/Bermos/Kitchen/compare/v0.15.0...v0.16.0) (2026-08-25)
+
+
+### Features
+
+* **api:** answer why a build failed, and tail it off the pod while there is one ([5be044a](https://github.com/Bermos/Kitchen/commit/5be044acb0ff50244ea412764225523971abfb09))
+* **cli:** report the release a "go install" built ([e820ce6](https://github.com/Bermos/Kitchen/commit/e820ce6ec7c4f836d1deb0fb99f15605045d23e7))
+* **cli:** say why a build failed ([45f3614](https://github.com/Bermos/Kitchen/commit/45f3614bd3314a66e89df4aff8253f92a860b38d))
+* **operator:** say which container failed a build, and what it printed ([9e552b5](https://github.com/Bermos/Kitchen/commit/9e552b5e261623a85ec7ed061241347deb4161f0))
+* **ui:** make a failed build say why, and give the tables room ([cd2707d](https://github.com/Bermos/Kitchen/commit/cd2707daff7fc9e589b7dbfe2a23b6f89a03ac27))
+* **ui:** move the settings screen under the Platform section ([#191](https://github.com/Bermos/Kitchen/issues/191)) ([872b829](https://github.com/Bermos/Kitchen/commit/872b829b8c05a1895a8290de1275c12f0d4fdf86))
+* **ui:** say why the last build failed, on the overview ([b97c1a5](https://github.com/Bermos/Kitchen/commit/b97c1a506d7a5704e5c85cc5ad7a5af3e93b6d49))
+
+
+### Bug fixes
+
+* **api:** report the container that failed, not the first one that spoke ([61b1106](https://github.com/Bermos/Kitchen/commit/61b1106d4c301afee2f2421ea658727153357982))
+* **ui:** say node CPU and memory in units a person reads ([#194](https://github.com/Bermos/Kitchen/issues/194)) ([3870065](https://github.com/Bermos/Kitchen/commit/38700657ef8d7881e8641b28de37eec85a3810d5))
+
+
+### Documentation
+
+* **cli:** say how to install the CLI, and that no binary is published ([e505962](https://github.com/Bermos/Kitchen/commit/e5059620b0be97b19c16013053467edb3b302cc1))
+
 ## [0.15.0](https://github.com/Bermos/Kitchen/compare/v0.14.0...v0.15.0) (2026-08-25)
 
 
