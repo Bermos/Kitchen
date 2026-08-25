@@ -2,6 +2,7 @@
 import { computed, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { api, CRITICALITIES, DATA_CLASSES, type Claim, type Project, type Release } from "../lib/api";
+import { buildFailureLine } from "../lib/builds";
 import { duration, shortImage, shortSHA, timeAgo } from "../lib/format";
 import { callerFor } from "../lib/me";
 import { operatorMode } from "../lib/mode";
@@ -23,6 +24,15 @@ const route = useRoute();
 const router = useRouter();
 const toast = useToast();
 const name = computed(() => route.params.name as string);
+
+/** Opening a build from anywhere on its row, without stealing the clicks that
+ *  already mean something: a link inside the row, and the modifier clicks a
+ *  browser opens in a new tab with. */
+function openBuild(build: string, event: MouseEvent) {
+  if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
+  if ((event.target as HTMLElement | null)?.closest("a")) return;
+  void router.push({ name: "build", params: { name: build } });
+}
 
 const { data, error, loading, refresh } = useAsync(async () => {
   const [project, environments, releases, builds, claims, allDomains, promotions] = await Promise.all([
@@ -659,16 +669,30 @@ function host(url?: string): string {
       <!-- Builds: the project's build history. -->
       <div v-else-if="tab === 'builds'" class="rounded-md border border-default overflow-x-auto">
         <table class="w-full min-w-[42rem] text-sm">
+          <thead>
+            <tr class="text-left text-xs text-muted border-b border-default bg-muted">
+              <th class="px-4 py-2.5 font-medium w-24">Commit</th>
+              <th class="px-4 py-2.5 font-medium">Message</th>
+              <th class="px-4 py-2.5 font-medium">Status</th>
+              <th class="px-4 py-2.5 font-medium">Duration</th>
+              <th class="px-4 py-2.5 font-medium text-right">Created</th>
+            </tr>
+          </thead>
           <tbody>
             <tr v-if="!data?.builds.length">
-              <td class="px-4 py-8 text-center text-muted">No builds yet — push to the repository, or hit Redeploy.</td>
+              <td colspan="5" class="px-4 py-8 text-center text-muted">
+                No builds yet — push to the repository, or hit Redeploy.
+              </td>
             </tr>
+            <!-- The whole row opens the build. Only the subject used to, which
+                 in a row this wide is a link most clicks miss. -->
             <tr
               v-for="build in data?.builds"
               :key="build.name"
-              class="border-b border-muted last:border-0 hover:bg-elevated/40"
+              class="border-b border-muted last:border-0 hover:bg-elevated/40 cursor-pointer"
+              @click="openBuild(build.name, $event)"
             >
-              <td class="px-4 py-3 w-24 font-mono text-xs text-toned">{{ shortSHA(build.git.sha) }}</td>
+              <td class="px-4 py-3 w-24 font-mono text-xs text-toned align-top">{{ shortSHA(build.git.sha) }}</td>
               <td class="px-4 py-3">
                 <RouterLink :to="{ name: 'build', params: { name: build.name } }" class="text-highlighted hover:underline">
                   {{ build.git.message || build.name }}
@@ -676,12 +700,19 @@ function host(url?: string): string {
                 <p class="text-xs text-muted font-mono mt-0.5">
                   {{ build.git.branch }}<span v-if="build.git.pullRequest"> · #{{ build.git.pullRequest }}</span>
                 </p>
+                <!-- Why it failed, so that two failed builds read as two
+                     failures rather than as the same one twice. -->
+                <p v-if="buildFailureLine(build)" class="text-xs text-error mt-1 break-words">
+                  {{ buildFailureLine(build) }}
+                </p>
               </td>
-              <td class="px-4 py-3"><PhaseBadge :phase="build.phase" /></td>
-              <td class="px-4 py-3 font-mono text-xs text-muted whitespace-nowrap">
+              <td class="px-4 py-3 align-top"><PhaseBadge :phase="build.phase" /></td>
+              <td class="px-4 py-3 font-mono text-xs text-muted whitespace-nowrap align-top">
                 {{ duration(build.startedAt, build.completedAt) }}
               </td>
-              <td class="px-4 py-3 text-right text-xs text-muted whitespace-nowrap">{{ timeAgo(build.createdAt) }}</td>
+              <td class="px-4 py-3 text-right text-xs text-muted whitespace-nowrap align-top">
+                {{ timeAgo(build.createdAt) }}
+              </td>
             </tr>
           </tbody>
         </table>
