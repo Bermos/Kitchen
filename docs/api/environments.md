@@ -43,6 +43,76 @@ automatic ones):
 `rolledBack` when the environment was moved back to an older release, and
 `superseded` when another release replaced it any other way.
 
+## What a move would change
+
+Rollback is the one destructive write this API offers, and it is usually made
+under pressure by whoever is on call rather than by whoever wrote the code. The
+PATCH above is exact and reversible, but "exact" is a claim about the mechanism
+rather than about the consequences: a `Release` snapshots the configuration as
+well as the image, so putting an older one back also puts back its environment
+variables, its replica count and its process list.
+
+`config-diff` says what that would be, before it is written:
+
+```sh
+curl -sS -H "authorization: Bearer $TOKEN" \
+  "https://kitchen.apps.example.com/api/v1/releases/shop-rel-41/config-diff?against=shop-rel-42"
+```
+
+The release in the path is where the environment would be *going*; `against` is
+where it is now, and is required. Every change is therefore described in the
+direction of the write — a variable the live release sets and the target does
+not reads `removed`, because that is what would happen.
+
+```json
+{
+  "release": "shop-rel-41", "against": "shop-rel-42", "project": "shop",
+  "variables": [
+    {"name": "NEXT_PUBLIC_CDN", "change": "changed", "source": "value", "againstSource": "value"},
+    {"name": "SESSION_SECRET", "change": "changed", "source": "claim", "againstSource": "secret"},
+    {"name": "FEATURE_BULK_IMPORT", "change": "removed", "againstSource": "value"},
+    {"name": "NODE_ENV", "change": "unchanged", "source": "value", "againstSource": "value"}
+  ],
+  "runtime": [{"field": "replicas", "from": "3", "to": "2", "changed": true}],
+  "processes": [{"name": "nightly", "change": "changed", "type": "cron", "schedule": "0 2 * * *"}]
+}
+```
+
+`change` is `added`, `removed`, `changed` or `unchanged`. Every list is
+complete — unchanged entries included — because the count of what did not move
+is part of the answer; a caller that wants only the differences filters on
+`change`. The variables are ordered by how much a reader needs them: changed,
+then removed, then added, then unchanged.
+
+**There is no value in it, and that is the reason the route exists.** The API
+never reads an environment variable's value back — [a project's
+variables](projects.md) report only that there is one — so two snapshots cannot
+be compared by a client without the platform first handing over every literal
+the project ever set. The comparison is made here instead and only the verdict
+crosses the wire: `changed`, never what it changed to. What *does* travel is
+where each side's value comes from (`source` and `againstSource`: `value`,
+`secret` or `claim`) and, for a reference-backed variable, the key it reads
+(`ref`, `againstRef`) — neither is a secret, and both explain a change no
+comparison of values could have.
+
+A change confined to the preview override — the two releases agree about what
+every environment but a preview runs with — carries `previewOnly: true`.
+Without it a preview-only edit would read, on a production environment, as a
+change to production.
+
+The runtime and the process list are reported as themselves, with both values:
+a port, a replica count and a cron expression are configuration a viewer
+already reads off the project. Every runtime field is listed with a `changed`
+flag rather than only the differing ones, so that "the port is the same" is an
+answer instead of an absence.
+
+Both releases must belong to the same project, and a release cannot be compared
+against itself; either is a `400`.
+
+The dashboard's rollback panel is this endpoint rendered — pick a release,
+review the diff, then watch the swap land — and `kitchen rollback` prints the
+same comparison above its confirmation.
+
 ## The bar an environment sets
 
 An environment may declare *requirements*: a policy bundle, pinned by digest,

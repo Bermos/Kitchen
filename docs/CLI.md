@@ -165,7 +165,7 @@ give.
 | `kitchen logs` | An environment's or a build's logs, `--follow` to tail | `GET /environments/{name}/logs`, `GET /builds/{name}/logs` |
 | `kitchen processes` | The workers and scheduled jobs an environment runs, and (`runs`, `run`) one job's history and running it now | `GET /environments/{name}/processes`, `GET`/`POST /environments/{name}/processes/{process}/runs` |
 | `kitchen env list/set/rm` | The project's environment variables | `PATCH /projects/{name}/env` |
-| `kitchen rollback` | Put an environment back on an earlier release | `PATCH /environments/{name}` |
+| `kitchen rollback` | Put an environment back on an earlier release, saying what that changes first | `GET /releases/{name}/config-diff`, `PATCH /environments/{name}` |
 | `kitchen promote` | Ask for a release to land on an environment; the policy decides | `POST /projects/{name}/promotions` |
 | `kitchen promotions` | What promotions were asked for and what became of them | `GET /projects/{name}/promotions`, `GET /promotions/{name}` |
 | `kitchen projects` | The projects this account can see, with its role on each | `GET /projects` |
@@ -371,6 +371,27 @@ kitchen releases              # what there is to move to
 kitchen rollback              # back one, from the environment's own history
 kitchen rollback shop-rel-41  # or to a named release — a promotion is the same call
 ```
+
+**It says what the move changes before it asks.** A confirmation that repeats
+the release name back is not a safety mechanism — the release name is the one
+thing whoever typed it already knew — so above the prompt goes the comparison
+of the two configuration snapshots: which environment variables change, go away
+or appear, and what moves in the runtime and the process list.
+
+```
+shop-rel-42 → shop-rel-41
+  ~ NEXT_PUBLIC_CDN                  the value differs
+  − FEATURE_BULK_IMPORT              a value → unset
+  ~ replicas                         3 → 2
+Move shop-production from shop-rel-42 to shop-rel-41? [y/N]
+```
+
+No value appears there, because none is fetched: the API compares the two
+snapshots itself and answers with the verdict alone — see
+[`config-diff`](api/environments.md#what-a-move-would-change). `--yes` and
+`--json` both mean nobody is being asked, so neither pays for the comparison;
+and a comparison that cannot be read is said out loud but never stops the move,
+since a safety feature that lengthens an outage is not one.
 
 Against an environment that declares requirements the move is not made on the
 spot: the platform answers with the promotion it became, phase `Pending`, and
