@@ -79,6 +79,7 @@ export type Route =
   | "POST /api/v1/builds/{name}/vex"
   | "GET /api/v1/releases"
   | "GET /api/v1/releases/{name}"
+  | "GET /api/v1/releases/{name}/config-diff"
   | "GET /api/v1/projects/{name}/promotions"
   | "POST /api/v1/projects/{name}/promotions"
   | "GET /api/v1/promotions/{name}"
@@ -204,6 +205,7 @@ export const POLICY: Readonly<Record<Route, Requirement>> = {
   "POST /api/v1/builds/{name}/vex": { kind: "projectRole", role: "admin", doing: "submitting a VEX statement about an artifact" },
   "GET /api/v1/releases": { kind: "visibleProjects" },
   "GET /api/v1/releases/{name}": { kind: "projectRole", role: "viewer", doing: "reading a release" },
+  "GET /api/v1/releases/{name}/config-diff": { kind: "projectRole", role: "viewer", doing: "comparing two releases' configuration" },
   "GET /api/v1/projects/{name}/promotions": { kind: "projectRole", role: "viewer", doing: "reading a project's promotions" },
   "POST /api/v1/projects/{name}/promotions": { kind: "projectRole", role: "developer", doing: "promoting a release" },
   "GET /api/v1/promotions/{name}": { kind: "projectRole", role: "viewer", doing: "reading a promotion" },
