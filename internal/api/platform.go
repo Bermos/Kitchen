@@ -520,11 +520,8 @@ func (s *Server) collectorStatus(ctx context.Context) (collectorView, map[string
 	for i := range pods.Items {
 		pod := &pods.Items[i]
 		state := string(pod.Status.Phase)
-		for j := range pod.Status.ContainerStatuses {
-			if reason := containerMessage(&pod.Status.ContainerStatuses[j]); reason != "" {
-				state = reason
-				break
-			}
+		if reason := podMessage(pod); reason != "" {
+			state = reason
 		}
 		onNode[pod.Spec.NodeName] = state
 	}

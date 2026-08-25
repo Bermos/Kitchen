@@ -325,27 +325,23 @@ func newPlatformPodView(pod *corev1.Pod) platformPodView {
 		view.StartedAt = &started
 	}
 	for _, condition := range pod.Status.Conditions {
-		switch {
-		case condition.Type == corev1.PodReady:
+		if condition.Type == corev1.PodReady {
 			view.Ready = condition.Status == corev1.ConditionTrue
-		case condition.Type == corev1.PodScheduled && condition.Status == corev1.ConditionFalse:
-			// The scheduler's own reason for a pod it can place nowhere, which
-			// is the one explanation that is on the pod and not on a container.
-			view.Message = withReason(condition.Reason, condition.Message)
 		}
 	}
-	for _, statuses := range [][]corev1.ContainerStatus{pod.Status.InitContainerStatuses, pod.Status.ContainerStatuses} {
+	for _, statuses := range podContainerStatuses(pod) {
 		for i := range statuses {
 			status := &statuses[i]
 			view.Restarts += status.RestartCount
 			if oomKilled(status) {
 				view.OOMKilled = true
 			}
-			if view.Message == "" {
-				view.Message = containerMessage(status)
-			}
 		}
 	}
+	// Which container to believe is decided once, in podMessage, and for the
+	// same reason on both screens: the first container with something to say
+	// is very often the one that worked.
+	view.Message = podMessage(pod)
 	return view
 }
 
@@ -374,18 +370,6 @@ func controllerOwner(owners []metav1.OwnerReference) *metav1.OwnerReference {
 		}
 	}
 	return nil
-}
-
-// withReason joins a reason and a message the way every screen here shows them.
-func withReason(reason, message string) string {
-	switch {
-	case reason == "":
-		return message
-	case message == "":
-		return reason
-	default:
-		return reason + ": " + message
-	}
 }
 
 // workloadKey identifies a workload across the two reads it is assembled from —
