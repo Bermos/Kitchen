@@ -72,6 +72,12 @@ type Server struct {
 	// the cluster kept warm for a question only an open dashboard asks. Nil
 	// falls back to Client, which is what the tests do.
 	APIReader client.Reader
+	// PodLogs opens a container's output, for the one read that cannot come
+	// from the telemetry store: a build's log while its own pod is still
+	// there. Nil answers builds' logs from the store alone. See
+	// buildpodlogs.go for why a build is the exception.
+	PodLogs PodLogReader
+
 	// Namespace is where the Kitchen custom resources live.
 	Namespace string
 	// BindAddr for the HTTP server, e.g. ":8082".

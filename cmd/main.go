@@ -32,6 +32,7 @@ import (
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
@@ -497,8 +498,20 @@ func main() {
 	// request time — so it can be added here without waiting for the
 	// platform to be configured. The dashboard rides on the same server:
 	// static files outside /api/, resolved against the same Kitchen object.
+	// The API reads one thing the manager's client cannot: a build's log off
+	// the pod writing it, which is a subresource the kubelet serves. A
+	// clientset that cannot be built is not fatal — the API then answers
+	// builds' logs from the telemetry store alone, as it always did.
+	var podLogs api.PodLogReader
+	if clientset, err := kubernetes.NewForConfig(mgr.GetConfig()); err != nil {
+		setupLog.Error(err, "container logs will be read from the telemetry store only")
+	} else {
+		podLogs = api.ClientsetPodLogs(clientset)
+	}
+
 	if err := mgr.Add(&api.Server{
-		Client: mgr.GetClient(),
+		Client:  mgr.GetClient(),
+		PodLogs: podLogs,
 		// Pods and nodes are read through the uncached reader: the
 		// introspection endpoints are the only thing that asks for them, and
 		// caching them would mean watching every pod in the cluster.

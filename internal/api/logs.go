@@ -85,7 +85,12 @@ func (s *Server) buildLogs(w http.ResponseWriter, req *http.Request) {
 	query.Build = build.Name
 	query.Project = build.Spec.ProjectRef.Name
 
-	s.writeLogs(w, req, query)
+	// A build is the one log the platform can read at the source. While its
+	// pod is there it is asked whenever the store has nothing, which is what
+	// keeps a build that failed in its first seconds — or one on an
+	// installation whose collector never started — from being a failure with
+	// no output at all. See buildpodlogs.go.
+	s.writeLogs(w, req, query, s.buildPodLines(ctx, build, query))
 }
 
 func (s *Server) environmentLogs(w http.ResponseWriter, req *http.Request) {
@@ -106,28 +111,52 @@ func (s *Server) environmentLogs(w http.ResponseWriter, req *http.Request) {
 	query.Environment = env.Name
 	query.Project = env.Spec.ProjectRef.Name
 
-	s.writeLogs(w, req, query)
+	s.writeLogs(w, req, query, nil)
 }
 
-func (s *Server) writeLogs(w http.ResponseWriter, req *http.Request, query clickhouse.LogQuery) {
-	store := s.openLogStore(w, req)
-	if store == nil {
-		return
+// writeLogs answers one log read, plain or followed.
+//
+// `live` is a second source consulted only when the store answers nothing: it
+// exists for builds, whose output can be read off the pod that is writing it.
+// The store answers first because it is the source of record and the only one
+// that survives the pod; the live source is what turns "no lines" into the
+// lines, and a nil one leaves the behaviour exactly as it was.
+func (s *Server) writeLogs(
+	w http.ResponseWriter, req *http.Request, query clickhouse.LogQuery, live podLogLines,
+) {
+	store, err := s.logStore(req.Context())
+	if err != nil {
+		if live == nil {
+			s.writeLogStoreError(w, err)
+			return
+		}
+		// No telemetry store and a pod that is still writing: the pod is the
+		// whole answer rather than a 503 about a component this read did not
+		// need.
+		store = nil
 	}
 
-	if wantsEventStream(req) {
-		s.streamLogs(w, req, func(ctx context.Context, since time.Time) ([]clickhouse.LogLine, error) {
+	fetch := func(ctx context.Context, since time.Time) ([]clickhouse.LogLine, error) {
+		if store != nil {
 			follow := query
 			if !since.IsZero() {
 				follow.Since = since
 				follow.Limit = clickhouse.MaxLogLimit
 			}
-			return store.SearchLogs(ctx, follow)
-		})
+			lines, err := store.SearchLogs(ctx, follow)
+			if err != nil || len(lines) > 0 || live == nil {
+				return lines, err
+			}
+		}
+		return live(ctx, since)
+	}
+
+	if wantsEventStream(req) {
+		s.streamLogs(w, req, fetch)
 		return
 	}
 
-	lines, err := store.SearchLogs(req.Context(), query)
+	lines, err := fetch(req.Context(), time.Time{})
 	if err != nil {
 		s.writeError(w, err)
 		return
@@ -522,14 +551,19 @@ func streamRows[T any](
 func (s *Server) openLogStore(w http.ResponseWriter, req *http.Request) logReader {
 	store, err := s.logStore(req.Context())
 	if err != nil {
-		if errors.Is(err, errNoLogStore) {
-			// The installation chose to run without telemetry. That is a
-			// missing capability, not a broken request.
-			writeJSON(w, http.StatusServiceUnavailable, errorBody{Error: err.Error()})
-			return nil
-		}
-		s.writeError(w, err)
+		s.writeLogStoreError(w, err)
 		return nil
 	}
 	return store
+}
+
+// writeLogStoreError answers a telemetry store that cannot be reached.
+func (s *Server) writeLogStoreError(w http.ResponseWriter, err error) {
+	if errors.Is(err, errNoLogStore) {
+		// The installation chose to run without telemetry. That is a missing
+		// capability, not a broken request.
+		writeJSON(w, http.StatusServiceUnavailable, errorBody{Error: err.Error()})
+		return
+	}
+	s.writeError(w, err)
 }
