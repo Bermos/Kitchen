@@ -27,6 +27,7 @@ import ProcessesPanel from "../components/ProcessesPanel.vue";
 import RequestsPanel from "../components/RequestsPanel.vue";
 import RequirementsPanel from "../components/RequirementsPanel.vue";
 import ResourceHistory from "../components/ResourceHistory.vue";
+import RollbackPanel from "../components/RollbackPanel.vue";
 import StatusDot from "../components/StatusDot.vue";
 
 const route = useRoute();
@@ -40,14 +41,19 @@ const { data, error, loading, refresh } = useAsync(async () => {
   // role of its own — the API resolves which project a request is about from
   // the object it names — so the one place the caller's role is written down
   // is the project's own payload, and this screen's controls are keyed to it.
-  const [releases, project, promotions, claims, exceptions] = await Promise.all([
+  // The builds come along for their commits. A release names the build it was
+  // cut from and nothing else, so the rollback panel's "built from" and its
+  // list of commits that stop being served are this join — done here, from a
+  // list already served to a viewer, rather than by a route of its own.
+  const [releases, builds, project, promotions, claims, exceptions] = await Promise.all([
     api.projectReleases(environment.project),
+    api.projectBuilds(environment.project),
     api.project(environment.project),
     api.projectPromotions(environment.project, { environment: environment.name }),
     api.claims({ project: environment.project }),
     api.exceptions({ project: environment.project, environment: environment.name }),
   ]);
-  return { environment, releases, project, promotions, claims, exceptions };
+  return { environment, releases, builds, project, promotions, claims, exceptions };
 });
 watch(name, () => void refresh());
 
@@ -155,32 +161,16 @@ const otherReleases = computed(() =>
   (data.value?.releases ?? []).filter((r) => r.name !== environment.value?.release),
 );
 
-const target = ref<Release | null>(null);
-const movingRelease = ref(false);
-async function move() {
-  if (!target.value || !environment.value) return;
-  movingRelease.value = true;
-  try {
-    const outcome = await api.moveEnvironment(environment.value.name, target.value.name);
-    // An environment with requirements answers with the promotion the move
-    // became — nothing has moved yet, and the phase says what happens next.
-    if ("trigger" in outcome) {
-      toast.add({
-        title: `Promotion ${outcome.name} requested`,
-        description: `This environment declares requirements; the policy decides whether the release lands.`,
-        color: "info",
-        icon: "i-lucide-scale",
-      });
-    } else {
-      toast.add({ title: `${environment.value.name} moved to ${target.value.name}`, color: "success", icon: "i-lucide-undo-2" });
-    }
-    target.value = null;
-    await refresh();
-  } catch (err) {
-    toast.add({ title: "Move failed", description: err instanceof Error ? err.message : String(err), color: "error" });
-  } finally {
-    movingRelease.value = false;
-  }
+// Moving to another release is the rollback panel's, not a confirm dialog's
+// (#181). The panel is three steps — pick, review the diff, verify — because
+// this is the one destructive write the dashboard offers and the old dialog
+// revealed nothing the release list had not already shown. The view keeps only
+// which release it was opened on; everything else is the panel's own.
+const rollbackOpen = ref(false);
+const rollbackFrom = ref("");
+function openRollback(release?: Release) {
+  rollbackFrom.value = release?.name ?? "";
+  rollbackOpen.value = true;
 }
 
 // Deleting is for previews only — a stuck one whose pull request the operator
@@ -301,6 +291,16 @@ function historyBy(entry: { reason: string; by?: string }): string {
             @click="confirmingDelete = true"
           >
             Delete preview
+          </UButton>
+          <UButton
+            v-if="mayDeploy && otherReleases.length"
+            color="neutral"
+            variant="subtle"
+            size="sm"
+            icon="i-lucide-undo-2"
+            @click="openRollback()"
+          >
+            Roll back
           </UButton>
           <UButton
             v-if="environment.url"
@@ -574,12 +574,16 @@ function historyBy(entry: { reason: string; by?: string }): string {
 
       <!-- The whole section is the move, not a list with a button on it: the
            releases themselves are already on the project's Deployments tab,
-           so for a viewer this would be the same table twice. -->
+           so for a viewer this would be the same table twice.
+
+           "Review" rather than "Move here", because that is now what the
+           button does: the write is three steps away, behind a diff (#181). -->
       <div v-if="mayDeploy && otherReleases.length">
         <h2 class="text-sm font-medium text-highlighted mb-2">Move to another release</h2>
         <p class="text-xs text-muted mb-3">
           Rollback and promotion are the same one-field change: point the environment at an immutable release and the
-          operator puts back exactly what it snapshotted.
+          operator puts back exactly what it snapshotted. Reviewing one shows what that would change — the image, the
+          variable snapshot, and the commits that stop being served — before anything is written.
         </p>
         <div class="rounded-md border border-default overflow-x-auto">
           <table class="w-full min-w-[36rem] text-sm">
@@ -591,7 +595,7 @@ function historyBy(entry: { reason: string; by?: string }): string {
                 </td>
                 <td class="px-4 py-2.5 text-xs text-muted whitespace-nowrap">{{ timeAgo(release.createdAt) }}</td>
                 <td class="px-4 py-2.5 text-right">
-                  <UButton color="neutral" variant="subtle" size="xs" @click="target = release">Move here</UButton>
+                  <UButton color="neutral" variant="subtle" size="xs" @click="openRollback(release)">Review</UButton>
                 </td>
               </tr>
             </tbody>
@@ -633,20 +637,18 @@ function historyBy(entry: { reason: string; by?: string }): string {
     </template>
     <div v-else-if="loading" class="py-24 text-center text-muted text-sm">Loading…</div>
 
-    <UModal
-      :open="target !== null"
-      :title="`Move ${environment?.name}?`"
-      :description="`The environment moves to ${target?.name}. Releases are immutable snapshots of image and config, so this is exact — and just as easy to undo.`"
-      @update:open="(open: boolean) => { if (!open) target = null; }"
-    >
-      <template #footer>
-        <div class="flex justify-end gap-2 w-full">
-          <UButton color="neutral" variant="subtle" @click="target = null">Cancel</UButton>
-          <UButton color="primary" :loading="movingRelease" icon="i-lucide-undo-2" @click="move">
-            Move to {{ target?.name }}
-          </UButton>
-        </div>
-      </template>
-    </UModal>
+    <!-- Pick, review the diff, verify. The panel outlives the write on
+         purpose: closing on confirm would leave "did that work" to be
+         answered by going and looking somewhere else. -->
+    <RollbackPanel
+      v-if="environment && data"
+      :open="rollbackOpen"
+      :environment="environment"
+      :releases="data.releases"
+      :builds="data.builds"
+      :initial-release="rollbackFrom"
+      @update:open="(open: boolean) => { rollbackOpen = open; }"
+      @moved="refresh"
+    />
   </div>
 </template>

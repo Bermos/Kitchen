@@ -809,6 +809,67 @@ export interface Release {
   createdAt: string;
 }
 
+/** How one entry of a release's configuration snapshot compares with
+ * another's. `change` is the platform's own verdict over two literals it holds
+ * and the dashboard does not: the API never reads a value back, so the
+ * comparison is made on the server and only the verdict crosses the wire.
+ *
+ * The direction is the write's — the release named in the path is where the
+ * environment is going, so a variable the live release sets and the target
+ * does not reads `removed`. */
+export type ConfigChange = "added" | "removed" | "changed" | "unchanged";
+
+/** Where a variable's value comes from. A reference is not a secret and
+ * travels with the diff; a literal is only ever `"value"`. */
+export type ConfigSource = "value" | "secret" | "claim";
+
+export interface VariableChange {
+  name: string;
+  change: ConfigChange;
+  /** The source in the target release; absent when the target does not carry
+   * the variable at all. */
+  source?: ConfigSource;
+  /** The source in the release running now; absent when that one does not. */
+  againstSource?: ConfigSource;
+  ref?: KeyRef;
+  againstRef?: KeyRef;
+  /** The change is confined to the preview override: the two releases agree
+   * about what every environment but a preview runs with. Without it a
+   * preview-only edit would read, on a production environment, as a change to
+   * production — which it is not. */
+  previewOnly?: boolean;
+}
+
+/** One runtime field across the two snapshots. Unlike a variable these carry
+ * their values: a port, a replica count and a compute request are project
+ * settings a viewer already reads. */
+export interface FieldChange {
+  field: string;
+  from?: string;
+  to?: string;
+  changed: boolean;
+}
+
+export interface ProcessChange {
+  name: string;
+  change: ConfigChange;
+  type?: string;
+  schedule?: string;
+}
+
+/** GET /releases/{name}/config-diff?against= — what a move to `release` would
+ * change about the configuration `against` is running with. Every list is
+ * complete, unchanged entries included: the count of what did not move is
+ * part of the reassurance. */
+export interface ConfigDiff {
+  release: string;
+  against: string;
+  project: string;
+  variables: VariableChange[];
+  runtime: FieldChange[];
+  processes: ProcessChange[];
+}
+
 export interface Preview {
   pullRequest: number;
   branch: string;
@@ -2768,6 +2829,12 @@ export const api = {
     request<{ items: LogLine[] }>("GET", `/builds/${name}/logs${logQuery(query)}`).then((b) => b.items),
 
   releases: list<Release>("/releases"),
+  // What a move between two releases would change: `name` is where the
+  // environment is going, `against` where it is now. The comparison is made
+  // on the server precisely so that the values do not have to travel — see
+  // ConfigDiff.
+  releaseConfigDiff: (name: string, against: string) =>
+    request<ConfigDiff>("GET", `/releases/${name}/config-diff?against=${encodeURIComponent(against)}`),
 
   // Promotions: asking for a release to land on an environment, and reading
   // what became of the asking. The POST answers 201 with the promotion,
