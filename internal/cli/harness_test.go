@@ -61,6 +61,11 @@ type platform struct {
 	environments []environment
 	logLines     []logLine
 
+	// configDiff is what /releases/{name}/config-diff answers with: the
+	// comparison `kitchen rollback` prints before it asks. Nil answers 404,
+	// which is a platform too old to serve it.
+	configDiff *configDiff
+
 	// buildPhases is walked one entry per GET of a build, so a test can play
 	// a build through Queued, Running and Succeeded.
 	buildPhases []string
@@ -169,6 +174,12 @@ func (p *platform) serve(w http.ResponseWriter, req *http.Request) {
 		writeAnswer(w, http.StatusOK, list[build]{Items: p.builds})
 	case strings.HasSuffix(path, "/releases"):
 		writeAnswer(w, http.StatusOK, list[release]{Items: p.releases})
+	case strings.HasSuffix(path, "/config-diff"):
+		if p.configDiff == nil {
+			writeAnswer(w, http.StatusNotFound, errorBody{Error: "no such endpoint: " + path})
+			return
+		}
+		writeAnswer(w, http.StatusOK, p.configDiff)
 	case strings.HasSuffix(path, "/environments"):
 		writeAnswer(w, http.StatusOK, list[environment]{Items: p.environments})
 	case strings.HasSuffix(path, "/promotions") && req.Method == http.MethodPost:
@@ -508,6 +519,10 @@ type harness struct {
 	stdout   bytes.Buffer
 	stderr   bytes.Buffer
 	stdin    io.Reader
+	// stdinTerminal is whether the command believes somebody is there to
+	// answer a prompt. Off by default, which is what makes every other test
+	// in this package a non-interactive run.
+	stdinTerminal bool
 }
 
 func newHarness(t *testing.T) *harness {
@@ -535,10 +550,11 @@ func (h *harness) run(args ...string) int {
 	h.stderr.Reset()
 
 	runtime := &Runtime{
-		Stdin:      h.stdin,
-		Stdout:     &h.stdout,
-		Stderr:     &h.stderr,
-		WorkingDir: h.work,
+		Stdin:         h.stdin,
+		Stdout:        &h.stdout,
+		Stderr:        &h.stderr,
+		WorkingDir:    h.work,
+		StdinTerminal: h.stdinTerminal,
 		Getenv: func(name string) string {
 			if name == "KITCHEN_CONFIG_HOME" {
 				return h.home

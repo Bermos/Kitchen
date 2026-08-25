@@ -78,6 +78,7 @@ lists what there is to move to.`),
 		Calls: []string{
 			"GET /api/v1/projects/{name}",
 			"GET /api/v1/environments/{name}",
+			"GET /api/v1/releases/{name}/config-diff",
 			"PATCH /api/v1/environments/{name}",
 		},
 		Output: output{Mode: outputDocument, Kind: "environment",
@@ -132,6 +133,17 @@ func rollback(parent context.Context, r *Runtime, environmentName, to string, ye
 		return failf(codeConflict, "%s is already on %s", environmentName, to)
 	}
 
+	// What the move would change, before it is made (#181). This is the same
+	// answer the dashboard's second step renders, and it is here for the same
+	// reason: a confirmation that reveals nothing the release list had not
+	// already shown is a speed bump rather than a safety mechanism.
+	//
+	// It is printed only when there is somebody to read it. `--yes` and
+	// `--json` both mean nobody is being asked, and a diff nobody reads is a
+	// round trip spent on a stream something else is parsing.
+	if !yes && !r.jsonOut {
+		printConfigDiff(ctx, r, client, to, current.Release)
+	}
 	if err := confirm(r, fmt.Sprintf("Move %s from %s to %s?", environmentName, current.Release, to), yes); err != nil {
 		return err
 	}
@@ -158,4 +170,122 @@ func rollback(parent context.Context, r *Runtime, environmentName, to string, ye
 			s.OK.Render("Moved"), s.Title.Render(moved.Name), s.Accent.Render(moved.Release),
 			s.Phase(moved.Phase))
 	})
+}
+
+// The change kinds a configDiff reports, in the direction of the write.
+const (
+	changeAdded     = "added"
+	changeRemoved   = "removed"
+	changeChanged   = "changed"
+	changeUnchanged = "unchanged"
+)
+
+// printConfigDiff writes the configuration difference between the release an
+// environment is going to and the one it is on, above the confirmation.
+//
+// A diff that cannot be read is not a reason to refuse the move: the endpoint
+// is a viewer's read that could fail on its own — an old platform that does
+// not serve it, a release whose snapshot predates the field — and stopping a
+// rollback for it would be the safety feature making the outage longer. It
+// says so and lets the confirmation stand.
+//
+// No value appears here, because none is fetched. See the configDiff type.
+func printConfigDiff(ctx context.Context, r *Runtime, client *client, to, from string) {
+	diff, err := client.releaseConfigDiff(ctx, to, from)
+	if err != nil {
+		r.printer().note("could not read what changes between %s and %s: %v", from, to, err)
+		return
+	}
+	var out strings.Builder
+	fmt.Fprintf(&out, "%s → %s\n", from, to)
+
+	moved := 0
+	for _, v := range diff.Variables {
+		if v.Change == changeUnchanged {
+			continue
+		}
+		moved++
+		fmt.Fprintf(&out, "  %s %-32s %s\n", changeMark(v.Change), v.Name, variableDetail(v))
+	}
+	for _, f := range diff.Runtime {
+		if !f.Changed {
+			continue
+		}
+		moved++
+		fmt.Fprintf(&out, "  ~ %-32s %s → %s\n", f.Field, orUnset(f.From), orUnset(f.To))
+	}
+	for _, p := range diff.Processes {
+		if p.Change == changeUnchanged {
+			continue
+		}
+		moved++
+		detail := p.Change
+		if p.Schedule != "" {
+			detail += " · " + p.Schedule
+		}
+		fmt.Fprintf(&out, "  %s %-32s %s\n", changeMark(p.Change), p.Name, detail)
+	}
+	if moved == 0 {
+		fmt.Fprint(&out, "  the configuration is identical; only the image changes")
+	}
+	r.printer().note("%s", strings.TrimRight(out.String(), "\n"))
+}
+
+// changeMark is the diff vocabulary, the same signs the dashboard's rows are
+// marked with.
+func changeMark(change string) string {
+	switch change {
+	case changeChanged:
+		return "~"
+	case changeRemoved:
+		return "−"
+	case changeAdded:
+		return "+"
+	default:
+		return "="
+	}
+}
+
+// variableDetail says what kind of change it is, and where the source moved.
+// There is no value to print — the API never reads one back — and the source
+// is the part somebody acts on anyway.
+func variableDetail(v variableChange) string {
+	source := func(kind string) string {
+		switch kind {
+		case "secret":
+			return "a secret"
+		case "claim":
+			return "a claim binding"
+		case "value":
+			return "a value"
+		default:
+			return "unset"
+		}
+	}
+	switch v.Change {
+	case changeRemoved:
+		return source(v.AgainstSource) + " → unset"
+	case changeAdded:
+		return "unset → " + source(v.Source)
+	case changeChanged:
+		if v.PreviewOnly {
+			return "only the preview override differs"
+		}
+		if v.Source != v.AgainstSource {
+			return source(v.AgainstSource) + " → " + source(v.Source)
+		}
+		if v.Ref != nil && v.AgainstRef != nil && *v.Ref != *v.AgainstRef {
+			return fmt.Sprintf("%s/%s → %s/%s", v.AgainstRef.Name, v.AgainstRef.Key, v.Ref.Name, v.Ref.Key)
+		}
+		return "the value differs"
+	default:
+		return "unchanged"
+	}
+}
+
+func orUnset(value string) string {
+	if value == "" {
+		return "unset"
+	}
+	return value
 }
