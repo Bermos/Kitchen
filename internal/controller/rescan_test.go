@@ -252,6 +252,24 @@ func (f *rescanFixtures) environment(t *testing.T) *kitchenv1alpha1.Environment 
 
 // finishScan marks the scanner Job complete and leaves the publisher's report
 // on a pod, which is how the operator learns where the findings went.
+// justNow is a scan finish time the sweep will read as recent.
+//
+// **The interval is measured against this, so it cannot be a fixed date.**
+// A scan reported as finishing at a literal timestamp is a scan that recedes
+// into the past as the calendar moves: a fixture that was "moments ago" when
+// it was written silently becomes "yesterday", and every test that asserts a
+// pair is *not* yet due starts failing on a commit nobody pushed. That is what
+// happened to TestAPairIsNotRescannedBeforeItsIntervalIsUp — it passed until
+// the wall clock drifted 24 hours past its hardcoded report and then failed on
+// main with no change behind it.
+//
+// The one place a literal belongs is a test asserting the reported time is
+// carried through verbatim, where the value is the subject rather than the
+// clock; that one keeps its own constant.
+func justNow() string {
+	return time.Now().UTC().Format(time.RFC3339)
+}
+
 func (f *rescanFixtures) finishScan(t *testing.T, report rescanReport) {
 	t.Helper()
 	f.jobStatus(t, batchv1.JobCondition{Type: batchv1.JobComplete, Status: corev1.ConditionTrue})
@@ -563,7 +581,7 @@ func (f *rescanFixtures) scanThrough(t *testing.T) {
 	}
 	blob := "sha256:" + strings.Repeat("b", 64)
 	f.attester.blobs[blob] = []byte(grypeReport)
-	f.finishScan(t, rescanReport{Blob: blob, FinishedAt: "2026-08-24T03:16:11Z"})
+	f.finishScan(t, rescanReport{Blob: blob, FinishedAt: justNow()})
 	if _, err := f.sweeper.SweepOnce(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -893,7 +911,7 @@ func TestAPairStuckInPublishIsStillCountedAsScanning(t *testing.T) {
 	}
 	blob := "sha256:" + strings.Repeat("b", 64)
 	f.attester.blobs[blob] = []byte(grypeReport)
-	f.finishScan(t, rescanReport{Blob: blob, FinishedAt: "2026-08-24T03:16:11Z"})
+	f.finishScan(t, rescanReport{Blob: blob, FinishedAt: justNow()})
 
 	f.sweeper.Attesters = func([]byte, string) (ArtifactAttester, error) {
 		return nil, errors.New("the registry connection's credential could not be read")
