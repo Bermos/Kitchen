@@ -363,6 +363,13 @@ jobs:
             echo "  --set kitchen.tls.acme.dns01.cloudflare.apiTokenSecretName=cloudflare-api-token"
             echo '```'
             echo
+            echo "The \`kitchen\` CLI is not published as a binary; it is built"
+            echo "from this tag by the Go toolchain:"
+            echo
+            echo '```sh'
+            echo "go install github.com/Bermos/Kitchen/cmd/kitchen@v${VERSION}"
+            echo '```'
+            echo
             echo "## Artifacts"
             echo
             echo "| Artifact | Reference | Digest |"
