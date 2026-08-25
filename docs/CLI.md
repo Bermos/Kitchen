@@ -58,15 +58,50 @@ one.
 
 ## Installing
 
+**There is no binary release to download.** The chart and both images are
+published under every tag; the CLI is not built or uploaded by any workflow —
+it is a [fourth artifact job nobody has written yet](#open) — so `go install`,
+which builds it from the tag you name, is the whole of it. That needs a Go
+toolchain of at least the version in [`go.mod`](../go.mod), and nothing else:
+
+```sh
+go install github.com/Bermos/Kitchen/cmd/kitchen@latest    # the newest release
+go install github.com/Bermos/Kitchen/cmd/kitchen@v0.15.0   # a particular one
+```
+
+That writes `kitchen` into `go env GOBIN`, or `$(go env GOPATH)/bin` when GOBIN
+is unset — which has to be on your `PATH`:
+
+```sh
+export PATH="$PATH:$(go env GOPATH)/bin"
+```
+
+**Pin the tag to the installation you talk to.** `@latest` is the newest tag in
+this repository, which is not necessarily the release your cluster is running:
+one tag versions the chart, both images and this, so `kitchen version` and the
+version in the dashboard's sidebar should read the same. The CLI is a REST
+client and the API is versioned, so a mismatch is usually harmless — but a
+command for a route your installation does not serve yet fails at the route,
+which is a confusing way to learn it.
+
+From a checkout, the Makefile builds the same binary:
+
 ```sh
 make cli            # builds bin/kitchen
 make cli-install    # installs it into GOBIN
-
-go install github.com/Bermos/Kitchen/cmd/kitchen@latest
 ```
 
-The version is stamped by the linker from the same `LDFLAGS` the images use, so
-`kitchen version` reports the release the platform is on.
+Either way, `kitchen version` says what you got:
+
+```sh
+kitchen version                          # kitchen 0.15.0 (go1.26.6, linux/amd64)
+kitchen version --json | jq -r .version  # 0.15.0
+```
+
+The Makefile stamps that number with the linker, from the same `LDFLAGS` the
+images use; `go install` passes no linker flags, so the binary reports the
+module version the toolchain recorded in it instead. A `go build ./cmd/kitchen`
+in a working directory has neither, and says `dev`.
 
 ## Signing in
 
@@ -184,6 +219,7 @@ give.
 | `kitchen environments` | The project's environments and where they answer | `GET /projects/{name}/environments` |
 | `kitchen api` | Any endpoint of the API, authenticated | anything |
 | `kitchen schema` | The whole CLI as JSON | — |
+| `kitchen version` | Which release of the CLI this is | — |
 | `kitchen backup` | Take a backup of the platform and write it to a file | `POST /platform/backup` |
 
 ### Creating a project
