@@ -292,6 +292,13 @@ func (s *Server) routes() []route {
 		// Releases.
 		{"GET /api/v1/releases", s.listReleases, acrossProjects()},
 		{"GET /api/v1/releases/{name}", s.getRelease, onProject(access.ProjectViewer, ofRelease, "reading a release")},
+		// What a move between two releases would change (#181). A viewer's
+		// read like the release itself, and safely so: it compares the two
+		// configuration snapshots on this side of the wire and answers with
+		// the verdict alone — `changed`, never what it changed to — precisely
+		// so that the values never have to be readable to be compared.
+		{"GET /api/v1/releases/{name}/config-diff", s.releaseConfigDiff,
+			onProject(access.ProjectViewer, ofRelease, "comparing two releases' configuration")},
 
 		// Promotions. Asking for a release to land on an environment is a
 		// developer's write, the same bar as redeploying — the environment's
