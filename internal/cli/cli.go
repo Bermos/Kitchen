@@ -250,6 +250,7 @@ shapes and exit codes — in one machine-readable document.`),
 		newBackupCommand(r),
 		newAPICommand(r),
 		newSchemaCommand(r),
+		newVersionCommand(r),
 	)
 	return root
 }

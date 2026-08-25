@@ -443,6 +443,9 @@ var publishedShapes = map[string]struct {
 		"a section hit its cap — and `signed` false means the platform holds no key, so there " +
 		"is no envelope beside it", auditPackTaken{}},
 	"schema": {"This document", schema{}},
+	"version": {"The CLI's own release, and the toolchain and platform it was built for. " +
+		"\"dev\" is a binary nothing stamped — built from a working directory rather than " +
+		"installed from a tag", versionInfo{}},
 }
 
 // addShape puts a named shape into the document, along with every shape it
