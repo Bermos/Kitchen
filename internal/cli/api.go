@@ -613,6 +613,58 @@ type release struct {
 	CreatedAt    time.Time `json:"createdAt"`
 }
 
+// configDiff is what a move between two releases would change: the answer to
+// GET /releases/{name}/config-diff?against=. `Release` is where the
+// environment is going, `Against` where it is now.
+//
+// **There are no values in it, and there cannot be.** The API never reads an
+// environment variable's value back, so the comparison is made on the server
+// and only its verdict travels — `changed`, never what it changed to. That is
+// what lets `kitchen rollback` say what a move would do without the platform
+// first handing a terminal every literal the project ever set.
+type configDiff struct {
+	Release   string           `json:"release"`
+	Against   string           `json:"against"`
+	Project   string           `json:"project"`
+	Variables []variableChange `json:"variables"`
+	Runtime   []fieldChange    `json:"runtime"`
+	Processes []processChange  `json:"processes"`
+}
+
+// variableChange is one environment variable across the two snapshots.
+// `Change` is one of added, removed, changed, unchanged; `Source` and
+// `AgainstSource` say where the value comes from on each side — value, secret
+// or claim — which is the change no comparison of values would explain.
+type variableChange struct {
+	Name          string  `json:"name"`
+	Change        string  `json:"change"`
+	Source        string  `json:"source,omitempty"`
+	AgainstSource string  `json:"againstSource,omitempty"`
+	Ref           *keyRef `json:"ref,omitempty"`
+	AgainstRef    *keyRef `json:"againstRef,omitempty"`
+	// PreviewOnly marks a change confined to the preview override: the two
+	// releases agree about what every environment but a preview runs with.
+	PreviewOnly bool `json:"previewOnly,omitempty"`
+}
+
+// fieldChange is one runtime field, with both values: a port, a replica count
+// and a compute request are project settings a viewer already reads, so unlike
+// a variable they are reported as themselves.
+type fieldChange struct {
+	Field   string `json:"field"`
+	From    string `json:"from,omitempty"`
+	To      string `json:"to,omitempty"`
+	Changed bool   `json:"changed"`
+}
+
+// processChange is one worker or scheduled job across the two snapshots.
+type processChange struct {
+	Name     string `json:"name"`
+	Change   string `json:"change"`
+	Type     string `json:"type,omitempty"`
+	Schedule string `json:"schedule,omitempty"`
+}
+
 // preview is the pull request a preview environment belongs to.
 type preview struct {
 	PullRequest int32  `json:"pullRequest"`
@@ -1133,6 +1185,14 @@ func (c *client) environment(ctx context.Context, name string) (*environment, er
 	answer := &environment{}
 	return answer, c.do(ctx, "reading the environment "+name,
 		http.MethodGet, "/environments/"+name, nil, nil, answer)
+}
+
+// releaseConfigDiff asks what a move to `release` would change about the
+// configuration `against` is running with.
+func (c *client) releaseConfigDiff(ctx context.Context, release, against string) (*configDiff, error) {
+	answer := &configDiff{}
+	return answer, c.do(ctx, "comparing "+release+" with "+against,
+		http.MethodGet, "/releases/"+release+"/config-diff", url.Values{"against": {against}}, nil, answer)
 }
 
 // moveOutcome is what moving an environment came to: the environment when the
