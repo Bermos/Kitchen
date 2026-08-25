@@ -206,6 +206,24 @@ Creating a project asks for two connections: a git one, which is yours to add,
 and a registry, which the platform has already seeded pointing at the one it
 runs itself. Push, and the first build pushes an image and deploys it.
 
+### 7. Install the CLI
+
+Optional, and on your machine rather than in the cluster: [`kitchen`](docs/CLI.md)
+deploys, follows a build, reads the logs, changes the environment variables and
+rolls back from a terminal. It is a client of the REST API above — it holds no
+kubeconfig and talks to no cluster.
+
+```sh
+go install github.com/Bermos/Kitchen/cmd/kitchen@latest
+kitchen login --api https://kitchen.apps.example.com --api-key-stdin < key
+```
+
+No binary is published for it, so `go install` builds it from the tag you name
+— every release's notes carry the pinned command, and pinning is worth it,
+since one tag versions the chart, both images and this. `$(go env GOPATH)/bin`
+has to be on your `PATH`. The key comes from a project's Keys tab in the
+dashboard, and [docs/CLI.md](docs/CLI.md#installing) has the rest.
+
 ### Checking what is running
 
 The dashboard's settings page and status bar show the operator's component
