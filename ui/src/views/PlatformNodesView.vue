@@ -2,7 +2,7 @@
 import { computed, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { api, type PlatformNode } from "../lib/api";
-import { formatBytes, timeAgo, uptime } from "../lib/format";
+import { formatBytes, formatCores, formatMemory, timeAgo, uptime } from "../lib/format";
 import { freshness, latestObserved, formatFraction, nodePressure, NODE_SATURATION_FRACTION } from "../lib/platform";
 import { useAsync, usePoll } from "../lib/useAsync";
 import FillBar from "../components/FillBar.vue";
@@ -305,7 +305,9 @@ function fullest(item: PlatformNode) {
                     </span>
                   </div>
                   <span v-else class="text-xs text-dimmed" :title="usageMessage">—</span>
-                  <p class="text-[11px] text-dimmed">{{ item.allocatable.cpu || "?" }} allocatable</p>
+                  <p class="text-[11px] text-dimmed" :title="item.allocatable.cpu">
+                    {{ formatCores(item.allocatable.cpu) }} allocatable
+                  </p>
                 </td>
                 <td class="px-4 py-3">
                   <div v-if="item.usage" class="flex items-center gap-2">
@@ -318,7 +320,9 @@ function fullest(item: PlatformNode) {
                     </span>
                   </div>
                   <span v-else class="text-xs text-dimmed" :title="usageMessage">—</span>
-                  <p class="text-[11px] text-dimmed">{{ item.allocatable.memory || "?" }} allocatable</p>
+                  <p class="text-[11px] text-dimmed" :title="item.allocatable.memory">
+                    {{ formatMemory(item.allocatable.memory) }} allocatable
+                  </p>
                 </td>
                 <td class="px-4 py-3">
                   <FillBar

@@ -110,3 +110,74 @@ export function formatSeconds(seconds: number | undefined): string {
   if (minutes === 0) return `${whole}s`;
   return `${minutes}m ${String(whole % 60).padStart(2, "0")}s`;
 }
+
+/**
+ * A Kubernetes quantity as a number, or `undefined` when it is not one.
+ *
+ * `Quantity` is a decimal number with an optional suffix, and the suffix is
+ * one of two families: binary (`Ki`, `Mi`, …) and decimal (`k`, `M`, …, plus
+ * `m` for milli, which only CPU uses). Everything comes back in base units —
+ * bytes for memory, whole cores for CPU — so the renderers below only have to
+ * decide how to say a number.
+ */
+export function parseQuantity(quantity: string | undefined): number | undefined {
+  if (!quantity) return undefined;
+  const match = /^(-?\d+(?:\.\d+)?)(Ki|Mi|Gi|Ti|Pi|Ei|m|k|M|G|T|P|E)?$/.exec(quantity.trim());
+  if (!match) return undefined;
+  const value = Number(match[1]);
+  if (Number.isNaN(value)) return undefined;
+  const binary: Record<string, number> = {
+    Ki: 2 ** 10,
+    Mi: 2 ** 20,
+    Gi: 2 ** 30,
+    Ti: 2 ** 40,
+    Pi: 2 ** 50,
+    Ei: 2 ** 60,
+  };
+  const decimal: Record<string, number> = {
+    m: 1e-3,
+    k: 1e3,
+    M: 1e6,
+    G: 1e9,
+    T: 1e12,
+    P: 1e15,
+    E: 1e18,
+  };
+  const suffix = match[2];
+  if (!suffix) return value;
+  return value * (binary[suffix] ?? decimal[suffix] ?? 1);
+}
+
+/** Two decimals at most, and none at all when they would all be zeros. */
+function trim(value: number): string {
+  return value.toFixed(2).replace(/\.?0+$/, "");
+}
+
+/**
+ * A CPU quantity as cores: `15950m` is `15.95 cores`, which is the number the
+ * node has rather than the number the kubelet writes it in.
+ */
+export function formatCores(quantity: string | undefined): string {
+  const cores = parseQuantity(quantity);
+  if (cores === undefined) return "?";
+  return `${trim(cores)} ${cores === 1 ? "core" : "cores"}`;
+}
+
+/**
+ * A memory quantity in the largest binary unit that leaves a number above one:
+ * `64720076Ki` is `61.72 GiB`. Binary because that is what the quantity was
+ * written in, and what a limit compared against it will be written in too.
+ */
+export function formatMemory(quantity: string | undefined): string {
+  const bytes = parseQuantity(quantity);
+  if (bytes === undefined) return "?";
+  const units = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
+  let value = Math.abs(bytes);
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  const signed = bytes < 0 ? -value : value;
+  return `${unit === 0 ? String(Math.round(signed)) : trim(signed)} ${units[unit]}`;
+}

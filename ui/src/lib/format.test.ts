@@ -1,5 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { bucketLabel, duration, formatDurationSeconds, shortImage, shortSHA, timeAgo, uptime } from "./format";
+import {
+  bucketLabel,
+  duration,
+  formatCores,
+  formatDurationSeconds,
+  formatMemory,
+  parseQuantity,
+  shortImage,
+  shortSHA,
+  timeAgo,
+  uptime,
+} from "./format";
 
 describe("format", () => {
   it("durations read like the mockup", () => {
@@ -50,5 +61,39 @@ describe("format", () => {
     expect(bucketLabel(3600)).toBe("1h buckets");
     expect(bucketLabel(0)).toBe("");
     expect(bucketLabel(undefined)).toBe("");
+  });
+});
+
+describe("quantities", () => {
+  it("reads the suffixes a node writes", () => {
+    expect(parseQuantity("15950m")).toBeCloseTo(15.95);
+    expect(parseQuantity("4")).toBe(4);
+    expect(parseQuantity("64720076Ki")).toBe(64720076 * 1024);
+    expect(parseQuantity("2Gi")).toBe(2 * 1024 ** 3);
+    expect(parseQuantity("1M")).toBe(1e6);
+  });
+
+  it("answers nothing for what is not a quantity", () => {
+    expect(parseQuantity(undefined)).toBeUndefined();
+    expect(parseQuantity("")).toBeUndefined();
+    expect(parseQuantity("lots")).toBeUndefined();
+    expect(parseQuantity("12Xi")).toBeUndefined();
+  });
+
+  it("says a CPU quantity as cores", () => {
+    expect(formatCores("15950m")).toBe("15.95 cores");
+    expect(formatCores("500m")).toBe("0.5 cores");
+    expect(formatCores("4")).toBe("4 cores");
+    expect(formatCores("1000m")).toBe("1 core");
+    expect(formatCores(undefined)).toBe("?");
+  });
+
+  it("climbs memory to the largest binary unit above one", () => {
+    expect(formatMemory("64720076Ki")).toBe("61.72 GiB");
+    expect(formatMemory("2Gi")).toBe("2 GiB");
+    expect(formatMemory("1536Mi")).toBe("1.5 GiB");
+    expect(formatMemory("512")).toBe("512 B");
+    expect(formatMemory("1234567Ki")).toBe("1.18 GiB");
+    expect(formatMemory(undefined)).toBe("?");
   });
 });
