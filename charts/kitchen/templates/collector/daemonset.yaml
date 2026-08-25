@@ -99,6 +99,24 @@ spec:
             - name: health
               containerPort: {{ int (include "kitchen.collectorHealthPort" .) }}
               protocol: TCP
+          # The health endpoint belongs to an extension, and the extensions
+          # that start alongside it are not all instant: file_storage compacts
+          # its offset database on start, which on a node that has been
+          # collecting for a while is real work. Until that is done the port is
+          # not bound and every probe of it is a `connection refused` — which,
+          # with readiness alone, is a warning on the pod for as long as it
+          # takes to start. Those land in the platform's own warnings feed, so
+          # every rollout of this DaemonSet reported itself as something going
+          # wrong. A startup probe is the fix: liveness and readiness do not
+          # run at all until it passes, and its first attempt waits rather than
+          # being spent on a certainty.
+          startupProbe:
+            httpGet:
+              path: /
+              port: health
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 60
           livenessProbe:
             httpGet:
               path: /
