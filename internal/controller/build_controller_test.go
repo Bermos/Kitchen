@@ -25,6 +25,7 @@ import (
 	"path"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -885,6 +886,123 @@ var _ = Describe("Build Controller", func() {
 
 			err := k8sClient.Get(ctx, types.NamespacedName{Name: projectName + "-production", Namespace: namespace}, &kitchenv1alpha1.Environment{})
 			Expect(err).To(HaveOccurred(), "a PR build must not touch production")
+		})
+
+		// Issue #201. A branch is normally pushed before its pull request is
+		// opened, and every provider delivers the push first — so the Build
+		// for the head commit exists, created from a push, before anything
+		// knows the commit belongs to a request. The receiver records the
+		// request on the Build it found; these are the two moments that can
+		// happen at, and the tear-down that must not be undone.
+		Describe("a pull request the platform hears about after the push", func() {
+			// pushedBranchBuild replaces the fixture with what a push to a
+			// feature branch produces: no pull request anywhere in the spec,
+			// and a branch that is not the production one, so the release has
+			// nowhere to go on its own.
+			pushedBranchBuild := func() *kitchenv1alpha1.Build {
+				existing := &kitchenv1alpha1.Build{}
+				ExpectWithOffset(1, k8sClient.Get(ctx, buildKey, existing)).To(Succeed())
+				ExpectWithOffset(1, k8sClient.Delete(ctx, existing)).To(Succeed())
+				build := &kitchenv1alpha1.Build{
+					ObjectMeta: metav1.ObjectMeta{Name: buildName, Namespace: namespace},
+					Spec: kitchenv1alpha1.BuildSpec{
+						ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: projectName},
+						Git:        kitchenv1alpha1.GitRevision{SHA: sha, Branch: "feat/checkout"},
+					},
+				}
+				ExpectWithOffset(1, k8sClient.Create(ctx, build)).To(Succeed())
+				return build
+			}
+
+			// recordPullRequest is what the receiver does to a Build whose
+			// name a pull request event finds taken.
+			recordPullRequest := func(number int32) {
+				build := &kitchenv1alpha1.Build{}
+				ExpectWithOffset(1, k8sClient.Get(ctx, buildKey, build)).To(Succeed())
+				build.Annotations = map[string]string{
+					kitchenv1alpha1.PullRequestAnnotation: strconv.Itoa(int(number)),
+				}
+				ExpectWithOffset(1, k8sClient.Update(ctx, build)).To(Succeed())
+			}
+
+			previewKey := types.NamespacedName{Name: projectName + "-pr-10", Namespace: namespace}
+
+			BeforeEach(func() {
+				pushedBranchBuild()
+				DeferCleanup(func() {
+					env := &kitchenv1alpha1.Environment{ObjectMeta: metav1.ObjectMeta{
+						Name: previewKey.Name, Namespace: namespace,
+					}}
+					Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, env))).To(Succeed())
+				})
+			})
+
+			It("previews it when the request arrives while the build is running", func() {
+				reconcileOnce()
+				recordPullRequest(10)
+				completeJob()
+				createBuildPod(`{"containerimage.digest":"sha256:feedface"}`)
+				reconcileOnce()
+
+				env := &kitchenv1alpha1.Environment{}
+				Expect(k8sClient.Get(ctx, previewKey, env)).To(Succeed())
+				Expect(env.Spec.Type).To(Equal(kitchenv1alpha1.EnvironmentPreview))
+				Expect(env.Spec.Preview.PullRequest).To(Equal(int32(10)))
+				Expect(env.Spec.Preview.Branch).To(Equal("feat/checkout"))
+				Expect(env.Spec.ReleaseRef.Name).To(Equal(releaseName(projectName, sha)))
+
+				build := &kitchenv1alpha1.Build{}
+				Expect(k8sClient.Get(ctx, buildKey, build)).To(Succeed())
+				Expect(build.Status.Preview).To(Equal(previewKey.Name))
+			})
+
+			It("previews it when the request arrives after the build finished", func() {
+				reconcileOnce()
+				completeJob()
+				createBuildPod(`{"containerimage.digest":"sha256:feedface"}`)
+				reconcileOnce()
+
+				// The build is over and its release is attached to nothing:
+				// this is exactly the state the issue reported.
+				build := &kitchenv1alpha1.Build{}
+				Expect(k8sClient.Get(ctx, buildKey, build)).To(Succeed())
+				Expect(build.Status.Phase).To(Equal(kitchenv1alpha1.BuildSucceeded))
+				Expect(build.Status.Preview).To(BeEmpty())
+				Expect(k8sClient.Get(ctx, previewKey, &kitchenv1alpha1.Environment{})).NotTo(Succeed())
+
+				recordPullRequest(10)
+				reconcileOnce()
+
+				env := &kitchenv1alpha1.Environment{}
+				Expect(k8sClient.Get(ctx, previewKey, env)).To(Succeed())
+				Expect(env.Spec.Preview.PullRequest).To(Equal(int32(10)))
+				Expect(env.Spec.ReleaseRef.Name).To(Equal(releaseName(projectName, sha)))
+				Expect(k8sClient.Get(ctx, buildKey, build)).To(Succeed())
+				Expect(build.Status.Preview).To(Equal(previewKey.Name))
+			})
+
+			It("does not bring the preview back once the request closes", func() {
+				reconcileOnce()
+				completeJob()
+				createBuildPod(`{"containerimage.digest":"sha256:feedface"}`)
+				reconcileOnce()
+				recordPullRequest(10)
+				reconcileOnce()
+				Expect(k8sClient.Get(ctx, previewKey, &kitchenv1alpha1.Environment{})).To(Succeed())
+
+				// Closing the request deletes the environment. The Build is
+				// terminal and will be reconciled again — on a gate, on a
+				// resync — and must not read "no preview" as "owed a preview".
+				env := &kitchenv1alpha1.Environment{ObjectMeta: metav1.ObjectMeta{
+					Name: previewKey.Name, Namespace: namespace,
+				}}
+				Expect(k8sClient.Delete(ctx, env)).To(Succeed())
+				reconcileOnce()
+				reconcileOnce()
+
+				err := k8sClient.Get(ctx, previewKey, &kitchenv1alpha1.Environment{})
+				Expect(err).To(HaveOccurred(), "a closed request's preview must stay torn down")
+			})
 		})
 
 		It("marks the build failed when the job fails", func() {

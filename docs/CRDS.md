@@ -1233,6 +1233,20 @@ apps/v1 Deployment rolls → status check goes green on the commit.
 PR comment with the preview URL. Every later push to the PR: new Build → new Release →
 same Environment's `releaseRef` bumped. PR closed: Environment (and DB branch) torn down.
 
+**A Build is named after its commit, and the pull request event usually arrives
+second.** A branch is normally pushed before a request is opened for it, and every
+provider delivers the push first — so the `Build` for the head SHA already exists, and
+was created from a push that knew of no request. The receiver records the request on
+that Build as the `kitchen.bermos.dev/pull-request` annotation rather than creating a
+second one: the spec is immutable and this is genuinely new information about a commit
+already known, not a correction. `Build.PullRequestNumber()` is what everything asks —
+the preview routing, the source attestation, the API's `git.pullRequest` — so which
+event arrived first stops being visible. When the request is opened long enough after
+the push that the build has already finished, the operator routes that build's existing
+`Release` to a preview after the fact and records the environment in
+`status.preview`, which is also what stops a preview torn down at PR close from being
+recreated on a later reconcile.
+
 **Rollback:** `Environment.spec.releaseRef` → previous Release. One field, instant,
 exact (config was snapshotted). The UI's rollback button is a one-line patch.
 

@@ -29,6 +29,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -40,6 +41,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/controller"
 	"github.com/Bermos/Kitchen/internal/gitprovider"
 )
 
@@ -291,7 +293,7 @@ func (r *GitWebhookReceiver) handleGitEvent(w http.ResponseWriter, req *http.Req
 }
 
 // dispatch handles a verified event for one project and returns the names of
-// any Builds it created.
+// the Builds it created, or the ones an event told it something new about.
 func (r *GitWebhookReceiver) dispatch(
 	ctx context.Context,
 	project *kitchenv1alpha1.Project,
@@ -348,7 +350,7 @@ func (r *GitWebhookReceiver) dispatchGitHub(
 		case actionClosed:
 			// TODO: honor previews.ttlAfterClosed instead of immediate teardown.
 			env := &kitchenv1alpha1.Environment{ObjectMeta: metav1.ObjectMeta{
-				Name:      fmt.Sprintf("%s-pr-%d", project.Name, payload.Number),
+				Name:      controller.PreviewEnvironmentName(project.Name, payload.Number),
 				Namespace: project.Namespace,
 			}}
 			if err := r.Client.Delete(ctx, env); err != nil && !apierrors.IsNotFound(err) {
@@ -417,7 +419,7 @@ func (r *GitWebhookReceiver) dispatchGitLab(
 				&attrs.IID)
 		case "close", actionClosed, "merge", "merged":
 			env := &kitchenv1alpha1.Environment{ObjectMeta: metav1.ObjectMeta{
-				Name:      fmt.Sprintf("%s-pr-%d", project.Name, attrs.IID),
+				Name:      controller.PreviewEnvironmentName(project.Name, attrs.IID),
 				Namespace: project.Namespace,
 			}}
 			if err := r.Client.Delete(ctx, env); err != nil && !apierrors.IsNotFound(err) {
@@ -462,7 +464,7 @@ func (r *GitWebhookReceiver) dispatchGitea(
 				payload.PullRequest.Head.SHA, payload.PullRequest.Head.Ref, "", "", &payload.Number)
 		case actionClosed:
 			env := &kitchenv1alpha1.Environment{ObjectMeta: metav1.ObjectMeta{
-				Name:      fmt.Sprintf("%s-pr-%d", project.Name, payload.Number),
+				Name:      controller.PreviewEnvironmentName(project.Name, payload.Number),
 				Namespace: project.Namespace,
 			}}
 			if err := r.Client.Delete(ctx, env); err != nil && !apierrors.IsNotFound(err) {
@@ -498,10 +500,57 @@ func (r *GitWebhookReceiver) createBuild(
 	}
 	if err := r.Client.Create(ctx, build); err != nil {
 		if apierrors.IsAlreadyExists(err) {
-			return nil, nil // webhook redelivery
+			return r.recordPullRequest(ctx, build.Namespace, build.Name, pullRequest)
 		}
 		return nil, err
 	}
+	return []string{build.Name}, nil
+}
+
+// recordPullRequest is what happens when the Build for this commit is already
+// there.
+//
+// Most of the time that is a redelivery and there is nothing to do. The case
+// that is not is a pull request event for a commit the platform first heard
+// about as a push — which is the ordinary way a request is opened, since every
+// provider delivers the push first and a branch is usually pushed before
+// anybody opens a request for it. That delivery is not a repeat of anything:
+// it carries the one fact the push could not, and dropping it is a preview
+// environment that never appears.
+//
+// It is written as an annotation, patched rather than updated so it cannot
+// lose a race with the reconciler writing status. The first request to claim a
+// commit keeps it: the same head can belong to two open requests, and picking
+// the later one would move a preview that already exists to a different
+// request's name.
+func (r *GitWebhookReceiver) recordPullRequest(
+	ctx context.Context,
+	namespace, name string,
+	pullRequest *int32,
+) ([]string, error) {
+	if pullRequest == nil {
+		return nil, nil // webhook redelivery of a push
+	}
+	build := &kitchenv1alpha1.Build{}
+	if err := r.Client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, build); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, nil // deleted between the create and the read
+		}
+		return nil, err
+	}
+	if build.PullRequestNumber() != nil {
+		return nil, nil // already associated, by this request or another
+	}
+	patch := client.MergeFrom(build.DeepCopy())
+	if build.Annotations == nil {
+		build.Annotations = map[string]string{}
+	}
+	build.Annotations[kitchenv1alpha1.PullRequestAnnotation] = strconv.FormatInt(int64(*pullRequest), 10)
+	if err := r.Client.Patch(ctx, build, patch); err != nil {
+		return nil, err
+	}
+	logf.Log.WithName("git-webhook-receiver").Info("associated an existing build with a pull request",
+		"build", build.Name, "commit", build.Spec.Git.SHA, "pullRequest", *pullRequest)
 	return []string{build.Name}, nil
 }
 

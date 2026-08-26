@@ -276,6 +276,16 @@ func sourceBreakGlassTransition(
 // Only the production branch, and only a commit that is not itself a pull
 // request build: a request's own builds are what produce the thing being
 // reviewed.
+//
+// This is the one place that reads the *spec* rather than
+// Build.PullRequestNumber(), and it is deliberate. Everywhere else the two
+// differ, the difference is a pull request the platform was told about after
+// the Build existed — a webhook-supplied fact — and honouring it here would
+// mean a person who can push to the production branch could lift their own
+// review requirement by opening a request whose head branch is that branch.
+// A requirement is not something an incoming event gets to relax; what the
+// build is exempted for is being the review vehicle, and only the event that
+// created it can establish that.
 func requiresPullRequest(build *kitchenv1alpha1.Build, project *kitchenv1alpha1.Project) bool {
 	if !project.Spec.Source.RequirePullRequest {
 		return false

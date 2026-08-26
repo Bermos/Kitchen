@@ -40,6 +40,30 @@ The build job is deleted, pod and all; the `Build` itself stays, phase
 who asked for what, so cancellation never removes one. A build that already
 finished answers `409`.
 
+## Which pull request a build belongs to
+
+`git.pullRequest` is the request the commit is part of, absent when it is part
+of none the platform has heard of. It is what decides that a build's release
+goes to a preview environment rather than nowhere.
+
+It is not simply "which event created this build". A branch is usually pushed
+before a request is opened for it, and every provider delivers the push first,
+so the `Build` for the head commit is normally created by the push — with no
+request anywhere in it. The request event that follows finds the build already
+there and records itself on it, and this field answers from either source. The
+build's `spec.git.pullRequest` in the cluster stays as the push created it,
+because a Build's spec is immutable; the API reports what the platform knows,
+not which webhook won the race.
+
+Two consequences worth knowing:
+
+- **A rebuild inherits it.** `POST /projects/{name}/builds` for a commit that
+  has been built before copies the request across, so a rerun of a preview
+  build is still a preview build.
+- **The preview arrives whenever the request does.** A request opened days
+  after the branch was pushed does not rebuild the commit: the release that
+  build already produced is routed to the preview environment then.
+
 ## What a build reused
 
 Every build carries `cache`, which is the platform's answer to "why did that

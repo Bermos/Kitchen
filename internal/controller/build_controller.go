@@ -270,10 +270,16 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		return ctrl.Result{}, nil
 	}
 	if isTerminal(build.Status.Phase) {
-		// The build is over and nothing below can change it. What is left is
-		// the evidence that accretes onto the artifact afterwards: the
-		// quality gates, which run over something that already exists and
-		// hold nothing up by taking their time.
+		// The build is over and nothing below can change it. Two things still
+		// happen to a finished build. One is a pull request the platform was
+		// told about after this build ended, which is a preview environment
+		// owed to a release that already exists. The other is the evidence
+		// that accretes onto the artifact afterwards: the quality gates, which
+		// run over something that already exists and hold nothing up by taking
+		// their time.
+		if err := r.adoptLatePreview(ctx, build); err != nil {
+			return ctrl.Result{}, err
+		}
 		return r.reconcileGates(ctx, build)
 	}
 
@@ -913,22 +919,14 @@ func (r *BuildReconciler) succeed(
 		return ctrl.Result{}, err
 	}
 
-	switch {
-	case build.Spec.Git.PullRequest != nil:
+	switch pullRequest := build.PullRequestNumber(); {
+	case pullRequest != nil:
 		// Previews are never routed through a Promotion: the preview *is* the
 		// review vehicle — it exists so the change can be looked at before
 		// anything judges it — and gating its deployment on evidence would
 		// gate producing the evidence.
-		if previewsEnabled(project) {
-			preview := &kitchenv1alpha1.PreviewInfo{
-				PullRequest: *build.Spec.Git.PullRequest,
-				Branch:      build.Spec.Git.Branch,
-			}
-			envName := fmt.Sprintf("%s-pr-%d", project.Name, *build.Spec.Git.PullRequest)
-			if err := r.ensureEnvironment(ctx, build.Namespace, project, envName,
-				kitchenv1alpha1.EnvironmentPreview, preview, release.Name, build); err != nil {
-				return ctrl.Result{}, err
-			}
+		if err := r.routePreview(ctx, build, project, *pullRequest, release.Name); err != nil {
+			return ctrl.Result{}, err
 		}
 	case build.Spec.Git.Branch == project.Spec.Source.ProductionBranch:
 		// The build's target is stage one of the project's pipeline when it
@@ -943,6 +941,13 @@ func (r *BuildReconciler) succeed(
 		if err := r.promoteOrFlip(ctx, build.Namespace, project, envName, release.Name, build); err != nil {
 			return ctrl.Result{}, err
 		}
+	default:
+		// A commit on neither the production branch nor any request the
+		// platform has heard of. The release is real and can be deployed by
+		// hand; nothing is going to deploy it on its own, and saying so is the
+		// difference between that and a preview that failed to appear.
+		logf.FromContext(ctx).Info("release is attached to no environment",
+			"build", build.Name, "release", release.Name, "branch", build.Spec.Git.Branch)
 	}
 
 	build.Status.Phase = kitchenv1alpha1.BuildSucceeded
@@ -985,6 +990,99 @@ func runtimeFor(project *kitchenv1alpha1.Project, build *kitchenv1alpha1.Build) 
 		runtimeSpec.Port = detected.Port
 	}
 	return runtimeSpec
+}
+
+// routePreview puts a build's release on its pull request's preview
+// environment, and records on the build that it did.
+//
+// The record is the whole reason this is one function rather than four lines
+// in succeed(): a request opened after its branch was pushed is heard about
+// late, so the routing has to be attemptable again afterwards, and something
+// has to be able to answer "has this build's release already been routed?"
+// without asking the world. Asking the world gets it wrong — a preview torn
+// down when its request closed is indistinguishable from one that was never
+// made, and re-creating that is a closed request's preview coming back to
+// life hours later.
+//
+// The caller persists the status: succeed() writes it with the rest of the
+// build's outcome, and adoptLatePreview writes it on its own.
+func (r *BuildReconciler) routePreview(
+	ctx context.Context,
+	build *kitchenv1alpha1.Build,
+	project *kitchenv1alpha1.Project,
+	pullRequest int32,
+	releaseName string,
+) error {
+	if !previewsEnabled(project) {
+		return nil
+	}
+	envName := PreviewEnvironmentName(project.Name, pullRequest)
+	preview := &kitchenv1alpha1.PreviewInfo{
+		PullRequest: pullRequest,
+		Branch:      build.Spec.Git.Branch,
+	}
+	if err := r.ensureEnvironment(ctx, build.Namespace, project, envName,
+		kitchenv1alpha1.EnvironmentPreview, preview, releaseName, build); err != nil {
+		return err
+	}
+	build.Status.Preview = envName
+	return nil
+}
+
+// adoptLatePreview gives a finished build the preview environment it would
+// have got had the platform known about the pull request in time.
+//
+// A branch is normally pushed before a request is opened for it — sometimes
+// days before — and every provider delivers the push first. The push creates
+// the Build, and the request event that follows finds the name taken. Before
+// this existed it was discarded as a redelivery, and since a Build's spec is
+// immutable and a terminal Build never re-enters succeed(), the request was
+// never heard of again: the branch built, produced a release, and no preview
+// ever appeared. The receiver now annotates the existing Build instead, and
+// this is the other half — the case where the build had already finished by
+// the time the annotation arrived.
+//
+// It insists the association came from the annotation, which is what keeps it
+// to exactly the builds this repairs. A build whose *spec* names a request was
+// routed by succeed() with everything it needed to know; re-routing it here
+// would recreate previews for every request an installation has ever closed
+// the first time it upgrades.
+func (r *BuildReconciler) adoptLatePreview(ctx context.Context, build *kitchenv1alpha1.Build) error {
+	if build.Status.Phase != kitchenv1alpha1.BuildSucceeded || build.Status.Preview != "" {
+		return nil
+	}
+	if build.Spec.Git.PullRequest != nil {
+		return nil
+	}
+	pullRequest := build.PullRequestNumber()
+	if pullRequest == nil {
+		return nil
+	}
+
+	project := &kitchenv1alpha1.Project{}
+	if err := r.Get(ctx, types.NamespacedName{
+		Namespace: build.Namespace, Name: build.Spec.ProjectRef.Name,
+	}, project); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	if !previewsEnabled(project) {
+		return nil
+	}
+	// The release is the one this build produced, named the way succeed()
+	// named it. A build that succeeded has one; a build whose release somebody
+	// deleted has nothing left to deploy and is left alone.
+	release := &kitchenv1alpha1.Release{}
+	name := releaseName(project.Name, build.Spec.Git.SHA)
+	if err := r.Get(ctx, types.NamespacedName{Namespace: build.Namespace, Name: name}, release); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	if err := r.routePreview(ctx, build, project, *pullRequest, release.Name); err != nil {
+		return err
+	}
+	logf.FromContext(ctx).Info("routed a finished build to the preview of a pull request it was told about late",
+		"build", build.Name, "release", release.Name,
+		"pullRequest", *pullRequest, "environment", build.Status.Preview)
+	return r.Status().Update(ctx, build)
 }
 
 // promoteOrFlip routes a production-branch build's release to its target
