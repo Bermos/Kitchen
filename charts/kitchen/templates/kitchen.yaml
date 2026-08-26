@@ -106,6 +106,12 @@ spec:
       enabled: {{ .Values.kitchen.builds.cache.enabled }}
       mode: {{ .Values.kitchen.builds.cache.mode | quote }}
       scope: {{ .Values.kitchen.builds.cache.scope | quote }}
+  appNamespaces:
+    # The Pod Security level the operator labels each project's namespace
+    # with. Set rather than inherited: the cluster default decides whether
+    # Dockerfile builds are admitted at all, and distributions disagree about
+    # it.
+    podSecurity: {{ .Values.kitchen.appNamespaces.podSecurity | quote }}
   registry:
     # The registry the chart runs, published by the operator: the route on the
     # shared Gateway is the operator's because the Gateway is, and the seeded

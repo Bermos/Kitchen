@@ -134,6 +134,38 @@ Two consequences worth knowing:
 Set `namespace.create=false` to manage the namespace yourself, in which case
 its Pod Security labels are yours to get right.
 
+#### Application namespaces have a level of their own
+
+`kitchen-system` is not the only namespace whose Pod Security level has to be
+set rather than inherited. Every project gets a namespace of its own —
+`kitchen-<project>`, holding its builds, its environments' workloads and the
+secrets behind its resource claims — and the operator labels those the same
+three ways, at `kitchen.appNamespaces.podSecurity`.
+
+`privileged` is the default because that is what the **Dockerfile build
+strategy** needs. BuildKit runs rootless here, which means it creates a nested
+user namespace and mounts its own overlayfs inside it: the runtime's default
+seccomp profile blocks the first and the default AppArmor profile blocks the
+second, so the builder asks for both unconfined — and Pod Security admits
+neither below `privileged`.
+
+The failure when it is not set is quiet, which is the reason this is a value
+and not a footnote. A Job whose pods admission refuses **creates no pod at
+all**: `kubectl get pods -n kitchen-<project>` is empty, `kubectl get jobs`
+says `Running`, and the rejection is a `FailedCreate` event on the Job. On a
+cluster defaulting to `baseline` — Talos does — every Dockerfile build hangs
+there while buildpacks builds, which ask for neither relaxation, keep working.
+
+Lower it to `baseline` on an installation that builds with buildpacks alone;
+`kitchen.builds.defaultStrategy=dockerfile` with anything below `privileged` is
+refused at render time. `restricted` additionally refuses most application
+images, which pick their own user and capabilities, so it suits an installation
+that vets what it deploys and little else.
+
+The level is reconciled, not only written at creation: raising or lowering the
+value and running `helm upgrade` relabels the namespaces that already exist on
+each project's next reconcile.
+
 #### Adopting an existing namespace
 
 An existing `kitchen-system` — one made with `kubectl create namespace`, or by
@@ -1391,6 +1423,7 @@ kubectl delete namespace kitchen-system
 | `kitchen.builds.cache.enabled` | `true` | Reuse layers between builds. The cache is a manifest in the registry the project already pushes to, under the same credential — nothing extra to install. Off means every build starts from nothing. |
 | `kitchen.builds.cache.mode` | `max` | How much of a BuildKit build is cached: `max` keeps intermediate layers, so a source change still reuses the dependency install above it, at the cost of registry storage; `min` keeps only the layers of the image that came out. Buildpacks builds ignore it. |
 | `kitchen.builds.cache.scope` | `project` | What two builds share to reuse each other's layers: `project` is one tag per project, overwritten in place and so bounded; `branch` is one per branch, a better hit rate on a long-lived branch and a tag nothing removes. |
+| `kitchen.appNamespaces.podSecurity` | `privileged` | Pod Security level the operator labels each project's namespace with. `privileged` is what the rootless BuildKit builder needs — anything stricter refuses its pods at admission and Dockerfile builds never start. See [Application namespaces have a level of their own](#application-namespaces-have-a-level-of-their-own). |
 | `kitchen.compliance.audit.enabled` | `true` | Record every state transition into an append-only, hash-chained log in the telemetry store. Off leaves the platform with no evidence of what it did. |
 | `kitchen.compliance.audit.retentionDays` | `365` | Audit retention, deliberately separate from telemetry retention: evidence must outlive logs. Minimum 90. |
 | `kitchen.compliance.attestation.enabled` | `true` | Sign a build record for every artifact and attach it to the artifact's digest as a DSSE envelope over an in-toto statement, through OCI referrers. |

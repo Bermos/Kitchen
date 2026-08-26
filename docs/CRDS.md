@@ -85,6 +85,14 @@ spec:
       enabled: true                     # reuse layers between builds, in the registry the project pushes to
       mode: max                         # max | min — how much of a BuildKit build is kept
       scope: project                    # project | branch — what two builds share to reuse each other's layers
+  appNamespaces:
+    podSecurity: privileged             # privileged | baseline | restricted — the Pod Security level the
+                                        # operator labels every kitchen-<project> namespace with. Set rather
+                                        # than inherited: rootless BuildKit needs seccomp and AppArmor
+                                        # unconfined, which Pod Security admits at privileged alone, and a
+                                        # Job whose pods it refuses creates no pod at all — the build sits
+                                        # in Running forever. Lower it only where every project builds with
+                                        # buildpacks, which ask for neither.
   registry:
     enabled: true                       # the registry the platform runs for itself
     host: registry.apps.example.com     # where it is published; defaults to registry.<baseDomain>

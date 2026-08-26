@@ -218,6 +218,58 @@ type ImageRegistrySpec struct {
 	SecretRef *LocalObjectReference `json:"secretRef,omitempty"`
 }
 
+// PodSecurityLevel is one of the three Pod Security Standards levels a
+// namespace can be labelled with.
+// +kubebuilder:validation:Enum=privileged;baseline;restricted
+type PodSecurityLevel string
+
+const (
+	// PodSecurityPrivileged is unrestricted: every pod the platform builds
+	// with is admitted, including the BuildKit builder.
+	PodSecurityPrivileged PodSecurityLevel = "privileged"
+
+	// PodSecurityBaseline blocks known privilege escalations. It refuses the
+	// Dockerfile builder — rootless BuildKit needs seccomp and AppArmor
+	// unconfined, and baseline forbids both — so a platform running here
+	// builds with buildpacks alone.
+	PodSecurityBaseline PodSecurityLevel = "baseline"
+
+	// PodSecurityRestricted is the hardened profile. Application images
+	// choose their own user and capabilities, so most of them are refused by
+	// it; it is offered for an installation that vets its own images.
+	PodSecurityRestricted PodSecurityLevel = "restricted"
+)
+
+// AppNamespacesSpec configures the per-project namespaces the operator
+// creates: one per Project, holding that project's builds, its environments'
+// workloads and the secrets behind its resource claims.
+type AppNamespacesSpec struct {
+	// PodSecurity is the Pod Security Standards level enforced on every
+	// application namespace, written as the enforce, audit and warn labels
+	// when the namespace is created and kept in step afterwards.
+	//
+	// It is set rather than inherited for the same reason the platform
+	// namespace's is: clusters disagree about the default (kind is
+	// privileged, Talos is baseline), and the level decides whether the
+	// Dockerfile build strategy works at all. Rootless BuildKit needs an
+	// unconfined seccomp profile and an unconfined AppArmor profile, both of
+	// which baseline forbids, and a Job whose pods Pod Security refuses
+	// creates no pod at all — the build simply never starts.
+	//
+	// Lower it to baseline on an installation that builds with buildpacks
+	// alone: the lifecycle asks for neither relaxation.
+	//
+	// It is deliberately not on the settings screen. Everything else the
+	// dashboard can change here is a choice about the platform; this is a
+	// fact about the cluster underneath it, decided once at install time
+	// beside namespace.podSecurity — and lowering it from a browser would
+	// stop every Dockerfile build in the installation with no failure the
+	// person who did it would recognise.
+	// +kubebuilder:default=privileged
+	// +optional
+	PodSecurity PodSecurityLevel `json:"podSecurity,omitempty"`
+}
+
 // BuildsSpec configures platform-wide build defaults.
 type BuildsSpec struct {
 	// +kubebuilder:default=auto
@@ -586,6 +638,14 @@ type KitchenSpec struct {
 
 	// +optional
 	Builds BuildsSpec `json:"builds,omitempty"`
+
+	// AppNamespaces configures the namespaces the operator creates for
+	// projects. The empty-object default is what gives an installation
+	// predating the field the Pod Security level below: structural defaulting
+	// only descends into objects that are present.
+	// +kubebuilder:default={}
+	// +optional
+	AppNamespaces AppNamespacesSpec `json:"appNamespaces,omitempty"`
 
 	// The empty-object default is what gives an installation that predates
 	// the field a registry at all: structural defaulting only descends into
