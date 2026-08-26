@@ -209,6 +209,12 @@ const version = computed(() => {
 const userMenu = computed(() => [
   [{ label: user.value?.email || user.value?.name || "Signed in", type: "label" as const }],
   [
+    // The one thing this menu used to be missing, and the only route to it:
+    // changing a password, or ending a session somebody else is holding, has
+    // no other screen and never had one (issue #207).
+    { label: "Account", icon: "i-lucide-user-round", to: "/account" },
+  ],
+  [
     {
       label: "Sign out",
       icon: "i-lucide-log-out",
