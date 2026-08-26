@@ -863,6 +863,7 @@ cannot write it carries on and exchanges every time.
 | Following a deploy | Poll the build, stream its logs, then watch for the release and the environment | All four are things the API already answers; the CLI renders them and drives nothing |
 | The exit status of a deploy | The build's | "Did my build pass" and "is it live yet" are different questions; the second is in the result, where a caller can read the phase and the URL |
 | Credentials on the command line | `--api-key-file` and `--api-key-stdin` preferred, `--api-key` documented as visible in the process list | The convenient spelling should not be the one that leaks |
+| Account management | No command, and none possible | Changing a password, or ending a session, is done at the identity provider against its session cookie — and this CLI holds a key, never a session. It is not an endpoint `kitchen api` reaches either, because that reaches the operator API and these are not on it ([AUTH.md](AUTH.md), "Managing an account") |
 
 ## Open
 

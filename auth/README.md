@@ -20,6 +20,8 @@ Everything is mounted at the root, so the issuer is the origin itself:
 | `/oauth2/authorize`, `/oauth2/token`, `/oauth2/userinfo` | Authorization Code + PKCE |
 | `/oauth2/register` | Dynamic client registration (authenticated) |
 | `/login`, `/consent` | The hosted pages the provider redirects to |
+| `/get-session`, `/list-accounts`, `/list-sessions` | What the dashboard's account screen reads |
+| `/update-user`, `/change-password`, `/revoke-session` | What it writes — see [docs/AUTH.md](../docs/AUTH.md), "Managing an account" |
 | `/bootstrap` | First-administrator flow, see below |
 | `/kitchen/*` | Kitchen's own prefix, for the operator's service credential only — see below |
 | `/healthz`, `/readyz` | Probes; readiness additionally requires Postgres |
@@ -29,11 +31,28 @@ login (GitHub), organizations, passkeys, two-factor and API keys.
 
 ## Accounts
 
-Public sign-up is off. Accounts come from one of three places:
+Public sign-up is off, and an account comes from one of exactly two places:
 
 - the **bootstrap** flow, for the very first administrator,
-- an upstream provider, when `KITCHEN_AUTH_ALLOW_SOCIAL_SIGNUP` is on,
-- an invitation from an organization (the organizations plugin).
+- an upstream provider, when `KITCHEN_AUTH_ALLOW_SOCIAL_SIGNUP` is on and a
+  GitHub OAuth app is configured.
+
+There is no third, whatever this file used to say. The organizations plugin
+is mounted, but an organization invitation **cannot create an account**:
+accepting one is behind the plugin's session middleware, so the invitee has to
+be signed in already. On an installation with no upstream provider the
+bootstrap account is therefore the only account there can be, and the platform
+has no way to make another — creating an account and resetting a password both
+need mail it cannot send. [docs/AUTH.md](../docs/AUTH.md) has the whole of what
+that leaves missing, and how a locked-out password is reset by hand until it is
+decided.
+
+An account **manages itself** from the dashboard's `/account` screen, which
+calls the endpoints in the table above with the session cookie this service
+set: the display name, the password, and the browsers signed in as it. Those
+calls come from the dashboard's origin, which is why `trustedOrigins` is
+derived from the same list the CORS headers are (`src/config.ts`) rather than
+naming this service alone.
 
 ### Bootstrap
 
