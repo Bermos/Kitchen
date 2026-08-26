@@ -170,11 +170,20 @@ watch([repo, connection, productionBranch, rootDirectory, dockerfilePath], () =>
 
 // What the verdict reads as. A framework nobody recognised is a warning
 // rather than an error, because creating the project anyway is a legitimate
-// choice — the build strategy can be set afterwards.
-const detectionColor = computed(() => (detection.value?.detected ? "success" : "warning"));
+// choice — the build strategy can be set afterwards. A repository that could
+// not be read is not that: nothing was looked at, the fields below it are not
+// what is wrong, and no build of it can succeed either.
+const detectionColor = computed(() => {
+  if (detection.value?.unreadable) return "error";
+  return detection.value?.detected ? "success" : "warning";
+});
+const detectionIcon = computed(() =>
+  detection.value?.detected ? "i-lucide-check" : "i-lucide-triangle-alert",
+);
 const detectionTitle = computed(() => {
   const found = detection.value;
   if (!found) return "";
+  if (found.unreadable) return "The repository could not be read";
   if (!found.detected) return "No framework detected";
   const how = found.dockerfile ? "Dockerfile" : `built with ${found.strategy}`;
   return `Detected ${found.framework} — ${how}`;
@@ -347,7 +356,7 @@ async function create() {
             v-else-if="detection"
             :color="detectionColor"
             variant="soft"
-            :icon="detection.detected ? 'i-lucide-check' : 'i-lucide-triangle-alert'"
+            :icon="detectionIcon"
             :title="detectionTitle"
             :description="
               detection.detected

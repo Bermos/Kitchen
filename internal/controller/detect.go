@@ -36,6 +36,14 @@ import (
 // moved when the API grew a preflight over the same question.
 var errSourceUnreadable = detect.ErrSourceUnreadable
 
+// errRepositoryUnreadable is the repository itself not being readable — not
+// there, or not visible to the credential this connection holds. It is the
+// other detection failure the build reconciler tells apart, and it ends the
+// other way: a repository that cannot be seen is not going to appear because
+// the Build waited, so the commit fails with a sentence about the repository
+// rather than one about a directory inside it.
+var errRepositoryUnreadable = detect.ErrRepositoryUnreadable
+
 // detectFramework is what `strategy: auto` means: read the repository at the
 // commit under build, and decide what it is before anything is created.
 //

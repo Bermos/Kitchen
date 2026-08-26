@@ -41,6 +41,18 @@ type resolvingGitProvider struct {
 	revision gitprovider.Revision
 	err      error
 	asked    int
+	// unreadable is the repository itself not being readable — not there, or
+	// not visible to this credential — which the provider answers with the
+	// same 404 a branch that is not there gets.
+	unreadable bool
+}
+
+// Repository is the probe that tells those two 404s apart.
+func (f *resolvingGitProvider) Repository(context.Context, string) (gitprovider.Repository, error) {
+	if f.unreadable {
+		return gitprovider.Repository{}, fmt.Errorf("%w: acme/shop", gitprovider.ErrRepositoryNotFound)
+	}
+	return gitprovider.Repository{FullName: "acme/shop", DefaultBranch: "trunk"}, nil
 }
 
 func (f *resolvingGitProvider) HeadRevision(_ context.Context, _, ref string) (gitprovider.Revision, error) {
@@ -211,6 +223,26 @@ var _ = Describe("Project first build", func() {
 		Expect(cond.Reason).To(Equal("NoCommit"))
 		Expect(meta.IsStatusConditionTrue(project.Status.Conditions, condReady)).To(BeTrue(),
 			"a project with nothing to build yet is still a ready project")
+	})
+
+	It("says so when the repository itself cannot be read", func() {
+		// The same 404 the missing branch above gives, from a repository
+		// that is not there or that this credential may not see. "Push a
+		// commit" is the wrong thing to tell somebody in that position.
+		provider.err = fmt.Errorf("%w: trunk at acme/shop", gitprovider.ErrFileNotFound)
+		provider.unreadable = true
+
+		reconcileOnce()
+
+		Expect(buildsOfProject()).To(BeEmpty())
+		project := &kitchenv1alpha1.Project{}
+		Expect(k8sClient.Get(ctx, projectKey, project)).To(Succeed())
+		cond := meta.FindStatusCondition(project.Status.Conditions, condInitialBuild)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Reason).To(Equal("RepositoryUnreadable"))
+		// It names the connection, because the fix is usually its credential.
+		Expect(cond.Message).To(ContainSubstring(`"seed-gh"`))
+		Expect(cond.Message).NotTo(ContainSubstring("push a commit"))
 	})
 
 	It("leaves a project that has already built something alone", func() {

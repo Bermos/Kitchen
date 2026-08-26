@@ -603,6 +603,27 @@ var _ = Describe("Build Controller", func() {
 			Expect(ready.Message).To(ContainSubstring("no Dockerfile and no framework detected"))
 		})
 
+		It("fails saying so when the repository itself cannot be read", func() {
+			// Not a root directory one level off: the repository is not
+			// there, or this connection's credential may not see it. The two
+			// are the same 404 one layer apart, and this used to be reported
+			// as the other one.
+			source = &fakeSource{unreadable: true}
+
+			reconcileOnce()
+
+			Expect(apierrors.IsNotFound(k8sClient.Get(ctx, jobKey, &batchv1.Job{}))).To(BeTrue())
+
+			build := &kitchenv1alpha1.Build{}
+			Expect(k8sClient.Get(ctx, buildKey, build)).To(Succeed())
+			Expect(build.Status.Phase).To(Equal(kitchenv1alpha1.BuildFailed))
+			ready := meta.FindStatusCondition(build.Status.Conditions, condReady)
+			Expect(ready).NotTo(BeNil())
+			Expect(ready.Reason).To(Equal(reasonRepositoryUnreadable))
+			Expect(ready.Message).To(ContainSubstring("the credential cannot see it"))
+			Expect(ready.Message).NotTo(ContainSubstring("directory"))
+		})
+
 		It("keeps the build queued while the repository cannot be read", func() {
 			source = &fakeSource{err: errors.New("502 Bad Gateway")}
 

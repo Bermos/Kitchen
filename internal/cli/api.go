@@ -150,7 +150,12 @@ type detection struct {
 	RootDirectory string   `json:"rootDirectory,omitempty"`
 	Dockerfile    bool     `json:"dockerfile"`
 	Files         []string `json:"files,omitempty"`
-	Message       string   `json:"message,omitempty"`
+	// Unreadable is the repository itself not having been read: it is not
+	// there, or the connection's credential cannot see it. It is the one
+	// verdict that is not about the build context, and the one a corrected
+	// --root-directory will not change.
+	Unreadable bool   `json:"unreadable,omitempty"`
+	Message    string `json:"message,omitempty"`
 }
 
 // revision is the commit a build was of.

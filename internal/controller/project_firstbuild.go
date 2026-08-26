@@ -28,6 +28,7 @@ import (
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/audit"
 	"github.com/Bermos/Kitchen/internal/clickhouse"
+	"github.com/Bermos/Kitchen/internal/detect"
 	"github.com/Bermos/Kitchen/internal/gitprovider"
 )
 
@@ -90,6 +91,15 @@ func (r *ProjectReconciler) ensureInitialBuild(
 	}
 	revision, err := resolver.HeadRevision(ctx, project.Spec.Source.Repo, branch)
 	if errors.Is(err, gitprovider.ErrFileNotFound) {
+		// A repository the credential cannot read answers this 404 too, and
+		// "push a commit" is the wrong thing to tell somebody whose
+		// repository nothing can see. Asking about the repository itself is
+		// what tells the two apart.
+		if detect.UnreadableRepository(ctx, provider, project.Spec.Source.Repo) {
+			setCond(condInitialBuild, metav1.ConditionFalse, "RepositoryUnreadable",
+				detect.UnreadableRepositoryMessage(conn.Name, project.Spec.Source.Repo))
+			return false
+		}
 		// An empty repository, or a production branch that is not there.
 		// Both are the project's own configuration meeting the repository,
 		// and neither improves by being asked again.

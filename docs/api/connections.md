@@ -287,9 +287,21 @@ wants:
 
 | Answer | What it means |
 |---|---|
-| `"detected": false` with `message` | The directory was read and not recognised, the root directory is not there, the repository is not one this connection can see, or the connection is not a source of repositories. `files` says what the verdict was reached from |
+| `"detected": false` with `message` | The directory was read and not recognised, the root directory is not there, or the connection is not a source of repositories. `files` says what the verdict was reached from |
+| `"unreadable": true` with `message` | The repository itself could not be read: it is not there, or this connection's credential cannot see it. The one verdict that is not about the build context |
 | `400` | No `repo`, or no `ref` for a repository the provider names no default branch of |
 | `502` | The provider refused or could not be reached |
+
+`unreadable` is a separate answer because it used to be the same one. Every
+provider answers `404` both for a path that is not in a repository and for a
+repository a credential may not know about — GitHub deliberately, so that a
+token cannot enumerate private repositories by reading status codes — so a
+repository nobody could read was reported as `has no directory "." at main`,
+which sends somebody to correct a root directory that is already correct. The
+preflight asks the repository itself before it says anything about a
+directory, and the message that comes back names the connection, because an
+installation may have several and the fix is usually the credential of the one
+that was asked.
 
 `detected: false` is not an error and does not stop a project being created:
 the build strategy can be set afterwards, and the build is still what decides.

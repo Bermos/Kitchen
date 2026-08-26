@@ -340,6 +340,9 @@ func confirmLayout(r *Runtime, verdict *detection, options createOptions) error 
 		where += "/" + options.root
 	}
 	message := "nothing recognisable in " + where
+	// The platform's own sentence when it has one, which for a repository
+	// that could not be read is the only one that is true: nothing was read,
+	// so nothing about the build context is what is wrong.
 	if verdict.Message != "" {
 		message = verdict.Message
 	}
@@ -353,6 +356,8 @@ func confirmLayout(r *Runtime, verdict *detection, options createOptions) error 
 // port rather than as the absence of one.
 func describeDetection(verdict *detection) string {
 	switch {
+	case verdict.Unreadable:
+		return "the repository could not be read"
 	case verdict.Framework != "" && verdict.Port > 0:
 		return fmt.Sprintf("detected %s, built with %s on port %d",
 			verdict.Framework, verdict.Strategy, verdict.Port)

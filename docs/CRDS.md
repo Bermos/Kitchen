@@ -674,7 +674,11 @@ Two things do not happen. A repository nothing matches **fails the build** with 
 Dockerfile and no framework detected"* rather than handing a builder a repository it
 cannot build; and a repository the platform cannot *read* right now — a provider that is
 down, a credential that stopped working — leaves the Build `Queued` with reason
-`SourceUnreadable`, because nothing about the commit caused that. Detection runs only
+`SourceUnreadable`, because nothing about the commit caused that. A repository that
+cannot be read *at all* — it is not there, or the connection's credential may not see it
+— is neither: it fails with reason `RepositoryUnreadable`, saying so, because it is not
+going to appear because a Build waited, and because nothing was read for a verdict about
+a directory to be about. Detection runs only
 where configuration left the question open: `strategy: dockerfile` never reads the
 repository, and `strategy: buildpacks` reads it only to learn what to tell the
 lifecycle, building anyway if it cannot.

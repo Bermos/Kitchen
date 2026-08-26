@@ -18,6 +18,7 @@ package gitprovider
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 )
@@ -81,20 +82,42 @@ func (g *GitHub) ListRepositories(ctx context.Context) (RepositoryListing, error
 // GitHub answers about one repository as readily as about all of them, which
 // is what a caller that was handed a repository name — rather than picking one
 // out of the listing — needs before it can read anything at a ref.
-var _ DefaultBranchResolver = (*GitHub)(nil)
+var (
+	_ DefaultBranchResolver = (*GitHub)(nil)
+	_ RepositoryProbe       = (*GitHub)(nil)
+)
 
-// DefaultBranch implements DefaultBranchResolver against the repository
-// endpoint. It is one request for the same `default_branch` the listing
-// carries, which is why the wire shape is shared with it.
-func (g *GitHub) DefaultBranch(ctx context.Context, repo string) (string, error) {
+// Repository implements RepositoryProbe against /repos/{owner}/{name}, which
+// is the one request that distinguishes a repository this credential cannot
+// read from a path inside a repository it can. A fine-grained token left this
+// repository out of its selection is a 404 here, exactly as a repository that
+// was never created is.
+//
+// It is also the request DefaultBranch is after — the repository endpoint
+// carries the same `default_branch` the listing does — so the two questions
+// are one implementation and one round trip.
+func (g *GitHub) Repository(ctx context.Context, repo string) (Repository, error) {
 	found := githubRepository{}
 	if err := g.do(ctx, http.MethodGet, "/repos/"+repoPath(repo), nil, &found); err != nil {
 		if isNotFound(err) {
-			// A repository the token cannot see is a 404 here too, which is
-			// the same answer for the caller's purposes: there is no
-			// repository to name a branch of.
-			return "", fmt.Errorf("%w: %s", ErrFileNotFound, repo)
+			return Repository{}, fmt.Errorf("%w: %s", ErrRepositoryNotFound, repo)
 		}
+		return Repository{}, err
+	}
+	return Repository(found), nil
+}
+
+// DefaultBranch implements DefaultBranchResolver from the repository itself.
+// A repository the token cannot see is a 404 here too, which is the same
+// answer for this caller's purposes — there is no repository to name a branch
+// of — so it is reported in the terms this interface promises rather than in
+// the probe's.
+func (g *GitHub) DefaultBranch(ctx context.Context, repo string) (string, error) {
+	found, err := g.Repository(ctx, repo)
+	if errors.Is(err, ErrRepositoryNotFound) {
+		return "", fmt.Errorf("%w: %s", ErrFileNotFound, repo)
+	}
+	if err != nil {
 		return "", err
 	}
 	return found.DefaultBranch, nil
