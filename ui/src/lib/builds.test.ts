@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Build } from "./api";
-import { buildFailureLine } from "./builds";
+import { buildFailureLine, buildStallLine } from "./builds";
 
 const build = (over: Partial<Build> = {}): Build => ({
   name: "shop-bld-0f8ed150b919",
@@ -46,5 +46,47 @@ describe("buildFailureLine", () => {
 
   it("says nothing rather than guessing", () => {
     expect(buildFailureLine(build({ phase: "Failed" }))).toBe("");
+  });
+});
+
+describe("buildStallLine", () => {
+  it("says nothing about a build that is not running", () => {
+    expect(buildStallLine(build({ phase: "Succeeded" }))).toBe("");
+    expect(
+      buildStallLine(
+        build({
+          phase: "Failed",
+          conditions: [{ type: "Stalled", status: "True", message: "no pod", lastTransitionTime: "" }],
+        }),
+      ),
+    ).toBe("");
+  });
+
+  it("says nothing about a running build that is moving", () => {
+    expect(buildStallLine(build({ phase: "Running" }))).toBe("");
+    expect(
+      buildStallLine(
+        build({
+          phase: "Running",
+          conditions: [{ type: "Stalled", status: "False", message: "the build job has a pod", lastTransitionTime: "" }],
+        }),
+      ),
+    ).toBe("");
+  });
+
+  it("carries the reason the job gave for having no pod", () => {
+    const stalled = build({
+      phase: "Running",
+      conditions: [
+        {
+          type: "Stalled",
+          status: "True",
+          reason: "JobHasNoPod",
+          message: 'the build job has created no pod: Error creating: pods "x" is forbidden',
+          lastTransitionTime: "",
+        },
+      ],
+    });
+    expect(buildStallLine(stalled)).toBe('the build job has created no pod: Error creating: pods "x" is forbidden');
   });
 });

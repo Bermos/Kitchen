@@ -2,6 +2,7 @@
 import { computed, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 import { api, type EvidenceSet, type LogLine, type LogQuery, type QualityGate } from "../lib/api";
+import { buildStallLine } from "../lib/builds";
 import { duration, shortSHA, timeAgo } from "../lib/format";
 import { callerFor } from "../lib/me";
 import { operatorMode } from "../lib/mode";
@@ -182,6 +183,12 @@ const failureDetail = computed(() => {
   return message && message !== failureTitle.value ? message : "";
 });
 
+/** A running build whose Job has never created a pod, and the reason the job
+ *  controller gave for it. The build is still notionally running — the Job may
+ *  yet be admitted — so this is a warning rather than the failure panel, and it
+ *  sits in the same place for the same reason: it is why the page was opened. */
+const stall = computed(() => (build.value ? buildStallLine(build.value) : ""));
+
 /** The condition the reconciler left, for a build that failed before it ever
  *  had a pod: a strategy the platform does not support, a commit that was
  *  refused for want of review. There is no container to name in either case. */
@@ -251,6 +258,18 @@ const logStreamer = (query: LogQuery, onLine: (line: LogLine) => void, signal: A
         <div class="sm:col-span-2 min-w-0">
           <p class="text-xs text-muted mb-1">Image</p>
           <p class="text-sm text-toned font-mono truncate" :title="build.image">{{ build.image || "not pushed yet" }}</p>
+        </div>
+      </div>
+
+      <!-- Why a build that says Running is not moving. Above the failure
+           panel because the two are never both showing. -->
+      <div v-if="stall" class="rounded-md border border-warning/40 bg-warning/5 px-5 py-4">
+        <div class="flex items-start gap-2">
+          <UIcon name="i-lucide-clock-alert" class="size-4 text-warning mt-0.5 shrink-0" />
+          <div class="min-w-0 space-y-1">
+            <p class="text-sm font-medium text-highlighted">The build has not started</p>
+            <p class="text-xs text-toned font-mono break-words">{{ stall }}</p>
+          </div>
         </div>
       </div>
 

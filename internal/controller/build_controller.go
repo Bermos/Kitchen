@@ -91,6 +91,12 @@ const (
 	// and still keeps finished jobs from piling up in the namespace.
 	buildJobTTLSeconds = 3600
 
+	// buildDeadlineSeconds is the longest a build Job may be active before
+	// the job-controller ends it. It is generous — an hour is far past any
+	// build this platform is meant to run — because the point of it is that
+	// a build has an end at all, not that it is a time budget.
+	buildDeadlineSeconds = 3600
+
 	// DefaultBuildConcurrency is how many builds run at once when the Kitchen
 	// object names no limit. It is exported because the API reports the queue
 	// against it, and a status bar reading "1 of 0" would be its own bug.
@@ -196,6 +202,14 @@ type BuildReconciler struct {
 	// in from the manager's own configuration; tests answer without a
 	// kubelet. Nil records the failure without its log rather than failing.
 	PodLogs PodLogReader
+
+	// APIReader reads straight from the API server, bypassing the cache.
+	// Events are what it is for: the field selectors that find the warnings
+	// on a build Job are not served by the cache, and a Job whose pods were
+	// refused before they existed says nothing anywhere else.
+	// SetupWithManager fills it in; nil reports the stall without its reason
+	// rather than failing.
+	APIReader client.Reader
 }
 
 // buildTarget is where a build pushed and how: the registry, the credential
@@ -241,6 +255,7 @@ func (r *BuildReconciler) git() gitReporting {
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=pods/log,verbs=get
+// +kubebuilder:rbac:groups="",resources=events,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch
 
 // Reconcile drives a Build from Queued through a BuildKit Job to a Release.
@@ -397,15 +412,11 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		// pod is asked before it is collected: what failed, how, and the last
 		// thing it printed. It is written onto the Build because the pod is
 		// deleted with the job and the Build is not.
-		build.Status.Failure = r.diagnoseJobFailure(ctx, appNS, job.Name, message)
+		build.Status.Failure = r.diagnoseJobFailure(ctx, job, message)
 		return r.fail(ctx, build, project, reasonBuildFailed,
 			gitCreds.explain(failureMessage(build.Status.Failure, message)))
 	default:
-		if build.Status.Phase != kitchenv1alpha1.BuildRunning {
-			build.Status.Phase = kitchenv1alpha1.BuildRunning
-			return ctrl.Result{}, r.Status().Update(ctx, build)
-		}
-		return ctrl.Result{}, nil
+		return r.observeRunning(ctx, build, project, job)
 	}
 }
 
@@ -590,7 +601,15 @@ func (r *BuildReconciler) createJob(
 			// exists on disk while the pod does — then let the cluster
 			// reclaim it. The logs themselves live on in ClickHouse.
 			TTLSecondsAfterFinished: ptr.To(int32(buildJobTTLSeconds)),
-			Template:                template,
+			// A build that is still going an hour later is not going to
+			// finish, and BackoffLimit 0 gives a Job no other end: nothing
+			// retries, so nothing ever reaches a limit. The deadline is the
+			// job-controller's own, which means a build that hangs where the
+			// reconciler cannot see it — a pod the scheduler never places, a
+			// builder waiting on a registry that never answers — still ends
+			// in a Failed condition the Build can read.
+			ActiveDeadlineSeconds: ptr.To(int64(buildDeadlineSeconds)),
+			Template:              template,
 		},
 	}
 	return r.Create(ctx, job)
@@ -1512,6 +1531,11 @@ func (r *BuildReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			return err
 		}
 		r.PodLogs = clientsetPodLogs(clientset)
+	}
+	// Warning events are read through this rather than the cache; see
+	// APIReader.
+	if r.APIReader == nil {
+		r.APIReader = mgr.GetAPIReader()
 	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&kitchenv1alpha1.Build{}).

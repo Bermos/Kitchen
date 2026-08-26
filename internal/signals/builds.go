@@ -22,6 +22,8 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 )
@@ -33,8 +35,15 @@ import (
 const (
 	SignalBuildQueueBackedUp   ID = "build.queue-backed-up"
 	SignalBuildPodPending      ID = "build.pod-pending"
+	SignalBuildStalled         ID = "build.stalled"
 	SignalBuildFailingRepeated ID = "build.failing-repeatedly"
 )
+
+// buildStalledCondition is what the build reconciler calls a Job that has
+// never had a pod. It is a condition rather than anything read off the pods
+// here for the reason the condition exists: there are no pods, so a signal
+// that started from them would be looking in the one place with nothing in it.
+const buildStalledCondition = "Stalled"
 
 func buildSignals() []Signal {
 	return []Signal{{
@@ -51,6 +60,13 @@ func buildSignals() []Signal {
 		Summary:  "a running build's pod cannot be scheduled",
 		Requires: []Input{InputBuilds, InputPods},
 		Evaluate: evaluateBuildPodPending,
+	}, {
+		ID:       SignalBuildStalled,
+		Version:  1,
+		Audience: AudienceDeveloper,
+		Summary:  "a running build's job has never created a pod",
+		Requires: []Input{InputBuilds},
+		Evaluate: evaluateBuildStalled,
 	}, {
 		ID:       SignalBuildFailingRepeated,
 		Version:  1,
@@ -179,6 +195,47 @@ func evaluateBuildPodPending(snapshot *Snapshot) []Finding {
 				fmt.Sprintf("pending for %s",
 					duration(snapshot.Now.Sub(condition.LastTransitionTime.Time))),
 				withReason(condition.Reason, condition.Message),
+				"the build reports Running because its Job exists; nothing is executing",
+			),
+			buildEvidence(build.Name)))
+	}
+	return findings
+}
+
+// evaluateBuildStalled reports a build whose Job has not got as far as a pod.
+//
+// It is the companion of build.pod-pending and not the same signal: that one
+// is a pod nothing will schedule, this one is a pod that was never created at
+// all — refused at admission, refused by a quota, refused for a service
+// account that is not there. The distinction matters to whoever is reading,
+// because in this case `kubectl get pods` is empty and there is nothing to
+// describe.
+//
+// The reconciler has already done the work of deciding, and of finding the
+// warning event that says why; this reads the condition it left.
+func evaluateBuildStalled(snapshot *Snapshot) []Finding {
+	findings := make([]Finding, 0, 1)
+	for i := range snapshot.Builds {
+		build := &snapshot.Builds[i]
+		if build.Status.Phase != kitchenv1alpha1.BuildRunning {
+			continue
+		}
+		condition := meta.FindStatusCondition(build.Status.Conditions, buildStalledCondition)
+		if condition == nil || condition.Status != metav1.ConditionTrue {
+			continue
+		}
+		scope := Scope{
+			Kind:    ScopeBuild,
+			Project: build.Spec.ProjectRef.Name,
+			Name:    build.Name,
+		}
+		findings = append(findings, fire(SignalBuildStalled, SeverityWarning, scope,
+			condition.LastTransitionTime.Time,
+			"the build job has no pod",
+			sentence(
+				fmt.Sprintf("stalled for %s",
+					duration(snapshot.Now.Sub(condition.LastTransitionTime.Time))),
+				condition.Message,
 				"the build reports Running because its Job exists; nothing is executing",
 			),
 			buildEvidence(build.Name)))

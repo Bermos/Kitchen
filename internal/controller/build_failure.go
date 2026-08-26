@@ -22,6 +22,7 @@ import (
 	"io"
 	"strings"
 
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/utils/ptr"
@@ -98,28 +99,53 @@ func clientsetPodLogs(clientset kubernetes.Interface) PodLogReader {
 // produces the Job's own message, so that the Build always carries a failure
 // rather than sometimes carrying one.
 func (r *BuildReconciler) diagnoseJobFailure(
-	ctx context.Context, namespace, jobName, jobMessage string,
+	ctx context.Context, job *batchv1.Job, jobMessage string,
 ) *kitchenv1alpha1.BuildFailureStatus {
 	log := ctrl.LoggerFrom(ctx)
 
 	pods := &corev1.PodList{}
-	if err := r.List(ctx, pods, client.InNamespace(namespace), client.MatchingLabels{"job-name": jobName}); err != nil {
-		log.Error(err, "listing the build job's pods", "namespace", namespace, "job", jobName)
+	if err := r.List(ctx, pods,
+		client.InNamespace(job.Namespace), client.MatchingLabels{"job-name": job.Name}); err != nil {
+		log.Error(err, "listing the build job's pods", "namespace", job.Namespace, "job", job.Name)
 		return &kitchenv1alpha1.BuildFailureStatus{Message: jobMessage}
 	}
 
 	pod := failedPod(pods.Items)
 	if pod == nil {
-		return &kitchenv1alpha1.BuildFailureStatus{Message: jobMessage}
+		return r.failureWithoutPod(ctx, job, jobMessage)
 	}
 	failure := failureFromPod(pod)
 	if failure == nil {
+		// The pod exists and has nothing to say, which is not the same
+		// question as there being no pod: the Job's events are about
+		// creating one, and there was one.
 		return &kitchenv1alpha1.BuildFailureStatus{Message: jobMessage}
 	}
 	if failure.Container != "" {
 		failure.Log = r.containerLogTail(ctx, pod, failure.Container)
 	}
 	return failure
+}
+
+// failureWithoutPod is the failure of a build that has no pod to ask.
+//
+// The Job's own sentence is the same for every build that ever failed, and
+// when there is no pod behind it there is nothing to make it specific — except
+// on the Job itself, where the controllers put what never becomes pod state.
+// A pod refused at admission, refused by a quota, or refused for a service
+// account that is not there leaves a warning event on the Job and nothing
+// anywhere else, so that is where this looks before giving up.
+func (r *BuildReconciler) failureWithoutPod(
+	ctx context.Context, job *batchv1.Job, jobMessage string,
+) *kitchenv1alpha1.BuildFailureStatus {
+	warning := latestWarning(ctx, r.APIReader, &job.ObjectMeta)
+	if warning == "" {
+		return &kitchenv1alpha1.BuildFailureStatus{Message: jobMessage}
+	}
+	return &kitchenv1alpha1.BuildFailureStatus{
+		Reason:  reasonJobNoPod,
+		Message: withReason(jobMessage, warning),
+	}
 }
 
 // failedPod is the pod that carries the failure. A build job runs one pod at a

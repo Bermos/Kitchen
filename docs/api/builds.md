@@ -111,6 +111,37 @@ The field is on the build, which means it is readable by anyone who may read
 the project. Reading the pod it was taken from is the operator's, and a build
 that failed is not the operator's problem.
 
+## A build that says Running and is not moving
+
+A build whose Job has never created a pod carries a `Stalled` condition:
+
+```json
+{
+  "type": "Stalled",
+  "status": "True",
+  "reason": "JobHasNoPod",
+  "message": "the build job has created no pod: Error creating: pods \"shop-bld-a0bb…-x\" is forbidden: violates PodSecurity \"baseline:latest\"",
+  "lastTransitionTime": "2026-08-26T09:14:11Z"
+}
+```
+
+This is the one failure a build's own status used to be silent about. Pods
+refused before they exist are counted nowhere — `status.failed` on the Job
+stays 0 and no `JobFailed` condition is ever written, because the job
+controller is still retrying — so the build reported `Running` for as long as
+anybody left it there, and the only record of the reason was a `FailedCreate`
+event on the Job. The reconciler now reads that event and puts it here.
+
+It is a condition rather than a phase because the build may still recover: a
+quota someone is raising, a namespace label someone is fixing. `status`
+returns to `False` the moment a pod exists. What does not happen is waiting
+forever — a build with no pod for ten minutes is failed, with this message,
+and `failure.reason` is `JobHasNoPod`.
+
+`lastTransitionTime` is when the stall started; the message deliberately
+carries no elapsed time, so that a stuck build is not rewriting its own status
+every half minute.
+
 ## An artifact's evidence
 
 `GET /builds/{name}/attestations` answers everything attached to what the

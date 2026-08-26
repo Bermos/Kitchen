@@ -472,7 +472,11 @@ func (d *deployment) awaitBuild(ctx context.Context, started *build) (*build, er
 		if err != nil {
 			return nil, err
 		}
-		if latest.Phase != current.Phase {
+		// The stall is a change worth reporting even though the phase has
+		// not moved: a follow that says "Running" and nothing else for ten
+		// minutes is exactly the experience the reconciler's Stalled
+		// condition exists to end.
+		if latest.Phase != current.Phase || latest.stalledReason() != current.stalledReason() {
 			d.emit(deployEvent{Type: eventBuild, Build: latest})
 		}
 		current = latest
@@ -576,8 +580,12 @@ func renderDeployEvent(s tui.Styles, event deployEvent) string {
 		return renderLogLine(s, *event.Line, false)
 	case eventBuild:
 		b := event.Build
-		return fmt.Sprintf("%s %s %s %s", s.Accent.Render("build"), b.Name,
+		line := fmt.Sprintf("%s %s %s %s", s.Accent.Render("build"), b.Name,
 			s.Phase(b.Phase), s.Subtle.Render(short(b.Git.SHA)+" "+b.Git.Branch))
+		if reason := b.stalledReason(); reason != "" {
+			line += "\n" + s.Bad.Render("stalled: "+reason)
+		}
+		return line
 	case eventRelease:
 		return fmt.Sprintf("%s %s %s", s.Accent.Render("release"), event.Release.Name,
 			s.Subtle.Render(event.Release.Image))

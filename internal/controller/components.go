@@ -221,7 +221,7 @@ func (r *KitchenReconciler) componentOf(
 	component.Message = fmt.Sprintf("%d of %d pods available", available, desired)
 	reason := r.podReason(ctx, objectMeta.Namespace, selector)
 	if reason == "" {
-		reason = r.latestWarning(ctx, objectMeta)
+		reason = latestWarning(ctx, r.APIReader, objectMeta)
 	}
 	if reason != "" {
 		component.Message += ": " + reason
@@ -367,12 +367,17 @@ func withMessage(reason, message string) string {
 	return reason
 }
 
-// latestWarning returns the most recent warning event on a workload, which is
+// latestWarning returns the most recent warning event on an object, which is
 // where the controllers put the things that never become pod state: an
 // admission rejection, a missing image pull secret, a quota refusal. Best
-// effort — a survey that cannot read events still reports the counts.
-func (r *KitchenReconciler) latestWarning(ctx context.Context, objectMeta *metav1.ObjectMeta) string {
-	reader := r.APIReader
+// effort — a caller that cannot read events still reports what it already
+// knows.
+//
+// The reader is passed in rather than taken off a receiver because this is not
+// only the platform survey's question: a build Job that never creates a pod is
+// the same shape of fault on a different kind of object, and reads its reason
+// out of the same place.
+func latestWarning(ctx context.Context, reader client.Reader, objectMeta *metav1.ObjectMeta) string {
 	if reader == nil {
 		// Field selectors are not served by the cache, so without a direct
 		// reader there is nothing safe to ask for.

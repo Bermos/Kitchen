@@ -2,7 +2,7 @@
 import { computed, ref } from "vue";
 import { useRouter } from "vue-router";
 import { api, type Build } from "../lib/api";
-import { buildFailureLine } from "../lib/builds";
+import { buildFailureLine, buildStallLine } from "../lib/builds";
 import { duration, formatDurationSeconds, shortSHA, timeAgo } from "../lib/format";
 import { useAsync, usePoll } from "../lib/useAsync";
 import PhaseBadge from "../components/PhaseBadge.vue";
@@ -19,6 +19,9 @@ function open(name: string, event: MouseEvent) {
 }
 
 const failureOf = (build: Build) => buildFailureLine(build);
+// A running build that is not moving. It reads as a failure on the row on
+// purpose — it is one, it just has not been called one yet.
+const stallOf = (build: Build) => buildStallLine(build);
 
 const { data, error, loading, refresh } = useAsync(() => api.builds());
 usePoll(() => void refresh(), 10000, () => true);
@@ -140,6 +143,11 @@ const visible = computed(() => (project.value ? (data.value ?? []).filter((b) =>
                    readable as a list of *different* failures. -->
               <span v-if="failureOf(build)" class="block text-xs text-error mt-1 break-words">
                 {{ failureOf(build) }}
+              </span>
+              <!-- And why one that says Running is not moving, which without
+                   this is only on a warning event on the Job. -->
+              <span v-else-if="stallOf(build)" class="block text-xs text-warning mt-1 break-words">
+                {{ stallOf(build) }}
               </span>
             </td>
             <td class="px-4 py-3">
