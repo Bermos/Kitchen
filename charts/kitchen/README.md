@@ -1406,6 +1406,7 @@ kubectl delete namespace kitchen-system
 | `kitchen.residency` | `""` | Where this installation's data is located — a region or jurisdiction in your own vocabulary. Declared, not observed; the compliance inventory's default for environments that declare none, reading `"unknown"` when empty. |
 | `kitchen.api.externalURL` | `""` | Defaults to `kitchen.<baseDomain>`, under the scheme `kitchen.tls.mode` serves. |
 | `kitchen.ingress.gatewayClassName` | `cilium` | GatewayClass for the shared Gateway. |
+| `kitchen.ingress.publicAddresses` | `[]` | Addresses the internet reaches the platform on, when a router forwards :80/:443 to a private Gateway address. What `dns.mismatch` compares published names against. Addresses, not hostnames. |
 | `kitchen.ingress.cloudflared.enabled` | `false` | Run a cloudflared tunnel as the edge. |
 | `kitchen.ingress.cloudflared.tunnelSecretName` | `""` | Secret with the tunnel token under `token`. |
 | `kitchen.tls.mode` | `acme` | `acme`, `cloudflared` or `none`. `acme` requires the `acme` values below. Also the scheme of every published URL: `none` serves HTTP only. |

@@ -167,6 +167,92 @@ func TestDNSMismatchStaysQuietWhenTheNamePointsHere(t *testing.T) {
 	expectNone(t, evaluate(t, SignalDNSMismatch, snapshot))
 }
 
+// The rule's original reading of a Gateway address was "what public DNS should
+// name", which is false wherever a router forwards to it: the Gateway is at
+// 10.0.10.240, the record says 85.195.238.240, and both are right. Two
+// criticals per published hostname is the wrong answer to a correct install.
+func TestDNSMismatchStaysQuietBehindNAT(t *testing.T) {
+	snapshot := newSnapshot()
+	snapshot.Platform.GatewayAddress = testPrivateGatewayIP
+	snapshot.DNS = []DNSProbe{{Host: testHost, Addresses: []string{testPublicIP}, Exists: true}}
+	expectNone(t, evaluate(t, SignalDNSMismatch, snapshot))
+}
+
+// Declining to compare is not declining to look. A published name answering
+// nothing at all is broken under every topology, NAT included.
+func TestDNSMismatchStillFiresOnAMissingRecordBehindNAT(t *testing.T) {
+	snapshot := newSnapshot()
+	snapshot.Platform.GatewayAddress = testPrivateGatewayIP
+	snapshot.DNS = []DNSProbe{{Host: testHost}}
+
+	finding := expectOne(t, evaluate(t, SignalDNSMismatch, snapshot))
+	expectDetail(t, finding, "no address record at all")
+}
+
+// Declaring the public address is what gives the check its teeth back: the
+// operator has said what the record should say, so a record saying anything
+// else is a finding again.
+func TestDNSMismatchFiresAgainstADeclaredPublicAddress(t *testing.T) {
+	snapshot := newSnapshot()
+	snapshot.Platform.GatewayAddress = testPrivateGatewayIP
+	snapshot.Platform.PublicAddresses = []string{testPublicIP}
+	snapshot.DNS = []DNSProbe{{Host: testHost, Addresses: []string{"192.0.2.99"}, Exists: true}}
+
+	finding := expectOne(t, evaluate(t, SignalDNSMismatch, snapshot))
+	expectDetail(t, finding, testPublicIP)
+	expectDetail(t, finding, "192.0.2.99")
+}
+
+func TestDNSMismatchStaysQuietOnADeclaredPublicAddress(t *testing.T) {
+	snapshot := newSnapshot()
+	snapshot.Platform.GatewayAddress = testPrivateGatewayIP
+	snapshot.Platform.PublicAddresses = []string{testPublicIP}
+	snapshot.DNS = []DNSProbe{{Host: testHost, Addresses: []string{testPublicIP}, Exists: true}}
+	expectNone(t, evaluate(t, SignalDNSMismatch, snapshot))
+}
+
+// Split horizon is the usual companion of the translation: the operator
+// resolves from inside the cluster, where the answer is the address traffic
+// actually lands on. That is the same correct configuration from the other
+// side of the router.
+func TestDNSMismatchAcceptsTheGatewayAddressUnderSplitHorizon(t *testing.T) {
+	snapshot := newSnapshot()
+	snapshot.Platform.GatewayAddress = testPrivateGatewayIP
+	snapshot.Platform.PublicAddresses = []string{testPublicIP}
+	snapshot.DNS = []DNSProbe{{Host: testHost, Addresses: []string{testPrivateGatewayIP}, Exists: true}}
+	expectNone(t, evaluate(t, SignalDNSMismatch, snapshot))
+}
+
+// A Gateway addressed by hostname is the other thing a resolved address can
+// never equal. It used to fire on every name; now it is simply not comparable.
+func TestDNSMismatchStaysQuietForAGatewayAddressedByHostname(t *testing.T) {
+	snapshot := newSnapshot()
+	snapshot.Platform.GatewayAddress = "lb-1234.example-cloud.net"
+	snapshot.DNS = []DNSProbe{{Host: testHost, Addresses: []string{testPublicIP}, Exists: true}}
+	expectNone(t, evaluate(t, SignalDNSMismatch, snapshot))
+}
+
+func TestPubliclyRoutableRejectsWhatNoPublicRecordShouldName(t *testing.T) {
+	for _, address := range []string{
+		"10.0.10.240", "172.16.4.1", "192.168.1.1", // RFC1918
+		"100.64.0.1",       // carrier-grade NAT
+		"127.0.0.1", "::1", // loopback
+		"169.254.10.1", "fe80::1", // link-local
+		"fd00::1",            // unique local
+		"0.0.0.0",            // unspecified
+		"lb.example.net", "", // not addresses at all
+	} {
+		if publiclyRoutable(address) {
+			t.Errorf("publiclyRoutable(%q) = true, want false", address)
+		}
+	}
+	for _, address := range []string{"203.0.113.10", "198.51.100.7", "2001:db8::1"} {
+		if !publiclyRoutable(address) {
+			t.Errorf("publiclyRoutable(%q) = false, want true", address)
+		}
+	}
+}
+
 func certificate(notAfter time.Time, ready bool) Certificate {
 	return Certificate{
 		Namespace: controller.PlatformNamespace,

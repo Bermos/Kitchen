@@ -880,6 +880,28 @@ spec:
                       GatewayClass used for the shared Gateway. Cilium's Gateway API
                       implementation is the expected default.
                     type: string
+                  publicAddresses:
+                    description: |-
+                      PublicAddresses are the addresses the internet reaches this platform on,
+                      where they are not the Gateway's own.
+
+                      The Gateway is programmed with whatever its LoadBalancer implementation
+                      assigned it, and on bare metal that is routinely a private address: a
+                      router forwards :80 and :443 from 85.195.238.240 to the Gateway at
+                      10.0.10.240, and both of those are correct. Nothing inside the cluster
+                      can see the outside of that translation, so this is where it is written
+                      down.
+
+                      It is what a published name is compared against — the `dns.mismatch`
+                      signal — and it exists for no other reason. Left empty with a private
+                      Gateway address, the platform does not know what its own records ought
+                      to say and declines to guess: a name that resolves nowhere is still a
+                      finding, a name that resolves somewhere is not compared.
+
+                      Addresses, not hostnames: it is the answer a lookup should give.
+                    items:
+                      type: string
+                    type: array
                 type: object
               observability:
                 description: ObservabilitySpec configures the telemetry pipeline.

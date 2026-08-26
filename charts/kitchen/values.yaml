@@ -213,6 +213,14 @@ kitchen:
   ingress:
     # -- GatewayClass backing the shared Gateway.
     gatewayClassName: cilium
+    # -- Addresses the internet reaches this platform on, where they are not
+    # the Gateway's own. Set this where a router or firewall forwards :80 and
+    # :443 to a Gateway whose LoadBalancer address is private — the Gateway is
+    # programmed with `10.0.10.240`, DNS points at `85.195.238.240`, and both
+    # are correct. It is what the `dns.mismatch` signal compares a published
+    # name against; left empty with a private Gateway address, that comparison
+    # is skipped rather than guessed at. Addresses, not hostnames.
+    publicAddresses: []
     cloudflared:
       # -- Front the Gateway with a cloudflared tunnel instead of a
       # LoadBalancer address.

@@ -1436,6 +1436,10 @@ export interface Settings {
   releaseRetention: number;
   logRetentionDays?: number;
   gatewayAddress?: string;
+  /** `spec.ingress.publicAddresses`: where the internet reaches the platform,
+   * when a router forwards to the Gateway from an address the cluster never
+   * sees. Empty in the ordinary case where the Gateway's address is public. */
+  publicAddresses?: string[];
   /**
    * `spec.access.operators`: the list every `operator` requirement in the
    * policy table is resolved against.

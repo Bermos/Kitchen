@@ -711,7 +711,7 @@ means it also surfaces on the environment's diagnostics strip.
 |---|---|---|
 | `gateway.unprogrammed` | Gateway Programmed=False (AddressNotAssigned et al.) | Gateway status (API; today a condition, now with evidence) |
 | `route.rejected` | any HTTPRoute unaccepted / refs unresolved | route status (API) |
-| `dns.mismatch` | a sampled `*.baseDomain` name does not resolve to the Gateway address | active resolution by the operator — cheap, and catches the "everything green, nothing reachable" install |
+| `dns.mismatch` | a sampled `*.baseDomain` name resolves to none of the addresses the platform is reached at, or resolves to nothing at all | active resolution by the operator — cheap, and catches the "everything green, nothing reachable" install. The addresses are `spec.ingress.publicAddresses` where it is set, and otherwise the Gateway's own address *if the internet could reach it*: a Gateway programmed with an RFC1918 address is a router forwarding to it, and a public record naming `10.0.10.240` would be the fault rather than the fix. With no routable address to compare against, a name that resolves nowhere is still reported and a name that resolves somewhere is not judged |
 | `cert.expiring` | certificate inside 21 days with renewal not progressing; ACME order error attached verbatim | cert-manager objects (unstructured, as the operator already addresses them) |
 | `tunnel.down` | cloudflared unavailable or flapping | Deployment status + restarts |
 | `edge.unrouted-hosts` | sustained requests for hosts no HTTPRoute publishes | `http_requests` unrouted bucket, minus every hostname the routes publish — the platform's own surfaces are unattributed, not unpublished |

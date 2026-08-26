@@ -18,6 +18,7 @@ package signals
 
 import (
 	"fmt"
+	"net/netip"
 	"sort"
 	"strings"
 	"time"
@@ -67,10 +68,15 @@ func edgeSignals() []Signal {
 		Requires: []Input{InputRoutes},
 		Evaluate: evaluateRouteRejected,
 	}, {
-		ID:       SignalDNSMismatch,
-		Version:  1,
+		ID: SignalDNSMismatch,
+		// 2: the comparison is against the address the *internet* reaches this
+		// platform at, which is the Gateway's own only where that address is
+		// globally routable. Under version 1 every install whose Gateway sat
+		// behind a router's port forward reported each of its published
+		// hostnames as a critical, permanently.
+		Version:  2,
 		Audience: AudienceOperator,
-		Summary:  "a published name does not resolve to the Gateway's address",
+		Summary:  "a published name does not resolve to the address the platform is reached at",
 		Requires: []Input{InputDNS},
 		Evaluate: evaluateDNSMismatch,
 	}, {
@@ -226,42 +232,134 @@ func hostnamesOf(route *gatewayv1.HTTPRoute) string {
 
 // evaluateDNSMismatch is the "everything green, nothing reachable" detector.
 //
-// The rule itself is trivial — a name resolved somewhere other than the
-// Gateway's address, or did not resolve at all. What matters is where it does
-// *not* fire, and that is decided before the rule runs: the gatherer marks the
-// DNS input not-applicable when the platform is behind cloudflared (names point
-// at Cloudflare by design) or when the Gateway has no address to compare
-// against, and unreadable when the resolver itself misbehaved. A broken
+// The rule itself is trivial — a name resolved somewhere other than the edge,
+// or did not resolve at all. What matters is where it does *not* fire, and
+// most of that is decided before the rule runs: the gatherer marks the DNS
+// input not-applicable when the platform is behind cloudflared (names point at
+// Cloudflare by design) or when there is no address of any kind to probe on
+// behalf of, and unreadable when the resolver itself misbehaved. A broken
 // resolver must never look like broken DNS.
+//
+// The last of it is decided here, and it is the case the rule originally got
+// wrong. The Gateway's address is where traffic arrives *inside* the cluster,
+// which is not where it arrives from the internet: on bare metal a router
+// commonly forwards :80 and :443 from a public address to a Gateway programmed
+// with an RFC1918 one, and a public record naming 10.0.10.240 would then be
+// the fault rather than the fix. So a name is compared only against an address
+// the internet could plausibly answer with — the declared public addresses, or
+// a Gateway address that is itself globally routable. Where there is no such
+// address the platform does not know what its records ought to say, and
+// declines to guess: see expectedDNSAddresses.
 func evaluateDNSMismatch(snapshot *Snapshot) []Finding {
-	expected := snapshot.Platform.GatewayAddress
-	if expected == "" {
-		return nil
-	}
+	expected := expectedDNSAddresses(snapshot.Platform)
+	accepted := acceptedDNSAddresses(snapshot.Platform, expected)
 	findings := make([]Finding, 0, 1)
 	for _, probe := range snapshot.DNS {
-		if probe.Exists && containsString(probe.Addresses, expected) {
+		switch {
+		case !probe.Exists:
+			// A name the platform published that resolves to nothing at all is
+			// broken under every topology, including the ones with nothing to
+			// compare a resolved address against.
+		case len(expected) == 0:
+			continue
+		case containsAny(probe.Addresses, accepted):
 			continue
 		}
 		scope := Scope{Kind: ScopeDomain, Name: probe.Host}
 		findings = append(findings, fire(SignalDNSMismatch, SeverityCritical, scope, snapshot.Now,
-			"published name does not point here",
+			dnsMismatchTitle(probe),
 			sentence(
 				dnsMismatchHeadline(probe, expected),
-				"the platform published this hostname and the cluster is serving it; the record in "+
-					"front of it disagrees, so visitors never reach the edge at all",
+				dnsMismatchExplanation(probe),
 			),
 			hostEvidence(probe.Host)))
 	}
 	return findings
 }
 
-func dnsMismatchHeadline(probe DNSProbe, expected string) string {
-	if !probe.Exists {
-		return fmt.Sprintf("%s does not resolve, and the Gateway is at %s", probe.Host, expected)
+// expectedDNSAddresses is what a published name ought to resolve to, and it is
+// empty when the platform cannot know.
+//
+// A declared public address is the answer whenever there is one: it is the
+// outside of a translation nothing in the cluster can observe, and an operator
+// who wrote it down is telling the platform what its records should say. With
+// none declared, the Gateway's own address is that answer only if the internet
+// could reach it — an address in an RFC1918 range, in the carrier-grade NAT
+// range, on the loopback or link-local, or a hostname rather than an address,
+// is one no public record should name, so there is nothing here to check a
+// record against and the rule confines itself to records that are missing
+// outright.
+func expectedDNSAddresses(platform PlatformFacts) []string {
+	if len(platform.PublicAddresses) > 0 {
+		return platform.PublicAddresses
 	}
-	return fmt.Sprintf("%s resolves to %s, not to the Gateway at %s",
-		probe.Host, strings.Join(probe.Addresses, ", "), expected)
+	if publiclyRoutable(platform.GatewayAddress) {
+		return []string{platform.GatewayAddress}
+	}
+	return nil
+}
+
+// acceptedDNSAddresses is the wider set the rule stays quiet about: what a
+// name should say, plus the Gateway's own address.
+//
+// The addition covers split horizon, which is the common companion of the
+// translation publicAddresses exists for. The operator resolves names from
+// inside the cluster, where a resolver may well answer with the private
+// address that traffic actually lands on — the same correct configuration seen
+// from the other side of the router, and not something to report as a
+// misdirected record.
+func acceptedDNSAddresses(platform PlatformFacts, expected []string) []string {
+	if platform.GatewayAddress == "" || containsString(expected, platform.GatewayAddress) {
+		return expected
+	}
+	return append(append(make([]string, 0, len(expected)+1), expected...), platform.GatewayAddress)
+}
+
+// publiclyRoutable tells an address the internet can reach from one it cannot.
+// Anything that is not an address at all — a Gateway addressed by hostname —
+// answers false, since a resolved address can never equal it.
+func publiclyRoutable(address string) bool {
+	addr, err := netip.ParseAddr(address)
+	if err != nil {
+		return false
+	}
+	return !addr.IsPrivate() && !addr.IsLoopback() && !addr.IsUnspecified() &&
+		!addr.IsLinkLocalUnicast() && !addr.IsLinkLocalMulticast() &&
+		!addr.IsInterfaceLocalMulticast() && !carrierGradeNAT.Contains(addr)
+}
+
+// carrierGradeNAT is RFC 6598, which netip's IsPrivate does not cover and
+// which every address behind an ISP's own NAT sits in.
+var carrierGradeNAT = netip.MustParsePrefix("100.64.0.0/10")
+
+func dnsMismatchTitle(probe DNSProbe) string {
+	if !probe.Exists {
+		return "published name does not resolve"
+	}
+	return "published name does not point here"
+}
+
+func dnsMismatchHeadline(probe DNSProbe, expected []string) string {
+	if !probe.Exists {
+		if len(expected) == 0 {
+			return fmt.Sprintf("%s has no address record at all, and the platform published it",
+				probe.Host)
+		}
+		return fmt.Sprintf("%s does not resolve, and this platform is reached at %s",
+			probe.Host, strings.Join(expected, ", "))
+	}
+	return fmt.Sprintf("%s resolves to %s, not to %s", probe.Host,
+		strings.Join(probe.Addresses, ", "), strings.Join(expected, ", "))
+}
+
+func dnsMismatchExplanation(probe DNSProbe) string {
+	if !probe.Exists {
+		return "the platform published this hostname and the cluster is serving it; nothing " +
+			"answers for the name, so visitors never reach the edge at all"
+	}
+	return "the platform published this hostname and the cluster is serving it; the record in " +
+		"front of it names somewhere else, so visitors never reach the edge at all — if that " +
+		"address does forward here, it belongs in spec.ingress.publicAddresses"
 }
 
 // evaluateCertExpiring reports a certificate running out with nothing being
@@ -475,6 +573,17 @@ func findCondition(conditions []metav1.Condition, conditionType string) *metav1.
 		}
 	}
 	return nil
+}
+
+// containsAny is containsString over a set of acceptable answers: a name is
+// pointed here if any address it resolved to is one of them.
+func containsAny(values, wanted []string) bool {
+	for _, value := range values {
+		if containsString(wanted, value) {
+			return true
+		}
+	}
+	return false
 }
 
 func containsString(values []string, wanted string) bool {

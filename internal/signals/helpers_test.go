@@ -42,6 +42,10 @@ const (
 	testClaim       = "data"
 	testHost        = "shop-pr-41.example.com"
 	testGatewayIP   = "203.0.113.10"
+	// The bare-metal shape: a Gateway programmed with a private address, with
+	// a router forwarding :80 and :443 to it from a public one.
+	testPrivateGatewayIP = "10.0.10.240"
+	testPublicIP         = "198.51.100.7"
 )
 
 // testNow is a fixed instant. Nothing in this package reads the wall clock, so

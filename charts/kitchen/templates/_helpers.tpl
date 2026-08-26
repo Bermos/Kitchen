@@ -709,6 +709,11 @@ does not run in.
 {{- if not (has .Values.kitchen.tls.mode (list "acme" "cloudflared" "none")) }}
 {{- fail (printf "kitchen.tls.mode must be one of acme, cloudflared, none (got %q)" .Values.kitchen.tls.mode) }}
 {{- end }}
+{{- range .Values.kitchen.ingress.publicAddresses }}
+{{- if not (regexMatch "^[0-9A-Fa-f:.]+$" (toString .)) }}
+{{- fail (printf "kitchen.ingress.publicAddresses must hold IP addresses (got %q): it is the answer a lookup for a published name should give, so a hostname, a URL or a CIDR cannot be compared against one. Use the address a router forwards :80 and :443 to the Gateway from." .) }}
+{{- end }}
+{{- end }}
 {{- if not (has .Values.kitchen.builds.defaultStrategy (list "auto" "dockerfile" "buildpacks")) }}
 {{- fail (printf "kitchen.builds.defaultStrategy must be one of auto, dockerfile, buildpacks (got %q)" .Values.kitchen.builds.defaultStrategy) }}
 {{- end }}

@@ -137,7 +137,15 @@ type PlatformFacts struct {
 	BaseDomain string
 	// GatewayAddress is the shared Gateway's programmed address, empty until
 	// it has one.
+	//
+	// It is where traffic arrives *inside* the cluster, which on bare metal is
+	// routinely not where it arrives from the internet. See PublicAddresses.
 	GatewayAddress string
+	// PublicAddresses is `spec.ingress.publicAddresses`: what the internet
+	// reaches this platform on, when a router or a firewall forwards to the
+	// Gateway from an address the cluster never sees. Empty in the ordinary
+	// case where the Gateway's own address is the public one.
+	PublicAddresses []string
 	// CloudflaredEnabled changes what "correct DNS" means: names point at
 	// Cloudflare's edge rather than at the Gateway, so dns.mismatch has nothing
 	// to compare against.
