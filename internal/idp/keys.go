@@ -44,8 +44,15 @@ const KeysPath = "/kitchen/keys"
 // needs it to *read one back*: a grant in `spec.access` carries the account's
 // address beside its subject so the list is legible, and telling a key's grant
 // from a person's is what lets the members list say which it is looking at.
-// It is a display rule and never an access decision — internal/access resolves
-// a role from the subject alone, and knows nothing about this.
+//
+// It resolves no role and it grants nothing: internal/access answers "what may
+// this caller do" from the subject alone and knows nothing about this. There
+// is one route that asks a different question — `POST /api/v1/projects`, whose
+// caller becomes the new project's admin, and which therefore refuses a
+// machine account outright (`Caller.isMachine` in internal/api, docs/AUTH.md
+// "Machine accounts"). That is a refusal rather than a grant, in the one place
+// where a credential could otherwise widen its own access, and it is the whole
+// of what this constant decides.
 const MachineAccountDomain = "machines.kitchen.local"
 
 // ErrKeyNotFound is what a delete answers when the project has no key by that

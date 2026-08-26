@@ -170,6 +170,64 @@ func TestACIKeyIsAMemberOfExactlyOneProject(t *testing.T) {
 		http.StatusForbidden {
 		t.Fatalf("a developer key must not be able to issue keys: %d %s", recorder.Code, recorder.Body.String())
 	}
+
+	// Nor may it go around that by creating a project of its own, which it
+	// would be the admin of (#203).
+	if recorder := h.do(t, http.MethodPost, "/api/v1/projects",
+		`{"name":"tools","repo":"acme/tools","connection":"gh","registry":"registry"}`,
+		asKey); recorder.Code != http.StatusForbidden {
+		t.Fatalf("a key must not be able to create a project: %d %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+// #203: creating a project used to ask for a valid token and nothing more, so
+// the narrowest credential the platform can issue could make one and hold
+// admin on it. That is not a private act — the operator registers a webhook on
+// the named repository through the *platform's* git connection, builds it on
+// the platform's builders, and takes a name out of a flat namespace under the
+// base domain — and it walked around the reasoning that refuses to issue an
+// admin key at all.
+func TestACIKeyIsRefusedProjectCreationInWordsAndInFact(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+	h.demoteCaller(t)
+	h.grantTo(t, ciKeySubject, ciKeyEmail, kitchenv1alpha1.AccessRoleDeveloper)
+	asKey := h.issuer.tokenFor(t, ciKeySubject, ciKeyEmail)
+
+	recorder := h.do(t, http.MethodPost, "/api/v1/projects",
+		`{"name":"tools","repo":"acme/tools","connection":"gh","registry":"registry"}`, asKey)
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("want 403, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	// The refusal names the operation and the account, the way every other
+	// 403 here names the role it wanted.
+	if body := recorder.Body.String(); !strings.Contains(body, "creating a project") ||
+		!strings.Contains(body, ciKeyEmail) {
+		t.Fatalf("the refusal explains neither the operation nor the caller: %s", body)
+	}
+
+	// And nothing was written on the way to being refused: the guard runs in
+	// front of the handler, so the Project never reaches the cluster.
+	projects := &kitchenv1alpha1.ProjectList{}
+	if err := h.server.Client.List(context.Background(), projects); err != nil {
+		t.Fatal(err)
+	}
+	for i := range projects.Items {
+		if projects.Items[i].Name == "tools" {
+			t.Fatal("the project was created despite the refusal")
+		}
+	}
+}
+
+// A person on the same installation is unaffected. The rule is about what kind
+// of account may widen its own access, not about who is allowed to be busy.
+func TestAPersonMayStillCreateAProject(t *testing.T) {
+	h := asMember(t, "")
+
+	recorder := h.do(t, http.MethodPost, "/api/v1/projects",
+		`{"name":"tools","repo":"acme/tools","connection":"gh","registry":"registry"}`)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d: %s", recorder.Code, recorder.Body.String())
+	}
 }
 
 // Creating writes both things: the credential at the issuer, and the grant

@@ -317,6 +317,15 @@ build and promote and nothing else — is
 [deliberately open](../AUTH.md#machine-accounts) and would arrive as another value
 here.
 
+That reasoning has one other consequence, and it is why `POST /projects`
+refuses a key: **a machine account may not create a project.** Refusing to
+issue an `admin` key means nothing if a key can create a project it is already
+the admin of and issue keys there instead. It is also the only route that asks
+what kind of account is calling rather than what role it holds — everything
+else about a key is an ordinary grant on an ordinary project. See
+[AUTH.md](../AUTH.md#machine-accounts) for how the distinction is drawn, and
+why it never grants anything.
+
 **A key name is a DNS label**, lowercase letters, digits and dashes, at most 32
 characters — it addresses the key in the path, and it is half of the machine
 account's own address at the issuer. One name per project: the same name twice

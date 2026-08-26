@@ -38,7 +38,7 @@ import (
 // on a row is a function that reads the cluster. What comes out is every part
 // of a row that is a constant, which is the part the dashboard can act on.
 
-// The wire names of what a route asks of its caller: requirementKind's five
+// The wire names of what a route asks of its caller: requirementKind's six
 // values, in the words the generated module uses.
 //
 // They are spelled out here rather than derived from the Go identifiers so
@@ -46,6 +46,7 @@ import (
 // dashboard switches on.
 const (
 	PolicyAuthenticated   = "authenticated"
+	PolicyPerson          = "person"
 	PolicyOperator        = "operator"
 	PolicyProjectRole     = "projectRole"
 	PolicyVisibleProjects = "visibleProjects"
@@ -57,7 +58,7 @@ type PolicyRoute struct {
 	// Pattern is the row's own pattern, "PATCH /api/v1/environments/{name}",
 	// and "/" for the catch-all, which has no method of its own.
 	Pattern string
-	// Kind is one of the five constants above.
+	// Kind is one of the six constants above.
 	Kind string
 	// Role is the project role Kind PolicyProjectRole wants, in the wire form
 	// a grant is written in ("viewer", "developer", "admin"). Empty for every
@@ -137,6 +138,8 @@ func policyKind(kind requirementKind) (string, bool) {
 	switch kind {
 	case requireAuthenticated:
 		return PolicyAuthenticated, true
+	case requirePerson:
+		return PolicyPerson, true
 	case requireOperator:
 		return PolicyOperator, true
 	case requireProjectRole:

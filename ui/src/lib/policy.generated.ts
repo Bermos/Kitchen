@@ -24,6 +24,10 @@ export type ProjectRole = (typeof PROJECT_ROLES)[number];
  * What a route asks of its caller.
  *
  * - "authenticated" — any valid token. The caller's own identity is the whole of it.
+ * - "person" — any valid token that is not a CI key's. Not a role: a machine
+ *   account holds every role it needs, and what this refuses is widening
+ *   them. Nothing the dashboard renders can be reached by a machine account,
+ *   which cannot sign in, so `may` answers true for it.
  * - "operator" — the platform's operators alone.
  * - "projectRole" — at least `role` on the project the request is about.
  * - "visibleProjects" — any valid token, and the answer is narrowed to the caller's own
@@ -32,7 +36,7 @@ export type ProjectRole = (typeof PROJECT_ROLES)[number];
  *   role. Which parts are missing is the handler's own business and is not
  *   something this table can say.
  */
-export const REQUIREMENT_KINDS = ["authenticated", "operator", "projectRole", "visibleProjects", "roleShapedBody"] as const;
+export const REQUIREMENT_KINDS = ["authenticated", "person", "operator", "projectRole", "visibleProjects", "roleShapedBody"] as const;
 export type RequirementKind = (typeof REQUIREMENT_KINDS)[number];
 
 /** One row's answer to "who may call this". */
@@ -178,7 +182,7 @@ export type Route =
  */
 export const POLICY: Readonly<Record<Route, Requirement>> = {
   "GET /api/v1/projects": { kind: "visibleProjects" },
-  "POST /api/v1/projects": { kind: "authenticated" },
+  "POST /api/v1/projects": { kind: "person", doing: "creating a project" },
   "GET /api/v1/projects/{name}": { kind: "projectRole", role: "viewer", doing: "reading a project" },
   "PATCH /api/v1/projects/{name}": { kind: "projectRole", role: "admin", doing: "changing a project's settings" },
   "PATCH /api/v1/projects/{name}/env": { kind: "projectRole", role: "developer", doing: "changing a project's environment variables" },

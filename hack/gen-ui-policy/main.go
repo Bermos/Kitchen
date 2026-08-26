@@ -152,11 +152,15 @@ func writeKinds(buf *bytes.Buffer) error {
  * What a route asks of its caller.
  *
  * - %[2]q — any valid token. The caller's own identity is the whole of it.
- * - %[3]q — the platform's operators alone.
- * - %[4]q — at least `+"`role`"+` on the project the request is about.
- * - %[5]q — any valid token, and the answer is narrowed to the caller's own
+ * - %[3]q — any valid token that is not a CI key's. Not a role: a machine
+ *   account holds every role it needs, and what this refuses is widening
+ *   them. Nothing the dashboard renders can be reached by a machine account,
+ *   which cannot sign in, so `+"`may`"+` answers true for it.
+ * - %[4]q — the platform's operators alone.
+ * - %[5]q — at least `+"`role`"+` on the project the request is about.
+ * - %[6]q — any valid token, and the answer is narrowed to the caller's own
  *   projects. Admission is never the question here; completeness is.
- * - %[6]q — any valid token, and the *body* varies by the caller's platform
+ * - %[7]q — any valid token, and the *body* varies by the caller's platform
  *   role. Which parts are missing is the handler's own business and is not
  *   something this table can say.
  */
@@ -166,7 +170,7 @@ export type RequirementKind = (typeof REQUIREMENT_KINDS)[number];
 /** One row's answer to "who may call this". */
 export interface Requirement {
   kind: RequirementKind;
-  /** The project role wanted, set only for %[4]q. */
+  /** The project role wanted, set only for %[5]q. */
   role?: ProjectRole;
   /**
    * The operation in the words a refusal uses — "redeploying", "changing the
@@ -177,8 +181,8 @@ export interface Requirement {
   doing?: string;
 }
 
-`, kinds, api.PolicyAuthenticated, api.PolicyOperator, api.PolicyProjectRole,
-		api.PolicyVisibleProjects, api.PolicyRoleShapedBody)
+`, kinds, api.PolicyAuthenticated, api.PolicyPerson, api.PolicyOperator,
+		api.PolicyProjectRole, api.PolicyVisibleProjects, api.PolicyRoleShapedBody)
 	return nil
 }
 
@@ -188,6 +192,7 @@ export interface Requirement {
 func everyKind() []string {
 	return []string{
 		api.PolicyAuthenticated,
+		api.PolicyPerson,
 		api.PolicyOperator,
 		api.PolicyProjectRole,
 		api.PolicyVisibleProjects,

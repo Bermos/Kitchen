@@ -71,8 +71,24 @@ type requirementKind uint8
 const (
 	// requireAuthenticated admits any valid token. It is what a route asks
 	// when the caller's own identity is the whole of the authorization:
-	// creating a project, and reading who you are.
+	// reading who you are, and saving a query of your own.
 	requireAuthenticated requirementKind = iota
+	// requirePerson admits any valid token that is not a CI key's.
+	//
+	// It is the one requirement that is not about a role, because the thing
+	// it refuses holds every role it needs: a machine account is granted
+	// developer on one project, and that grant is what makes it useful. What
+	// it must not have is a way to *widen* itself, and creating a project
+	// is exactly that — the creator becomes its admin, and an admin issues
+	// keys. `POST /projects/{name}/keys` already refuses to issue an admin
+	// key on the grounds that "a credential in a build pipeline that can
+	// mint its own successors is one nobody can account for"
+	// (docs/api/projects.md); a key that can create a project it is admin of
+	// walks around that reasoning rather than meeting it.
+	//
+	// It is also what docs/API.md has always said a key is: "a member of
+	// exactly one project" that "has no platform surface at all".
+	requirePerson
 	// requireOperator admits the platform's operators alone.
 	requireOperator
 	// requireProjectRole admits a caller holding at least requirement.Role on
@@ -124,7 +140,7 @@ type route struct {
 	Requires requirement
 }
 
-// The five requirement constructors. They exist so the table below is a list
+// The six requirement constructors. They exist so the table below is a list
 // of facts rather than of struct literals with four fields each, and so that a
 // requirement cannot be half-written: a project role always arrives with the
 // resolver that finds its project.
@@ -132,6 +148,12 @@ type route struct {
 // anyCaller is what a route asks when a valid token is the whole of it.
 func anyCaller() requirement {
 	return requirement{Kind: requireAuthenticated}
+}
+
+// anyPerson is a route a CI key may not call, however it is granted. `doing`
+// completes the sentence "<doing> is not something a CI key may do".
+func anyPerson(doing string) requirement {
+	return requirement{Kind: requirePerson, Doing: doing}
 }
 
 // operatorOnly is the platform's own surface. `doing` completes the sentence
@@ -175,10 +197,11 @@ func byRole(doing string) requirement {
 // that gives the dashboard its copy.
 func (s *Server) routes() []route {
 	return []route{
-		// Projects. Creating one is self-service — any account may, and
-		// becomes its admin — and the list is filtered rather than refused.
+		// Projects. Creating one is self-service — any account a person
+		// signs in as may, and becomes its admin — and the list is filtered
+		// rather than refused.
 		{"GET /api/v1/projects", s.listProjects, acrossProjects()},
-		{"POST /api/v1/projects", s.createProject, anyCaller()},
+		{"POST /api/v1/projects", s.createProject, anyPerson("creating a project")},
 		{"GET /api/v1/projects/{name}", s.getProject, onProject(access.ProjectViewer, ofProject, "reading a project")},
 		{"PATCH /api/v1/projects/{name}", s.patchProject,
 			onProject(access.ProjectAdmin, ofProject, "changing a project's settings")},
@@ -742,6 +765,15 @@ func (s *Server) guard(requires requirement, handler http.HandlerFunc) http.Hand
 		case requireAuthenticated:
 			// The token was the whole requirement, and it was checked before
 			// this ever ran.
+
+		case requirePerson:
+			if caller.isMachine() {
+				forbidden(w, fmt.Sprintf(
+					"%s is not something a CI key may do: %s is a machine account, "+
+						"which holds a role on one project and no platform surface at all",
+					requires.Doing, callerName(caller)))
+				return
+			}
 
 		case requireOperator:
 			if !platform.AtLeast(access.PlatformOperator) {

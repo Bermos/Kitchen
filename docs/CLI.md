@@ -122,8 +122,10 @@ the issuer, and the operator has nothing to invalidate.
 
 What a key may do is a project role on a machine account, which is the
 narrowest credential the platform can issue: a key made for `shop` can deploy
-`shop` and cannot see that any other project exists. That is the right shape for
-a CLI, which is exactly where a too-broad token ends up on a laptop.
+`shop`, cannot see that any other project exists, and cannot create one —
+`kitchen projects create` is refused for a key, because a project's creator
+becomes its admin and an admin issues keys. That is the right shape for a CLI,
+which is exactly where a too-broad token ends up on a laptop.
 
 In CI, skip `login` entirely:
 

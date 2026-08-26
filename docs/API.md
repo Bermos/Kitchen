@@ -70,7 +70,9 @@ grant for that account in `spec.access` — `developer` by default, which is the
 day job: builds, promotions, rollbacks, environment variables, logs. So a key
 is a member of exactly one project and has no platform surface at all: it can
 trigger a build on `shop` and it cannot change the base domain, read another
-project, or see that another project exists. Nothing about the role is stored
+project, or see that another project exists. **Nor can it create one** — that
+is the single route whose requirement is `any person` rather than a role,
+because a project's creator becomes its `admin`, and an `admin` issues keys. Nothing about the role is stored
 on the key, and there is no fourth role for machines — it is an ordinary grant
 on an ordinary project, which is why a key can never outrank the project it was
 made for. See [Keys for CI](api/projects.md#keys-for-ci) for issuing one, and
@@ -101,12 +103,13 @@ The `Requires` column on every endpoint below says which of the two it wants.
 An unqualified `viewer`, `developer` or `admin` is a **project** role, on the
 project the request is about — the path's for `/projects/{name}/…`, and
 otherwise the object's own (`spec.projectRef` on a build, a release, an
-environment or a claim; the environment's project for a domain). Three values
+environment or a claim; the environment's project for a domain). Four values
 are not roles:
 
 | Value | Means |
 |---|---|
 | `any account` | a valid token, and nothing more |
+| `any person` | a valid token that is not a CI key's. Not a role — a machine account already holds the role it needs; what this refuses is *widening* it. One route: `POST /projects` |
 | `any account — filtered` | a valid token; the answer is narrowed to the projects the caller can see |
 | `any account — body varies` | a valid token; the shape of the body depends on the caller's platform role, and any list inside it is narrowed to the projects they can see. Two routes: `GET /status` and `GET /connections` |
 
@@ -154,7 +157,7 @@ name against `internal/api/policy.go`, so a route that moves fails them too.
 | Method | Path | Does | Requires |
 |---|---|---|---|
 | GET | `/projects` | List projects | any account — filtered |
-| POST | `/projects` | Create a project | any account |
+| POST | `/projects` | Create a project | any person |
 | GET | `/projects/{name}` | One project — its env vars by name, never their values | `viewer` |
 | PATCH | `/projects/{name}` | Change its settings — branch, previews, build, runtime. Not its env vars | `admin` |
 | PATCH | `/projects/{name}/env` | Change its environment variables — the whole list | `developer` |
