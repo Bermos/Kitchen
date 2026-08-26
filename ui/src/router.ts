@@ -33,6 +33,15 @@ export const router = createRouter({
       meta: { public: true },
     },
     { path: "/", name: "overview", component: () => import("./views/OverviewView.vue") },
+    {
+      // Every signed-in account's own screen, and so one with no `requires`:
+      // it asks the identity provider about the account behind the session
+      // rather than the API about anything the platform authorises. There is
+      // no role that could be too low for it — see views/AccountView.vue.
+      path: "/account",
+      name: "account",
+      component: () => import("./views/AccountView.vue"),
+    },
     { path: "/projects/:name", name: "project", component: () => import("./views/ProjectView.vue") },
     { path: "/builds", name: "builds", component: () => import("./views/BuildsView.vue") },
     {

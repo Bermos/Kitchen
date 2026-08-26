@@ -106,6 +106,7 @@ const groups = () => {
       // on it — the same rule the sidebar follows, asked of the same table.
       items: [
         { label: "Overview", icon: "i-lucide-layout-dashboard", onSelect: () => go({ name: "overview" }) },
+        { label: "Account", icon: "i-lucide-user-round", onSelect: () => go({ name: "account" }) },
         { label: "Builds", icon: "i-lucide-hammer", onSelect: () => go({ name: "builds" }) },
         { label: "Observability", icon: "i-lucide-activity", onSelect: () => go({ name: "observability" }) },
         ...(may("GET /api/v1/connections/{name}", callerFor())
