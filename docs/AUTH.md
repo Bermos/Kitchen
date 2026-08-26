@@ -451,7 +451,8 @@ whoever can claim that address at the issuer.
 | `DELETE /projects/{name}`, the project's own settings, membership and key writes | project `admin` |
 | Builds and cancellations, releases, environment variables, environments, domains, claims | project `developer` |
 | Projects, builds, releases, environments, logs, metrics, requests, diagnostics, signals, traces, and a project's members and keys | project `viewer` |
-| `POST /projects`, `GET /connections/{name}/repositories` | any account |
+| `POST /projects` | any account a person signs in as — see [Machine accounts](#machine-accounts) |
+| `GET /connections/{name}/repositories` | any account |
 | `GET /status`, `GET /connections` | any account, with a body that varies by role |
 | `GET /me` | any account — it describes the caller to themselves |
 | `/logs`, `/events`, `/traffic`, `/metrics/overview`, `/traces`, `/audit` and the collection `GET`s | filtered to the projects the caller can see |
@@ -508,6 +509,25 @@ makes a key a non-human member of exactly one project,
 which is what stops a key that can trigger a build from also being able to
 change the base domain — without a fourth role, and without storing permissions
 on the key. Revocation stays where it already is: one place, at the issuer.
+
+**A machine account may not create a project**, and that is the one place the
+platform asks what *kind* of account is calling rather than what role it holds.
+The rest of the model is deliberately blind to the distinction — a role is
+resolved from the subject alone, and a machine account's address is a display
+detail — but project creation is not a private act. Its creator becomes its
+`admin`; an `admin` issues keys; and the operator goes on to register a webhook
+on the named repository through the *platform's* git connection, build it on
+the platform's builders and publish it under the base domain. A key that could
+do that would be a credential able to mint its own successors, which is exactly
+what `POST /projects/{name}/keys` refuses to issue an `admin` key to avoid.
+
+The check is the reserved domain and nothing cleverer: a machine account can
+only exist under `machines.kitchen.local` and a person can only exist outside
+it, both enforced by the identity provider's own user table, so the address on
+a token is the issuer's statement rather than the caller's. It never grants
+anything — an address that is absent or under any other domain reads as a
+person's, which keeps a federated issuer that sends no `email` claim working —
+and every role every caller holds is still resolved from the subject alone.
 
 ### Preview admission
 

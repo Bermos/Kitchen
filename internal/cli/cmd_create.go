@@ -85,7 +85,11 @@ recognised in is not refused — it is a question, and --yes answers it.
 
 Creating a project starts a build of its production branch straight away, so
 --root-directory and --dockerfile are sent with it rather than set afterwards:
-a monorepo corrected by a later change is corrected one failed build too late.`),
+a monorepo corrected by a later change is corrected one failed build too late.
+
+It is the one command a CI key cannot run. A project's creator becomes its
+admin and an admin issues keys, so creating one is a person's; a key signed in
+with KITCHEN_API_KEY is refused, and says so.`),
 		Args: cobra.MaximumNArgs(1),
 		RunE: run(func(cmd *cobra.Command, args []string) error {
 			options := createOptions{

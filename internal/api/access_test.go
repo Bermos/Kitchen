@@ -560,7 +560,7 @@ func TestEveryRouteCarriesAWellFormedRequirement(t *testing.T) {
 		seen[route.Pattern] = true
 
 		switch route.Requires.Kind {
-		case requireOperator:
+		case requirePerson, requireOperator:
 			if route.Requires.Doing == "" {
 				t.Fatalf("%s refuses without saying what was being attempted", route.Pattern)
 			}

@@ -32,6 +32,7 @@ import (
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/access"
 	"github.com/Bermos/Kitchen/internal/controller"
+	"github.com/Bermos/Kitchen/internal/idp"
 )
 
 // signingAlgorithms are the algorithms a platform token may be signed with.
@@ -87,6 +88,34 @@ func CallerFrom(ctx context.Context) (Caller, bool) {
 // them: the three claims a membership entry can name, and nothing else.
 func (c Caller) access() access.Caller {
 	return access.Caller{Subject: c.Subject, Email: c.Email, EmailVerified: c.EmailVerified}
+}
+
+// isMachine reports whether this token was exchanged from a CI key rather than
+// held by somebody who signed in.
+//
+// The address is the marker because it is the only one there is: a key becomes
+// a session at the issuer, so the token it produces is shaped like anybody
+// else's. Machine accounts are created under a reserved domain
+// (idp.MachineAccountDomain, `.local`, RFC 6762) precisely so that they are
+// recognisable, and the address is the issuer's own record rather than
+// anything the caller says about itself — a person cannot register there, and
+// a key cannot register anywhere else.
+//
+// It is not a role and it never grants anything. Every role this caller holds
+// is resolved from the subject alone, exactly as before; this answers the one
+// different question a route can ask, which is whether the caller is the kind
+// of account that may widen its own access.
+//
+// An address that is absent or is under any other domain reads as a person's.
+// That is deliberate rather than lax: a federated issuer need not send `email`
+// at all, and refusing project creation to every account on such an
+// installation would be a much larger change than the one rule this is. It
+// costs nothing here, because the address on a key's token is not the caller's
+// to choose — the issuer writes it from its own user table, where a machine
+// account can only exist under this domain and a person can only exist
+// outside it.
+func (c Caller) isMachine() bool {
+	return strings.HasSuffix(strings.ToLower(strings.TrimSpace(c.Email)), "@"+idp.MachineAccountDomain)
 }
 
 // kitchenFrom is the Kitchen singleton the request was authenticated against —
