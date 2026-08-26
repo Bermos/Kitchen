@@ -45,9 +45,10 @@ import (
 	"github.com/Bermos/Kitchen/internal/gitprovider"
 )
 
-// The two ways detection does not produce an answer, kept apart because they
-// end differently: one is worth trying again in fifteen seconds, the other is
-// a sentence the person who pushed the commit has to read.
+// The three ways detection does not produce an answer, kept apart because
+// they end differently: one is worth trying again in fifteen seconds, and the
+// other two are sentences somebody has to read — different sentences, about
+// different fields.
 var (
 	// ErrSourceUnreadable is the repository not being readable right now —
 	// a provider that is down, a token that stopped working, a rate limit.
@@ -58,6 +59,18 @@ var (
 	// recognised. That is final: the same commit will not detect differently
 	// on the next attempt.
 	ErrNotRecognised = errors.New("no Dockerfile and no framework detected")
+
+	// ErrRepositoryUnreadable is the repository itself not having been read:
+	// it is not there, or the credential the connection holds cannot see it.
+	//
+	// It is a third answer rather than a shade of the other two because it is
+	// the one they are most easily mistaken for. Every provider answers 404
+	// both for a path that is not in a repository and for a repository a
+	// credential may not know about, so a repository nobody can read arrives
+	// here looking exactly like a root directory somebody typed wrong — and
+	// the message for that sends them to correct a field that is already
+	// correct, for as long as they are willing to keep trying.
+	ErrRepositoryUnreadable = errors.New("the repository is not there, or the credential cannot see it")
 )
 
 // Target is the repository, the commit and the directory within it that
@@ -124,6 +137,12 @@ func Signals(
 	entries, err := reader.ListDir(ctx, target.Repo, target.Ref, target.RootDirectory)
 	if err != nil {
 		if errors.Is(err, gitprovider.ErrFileNotFound) {
+			// Which of the two 404s this is has to be settled before
+			// anything is said about a directory, because the message for a
+			// missing directory is a confident instruction to fix a field.
+			if err := checkRepository(ctx, reader, target.Repo); err != nil {
+				return framework.Signals{}, err
+			}
 			// A root directory that is not there is the project's
 			// configuration being wrong about the repository, which no
 			// amount of waiting fixes.
@@ -167,6 +186,47 @@ func Signals(
 	return signals, nil
 }
 
+// checkRepository asks the provider about the repository itself, which is the
+// one request that tells a repository the credential cannot read apart from a
+// path inside one it can. It costs a request, and only on the path where
+// something is already about to be reported as missing.
+//
+// A nil return means the repository reads, so whatever was not found is
+// genuinely not in it. A provider with nothing to ask — one that reads
+// contents and answers no questions about repositories — also returns nil:
+// the ambiguous message it always gave is better than a confident wrong one
+// invented here. It takes anything a caller holds, because the callers hold
+// different halves of the same provider: a SourceReader here, the Provider
+// itself where the question comes up before any reading has started.
+func checkRepository(ctx context.Context, provider any, repo string) error {
+	probe, ok := gitprovider.Probe(provider)
+	if !ok {
+		return nil
+	}
+	switch _, err := probe.Repository(ctx, repo); {
+	case errors.Is(err, gitprovider.ErrRepositoryNotFound):
+		return fmt.Errorf("%w: %s", ErrRepositoryUnreadable, repo)
+	case err != nil:
+		// The probe itself did not answer, so nothing has been settled. That
+		// is the provider being unreachable rather than the repository being
+		// anything, and it is worth another attempt.
+		return fmt.Errorf("%w: %w", ErrSourceUnreadable, err)
+	}
+	return nil
+}
+
+// UnreadableRepository is checkRepository for a caller that is not reading
+// anything and has a 404 to explain: a project's first build, where the
+// production branch would not resolve and "push a commit" is the wrong thing
+// to say to somebody whose repository nothing can see.
+//
+// False for a provider with no probe behind it, and false for a probe that
+// did not answer — neither has established anything, and a verdict invented
+// from silence is what this exists to stop.
+func UnreadableRepository(ctx context.Context, provider any, repo string) bool {
+	return errors.Is(checkRepository(ctx, provider, repo), ErrRepositoryUnreadable)
+}
+
 // dockerfilePresent reports whether the project's Dockerfile is where the
 // project says it is. The usual case costs nothing — the file is in the
 // listing already read — and only a path pointing into a subdirectory needs
@@ -203,6 +263,20 @@ func dockerfilePresent(
 		}
 	}
 	return false, nil
+}
+
+// UnreadableRepositoryMessage is the one sentence to show somebody whose
+// repository could not be read, wherever the platform noticed it: the
+// preflight, a project's first build, a build's own detection.
+//
+// It names the connection, because the fix is usually the credential of the
+// one that was asked and an installation may have several — and it says both
+// things it can be, because no provider will say which: a 404 for a
+// repository a token may not know about is how a token is kept from
+// enumerating private repositories.
+func UnreadableRepositoryMessage(connection, repo string) string {
+	return fmt.Sprintf("connection %q cannot read %s: check the repository name, "+
+		"and that the connection's credential reaches it", connection, repo)
 }
 
 // ShortRef is a commit abbreviated for a message, and anything else left

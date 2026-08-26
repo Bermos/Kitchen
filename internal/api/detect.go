@@ -90,6 +90,13 @@ type detectionView struct {
 	// the verdict can see what it was reached from.
 	Files []string `json:"files,omitempty"`
 
+	// Unreadable is the repository itself not having been read: it is not
+	// there, or the connection's credential cannot see it. It is the one
+	// "detected": false that correcting the build context will not change,
+	// and a form that headed it "no framework detected" would be sending
+	// somebody to edit a field that is already right.
+	Unreadable bool `json:"unreadable,omitempty"`
+
 	Message string `json:"message,omitempty"`
 }
 
@@ -160,12 +167,15 @@ func (s *Server) detectRepository(w http.ResponseWriter, req *http.Request) {
 		branch, err := resolver.DefaultBranch(detectCtx, body.Repo)
 		switch {
 		case errors.Is(err, gitprovider.ErrFileNotFound):
-			// A repository the credential cannot see, which is the same
-			// answer as a misspelled name: the caller's to fix, so it is an
+			// The repository endpoint answered 404, which is the one place
+			// that answer is unambiguous: it is the repository that cannot be
+			// read, not a path inside one. The caller's to fix — a name they
+			// mistyped, or a token that was never granted it — so it is an
 			// answer rather than a failure.
-			writeJSON(w, http.StatusOK, detectionView{Message: fmt.Sprintf(
-				"connection %q cannot see %s: check the repository name, and that the "+
-					"connection's credential reaches it", connection.Name, body.Repo)})
+			writeJSON(w, http.StatusOK, detectionView{
+				Unreadable: true,
+				Message:    detect.UnreadableRepositoryMessage(connection.Name, body.Repo),
+			})
 			return
 		case err != nil:
 			writeJSON(w, http.StatusBadGateway, errorBody{Error: fmt.Sprintf(
@@ -188,6 +198,19 @@ func (s *Server) detectRepository(w http.ResponseWriter, req *http.Request) {
 	}
 
 	signals, err := detect.Signals(detectCtx, reader, target)
+	if errors.Is(err, detect.ErrRepositoryUnreadable) {
+		// Not a verdict about a directory at all: the repository is not
+		// there, or this connection may not see it. Which of the two is not
+		// knowable — a provider that said so would be a way to enumerate
+		// private repositories — and both are the caller's to act on, so it
+		// is an answer rather than a failure, and it names the connection
+		// because an installation may have several.
+		writeJSON(w, http.StatusOK, detectionView{
+			Ref: ref, RootDirectory: target.RootDirectory, Unreadable: true,
+			Message: detect.UnreadableRepositoryMessage(connection.Name, body.Repo),
+		})
+		return
+	}
 	if errors.Is(err, detect.ErrNotRecognised) {
 		// The root directory is not there. That is the commonest thing this
 		// preflight exists to catch, and it is the caller's to fix.

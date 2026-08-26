@@ -255,7 +255,11 @@ fail one build before anybody realised what to correct.
 
 A repository the platform recognised nothing in — and that has no Dockerfile
 either — is a question rather than a refusal, since the detector reads one
-commit and the person is looking at the whole repository. Like every other
+commit and the person is looking at the whole repository. A repository it could
+not read at all comes back as `"unreadable": true` and is the same question in
+different words: it is not there, or the connection's credential cannot see it,
+and the sentence the preflight gives names which connection was asked rather
+than describing a directory nothing ever got as far as. Like every other
 question here it has a flag that answers it, so `--yes` creates the project and
 nothing ever waits:
 

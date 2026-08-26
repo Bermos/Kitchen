@@ -147,6 +147,14 @@ const (
 	// error about a file the repository never had.
 	reasonFrameworkNotDetected = "FrameworkNotDetected"
 
+	// reasonRepositoryUnreadable is the repository itself not being readable:
+	// it is not there, or the connection's credential cannot see it. It is
+	// its own reason because it is not a repository the platform read and did
+	// not recognise — nothing was read — and the two are otherwise the same
+	// 404 one layer apart, which is how it came to be reported as a root
+	// directory that is not there.
+	reasonRepositoryUnreadable = "RepositoryUnreadable"
+
 	// reasonSourceUnreadable is the platform not being able to look at the
 	// repository at all. It keeps the Build queued rather than failing it —
 	// nothing about the commit caused it.
@@ -528,6 +536,16 @@ func (r *BuildReconciler) decide(
 		// The platform cannot look right now. The Build waits rather than
 		// failing a commit for the provider being unreachable.
 		res, updateErr := r.pending(ctx, build, reasonSourceUnreadable, err)
+		return framework.Framework{}, &res, updateErr
+	}
+
+	if errors.Is(err, errRepositoryUnreadable) {
+		// The repository is not there, or this connection may not see it.
+		// That is the project's configuration rather than the provider
+		// having a bad minute, so the Build fails saying so instead of
+		// queueing for a repository that is not going to appear — and it
+		// fails saying that, rather than describing a root directory.
+		res, updateErr := r.fail(ctx, build, project, reasonRepositoryUnreadable, err.Error())
 		return framework.Framework{}, &res, updateErr
 	}
 	res, updateErr := r.fail(ctx, build, project, reasonFrameworkNotDetected, err.Error())

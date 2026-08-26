@@ -34,6 +34,11 @@ type fakeSource struct {
 	// err, when set, is what every read fails with — a provider that is
 	// down, rather than a repository that says nothing.
 	err error
+	// unreadable is the repository itself not being readable: not there, or
+	// not visible to this credential. Every provider answers that with the
+	// same 404 a path that is not there gets, so it is a listing that finds
+	// nothing plus a repository that cannot be asked about.
+	unreadable bool
 }
 
 // repoWithDockerfile is what most of the suite's projects are: a repository
@@ -76,6 +81,18 @@ func (f *fakeSource) ListDir(_ context.Context, _, _, dir string) ([]gitprovider
 		entries = append(entries, entry)
 	}
 	return entries, nil
+}
+
+// Repository implements the probe that tells a repository nothing can read
+// apart from a path that is not in one it can.
+func (f *fakeSource) Repository(context.Context, string) (gitprovider.Repository, error) {
+	if f.unreadable {
+		return gitprovider.Repository{}, fmt.Errorf("%w: the repository", gitprovider.ErrRepositoryNotFound)
+	}
+	if f.err != nil {
+		return gitprovider.Repository{}, f.err
+	}
+	return gitprovider.Repository{FullName: "acme/shop", DefaultBranch: "main"}, nil
 }
 
 func (f *fakeSource) ReadFile(_ context.Context, _, _, filePath string) ([]byte, error) {

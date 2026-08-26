@@ -1328,6 +1328,12 @@ export interface Detection {
   rootDirectory?: string;
   dockerfile: boolean;
   files?: string[];
+  /** The repository itself could not be read: it is not there, or the
+   * connection's credential cannot see it. The one `detected: false` that
+   * correcting the build context will not change — every provider answers the
+   * same 404 for a repository a token may not know about as for a path that is
+   * not in one, so this used to arrive headed as a missing directory. */
+  unreadable?: boolean;
   message?: string;
 }
 

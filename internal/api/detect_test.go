@@ -35,6 +35,12 @@ import (
 // fakeGitHubContents serves the contents API for one repository from a map of
 // directory path to listing, and one file path to its contents. Anything not
 // in either is a 404, which is what a wrong root directory looks like.
+//
+// The repository itself answers too, because GitHub's 404 for a path inside a
+// repository and its 404 for a repository the token may not see are the same
+// answer, and the only thing that tells them apart is asking about the
+// repository. A server that served contents and not the repository would be
+// one no credential can read.
 func fakeGitHubContents(t *testing.T, dirs map[string][]string, files map[string]string) *httptest.Server {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
@@ -160,6 +166,37 @@ func TestDetectingARootDirectoryThatIsNotThere(t *testing.T) {
 	}
 }
 
+func TestDetectingARepositoryTheConnectionCannotSee(t *testing.T) {
+	// The repository the credential can see is acme/shop; every other
+	// repository is a 404, which is what GitHub answers both for a
+	// repository that does not exist and for one a token is not allowed to
+	// know about.
+	github := fakeGitHubContents(t, map[string][]string{"": {"go.mod"}}, nil)
+	h := newHarness(t, nil, append(fixtures(), gitHubConnection("hub", github.URL, "ghp_stored")...)...)
+
+	recorder := h.do(t, http.MethodPost, "/api/v1/connections/hub/detect",
+		`{"repo": "acme/private", "ref": "main"}`)
+	// It is the caller's to act on — a repository to correct, or a token to
+	// widen — so it is an answer rather than a failure.
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	view := decode[detectionView](t, recorder)
+	if view.Detected || !view.Unreadable {
+		t.Fatalf("a repository nothing could read was not reported as such: %+v", view)
+	}
+	// The message that used to be given here sent somebody to correct a root
+	// directory that was already correct.
+	if strings.Contains(view.Message, "directory") {
+		t.Fatalf("an unreadable repository is still reported as a directory: %+v", view)
+	}
+	// It names the connection, because an installation may have several and
+	// the fix is usually in the one that was asked.
+	if !strings.Contains(view.Message, `"hub"`) || !strings.Contains(view.Message, "acme/private") {
+		t.Fatalf("the message does not say what could not read what: %+v", view)
+	}
+}
+
 func TestDetectingOnAConnectionWithNoRepositories(t *testing.T) {
 	h := newHarness(t, nil, fixtures()...)
 
@@ -219,6 +256,12 @@ func TestDetectingWithoutARefForARepositoryThatIsNotThere(t *testing.T) {
 	view := decode[detectionView](t, recorder)
 	if view.Detected || !strings.Contains(view.Message, "acme/typo") {
 		t.Fatalf("the answer does not name the repository it could not see: %+v", view)
+	}
+	// It is the repository that could not be read, which is what separates
+	// this from every other "detected": false — none of the build-context
+	// fields is what is wrong.
+	if !view.Unreadable {
+		t.Fatalf("a repository nothing could read was not reported as such: %+v", view)
 	}
 }
 
