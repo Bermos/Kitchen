@@ -49,3 +49,15 @@ jobs:
           # client's cilium dependency). goinstall matches what `make lint`
           # runs locally.
           install-mode: goinstall
+          # The action's config check is `golangci-lint config verify`, which
+          # for a v1 linter fetches the JSON schema for its own version from
+          # golangci-lint.run every time it runs. That is the only thing this
+          # job wants from the network once the module cache is warm, and it
+          # is enough to fail the job: the fetch timed out on a pull request
+          # carrying a config that had passed on `main` minutes earlier, which
+          # blocks a release for a reason that has nothing to do with the
+          # branch. `make lint-config` runs the same check, on the machine of
+          # whoever is editing .golangci.yml, where a schema download is worth
+          # waiting for and a failure to reach the site is not somebody else's
+          # red pull request.
+          verify: false

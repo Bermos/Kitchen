@@ -286,6 +286,14 @@ make test                       # also runs go fmt, regenerates deepcopy, and ru
 make lint                       # CI runs it as its own job; test passing does not imply it
 ```
 
+`make lint` runs the linter under the toolchain `go.mod` names rather than the
+go on your PATH, and will fetch that toolchain once if you have not got it.
+That is deliberate: golangci-lint reads export data written by the go it shells
+out to, and a toolchain newer than the pin writes a format the pinned linter
+cannot decode — whereupon it resolves nothing and reports every identifier in
+the tree as undefined, which looks like a repository that does not compile
+rather than like a version mismatch.
+
 See [CLAUDE.md](CLAUDE.md) for the design constraints these commands exist to
 protect.
 
