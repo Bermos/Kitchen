@@ -19,6 +19,12 @@ package controller
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -1208,4 +1214,139 @@ func hasGitCredentialVolume(volumes []corev1.Volume, secret string) bool {
 		return secret == "" || (v.Secret != nil && v.Secret.SecretName == secret)
 	}
 	return false
+}
+
+// Where BuildKit's metadata goes, and how it gets to the termination log.
+//
+// The two halves used to be one argument, and the argument was accepted while
+// the file was unwritable: /dev is root-owned 0755, `--metadata-file` is
+// written atomically, and the builder runs as 1000 — so every Dockerfile
+// build died on the last line, over an image it had already pushed. What is
+// asserted here is both halves: the pod asks for a path the builder can write
+// a neighbouring temporary file in, and the script that carries it the rest of
+// the way does what it says. The script is run, not read.
+
+func TestDockerfilePodKeepsBuildKitsMetadataOutOfDev(t *testing.T) {
+	project, build := buildFixtures()
+	pod := dockerfilePod(project, build, nil, "creds", "", "registry.example.com/shop:abc123",
+		kitchenv1alpha1.BuildAttestationSpec{})
+	container := pod.Spec.Containers[0]
+
+	metadata := ""
+	for i, arg := range container.Args {
+		if arg == "--metadata-file" && i+1 < len(container.Args) {
+			metadata = container.Args[i+1]
+		}
+	}
+	if metadata == "" {
+		t.Fatal("the build was given no --metadata-file")
+	}
+	// The directory is the whole of it: an atomic write creates its temporary
+	// file beside the destination, so a destination in /dev is refused however
+	// world-writable the destination itself is.
+	if dir := path.Dir(metadata); dir == path.Dir(terminationLogPath) {
+		t.Errorf("BuildKit was asked to write its metadata into %s: %s", dir, metadata)
+	}
+	// The digest still has to reach the termination log — nothing else is
+	// read for it — and the container has to be the thing that carries it.
+	if got := strings.Join(container.Command, " "); !strings.Contains(got, terminationLogPath) {
+		t.Errorf("nothing copies the metadata to the termination log: %s", got)
+	}
+}
+
+func TestBuildkitEntrypointCopiesTheDigestOutOnlyWhenTheBuildWon(t *testing.T) {
+	metadata := `{"containerimage.digest":"sha256:` + strings.Repeat("a", 64) + `"}`
+
+	for _, tc := range []struct {
+		name string
+		code int
+		want string
+	}{
+		// The build the issue is about: buildctl succeeds, and the digest it
+		// wrote has to end up in the termination log.
+		{name: "a build that pushed", code: 0, want: metadata},
+		// A failed build has no digest to report, and the termination message
+		// is what its failure is described with — see terminatedMessage.
+		{name: "a build that failed", code: 3, want: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			metadataPath := filepath.Join(dir, "metadata.json")
+			terminationPath := filepath.Join(dir, "termination-log")
+			// The termination log exists before the container does: kubelet
+			// creates it, which is why the copy has to be a write into a file
+			// that is already there rather than a rename over it.
+			if err := os.WriteFile(terminationPath, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			stubBuilder(t, dir, "buildctl-daemonless.sh", fmt.Sprintf(
+				"printf '%%s' '%s' > %s\nexit %d\n", metadata, metadataPath, tc.code))
+
+			code := runEntrypoint(t, dir, metadataPath, terminationPath)
+			if code != tc.code {
+				t.Errorf("the entrypoint exited %d, not the builder's %d", code, tc.code)
+			}
+			written, err := os.ReadFile(terminationPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(written) != tc.want {
+				t.Errorf("the termination log holds %q, want %q", written, tc.want)
+			}
+			if digest := digestFromTerminationMessage(string(written)); (digest != "") != (tc.code == 0) {
+				t.Errorf("the reconciler read %q out of it", digest)
+			}
+		})
+	}
+}
+
+func TestBuildkitEntrypointForwardsArgumentsUntouched(t *testing.T) {
+	dir := t.TempDir()
+	// Nothing from a Build reaches the script as source, so an argument that
+	// reads as shell has to arrive at buildctl as itself. A repository named
+	// after a command substitution is the cheapest way to notice if that ever
+	// stops being true.
+	args := []string{"build", "--opt", "context=https://github.com/a/b.git#$(id -u)", "--opt", "filename=a b"}
+	stubBuilder(t, dir, "buildctl-daemonless.sh", `printf '%s\n' "$@" > `+filepath.Join(dir, "argv")+"\n")
+
+	if code := runEntrypoint(t, dir, filepath.Join(dir, "metadata.json"), filepath.Join(dir, "termination-log"), args...); code != 0 {
+		t.Fatalf("the entrypoint exited %d", code)
+	}
+	recorded, err := os.ReadFile(filepath.Join(dir, "argv"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Split(strings.TrimSuffix(string(recorded), "\n"), "\n"); !reflect.DeepEqual(got, args) {
+		t.Errorf("buildctl was given %q, want %q", got, args)
+	}
+}
+
+// stubBuilder writes an executable shell script into dir, which runEntrypoint puts
+// on the PATH the entrypoint runs with.
+func stubBuilder(t *testing.T, dir, name, body string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\n"+body), 0o700); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// runEntrypoint runs the real entrypoint against a stubbed builder and answers
+// with its exit code.
+func runEntrypoint(t *testing.T, dir, metadataPath, terminationPath string, args ...string) int {
+	t.Helper()
+	argv := append([]string{"-c", buildkitEntrypoint(metadataPath, terminationPath), "buildctl-daemonless.sh"}, args...)
+	cmd := exec.Command("sh", argv...)
+	cmd.Env = append(os.Environ(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	out, err := cmd.CombinedOutput()
+	var exit *exec.ExitError
+	switch {
+	case err == nil:
+		return 0
+	case errors.As(err, &exit):
+		return exit.ExitCode()
+	default:
+		t.Fatalf("running the entrypoint: %v: %s", err, out)
+		return -1
+	}
 }

@@ -110,11 +110,30 @@ const (
 	// volumeGitCredential is that mount's volume, named in both pod shapes.
 	volumeGitCredential = "git-credential"
 
-	// terminationLogPath is where a builder writes what the reconciler needs
+	// terminationLogPath is where a builder leaves what the reconciler needs
 	// back from it — the digest of the image it pushed. Kubernetes surfaces
 	// the file as the container's termination message, so nothing has to be
 	// read out of the pod's log.
 	terminationLogPath = "/dev/termination-log"
+
+	// buildkitMetadataPath is where BuildKit writes that digest first, before
+	// anything copies it to the termination log.
+	//
+	// It cannot write it there directly. `--metadata-file` is written
+	// atomically — a temporary file beside the destination, then a rename —
+	// and the destination's directory is /dev: a runtime-created tmpfs owned
+	// by root and mode 0755 in every cluster. The file itself is
+	// world-writable, which is why the CNB lifecycle's in-place `-report`
+	// write works, but a builder running as UID 1000 cannot create a
+	// neighbour for it. The result was a build that pushed its image, its
+	// manifest and its cache and then died on the last line, exactly as
+	// buildkitCacheArgs describes for the cache export one step earlier.
+	//
+	// /tmp is the builder's own: buildctl-daemonless.sh already mkdirs its
+	// daemon state there. It has to be a path kubelet has not pre-created,
+	// which rules out pointing terminationMessagePath at it — kubelet makes
+	// that file root-owned, and the rename into sticky /tmp is refused.
+	buildkitMetadataPath = "/tmp/kitchen-build-metadata.json"
 
 	// reasonFrameworkNotDetected is a repository the platform read and did
 	// not recognise, with no Dockerfile to fall back to. It is the failure
@@ -631,9 +650,11 @@ func dockerfilePod(
 	args = append(args,
 		"--output", output,
 		// BuildKit writes its result metadata (including the image digest)
-		// to the termination log so the reconciler can read it from the
-		// pod status without any extra plumbing.
-		"--metadata-file", terminationLogPath,
+		// to a scratch path it owns; buildkitEntrypoint copies it to the
+		// termination log, which is where the reconciler reads it from the
+		// pod status. See buildkitMetadataPath for why it cannot be written
+		// there in the first place.
+		"--metadata-file", buildkitMetadataPath,
 		// One log line per step, no cursor tricks: the collector ships
 		// these lines into ClickHouse, and the interactive renderer would
 		// arrive there as a wall of escape codes.
@@ -664,10 +685,16 @@ func dockerfilePod(
 		Spec: corev1.PodSpec{
 			RestartPolicy: corev1.RestartPolicyNever,
 			Containers: []corev1.Container{{
-				Name:    "buildkit",
-				Image:   BuildkitImage,
-				Command: []string{"buildctl-daemonless.sh"},
-				Args:    args,
+				Name:  "buildkit",
+				Image: BuildkitImage,
+				// $0 names the shell's own argv[0] for any diagnostic it
+				// prints; the build's arguments follow it as "$@".
+				Command: []string{
+					"sh", "-c",
+					buildkitEntrypoint(buildkitMetadataPath, terminationLogPath),
+					"buildctl-daemonless.sh",
+				},
+				Args: args,
 				Env: []corev1.EnvVar{
 					{Name: "BUILDKITD_FLAGS", Value: "--oci-worker-no-process-sandbox"},
 					{Name: "DOCKER_CONFIG", Value: dockerConfigDir},
@@ -681,6 +708,31 @@ func dockerfilePod(
 			Volumes: volumes,
 		},
 	}
+}
+
+// buildkitEntrypoint is the program the build container runs: the build
+// itself, and then the copy of its metadata into the termination log — which
+// needs no rename, because that file is already there and world-writable.
+//
+// It is a shell line rather than a second container because a pod has no
+// "after" container: an init container runs before the build, a sidecar
+// alongside it. Nothing from the request reaches the script — buildctl's
+// arguments arrive as positional parameters and are forwarded as "$@", so no
+// value is ever interpolated into shell source. That is the property
+// keda.go gets by refusing a shell outright, which it has to because that job
+// is bound to cluster-admin; a build pod is not.
+//
+// The copy is conditional on the build having succeeded. A failed build has
+// no digest to report, and its termination message is what the failure is
+// described with — see terminatedMessage.
+func buildkitEntrypoint(metadataPath, terminationPath string) string {
+	return `buildctl-daemonless.sh "$@"
+code=$?
+if [ "$code" -eq 0 ]; then
+	cat ` + metadataPath + ` > ` + terminationPath + `
+fi
+exit "$code"
+`
 }
 
 // repoCloneURL is where a build fetches the project's repository from.
