@@ -17,6 +17,7 @@ import {
 } from "../lib/account";
 import { timeAgo } from "../lib/format";
 import { useAsync } from "../lib/useAsync";
+import PageHeader from "../components/PageHeader.vue";
 
 // The account, as the person who owns it manages it: what it is called, how it
 // signs in, and which browsers are signed in as it right now.
@@ -175,14 +176,13 @@ async function revoke(token: string) {
 </script>
 
 <template>
-  <div class="space-y-5 max-w-3xl">
-    <div>
-      <h1 class="text-xl font-semibold text-highlighted">Account</h1>
-      <p class="text-xs text-muted mt-1">
+  <div class="space-y-6 max-w-3xl">
+    <PageHeader title="Account">
+      <template #description>
         Your own account at the platform's identity provider — what it is called, how it signs in, and which browsers
         are signed in as it. Roles are granted on a project, not here.
-      </p>
-    </div>
+      </template>
+    </PageHeader>
 
     <UAlert v-if="identityError" color="error" variant="soft" icon="i-lucide-triangle-alert" :title="identityError" />
 
@@ -190,7 +190,7 @@ async function revoke(token: string) {
       <!-- Profile -->
       <section class="rounded-md border border-default p-4 space-y-4">
         <div>
-          <h2 class="text-sm font-semibold text-highlighted">Profile</h2>
+          <h2 class="text-sm font-medium text-highlighted">Profile</h2>
           <p class="text-xs text-muted mt-1">
             The name everything you create on this platform is attributed to. The account menu keeps showing the old
             one until you sign in again: it reads the name out of the access token, which was stamped at sign-in.
@@ -225,7 +225,7 @@ async function revoke(token: string) {
       <!-- Password -->
       <section class="rounded-md border border-default p-4 space-y-4">
         <div>
-          <h2 class="text-sm font-semibold text-highlighted">Password</h2>
+          <h2 class="text-sm font-medium text-highlighted">Password</h2>
           <p class="text-xs text-muted mt-1">
             Changing it proves the current one. The browsers already signed in stay signed in unless you say otherwise.
           </p>
@@ -293,7 +293,7 @@ async function revoke(token: string) {
       <section class="rounded-md border border-default p-4 space-y-4">
         <div class="flex items-start justify-between gap-4">
           <div>
-            <h2 class="text-sm font-semibold text-highlighted">Signed-in browsers</h2>
+            <h2 class="text-sm font-medium text-highlighted">Signed-in browsers</h2>
             <p class="text-xs text-muted mt-1">
               Every session the identity provider holds for this account. Signing one out ends it there, which is what
               stops that browser signing back in without the password.
@@ -331,29 +331,29 @@ async function revoke(token: string) {
           <table class="w-full min-w-[34rem] text-sm">
             <thead>
               <tr class="text-left text-xs text-muted border-b border-default">
-                <th class="px-4 py-2 font-medium">Browser</th>
-                <th class="px-4 py-2 font-medium">Signed in</th>
-                <th class="px-4 py-2 font-medium">Expires</th>
-                <th class="px-4 py-2"></th>
+                <th class="px-3 py-2 font-medium">Browser</th>
+                <th class="px-3 py-2 font-medium">Signed in</th>
+                <th class="px-3 py-2 font-medium">Expires</th>
+                <th class="px-3 py-2"></th>
               </tr>
             </thead>
             <tbody>
               <tr v-if="!rows.length">
-                <td colspan="4" class="px-4 py-8 text-center text-muted">
+                <td colspan="4" class="px-3 py-8 text-center text-muted">
                   {{ sessionsLoading ? "Loading…" : "No sessions to show." }}
                 </td>
               </tr>
               <tr v-for="row in rows" :key="row.id" class="border-b border-muted last:border-0">
-                <td class="px-4 py-3">
+                <td class="px-3 py-2">
                   <p class="text-highlighted flex items-center gap-2">
                     {{ row.device }}
                     <UBadge v-if="row.current" color="primary" variant="subtle" size="sm">this browser</UBadge>
                   </p>
                   <p class="text-xs text-dimmed font-mono">{{ row.ipAddress || "no address recorded" }}</p>
                 </td>
-                <td class="px-4 py-3 text-xs text-toned">{{ timeAgo(row.createdAt) }}</td>
-                <td class="px-4 py-3 text-xs text-toned">{{ expiresIn(row.expiresAt) }}</td>
-                <td class="px-4 py-3 text-right whitespace-nowrap">
+                <td class="px-3 py-2 text-xs text-toned">{{ timeAgo(row.createdAt) }}</td>
+                <td class="px-3 py-2 text-xs text-toned">{{ expiresIn(row.expiresAt) }}</td>
+                <td class="px-3 py-2 text-right whitespace-nowrap">
                   <!-- This browser gets no button on purpose: ending its own
                        session from here would sign the reader out mid-sentence,
                        and the account menu already does that deliberately. -->

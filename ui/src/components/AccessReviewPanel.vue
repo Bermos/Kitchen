@@ -243,7 +243,7 @@ function flagsOf(entry: { orphaned?: boolean; inactive?: boolean; unknown?: bool
           </thead>
           <tbody>
             <tr v-if="!review.entries.length">
-              <td colspan="6" class="px-3 py-6 text-center text-muted text-sm">
+              <td colspan="6" class="px-3 py-8 text-center text-muted text-sm">
                 This cycle froze no grants: nobody held a role in its scope when it opened.
               </td>
             </tr>
@@ -330,7 +330,7 @@ function flagsOf(entry: { orphaned?: boolean; inactive?: boolean; unknown?: bool
           </thead>
           <tbody>
             <tr v-if="!identities.data.value?.identities.length">
-              <td colspan="5" class="px-3 py-6 text-center text-muted text-sm">
+              <td colspan="5" class="px-3 py-8 text-center text-muted text-sm">
                 {{ identities.loading.value ? "Loading…" : "Nobody holds a role here." }}
               </td>
             </tr>

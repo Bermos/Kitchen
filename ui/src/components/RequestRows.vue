@@ -57,14 +57,14 @@ function millis(iso: string): string {
             <td class="px-3 py-0.5 text-dimmed whitespace-nowrap select-none">
               {{ time(row.timestamp) }}<span class="text-dimmed/60">{{ millis(row.timestamp) }}</span>
             </td>
-            <td class="px-2 py-0.5 text-muted whitespace-nowrap select-none">{{ row.method }}</td>
-            <td class="px-2 py-0.5 whitespace-nowrap tabular-nums select-none" :class="statusClass(row.status)">
+            <td class="px-3 py-0.5 text-muted whitespace-nowrap select-none">{{ row.method }}</td>
+            <td class="px-3 py-0.5 whitespace-nowrap tabular-nums select-none" :class="statusClass(row.status)">
               {{ row.status }}
             </td>
-            <td class="px-2 py-0.5 text-toned whitespace-nowrap tabular-nums text-right">
+            <td class="px-3 py-0.5 text-toned whitespace-nowrap tabular-nums text-right">
               {{ formatLatency(row.durationMs) }}
             </td>
-            <td class="px-2 py-0.5 break-all w-full" :class="statusClass(row.status)">
+            <td class="px-3 py-0.5 break-all w-full" :class="statusClass(row.status)">
               {{ row.path }}
               <span v-if="row.route && row.route !== row.path" class="text-dimmed ml-1">{{ row.route }}</span>
             </td>

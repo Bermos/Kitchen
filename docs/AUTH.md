@@ -315,7 +315,12 @@ other: the dashboard's operator mode changed what was *rendered*, not what was
 **This section is now enforced.** The REST API registers every route out of one
 route → role table (`internal/api/policy.go`), the preview gate and the API
 both resolve membership through `internal/access`, and the dashboard's copy of
-the table is generated from the API's so the two cannot disagree. It was
+the table is generated from the API's so the two cannot disagree.
+
+The other half of that sentence — what operator mode *renders*, as against what
+the role permits — is [the dashboard's design guide](UI.md#the-mode-rule), and
+it is enforced too: `ui/src/lib/design.test.ts` refuses a developer screen that
+prints a Kubernetes noun outside an operator gate. It was
 written down before any of it was built on purpose — enforcement without a
 written model is how a permission system ends up meaning whatever the first
 three `if` statements happened to mean — and it remains the authority: where

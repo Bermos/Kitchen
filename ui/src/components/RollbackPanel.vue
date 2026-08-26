@@ -363,7 +363,7 @@ function commitLabel(build: Build): string {
 
             <template v-else-if="step === 2 && target">
               <div class="flex items-center gap-3 flex-wrap mb-4">
-                <h2 class="text-base font-medium text-highlighted font-mono">
+                <h2 class="text-sm font-medium text-highlighted font-mono">
                   {{ props.environment.release }} → {{ target.release.name }}
                 </h2>
                 <UBadge v-if="props.environment.type !== 'preview'" color="warning" variant="subtle" size="sm">
@@ -541,7 +541,7 @@ function commitLabel(build: Build): string {
                  rather than returning to an unchanged list. -->
             <template v-else-if="step === 3 && target">
               <div class="flex items-baseline gap-3 flex-wrap mb-4">
-                <h2 class="text-base font-medium text-highlighted">
+                <h2 class="text-sm font-medium text-highlighted">
                   <span class="font-mono">{{ target.release.name }}</span>
                   {{ landed ? "is live" : "is rolling out" }}
                 </h2>

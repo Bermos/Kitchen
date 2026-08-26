@@ -2,7 +2,10 @@
 import { computed, ref } from "vue";
 import { api, type TrafficEdge } from "../lib/api";
 import { compactCount } from "../lib/format";
+import { operatorMode } from "../lib/mode";
 import { useAsync, usePoll } from "../lib/useAsync";
+import OperatorOnly from "../components/OperatorOnly.vue";
+import PageHeader from "../components/PageHeader.vue";
 
 // The traffic screen draws what the flow collector shipped: aggregated
 // Hubble flow edges out of ClickHouse, via GET /api/v1/traffic. The map is a
@@ -44,6 +47,15 @@ const edges = computed<TrafficEdge[]>(() => {
   if (dropsOnly.value) edges = edges.filter((e) => e.drops > 0);
   return edges;
 });
+
+// The second line under a box on the map. A namespace is a Kubernetes noun and
+// so the operator's; what a developer needs from the same field is the one
+// thing it says in their vocabulary — whether the other end of the edge is on
+// this platform at all, which is exactly the case where it is missing.
+function boxDetail(box: Node): string {
+  if (!box.namespace) return "off the platform";
+  return operatorMode.value ? box.namespace : "";
+}
 
 // The map draws the busiest edges; the table below has all of them.
 const mapLimit = 30;
@@ -137,19 +149,16 @@ function edgeLabel(edge: TrafficEdge): string {
 </script>
 
 <template>
-  <div class="space-y-5">
-    <div class="flex items-center justify-between gap-4 flex-wrap">
-      <div>
-        <h1 class="text-xl font-semibold text-highlighted">Traffic</h1>
-        <p class="text-xs text-muted mt-1">
-          The service map, aggregated from Cilium's Hubble flows — one edge per talking pair in the window.
-        </p>
-      </div>
-      <div class="flex items-center gap-2 flex-wrap">
+  <div class="space-y-6">
+    <PageHeader title="Traffic">
+      <template #description>
+        The service map, aggregated from Cilium's Hubble flows — one edge per talking pair in the window.
+      </template>
+      <template #actions>
         <USelect v-model="project" :items="projectItems" value-key="value" size="sm" class="w-36 sm:w-40" @change="rerun" />
         <USelect v-model="rangeMinutes" :items="ranges" size="sm" class="w-36 sm:w-44" @change="rerun" />
-      </div>
-    </div>
+      </template>
+    </PageHeader>
 
     <div class="flex items-center gap-2 flex-wrap">
       <UButton
@@ -188,12 +197,23 @@ function edgeLabel(edge: TrafficEdge): string {
       class="rounded-md border border-default px-6 py-14 text-center text-sm text-muted space-y-2"
     >
       <p>{{ loading ? "Loading…" : dropsOnly ? "Nothing was dropped in this window." : "No flow data in this window." }}</p>
-      <p v-if="!loading && !dropsOnly" class="text-xs text-dimmed max-w-xl mx-auto">
-        The traffic view needs the flow pipeline: enable Hubble in Cilium and point
-        <span class="font-mono">Kitchen.spec.observability.hubble.relayAddress</span> at Hubble Relay (typically
-        <span class="font-mono">hubble-relay.kube-system.svc.cluster.local:80</span>). The operator follows the
-        stream from there and this screen fills in.
-      </p>
+      <!-- Turning the flow pipeline on is the operator's job and reads as an
+           instruction; a developer who cannot act on it is only being told
+           their screen is empty for a reason nobody named. -->
+      <template v-if="!loading && !dropsOnly">
+        <OperatorOnly>
+          <p class="text-xs text-dimmed max-w-xl mx-auto">
+            The traffic view needs the flow pipeline: enable Hubble in Cilium and point
+            <span class="font-mono">Kitchen.spec.observability.hubble.relayAddress</span> at Hubble Relay (typically
+            <span class="font-mono">hubble-relay.kube-system.svc.cluster.local:80</span>). The operator follows the
+            stream from there and this screen fills in.
+          </p>
+        </OperatorOnly>
+        <p v-if="!operatorMode" class="text-xs text-dimmed max-w-xl mx-auto">
+          The platform is not measuring flows yet — an operator has to turn the pipeline on before this screen has
+          anything to draw.
+        </p>
+      </template>
     </div>
 
     <template v-else>
@@ -231,7 +251,7 @@ function edgeLabel(edge: TrafficEdge): string {
               {{ node.name.length > 26 ? `${node.name.slice(0, 25)}…` : node.name }}
             </text>
             <text :x="node.x + 10" :y="node.y + 31" class="fill-[var(--ui-text-dimmed)] text-[9px] font-mono">
-              {{ node.namespace || "outside the cluster" }}
+              {{ boxDetail(node) }}
             </text>
           </g>
         </svg>
@@ -242,13 +262,13 @@ function edgeLabel(edge: TrafficEdge): string {
         <table class="w-full min-w-[48rem] text-sm">
           <thead>
             <tr class="text-left text-xs text-muted border-b border-default bg-muted">
-              <th class="px-4 py-2.5 font-medium">Edge</th>
-              <th class="px-4 py-2.5 font-medium">Protocol</th>
-              <th class="px-4 py-2.5 font-medium text-right">Rate</th>
-              <th class="px-4 py-2.5 font-medium text-right">Flows</th>
-              <th class="px-4 py-2.5 font-medium text-right">5xx</th>
-              <th class="px-4 py-2.5 font-medium text-right">Dropped</th>
-              <th class="px-4 py-2.5 font-medium text-right">p95</th>
+              <th class="px-3 py-2 font-medium">Edge</th>
+              <th class="px-3 py-2 font-medium">Protocol</th>
+              <th class="px-3 py-2 font-medium text-right">Rate</th>
+              <th class="px-3 py-2 font-medium text-right">Flows</th>
+              <th class="px-3 py-2 font-medium text-right">5xx</th>
+              <th class="px-3 py-2 font-medium text-right">Dropped</th>
+              <th class="px-3 py-2 font-medium text-right">p95</th>
             </tr>
           </thead>
           <tbody>
@@ -257,24 +277,28 @@ function edgeLabel(edge: TrafficEdge): string {
               :key="`${edge.sourceNamespace}/${edge.source}->${edge.destinationNamespace}/${edge.destination}`"
               class="border-b border-muted last:border-0 hover:bg-elevated/40"
             >
-              <td class="px-4 py-2 font-mono text-xs">
+              <td class="px-3 py-2 font-mono text-xs">
                 <span class="text-toned">{{ edge.source }}</span>
                 <span class="text-dimmed mx-1.5">→</span>
                 <span class="text-toned">{{ edge.destination }}</span>
-                <span v-if="edge.destinationNamespace" class="text-dimmed ml-1.5">{{ edge.destinationNamespace }}</span>
+                <OperatorOnly>
+                  <span v-if="edge.destinationNamespace" class="text-dimmed ml-1.5">
+                    {{ edge.destinationNamespace }}
+                  </span>
+                </OperatorOnly>
               </td>
-              <td class="px-4 py-2 text-xs text-muted">{{ edge.protocol }}</td>
-              <td class="px-4 py-2 text-right font-mono text-xs text-toned">
+              <td class="px-3 py-2 text-xs text-muted">{{ edge.protocol }}</td>
+              <td class="px-3 py-2 text-right font-mono text-xs text-toned">
                 {{ edge.rps >= 10 ? Math.round(edge.rps) : edge.rps.toFixed(2) }}/s
               </td>
-              <td class="px-4 py-2 text-right font-mono text-xs text-toned">{{ compactCount(edge.flows) }}</td>
-              <td class="px-4 py-2 text-right font-mono text-xs" :class="edge.errors ? 'text-error' : 'text-dimmed'">
+              <td class="px-3 py-2 text-right font-mono text-xs text-toned">{{ compactCount(edge.flows) }}</td>
+              <td class="px-3 py-2 text-right font-mono text-xs" :class="edge.errors ? 'text-error' : 'text-dimmed'">
                 {{ edge.errors || "—" }}
               </td>
-              <td class="px-4 py-2 text-right font-mono text-xs" :class="edge.drops ? 'text-error' : 'text-dimmed'">
+              <td class="px-3 py-2 text-right font-mono text-xs" :class="edge.drops ? 'text-error' : 'text-dimmed'">
                 {{ edge.drops || "—" }}
               </td>
-              <td class="px-4 py-2 text-right font-mono text-xs text-toned">
+              <td class="px-3 py-2 text-right font-mono text-xs text-toned">
                 {{ edge.protocol === "HTTP" && edge.p95Ms > 0 ? `${Math.round(edge.p95Ms)} ms` : "—" }}
               </td>
             </tr>

@@ -2,11 +2,12 @@
 import { computed, ref, watch } from "vue";
 import { api } from "../lib/api";
 import { loadConfig, platformVersion } from "../lib/config";
-import { operatorMode } from "../lib/mode";
 import { versionLabel } from "../lib/updates";
 import { useAsync } from "../lib/useAsync";
 import ConditionsTable from "../components/ConditionsTable.vue";
 import OperatorsPanel from "../components/OperatorsPanel.vue";
+import PageHeader from "../components/PageHeader.vue";
+import PageSection from "../components/PageSection.vue";
 import PlatformUpdatePanel from "../components/PlatformUpdatePanel.vue";
 import RetentionPanel from "../components/RetentionPanel.vue";
 import StatusDot from "../components/StatusDot.vue";
@@ -83,18 +84,12 @@ const strategies = [
 
 <template>
   <div class="space-y-6">
-    <div>
-      <div class="flex items-center gap-2 text-xs text-muted mb-1">
-        <RouterLink to="/platform" class="hover:text-highlighted">Platform</RouterLink>
-        <span>/</span>
-        <span class="text-toned">Settings</span>
-      </div>
-      <h1 class="text-xl font-semibold text-highlighted">Settings</h1>
-      <p class="text-xs text-muted mt-1">
+    <PageHeader title="Settings" :breadcrumb="[{ label: 'Platform', to: '/platform' }, { label: 'Settings' }]">
+      <template #description>
         The platform's runtime configuration — the <span class="font-mono">Kitchen</span> singleton the operator
         reconciles.
-      </p>
-    </div>
+      </template>
+    </PageHeader>
 
     <UAlert v-if="error" color="error" variant="soft" icon="i-lucide-triangle-alert" :title="error" />
 
@@ -182,18 +177,21 @@ const strategies = [
       </div>
 
       <!-- Both are five-column tables with a message that truncates, so they
-           keep the whole width rather than sharing it. -->
-      <div v-if="operatorMode">
-        <h2 class="text-sm font-medium text-highlighted mb-2">Platform conditions</h2>
-        <ConditionsTable :conditions="settings.conditions" />
-      </div>
+           keep the whole width rather than sharing it.
 
-      <div v-if="operatorMode">
-        <h2 class="text-sm font-medium text-highlighted mb-2">Platform components</h2>
-        <p class="text-xs text-muted mb-3">
-          Every workload labelled as part of Kitchen, and whether the pods it wants are running. A component with no
-          pods at all was refused before it started — the message carries the reason.
-        </p>
+           Neither is gated on the mode, and that is the rule rather than an
+           oversight: a platform screen is the operator's screen entire (see
+           docs/UI.md). Gating blocks *inside* one is how this page came to
+           show its top half and not its bottom to an operator who had chosen
+           the developer's view and then followed a link here. -->
+      <PageSection title="Platform conditions">
+        <ConditionsTable :conditions="settings.conditions" />
+      </PageSection>
+
+      <PageSection
+        title="Platform components"
+        description="Every workload labelled as part of Kitchen, and whether the pods it wants are running. A component with no pods at all was refused before it started — the message carries the reason."
+      >
         <div class="rounded-md border border-default bg-muted overflow-x-auto">
           <table class="w-full min-w-[36rem] text-sm">
             <thead>
@@ -206,7 +204,7 @@ const strategies = [
             </thead>
             <tbody>
               <tr v-if="!components.length">
-                <td colspan="4" class="px-3 py-3 text-muted">No components surveyed yet.</td>
+                <td colspan="4" class="px-3 py-2 text-muted">No components surveyed yet.</td>
               </tr>
               <tr v-for="component in components" :key="component.name" class="border-b border-muted last:border-0">
                 <td class="px-3 py-2 font-mono text-highlighted">
@@ -229,7 +227,7 @@ const strategies = [
             </tbody>
           </table>
         </div>
-      </div>
+      </PageSection>
     </template>
     <div v-else-if="loading" class="py-24 text-center text-muted text-sm">Loading…</div>
   </div>

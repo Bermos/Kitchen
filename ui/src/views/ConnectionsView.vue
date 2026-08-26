@@ -2,11 +2,11 @@
 import { ref } from "vue";
 import { api, type Connection } from "../lib/api";
 import { timeAgo } from "../lib/format";
-import { operatorMode } from "../lib/mode";
-import { conditionsTone, statusDetail } from "../lib/status";
+import { conditionsTone } from "../lib/status";
 import { useAsync } from "../lib/useAsync";
 import ConditionsTable from "../components/ConditionsTable.vue";
 import ConnectionModal from "../components/ConnectionModal.vue";
+import PageHeader from "../components/PageHeader.vue";
 import StatusDot from "../components/StatusDot.vue";
 
 // Connections are plugin instances: git sources, registries, database
@@ -41,14 +41,11 @@ async function deleteConnection() {
 
 <template>
   <div class="space-y-6">
-    <div class="flex items-start justify-between gap-3 flex-wrap">
-      <div>
-        <h1 class="text-xl font-semibold text-highlighted">Connections</h1>
-        <p class="text-xs text-muted mt-1">
-          Git providers, registries and databases the platform talks to. Credentials never leave the operator.
-        </p>
-      </div>
-      <div class="flex items-center gap-2">
+    <PageHeader title="Connections">
+      <template #description>
+        Git providers, registries and databases the platform talks to. Credentials never leave the operator.
+      </template>
+      <template #actions>
         <UButton
           icon="i-lucide-refresh-cw"
           color="neutral"
@@ -59,8 +56,8 @@ async function deleteConnection() {
           @click="refresh"
         />
         <ConnectionModal @saved="refresh" />
-      </div>
-    </div>
+      </template>
+    </PageHeader>
 
     <UAlert v-if="error" color="error" variant="soft" icon="i-lucide-triangle-alert" :title="error" />
 
@@ -96,16 +93,10 @@ async function deleteConnection() {
           @click="deleteTarget = connection"
         />
       </div>
-      <!-- Why the dot is not green, in the provider's own words — the full
-           conditions table stays an operator-mode detail. -->
-      <p
-        v-if="!operatorMode && statusDetail(connection.conditions)"
-        class="px-4 pb-3 text-xs"
-        :class="conditionsTone(connection.conditions) === 'warning' ? 'text-warning' : 'text-error'"
-      >
-        {{ statusDetail(connection.conditions) }}
-      </p>
-      <div v-if="operatorMode" class="px-4 pb-3">
+      <!-- Why the dot is not green, in full. Managing a connection is the
+           operator's outright — this whole screen is behind that role — so
+           the conditions are not gated on the mode a second time. -->
+      <div v-if="connection.conditions?.length" class="px-4 pb-3">
         <ConditionsTable :conditions="connection.conditions" />
       </div>
     </div>

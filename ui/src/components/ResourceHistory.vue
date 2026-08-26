@@ -98,7 +98,7 @@ const resolution = computed(() => bucketLabel(series.value?.bucketSeconds));
     </p>
 
     <p v-if="quiet && !history.loading.value" class="rounded-md border border-default bg-muted px-4 py-6 text-center text-xs text-muted">
-      No samples in this window — the environment ran no pods, or the platform was not sampling.
+      No samples in this window — the environment was not running, or the platform was not sampling.
     </p>
     <div v-else class="grid gap-3 lg:grid-cols-2">
       <ResourceChart label="CPU" :points="cpu" :format="cores" :limit="series?.cpuLimitCores ?? 0" :marks="marks" />

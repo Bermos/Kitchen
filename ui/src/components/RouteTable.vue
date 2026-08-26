@@ -61,7 +61,7 @@ function toggle(route: string) {
       <table class="w-full min-w-[42rem] text-sm">
         <thead>
           <tr class="text-left text-xs text-muted border-b border-default bg-muted">
-            <th v-for="column in columns" :key="column.key" class="px-4 py-2 font-medium" :class="column.align">
+            <th v-for="column in columns" :key="column.key" class="px-3 py-2 font-medium" :class="column.align">
               <button
                 v-if="column.sort"
                 class="inline-flex items-center gap-1 hover:text-highlighted"
@@ -86,7 +86,7 @@ function toggle(route: string) {
         </thead>
         <tbody>
           <tr v-if="!routes?.length">
-            <td :colspan="columns.length" class="px-4 py-6 text-center text-muted text-sm">
+            <td :colspan="columns.length" class="px-3 py-8 text-center text-muted text-sm">
               {{ loading ? "Loading…" : "No routes served anything in this window." }}
             </td>
           </tr>
@@ -98,7 +98,7 @@ function toggle(route: string) {
             :title="selected === row.route ? 'Show every route again' : 'Filter this section to this route'"
             @click="toggle(row.route)"
           >
-            <td class="px-4 py-2 font-mono text-xs text-highlighted break-all">
+            <td class="px-3 py-2 font-mono text-xs text-highlighted break-all">
               {{ row.route || "/" }}
               <UIcon
                 v-if="row.route === OVERFLOW"
@@ -107,21 +107,21 @@ function toggle(route: string) {
                 title="Everything past this environment's 300-template budget lands here — usually a sign an identifier scheme was not recognised"
               />
             </td>
-            <td class="px-4 py-2 text-right font-mono text-toned tabular-nums">{{ compactCount(row.requests) }}</td>
-            <td class="px-4 py-2 text-right font-mono text-dimmed tabular-nums text-xs">
+            <td class="px-3 py-2 text-right font-mono text-toned tabular-nums">{{ compactCount(row.requests) }}</td>
+            <td class="px-3 py-2 text-right font-mono text-dimmed tabular-nums text-xs">
               {{ row.requestsPerSecond >= 1 ? `${row.requestsPerSecond.toFixed(1)}/s` : `${(row.requestsPerSecond * 60).toFixed(1)}/min` }}
             </td>
-            <td class="px-4 py-2 text-right font-mono tabular-nums" :class="row.errors ? 'text-error' : 'text-dimmed'">
+            <td class="px-3 py-2 text-right font-mono tabular-nums" :class="row.errors ? 'text-error' : 'text-dimmed'">
               {{ row.errors || "—" }}
             </td>
-            <td class="px-4 py-2 text-right font-mono tabular-nums" :class="row.errors ? 'text-error' : 'text-dimmed'">
+            <td class="px-3 py-2 text-right font-mono tabular-nums" :class="row.errors ? 'text-error' : 'text-dimmed'">
               {{ formatPercent(row.errorRate) }}
             </td>
-            <td class="px-4 py-2 text-right font-mono text-dimmed tabular-nums text-xs">
+            <td class="px-3 py-2 text-right font-mono text-dimmed tabular-nums text-xs">
               {{ formatLatency(row.p50Ms) }}
             </td>
-            <td class="px-4 py-2 text-right font-mono text-toned tabular-nums">{{ formatLatency(row.p95Ms) }}</td>
-            <td class="px-4 py-2 text-right font-mono text-dimmed tabular-nums text-xs">
+            <td class="px-3 py-2 text-right font-mono text-toned tabular-nums">{{ formatLatency(row.p95Ms) }}</td>
+            <td class="px-3 py-2 text-right font-mono text-dimmed tabular-nums text-xs">
               {{ formatLatency(row.p99Ms) }}
             </td>
           </tr>

@@ -22,6 +22,9 @@ import CrashReport from "../components/CrashReport.vue";
 import DomainsPanel from "../components/DomainsPanel.vue";
 import FindingList from "../components/FindingList.vue";
 import LogViewer from "../components/LogViewer.vue";
+import OperatorOnly from "../components/OperatorOnly.vue";
+import PageHeader from "../components/PageHeader.vue";
+import PageSection from "../components/PageSection.vue";
 import PhaseBadge from "../components/PhaseBadge.vue";
 import ProcessesPanel from "../components/ProcessesPanel.vue";
 import RequestsPanel from "../components/RequestsPanel.vue";
@@ -247,41 +250,36 @@ function historyBy(entry: { reason: string; by?: string }): string {
           (exception.usedBy?.length ? `. Relied on by: ${exception.usedBy.join(', ')}` : '')
         "
       />
-      <div class="flex items-start justify-between gap-4 flex-wrap">
-        <div>
-          <div class="flex items-center gap-2 text-xs text-muted mb-1">
-            <RouterLink to="/" class="hover:text-highlighted">Overview</RouterLink>
-            <span>/</span>
-            <RouterLink :to="{ name: 'project', params: { name: environment.project } }" class="hover:text-highlighted">
-              {{ environment.project }}
-            </RouterLink>
-            <span>/</span>
-            <span class="text-toned font-mono">{{ environment.name }}</span>
-          </div>
-          <div class="flex items-center gap-3 flex-wrap">
-            <h1 class="text-xl font-semibold text-highlighted">{{ environment.name }}</h1>
-            <UBadge color="neutral" variant="subtle" size="sm">{{ environment.type }}</UBadge>
-            <PhaseBadge :phase="environment.phase" />
-            <!-- The rating is the owners' declaration; its absence is a state
-                 of its own and is said out loud, never left blank. -->
-            <UBadge v-if="environment.dataClass" color="warning" variant="subtle" size="sm" icon="i-lucide-shield">
-              {{ environment.dataClass }}
-            </UBadge>
-            <UBadge v-else color="neutral" variant="outline" size="sm" icon="i-lucide-shield-question">
-              unclassified
-            </UBadge>
-            <UBadge v-if="environment.residency" color="neutral" variant="subtle" size="sm" icon="i-lucide-globe">
-              {{ environment.residency }}
-            </UBadge>
-          </div>
-          <div class="flex items-center gap-3 mt-1 text-xs text-muted flex-wrap">
-            <span v-if="environment.preview" class="font-mono">
-              #{{ environment.preview.pullRequest }} · {{ environment.preview.branch }}
-            </span>
-            <span>created {{ timeAgo(environment.createdAt) }}</span>
-          </div>
-        </div>
-        <div class="flex items-center gap-2">
+      <PageHeader
+        :title="environment.name"
+        :breadcrumb="[
+          { label: 'Overview', to: '/' },
+          { label: environment.project, to: { name: 'project', params: { name: environment.project } } },
+          { label: environment.name, mono: true },
+        ]"
+      >
+        <template #badges>
+          <UBadge color="neutral" variant="subtle" size="sm">{{ environment.type }}</UBadge>
+          <PhaseBadge :phase="environment.phase" />
+          <!-- The rating is the owners' declaration; its absence is a state
+               of its own and is said out loud, never left blank. -->
+          <UBadge v-if="environment.dataClass" color="warning" variant="subtle" size="sm" icon="i-lucide-shield">
+            {{ environment.dataClass }}
+          </UBadge>
+          <UBadge v-else color="neutral" variant="outline" size="sm" icon="i-lucide-shield-question">
+            unclassified
+          </UBadge>
+          <UBadge v-if="environment.residency" color="neutral" variant="subtle" size="sm" icon="i-lucide-globe">
+            {{ environment.residency }}
+          </UBadge>
+        </template>
+        <template #meta>
+          <span v-if="environment.preview" class="font-mono">
+            #{{ environment.preview.pullRequest }} · {{ environment.preview.branch }}
+          </span>
+          <span>created {{ timeAgo(environment.createdAt) }}</span>
+        </template>
+        <template #actions>
           <UButton
             v-if="mayDeleteEnvironment && environment.type === 'preview'"
             color="neutral"
@@ -312,8 +310,8 @@ function historyBy(entry: { reason: string; by?: string }): string {
           >
             Open
           </UButton>
-        </div>
-      </div>
+        </template>
+      </PageHeader>
 
       <!-- What is wrong with it right now, if anything: the same findings the
            operator's problems list carries, narrowed to this environment. It
@@ -431,37 +429,43 @@ function historyBy(entry: { reason: string; by?: string }): string {
             </div>
           </div>
 
-          <div v-if="workload.data.value.pods?.length" class="overflow-x-auto border-t border-default">
-            <table class="w-full min-w-[42rem] text-sm">
-              <thead>
-                <tr class="text-left text-xs text-muted border-b border-default">
-                  <th class="px-4 py-2 font-medium">Pod</th>
-                  <th class="px-4 py-2 font-medium">Restarts</th>
-                  <th class="px-4 py-2 font-medium">Node</th>
-                  <th class="px-4 py-2 font-medium">Up</th>
-                  <th class="px-4 py-2 font-medium">Detail</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="pod in workload.data.value.pods" :key="pod.name" class="border-b border-muted last:border-0">
-                  <td class="px-4 py-2 font-mono text-highlighted">
-                    <span class="inline-flex items-center gap-2">
-                      <StatusDot :tone="podTone(pod)" />
-                      <span class="truncate">{{ pod.name }}</span>
-                    </span>
-                  </td>
-                  <td class="px-4 py-2 font-mono" :class="pod.restarts ? 'text-warning' : 'text-toned'">
-                    {{ pod.restarts }}
-                  </td>
-                  <td class="px-4 py-2 font-mono text-xs text-toned">{{ pod.node || "—" }}</td>
-                  <td class="px-4 py-2 text-xs text-muted whitespace-nowrap">{{ uptime(pod.startedAt) }}</td>
-                  <td class="px-4 py-2 text-xs text-toned max-w-xs truncate" :title="pod.message || pod.phase">
-                    {{ pod.message || pod.phase }}
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
+          <!-- One row per pod, with the node it landed on: Kubernetes nouns,
+               and so the operator's. A developer's answer to "is it running"
+               is the strip above, the crash report below it and the findings
+               at the top of the page — none of which needs the word pod. -->
+          <OperatorOnly>
+            <div v-if="workload.data.value.pods?.length" class="overflow-x-auto border-t border-default">
+              <table class="w-full min-w-[42rem] text-sm">
+                <thead>
+                  <tr class="text-left text-xs text-muted border-b border-default">
+                    <th class="px-3 py-2 font-medium">Pod</th>
+                    <th class="px-3 py-2 font-medium">Restarts</th>
+                    <th class="px-3 py-2 font-medium">Node</th>
+                    <th class="px-3 py-2 font-medium">Up</th>
+                    <th class="px-3 py-2 font-medium">Detail</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="pod in workload.data.value.pods" :key="pod.name" class="border-b border-muted last:border-0">
+                    <td class="px-3 py-2 font-mono text-highlighted">
+                      <span class="inline-flex items-center gap-2">
+                        <StatusDot :tone="podTone(pod)" />
+                        <span class="truncate">{{ pod.name }}</span>
+                      </span>
+                    </td>
+                    <td class="px-3 py-2 font-mono" :class="pod.restarts ? 'text-warning' : 'text-toned'">
+                      {{ pod.restarts }}
+                    </td>
+                    <td class="px-3 py-2 font-mono text-xs text-toned">{{ pod.node || "—" }}</td>
+                    <td class="px-3 py-2 text-xs text-muted whitespace-nowrap">{{ uptime(pod.startedAt) }}</td>
+                    <td class="px-3 py-2 text-xs text-toned max-w-xs truncate" :title="pod.message || pod.phase">
+                      {{ pod.message || pod.phase }}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </OperatorOnly>
         </div>
       </div>
 
@@ -528,49 +532,52 @@ function historyBy(entry: { reason: string; by?: string }): string {
 
       <DomainsPanel :environment="environment.name" :role="data?.project.role" />
 
-      <ConditionsTable v-if="operatorMode" :conditions="environment.conditions" />
+      <OperatorOnly>
+        <ConditionsTable :conditions="environment.conditions" />
+      </OperatorOnly>
 
-      <div v-if="operatorMode">
-        <h2 class="text-sm font-medium text-highlighted mb-2">Materialized objects</h2>
-        <p class="text-xs text-muted mb-3">
-          What the operator created in
-          <span class="font-mono">{{ objects.data.value?.namespace || "the application namespace" }}</span> for this
-          environment — the objects themselves, as the API server holds them.
-        </p>
-        <UAlert
-          v-if="objects.error.value"
-          color="error"
-          variant="soft"
-          icon="i-lucide-triangle-alert"
-          :title="objects.error.value"
-        />
-        <div v-else class="rounded-md border border-default divide-y divide-default overflow-hidden">
-          <details v-for="object in objects.data.value?.objects ?? []" :key="object.kind" class="group">
-            <summary class="flex items-center gap-3 px-4 py-2.5 cursor-pointer text-sm hover:bg-elevated">
-              <UIcon name="i-lucide-chevron-right" class="size-4 text-dimmed group-open:rotate-90" />
-              <span class="font-mono text-highlighted">{{ object.kind }}</span>
-              <span class="font-mono text-xs text-dimmed truncate">{{ object.name }}</span>
-              <span v-if="!object.present" class="ml-auto text-xs text-warning">{{ object.message }}</span>
-              <UButton
-                v-else
-                color="neutral"
-                variant="ghost"
-                size="xs"
-                icon="i-lucide-copy"
-                class="ml-auto"
-                aria-label="Copy manifest"
-                @click.prevent="copyManifest(object)"
-              />
-            </summary>
-            <pre
-              v-if="object.present"
-              class="px-4 py-3 text-xs font-mono bg-muted overflow-x-auto max-h-96 overflow-y-auto"
-              >{{ manifestOf(object) }}</pre
-            >
-          </details>
-          <p v-if="!objects.data.value" class="px-4 py-3 text-xs text-muted">Loading…</p>
-        </div>
-      </div>
+      <OperatorOnly>
+        <PageSection title="Materialized objects">
+          <template #description>
+            What the operator created in
+            <span class="font-mono">{{ objects.data.value?.namespace || "the application namespace" }}</span> for this
+            environment — the objects themselves, as the API server holds them.
+          </template>
+          <UAlert
+            v-if="objects.error.value"
+            color="error"
+            variant="soft"
+            icon="i-lucide-triangle-alert"
+            :title="objects.error.value"
+          />
+          <div v-else class="rounded-md border border-default divide-y divide-default overflow-hidden">
+            <details v-for="object in objects.data.value?.objects ?? []" :key="object.kind" class="group">
+              <summary class="flex items-center gap-3 px-4 py-2.5 cursor-pointer text-sm hover:bg-elevated">
+                <UIcon name="i-lucide-chevron-right" class="size-4 text-dimmed group-open:rotate-90" />
+                <span class="font-mono text-highlighted">{{ object.kind }}</span>
+                <span class="font-mono text-xs text-dimmed truncate">{{ object.name }}</span>
+                <span v-if="!object.present" class="ml-auto text-xs text-warning">{{ object.message }}</span>
+                <UButton
+                  v-else
+                  color="neutral"
+                  variant="ghost"
+                  size="xs"
+                  icon="i-lucide-copy"
+                  class="ml-auto"
+                  aria-label="Copy manifest"
+                  @click.prevent="copyManifest(object)"
+                />
+              </summary>
+              <pre
+                v-if="object.present"
+                class="px-4 py-3 text-xs font-mono bg-muted overflow-x-auto max-h-96 overflow-y-auto"
+                >{{ manifestOf(object) }}</pre
+              >
+            </details>
+            <p v-if="!objects.data.value" class="px-4 py-3 text-xs text-muted">Loading…</p>
+          </div>
+        </PageSection>
+      </OperatorOnly>
 
       <!-- The whole section is the move, not a list with a button on it: the
            releases themselves are already on the project's Deployments tab,
@@ -589,12 +596,12 @@ function historyBy(entry: { reason: string; by?: string }): string {
           <table class="w-full min-w-[36rem] text-sm">
             <tbody>
               <tr v-for="release in otherReleases" :key="release.name" class="border-b border-muted last:border-0">
-                <td class="px-4 py-2.5 font-mono text-highlighted w-44">{{ release.name }}</td>
-                <td class="px-4 py-2.5 font-mono text-xs text-toned truncate max-w-xs" :title="release.image">
+                <td class="px-3 py-2 font-mono text-highlighted w-44">{{ release.name }}</td>
+                <td class="px-3 py-2 font-mono text-xs text-toned truncate max-w-xs" :title="release.image">
                   {{ shortImage(release.image) }}
                 </td>
-                <td class="px-4 py-2.5 text-xs text-muted whitespace-nowrap">{{ timeAgo(release.createdAt) }}</td>
-                <td class="px-4 py-2.5 text-right">
+                <td class="px-3 py-2 text-xs text-muted whitespace-nowrap">{{ timeAgo(release.createdAt) }}</td>
+                <td class="px-3 py-2 text-right">
                   <UButton color="neutral" variant="subtle" size="xs" @click="openRollback(release)">Review</UButton>
                 </td>
               </tr>
@@ -612,16 +619,16 @@ function historyBy(entry: { reason: string; by?: string }): string {
           <table class="w-full min-w-[36rem] text-sm">
             <tbody>
               <tr v-for="entry in environment.history" :key="entry.release + entry.to" class="border-b border-muted last:border-0">
-                <td class="px-4 py-2.5 font-mono text-highlighted w-44">{{ entry.release }}</td>
-                <td class="px-4 py-2.5">
+                <td class="px-3 py-2 font-mono text-highlighted w-44">{{ entry.release }}</td>
+                <td class="px-3 py-2">
                   <UBadge :color="historyLabel(entry.reason).tone" variant="soft" size="sm">
                     {{ historyLabel(entry.reason).label }}
                   </UBadge>
                 </td>
-                <td class="px-4 py-2.5 text-xs text-toned truncate max-w-xs" :title="historyBy(entry)">
+                <td class="px-3 py-2 text-xs text-toned truncate max-w-xs" :title="historyBy(entry)">
                   {{ historyBy(entry) }}
                 </td>
-                <td class="px-4 py-2.5 text-xs text-muted whitespace-nowrap">
+                <td class="px-3 py-2 text-xs text-muted whitespace-nowrap">
                   current {{ timeAgo(entry.from) }} → {{ timeAgo(entry.to) }}
                 </td>
               </tr>

@@ -8,6 +8,7 @@ import { formatLatency, formatPercent, formatRate, type SignalTile } from "../li
 import { useAsync, usePoll } from "../lib/useAsync";
 import EdgeRanking from "../components/EdgeRanking.vue";
 import GoldenSignals from "../components/GoldenSignals.vue";
+import PageHeader from "../components/PageHeader.vue";
 import StatusDot from "../components/StatusDot.vue";
 
 // The front door: what it served across every project, and whether the door
@@ -99,21 +100,13 @@ function expiry(certificate: Certificate): string {
 </script>
 
 <template>
-  <div class="space-y-5">
-    <div class="flex items-start justify-between gap-4 flex-wrap">
-      <div>
-        <div class="flex items-center gap-2 text-xs text-muted mb-1">
-          <RouterLink to="/platform" class="hover:text-highlighted">Platform</RouterLink>
-          <span>/</span>
-          <span class="text-toned">Edge</span>
-        </div>
-        <h1 class="text-xl font-semibold text-highlighted">Edge</h1>
-        <p class="text-xs text-muted mt-1">
-          Everything that entered the platform, across every project — and the Gateway, the tunnel and the certificates
-          it entered through.
-        </p>
-      </div>
-      <div class="flex items-center gap-2">
+  <div class="space-y-6">
+    <PageHeader title="Edge" :breadcrumb="[{ label: 'Platform', to: '/platform' }, { label: 'Edge' }]">
+      <template #description>
+        Everything that entered the platform, across every project — and the Gateway, the tunnel and the certificates it
+        entered through.
+      </template>
+      <template #actions>
         <USelect v-model="rangeMinutes" :items="ranges" size="xs" class="w-36 sm:w-40" />
         <UButton
           icon="i-lucide-refresh-cw"
@@ -124,8 +117,8 @@ function expiry(certificate: Certificate): string {
           aria-label="Refresh"
           @click="reload"
         />
-      </div>
-    </div>
+      </template>
+    </PageHeader>
 
     <UAlert v-if="error" color="error" variant="soft" icon="i-lucide-triangle-alert" :title="error" />
 
@@ -200,15 +193,15 @@ function expiry(certificate: Certificate): string {
           <table class="w-full min-w-[36rem] text-sm">
             <thead>
               <tr class="text-left text-xs text-muted border-b border-default bg-muted">
-                <th class="px-4 py-2 font-medium">Host</th>
-                <th class="px-4 py-2 font-medium text-right">Requests</th>
-                <th class="px-4 py-2 font-medium">First seen</th>
-                <th class="px-4 py-2 font-medium">Last seen</th>
+                <th class="px-3 py-2 font-medium">Host</th>
+                <th class="px-3 py-2 font-medium text-right">Requests</th>
+                <th class="px-3 py-2 font-medium">First seen</th>
+                <th class="px-3 py-2 font-medium">Last seen</th>
               </tr>
             </thead>
             <tbody>
               <tr v-if="!data?.unrouted?.length">
-                <td colspan="4" class="px-4 py-4 text-center text-xs text-muted">
+                <td colspan="4" class="px-3 py-2 text-center text-xs text-muted">
                   Every request in the window asked for a hostname this platform publishes.
                 </td>
               </tr>
@@ -218,12 +211,12 @@ function expiry(certificate: Certificate): string {
                 class="border-b border-muted last:border-0"
                 :class="host && entry.host === host ? 'bg-warning/10' : ''"
               >
-                <td class="px-4 py-2 font-mono text-xs text-highlighted break-all">{{ entry.host || "(none)" }}</td>
-                <td class="px-4 py-2 text-right font-mono text-xs tabular-nums text-toned">
+                <td class="px-3 py-2 font-mono text-xs text-highlighted break-all">{{ entry.host || "(none)" }}</td>
+                <td class="px-3 py-2 text-right font-mono text-xs tabular-nums text-toned">
                   {{ compactCount(entry.requests) }} <span class="text-dimmed">· {{ formatRate(entry.requestsPerSecond) }}</span>
                 </td>
-                <td class="px-4 py-2 text-xs text-dimmed whitespace-nowrap">{{ timeAgo(entry.firstSeen) }}</td>
-                <td class="px-4 py-2 text-xs text-dimmed whitespace-nowrap">{{ timeAgo(entry.lastSeen) }}</td>
+                <td class="px-3 py-2 text-xs text-dimmed whitespace-nowrap">{{ timeAgo(entry.firstSeen) }}</td>
+                <td class="px-3 py-2 text-xs text-dimmed whitespace-nowrap">{{ timeAgo(entry.lastSeen) }}</td>
               </tr>
             </tbody>
           </table>
@@ -315,16 +308,16 @@ function expiry(certificate: Certificate): string {
           <table class="w-full text-sm">
             <thead>
               <tr class="text-left text-xs text-muted border-b border-default bg-muted">
-                <th class="px-4 py-2 font-medium">Certificate</th>
-                <th class="px-4 py-2 font-medium">Names</th>
-                <th class="px-4 py-2 font-medium text-right">Expires in</th>
-                <th class="px-4 py-2 font-medium">Renews</th>
-                <th class="px-4 py-2 font-medium">State</th>
+                <th class="px-3 py-2 font-medium">Certificate</th>
+                <th class="px-3 py-2 font-medium">Names</th>
+                <th class="px-3 py-2 font-medium text-right">Expires in</th>
+                <th class="px-3 py-2 font-medium">Renews</th>
+                <th class="px-3 py-2 font-medium">State</th>
               </tr>
             </thead>
             <tbody>
               <tr v-if="!certificates.length">
-                <td colspan="5" class="px-4 py-4 text-center text-xs text-muted">
+                <td colspan="5" class="px-3 py-2 text-center text-xs text-muted">
                   {{ loading ? "Loading…" : "No certificates." }}
                 </td>
               </tr>
@@ -337,26 +330,26 @@ function expiry(certificate: Certificate): string {
                   host && (certificate.dnsNames ?? []).some((name) => name.includes(host)) ? 'bg-warning/10' : '',
                 ]"
               >
-                <td class="px-4 py-2.5">
+                <td class="px-3 py-2">
                   <span class="inline-flex items-center gap-2">
                     <StatusDot :tone="certificateTone(certificate)" />
                     <span class="font-mono text-xs text-highlighted">{{ certificate.name }}</span>
                   </span>
                   <p class="text-[11px] text-dimmed pl-3.5">{{ certificate.namespace }}</p>
                 </td>
-                <td class="px-4 py-2.5 font-mono text-xs text-toned break-all">
+                <td class="px-3 py-2 font-mono text-xs text-toned break-all">
                   {{ (certificate.dnsNames ?? []).join(", ") || "—" }}
                 </td>
                 <td
-                  class="px-4 py-2.5 text-right font-mono text-xs tabular-nums"
+                  class="px-3 py-2 text-right font-mono text-xs tabular-nums"
                   :class="certificateTrouble(certificate) ? 'text-warning' : 'text-toned'"
                 >
                   {{ expiry(certificate) }}
                 </td>
-                <td class="px-4 py-2.5 text-xs text-dimmed whitespace-nowrap">
+                <td class="px-3 py-2 text-xs text-dimmed whitespace-nowrap">
                   {{ certificate.renewalTime ? timeAgo(certificate.renewalTime) : "—" }}
                 </td>
-                <td class="px-4 py-2.5 text-xs max-w-md">
+                <td class="px-3 py-2 text-xs max-w-md">
                   <span :class="certificate.ready ? 'text-success' : 'text-error'">
                     {{ certificate.ready ? "Ready" : "Not ready" }}
                   </span>

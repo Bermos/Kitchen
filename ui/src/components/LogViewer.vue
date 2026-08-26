@@ -181,12 +181,12 @@ function time(line: LogLine): string {
         <tbody>
           <tr v-for="(line, i) in lines" :key="i" class="hover:bg-elevated/50 align-top">
             <td class="px-3 py-0.5 text-dimmed whitespace-nowrap select-none">{{ time(line) }}</td>
-            <td class="px-2 py-0.5 text-muted whitespace-nowrap">{{ line.container || line.source }}</td>
-            <td v-if="line.level" class="px-2 py-0.5 whitespace-nowrap select-none" :class="levelClass(line)">
+            <td class="px-3 py-0.5 text-muted whitespace-nowrap">{{ line.container || line.source }}</td>
+            <td v-if="line.level" class="px-3 py-0.5 whitespace-nowrap select-none" :class="levelClass(line)">
               {{ line.level }}
             </td>
-            <td v-else class="px-2 py-0.5" />
-            <td class="px-2 py-0.5 whitespace-pre-wrap break-all w-full" :class="levelClass(line)">
+            <td v-else class="px-3 py-0.5" />
+            <td class="px-3 py-0.5 whitespace-pre-wrap break-all w-full" :class="levelClass(line)">
               {{ line.message }}
             </td>
           </tr>

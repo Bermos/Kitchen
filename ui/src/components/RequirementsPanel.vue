@@ -222,9 +222,9 @@ async function save() {
             <table class="w-full min-w-[28rem] text-xs">
               <thead>
                 <tr class="text-left text-muted border-b border-default">
-                  <th class="py-1.5 pr-4 font-medium">Evidence</th>
-                  <th class="py-1.5 pr-4 font-medium">Source</th>
-                  <th class="py-1.5 font-medium">Verified</th>
+                  <th class="py-1 pr-4 font-medium">Evidence</th>
+                  <th class="py-1 pr-4 font-medium">Source</th>
+                  <th class="py-1 font-medium">Verified</th>
                 </tr>
               </thead>
               <tbody>
@@ -233,11 +233,11 @@ async function save() {
                   :key="evidence.predicateType + (evidence.source ?? '')"
                   class="border-b border-muted last:border-0"
                 >
-                  <td class="py-1.5 pr-4 font-mono text-toned truncate max-w-md" :title="evidence.predicateType">
+                  <td class="py-1 pr-4 font-mono text-toned truncate max-w-md" :title="evidence.predicateType">
                     {{ evidence.predicateType }}
                   </td>
-                  <td class="py-1.5 pr-4 text-muted">{{ evidence.source || "—" }}</td>
-                  <td class="py-1.5">
+                  <td class="py-1 pr-4 text-muted">{{ evidence.source || "—" }}</td>
+                  <td class="py-1">
                     <UIcon v-if="evidence.verified" name="i-lucide-shield-check" class="size-4 text-success" />
                     <span v-else class="text-dimmed">no</span>
                   </td>

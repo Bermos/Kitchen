@@ -4,6 +4,7 @@ import { useRoute, useRouter } from "vue-router";
 import { api, type K8sEvent, type PlatformEventQuery } from "../lib/api";
 import { compactCount, timeAgo } from "../lib/format";
 import { useAsync, usePoll } from "../lib/useAsync";
+import PageHeader from "../components/PageHeader.vue";
 
 // The cluster's Warning history — FailedScheduling, FailedCreate, FailedMount,
 // OOMKilling — which Kubernetes expires about an hour after the fact and the
@@ -121,20 +122,12 @@ function environmentOf(event: K8sEvent) {
 </script>
 
 <template>
-  <div class="space-y-4">
-    <div class="flex items-start justify-between gap-4 flex-wrap">
-      <div>
-        <div class="flex items-center gap-2 text-xs text-muted mb-1">
-          <RouterLink to="/platform" class="hover:text-highlighted">Platform</RouterLink>
-          <span>/</span>
-          <span class="text-toned">Events</span>
-        </div>
-        <h1 class="text-xl font-semibold text-highlighted">Events</h1>
-        <p class="text-xs text-muted mt-1">
-          The cluster's warnings, kept past the hour Kubernetes keeps them — so “what happened at 03:00” has an answer.
-        </p>
-      </div>
-      <div class="flex items-center gap-2 flex-wrap">
+  <div class="space-y-6">
+    <PageHeader title="Events" :breadcrumb="[{ label: 'Platform', to: '/platform' }, { label: 'Events' }]">
+      <template #description>
+        The cluster's warnings, kept past the hour Kubernetes keeps them — so “what happened at 03:00” has an answer.
+      </template>
+      <template #actions>
         <USelect
           :model-value="rangeMinutes"
           :items="ranges"
@@ -158,8 +151,8 @@ function environmentOf(event: K8sEvent) {
           aria-label="Refresh"
           @click="refresh"
         />
-      </div>
-    </div>
+      </template>
+    </PageHeader>
 
     <UInput
       v-model="search"

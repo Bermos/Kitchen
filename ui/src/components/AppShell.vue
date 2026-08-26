@@ -145,6 +145,10 @@ const platformNav = [
   { label: "Edge", icon: "i-lucide-globe", to: "/platform/edge", name: "platform-edge" },
   { label: "Storage", icon: "i-lucide-hard-drive", to: "/platform/storage", name: "platform-storage" },
   { label: "Events", icon: "i-lucide-list", to: "/platform/events", name: "platform-events" },
+  // The audit log had a screen, a route and a tile on the platform overview,
+  // and no way into it from here — so the one screen an auditor opens was the
+  // one screen the navigation did not list.
+  { label: "Audit", icon: "i-lucide-shield-check", to: "/platform/audit", name: "platform-audit" },
   { label: "Backup", icon: "i-lucide-archive", to: "/platform/backup", name: "platform-backup" },
   // The installation's own configuration. It is the platform's, so it is
   // here: nothing on that screen is a developer's to read, let alone change,

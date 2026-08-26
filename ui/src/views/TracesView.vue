@@ -4,6 +4,7 @@ import { useRoute, useRouter } from "vue-router";
 import { api, type Span } from "../lib/api";
 import { compactCount } from "../lib/format";
 import { useAsync, usePoll } from "../lib/useAsync";
+import PageHeader from "../components/PageHeader.vue";
 
 // Traces: what one request did, across everything it touched.
 //
@@ -181,16 +182,13 @@ function barTone(span: Span): string {
 </script>
 
 <template>
-  <div class="space-y-4">
-    <div class="flex items-start justify-between gap-4 flex-wrap">
-      <div>
-        <h1 class="text-xl font-semibold text-highlighted">Traces</h1>
-        <p class="text-xs text-muted mt-1">
-          What one request did, as the application reported it. Add an OpenTelemetry SDK and it exports here on its
-          own — every environment is given the endpoint.
-        </p>
-      </div>
-      <div class="flex items-center gap-2 flex-wrap">
+  <div class="space-y-6">
+    <PageHeader title="Traces">
+      <template #description>
+        What one request did, as the application reported it. Add an OpenTelemetry SDK and it exports here on its own —
+        every environment is given the endpoint.
+      </template>
+      <template #actions>
         <USelect v-model="project" :items="projectItems" size="sm" class="w-36 sm:w-40" />
         <USelect v-model="minDuration" :items="slowOptions" size="sm" class="w-36 sm:w-44" />
         <USelect v-model="rangeMinutes" :items="ranges" size="sm" class="w-36 sm:w-40" />
@@ -204,8 +202,8 @@ function barTone(span: Span): string {
         >
           Errors
         </UButton>
-      </div>
-    </div>
+      </template>
+    </PageHeader>
 
     <UAlert
       v-if="traces.error.value"
@@ -313,7 +311,7 @@ function barTone(span: Span): string {
                   class="border-b border-muted last:border-0 hover:bg-elevated/50 cursor-pointer align-middle"
                   @click="expanded = expanded === row.span.spanId ? null : row.span.spanId"
                 >
-                  <td class="px-3 py-1.5 max-w-64">
+                  <td class="px-3 py-1 max-w-64">
                     <p class="truncate font-mono" :class="statusTone(row.span)" :style="{ paddingLeft: `${row.depth * 12}px` }">
                       {{ row.span.name }}
                     </p>
@@ -321,7 +319,7 @@ function barTone(span: Span): string {
                       {{ row.span.service }}<template v-if="row.span.kind"> · {{ row.span.kind.toLowerCase() }}</template>
                     </p>
                   </td>
-                  <td class="px-2 py-1.5 w-full">
+                  <td class="px-3 py-1 w-full">
                     <div class="relative h-3 rounded-sm bg-elevated/60">
                       <div
                         class="absolute top-0 h-3 rounded-sm"
@@ -330,7 +328,7 @@ function barTone(span: Span): string {
                       />
                     </div>
                   </td>
-                  <td class="px-3 py-1.5 text-right font-mono tabular-nums whitespace-nowrap text-toned">
+                  <td class="px-3 py-1 text-right font-mono tabular-nums whitespace-nowrap text-toned">
                     {{ ms(row.span.durationMs) }}
                   </td>
                 </tr>

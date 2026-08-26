@@ -5,6 +5,7 @@ import { healthStrip } from "../lib/platform";
 import { useAsync, usePoll } from "../lib/useAsync";
 import FindingList from "../components/FindingList.vue";
 import HealthStrip from "../components/HealthStrip.vue";
+import PageHeader from "../components/PageHeader.vue";
 
 // The platform's front page: a health strip and the problems list.
 //
@@ -67,24 +68,22 @@ const sections = [
 
 <template>
   <div class="space-y-6">
-    <div class="flex items-start justify-between gap-4 flex-wrap">
-      <div>
-        <h1 class="text-xl font-semibold text-highlighted">Platform</h1>
-        <p class="text-xs text-muted mt-1">
-          The cluster as the operator sees it, across every project — and everything currently wrong with it, worst
-          first.
-        </p>
-      </div>
-      <UButton
-        icon="i-lucide-refresh-cw"
-        color="neutral"
-        variant="ghost"
-        size="sm"
-        :loading="loading"
-        aria-label="Re-evaluate"
-        @click="refresh"
-      />
-    </div>
+    <PageHeader title="Platform">
+      <template #description>
+        The cluster as the operator sees it, across every project — and everything currently wrong with it, worst first.
+      </template>
+      <template #actions>
+        <UButton
+          icon="i-lucide-refresh-cw"
+          color="neutral"
+          variant="ghost"
+          size="sm"
+          :loading="loading"
+          aria-label="Re-evaluate"
+          @click="refresh"
+        />
+      </template>
+    </PageHeader>
 
     <HealthStrip :tiles="tiles" />
 

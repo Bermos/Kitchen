@@ -6,6 +6,7 @@ import { compactCount, formatBytes, formatDurationSeconds, timeAgo } from "../li
 import { FLOWS_LOST_FIRING, flowsUnderReporting, formatFraction } from "../lib/platform";
 import { useAsync, usePoll } from "../lib/useAsync";
 import FillBar from "../components/FillBar.vue";
+import PageHeader from "../components/PageHeader.vue";
 import StatusDot from "../components/StatusDot.vue";
 
 // Every volume the platform holds, what mounts it, and the health of the one
@@ -55,29 +56,23 @@ function highlighted(volume: { namespace: string; name: string }): boolean {
 </script>
 
 <template>
-  <div class="space-y-5">
-    <div class="flex items-start justify-between gap-4 flex-wrap">
-      <div>
-        <div class="flex items-center gap-2 text-xs text-muted mb-1">
-          <RouterLink to="/platform" class="hover:text-highlighted">Platform</RouterLink>
-          <span>/</span>
-          <span class="text-toned">Storage</span>
-        </div>
-        <h1 class="text-xl font-semibold text-highlighted">Storage</h1>
-        <p class="text-xs text-muted mt-1">
-          Every volume on the platform and what mounts it, plus the telemetry store's own disk.
-        </p>
-      </div>
-      <UButton
-        icon="i-lucide-refresh-cw"
-        color="neutral"
-        variant="ghost"
-        size="sm"
-        :loading="loading"
-        aria-label="Refresh"
-        @click="refresh"
-      />
-    </div>
+  <div class="space-y-6">
+    <PageHeader title="Storage" :breadcrumb="[{ label: 'Platform', to: '/platform' }, { label: 'Storage' }]">
+      <template #description>
+        Every volume on the platform and what mounts it, plus the telemetry store's own disk.
+      </template>
+      <template #actions>
+        <UButton
+          icon="i-lucide-refresh-cw"
+          color="neutral"
+          variant="ghost"
+          size="sm"
+          :loading="loading"
+          aria-label="Refresh"
+          @click="refresh"
+        />
+      </template>
+    </PageHeader>
 
     <UAlert v-if="error" color="error" variant="soft" icon="i-lucide-triangle-alert" :title="error" />
 
@@ -128,18 +123,18 @@ function highlighted(volume: { namespace: string; name: string }): boolean {
           <table class="w-full min-w-[48rem] text-sm">
             <thead>
               <tr class="text-left text-xs text-muted border-b border-default bg-muted">
-                <th class="px-4 py-2.5 font-medium">Volume</th>
-                <th class="px-4 py-2.5 font-medium">For</th>
-                <th class="px-4 py-2.5 font-medium">Phase</th>
-                <th class="px-4 py-2.5 font-medium">Class</th>
-                <th class="px-4 py-2.5 font-medium text-right">Size</th>
-                <th class="px-4 py-2.5 font-medium">Used</th>
-                <th class="px-4 py-2.5 font-medium">Mounted by</th>
+                <th class="px-3 py-2 font-medium">Volume</th>
+                <th class="px-3 py-2 font-medium">For</th>
+                <th class="px-3 py-2 font-medium">Phase</th>
+                <th class="px-3 py-2 font-medium">Class</th>
+                <th class="px-3 py-2 font-medium text-right">Size</th>
+                <th class="px-3 py-2 font-medium">Used</th>
+                <th class="px-3 py-2 font-medium">Mounted by</th>
               </tr>
             </thead>
             <tbody>
               <tr v-if="!volumes.length">
-                <td colspan="7" class="px-4 py-8 text-center text-muted">
+                <td colspan="7" class="px-3 py-8 text-center text-muted">
                   {{ loading ? "Loading…" : "This platform holds no volumes." }}
                 </td>
               </tr>
@@ -151,14 +146,14 @@ function highlighted(volume: { namespace: string; name: string }): boolean {
                     highlighted(volume) ? 'ring-1 ring-inset ring-primary/40' : '',
                   ]"
                 >
-                  <td class="px-4 py-2.5">
+                  <td class="px-3 py-2">
                     <span class="inline-flex items-center gap-2">
                       <StatusDot :tone="volume.bound ? 'success' : 'error'" />
                       <span class="font-mono text-xs text-highlighted break-all">{{ volume.name }}</span>
                     </span>
                     <p class="text-[11px] text-dimmed pl-3.5">{{ volume.namespace }}</p>
                   </td>
-                  <td class="px-4 py-2.5 text-xs">
+                  <td class="px-3 py-2 text-xs">
                     <RouterLink
                       v-if="volume.project"
                       :to="{ name: 'project', params: { name: volume.project } }"
@@ -167,26 +162,26 @@ function highlighted(volume: { namespace: string; name: string }): boolean {
                     >
                     <span v-else class="text-dimmed">the platform</span>
                   </td>
-                  <td class="px-4 py-2.5 text-xs" :class="volume.bound ? 'text-toned' : 'text-error'">
+                  <td class="px-3 py-2 text-xs" :class="volume.bound ? 'text-toned' : 'text-error'">
                     {{ volume.phase }}
                   </td>
-                  <td class="px-4 py-2.5 font-mono text-xs text-dimmed">{{ volume.storageClass || "—" }}</td>
-                  <td class="px-4 py-2.5 text-right font-mono text-xs tabular-nums text-toned">
+                  <td class="px-3 py-2 font-mono text-xs text-dimmed">{{ volume.storageClass || "—" }}</td>
+                  <td class="px-3 py-2 text-right font-mono text-xs tabular-nums text-toned">
                     {{ volume.capacity || volume.requested || "—" }}
                   </td>
-                  <td class="px-4 py-2.5">
+                  <td class="px-3 py-2">
                     <FillBar
                       :fraction="volume.usage?.usedFraction ?? null"
                       :caption="volume.usage ? formatBytes(volume.usage.usedBytes) : undefined"
                       :unmeasured="usageMessage || '—'"
                     />
                   </td>
-                  <td class="px-4 py-2.5 font-mono text-[11px] text-dimmed break-all">
+                  <td class="px-3 py-2 font-mono text-[11px] text-dimmed break-all">
                     {{ (volume.pods ?? []).join(", ") || "nothing" }}
                   </td>
                 </tr>
                 <tr v-if="volume.message" :key="`${volume.namespace}/${volume.name}-message`" class="border-b border-muted last:border-0">
-                  <td colspan="7" class="px-4 pb-2.5 text-xs" :class="volume.bound ? 'text-muted' : 'text-error'">
+                  <td colspan="7" class="px-3 pb-2.5 text-xs" :class="volume.bound ? 'text-muted' : 'text-error'">
                     {{ volume.message }}
                   </td>
                 </tr>
