@@ -22,8 +22,10 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -221,6 +223,168 @@ func TestPullRequestCreatesBuild(t *testing.T) {
 	}
 	if build.Spec.Git.Branch != "feat/checkout" {
 		t.Errorf("unexpected branch %q", build.Spec.Git.Branch)
+	}
+}
+
+// TestPullRequestAfterPushAssociatesTheExistingBuild is issue #201: the
+// ordinary way a request is opened is to push the branch and then open it, and
+// every provider delivers the push first. The Build is named after the commit,
+// so the request event finds the name taken — and used to be discarded as a
+// redelivery, which left the platform believing the commit belonged to no
+// request and no preview environment was ever created for it.
+func TestPullRequestAfterPushAssociatesTheExistingBuild(t *testing.T) {
+	r, handler := newReceiver(t)
+	push := []byte(`{
+		"ref": "refs/heads/feat/checkout",
+		"after": "8f3a2c1d0abc456789ab",
+		"repository": {"full_name": "acme/shop"},
+		"head_commit": {"message": "Add checkout", "author": {"username": "bermos"}}
+	}`)
+	if rec := deliver(handler, "push", push, sign(push)); rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202 for the push, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	opened := []byte(`{
+		"action": "opened",
+		"number": 10,
+		"pull_request": {"head": {"ref": "feat/checkout", "sha": "8f3a2c1d0abc456789ab"}},
+		"repository": {"full_name": "acme/shop"}
+	}`)
+	rec := deliver(handler, "pull_request", opened, sign(opened))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202 for the pull request, got %d: %s", rec.Code, rec.Body.String())
+	}
+	// The delivery names the build it acted on: a body of {"builds":null} is
+	// how this bug looked from the provider's delivery log.
+	if !strings.Contains(rec.Body.String(), "shop-bld-8f3a2c1d0abc") {
+		t.Errorf("the delivery should name the build it associated, got %s", rec.Body.String())
+	}
+
+	build := &kitchenv1alpha1.Build{}
+	key := types.NamespacedName{Name: "shop-bld-8f3a2c1d0abc", Namespace: "default"}
+	if err := r.Client.Get(context.Background(), key, build); err != nil {
+		t.Fatalf("expected the push's build to still be there: %v", err)
+	}
+	if build.Spec.Git.PullRequest != nil {
+		t.Error("the spec is immutable and was created from a push: it must still name no request")
+	}
+	if pr := build.PullRequestNumber(); pr == nil || *pr != 10 {
+		t.Fatalf("expected the build to know about pull request 10, got %v", pr)
+	}
+
+	builds := &kitchenv1alpha1.BuildList{}
+	if err := r.Client.List(context.Background(), builds); err != nil {
+		t.Fatal(err)
+	}
+	if len(builds.Items) != 1 {
+		t.Errorf("the commit should be built once, found %d builds", len(builds.Items))
+	}
+}
+
+// TestPushRedeliveryDoesNotUnlearnThePullRequest guards the other order: once
+// a commit is associated with a request, a re-sent push for the same commit is
+// still nothing to do, and the association survives it.
+func TestPushRedeliveryDoesNotUnlearnThePullRequest(t *testing.T) {
+	r, handler := newReceiver(t)
+	opened := []byte(`{
+		"action": "opened",
+		"number": 10,
+		"pull_request": {"head": {"ref": "feat/checkout", "sha": "8f3a2c1d0abc456789ab"}},
+		"repository": {"full_name": "acme/shop"}
+	}`)
+	if rec := deliver(handler, "pull_request", opened, sign(opened)); rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", rec.Code, rec.Body.String())
+	}
+	push := []byte(`{
+		"ref": "refs/heads/feat/checkout",
+		"after": "8f3a2c1d0abc456789ab",
+		"repository": {"full_name": "acme/shop"},
+		"head_commit": {"message": "Add checkout", "author": {"username": "bermos"}}
+	}`)
+	if rec := deliver(handler, "push", push, sign(push)); rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	build := &kitchenv1alpha1.Build{}
+	key := types.NamespacedName{Name: "shop-bld-8f3a2c1d0abc", Namespace: "default"}
+	if err := r.Client.Get(context.Background(), key, build); err != nil {
+		t.Fatal(err)
+	}
+	if pr := build.PullRequestNumber(); pr == nil || *pr != 10 {
+		t.Errorf("expected pull request 10 to survive the push, got %v", pr)
+	}
+}
+
+// TestTheFirstPullRequestToClaimACommitKeepsIt: one head commit can belong to
+// two open requests. The preview already exists under the first one's name, so
+// letting the second take the association would move it.
+func TestTheFirstPullRequestToClaimACommitKeepsIt(t *testing.T) {
+	r, handler := newReceiver(t)
+	push := []byte(`{
+		"ref": "refs/heads/feat/checkout",
+		"after": "8f3a2c1d0abc456789ab",
+		"repository": {"full_name": "acme/shop"},
+		"head_commit": {"message": "Add checkout", "author": {"username": "bermos"}}
+	}`)
+	if rec := deliver(handler, "push", push, sign(push)); rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", rec.Code, rec.Body.String())
+	}
+	for _, number := range []int{10, 11} {
+		opened := []byte(fmt.Sprintf(`{
+			"action": "opened",
+			"number": %d,
+			"pull_request": {"head": {"ref": "feat/checkout", "sha": "8f3a2c1d0abc456789ab"}},
+			"repository": {"full_name": "acme/shop"}
+		}`, number))
+		if rec := deliver(handler, "pull_request", opened, sign(opened)); rec.Code != http.StatusAccepted {
+			t.Fatalf("expected 202 for #%d, got %d: %s", number, rec.Code, rec.Body.String())
+		}
+	}
+
+	build := &kitchenv1alpha1.Build{}
+	key := types.NamespacedName{Name: "shop-bld-8f3a2c1d0abc", Namespace: "default"}
+	if err := r.Client.Get(context.Background(), key, build); err != nil {
+		t.Fatal(err)
+	}
+	if pr := build.PullRequestNumber(); pr == nil || *pr != 10 {
+		t.Errorf("expected the first request to keep the commit, got %v", pr)
+	}
+}
+
+// TestGitLabMergeRequestAfterPushAssociatesTheExistingBuild is the same order
+// of events on GitLab, which delivers a push hook and then a merge request
+// hook exactly as GitHub does.
+func TestGitLabMergeRequestAfterPushAssociatesTheExistingBuild(t *testing.T) {
+	r, handler := newReceiverForProvider(t, "gitlab")
+	push := []byte(`{
+		"ref": "refs/heads/feat/checkout",
+		"after": "aaaabbbbccccdddd",
+		"project": {"path_with_namespace": "acme/shop"},
+		"user_username": "bermos",
+		"commits": [{"message": "Add checkout", "author": {"username": "bermos"}}]
+	}`)
+	if rec := deliverAs("gitlab", handler, "Push Hook", push, webhookSecret); rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202 for the push, got %d: %s", rec.Code, rec.Body.String())
+	}
+	opened := []byte(`{
+		"object_attributes": {
+			"action": "open", "iid": 42, "source_branch": "feat/checkout",
+			"last_commit": {"id": "aaaabbbbccccdddd", "message": "Add checkout"}
+		},
+		"project": {"path_with_namespace": "acme/shop"},
+		"user": {"username": "bermos"}
+	}`)
+	if rec := deliverAs("gitlab", handler, "Merge Request Hook", opened, webhookSecret); rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202 for the merge request, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	build := &kitchenv1alpha1.Build{}
+	key := types.NamespacedName{Name: "shop-bld-aaaabbbbcccc", Namespace: "default"}
+	if err := r.Client.Get(context.Background(), key, build); err != nil {
+		t.Fatal(err)
+	}
+	if pr := build.PullRequestNumber(); pr == nil || *pr != 42 {
+		t.Errorf("expected merge request 42, got %v", pr)
 	}
 }
 

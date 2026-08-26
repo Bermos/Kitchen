@@ -592,7 +592,7 @@ func newBuildView(build *kitchenv1alpha1.Build) buildView {
 			Branch:      build.Spec.Git.Branch,
 			Message:     build.Spec.Git.Message,
 			Author:      build.Spec.Git.Author,
-			PullRequest: build.Spec.Git.PullRequest,
+			PullRequest: build.PullRequestNumber(),
 		},
 		DetectedFramework: build.Status.DetectedFramework,
 		Image:             build.Status.Image,

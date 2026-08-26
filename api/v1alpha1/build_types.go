@@ -18,6 +18,7 @@ package v1alpha1
 
 import (
 	"fmt"
+	"strconv"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -26,6 +27,19 @@ import (
 // which is how everything owned by a project is found without walking owner
 // references.
 const ProjectLabel = "kitchen.bermos.dev/project"
+
+// PullRequestAnnotation records the pull request a commit turned out to belong
+// to, when the platform learned that after the Build already existed.
+//
+// It is metadata rather than spec because the spec is immutable and this is
+// not a correction to it: the Build really was created from a push that
+// belonged to no known request. A branch is normally pushed before its pull
+// request is opened — often days before — and every provider delivers the push
+// first, so the request is new information about a commit already known. The
+// annotation is where that information lands; PullRequestNumber is how
+// everything reads it, so nothing has to care which of the two events got
+// there first.
+const PullRequestAnnotation = "kitchen.bermos.dev/pull-request"
 
 // BuildNameFor is the name of the Build for a commit the platform was told
 // about, rather than one somebody asked to be rebuilt.
@@ -36,6 +50,11 @@ const ProjectLabel = "kitchen.bermos.dev/project"
 // AlreadyExists that means "already building" rather than on a second run of
 // the same commit. A rebuild somebody asked for is a different question and
 // uses this only as a GenerateName prefix.
+//
+// The name deliberately says nothing about a pull request, so a push and the
+// request opened for it collide here on purpose — one commit is one build.
+// What that collision must not do is discard what the second event knew: see
+// PullRequestAnnotation.
 func BuildNameFor(project, sha string) string {
 	if len(sha) > 12 {
 		sha = sha[:12]
@@ -508,6 +527,19 @@ type BuildStatus struct {
 	// +optional
 	Source *SourceProvenanceStatus `json:"source,omitempty"`
 
+	// Preview names the preview environment this build's release was routed
+	// to, written at the moment it was routed there.
+	//
+	// It is a record of an action taken rather than a description of the
+	// world, and that is the point: a pull request opened after its branch was
+	// pushed is learned about late, and the release of a build that already
+	// finished has to be routed to a preview after the fact. This is what
+	// makes that repair happen exactly once — a preview torn down when its
+	// request closed is not resurrected the next time the build that made it
+	// is reconciled.
+	// +optional
+	Preview string `json:"preview,omitempty"`
+
 	// Failure is why this build failed, when it did. It is set on the
 	// transition into Failed and never cleared, because a Build is never
 	// rebuilt — a rebuild is another Build.
@@ -538,6 +570,35 @@ type Build struct {
 
 	Spec   BuildSpec   `json:"spec,omitempty"`
 	Status BuildStatus `json:"status,omitempty"`
+}
+
+// PullRequestNumber is the pull request this build's commit belongs to, or nil
+// when it belongs to none the platform has heard of.
+//
+// It is the spec's answer when the event that created the Build knew one, and
+// the annotation's when the platform was told afterwards. Everything that acts
+// on what the platform knows about a build's request — the preview
+// environment, the source attestation, what the API reports — asks this rather
+// than the spec, because reading the spec alone answers "was this a pull
+// request build?" with "did the pull request event happen to arrive first?".
+//
+// What does *not* ask this is anything a late answer could relax or freeze:
+// the review requirement in requiresPullRequest, and the spec a rebuild
+// inherits. Both are documented where they are.
+func (b *Build) PullRequestNumber() *int32 {
+	if b.Spec.Git.PullRequest != nil {
+		return b.Spec.Git.PullRequest
+	}
+	value, ok := b.Annotations[PullRequestAnnotation]
+	if !ok {
+		return nil
+	}
+	number, err := strconv.ParseInt(value, 10, 32)
+	if err != nil || number <= 0 {
+		return nil
+	}
+	pullRequest := int32(number)
+	return &pullRequest
 }
 
 // +kubebuilder:object:root=true

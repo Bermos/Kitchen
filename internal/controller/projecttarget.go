@@ -43,6 +43,18 @@ func ProductionTargetEnvironmentName(project *kitchenv1alpha1.Project) string {
 	return project.Name + "-production"
 }
 
+// PreviewEnvironmentName is the environment a pull request's preview lives on.
+//
+// It is derived from the request rather than from the commit because that is
+// what a preview is: one environment per request, moved forward as the branch
+// moves, and torn down when the request closes. The build reconciler creates
+// it and the webhook receiver deletes it by name — each provider's own closed
+// action — so the two have to agree on the spelling, or a preview is created
+// under one name and looked for under another.
+func PreviewEnvironmentName(projectName string, pullRequest int32) string {
+	return fmt.Sprintf("%s-pr-%d", projectName, pullRequest)
+}
+
 // DataClassRefusal is the one wording of issue #137's hard check: a release
 // of a classified project must not land on an environment rated below the
 // project's class, and an unrated environment receives no classified data at

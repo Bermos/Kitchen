@@ -1116,6 +1116,10 @@ func (s *Server) revisionToBuild(
 				revision.Message = previous[i].Spec.Git.Message
 			}
 			revision.Author = previous[i].Spec.Git.Author
+			// From the spec, not Build.PullRequestNumber(): this writes a
+			// new immutable spec, and what a rebuild inherits is what the
+			// event that created the original established — see the note on
+			// requiresPullRequest.
 			revision.PullRequest = previous[i].Spec.Git.PullRequest
 			break
 		}

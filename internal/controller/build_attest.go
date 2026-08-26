@@ -288,8 +288,8 @@ func buildRecord(
 	if framework := build.Status.DetectedFramework; framework != "" {
 		record["framework"] = framework
 	}
-	if build.Spec.Git.PullRequest != nil {
-		record["pullRequest"] = *build.Spec.Git.PullRequest
+	if pullRequest := build.PullRequestNumber(); pullRequest != nil {
+		record["pullRequest"] = *pullRequest
 	}
 	if build.Status.StartedAt != nil {
 		record["startedAt"] = build.Status.StartedAt.UTC().Format(time.RFC3339)

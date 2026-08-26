@@ -413,6 +413,19 @@ spec:
                 - Failed
                 - Cancelled
                 type: string
+              preview:
+                description: |-
+                  Preview names the preview environment this build's release was routed
+                  to, written at the moment it was routed there.
+
+                  It is a record of an action taken rather than a description of the
+                  world, and that is the point: a pull request opened after its branch was
+                  pushed is learned about late, and the release of a build that already
+                  finished has to be routed to a preview after the fact. This is what
+                  makes that repair happen exactly once — a preview torn down when its
+                  request closed is not resurrected the next time the build that made it
+                  is reconciled.
+                type: string
               source:
                 description: 'Source is how the commit reached the branch: through
                   review, or not.'
