@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.17.0](https://github.com/Bermos/Kitchen/compare/v0.16.1...v0.17.0) (2026-08-26)
+
+
+### Features
+
+* **ui:** give an account a screen to manage itself ([509e120](https://github.com/Bermos/Kitchen/commit/509e120efa0d98fd8dc3f952f65c8358c26b8543))
+
+
+### Bug fixes
+
+* **api:** resolve a repository's default branch when detect is given no ref ([#219](https://github.com/Bermos/Kitchen/issues/219)) ([e77c4e3](https://github.com/Bermos/Kitchen/commit/e77c4e320813a93fa619aa7c36c0787ead9d9bbb))
+* **api:** stop reporting a repository it cannot read as a missing root directory ([#221](https://github.com/Bermos/Kitchen/issues/221)) ([e49f120](https://github.com/Bermos/Kitchen/commit/e49f12058d3f74e5e12dd07fcc08cd0ae8ded5d8)), closes [#205](https://github.com/Bermos/Kitchen/issues/205)
+* **auth:** trust the dashboard's origin, and drop the session freshness window ([f430766](https://github.com/Bermos/Kitchen/commit/f430766083fbf16c9317c5084d0ce003ae17ac2c))
+* **operator:** let a project turn previews off ([#218](https://github.com/Bermos/Kitchen/issues/218)) ([b1ab3d3](https://github.com/Bermos/Kitchen/commit/b1ab3d3a0e0b3bdcd421a70390fd6eea7fe55de6))
+* **ui:** let the settings page use the width it has ([c473189](https://github.com/Bermos/Kitchen/commit/c47318913279d226d6597ec49e14c7f66fb8af8d))
+
+
+### Documentation
+
+* **auth:** say what account management is, and what it is not ([0089452](https://github.com/Bermos/Kitchen/commit/008945213750ac627f295014f2fa119f8d932790))
+
+
+### Build and dependencies
+
+* run the linter under the toolchain go.mod names ([#227](https://github.com/Bermos/Kitchen/issues/227)) ([4a392d8](https://github.com/Bermos/Kitchen/commit/4a392d869533bc9fce7887c433d4a3139bb04901)), closes [#225](https://github.com/Bermos/Kitchen/issues/225)
+
 ## [0.16.1](https://github.com/Bermos/Kitchen/compare/v0.16.0...v0.16.1) (2026-08-26)
 
 
