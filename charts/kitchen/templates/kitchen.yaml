@@ -44,6 +44,15 @@ spec:
     externalURL: {{ include "kitchen.apiExternalURL" . | quote }}
   ingress:
     gatewayClassName: {{ .Values.kitchen.ingress.gatewayClassName | quote }}
+    {{- with .Values.kitchen.ingress.publicAddresses }}
+    # Where the internet reaches this platform, when that is not the Gateway's
+    # own address. Nothing in the cluster can observe the outside of a router's
+    # translation, so it is declared here.
+    publicAddresses:
+      {{- range . }}
+      - {{ . | quote }}
+      {{- end }}
+    {{- end }}
     cloudflared:
       enabled: {{ .Values.kitchen.ingress.cloudflared.enabled }}
       {{- with .Values.kitchen.ingress.cloudflared.tunnelSecretName }}

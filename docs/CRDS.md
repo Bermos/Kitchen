@@ -50,6 +50,9 @@ spec:
     externalURL: https://kitchen.apps.example.com   # operator API + webhook receiver; defaults to kitchen.<baseDomain>
   ingress:
     gatewayClassName: cilium
+    publicAddresses: [85.195.238.240]  # where the internet reaches this platform, when a router
+                                       # forwards :80/:443 to a private Gateway address; the only
+                                       # thing that reads it is the dns.mismatch signal
     cloudflared:
       enabled: true
       tunnelSecretRef: { name: cloudflared-creds }   # tunnel fronts the Gateway service

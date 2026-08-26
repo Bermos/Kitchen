@@ -193,6 +193,7 @@ func gatherKitchen(ctx context.Context, reader client.Client, snapshot *Snapshot
 	snapshot.Platform = PlatformFacts{
 		BaseDomain:         kitchen.Spec.BaseDomain,
 		GatewayAddress:     kitchen.Status.GatewayAddress,
+		PublicAddresses:    kitchen.Spec.Ingress.PublicAddresses,
 		CloudflaredEnabled: kitchen.Spec.Ingress.Cloudflared.Enabled,
 		Components:         kitchen.Status.Components,
 		RetentionDays:      retention.Resolve(kitchen).LongestTelemetry(),
@@ -627,8 +628,9 @@ func bucketCount(window, width time.Duration) int {
 //
 //   - Behind cloudflared, names point at Cloudflare's edge by design. There is
 //     nothing to compare against and a mismatch is the correct configuration.
-//   - Without a Gateway address there is no expected answer, and every name
-//     would "mismatch" whatever it resolved to.
+//   - With neither a Gateway address nor a declared public one there is
+//     nothing to probe on behalf of: no answer could be judged, and no answer
+//     could even be judged missing on the platform's behalf.
 //   - A resolver that is itself broken must not look like broken DNS. A name
 //     that does not exist is a finding; a lookup that timed out or was refused
 //     is an input that could not be read, and one of those poisons the whole
@@ -642,7 +644,7 @@ func gatherDNS(ctx context.Context, sources Sources, snapshot *Snapshot) {
 		snapshot.MarkNotApplicable(InputDNS,
 			"cloudflared is enabled, so published names point at Cloudflare rather than at the Gateway")
 		return
-	case snapshot.Platform.GatewayAddress == "":
+	case snapshot.Platform.GatewayAddress == "" && len(snapshot.Platform.PublicAddresses) == 0:
 		snapshot.MarkNotApplicable(InputDNS,
 			"the Gateway has no address yet, so there is nothing for a name to resolve to")
 		return

@@ -382,6 +382,33 @@ func TestGatherSkipsDNSWithoutAGatewayAddress(t *testing.T) {
 	}
 }
 
+// A declared public address is an expected answer of its own: nothing about it
+// depends on the Gateway having been programmed yet, and it is what a record
+// should say either way.
+func TestGatherProbesDNSWithOnlyAPublicAddressDeclared(t *testing.T) {
+	kitchen := kitchenSingleton(false)
+	kitchen.Status.GatewayAddress = ""
+	kitchen.Spec.Ingress.PublicAddresses = []string{testPublicIP}
+	environment := &kitchenv1alpha1.Environment{
+		ObjectMeta: metav1.ObjectMeta{Name: testEnvironment, Namespace: controller.PlatformNamespace},
+		Spec: kitchenv1alpha1.EnvironmentSpec{
+			ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: testProject},
+		},
+		Status: kitchenv1alpha1.EnvironmentStatus{URL: "https://" + testHost},
+	}
+
+	snapshot := Gather(context.Background(), Sources{
+		Client:   testClient(t, kitchen, environment),
+		Resolver: &stubResolver{answers: map[string][]string{testHost: {"192.0.2.99"}}},
+		Now:      func() time.Time { return testNow },
+	}, Options{})
+
+	if !snapshot.Available(InputDNS) {
+		t.Fatal("DNS was not probed against the declared public address")
+	}
+	expectDetail(t, expectOne(t, evaluate(t, SignalDNSMismatch, snapshot)), testPublicIP)
+}
+
 // unstructuredFails answers every unstructured list with a chosen error, which
 // is how a cluster without cert-manager's CRD behaves.
 type unstructuredFails struct {

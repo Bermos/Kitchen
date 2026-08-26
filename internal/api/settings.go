@@ -46,10 +46,18 @@ type settingsView struct {
 	BuildConcurrency int32  `json:"buildConcurrency,omitempty"`
 	// No omitempty: 0 is a setting here — keep every release — not an absent
 	// one, and the dashboard has to be able to tell the two apart.
-	ReleaseRetention int32           `json:"releaseRetention"`
-	LogRetentionDays int32           `json:"logRetentionDays,omitempty"`
-	GatewayAddress   string          `json:"gatewayAddress,omitempty"`
-	Conditions       []conditionView `json:"conditions,omitempty"`
+	ReleaseRetention int32  `json:"releaseRetention"`
+	LogRetentionDays int32  `json:"logRetentionDays,omitempty"`
+	GatewayAddress   string `json:"gatewayAddress,omitempty"`
+	// PublicAddresses is `spec.ingress.publicAddresses`: where the internet
+	// reaches this platform, when a router forwards to the Gateway from an
+	// address the cluster never sees. It is here beside the Gateway's own
+	// address because the pair is what an operator diagnosing an unreachable
+	// install needs to read together — and because a `dns.mismatch` finding
+	// names the addresses it compared, which is only meaningful if the
+	// settings page can say where they came from.
+	PublicAddresses []string        `json:"publicAddresses,omitempty"`
+	Conditions      []conditionView `json:"conditions,omitempty"`
 	// Operators is `spec.access.operators`: who holds the platform role. It
 	// is here rather than on a surface of its own because this route already
 	// carries the base domain, the issuer and the gateway address, and is
@@ -100,6 +108,7 @@ func newSettingsView(kitchen *kitchenv1alpha1.Kitchen) settingsView {
 		ReleaseRetention: kitchen.Spec.Builds.ReleaseRetention,
 		LogRetentionDays: kitchen.Spec.Observability.ClickHouse.RetentionDays,
 		GatewayAddress:   kitchen.Status.GatewayAddress,
+		PublicAddresses:  kitchen.Spec.Ingress.PublicAddresses,
 		Conditions:       conditionViews(kitchen.Status.Conditions),
 		Operators:        operatorViews(kitchen.Spec.Access.Operators),
 	}

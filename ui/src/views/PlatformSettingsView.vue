@@ -125,6 +125,13 @@ const strategies = [
               · {{ settings.gatewayAddress }}</template
             >
           </p>
+          <!-- The Gateway's address is where traffic lands inside the cluster,
+               which is not where it arrives from the internet when a router
+               forwards to it. Both belong on the screen an operator reads when
+               nothing is reachable. -->
+          <p v-if="settings.publicAddresses?.length" class="text-[11px] text-muted mt-0.5">
+            reached at {{ settings.publicAddresses.join(", ") }}
+          </p>
         </div>
         <div>
           <p class="text-xs text-muted mb-0.5">Version</p>
