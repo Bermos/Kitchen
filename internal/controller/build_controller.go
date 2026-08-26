@@ -1307,9 +1307,10 @@ func (r *BuildReconciler) ensureEnvironment(
 }
 
 // previewsEnabled reports whether the project wants preview environments.
-// The API server defaults spec.previews.enabled to true.
+// The API server defaults spec.previews.enabled to true, and an unset field
+// reads the same way.
 func previewsEnabled(project *kitchenv1alpha1.Project) bool {
-	return project.Spec.Previews.Enabled
+	return project.Spec.Previews.IsEnabled()
 }
 
 // imageWithDigest reads the builder's own account of what it pushed from the

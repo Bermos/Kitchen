@@ -4556,6 +4556,16 @@ spec:
                 properties:
                   enabled:
                     default: true
+                    description: |-
+                      Enabled says whether a pull request against this Project gets a preview
+                      environment of its own. It defaults to on: the preview is the review
+                      vehicle, and a project that wants pull requests generally wants them
+                      looked at somewhere.
+
+                      It is a pointer for the reason Protected next to it is: a plain bool
+                      with omitempty cannot express false — the field is dropped from the
+                      serialized object, and the API server then applies the default, so
+                      turning previews off would be silently undone on every write.
                     type: boolean
                   protected:
                     default: true
