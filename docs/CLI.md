@@ -264,6 +264,11 @@ kitchen projects create shop --repo acme/mono --root-directory apps/shop \
   --connection github --registry kitchen --yes --json
 ```
 
+The preflight also settles which branch production deploys from: with no
+`--production-branch`, the repository is read at its own default branch and the
+project is created on that one — which is why the command works the same on a
+repository whose trunk is called `master` or `trunk` as on one called `main`.
+
 The preflight is advice, so a platform that cannot reach the provider to give
 any is reported on stderr and the project is still created. The flags are
 `--repo`, `--connection`, `--registry`, `--production-branch`, `--previews`,

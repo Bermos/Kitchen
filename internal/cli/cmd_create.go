@@ -200,6 +200,14 @@ func createProject(parent context.Context, r *Runtime, options createOptions) er
 		return err
 	}
 
+	// The branch the preflight settled on is the branch the project deploys
+	// from. Without this a create that named none takes the platform's own
+	// default of "main", which for a repository whose trunk is called
+	// anything else is a first build looking for a branch that is not there.
+	if options.branch == "" && verdict != nil && verdict.Ref != "" {
+		options.branch = verdict.Ref
+	}
+
 	created, err := client.createProject(ctx, newProject{
 		Name:             options.name,
 		Repo:             options.repo,
@@ -339,11 +347,17 @@ func confirmLayout(r *Runtime, verdict *detection, options createOptions) error 
 }
 
 // describeDetection is the verdict as one line.
+//
+// The port is left out when the platform implies none, which is every
+// Dockerfile build: an image decides its own port, and "on port 0" reads as a
+// port rather than as the absence of one.
 func describeDetection(verdict *detection) string {
 	switch {
-	case verdict.Framework != "":
+	case verdict.Framework != "" && verdict.Port > 0:
 		return fmt.Sprintf("detected %s, built with %s on port %d",
 			verdict.Framework, verdict.Strategy, verdict.Port)
+	case verdict.Framework != "":
+		return fmt.Sprintf("detected %s, built with %s", verdict.Framework, verdict.Strategy)
 	case verdict.Dockerfile:
 		return "no framework recognised, building the Dockerfile"
 	default:
