@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { after, before, describe, it } from "node:test";
 
-import type { Config } from "../src/config.js";
-import { allowedOrigins } from "../src/server.js";
+import { authOptions } from "../src/auth.js";
+import { allowedOrigins, type Config } from "../src/config.js";
 import { startHarness, type Harness } from "./support.js";
 
 /**
@@ -110,5 +110,41 @@ describe("the origins a browser may call the issuer from", () => {
 		assert.ok(origins.has(DASHBOARD));
 		assert.ok(origins.has("https://auth.example.com"));
 		assert.equal(origins.has("not a url"), false);
+	});
+});
+
+/*
+ * And the same list has to reach better-auth, which refuses a cookie-bearing
+ * POST from an origin it does not trust. That is every write the account
+ * screen makes, so a dashboard missing from here is a 403 nothing in the
+ * browser can explain — and it is not the CORS failure above, which the two
+ * lists having one source is what rules out.
+ */
+describe("the origins better-auth accepts a signed-in write from", () => {
+	const config = {
+		port: 0,
+		baseURL: "https://auth.example.com",
+		secret: "secret",
+		databaseURL: "",
+		databaseWaitSeconds: 0,
+		serviceAccountEmail: "operator@kitchen.local",
+		apiURL: DASHBOARD,
+		trustedOrigins: [],
+		allowSocialSignUp: false,
+	} as unknown as Config;
+
+	it("trusts the dashboard, and nowhere else", () => {
+		// The pool is never touched: `authOptions` only hands it on.
+		const trusted = authOptions(config, {} as never).trustedOrigins as string[];
+
+		assert.ok(trusted.includes(DASHBOARD), "the account screen posts from here");
+		assert.ok(trusted.includes("https://auth.example.com"), "so do the issuer's own pages");
+		assert.equal(trusted.includes(STRANGER), false);
+	});
+
+	it("asks nobody to sign in again before they may see their own sessions", () => {
+		// better-auth guards /list-sessions on a session created within the last
+		// day, and nothing here can make one fresher without ending it.
+		assert.equal(authOptions(config, {} as never).session?.freshAge, 0);
 	});
 });
