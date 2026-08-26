@@ -183,7 +183,7 @@ const kindOptions = [
               </td>
             </tr>
             <tr v-if="expanded.has(fn.project)" class="border-b border-muted last:border-0">
-              <td colspan="4" class="px-3 py-3 bg-elevated/30 space-y-3">
+              <td colspan="4" class="px-3 py-2 bg-elevated/30 space-y-3">
                 <div>
                   <p class="text-xs text-muted mb-1">Environments</p>
                   <p v-for="env in fn.environments" :key="env.name" class="text-xs">
@@ -276,10 +276,10 @@ const kindOptions = [
             <table class="w-full text-xs">
               <thead>
                 <tr class="text-left text-muted border-b border-default bg-muted">
-                  <th class="px-3 py-2 font-medium">Project</th>
-                  <th class="px-3 py-2 font-medium">Environment</th>
-                  <th class="px-3 py-2 font-medium">Designation</th>
-                  <th class="px-3 py-2 font-medium">Through</th>
+                  <th class="px-3 py-1 font-medium">Project</th>
+                  <th class="px-3 py-1 font-medium">Environment</th>
+                  <th class="px-3 py-1 font-medium">Designation</th>
+                  <th class="px-3 py-1 font-medium">Through</th>
                 </tr>
               </thead>
               <tbody>
@@ -288,12 +288,12 @@ const kindOptions = [
                   :key="`${affected.project}/${affected.environment}`"
                   class="border-b border-muted last:border-0"
                 >
-                  <td class="px-3 py-1.5 font-mono text-toned">{{ affected.project }}</td>
-                  <td class="px-3 py-1.5 font-mono text-highlighted">{{ affected.environment }}</td>
-                  <td class="px-3 py-1.5 font-mono" :class="tone(affected.criticality)">
+                  <td class="px-3 py-1 font-mono text-toned">{{ affected.project }}</td>
+                  <td class="px-3 py-1 font-mono text-highlighted">{{ affected.environment }}</td>
+                  <td class="px-3 py-1 font-mono" :class="tone(affected.criticality)">
                     {{ designation(affected.criticality, affected.rto, affected.rpo) }}
                   </td>
-                  <td class="px-3 py-1.5 text-toned">{{ affected.through.join(", ") }}</td>
+                  <td class="px-3 py-1 text-toned">{{ affected.through.join(", ") }}</td>
                 </tr>
               </tbody>
             </table>

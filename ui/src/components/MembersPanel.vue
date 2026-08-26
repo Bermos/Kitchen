@@ -148,13 +148,13 @@ const readOnlyReason = computed(() => refusal("PATCH /api/v1/projects/{name}/mem
 </script>
 
 <template>
-  <div class="space-y-4 max-w-2xl">
+  <div class="space-y-4 max-w-3xl">
     <div>
-      <h2 class="text-sm font-semibold text-highlighted">People</h2>
+      <h2 class="text-sm font-medium text-highlighted">People</h2>
       <p class="text-xs text-muted mt-1">
         Who may do what on <span class="font-mono">{{ project }}</span
-        >. Roles are the platform's, not the git provider's — somebody with a role here needs no access to the cluster.
-        The platform's operators hold admin on every project and are not listed.
+        >. Roles are the platform's, not the git provider's, and a role here is not an account anywhere else. The
+        platform's operators hold admin on every project and are not listed.
       </p>
     </div>
 
@@ -173,12 +173,12 @@ const readOnlyReason = computed(() => refusal("PATCH /api/v1/projects/{name}/mem
       <table class="w-full min-w-[34rem] text-sm">
         <tbody>
           <tr v-if="!members.length">
-            <td class="px-4 py-8 text-center text-muted">
+            <td class="px-3 py-8 text-center text-muted">
               {{ loading ? "Loading…" : "Nobody is listed on this project yet." }}
             </td>
           </tr>
           <tr v-for="member in members" :key="member.subject" class="border-b border-muted last:border-0">
-            <td class="px-4 py-3">
+            <td class="px-3 py-2">
               <p class="text-highlighted flex items-center gap-2">
                 <UIcon
                   v-if="memberKind(member) === 'key'"
@@ -197,7 +197,7 @@ const readOnlyReason = computed(() => refusal("PATCH /api/v1/projects/{name}/mem
                 {{ memberDetail(member) }}
               </p>
             </td>
-            <td class="px-4 py-3 w-72">
+            <td class="px-3 py-2 w-72">
               <USelect
                 v-if="mayChange"
                 :model-value="member.role"
@@ -212,7 +212,7 @@ const readOnlyReason = computed(() => refusal("PATCH /api/v1/projects/{name}/mem
                 <span class="text-xs text-muted">{{ roleSummary[member.role] }}</span>
               </span>
             </td>
-            <td class="px-4 py-3 text-right whitespace-nowrap">
+            <td class="px-3 py-2 text-right whitespace-nowrap">
               <UButton
                 v-if="mayRemove"
                 color="neutral"

@@ -13,8 +13,11 @@ import {
 } from "../lib/api";
 import { compactCount, formatBytes } from "../lib/format";
 import { clausesOf, hasClause, isEditable, removeClause, toggleClause, type Clause } from "../lib/logquery";
+import { operatorMode } from "../lib/mode";
 import { useAsync, usePoll } from "../lib/useAsync";
 import LogHistogram from "../components/LogHistogram.vue";
+import OperatorOnly from "../components/OperatorOnly.vue";
+import PageHeader from "../components/PageHeader.vue";
 import Sparkline from "../components/Sparkline.vue";
 import StatusDot from "../components/StatusDot.vue";
 
@@ -49,7 +52,24 @@ const tab = ref<"lines" | "patterns">(route.query.view === "patterns" ? "pattern
 // query language even in ClickHouse mode: the two surfaces compose with AND
 // server-side, so the bar stays the operator's to write.
 const clusterClause: Clause = { field: "source", value: "cluster", negated: true };
-const includeCluster = ref(route.query.cluster === "1");
+
+// Whether the cluster's own lines are in the answer — a preference, narrowed
+// by the mode, exactly as `mode.ts` narrows the mode by the role.
+//
+// The narrowing is the point. Everything the cluster runs that Kitchen did not
+// deploy is the operator's to look at, and the switch below is theirs; but the
+// switch is not the only way in. `?cluster=1` rides in the URL so a view can be
+// shared, and a pasted link is precisely how an operator's screen ends up in
+// front of somebody in the developer's view. So the preference is stored and
+// the *effective* value is the preference and the mode, which is what every
+// read below asks for.
+const clusterPreference = ref(route.query.cluster === "1");
+const includeCluster = computed<boolean>({
+  get: () => clusterPreference.value && operatorMode.value,
+  set: (on: boolean) => {
+    if (operatorMode.value) clusterPreference.value = on;
+  },
+});
 
 const ranges = [
   { label: "Last 15 minutes", value: 15 },
@@ -169,8 +189,9 @@ function startStream() {
 }
 
 function toggleCluster() {
+  // The watch below re-runs it — a write the mode refuses changes nothing and
+  // should ask the store nothing.
   includeCluster.value = !includeCluster.value;
-  void run();
 }
 
 function toggleLiveTail() {
@@ -260,6 +281,12 @@ watch(tab, (next) => {
   if (next === "patterns" && !patterns.value.length) void run();
   else syncURL();
 });
+
+// The switch above is not the only thing that moves `includeCluster`: leaving
+// operator mode narrows it, and the lines already on the screen were answered
+// under the old value. Re-asking is what makes the mode a property of what is
+// rendered rather than of what happens to be fetched next.
+watch(includeCluster, () => void run());
 
 /** A preset range releases whatever the histogram pinned. */
 function chooseRange(minutes: number) {
@@ -420,20 +447,17 @@ const placeholder = computed(() =>
 </script>
 
 <template>
-  <div class="space-y-4">
-    <div class="flex items-center justify-between gap-4 flex-wrap">
-      <div>
-        <h1 class="text-xl font-semibold text-highlighted">Observability</h1>
-        <p class="text-xs text-muted mt-1">
-          ClickHouse<template v-if="settings.data.value?.logRetentionDays">
-            · {{ settings.data.value.logRetentionDays }} day retention</template
-          ><template v-if="metrics.data.value?.storeBytes">
-            · {{ formatBytes(metrics.data.value.storeBytes) }} ·
-            {{ Math.round(metrics.data.value.storeRowsPerSecond) }} rows/s</template
-          >
-        </p>
-      </div>
-      <div class="flex items-center gap-2 flex-wrap">
+  <div class="space-y-6">
+    <PageHeader title="Observability">
+      <template #description>
+        ClickHouse<template v-if="settings.data.value?.logRetentionDays">
+          · {{ settings.data.value.logRetentionDays }} day retention</template
+        ><template v-if="metrics.data.value?.storeBytes">
+          · {{ formatBytes(metrics.data.value.storeBytes) }} ·
+          {{ Math.round(metrics.data.value.storeRowsPerSecond) }} rows/s</template
+        >
+      </template>
+      <template #actions>
         <USelect
           :model-value="pinned ? -1 : rangeMinutes"
           :items="pinned ? [{ label: 'Selected range', value: -1 }, ...ranges] : ranges"
@@ -441,20 +465,22 @@ const placeholder = computed(() =>
           class="w-36 sm:w-44"
           @update:model-value="chooseRange"
         />
-        <UButton
-          size="sm"
-          :color="includeCluster ? 'primary' : 'neutral'"
-          :variant="includeCluster ? 'soft' : 'subtle'"
-          icon="i-lucide-server"
-          :title="
-            includeCluster
-              ? 'Showing everything on the node, Kitchen\'s and the cluster\'s'
-              : 'Showing Kitchen\'s own logs. The cluster\'s other pods are collected too.'
-          "
-          @click="toggleCluster"
-        >
-          Cluster
-        </UButton>
+        <OperatorOnly>
+          <UButton
+            size="sm"
+            :color="includeCluster ? 'primary' : 'neutral'"
+            :variant="includeCluster ? 'soft' : 'subtle'"
+            icon="i-lucide-server"
+            :title="
+              includeCluster
+                ? 'Showing everything on the node, Kitchen\'s and the cluster\'s'
+                : 'Showing Kitchen\'s own logs. The cluster\'s other pods are collected too.'
+            "
+            @click="toggleCluster"
+          >
+            Cluster
+          </UButton>
+        </OperatorOnly>
         <UButton
           size="sm"
           :color="liveTail ? 'success' : 'neutral'"
@@ -464,8 +490,8 @@ const placeholder = computed(() =>
           <StatusDot :tone="liveTail ? 'success' : 'neutral'" :pulse="liveTail" class="mr-1" />
           {{ streaming ? "Streaming" : "Live tail" }}
         </UButton>
-      </div>
-    </div>
+      </template>
+    </PageHeader>
 
     <!-- What the store saw in the last 24 hours, hourly. -->
     <div v-if="headline" class="grid grid-cols-2 lg:grid-cols-4 gap-3">
@@ -566,15 +592,24 @@ const placeholder = computed(() =>
       >
         {{ clause.negated ? "−" : "" }}{{ clause.field }}:{{ clause.value }} ×
       </button>
+      <!-- What can be typed here. Both lists are the mode's: the last example
+           and four of the columns are only worth knowing about if the cluster's
+           own lines are in the answer, and they are the operator's. -->
       <span v-if="mode === 'query'" class="text-dimmed">
         <template v-if="!activeClauses.length">
           <span class="font-mono">level:error</span> · <span class="font-mono">service:shop</span> ·
-          <span class="font-mono">http.status:&gt;=500</span> · <span class="font-mono">-source:cluster</span>
+          <span class="font-mono">http.status:&gt;=500</span>
+          <OperatorOnly> · <span class="font-mono">-source:cluster</span></OperatorOnly>
         </template>
       </span>
       <span v-else class="text-dimmed font-mono">
-        columns: timestamp · source · project · environment · build · pod · container · stream · level · traceId ·
-        spanId · message · fields
+        <OperatorOnly>
+          columns: timestamp · source · project · environment · build · pod · container · stream · level · traceId ·
+          spanId · message · fields
+        </OperatorOnly>
+        <span v-if="!operatorMode">
+          columns: timestamp · project · environment · build · stream · level · traceId · spanId · message · fields
+        </span>
       </span>
     </div>
 
@@ -622,19 +657,19 @@ const placeholder = computed(() =>
                 <tr class="hover:bg-elevated/50 align-top cursor-pointer" @click="expanded = expanded === i ? null : i">
                   <td class="px-3 py-0.5 text-dimmed whitespace-nowrap select-none">{{ time(line.timestamp) }}</td>
                   <td
-                    class="px-2 py-0.5 whitespace-nowrap"
+                    class="px-3 py-0.5 whitespace-nowrap"
                     :class="line.stream === 'stderr' ? 'text-error' : 'text-muted'"
                   >
                     {{ line.environment || line.build || line.source }}
                   </td>
                   <td
-                    class="px-2 py-0.5 whitespace-nowrap select-none"
+                    class="px-3 py-0.5 whitespace-nowrap select-none"
                     :class="levelClass(line.level, line.stream)"
                   >
                     {{ line.level || "" }}
                   </td>
                   <td
-                    class="px-2 py-0.5 whitespace-pre-wrap break-all w-full"
+                    class="px-3 py-0.5 whitespace-pre-wrap break-all w-full"
                     :class="levelClass(line.level, line.stream)"
                   >
                     {{ line.message }}
@@ -699,17 +734,17 @@ const placeholder = computed(() =>
           <table v-else class="w-full text-xs">
             <tbody>
               <tr v-for="pattern in patterns" :key="pattern.pattern" class="hover:bg-elevated/50 align-top">
-                <td class="px-3 py-1.5 text-right tabular-nums font-mono text-highlighted whitespace-nowrap">
+                <td class="px-3 py-1 text-right tabular-nums font-mono text-highlighted whitespace-nowrap">
                   {{ compactCount(pattern.count) }}
                 </td>
-                <td class="px-2 py-1.5 font-mono whitespace-nowrap select-none" :class="levelClass(pattern.level)">
+                <td class="px-3 py-1 font-mono whitespace-nowrap select-none" :class="levelClass(pattern.level)">
                   {{ pattern.level || "" }}
                 </td>
-                <td class="px-2 py-1.5 w-full">
+                <td class="px-3 py-1 w-full">
                   <p class="font-mono break-all" :class="levelClass(pattern.level)">{{ pattern.pattern }}</p>
                   <p class="font-mono text-[11px] text-dimmed break-all mt-0.5">{{ pattern.sample }}</p>
                 </td>
-                <td class="px-3 py-1.5 text-dimmed font-mono whitespace-nowrap text-right">
+                <td class="px-3 py-1 text-dimmed font-mono whitespace-nowrap text-right">
                   {{ time(pattern.lastSeen) }}
                 </td>
               </tr>

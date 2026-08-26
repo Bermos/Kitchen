@@ -4,6 +4,7 @@ import { api, type LogLine } from "../lib/api";
 import { compactCount, formatBytes, timeAgo } from "../lib/format";
 import { correlatedLogsQuery } from "../lib/requests";
 import { useAsync, usePoll } from "../lib/useAsync";
+import OperatorOnly from "./OperatorOnly.vue";
 import RequestRows from "./RequestRows.vue";
 import ResourceChart from "./ResourceChart.vue";
 
@@ -93,7 +94,7 @@ function levelClass(line: LogLine): string {
       <UIcon name="i-lucide-shield-check" class="size-4 text-success shrink-0" />
       <span class="flex-1">{{ data?.message }}</span>
       <span v-if="data?.restarts" class="text-warning font-mono shrink-0">
-        {{ data.restarts }} restart{{ data.restarts === 1 ? "" : "s" }} on the pods running now
+        {{ data.restarts }} restart{{ data.restarts === 1 ? "" : "s" }} on what is running now
       </span>
     </p>
 
@@ -101,12 +102,14 @@ function levelClass(line: LogLine): string {
       <div class="px-5 py-4 bg-error/5 border-b border-error/30">
         <div class="flex items-start justify-between gap-4 flex-wrap">
           <div>
-            <h2 class="text-sm font-semibold text-error flex items-center gap-2">
+            <h2 class="text-sm font-medium text-error flex items-center gap-2">
               <UIcon :name="crash.oomKilled ? 'i-lucide-memory-stick' : 'i-lucide-skull'" class="size-4" />
               {{ headline }}
             </h2>
             <p class="text-xs text-muted mt-1 font-mono">
-              {{ crash.pod }} · {{ crash.container }} · {{ timeAgo(crash.finishedAt) }}
+              <!-- Which pod and which container is the operator's half of the
+                   sentence; when it happened is everybody's. -->
+              <OperatorOnly>{{ crash.pod }} · {{ crash.container }} · </OperatorOnly>{{ timeAgo(crash.finishedAt) }}
               <template v-if="crash.previous"> · the run before the current one</template>
             </p>
           </div>
@@ -178,11 +181,11 @@ function levelClass(line: LogLine): string {
               <tbody>
                 <tr v-for="(line, i) in report.logs" :key="i" class="align-top">
                   <td class="px-3 py-0.5 text-dimmed whitespace-nowrap select-none">{{ time(line.timestamp) }}</td>
-                  <td v-if="line.level" class="px-2 py-0.5 whitespace-nowrap select-none" :class="levelClass(line)">
+                  <td v-if="line.level" class="px-3 py-0.5 whitespace-nowrap select-none" :class="levelClass(line)">
                     {{ line.level }}
                   </td>
-                  <td v-else class="px-2 py-0.5" />
-                  <td class="px-2 py-0.5 whitespace-pre-wrap break-all w-full" :class="levelClass(line)">
+                  <td v-else class="px-3 py-0.5" />
+                  <td class="px-3 py-0.5 whitespace-pre-wrap break-all w-full" :class="levelClass(line)">
                     {{ line.message }}
                   </td>
                 </tr>
@@ -199,32 +202,34 @@ function levelClass(line: LogLine): string {
           </RouterLink>
         </div>
 
-        <div>
-          <h3 class="text-xs font-medium text-highlighted mb-1.5">
-            What the cluster said
-            <span class="text-dimmed font-normal">— Warnings, which run past the crash because a loop keeps announcing itself</span>
-          </h3>
-          <div class="rounded-md border border-default overflow-x-auto">
-            <p v-if="!report.events.length" class="px-4 py-2.5 text-xs text-muted">
-              No Warning events for this environment in the window.
-            </p>
-            <table v-else class="w-full text-xs">
-              <tbody>
-                <tr v-for="(event, i) in report.events" :key="i" class="border-b border-muted last:border-0 align-top">
-                  <td class="px-3 py-1.5 text-dimmed font-mono whitespace-nowrap">{{ time(event.timestamp) }}</td>
-                  <td class="px-2 py-1.5 font-mono text-warning whitespace-nowrap">{{ event.reason }}</td>
-                  <td class="px-2 py-1.5 font-mono text-dimmed whitespace-nowrap">
-                    {{ event.kind }}<template v-if="event.name">/{{ event.name }}</template>
-                  </td>
-                  <td class="px-2 py-1.5 text-toned w-full break-all">{{ event.message }}</td>
-                  <td class="px-3 py-1.5 text-dimmed font-mono text-right whitespace-nowrap">
-                    <template v-if="event.count > 1">×{{ event.count }}</template>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
+        <OperatorOnly>
+          <div>
+            <h3 class="text-xs font-medium text-highlighted mb-1.5">
+              What the cluster said
+              <span class="text-dimmed font-normal">— Warnings, which run past the crash because a loop keeps announcing itself</span>
+            </h3>
+            <div class="rounded-md border border-default overflow-x-auto">
+              <p v-if="!report.events.length" class="px-4 py-2.5 text-xs text-muted">
+                No Warning events for this environment in the window.
+              </p>
+              <table v-else class="w-full text-xs">
+                <tbody>
+                  <tr v-for="(event, i) in report.events" :key="i" class="border-b border-muted last:border-0 align-top">
+                    <td class="px-3 py-1 text-dimmed font-mono whitespace-nowrap">{{ time(event.timestamp) }}</td>
+                    <td class="px-3 py-1 font-mono text-warning whitespace-nowrap">{{ event.reason }}</td>
+                    <td class="px-3 py-1 font-mono text-dimmed whitespace-nowrap">
+                      {{ event.kind }}<template v-if="event.name">/{{ event.name }}</template>
+                    </td>
+                    <td class="px-3 py-1 text-toned w-full break-all">{{ event.message }}</td>
+                    <td class="px-3 py-1 text-dimmed font-mono text-right whitespace-nowrap">
+                      <template v-if="event.count > 1">×{{ event.count }}</template>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
           </div>
-        </div>
+        </OperatorOnly>
 
         <div>
           <h3 class="text-xs font-medium text-highlighted mb-1.5">

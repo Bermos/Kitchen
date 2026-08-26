@@ -9,6 +9,7 @@ import { refusal } from "../lib/policy";
 import { statusDetail, unhealthyConditions, type Tone } from "../lib/status";
 import { useAsync, usePoll } from "../lib/useAsync";
 import NewProjectModal from "../components/NewProjectModal.vue";
+import PageHeader from "../components/PageHeader.vue";
 import PhaseBadge from "../components/PhaseBadge.vue";
 import Sparkline from "../components/Sparkline.vue";
 import StatusDot from "../components/StatusDot.vue";
@@ -188,9 +189,11 @@ function host(url?: string): string {
 
 <template>
   <div class="space-y-6">
-    <div class="flex items-center justify-between gap-3 flex-wrap">
-      <h1 class="text-xl font-semibold text-highlighted">Overview</h1>
-      <div class="flex items-center gap-2">
+    <PageHeader title="Overview">
+      <template #description>
+        Every project you can see, what is serving production, and what the platform has been doing lately.
+      </template>
+      <template #actions>
         <UButton
           icon="i-lucide-refresh-cw"
           color="neutral"
@@ -201,8 +204,8 @@ function host(url?: string): string {
           @click="refresh"
         />
         <NewProjectModal @created="refresh" />
-      </div>
-    </div>
+      </template>
+    </PageHeader>
 
     <UAlert
       v-if="denied"
@@ -249,18 +252,18 @@ function host(url?: string): string {
       <table class="w-full min-w-[48rem] text-sm">
         <thead>
           <tr class="text-left text-xs text-muted border-b border-default bg-muted">
-            <th class="px-4 py-2.5 font-medium">Project</th>
-            <th class="px-4 py-2.5 font-medium">Production</th>
-            <th class="px-4 py-2.5 font-medium">Last build</th>
-            <th v-if="anyProjectTraffic" class="px-4 py-2.5 font-medium">Traffic · 24 h</th>
-            <th v-if="anyProjectTraffic" class="px-4 py-2.5 font-medium text-right">p95 · 5xx</th>
-            <th class="px-4 py-2.5 font-medium text-right">Previews</th>
-            <th class="px-4 py-2.5 font-medium text-right">Environment</th>
+            <th class="px-3 py-2 font-medium">Project</th>
+            <th class="px-3 py-2 font-medium">Production</th>
+            <th class="px-3 py-2 font-medium">Last build</th>
+            <th v-if="anyProjectTraffic" class="px-3 py-2 font-medium">Traffic · 24 h</th>
+            <th v-if="anyProjectTraffic" class="px-3 py-2 font-medium text-right">p95 · 5xx</th>
+            <th class="px-3 py-2 font-medium text-right">Previews</th>
+            <th class="px-3 py-2 font-medium text-right">Environment</th>
           </tr>
         </thead>
         <tbody>
           <tr v-if="!visible.length">
-            <td :colspan="anyProjectTraffic ? 7 : 5" class="px-4 py-8 text-center text-muted">
+            <td :colspan="anyProjectTraffic ? 7 : 5" class="px-3 py-8 text-center text-muted">
               {{ loading ? "Loading…" : filter === "failing" ? "Nothing is failing." : "No projects yet — “New project” connects your first repository." }}
             </td>
           </tr>
@@ -269,7 +272,7 @@ function host(url?: string): string {
             :key="row.name"
             class="border-b border-muted last:border-0 hover:bg-elevated/40"
           >
-            <td class="px-4 py-3">
+            <td class="px-3 py-2">
               <RouterLink :to="{ name: 'project', params: { name: row.name } }" class="flex items-center gap-2.5 group">
                 <StatusDot :tone="row.tone" :pulse="row.tone === 'warning'" />
                 <span>
@@ -281,7 +284,7 @@ function host(url?: string): string {
                 {{ row.detail }}
               </p>
             </td>
-            <td class="px-4 py-3">
+            <td class="px-3 py-2">
               <a
                 v-if="row.url"
                 :href="row.url"
@@ -292,7 +295,7 @@ function host(url?: string): string {
               >
               <span v-else class="text-dimmed">—</span>
             </td>
-            <td class="px-4 py-3">
+            <td class="px-3 py-2">
               <RouterLink
                 v-if="row.latestBuild"
                 :to="{ name: 'build', params: { name: row.latestBuild.name } }"
@@ -312,7 +315,7 @@ function host(url?: string): string {
                 {{ buildFailureLine(row.latestBuild) }}
               </p>
             </td>
-            <td v-if="anyProjectTraffic" class="px-4 py-3">
+            <td v-if="anyProjectTraffic" class="px-3 py-2">
               <div class="flex items-center gap-2">
                 <Sparkline :points="trafficByProject.get(row.name)?.requestsPerHour ?? []" :width="72" :height="20" />
                 <span class="text-xs font-mono text-toned">{{
@@ -320,7 +323,7 @@ function host(url?: string): string {
                 }}</span>
               </div>
             </td>
-            <td v-if="anyProjectTraffic" class="px-4 py-3 text-right font-mono text-xs">
+            <td v-if="anyProjectTraffic" class="px-3 py-2 text-right font-mono text-xs">
               <span class="text-toned">{{
                 (trafficByProject.get(row.name)?.p95Ms ?? 0) > 0
                   ? `${Math.round(trafficByProject.get(row.name)!.p95Ms)} ms`
@@ -331,8 +334,8 @@ function host(url?: string): string {
                 trafficByProject.get(row.name)?.errors5xx24h || 0
               }}</span>
             </td>
-            <td class="px-4 py-3 text-right font-mono text-toned">{{ row.previews || "—" }}</td>
-            <td class="px-4 py-3 text-right"><PhaseBadge :phase="row.environment?.phase" /></td>
+            <td class="px-3 py-2 text-right font-mono text-toned">{{ row.previews || "—" }}</td>
+            <td class="px-3 py-2 text-right"><PhaseBadge :phase="row.environment?.phase" /></td>
           </tr>
         </tbody>
       </table>
@@ -342,7 +345,7 @@ function host(url?: string): string {
          newest first, each linking to the thing it is about. -->
     <div v-if="activity.data.value?.length" class="rounded-md border border-default">
       <div class="px-4 py-2.5 border-b border-default bg-muted flex items-center justify-between">
-        <h2 class="text-xs font-medium text-muted">Recent activity</h2>
+        <h2 class="text-sm font-medium text-muted">Recent activity</h2>
         <span class="text-[11px] text-dimmed">from the platform's event feed</span>
       </div>
       <ul class="divide-y divide-muted">

@@ -223,16 +223,16 @@ function commandOf(process: Process): string {
               </thead>
               <tbody class="divide-y divide-default">
                 <tr v-for="run in runs[process.name]" :key="run.name">
-                  <td class="py-1.5 pr-3 font-mono text-toned break-all">{{ run.name }}</td>
-                  <td class="py-1.5 pr-3">
+                  <td class="py-1 pr-3 font-mono text-toned break-all">{{ run.name }}</td>
+                  <td class="py-1 pr-3">
                     <span class="inline-flex items-center gap-1.5">
                       <StatusDot :tone="runTone(run)" :pulse="run.phase === 'Running'" />
                       {{ run.phase }}
                     </span>
                   </td>
-                  <td class="py-1.5 pr-3 text-muted">{{ run.startedAt ? timeAgo(run.startedAt) : "—" }}</td>
-                  <td class="py-1.5 pr-3 text-muted">{{ took(run) }}</td>
-                  <td class="py-1.5 text-error">{{ run.message }}</td>
+                  <td class="py-1 pr-3 text-muted">{{ run.startedAt ? timeAgo(run.startedAt) : "—" }}</td>
+                  <td class="py-1 pr-3 text-muted">{{ took(run) }}</td>
+                  <td class="py-1 text-error">{{ run.message }}</td>
                 </tr>
               </tbody>
             </table>

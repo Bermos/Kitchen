@@ -114,10 +114,10 @@ async function save() {
 </script>
 
 <template>
-  <div class="space-y-4 max-w-2xl">
+  <div class="space-y-4 max-w-3xl">
     <div class="flex items-start justify-between gap-4">
       <div>
-        <h2 class="text-sm font-semibold text-highlighted">Environment variables</h2>
+        <h2 class="text-sm font-medium text-highlighted">Environment variables</h2>
         <p class="text-xs text-muted mt-1">
           What <span class="font-mono">{{ project }}</span> runs with. Values are never read back — by anybody, this
           dashboard included — so a variable that has one shows <span class="font-mono">•••• set</span><template

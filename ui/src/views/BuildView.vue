@@ -5,13 +5,14 @@ import { api, type EvidenceSet, type LogLine, type LogQuery, type QualityGate } 
 import { buildStallLine } from "../lib/builds";
 import { duration, shortSHA, timeAgo } from "../lib/format";
 import { callerFor } from "../lib/me";
-import { operatorMode } from "../lib/mode";
 import { may } from "../lib/policy";
 import { useAsync, usePoll } from "../lib/useAsync";
 import ConditionsTable from "../components/ConditionsTable.vue";
-import VEXPanel from "../components/VEXPanel.vue";
 import LogViewer from "../components/LogViewer.vue";
+import OperatorOnly from "../components/OperatorOnly.vue";
+import PageHeader from "../components/PageHeader.vue";
 import PhaseBadge from "../components/PhaseBadge.vue";
+import VEXPanel from "../components/VEXPanel.vue";
 
 const route = useRoute();
 const toast = useToast();
@@ -205,20 +206,25 @@ const logStreamer = (query: LogQuery, onLine: (line: LogLine) => void, signal: A
   <div class="space-y-6">
     <UAlert v-if="error" color="error" variant="soft" icon="i-lucide-triangle-alert" :title="error" />
     <template v-else-if="build">
-      <div>
-        <div class="flex items-center gap-2 text-xs text-muted mb-1">
-          <RouterLink to="/" class="hover:text-highlighted">Overview</RouterLink>
-          <span>/</span>
-          <RouterLink :to="{ name: 'project', params: { name: build.project } }" class="hover:text-highlighted">
-            {{ build.project }}
-          </RouterLink>
-          <span>/</span>
-          <span class="text-toned font-mono">{{ build.name }}</span>
-        </div>
-        <div class="flex items-center gap-3 flex-wrap">
-          <h1 class="text-xl font-semibold text-highlighted">{{ build.git.message || build.name }}</h1>
+      <PageHeader
+        :title="build.git.message || build.name"
+        :breadcrumb="[
+          { label: 'Overview', to: '/' },
+          { label: build.project, to: { name: 'project', params: { name: build.project } } },
+          { label: build.name, mono: true },
+        ]"
+      >
+        <template #badges>
           <PhaseBadge :phase="build.phase" />
-          <span class="flex-1" />
+        </template>
+        <template #meta>
+          <span class="font-mono">{{ shortSHA(build.git.sha) }}</span>
+          <span class="font-mono">{{ build.git.branch }}</span>
+          <span v-if="build.git.pullRequest" class="font-mono">#{{ build.git.pullRequest }}</span>
+          <span v-if="build.git.author" class="font-mono">{{ build.git.author }}</span>
+          <span v-if="build.detectedFramework" class="font-mono">{{ build.detectedFramework }}, detected</span>
+        </template>
+        <template #actions>
           <UButton
             v-if="moving && mayCancel"
             color="neutral"
@@ -230,15 +236,8 @@ const logStreamer = (query: LogQuery, onLine: (line: LogLine) => void, signal: A
           >
             Cancel build
           </UButton>
-        </div>
-        <div class="flex items-center gap-3 mt-1 text-xs text-muted font-mono flex-wrap">
-          <span>{{ shortSHA(build.git.sha) }}</span>
-          <span>{{ build.git.branch }}</span>
-          <span v-if="build.git.pullRequest">#{{ build.git.pullRequest }}</span>
-          <span v-if="build.git.author">{{ build.git.author }}</span>
-          <span v-if="build.detectedFramework">{{ build.detectedFramework }}, detected</span>
-        </div>
-      </div>
+        </template>
+      </PageHeader>
 
       <div class="rounded-md border border-default bg-muted px-5 py-4 grid gap-6 sm:grid-cols-4">
         <div>
@@ -493,7 +492,9 @@ const logStreamer = (query: LogQuery, onLine: (line: LogLine) => void, signal: A
         :role="project.data.value?.role"
       />
 
-      <ConditionsTable v-if="operatorMode" :conditions="build.conditions" />
+      <OperatorOnly>
+        <ConditionsTable :conditions="build.conditions" />
+      </OperatorOnly>
 
       <div>
         <h2 class="text-sm font-medium text-highlighted mb-2">Build output</h2>

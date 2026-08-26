@@ -23,7 +23,7 @@ function tone(condition: Condition): string {
       </thead>
       <tbody>
         <tr v-if="!conditions?.length">
-          <td colspan="5" class="px-3 py-3 text-muted">No conditions reported yet.</td>
+          <td colspan="5" class="px-3 py-2 text-muted">No conditions reported yet.</td>
         </tr>
         <tr v-for="condition in conditions" :key="condition.type" class="border-b border-muted last:border-0">
           <td class="px-3 py-2 font-mono text-highlighted">{{ condition.type }}</td>

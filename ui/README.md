@@ -27,9 +27,16 @@ after the Kitchen design mockups (IBM Plex, dark, conditions-first).
   whole session by design. The session lives in `localStorage`, which is what
   makes it one session per browser rather than one per tab — the reasoning,
   and what it costs, is in [docs/AUTH.md](../docs/AUTH.md).
+- **How a screen is put together.** [docs/UI.md](../docs/UI.md) is the design
+  guide: one page width, one rhythm, one header (`PageHeader`), one heading
+  scale, one table, and the rule that decides which of the two dashboards a
+  screen belongs to. `src/lib/design.test.ts` enforces the half of it a machine
+  can hold, and runs in `npm test`.
 - **Status display.** Phases are the coarse summary; the views read
   `status.conditions` for detail (docs/CRDS.md), and the Operator toggle in
-  the top bar surfaces the full condition tables on every object.
+  the top bar surfaces the full condition tables on every object — behind
+  `<OperatorOnly>`, which is where every Kubernetes noun on a developer screen
+  lives.
 - **"Live" logs.** The log endpoints stream as Server-Sent Events when asked to,
   and the viewers fall back to re-running the bounded query every few seconds
   where a stream cannot be established. The request list tails the same way.

@@ -161,13 +161,13 @@ const removalBlurb = computed(() => {
       <table class="w-full min-w-[28rem] text-sm">
         <tbody>
           <tr v-for="operator in operators" :key="operator.subject" class="border-b border-muted last:border-0">
-            <td class="px-4 py-3">
+            <td class="px-3 py-2">
               <p class="text-highlighted">{{ describeOperator(operator) }}</p>
               <p v-if="operator.email" class="text-xs text-dimmed font-mono truncate max-w-xs" :title="operator.subject">
                 {{ operator.subject }}
               </p>
             </td>
-            <td class="px-4 py-3 text-right whitespace-nowrap">
+            <td class="px-3 py-2 text-right whitespace-nowrap">
               <UButton
                 v-if="mayWrite"
                 color="neutral"

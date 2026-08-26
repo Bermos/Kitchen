@@ -144,10 +144,10 @@ async function revoke() {
 </script>
 
 <template>
-  <div class="space-y-4 max-w-2xl">
+  <div class="space-y-4 max-w-3xl">
     <div class="flex items-start justify-between gap-4">
       <div>
-        <h2 class="text-sm font-semibold text-highlighted">CI keys</h2>
+        <h2 class="text-sm font-medium text-highlighted">CI keys</h2>
         <p class="text-xs text-muted mt-1">
           A key is a member of <span class="font-mono">{{ project }}</span> and nothing else — it holds a role on this
           project the way a person does, so a key that can trigger a build cannot change the platform. Values are never
@@ -178,24 +178,24 @@ async function revoke() {
       <table class="w-full min-w-[34rem] text-sm">
         <thead>
           <tr class="text-left text-xs text-muted border-b border-default">
-            <th class="px-4 py-2 font-medium">Key</th>
-            <th class="px-4 py-2 font-medium">Role</th>
-            <th class="px-4 py-2 font-medium">Last used</th>
-            <th class="px-4 py-2"></th>
+            <th class="px-3 py-2 font-medium">Key</th>
+            <th class="px-3 py-2 font-medium">Role</th>
+            <th class="px-3 py-2 font-medium">Last used</th>
+            <th class="px-3 py-2"></th>
           </tr>
         </thead>
         <tbody>
           <tr v-if="!keys.length">
-            <td colspan="4" class="px-4 py-8 text-center text-muted">
+            <td colspan="4" class="px-3 py-8 text-center text-muted">
               {{ loading ? "Loading…" : "No CI keys on this project." }}
             </td>
           </tr>
           <tr v-for="key in keys" :key="key.name" class="border-b border-muted last:border-0">
-            <td class="px-4 py-3">
+            <td class="px-3 py-2">
               <p class="text-highlighted font-mono">{{ key.name }}</p>
               <p class="text-xs text-dimmed font-mono">{{ key.prefix }}… · issued {{ timeAgo(key.created) }}</p>
             </td>
-            <td class="px-4 py-3">
+            <td class="px-3 py-2">
               <UBadge v-if="!keyIsUngranted(key)" color="neutral" variant="subtle" size="sm" class="font-mono">
                 {{ key.role }}
               </UBadge>
@@ -207,8 +207,8 @@ async function revoke() {
                 no role — revoke it
               </span>
             </td>
-            <td class="px-4 py-3 text-xs text-toned">{{ key.lastUsed ? timeAgo(key.lastUsed) : "never" }}</td>
-            <td class="px-4 py-3 text-right whitespace-nowrap">
+            <td class="px-3 py-2 text-xs text-toned">{{ key.lastUsed ? timeAgo(key.lastUsed) : "never" }}</td>
+            <td class="px-3 py-2 text-right whitespace-nowrap">
               <UButton
                 v-if="mayRevoke"
                 color="neutral"

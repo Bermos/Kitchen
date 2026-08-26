@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import DecisionsPanel from "../components/DecisionsPanel.vue";
-import CriticalityPanel from "../components/CriticalityPanel.vue";
-import DriftPanel from "../components/DriftPanel.vue";
 import AccessReviewPanel from "../components/AccessReviewPanel.vue";
 import AuditPackPanel from "../components/AuditPackPanel.vue";
+import CriticalityPanel from "../components/CriticalityPanel.vue";
+import DecisionsPanel from "../components/DecisionsPanel.vue";
+import DriftPanel from "../components/DriftPanel.vue";
 import ExceptionsPanel from "../components/ExceptionsPanel.vue";
+import PageHeader from "../components/PageHeader.vue";
 import { api, type AuditRecord } from "../lib/api";
 import { timeAgo } from "../lib/format";
 import { useAsync } from "../lib/useAsync";
@@ -177,21 +178,13 @@ const truncated = computed(() => {
 </script>
 
 <template>
-  <div class="space-y-4">
-    <div class="flex items-start justify-between gap-4 flex-wrap">
-      <div>
-        <div class="flex items-center gap-2 text-xs text-muted mb-1">
-          <RouterLink to="/platform" class="hover:text-highlighted">Platform</RouterLink>
-          <span>/</span>
-          <span class="text-toned">Audit</span>
-        </div>
-        <h1 class="text-xl font-semibold text-highlighted">Audit</h1>
-        <p class="text-xs text-muted mt-1">
-          Every state transition the platform made, chained so that a record edited, removed or slipped in afterwards
-          says so.
-        </p>
-      </div>
-      <div class="flex items-center gap-2">
+  <div class="space-y-6">
+    <PageHeader title="Audit" :breadcrumb="[{ label: 'Platform', to: '/platform' }, { label: 'Audit' }]">
+      <template #description>
+        Every state transition the platform made, chained so that a record edited, removed or slipped in afterwards says
+        so.
+      </template>
+      <template #actions>
         <!-- The supervisor's question, one toggle: what moved a control
              rather than a workload. Waivers, requirements, classifications,
              grants, credentials, and writes the platform did not make. -->
@@ -221,8 +214,8 @@ const truncated = computed(() => {
           aria-label="Refresh"
           @click="records.refresh"
         />
-      </div>
-    </div>
+      </template>
+    </PageHeader>
 
     <!-- The chain's verdict, first, because the rows below are only worth
          reading if it holds. -->
@@ -445,7 +438,7 @@ const truncated = computed(() => {
     <div class="space-y-2">
       <div class="flex items-start justify-between gap-4 flex-wrap">
         <div>
-          <h2 class="text-sm font-semibold text-highlighted">Data classification inventory</h2>
+          <h2 class="text-sm font-medium text-highlighted">Data classification inventory</h2>
           <p class="text-xs text-muted mt-0.5">
             Where every environment's and claim's data stands: class, provenance, location.
             <template v-if="inventory.data.value?.defaultResidency">
@@ -475,12 +468,12 @@ const truncated = computed(() => {
         <table class="w-full text-xs">
           <thead>
             <tr class="border-b border-default text-left text-dimmed">
-              <th class="px-3 py-2 font-medium">Project</th>
-              <th class="px-3 py-2 font-medium">Name</th>
-              <th class="px-3 py-2 font-medium">Kind</th>
-              <th class="px-3 py-2 font-medium">Class</th>
-              <th class="px-3 py-2 font-medium">Provenance</th>
-              <th class="px-3 py-2 font-medium">Residency</th>
+              <th class="px-3 py-1 font-medium">Project</th>
+              <th class="px-3 py-1 font-medium">Name</th>
+              <th class="px-3 py-1 font-medium">Kind</th>
+              <th class="px-3 py-1 font-medium">Class</th>
+              <th class="px-3 py-1 font-medium">Provenance</th>
+              <th class="px-3 py-1 font-medium">Residency</th>
             </tr>
           </thead>
           <tbody>
@@ -489,25 +482,25 @@ const truncated = computed(() => {
               :key="`${item.kind}/${item.name}`"
               class="border-b border-default/50"
             >
-              <td class="px-3 py-1.5 font-mono text-toned">{{ item.project }}</td>
-              <td class="px-3 py-1.5 font-mono text-highlighted">{{ item.name }}</td>
-              <td class="px-3 py-1.5 text-dimmed">{{ item.kind }} · {{ item.type }}</td>
-              <td class="px-3 py-1.5" :class="item.dataClass === 'unclassified' ? 'text-dimmed' : 'text-toned'">
+              <td class="px-3 py-1 font-mono text-toned">{{ item.project }}</td>
+              <td class="px-3 py-1 font-mono text-highlighted">{{ item.name }}</td>
+              <td class="px-3 py-1 text-dimmed">{{ item.kind }} · {{ item.type }}</td>
+              <td class="px-3 py-1" :class="item.dataClass === 'unclassified' ? 'text-dimmed' : 'text-toned'">
                 {{ item.dataClass }}
               </td>
-              <td class="px-3 py-1.5">
+              <td class="px-3 py-1">
                 <span v-if="!item.provenance" class="text-dimmed">—</span>
                 <span v-else-if="item.provenance === 'production'" class="text-warning">production</span>
                 <span v-else :class="item.provenance === 'undeclared' ? 'text-dimmed' : 'text-toned'">
                   {{ item.provenance }}
                 </span>
               </td>
-              <td class="px-3 py-1.5" :class="item.residency === 'unknown' ? 'text-dimmed' : 'text-toned'">
+              <td class="px-3 py-1" :class="item.residency === 'unknown' ? 'text-dimmed' : 'text-toned'">
                 {{ item.residency }}
               </td>
             </tr>
             <tr v-if="inventory.data.value && inventory.data.value.items.length === 0">
-              <td colspan="6" class="px-3 py-3 text-center text-dimmed">Nothing to classify yet.</td>
+              <td colspan="6" class="px-3 py-2 text-center text-dimmed">Nothing to classify yet.</td>
             </tr>
           </tbody>
         </table>

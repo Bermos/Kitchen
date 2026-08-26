@@ -291,7 +291,7 @@ function toggleOutput(name: string) {
                 </td>
               </tr>
               <tr v-if="opened === update.name" class="border-b border-muted last:border-0">
-                <td colspan="5" class="px-3 py-3">
+                <td colspan="5" class="px-3 py-2">
                   <!-- The one being followed above already has a tail on it;
                        a second one here would be two streams of one log. -->
                   <UpdateLogs :name="update.name" :live="moving(update) && flight?.name !== update.name" />

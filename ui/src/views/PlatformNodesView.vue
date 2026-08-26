@@ -6,6 +6,7 @@ import { formatBytes, formatCores, formatMemory, timeAgo, uptime } from "../lib/
 import { freshness, latestObserved, formatFraction, nodePressure, NODE_SATURATION_FRACTION } from "../lib/platform";
 import { useAsync, usePoll } from "../lib/useAsync";
 import FillBar from "../components/FillBar.vue";
+import PageHeader from "../components/PageHeader.vue";
 import Sparkline from "../components/Sparkline.vue";
 import StatusDot from "../components/StatusDot.vue";
 
@@ -94,30 +95,23 @@ function fullest(item: PlatformNode) {
 </script>
 
 <template>
-  <div class="space-y-5">
-    <div class="flex items-start justify-between gap-4 flex-wrap">
-      <div>
-        <div class="flex items-center gap-2 text-xs text-muted mb-1">
-          <RouterLink to="/platform" class="hover:text-highlighted">Platform</RouterLink>
-          <span>/</span>
-          <span class="text-toned">Nodes</span>
-        </div>
-        <h1 class="text-xl font-semibold text-highlighted">Nodes</h1>
-        <p class="text-xs text-muted mt-1">
-          What the cluster is made of — and, in the last column, which of its machines the platform is still hearing
-          from.
-        </p>
-      </div>
-      <UButton
-        icon="i-lucide-refresh-cw"
-        color="neutral"
-        variant="ghost"
-        size="sm"
-        :loading="loading"
-        aria-label="Refresh"
-        @click="refresh"
-      />
-    </div>
+  <div class="space-y-6">
+    <PageHeader title="Nodes" :breadcrumb="[{ label: 'Platform', to: '/platform' }, { label: 'Nodes' }]">
+      <template #description>
+        What the cluster is made of — and, in the last column, which of its machines the platform is still hearing from.
+      </template>
+      <template #actions>
+        <UButton
+          icon="i-lucide-refresh-cw"
+          color="neutral"
+          variant="ghost"
+          size="sm"
+          :loading="loading"
+          aria-label="Refresh"
+          @click="refresh"
+        />
+      </template>
+    </PageHeader>
 
     <UAlert v-if="error" color="error" variant="soft" icon="i-lucide-triangle-alert" :title="error" />
 
@@ -212,18 +206,18 @@ function fullest(item: PlatformNode) {
         <table class="w-full min-w-[48rem] text-sm">
           <thead>
             <tr class="text-left text-xs text-muted border-b border-default bg-muted">
-              <th class="px-4 py-2.5 font-medium">Node</th>
-              <th class="px-4 py-2.5 font-medium">Telemetry</th>
-              <th class="px-4 py-2.5 font-medium text-right">Pods</th>
-              <th class="px-4 py-2.5 font-medium">CPU</th>
-              <th class="px-4 py-2.5 font-medium">Memory</th>
-              <th class="px-4 py-2.5 font-medium">Disk</th>
-              <th class="px-4 py-2.5 font-medium">Kubelet</th>
+              <th class="px-3 py-2 font-medium">Node</th>
+              <th class="px-3 py-2 font-medium">Telemetry</th>
+              <th class="px-3 py-2 font-medium text-right">Pods</th>
+              <th class="px-3 py-2 font-medium">CPU</th>
+              <th class="px-3 py-2 font-medium">Memory</th>
+              <th class="px-3 py-2 font-medium">Disk</th>
+              <th class="px-3 py-2 font-medium">Kubelet</th>
             </tr>
           </thead>
           <tbody>
             <tr v-if="!nodes.length">
-              <td colspan="7" class="px-4 py-8 text-center text-muted">
+              <td colspan="7" class="px-3 py-8 text-center text-muted">
                 {{ loading ? "Loading…" : node ? `No node named ${node}.` : "The cluster reported no nodes." }}
               </td>
             </tr>
@@ -238,7 +232,7 @@ function fullest(item: PlatformNode) {
                 :title="expanded === item.name ? 'Hide this node' : 'Show conditions and filesystems'"
                 @click="toggle(item.name)"
               >
-                <td class="px-4 py-3 whitespace-nowrap">
+                <td class="px-3 py-2 whitespace-nowrap">
                   <span class="inline-flex items-center gap-2">
                     <StatusDot :tone="item.ready ? 'success' : 'error'" />
                     <span class="font-mono text-highlighted">{{ item.name }}</span>
@@ -259,7 +253,7 @@ function fullest(item: PlatformNode) {
                   </p>
                 </td>
                 <!-- The column the screen exists for. -->
-                <td class="px-4 py-3">
+                <td class="px-3 py-2">
                   <span
                     class="inline-flex items-center gap-1.5 px-1.5 py-0.5 rounded font-mono text-xs"
                     :class="{
@@ -294,10 +288,10 @@ function fullest(item: PlatformNode) {
                     {{ collector(item.name) || "no collector pod" }}
                   </p>
                 </td>
-                <td class="px-4 py-3 text-right font-mono text-toned tabular-nums">
+                <td class="px-3 py-2 text-right font-mono text-toned tabular-nums">
                   {{ item.pods }}<span class="text-dimmed">/{{ item.allocatable.pods || "?" }}</span>
                 </td>
-                <td class="px-4 py-3">
+                <td class="px-3 py-2">
                   <div v-if="item.usage" class="flex items-center gap-2">
                     <Sparkline :points="series(item.usage.cpu)" :width="56" :height="18" />
                     <span class="font-mono text-xs tabular-nums" :class="saturationTone(latestObserved(item.usage.cpu))">
@@ -309,7 +303,7 @@ function fullest(item: PlatformNode) {
                     {{ formatCores(item.allocatable.cpu) }} allocatable
                   </p>
                 </td>
-                <td class="px-4 py-3">
+                <td class="px-3 py-2">
                   <div v-if="item.usage" class="flex items-center gap-2">
                     <Sparkline :points="series(item.usage.memory)" :width="56" :height="18" tone="text-info" />
                     <span
@@ -324,7 +318,7 @@ function fullest(item: PlatformNode) {
                     {{ formatMemory(item.allocatable.memory) }} allocatable
                   </p>
                 </td>
-                <td class="px-4 py-3">
+                <td class="px-3 py-2">
                   <FillBar
                     :fraction="fullest(item)?.fraction ?? null"
                     :caption="fullest(item)?.mountPoint"
@@ -332,14 +326,14 @@ function fullest(item: PlatformNode) {
                     width="w-16"
                   />
                 </td>
-                <td class="px-4 py-3 font-mono text-xs text-dimmed whitespace-nowrap">
+                <td class="px-3 py-2 font-mono text-xs text-dimmed whitespace-nowrap">
                   {{ item.kubeletVersion || "—" }}
                   <p class="text-[11px]">up {{ uptime(item.createdAt) }}</p>
                 </td>
               </tr>
 
               <tr v-if="expanded === item.name" :key="`${item.name}-detail`" class="border-b border-muted last:border-0">
-                <td colspan="7" class="px-4 py-3 bg-muted">
+                <td colspan="7" class="px-3 py-2 bg-muted">
                   <div class="grid gap-4 lg:grid-cols-2">
                     <div>
                       <h3 class="text-xs font-medium text-highlighted mb-1.5">Conditions</h3>

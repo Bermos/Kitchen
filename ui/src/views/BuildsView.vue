@@ -5,6 +5,7 @@ import { api, type Build } from "../lib/api";
 import { buildFailureLine, buildStallLine } from "../lib/builds";
 import { duration, formatDurationSeconds, shortSHA, timeAgo } from "../lib/format";
 import { useAsync, usePoll } from "../lib/useAsync";
+import PageHeader from "../components/PageHeader.vue";
 import PhaseBadge from "../components/PhaseBadge.vue";
 
 const router = useRouter();
@@ -43,18 +44,23 @@ const visible = computed(() => (project.value ? (data.value ?? []).filter((b) =>
 
 <template>
   <div class="space-y-6">
-    <div class="flex items-center justify-between gap-3 flex-wrap">
-      <h1 class="text-xl font-semibold text-highlighted">Builds</h1>
-      <UButton
-        icon="i-lucide-refresh-cw"
-        color="neutral"
-        variant="ghost"
-        size="sm"
-        :loading="loading"
-        aria-label="Refresh"
-        @click="refresh"
-      />
-    </div>
+    <PageHeader title="Builds">
+      <template #description>
+        Every build across the projects you can see, newest first — what is running now, what is waiting for a slot, and
+        what the last commit did.
+      </template>
+      <template #actions>
+        <UButton
+          icon="i-lucide-refresh-cw"
+          color="neutral"
+          variant="ghost"
+          size="sm"
+          :loading="loading"
+          aria-label="Refresh"
+          @click="refresh"
+        />
+      </template>
+    </PageHeader>
 
     <UAlert v-if="error" color="error" variant="soft" icon="i-lucide-triangle-alert" :title="error" />
 
@@ -109,16 +115,16 @@ const visible = computed(() => (project.value ? (data.value ?? []).filter((b) =>
       <table class="w-full min-w-[42rem] text-sm">
         <thead>
           <tr class="text-left text-xs text-muted border-b border-default bg-muted">
-            <th class="px-4 py-2.5 font-medium">Commit</th>
-            <th class="px-4 py-2.5 font-medium">Project</th>
-            <th class="px-4 py-2.5 font-medium">Status</th>
-            <th class="px-4 py-2.5 font-medium">Duration</th>
-            <th class="px-4 py-2.5 font-medium text-right">Created</th>
+            <th class="px-3 py-2 font-medium">Commit</th>
+            <th class="px-3 py-2 font-medium">Project</th>
+            <th class="px-3 py-2 font-medium">Status</th>
+            <th class="px-3 py-2 font-medium">Duration</th>
+            <th class="px-3 py-2 font-medium text-right">Created</th>
           </tr>
         </thead>
         <tbody>
           <tr v-if="!visible.length">
-            <td colspan="5" class="px-4 py-8 text-center text-muted">{{ loading ? "Loading…" : "No builds yet." }}</td>
+            <td colspan="5" class="px-3 py-8 text-center text-muted">{{ loading ? "Loading…" : "No builds yet." }}</td>
           </tr>
           <!-- The whole row opens the build. A row that is nine tenths dead
                space with one word in it that navigates reads as a list that
@@ -131,7 +137,7 @@ const visible = computed(() => (project.value ? (data.value ?? []).filter((b) =>
             class="border-b border-muted last:border-0 hover:bg-elevated/40 cursor-pointer"
             @click="open(build.name, $event)"
           >
-            <td class="px-4 py-3">
+            <td class="px-3 py-2">
               <RouterLink :to="{ name: 'build', params: { name: build.name } }" class="group">
                 <span class="text-highlighted group-hover:underline">{{ build.git.message || build.name }}</span>
                 <span class="block text-xs text-muted font-mono mt-0.5">
@@ -150,14 +156,14 @@ const visible = computed(() => (project.value ? (data.value ?? []).filter((b) =>
                 {{ stallOf(build) }}
               </span>
             </td>
-            <td class="px-4 py-3">
+            <td class="px-3 py-2">
               <RouterLink :to="{ name: 'project', params: { name: build.project } }" class="text-toned hover:underline">
                 {{ build.project }}
               </RouterLink>
             </td>
-            <td class="px-4 py-3"><PhaseBadge :phase="build.phase" /></td>
-            <td class="px-4 py-3 font-mono text-xs text-muted">{{ duration(build.startedAt, build.completedAt) }}</td>
-            <td class="px-4 py-3 text-right text-xs text-muted whitespace-nowrap">{{ timeAgo(build.createdAt) }}</td>
+            <td class="px-3 py-2"><PhaseBadge :phase="build.phase" /></td>
+            <td class="px-3 py-2 font-mono text-xs text-muted">{{ duration(build.startedAt, build.completedAt) }}</td>
+            <td class="px-3 py-2 text-right text-xs text-muted whitespace-nowrap">{{ timeAgo(build.createdAt) }}</td>
           </tr>
         </tbody>
       </table>

@@ -2,6 +2,7 @@
 import { computed, ref } from "vue";
 import { api, APIError, downloadBackup } from "../lib/api";
 import { useAsync } from "../lib/useAsync";
+import PageHeader from "../components/PageHeader.vue";
 import StatusDot from "../components/StatusDot.vue";
 
 // Backing the platform up: what an archive would carry, what it deliberately
@@ -56,21 +57,13 @@ async function take() {
 </script>
 
 <template>
-  <div class="space-y-5">
-    <div class="flex items-start justify-between gap-4 flex-wrap">
-      <div>
-        <div class="flex items-center gap-2 text-xs text-muted mb-1">
-          <RouterLink to="/platform" class="hover:text-highlighted">Platform</RouterLink>
-          <span>/</span>
-          <span class="text-toned">Backup</span>
-        </div>
-        <h1 class="text-xl font-semibold text-highlighted">Backup</h1>
-        <p class="text-xs text-muted mt-1">
-          One archive: every Kitchen object, every credential in the platform namespace, and the identity provider's
-          database.
-        </p>
-      </div>
-      <div class="flex items-center gap-2">
+  <div class="space-y-6">
+    <PageHeader title="Backup" :breadcrumb="[{ label: 'Platform', to: '/platform' }, { label: 'Backup' }]">
+      <template #description>
+        One archive: every Kitchen object, every credential in the platform namespace, and the identity provider's
+        database.
+      </template>
+      <template #actions>
         <UButton
           icon="i-lucide-refresh-cw"
           color="neutral"
@@ -83,8 +76,8 @@ async function take() {
         <UButton icon="i-lucide-download" color="primary" size="sm" :loading="taking" :disabled="!data" @click="take">
           Take a backup
         </UButton>
-      </div>
-    </div>
+      </template>
+    </PageHeader>
 
     <UAlert v-if="error" color="error" variant="soft" icon="i-lucide-triangle-alert" :title="error" />
     <UAlert v-if="failure" color="error" variant="soft" icon="i-lucide-triangle-alert" :title="failure" />

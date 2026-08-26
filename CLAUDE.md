@@ -44,6 +44,32 @@ The corollaries that shape how such writes are built:
   token secret, the bootstrap link) and deploy-time chart values — and a
   setting that stays chart-only should be a deliberate decision, not a gap.
 
+## The dashboard has a design guide, and it is enforced
+
+[docs/UI.md](docs/UI.md) is the frame every screen is built in: one page width,
+one rhythm, one header, one heading scale, one table. It exists because a UI
+with nothing written down drifts — not by anybody deciding differently, but by
+each new screen guessing at a shape the last one never stated — and by the time
+it was noticed the dashboard had three page widths, four table paddings and two
+weights for the same heading.
+
+The half of it a machine can hold is held by `ui/src/lib/design.test.ts`, which
+runs in `npm test` and so in CI. Adding a screen is therefore cheap: it inherits
+the frame from `PageHeader`, `PageSection` and `OperatorOnly`, and the test names
+the one thing it forgot. Changing a rule means changing both halves together —
+a rule loosened only in the test turns the file into an allowlist and the guide
+into folklore.
+
+The rule that guide exists for above all others is **role decides what is
+permitted, mode decides what is rendered**. The role half is enforced from the
+API's own table (see Regeneration below); the mode half was, until the guide,
+enforced only by whoever wrote the screen remembering to write
+`v-if="operatorMode"`, which is why three developer screens were showing pod
+names, cluster events and a cluster-wide log switch to an operator who had asked
+for the developer's view. Operator vocabulary — Pod, Node, namespace, manifest,
+cluster Event — belongs behind `<OperatorOnly>` on a developer screen, and a
+platform screen is the operator's entire and gates nothing inside itself.
+
 ## The CLI is the third client, and it exists
 
 `kitchen` — `cmd/kitchen`, `internal/cli` — is a command line client for the
@@ -316,7 +342,10 @@ three questions, and fix what the walk finds rather than reporting it:
   screen (or an existing one extended), and the CLI decision — a command, or
   a deliberate note that `kitchen api` carries it. The tests enforce most of
   this chain; the two docs rows and the screen are exactly the links they
-  cannot.
+  cannot. A screen that is new or changed is walked against
+  [docs/UI.md](docs/UI.md) as well — `ui/src/lib/design.test.ts` covers the
+  frame, and the two things it cannot judge are whether the page says what it
+  answers and whether anything on it is the operator's.
 
 ## Checking chart behaviour without waiting for CI
 

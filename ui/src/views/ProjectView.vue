@@ -5,17 +5,18 @@ import { api, CRITICALITIES, DATA_CLASSES, type Claim, type Project, type Releas
 import { buildFailureLine } from "../lib/builds";
 import { duration, shortImage, shortSHA, timeAgo } from "../lib/format";
 import { callerFor } from "../lib/me";
-import { operatorMode } from "../lib/mode";
 import { may } from "../lib/policy";
 import { pipelineShown } from "../lib/promotions";
 import { releaseHistoryEntry, releaseHistoryLabel } from "../lib/status";
 import { useAsync, usePoll } from "../lib/useAsync";
 import ClaimModal from "../components/ClaimModal.vue";
 import ConditionsTable from "../components/ConditionsTable.vue";
-import EnvironmentCard from "../components/EnvironmentCard.vue";
 import EnvVarsPanel from "../components/EnvVarsPanel.vue";
+import EnvironmentCard from "../components/EnvironmentCard.vue";
 import KeysPanel from "../components/KeysPanel.vue";
 import MembersPanel from "../components/MembersPanel.vue";
+import OperatorOnly from "../components/OperatorOnly.vue";
+import PageHeader from "../components/PageHeader.vue";
 import PhaseBadge from "../components/PhaseBadge.vue";
 import PipelinePanel from "../components/PipelinePanel.vue";
 import StatusDot from "../components/StatusDot.vue";
@@ -350,7 +351,7 @@ async function deleteProject() {
     await api.deleteProject(name.value);
     toast.add({
       title: `Project ${name.value} is being deleted`,
-      description: "Environments, builds, releases and the project namespace are being torn down.",
+      description: "Environments, builds, releases and everything they were running are being torn down.",
       color: "success",
       icon: "i-lucide-trash-2",
     });
@@ -427,31 +428,23 @@ function host(url?: string): string {
   <div class="space-y-6">
     <UAlert v-if="error" color="error" variant="soft" icon="i-lucide-triangle-alert" :title="error" />
     <template v-else-if="project">
-      <div class="flex items-start justify-between gap-4 flex-wrap">
-        <div>
-          <div class="flex items-center gap-2 text-xs text-muted mb-1">
-            <RouterLink to="/" class="hover:text-highlighted">Overview</RouterLink>
-            <span>/</span>
-            <span class="text-toned">{{ project.name }}</span>
-          </div>
-          <h1 class="text-xl font-semibold text-highlighted">{{ project.name }}</h1>
-          <div class="flex items-center gap-3 mt-1 text-xs text-muted flex-wrap">
-            <span>{{ project.repo }}</span>
-            <a
-              v-if="production?.url"
-              :href="production.url"
-              target="_blank"
-              rel="noopener"
-              class="font-mono text-primary hover:underline"
-              >{{ host(production.url) }}</a
-            >
-            <span v-if="framework" class="inline-flex items-center gap-1">
-              <UIcon name="i-lucide-sparkles" class="size-3" />{{ framework }}, detected
-            </span>
-            <span class="font-mono">{{ project.productionBranch }}</span>
-          </div>
-        </div>
-        <div class="flex items-center gap-2">
+      <PageHeader :title="project.name" :breadcrumb="[{ label: 'Overview', to: '/' }, { label: project.name }]">
+        <template #meta>
+          <span>{{ project.repo }}</span>
+          <a
+            v-if="production?.url"
+            :href="production.url"
+            target="_blank"
+            rel="noopener"
+            class="font-mono text-primary hover:underline"
+            >{{ host(production.url) }}</a
+          >
+          <span v-if="framework" class="inline-flex items-center gap-1">
+            <UIcon name="i-lucide-sparkles" class="size-3" />{{ framework }}, detected
+          </span>
+          <span class="font-mono">{{ project.productionBranch }}</span>
+        </template>
+        <template #actions>
           <UButton
             v-if="mayBuild"
             color="neutral"
@@ -473,8 +466,8 @@ function host(url?: string): string {
           >
             Visit site
           </UButton>
-        </div>
-      </div>
+        </template>
+      </PageHeader>
 
       <div v-if="production" class="rounded-md border border-default bg-muted px-5 py-4 grid gap-6 sm:grid-cols-4">
         <div>
@@ -515,7 +508,9 @@ function host(url?: string): string {
         :promotions="promotions"
       />
 
-      <ConditionsTable v-if="operatorMode" :conditions="project.conditions" />
+      <OperatorOnly>
+        <ConditionsTable :conditions="project.conditions" />
+      </OperatorOnly>
 
       <!-- Seven tabs do not fit across a phone, and a tab abbreviated to
            "Dep…" names nothing: the strip scrolls instead. -->
@@ -534,16 +529,16 @@ function host(url?: string): string {
         <table class="w-full min-w-[42rem] text-sm">
           <tbody>
             <tr v-if="!data?.releases.length">
-              <td class="px-4 py-8 text-center text-muted">No releases yet — a successful build creates one.</td>
+              <td class="px-3 py-8 text-center text-muted">No releases yet — a successful build creates one.</td>
             </tr>
             <tr v-for="release in data?.releases" :key="release.name" class="border-b border-muted last:border-0">
-              <td class="px-4 py-3 w-44">
+              <td class="px-3 py-2 w-44">
                 <span class="flex items-center gap-2.5">
                   <StatusDot :tone="releaseState(release).tone" />
                   <span class="font-mono text-highlighted">{{ release.name }}</span>
                 </span>
               </td>
-              <td class="px-4 py-3">
+              <td class="px-3 py-2">
                 <p class="text-highlighted truncate max-w-md">{{ buildOf(release)?.git.message || release.build }}</p>
                 <p class="text-xs text-muted font-mono mt-0.5">
                   {{ shortSHA(buildOf(release)?.git.sha) }} · {{ buildOf(release)?.git.branch || "—" }} ·
@@ -564,7 +559,7 @@ function host(url?: string): string {
                   >
                 </p>
               </td>
-              <td class="px-4 py-3 whitespace-nowrap">
+              <td class="px-3 py-2 whitespace-nowrap">
                 <UBadge
                   v-if="releaseState(release).label"
                   :color="releaseState(release).tone"
@@ -575,8 +570,8 @@ function host(url?: string): string {
                   {{ releaseState(release).label }}
                 </UBadge>
               </td>
-              <td class="px-4 py-3 text-xs text-muted whitespace-nowrap">{{ timeAgo(release.createdAt) }}</td>
-              <td class="px-4 py-3 text-right whitespace-nowrap">
+              <td class="px-3 py-2 text-xs text-muted whitespace-nowrap">{{ timeAgo(release.createdAt) }}</td>
+              <td class="px-3 py-2 text-right whitespace-nowrap">
                 <UButton
                   v-if="mayDeploy && production && release.name !== currentRelease"
                   color="neutral"
@@ -644,19 +639,19 @@ function host(url?: string): string {
                   :key="build.name"
                   class="border-b border-muted last:border-0 hover:bg-elevated/40"
                 >
-                  <td class="pl-10 pr-4 py-2 w-32 font-mono text-xs text-toned">{{ shortSHA(build.git.sha) }}</td>
-                  <td class="px-4 py-2">
+                  <td class="pl-10 pr-3 py-2 w-32 font-mono text-xs text-toned">{{ shortSHA(build.git.sha) }}</td>
+                  <td class="px-3 py-2">
                     <RouterLink
                       :to="{ name: 'build', params: { name: build.name } }"
                       class="text-toned hover:text-highlighted hover:underline"
                       >{{ build.git.message || build.name }}</RouterLink
                     >
                   </td>
-                  <td class="px-4 py-2"><PhaseBadge :phase="build.phase" /></td>
-                  <td class="px-4 py-2 font-mono text-xs text-muted whitespace-nowrap">
+                  <td class="px-3 py-2"><PhaseBadge :phase="build.phase" /></td>
+                  <td class="px-3 py-2 font-mono text-xs text-muted whitespace-nowrap">
                     {{ duration(build.startedAt, build.completedAt) }}
                   </td>
-                  <td class="px-4 py-2 text-right text-xs text-muted whitespace-nowrap">
+                  <td class="px-3 py-2 text-right text-xs text-muted whitespace-nowrap">
                     {{ timeAgo(build.createdAt) }}
                   </td>
                 </tr>
@@ -671,16 +666,16 @@ function host(url?: string): string {
         <table class="w-full min-w-[42rem] text-sm">
           <thead>
             <tr class="text-left text-xs text-muted border-b border-default bg-muted">
-              <th class="px-4 py-2.5 font-medium w-24">Commit</th>
-              <th class="px-4 py-2.5 font-medium">Message</th>
-              <th class="px-4 py-2.5 font-medium">Status</th>
-              <th class="px-4 py-2.5 font-medium">Duration</th>
-              <th class="px-4 py-2.5 font-medium text-right">Created</th>
+              <th class="px-3 py-2 font-medium w-24">Commit</th>
+              <th class="px-3 py-2 font-medium">Message</th>
+              <th class="px-3 py-2 font-medium">Status</th>
+              <th class="px-3 py-2 font-medium">Duration</th>
+              <th class="px-3 py-2 font-medium text-right">Created</th>
             </tr>
           </thead>
           <tbody>
             <tr v-if="!data?.builds.length">
-              <td colspan="5" class="px-4 py-8 text-center text-muted">
+              <td colspan="5" class="px-3 py-8 text-center text-muted">
                 No builds yet — push to the repository, or hit Redeploy.
               </td>
             </tr>
@@ -692,8 +687,8 @@ function host(url?: string): string {
               class="border-b border-muted last:border-0 hover:bg-elevated/40 cursor-pointer"
               @click="openBuild(build.name, $event)"
             >
-              <td class="px-4 py-3 w-24 font-mono text-xs text-toned align-top">{{ shortSHA(build.git.sha) }}</td>
-              <td class="px-4 py-3">
+              <td class="px-3 py-2 w-24 font-mono text-xs text-toned align-top">{{ shortSHA(build.git.sha) }}</td>
+              <td class="px-3 py-2">
                 <RouterLink :to="{ name: 'build', params: { name: build.name } }" class="text-highlighted hover:underline">
                   {{ build.git.message || build.name }}
                 </RouterLink>
@@ -706,11 +701,11 @@ function host(url?: string): string {
                   {{ buildFailureLine(build) }}
                 </p>
               </td>
-              <td class="px-4 py-3 align-top"><PhaseBadge :phase="build.phase" /></td>
-              <td class="px-4 py-3 font-mono text-xs text-muted whitespace-nowrap align-top">
+              <td class="px-3 py-2 align-top"><PhaseBadge :phase="build.phase" /></td>
+              <td class="px-3 py-2 font-mono text-xs text-muted whitespace-nowrap align-top">
                 {{ duration(build.startedAt, build.completedAt) }}
               </td>
-              <td class="px-4 py-3 text-right text-xs text-muted whitespace-nowrap align-top">
+              <td class="px-3 py-2 text-right text-xs text-muted whitespace-nowrap align-top">
                 {{ timeAgo(build.createdAt) }}
               </td>
             </tr>
@@ -723,12 +718,12 @@ function host(url?: string): string {
         <table class="w-full min-w-[42rem] text-sm">
           <tbody>
             <tr v-if="!data?.domains.length">
-              <td class="px-4 py-8 text-center text-muted">
-                No custom domains — they are attached with kubectl until the create flow lands here.
+              <td class="px-3 py-8 text-center text-muted">
+                No custom domains — a hostname is attached to an environment, on that environment's own screen.
               </td>
             </tr>
             <tr v-for="domain in data?.domains" :key="domain.name" class="border-b border-muted last:border-0">
-              <td class="px-4 py-3">
+              <td class="px-3 py-2">
                 <a
                   :href="`https://${domain.hostname}`"
                   target="_blank"
@@ -737,24 +732,24 @@ function host(url?: string): string {
                   >{{ domain.hostname }}</a
                 >
               </td>
-              <td class="px-4 py-3">
+              <td class="px-3 py-2">
                 <RouterLink
                   :to="{ name: 'environment', params: { name: domain.environment } }"
                   class="text-toned hover:underline"
                   >{{ domain.environment }}</RouterLink
                 >
               </td>
-              <td class="px-4 py-3">
+              <td class="px-3 py-2">
                 <UBadge v-if="domain.tls" color="neutral" variant="subtle" size="sm" class="font-mono">
                   tls: {{ domain.tls }}
                 </UBadge>
               </td>
-              <td class="px-4 py-3">
+              <td class="px-3 py-2">
                 <UBadge :color="domain.verified ? 'success' : 'warning'" variant="soft" size="sm">
                   {{ domain.verified ? "Verified" : "Awaiting DNS" }}
                 </UBadge>
               </td>
-              <td class="px-4 py-3 text-right text-xs text-muted whitespace-nowrap">{{ timeAgo(domain.createdAt) }}</td>
+              <td class="px-3 py-2 text-right text-xs text-muted whitespace-nowrap">{{ timeAgo(domain.createdAt) }}</td>
             </tr>
           </tbody>
         </table>
@@ -771,21 +766,21 @@ function host(url?: string): string {
           <table class="w-full min-w-[42rem] text-sm">
             <tbody>
               <tr v-if="!data?.claims.length">
-                <td class="px-4 py-8 text-center text-muted">
+                <td class="px-3 py-8 text-center text-muted">
                   No resource claims — a claim asks for something the project needs (a database from a connection,
                   or single sign-on from the platform's own identity provider) and binds it into the project's
                   environment through a secret its env vars reference.
                 </td>
               </tr>
               <tr v-for="claim in data?.claims" :key="claim.name" class="border-b border-muted last:border-0">
-                <td class="px-4 py-3 text-highlighted font-medium">{{ claim.name }}</td>
-                <td class="px-4 py-3">
+                <td class="px-3 py-2 text-highlighted font-medium">{{ claim.name }}</td>
+                <td class="px-3 py-2">
                   <UBadge color="neutral" variant="subtle" size="sm" class="font-mono">{{ claim.type }}</UBadge>
                   <UBadge v-if="claim.previewBranching" color="neutral" variant="subtle" size="sm" class="ml-1">
                     branch per preview
                   </UBadge>
                 </td>
-                <td class="px-4 py-3 text-xs whitespace-nowrap">
+                <td class="px-3 py-2 text-xs whitespace-nowrap">
                   <!-- The two data facts, absences said out loud: the class the
                        claim was filed under, and what the provider says the
                        data derives from. -->
@@ -805,7 +800,7 @@ function host(url?: string): string {
                     {{ claim.dataProvenance || "undeclared" }}
                   </span>
                 </td>
-                <td class="px-4 py-3 font-mono text-xs text-toned">
+                <td class="px-3 py-2 font-mono text-xs text-toned">
                   <template v-if="claim.connection">via {{ claim.connection }}</template>
                   <template v-else-if="claim.redirectURIs?.length">
                     <span :title="claim.redirectURIs.join('\n')">
@@ -814,18 +809,18 @@ function host(url?: string): string {
                   </template>
                   <template v-else>—</template>
                 </td>
-                <td class="px-4 py-3"><PhaseBadge :phase="claim.phase" /></td>
-                <td class="px-4 py-3 font-mono text-xs text-muted truncate max-w-48" :title="claim.secret">
+                <td class="px-3 py-2"><PhaseBadge :phase="claim.phase" /></td>
+                <td class="px-3 py-2 font-mono text-xs text-muted truncate max-w-48" :title="claim.secret">
                   {{ claim.secret || "not bound yet" }}
                 </td>
-                <td class="px-4 py-3 text-xs text-muted whitespace-nowrap">
+                <td class="px-3 py-2 text-xs text-muted whitespace-nowrap">
                   <template v-if="claim.type === 'oidcClient'">on delete: deregister the client</template>
                   <template v-else>
                     on delete: {{ claim.deletionPolicy === "Delete" ? "delete data" : "retain data" }}
                   </template>
                 </td>
-                <td class="px-4 py-3 text-right text-xs text-muted whitespace-nowrap">{{ timeAgo(claim.createdAt) }}</td>
-                <td class="px-4 py-3 text-right whitespace-nowrap">
+                <td class="px-3 py-2 text-right text-xs text-muted whitespace-nowrap">{{ timeAgo(claim.createdAt) }}</td>
+                <td class="px-3 py-2 text-right whitespace-nowrap">
                   <UButton
                     v-if="mayUnclaim"
                     color="neutral"
@@ -866,10 +861,10 @@ function host(url?: string): string {
 
       <!-- Settings: everything on the project a user may change after
            creating it, and the danger zone that removes it entirely. -->
-      <div v-else-if="tab === 'settings'" class="space-y-6 max-w-2xl">
+      <div v-else-if="tab === 'settings'" class="space-y-6 max-w-3xl">
         <form class="space-y-6" @submit.prevent="saveSettings">
           <div class="rounded-md border border-default bg-muted p-5 space-y-4">
-            <h2 class="text-sm font-semibold text-highlighted">Git</h2>
+            <h2 class="text-sm font-medium text-highlighted">Git</h2>
             <UFormField label="Production branch" help="Builds of this branch promote to production.">
               <UInput v-model="settings.productionBranch" class="w-full max-w-44 font-mono" />
             </UFormField>
@@ -888,7 +883,7 @@ function host(url?: string): string {
           </div>
 
           <div class="rounded-md border border-default bg-muted p-5 space-y-4">
-            <h2 class="text-sm font-semibold text-highlighted">Build</h2>
+            <h2 class="text-sm font-medium text-highlighted">Build</h2>
             <div class="grid gap-4 sm:grid-cols-3">
               <UFormField label="Strategy">
                 <USelect v-model="settings.buildStrategy" :items="strategyOptions" class="w-full" />
@@ -903,7 +898,7 @@ function host(url?: string): string {
           </div>
 
           <div class="rounded-md border border-default bg-muted p-5 space-y-4">
-            <h2 class="text-sm font-semibold text-highlighted">Data</h2>
+            <h2 class="text-sm font-medium text-highlighted">Data</h2>
             <UFormField
               label="Data classification"
               help="What class of data this project handles. Claims narrow it and never exceed it; a promotion into an environment rated below it is refused by policy. Changes are audit-logged with the previous value."
@@ -918,7 +913,7 @@ function host(url?: string): string {
                an opinion about the institution's functions. It does not. -->
           <div class="rounded-md border border-default bg-muted p-5 space-y-4">
             <div>
-              <h2 class="text-sm font-semibold text-highlighted">Continuity</h2>
+              <h2 class="text-sm font-medium text-highlighted">Continuity</h2>
               <p class="text-xs text-muted mt-1 max-w-3xl">
                 <span class="text-toned font-medium">Kitchen does not decide what is critical, and does not
                 set these tolerances.</span>
@@ -951,7 +946,7 @@ function host(url?: string): string {
           </div>
 
           <div class="rounded-md border border-default bg-muted p-5 space-y-4">
-            <h2 class="text-sm font-semibold text-highlighted">Runtime</h2>
+            <h2 class="text-sm font-medium text-highlighted">Runtime</h2>
             <div class="grid gap-4 sm:grid-cols-4">
               <UFormField label="Port" :help="portHelp">
                 <UInput v-model="portField" type="number" min="0" placeholder="auto" class="w-full font-mono" />
@@ -978,10 +973,10 @@ function host(url?: string): string {
              `PATCH` and `DELETE` are two rows of the table and only one of
              them takes the project away. -->
         <div v-if="mayDelete" class="rounded-md border border-error/40 p-5 space-y-3">
-          <h2 class="text-sm font-semibold text-error">Danger zone</h2>
+          <h2 class="text-sm font-medium text-error">Danger zone</h2>
           <p class="text-xs text-muted">
-            Deleting the project tears down its environments — production included — and removes its builds, releases,
-            domains and namespace. There is no undo.
+            Deleting the project tears down its environments — production included — and removes its builds, releases
+            and domains. There is no undo.
           </p>
           <div class="flex items-center gap-2">
             <UInput
@@ -1007,7 +1002,7 @@ function host(url?: string): string {
         <table class="w-full min-w-[42rem] text-sm">
           <tbody>
             <tr v-if="!data?.environments.length">
-              <td class="px-4 py-8 text-center text-muted">
+              <td class="px-3 py-8 text-center text-muted">
                 No environments yet — the first production build creates one.
               </td>
             </tr>
@@ -1016,17 +1011,17 @@ function host(url?: string): string {
               :key="environment.name"
               class="border-b border-muted last:border-0 hover:bg-elevated/40"
             >
-              <td class="px-4 py-3">
+              <td class="px-3 py-2">
                 <RouterLink
                   :to="{ name: 'environment', params: { name: environment.name } }"
                   class="text-highlighted font-medium hover:underline"
                   >{{ environment.name }}</RouterLink
                 >
               </td>
-              <td class="px-4 py-3"><UBadge color="neutral" variant="subtle" size="sm">{{ environment.type }}</UBadge></td>
-              <td class="px-4 py-3"><PhaseBadge :phase="environment.phase" /></td>
-              <td class="px-4 py-3 font-mono text-xs text-toned">{{ environment.release }}</td>
-              <td class="px-4 py-3 text-right">
+              <td class="px-3 py-2"><UBadge color="neutral" variant="subtle" size="sm">{{ environment.type }}</UBadge></td>
+              <td class="px-3 py-2"><PhaseBadge :phase="environment.phase" /></td>
+              <td class="px-3 py-2 font-mono text-xs text-toned">{{ environment.release }}</td>
+              <td class="px-3 py-2 text-right">
                 <a
                   v-if="environment.url"
                   :href="environment.url"

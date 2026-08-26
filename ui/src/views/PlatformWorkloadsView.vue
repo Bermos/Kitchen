@@ -4,6 +4,7 @@ import { useRoute, useRouter } from "vue-router";
 import { api, type PlatformPod, type PlatformWorkload } from "../lib/api";
 import { timeAgo, uptime } from "../lib/format";
 import { useAsync, usePoll } from "../lib/useAsync";
+import PageHeader from "../components/PageHeader.vue";
 import StatusDot from "../components/StatusDot.vue";
 
 // Every workload and every pod on the platform, applications and platform
@@ -79,20 +80,12 @@ function clearFilters() {
 </script>
 
 <template>
-  <div class="space-y-5">
-    <div class="flex items-start justify-between gap-4 flex-wrap">
-      <div>
-        <div class="flex items-center gap-2 text-xs text-muted mb-1">
-          <RouterLink to="/platform" class="hover:text-highlighted">Platform</RouterLink>
-          <span>/</span>
-          <span class="text-toned">Workloads</span>
-        </div>
-        <h1 class="text-xl font-semibold text-highlighted">Workloads</h1>
-        <p class="text-xs text-muted mt-1">
-          Everything the cluster is running, and first of all the things it is not running that it was asked to.
-        </p>
-      </div>
-      <div class="flex items-center gap-2 w-full sm:w-auto">
+  <div class="space-y-6">
+    <PageHeader title="Workloads" :breadcrumb="[{ label: 'Platform', to: '/platform' }, { label: 'Workloads' }]">
+      <template #description>
+        Everything the cluster is running, and first of all the things it is not running that it was asked to.
+      </template>
+      <template #actions>
         <UInput
           v-model="search"
           size="sm"
@@ -109,8 +102,8 @@ function clearFilters() {
           aria-label="Refresh"
           @click="refresh"
         />
-      </div>
-    </div>
+      </template>
+    </PageHeader>
 
     <UAlert v-if="error" color="error" variant="soft" icon="i-lucide-triangle-alert" :title="error" />
 
@@ -248,18 +241,18 @@ function clearFilters() {
           <table class="w-full min-w-[48rem] text-sm">
             <thead>
               <tr class="text-left text-xs text-muted border-b border-default bg-muted">
-                <th class="px-4 py-2.5 font-medium">Workload</th>
-                <th class="px-4 py-2.5 font-medium">For</th>
-                <th class="px-4 py-2.5 font-medium text-right">Desired</th>
-                <th class="px-4 py-2.5 font-medium text-right">Ready</th>
-                <th class="px-4 py-2.5 font-medium text-right">Available</th>
-                <th class="px-4 py-2.5 font-medium text-right">Pods</th>
-                <th class="px-4 py-2.5 font-medium text-right">Events</th>
+                <th class="px-3 py-2 font-medium">Workload</th>
+                <th class="px-3 py-2 font-medium">For</th>
+                <th class="px-3 py-2 font-medium text-right">Desired</th>
+                <th class="px-3 py-2 font-medium text-right">Ready</th>
+                <th class="px-3 py-2 font-medium text-right">Available</th>
+                <th class="px-3 py-2 font-medium text-right">Pods</th>
+                <th class="px-3 py-2 font-medium text-right">Events</th>
               </tr>
             </thead>
             <tbody>
               <tr v-if="!workloads.length">
-                <td colspan="7" class="px-4 py-8 text-center text-muted">
+                <td colspan="7" class="px-3 py-8 text-center text-muted">
                   {{ loading ? "Loading…" : "No workloads match." }}
                 </td>
               </tr>
@@ -272,14 +265,14 @@ function clearFilters() {
                   highlighted(item.name) ? 'ring-1 ring-inset ring-primary/40' : '',
                 ]"
               >
-                <td class="px-4 py-2.5">
+                <td class="px-3 py-2">
                   <span class="inline-flex items-center gap-2">
                     <StatusDot :tone="item.healthy ? 'success' : item.pods === 0 && item.desired > 0 ? 'error' : 'warning'" />
                     <span class="font-mono text-highlighted">{{ item.name }}</span>
                   </span>
                   <p class="text-[11px] text-dimmed pl-3.5">{{ item.kind }} · {{ item.namespace }}</p>
                 </td>
-                <td class="px-4 py-2.5 text-xs text-toned">
+                <td class="px-3 py-2 text-xs text-toned">
                   <RouterLink
                     v-if="item.environment"
                     :to="{ name: 'environment', params: { name: item.environment } }"
@@ -288,23 +281,23 @@ function clearFilters() {
                   >
                   <span v-else>{{ subject(item) }}</span>
                 </td>
-                <td class="px-4 py-2.5 text-right font-mono text-toned tabular-nums">{{ item.desired }}</td>
-                <td class="px-4 py-2.5 text-right font-mono tabular-nums" :class="item.ready < item.desired ? 'text-warning' : 'text-toned'">
+                <td class="px-3 py-2 text-right font-mono text-toned tabular-nums">{{ item.desired }}</td>
+                <td class="px-3 py-2 text-right font-mono tabular-nums" :class="item.ready < item.desired ? 'text-warning' : 'text-toned'">
                   {{ item.ready }}
                 </td>
-                <td class="px-4 py-2.5 text-right font-mono tabular-nums" :class="item.available < item.desired ? 'text-warning' : 'text-toned'">
+                <td class="px-3 py-2 text-right font-mono tabular-nums" :class="item.available < item.desired ? 'text-warning' : 'text-toned'">
                   {{ item.available }}
                 </td>
                 <!-- The column the replica counts cannot give you: zero
                      available is pods failing *or* pods never created. -->
                 <td
-                  class="px-4 py-2.5 text-right font-mono tabular-nums font-semibold"
+                  class="px-3 py-2 text-right font-mono tabular-nums font-semibold"
                   :class="item.desired > 0 && item.pods === 0 ? 'text-error' : 'text-toned'"
                   :title="item.desired > 0 && item.pods === 0 ? 'This workload wants pods and has none — nothing failing, nothing pending, nothing at all' : ''"
                 >
                   {{ item.pods }}
                 </td>
-                <td class="px-4 py-2.5 text-right">
+                <td class="px-3 py-2 text-right">
                   <RouterLink :to="workloadEvents(item)" class="text-xs text-primary hover:underline">events</RouterLink>
                 </td>
               </tr>
@@ -321,18 +314,18 @@ function clearFilters() {
           <table class="w-full min-w-[48rem] text-sm">
             <thead>
               <tr class="text-left text-xs text-muted border-b border-default bg-muted">
-                <th class="px-4 py-2.5 font-medium">Pod</th>
-                <th class="px-4 py-2.5 font-medium">For</th>
-                <th class="px-4 py-2.5 font-medium">Node</th>
-                <th class="px-4 py-2.5 font-medium">Phase</th>
-                <th class="px-4 py-2.5 font-medium text-right">Restarts</th>
-                <th class="px-4 py-2.5 font-medium">Up</th>
-                <th class="px-4 py-2.5 font-medium">Detail</th>
+                <th class="px-3 py-2 font-medium">Pod</th>
+                <th class="px-3 py-2 font-medium">For</th>
+                <th class="px-3 py-2 font-medium">Node</th>
+                <th class="px-3 py-2 font-medium">Phase</th>
+                <th class="px-3 py-2 font-medium text-right">Restarts</th>
+                <th class="px-3 py-2 font-medium">Up</th>
+                <th class="px-3 py-2 font-medium">Detail</th>
               </tr>
             </thead>
             <tbody>
               <tr v-if="!pods.length">
-                <td colspan="7" class="px-4 py-8 text-center text-muted">
+                <td colspan="7" class="px-3 py-8 text-center text-muted">
                   {{ loading ? "Loading…" : "No pods match." }}
                 </td>
               </tr>
@@ -341,14 +334,14 @@ function clearFilters() {
                 :key="`${pod.namespace}/${pod.name}`"
                 class="border-b border-muted last:border-0 hover:bg-elevated/40"
               >
-                <td class="px-4 py-2.5">
+                <td class="px-3 py-2">
                   <span class="inline-flex items-center gap-2">
                     <StatusDot :tone="podTone(pod)" />
                     <span class="font-mono text-xs text-highlighted truncate">{{ pod.name }}</span>
                   </span>
                   <p class="text-[11px] text-dimmed pl-3.5">{{ pod.namespace }}</p>
                 </td>
-                <td class="px-4 py-2.5 text-xs">
+                <td class="px-3 py-2 text-xs">
                   <RouterLink
                     v-if="pod.environment"
                     :to="{ name: 'environment', params: { name: pod.environment } }"
@@ -357,7 +350,7 @@ function clearFilters() {
                   >
                   <span v-else class="text-dimmed font-mono">{{ pod.workload || "—" }}</span>
                 </td>
-                <td class="px-4 py-2.5">
+                <td class="px-3 py-2">
                   <RouterLink
                     v-if="pod.node"
                     :to="{ path: '/platform/nodes', query: { node: pod.node } }"
@@ -366,14 +359,14 @@ function clearFilters() {
                   >
                   <span v-else class="text-dimmed text-xs">unscheduled</span>
                 </td>
-                <td class="px-4 py-2.5 text-xs" :class="pod.phase === 'Failed' ? 'text-error' : pod.ready ? 'text-toned' : 'text-warning'">
+                <td class="px-3 py-2 text-xs" :class="pod.phase === 'Failed' ? 'text-error' : pod.ready ? 'text-toned' : 'text-warning'">
                   {{ pod.phase }}<template v-if="!pod.ready && pod.phase === 'Running'"> · not ready</template>
                 </td>
-                <td class="px-4 py-2.5 text-right font-mono tabular-nums" :class="pod.restarts ? 'text-warning' : 'text-dimmed'">
+                <td class="px-3 py-2 text-right font-mono tabular-nums" :class="pod.restarts ? 'text-warning' : 'text-dimmed'">
                   {{ pod.restarts }}<span v-if="pod.oomKilled" class="text-error" title="killed for exceeding its memory limit"> · OOM</span>
                 </td>
-                <td class="px-4 py-2.5 text-xs text-muted whitespace-nowrap">{{ uptime(pod.startedAt) }}</td>
-                <td class="px-4 py-2.5 text-xs text-toned max-w-xs">
+                <td class="px-3 py-2 text-xs text-muted whitespace-nowrap">{{ uptime(pod.startedAt) }}</td>
+                <td class="px-3 py-2 text-xs text-toned max-w-xs">
                   <span class="block truncate" :title="pod.message">{{ pod.message || "—" }}</span>
                   <RouterLink :to="podEvents(pod)" class="text-[11px] text-primary hover:underline">its events</RouterLink>
                 </td>

@@ -70,7 +70,7 @@ const headline = computed(() => {
 <template>
   <div v-if="!silent" class="rounded-md border overflow-hidden" :class="frame">
     <div class="px-4 py-2.5 border-b border-default bg-muted flex items-center justify-between gap-3 flex-wrap">
-      <h2 class="text-xs font-medium text-muted flex items-center gap-2">
+      <h2 class="text-sm font-medium text-muted flex items-center gap-2">
         <UIcon
           v-if="variant === 'strip'"
           name="i-lucide-stethoscope"
