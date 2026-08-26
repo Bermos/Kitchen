@@ -19,6 +19,7 @@ package gitprovider
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -137,5 +138,48 @@ func TestListRepositoriesCarriesTheProvidersRefusal(t *testing.T) {
 func TestGitHubIsARepositoryLister(t *testing.T) {
 	if _, ok := Repositories(&GitHub{}); !ok {
 		t.Fatal("the github provider cannot be asked what it can see")
+	}
+}
+
+// trunkBranch is what the fakes call their default branch. It is deliberately
+// not "main": a resolver that answered with the guess rather than with the
+// repository would look right against a repository called "main".
+const trunkBranch = "trunk"
+
+// The default branch is what a caller who was handed a repository name — the
+// checkout's origin, rather than a pick out of the listing — has no other way
+// to learn, and it must be read from the repository rather than assumed to be
+// "main".
+func TestDefaultBranchReadsTheRepository(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.EscapedPath() != "/repos/acme/shop" {
+			t.Errorf("unexpected path %q", r.URL.EscapedPath())
+		}
+		_, _ = w.Write([]byte(`{"full_name": "acme/shop", "default_branch": "trunk"}`))
+	}))
+	defer server.Close()
+
+	gh := &GitHub{APIURL: server.URL, Token: "tok"}
+	branch, err := gh.DefaultBranch(context.Background(), "acme/shop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if branch != trunkBranch {
+		t.Errorf("default branch %q, want the repository's own", branch)
+	}
+}
+
+// A repository the token cannot see and one that is not there are the same
+// 404, and both are the caller's to act on rather than to retry.
+func TestDefaultBranchOfARepositoryThatIsNotThere(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"message": "Not Found"}`))
+	}))
+	defer server.Close()
+
+	gh := &GitHub{APIURL: server.URL, Token: "tok"}
+	if _, err := gh.DefaultBranch(context.Background(), "acme/typo"); !errors.Is(err, ErrFileNotFound) {
+		t.Fatalf("expected ErrFileNotFound, got %v", err)
 	}
 }

@@ -276,18 +276,19 @@ reads like the platform is broken.
 
 Every field of the request is the value the form currently holds, and asking
 again with a corrected `rootDirectory` or `dockerfilePath` is the whole of
-fixing it. `ref` may be left out, in which case the repository's default
-branch is resolved and answered back in `ref`. It writes nothing, reaches no
-credential back, and any account may ask it — creating a project is
-self-service.
+fixing it. `ref` may be left out, in which case the repository is read at the
+branch the provider calls its default and that branch is answered back in
+`ref` — one extra request, and the reason `kitchen projects create` needs no
+`--production-branch`. A provider the platform cannot ask for a default branch
+is the one case a missing `ref` is refused, and the refusal says so.
 
 Everything the caller can act on answers `200`, including the answers nobody
 wants:
 
 | Answer | What it means |
 |---|---|
-| `"detected": false` with `message` | The directory was read and not recognised, the root directory is not there, or the connection is not a source of repositories. `files` says what the verdict was reached from |
-| `400` | No `repo`, or no `ref` and no default branch to fall back on |
+| `"detected": false` with `message` | The directory was read and not recognised, the root directory is not there, the repository is not one this connection can see, or the connection is not a source of repositories. `files` says what the verdict was reached from |
+| `400` | No `repo`, or no `ref` for a repository the provider names no default branch of |
 | `502` | The provider refused or could not be reached |
 
 `detected: false` is not an error and does not stop a project being created:

@@ -328,3 +328,72 @@ func initRepo(t *testing.T, dir, url string) {
 		}
 	}
 }
+
+// The preflight resolves the default branch of a repository that named none,
+// and that is the branch the project deploys from: a repository whose trunk is
+// "trunk" would otherwise be created on the platform's default of "main" and
+// have its first build look for a branch that is not there.
+func TestCreateProjectTakesTheProductionBranchFromThePreflight(t *testing.T) {
+	h := newHarness(t)
+	h.platform.connections = twoConnections()
+	h.platform.detected = &detection{Detected: true, Framework: "Go", Ref: "trunk"}
+
+	if code := h.run("projects", "create", testProject, "--repo", "acme/shop",
+		"--connection", gitConnection, "--registry", registryConnection, "--json"); code != 0 {
+		t.Fatalf("exit %d: %s", code, h.stderr.String())
+	}
+
+	// The preflight itself is asked without one, which is what makes the
+	// platform resolve it.
+	asked := detectTarget{}
+	if err := json.Unmarshal([]byte(h.platform.sent("POST", "/connections/"+gitConnection+"/detect")[0].Body),
+		&asked); err != nil {
+		t.Fatalf("preflight body: %v", err)
+	}
+	if asked.Ref != "" {
+		t.Errorf("the preflight named a branch nobody gave it: %q", asked.Ref)
+	}
+
+	sent := newProject{}
+	if err := json.Unmarshal([]byte(h.platform.sent("POST", "/projects")[0].Body), &sent); err != nil {
+		t.Fatalf("create body: %v", err)
+	}
+	if sent.ProductionBranch != "trunk" {
+		t.Errorf("created on %q, not the branch the preflight read", sent.ProductionBranch)
+	}
+}
+
+// A branch that was given wins: the preflight was asked about it in the first
+// place.
+func TestCreateProjectKeepsTheProductionBranchItWasGiven(t *testing.T) {
+	h := newHarness(t)
+	h.platform.connections = twoConnections()
+	h.platform.detected = &detection{Detected: true, Ref: "trunk"}
+
+	if code := h.run("projects", "create", testProject, "--repo", "acme/shop",
+		"--production-branch", "stable",
+		"--connection", gitConnection, "--registry", registryConnection, "--json"); code != 0 {
+		t.Fatalf("exit %d: %s", code, h.stderr.String())
+	}
+	sent := newProject{}
+	if err := json.Unmarshal([]byte(h.platform.sent("POST", "/projects")[0].Body), &sent); err != nil {
+		t.Fatalf("create body: %v", err)
+	}
+	if sent.ProductionBranch != "stable" {
+		t.Errorf("created on %q rather than the branch it was given", sent.ProductionBranch)
+	}
+}
+
+// A Dockerfile build has no port to report — the image decides its own — and
+// "on port 0" reads as a port rather than as the absence of one.
+func TestDescribingADetectionLeavesOutAPortThereIsNone(t *testing.T) {
+	for verdict, want := range map[*detection]string{
+		{Detected: true, Framework: "dockerfile", Strategy: "dockerfile"}:     "detected dockerfile, built with dockerfile",
+		{Detected: true, Framework: "go", Strategy: "buildpacks", Port: 8080}: "detected go, built with buildpacks on port 8080",
+		{Detected: false, Dockerfile: true}:                                   "no framework recognised, building the Dockerfile",
+	} {
+		if got := describeDetection(verdict); got != want {
+			t.Errorf("described %+v as %q, want %q", verdict, got, want)
+		}
+	}
+}
