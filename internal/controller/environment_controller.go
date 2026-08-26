@@ -89,6 +89,12 @@ const (
 	labelManagedByKey   = "app.kubernetes.io/managed-by"
 	labelManagedByValue = "kitchen"
 
+	// The Pod Security Standards labels, as written on every namespace the
+	// operator creates for a project.
+	labelPodSecurityEnforce = "pod-security.kubernetes.io/enforce"
+	labelPodSecurityAudit   = "pod-security.kubernetes.io/audit"
+	labelPodSecurityWarn    = "pod-security.kubernetes.io/warn"
+
 	environmentFinalizer = "kitchen.bermos.dev/environment-cleanup"
 
 	condReady             = "Ready"
@@ -349,22 +355,85 @@ func (r *EnvironmentReconciler) finalize(ctx context.Context, env *kitchenv1alph
 	return ctrl.Result{}, nil
 }
 
+// appNamespacePodSecurity is the Pod Security level application namespaces are
+// labelled with, read off the platform singleton.
+//
+// A cluster with no singleton yet — a project reconciling against a chart
+// whose post-install hook has not landed, or a test — gets the CRD's own
+// default rather than an error: refusing to make the namespace would leave the
+// project with nowhere to build, over a level that is about to be the default
+// anyway.
+func appNamespacePodSecurity(ctx context.Context, c client.Client) (kitchenv1alpha1.PodSecurityLevel, error) {
+	kitchen := &kitchenv1alpha1.Kitchen{}
+	if err := c.Get(ctx, types.NamespacedName{Name: KitchenSingletonName}, kitchen); err != nil {
+		if apierrors.IsNotFound(err) {
+			return kitchenv1alpha1.PodSecurityPrivileged, nil
+		}
+		return "", err
+	}
+	if kitchen.Spec.AppNamespaces.PodSecurity == "" {
+		return kitchenv1alpha1.PodSecurityPrivileged, nil
+	}
+	return kitchen.Spec.AppNamespaces.PodSecurity, nil
+}
+
+// appNamespaceLabels is the metadata the operator owns on an application
+// namespace: whose project it is, that the platform made it, and the Pod
+// Security level its pods are admitted against.
+//
+// The level is written rather than inherited because the cluster default
+// decides whether half the platform works: Talos defaults to baseline, which
+// refuses the Dockerfile builder's pods outright, and a Job whose pods are
+// refused creates no pod at all — the build sits in Running with nothing
+// behind it. The platform namespace has been labelled explicitly for the same
+// kind of reason since the log collector arrived; these namespaces are the
+// other half of it.
+func appNamespaceLabels(projectName string, level kitchenv1alpha1.PodSecurityLevel) map[string]string {
+	return map[string]string{
+		labelProject:            projectName,
+		labelManagedByKey:       labelManagedByValue,
+		labelPodSecurityEnforce: string(level),
+		labelPodSecurityAudit:   string(level),
+		labelPodSecurityWarn:    string(level),
+	}
+}
+
 func ensureNamespace(ctx context.Context, c client.Client, name, projectName string) error {
+	level, err := appNamespacePodSecurity(ctx, c)
+	if err != nil {
+		return err
+	}
+	labels := appNamespaceLabels(projectName, level)
+
 	ns := &corev1.Namespace{}
-	err := c.Get(ctx, types.NamespacedName{Name: name}, ns)
+	err = c.Get(ctx, types.NamespacedName{Name: name}, ns)
 	if err == nil {
-		return nil
+		// An existing namespace is relabelled rather than left alone. A
+		// namespace is created once and every reconcile after that finds it,
+		// so a level that were only written at creation would never reach an
+		// installation that already has projects — which is every
+		// installation upgrading into this.
+		patch := client.MergeFrom(ns.DeepCopy())
+		changed := false
+		for key, value := range labels {
+			if ns.Labels[key] == value {
+				continue
+			}
+			if ns.Labels == nil {
+				ns.Labels = map[string]string{}
+			}
+			ns.Labels[key] = value
+			changed = true
+		}
+		if !changed {
+			return nil
+		}
+		return c.Patch(ctx, ns, patch)
 	}
 	if !apierrors.IsNotFound(err) {
 		return err
 	}
-	ns = &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
-		Name: name,
-		Labels: map[string]string{
-			labelProject:      projectName,
-			labelManagedByKey: labelManagedByValue,
-		},
-	}}
+	ns = &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name, Labels: labels}}
 	if err := c.Create(ctx, ns); err != nil && !apierrors.IsAlreadyExists(err) {
 		return err
 	}

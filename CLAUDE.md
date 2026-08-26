@@ -462,6 +462,17 @@ through its Go types, to avoid tying the build to its release cadence.
   clean, and the rejection is a `FailedCreate` event on the DaemonSet. That
   failure mode is what `status.components` on the Kitchen singleton exists to
   surface.
+- **Application namespaces need a Pod Security level too, and it is
+  `privileged` for the same silent reason.** Rootless BuildKit asks for an
+  unconfined seccomp profile and an unconfined AppArmor profile, which Pod
+  Security admits at `privileged` alone, so on a `baseline` cluster the
+  Dockerfile build strategy produces a Job, no pod, and a Build that stays
+  `Running`. `ensureNamespace` writes the three labels at
+  `spec.appNamespaces.podSecurity` and reconciles them onto namespaces that
+  already exist — a namespace is created once and found by every reconcile
+  after that, so a label written only at creation would never reach an
+  upgraded installation. Buildpacks builds ask for neither relaxation, which
+  is why a `baseline` cluster looked half-working rather than broken.
 - **A chart cannot bootstrap the namespace it installs into**, so
   `--create-namespace` is still required: Helm writes its release record into
   the target namespace *before* applying any manifest, and without the flag the

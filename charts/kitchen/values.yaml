@@ -276,6 +276,25 @@ kitchen:
       # `branch` gives each branch its own, a better hit rate on a long-lived
       # branch at one tag per branch that ever built, which nothing removes.
       scope: project
+  appNamespaces:
+    # -- Pod Security level enforced on the namespace each project's builds
+    # and workloads run in. Written by the operator as the `enforce`, `audit`
+    # and `warn` labels when it creates the namespace, and reconciled onto
+    # namespaces that already exist.
+    #
+    # It is a chart value rather than a settings screen for the same reason
+    # `namespace.podSecurity` is: it describes the cluster Kitchen was
+    # installed into, and the default differs between distributions — kind is
+    # `privileged`, Talos is `baseline`.
+    #
+    # `privileged` is what the Dockerfile build strategy needs. Rootless
+    # BuildKit runs with an unconfined seccomp profile and an unconfined
+    # AppArmor profile, both of which `baseline` forbids, and a Job whose pods
+    # Pod Security refuses creates no pod at all — the build sits in `Running`
+    # forever. Lower this only on an installation that builds with buildpacks
+    # alone; `restricted` additionally refuses most application images, which
+    # choose their own user and capabilities.
+    podSecurity: privileged
   compliance:
     audit:
       # -- Record every state transition the platform makes into an

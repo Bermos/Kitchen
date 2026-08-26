@@ -832,6 +832,12 @@ does not run in.
 {{- if and .Values.namespace.create (not (has .Values.namespace.podSecurity (list "privileged" "baseline" "restricted"))) }}
 {{- fail (printf "namespace.podSecurity must be one of privileged, baseline, restricted (got %q)" .Values.namespace.podSecurity) }}
 {{- end }}
+{{- if not (has .Values.kitchen.appNamespaces.podSecurity (list "privileged" "baseline" "restricted")) }}
+{{- fail (printf "kitchen.appNamespaces.podSecurity must be one of privileged, baseline, restricted (got %q)" .Values.kitchen.appNamespaces.podSecurity) }}
+{{- end }}
+{{- if and (ne .Values.kitchen.appNamespaces.podSecurity "privileged") (eq .Values.kitchen.builds.defaultStrategy "dockerfile") }}
+{{- fail (printf "kitchen.appNamespaces.podSecurity is %q but kitchen.builds.defaultStrategy is dockerfile: the BuildKit builder runs rootless, which needs an unconfined seccomp profile and an unconfined AppArmor profile, and Pod Security admits neither below privileged — its Jobs would be created and never produce a pod, leaving every build running forever. Set kitchen.appNamespaces.podSecurity=privileged, or build with buildpacks." .Values.kitchen.appNamespaces.podSecurity) }}
+{{- end }}
 {{- if and .Values.namespace.create .Values.collector.enabled (ne .Values.namespace.podSecurity "privileged") }}
 {{- fail (printf "namespace.podSecurity is %q but collector.enabled is true: the telemetry agent mounts the node's log directory and root filesystem, and Pod Security admits hostPath at the privileged level alone, so its pods would be refused at admission and no logs, metrics or traces would be collected at all. Set namespace.podSecurity=privileged, or collector.enabled=false." .Values.namespace.podSecurity) }}
 {{- end }}

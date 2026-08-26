@@ -82,7 +82,10 @@ type ProjectReconciler struct {
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=connections;kitchens,verbs=get;list;watch
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=builds,verbs=get;list;watch;create;delete
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=releases;environments;domains;resourceclaims;promotions;exceptions,verbs=get;list;watch;delete
-// +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;create;delete
+// The application namespace is relabelled as well as created: its Pod Security
+// level is read off the platform singleton and reconciled onto namespaces that
+// already exist, which needs update and patch.
+// +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch
 
 // Reconcile prepares everything a Project needs before its first build.

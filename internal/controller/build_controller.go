@@ -676,6 +676,18 @@ func dockerfilePod(
 		volumes = append(volumes, gitCredentialVolume(gitSecret))
 	}
 
+	// The two relaxations below are what rootless BuildKit costs, and they
+	// are not optional: buildkitd runs unprivileged here (see
+	// --oci-worker-no-process-sandbox above), which means it has to create a
+	// nested user namespace and mount its own overlayfs inside it. The
+	// runtime's default seccomp profile blocks the first and the default
+	// AppArmor profile blocks the second, so a builder admitted under either
+	// fails at startup rather than building anything.
+	//
+	// Pod Security admits both at the privileged level alone, which is why
+	// the namespace this lands in is labelled explicitly — see
+	// appNamespaceLabels. On a baseline application namespace the Job is
+	// created, no pod ever is, and the build never starts.
 	return corev1.PodTemplateSpec{
 		ObjectMeta: metav1.ObjectMeta{
 			Annotations: map[string]string{

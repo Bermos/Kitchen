@@ -1350,3 +1350,33 @@ func runEntrypoint(t *testing.T, dir, metadataPath, terminationPath string, args
 		return -1
 	}
 }
+
+// TestDockerfilePodKeepsTheRootlessExemptions pins the two relaxations rootless
+// BuildKit needs. They are the reason an application namespace is labelled
+// `privileged` (see appNamespaceLabels): Pod Security admits neither below
+// that level, and a Job whose pods it refuses never creates one at all — the
+// build sits in Running with nothing behind it. Dropping either here would
+// break every Dockerfile build with a message from the builder rather than
+// from admission, so both are asserted rather than assumed.
+func TestDockerfilePodKeepsTheRootlessExemptions(t *testing.T) {
+	project, build := buildFixtures()
+	pod := dockerfilePod(project, build, nil, "creds", "", "registry.example.com/shop:abc123",
+		kitchenv1alpha1.BuildAttestationSpec{})
+
+	const apparmor = "container.apparmor.security.beta.kubernetes.io/buildkit"
+	if got := pod.ObjectMeta.Annotations[apparmor]; got != "unconfined" {
+		t.Errorf("AppArmor annotation is %q, want %q", got, "unconfined")
+	}
+
+	container := pod.Spec.Containers[0]
+	if container.Name != "buildkit" {
+		t.Fatalf("the annotation names the container %q, but the container is %q", "buildkit", container.Name)
+	}
+	sc := container.SecurityContext
+	if sc == nil || sc.SeccompProfile == nil {
+		t.Fatalf("the builder has no seccomp profile: %+v", sc)
+	}
+	if sc.SeccompProfile.Type != corev1.SeccompProfileTypeUnconfined {
+		t.Errorf("seccomp profile is %q, want %q", sc.SeccompProfile.Type, corev1.SeccompProfileTypeUnconfined)
+	}
+}

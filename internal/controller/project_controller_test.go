@@ -179,6 +179,10 @@ var _ = Describe("Project Controller", func() {
 			By("checking the app namespace")
 			ns := &corev1.Namespace{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "kitchen-" + projectName}, ns)).To(Succeed())
+			// Set rather than inherited: the cluster default decides whether
+			// the Dockerfile builder is admitted, and this singleton asks for
+			// nothing, so it gets the CRD's default.
+			Expect(ns.Labels).To(HaveKeyWithValue("pod-security.kubernetes.io/enforce", "privileged"))
 		})
 
 		It("reports not ready when a connection is missing", func() {
