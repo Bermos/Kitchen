@@ -74,3 +74,36 @@ func Repositories(provider Provider) (RepositoryLister, bool) {
 	lister, ok := provider.(RepositoryLister)
 	return lister, ok
 }
+
+// DefaultBranchResolver is the half of a git provider that answers "what does
+// this one repository call its trunk". It is separate from RepositoryLister
+// because the two questions are not the same size: a listing walks pages of
+// everything a credential can see, and this is one request about one
+// repository — which is all a caller who has already named the repository, and
+// only wants the branch it deploys from, is asking for.
+//
+// It exists for the caller who was handed a repository rather than picking one
+// out of a listing: `kitchen projects create` takes it from the checkout's
+// origin, so nothing has told it which branch is production.
+//
+// Like SourceReader and RepositoryLister it is separate from Provider and
+// asked for with a type assertion, so a provider can land as a source of
+// webhooks first and gain this later. A provider without it is not an error:
+// the caller asks for the branch by name instead.
+type DefaultBranchResolver interface {
+	// DefaultBranch is the branch the provider considers this repository's
+	// trunk. A repository the credential cannot see returns ErrFileNotFound —
+	// a misspelled name and a repository the token was never granted are both
+	// answers rather than failures, and neither improves by being asked again.
+	// A repository the provider names no default branch for answers "" and no
+	// error, which is the caller's to report as "say which branch".
+	DefaultBranch(ctx context.Context, repo string) (string, error)
+}
+
+// DefaultBranches narrows a Provider to its default-branch-resolving half. The
+// second return is false for a provider that cannot answer, which callers
+// report as "name the branch" rather than as a failure.
+func DefaultBranches(provider Provider) (DefaultBranchResolver, bool) {
+	resolver, ok := provider.(DefaultBranchResolver)
+	return resolver, ok
+}

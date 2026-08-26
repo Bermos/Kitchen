@@ -36,9 +36,10 @@ import (
 	"github.com/Bermos/Kitchen/internal/provider"
 )
 
-// detectTimeout bounds one preflight. It is shorter than the repository
-// listing's because this is two requests rather than a walk, and somebody is
-// waiting on a form they have half filled in.
+// detectTimeout bounds one preflight — the default branch when the caller
+// named no ref, and the two the detection itself makes. It is shorter than
+// the repository listing's because that is a walk and this is not, and
+// somebody is waiting on a form they have half filled in.
 const detectTimeout = 15 * time.Second
 
 // detectRequest asks what a repository is before there is a project to ask
@@ -141,19 +142,41 @@ func (s *Server) detectRepository(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	detectCtx, cancel := context.WithTimeout(ctx, detectTimeout)
+	defer cancel()
+
 	ref := strings.TrimSpace(body.Ref)
 	if ref == "" {
-		if resolver, ok := gitprovider.Revisions(git); ok {
-			// The default branch is the one thing the form may not know, and
-			// the provider does.
-			if revision, err := resolver.HeadRevision(ctx, body.Repo, ""); err == nil {
-				ref = revision.SHA
-			}
+		// The default branch is the one thing the caller may not know, and
+		// the provider does. It is resolved as a branch name rather than as a
+		// commit because that is what is echoed back, and a caller that sent
+		// no ref has to be able to show which branch the answer is about.
+		resolver, ok := gitprovider.DefaultBranches(git)
+		if !ok {
+			badRequest(w, "ref is required: the platform's %s support cannot work out a "+
+				"repository's default branch, so name the branch to look at", connection.Spec.Provider)
+			return
 		}
-	}
-	if ref == "" {
-		badRequest(w, "ref is required: name the branch to look at")
-		return
+		branch, err := resolver.DefaultBranch(detectCtx, body.Repo)
+		switch {
+		case errors.Is(err, gitprovider.ErrFileNotFound):
+			// A repository the credential cannot see, which is the same
+			// answer as a misspelled name: the caller's to fix, so it is an
+			// answer rather than a failure.
+			writeJSON(w, http.StatusOK, detectionView{Message: fmt.Sprintf(
+				"connection %q cannot see %s: check the repository name, and that the "+
+					"connection's credential reaches it", connection.Name, body.Repo)})
+			return
+		case err != nil:
+			writeJSON(w, http.StatusBadGateway, errorBody{Error: fmt.Sprintf(
+				"connection %q could not read %s: %s", connection.Name, body.Repo, err.Error())})
+			return
+		case branch == "":
+			badRequest(w, "ref is required: %s has no default branch to fall back on, "+
+				"so name the branch to look at", body.Repo)
+			return
+		}
+		ref = branch
 	}
 
 	target := detect.Target{
@@ -163,9 +186,6 @@ func (s *Server) detectRepository(w http.ResponseWriter, req *http.Request) {
 		DockerfilePath:     strings.TrimSpace(body.DockerfilePath),
 		ConsiderDockerfile: true,
 	}
-
-	detectCtx, cancel := context.WithTimeout(ctx, detectTimeout)
-	defer cancel()
 
 	signals, err := detect.Signals(detectCtx, reader, target)
 	if errors.Is(err, detect.ErrNotRecognised) {

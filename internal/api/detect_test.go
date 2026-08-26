@@ -17,11 +17,15 @@ limitations under the License.
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/gitprovider"
 )
 
 // The preflight the new project form runs: read the repository the way a
@@ -34,9 +38,17 @@ import (
 func fakeGitHubContents(t *testing.T, dirs map[string][]string, files map[string]string) *httptest.Server {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		// The repository itself, which is what a request that named no ref
+		// resolves its default branch from. It is deliberately not "main":
+		// a preflight that assumed the name would look right and be wrong.
+		if req.URL.Path == "/repos/acme/shop" {
+			_, _ = w.Write([]byte(`{"full_name": "acme/shop", "default_branch": "trunk"}`))
+			return
+		}
 		path, ok := strings.CutPrefix(req.URL.Path, "/repos/acme/shop/contents")
 		if !ok {
 			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"message": "Not Found"}`))
 			return
 		}
 		path = strings.Trim(path, "/")
@@ -167,5 +179,86 @@ func TestDetectingWithoutARepository(t *testing.T) {
 	recorder := h.do(t, http.MethodPost, "/api/v1/connections/registry/detect", `{}`)
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("want 400, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+// The ref is optional, and the default branch is what a caller that sent none
+// gets read at — `kitchen projects create` takes its repository from the
+// checkout's origin, so nothing has told it which branch production is.
+func TestDetectingWithoutARefReadsTheDefaultBranch(t *testing.T) {
+	github := fakeGitHubContents(t,
+		map[string][]string{"": {"go.mod", "main.go"}}, nil)
+	h := newHarness(t, nil, append(fixtures(), gitHubConnection("hub", github.URL, "ghp_stored")...)...)
+
+	recorder := h.do(t, http.MethodPost, "/api/v1/connections/hub/detect", `{"repo": "acme/shop"}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	view := decode[detectionView](t, recorder)
+	// The branch it was read at is answered back, so a form that sent none
+	// can show which branch the verdict is about.
+	if view.Ref != "trunk" {
+		t.Fatalf("the repository was read at %q, not its default branch: %+v", view.Ref, view)
+	}
+	if !view.Detected || view.Framework != "go" {
+		t.Fatalf("the default branch was not detected on: %+v", view)
+	}
+}
+
+// A repository the credential cannot see is a 404 on the way to the default
+// branch, and it is the caller's to fix: a name they mistyped, or a token that
+// was never granted it.
+func TestDetectingWithoutARefForARepositoryThatIsNotThere(t *testing.T) {
+	github := fakeGitHubContents(t, map[string][]string{"": {"go.mod"}}, nil)
+	h := newHarness(t, nil, append(fixtures(), gitHubConnection("hub", github.URL, "ghp_stored")...)...)
+
+	recorder := h.do(t, http.MethodPost, "/api/v1/connections/hub/detect", `{"repo": "acme/typo"}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	view := decode[detectionView](t, recorder)
+	if view.Detected || !strings.Contains(view.Message, "acme/typo") {
+		t.Fatalf("the answer does not name the repository it could not see: %+v", view)
+	}
+}
+
+// blindProvider reads a repository and cannot say anything about the
+// repository itself, which is what a provider implemented as a source of
+// webhooks first looks like.
+type blindProvider struct{}
+
+func (blindProvider) EnsureWebhook(context.Context, string, gitprovider.WebhookSpec) (string, error) {
+	return "", nil
+}
+func (blindProvider) DeleteWebhook(context.Context, string, string) error { return nil }
+func (blindProvider) ListDir(context.Context, string, string, string) ([]gitprovider.DirEntry, error) {
+	return []gitprovider.DirEntry{{Name: "go.mod"}}, nil
+}
+func (blindProvider) ReadFile(context.Context, string, string, string) ([]byte, error) {
+	return nil, gitprovider.ErrFileNotFound
+}
+
+// A provider that cannot work out a default branch is not a failure of the
+// platform's — it is a question the caller has to answer, and the refusal says
+// which field answers it.
+func TestDetectingWithoutARefOnAProviderThatCannotResolveOne(t *testing.T) {
+	h := newHarness(t, nil, append(fixtures(), gitHubConnection("hub", "https://example.invalid", "ghp_stored")...)...)
+	h.server.GitProviders = func(*kitchenv1alpha1.Connection, string) (gitprovider.Provider, error) {
+		return blindProvider{}, nil
+	}
+
+	recorder := h.do(t, http.MethodPost, "/api/v1/connections/hub/detect", `{"repo": "acme/shop"}`)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "ref") {
+		t.Fatalf("the refusal does not name the field that answers it: %s", recorder.Body.String())
+	}
+
+	// The same provider answers as it always did once the branch is named.
+	recorder = h.do(t, http.MethodPost, "/api/v1/connections/hub/detect",
+		`{"repo": "acme/shop", "ref": "main"}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
 	}
 }

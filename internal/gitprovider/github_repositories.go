@@ -77,3 +77,25 @@ func (g *GitHub) ListRepositories(ctx context.Context) (RepositoryListing, error
 	}
 	return listing, nil
 }
+
+// GitHub answers about one repository as readily as about all of them, which
+// is what a caller that was handed a repository name — rather than picking one
+// out of the listing — needs before it can read anything at a ref.
+var _ DefaultBranchResolver = (*GitHub)(nil)
+
+// DefaultBranch implements DefaultBranchResolver against the repository
+// endpoint. It is one request for the same `default_branch` the listing
+// carries, which is why the wire shape is shared with it.
+func (g *GitHub) DefaultBranch(ctx context.Context, repo string) (string, error) {
+	found := githubRepository{}
+	if err := g.do(ctx, http.MethodGet, "/repos/"+repoPath(repo), nil, &found); err != nil {
+		if isNotFound(err) {
+			// A repository the token cannot see is a 404 here too, which is
+			// the same answer for the caller's purposes: there is no
+			// repository to name a branch of.
+			return "", fmt.Errorf("%w: %s", ErrFileNotFound, repo)
+		}
+		return "", err
+	}
+	return found.DefaultBranch, nil
+}
