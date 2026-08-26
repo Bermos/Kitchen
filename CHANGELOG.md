@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.18.0](https://github.com/Bermos/Kitchen/compare/v0.17.0...v0.18.0) (2026-08-26)
+
+
+### Features
+
+* **signals:** compare published names against the platform's public address ([#228](https://github.com/Bermos/Kitchen/issues/228)) ([cb7d02f](https://github.com/Bermos/Kitchen/commit/cb7d02f3218f39d914c3d7e7e2944c415b519798))
+
+
+### Bug fixes
+
+* **ui:** one design guide, and the screens that were not following it ([#230](https://github.com/Bermos/Kitchen/issues/230)) ([a2a310c](https://github.com/Bermos/Kitchen/commit/a2a310ceeca95d1c5c53b4b62cc896865aa67bda))
+
 ## [0.17.0](https://github.com/Bermos/Kitchen/compare/v0.16.1...v0.17.0) (2026-08-26)
 
 
