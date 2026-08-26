@@ -31,9 +31,13 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/audit"
@@ -465,11 +469,21 @@ func (r *ProjectReconciler) ensureWebhookSecret(ctx context.Context, project *ki
 
 // updateReferences refreshes the convenience refs in status: the production
 // Environment and the newest Build.
+//
+// Both are derived rather than accumulated, so a ref is cleared when the
+// object behind it is gone — a Build the retention sweep pruned or an
+// environment somebody deleted would otherwise leave the project pointing at
+// a name nothing resolves. A read that failed for any reason other than "it
+// is not there" leaves the ref alone: an unreadable object is not an absent
+// one.
 func (r *ProjectReconciler) updateReferences(ctx context.Context, project *kitchenv1alpha1.Project) {
 	env := &kitchenv1alpha1.Environment{}
 	envKey := types.NamespacedName{Namespace: project.Namespace, Name: project.Name + "-production"}
-	if err := r.Get(ctx, envKey, env); err == nil {
+	switch err := r.Get(ctx, envKey, env); {
+	case err == nil:
 		project.Status.ProductionEnvironmentRef = &kitchenv1alpha1.LocalObjectReference{Name: env.Name}
+	case apierrors.IsNotFound(err):
+		project.Status.ProductionEnvironmentRef = nil
 	}
 
 	builds := &kitchenv1alpha1.BuildList{}
@@ -486,9 +500,11 @@ func (r *ProjectReconciler) updateReferences(ctx context.Context, project *kitch
 			latest = b
 		}
 	}
-	if latest != nil {
-		project.Status.LatestBuildRef = &kitchenv1alpha1.LocalObjectReference{Name: latest.Name}
+	if latest == nil {
+		project.Status.LatestBuildRef = nil
+		return
 	}
+	project.Status.LatestBuildRef = &kitchenv1alpha1.LocalObjectReference{Name: latest.Name}
 }
 
 // apiExternalURL returns the operator API's public base URL. Its scheme
@@ -501,10 +517,63 @@ func apiExternalURL(kitchen *kitchenv1alpha1.Kitchen) string {
 	return platformScheme(kitchen) + "://kitchen." + kitchen.Spec.BaseDomain
 }
 
+// mapBuildToProject enqueues the project a Build belongs to, so that
+// status.latestBuildRef follows the builds a push produced rather than only
+// the ones a request to the API happened to make alongside a write to the
+// Project.
+func (r *ProjectReconciler) mapBuildToProject(_ context.Context, obj client.Object) []ctrl.Request {
+	build, ok := obj.(*kitchenv1alpha1.Build)
+	if !ok || build.Spec.ProjectRef.Name == "" {
+		return nil
+	}
+	return []ctrl.Request{{NamespacedName: types.NamespacedName{
+		Namespace: build.Namespace, Name: build.Spec.ProjectRef.Name,
+	}}}
+}
+
+// mapEnvironmentToProject enqueues the project an Environment belongs to, so
+// that status.productionEnvironmentRef appears with the environment rather
+// than at the next time something wrote to the Project.
+func (r *ProjectReconciler) mapEnvironmentToProject(_ context.Context, obj client.Object) []ctrl.Request {
+	env, ok := obj.(*kitchenv1alpha1.Environment)
+	if !ok || env.Spec.ProjectRef.Name == "" {
+		return nil
+	}
+	return []ctrl.Request{{NamespacedName: types.NamespacedName{
+		Namespace: env.Namespace, Name: env.Spec.ProjectRef.Name,
+	}}}
+}
+
+// existenceChanged passes creations and deletions and drops updates.
+//
+// Both refs the two watches below feed are questions about which objects
+// exist — the newest Build by creation time, and whether the production
+// Environment is there — so no update can change either answer. The
+// distinction matters because a project reconcile re-registers the git
+// webhook with the provider: an Environment's status moves with every replica
+// KEDA parks or wakes and a Build's with every phase it passes through, and
+// reconciling the project on each of those would spend the installation's
+// GitHub rate limit on a status that could not have changed.
+func existenceChanged() predicate.Predicate {
+	return predicate.Funcs{
+		UpdateFunc: func(event.UpdateEvent) bool { return false },
+	}
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *ProjectReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&kitchenv1alpha1.Project{}).
+		// The Project's status is derived from Builds and Environments, and
+		// nothing owner-references them, so without these watches it is
+		// refreshed only when the Project object itself changes. A project
+		// whose deploys all arrive by webhook never writes to its Project,
+		// which is how one came to report a permanently failed latest build
+		// and no production environment while it was serving traffic.
+		Watches(&kitchenv1alpha1.Build{}, handler.EnqueueRequestsFromMapFunc(r.mapBuildToProject),
+			builder.WithPredicates(existenceChanged())).
+		Watches(&kitchenv1alpha1.Environment{}, handler.EnqueueRequestsFromMapFunc(r.mapEnvironmentToProject),
+			builder.WithPredicates(existenceChanged())).
 		Named("project").
 		Complete(r)
 }
