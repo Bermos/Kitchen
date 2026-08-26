@@ -20,6 +20,15 @@ on the base domain, which puts it on the internet, so its credential is doing
 real work rather than being a formality. `defaultPolicy` is what an
 authenticated user may do — everything, since the only account is the
 platform's own.
+
+`http.compat` is not optional here either. zot 2.x is OCI-native and answers
+`415 Unsupported Media Type` to a manifest it was not told to accept, and both
+of Kitchen's build strategies push Docker manifest schema 2 by default: the
+CNB lifecycle's exporter writes it and has no knob, and BuildKit only switches
+to OCI media types when an attestation asks it to. Without `docker2s2` every
+build fails at its last step — after the image is built and every layer
+uploaded — with `MANIFEST_INVALID`, which is a red build over a registry that
+looks healthy.
 */}}
 apiVersion: v1
 kind: ConfigMap
@@ -75,7 +84,8 @@ data:
               "defaultPolicy": ["read", "create", "update", "delete"]
             }
           }
-        }
+        },
+        "compat": ["docker2s2"]
       },
       "log": {
         "level": {{ .Values.registry.logLevel | quote }}

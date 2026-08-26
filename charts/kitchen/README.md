@@ -769,6 +769,23 @@ manifests. Tune it, or turn it off and watch the volume yourself:
 --set registry.persistence.size=100Gi
 ```
 
+### Why it is told to accept Docker media types
+
+zot is OCI-native, and answers `415 Unsupported Media Type` to a manifest media
+type it was not configured to admit. Both of Kitchen's build strategies push
+Docker manifest schema 2
+(`application/vnd.docker.distribution.manifest.v2+json`) by default: the Cloud
+Native Buildpacks lifecycle's exporter writes it and offers no option, and
+BuildKit switches to OCI media types only when an attestation asks it to. So
+the rendered configuration carries `http.compat: ["docker2s2"]`, without which
+every build fails at its last step — after the image is built and every layer
+uploaded — with `MANIFEST_INVALID`, against a registry whose pod, probes and
+route all read as healthy.
+
+It is not a value, because there is no installation that wants it off: the
+setting admits Docker's media types **in addition to** OCI's, and the registry
+exists to be pushed to by these two builders.
+
 ### The seeded connection
 
 The operator creates the Connection **once** and remembers in
