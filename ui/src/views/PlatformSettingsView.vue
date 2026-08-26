@@ -82,7 +82,7 @@ const strategies = [
 </script>
 
 <template>
-  <div class="space-y-6 max-w-3xl">
+  <div class="space-y-6">
     <div>
       <div class="flex items-center gap-2 text-xs text-muted mb-1">
         <RouterLink to="/platform" class="hover:text-highlighted">Platform</RouterLink>
@@ -99,7 +99,9 @@ const strategies = [
     <UAlert v-if="error" color="error" variant="soft" icon="i-lucide-triangle-alert" :title="error" />
 
     <template v-else-if="settings">
-      <div class="rounded-md border border-default bg-muted px-5 py-4 grid gap-x-8 gap-y-4 sm:grid-cols-2 text-sm">
+      <div
+        class="rounded-md border border-default bg-muted px-5 py-4 grid gap-x-8 gap-y-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-5 text-sm"
+      >
         <div>
           <p class="text-xs text-muted mb-0.5">Base domain</p>
           <p class="font-mono text-toned">{{ settings.baseDomain || "—" }}</p>
@@ -130,37 +132,50 @@ const strategies = [
         </div>
       </div>
 
-      <OperatorsPanel :settings="settings" @saved="refresh" />
+      <!-- Two columns once the viewport is wide enough for the widest table
+           inside one of them; a single column below that, in the order the
+           panels are written. -->
+      <div class="grid gap-6 items-start 2xl:grid-cols-2">
+        <div class="space-y-6">
+          <OperatorsPanel :settings="settings" @saved="refresh" />
 
-      <div class="rounded-md border border-default px-5 py-4 space-y-4">
-        <h2 class="text-sm font-medium text-highlighted">Builds and telemetry</h2>
-        <UFormField label="Default build strategy" help="Projects can override this per repository.">
-          <USelect v-model="strategy" :items="strategies" class="w-full max-w-72" />
-        </UFormField>
-        <UFormField label="Build concurrency" help="How many builds run at once, platform-wide.">
-          <UInputNumber v-model="concurrency" :min="1" :max="32" class="w-40" />
-        </UFormField>
-        <UFormField
-          label="Releases kept per project"
-          help="Older releases are pruned. One an environment still runs is always kept, so a rollback target never disappears. 0 keeps every release."
-        >
-          <UInputNumber v-model="releaseRetention" :min="0" :max="500" class="w-40" />
-        </UFormField>
-        <UFormField
-          label="Default telemetry retention (days)"
-          help="The number every telemetry class inherits. Setting a class in the retention panel below overrides it for that class."
-        >
-          <UInputNumber v-model="retention" :min="1" :max="365" class="w-40" />
-        </UFormField>
-        <div class="flex justify-end">
-          <UButton :disabled="!dirty" :loading="saving" icon="i-lucide-save" @click="save">Save changes</UButton>
+          <div class="rounded-md border border-default px-5 py-4 space-y-4">
+            <h2 class="text-sm font-medium text-highlighted">Builds and telemetry</h2>
+            <div class="grid gap-4 sm:grid-cols-2">
+              <UFormField label="Default build strategy" help="Projects can override this per repository.">
+                <USelect v-model="strategy" :items="strategies" class="w-full" />
+              </UFormField>
+              <UFormField label="Build concurrency" help="How many builds run at once, platform-wide.">
+                <UInputNumber v-model="concurrency" :min="1" :max="32" class="w-40" />
+              </UFormField>
+              <UFormField
+                label="Releases kept per project"
+                help="Older releases are pruned. One an environment still runs is always kept, so a rollback target never disappears. 0 keeps every release."
+              >
+                <UInputNumber v-model="releaseRetention" :min="0" :max="500" class="w-40" />
+              </UFormField>
+              <UFormField
+                label="Default telemetry retention (days)"
+                help="The number every telemetry class inherits. Setting a class in the retention panel overrides it for that class."
+              >
+                <UInputNumber v-model="retention" :min="1" :max="365" class="w-40" />
+              </UFormField>
+            </div>
+            <div class="flex justify-end">
+              <UButton :disabled="!dirty" :loading="saving" icon="i-lucide-save" @click="save">Save changes</UButton>
+            </div>
+          </div>
+        </div>
+
+        <div class="space-y-6">
+          <RetentionPanel />
+
+          <PlatformUpdatePanel />
         </div>
       </div>
 
-      <RetentionPanel />
-
-      <PlatformUpdatePanel />
-
+      <!-- Both are five-column tables with a message that truncates, so they
+           keep the whole width rather than sharing it. -->
       <div v-if="operatorMode">
         <h2 class="text-sm font-medium text-highlighted mb-2">Platform conditions</h2>
         <ConditionsTable :conditions="settings.conditions" />
@@ -194,7 +209,10 @@ const strategies = [
                   </span>
                 </td>
                 <td class="px-3 py-2 font-mono text-xs text-toned">{{ component.kind }}</td>
-                <td class="px-3 py-2 font-mono" :class="component.healthy ? 'text-toned' : 'text-error'">
+                <td
+                  class="px-3 py-2 font-mono whitespace-nowrap"
+                  :class="component.healthy ? 'text-toned' : 'text-error'"
+                >
                   {{ component.available }} / {{ component.desired }}
                 </td>
                 <td class="px-3 py-2 text-xs text-toned max-w-md truncate" :title="component.message">
