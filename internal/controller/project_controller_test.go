@@ -295,6 +295,57 @@ var _ = Describe("Project Controller", func() {
 			Expect(k8sClient.Get(ctx, key, survivor)).To(Succeed(), "another project's build must survive")
 		})
 
+		It("derives the refs from builds and environments nothing wrote to the project for", func() {
+			reconcileOnce()
+
+			project := &kitchenv1alpha1.Project{}
+			Expect(k8sClient.Get(ctx, projectKey, project)).To(Succeed())
+			Expect(project.Status.LatestBuildRef).To(BeNil())
+			Expect(project.Status.ProductionEnvironmentRef).To(BeNil())
+
+			// What a webhook leaves behind: a Build and, once it lands, an
+			// Environment. Neither is owned by the Project and neither
+			// writes to it, so the reconcile below is the only thing that
+			// can put them in its status.
+			build := &kitchenv1alpha1.Build{
+				ObjectMeta: metav1.ObjectMeta{Name: projectName + "-bld-aaaaaaaaaaaa", Namespace: namespace},
+				Spec: kitchenv1alpha1.BuildSpec{
+					ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: projectName},
+					Git:        kitchenv1alpha1.GitRevision{SHA: "aaaaaaaaaaaa0000", Branch: "main"},
+				},
+			}
+			environment := &kitchenv1alpha1.Environment{
+				ObjectMeta: metav1.ObjectMeta{Name: projectName + "-production", Namespace: namespace},
+				Spec: kitchenv1alpha1.EnvironmentSpec{
+					ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: projectName},
+					Type:       kitchenv1alpha1.EnvironmentProduction,
+					ReleaseRef: kitchenv1alpha1.LocalObjectReference{Name: projectName + "-rel-aaaaaaaaaaaa"},
+				},
+			}
+			for _, obj := range []client.Object{build, environment} {
+				Expect(k8sClient.Create(ctx, obj)).To(Succeed())
+			}
+
+			reconcileOnce()
+
+			Expect(k8sClient.Get(ctx, projectKey, project)).To(Succeed())
+			Expect(project.Status.LatestBuildRef).NotTo(BeNil())
+			Expect(project.Status.LatestBuildRef.Name).To(Equal(build.Name))
+			Expect(project.Status.ProductionEnvironmentRef).NotTo(BeNil())
+			Expect(project.Status.ProductionEnvironmentRef.Name).To(Equal(environment.Name))
+
+			By("clearing a ref whose object is gone")
+			for _, obj := range []client.Object{build, environment} {
+				Expect(k8sClient.Delete(ctx, obj)).To(Succeed())
+			}
+
+			reconcileOnce()
+
+			Expect(k8sClient.Get(ctx, projectKey, project)).To(Succeed())
+			Expect(project.Status.LatestBuildRef).To(BeNil())
+			Expect(project.Status.ProductionEnvironmentRef).To(BeNil())
+		})
+
 		It("deregisters the webhook and removes the finalizer on delete", func() {
 			reconcileOnce()
 
