@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.16.1](https://github.com/Bermos/Kitchen/compare/v0.16.0...v0.16.1) (2026-08-26)
+
+
+### Bug fixes
+
+* **api:** refuse project creation to a CI key ([#215](https://github.com/Bermos/Kitchen/issues/215)) ([baa4259](https://github.com/Bermos/Kitchen/commit/baa42593ffc1ad045a6ce14ecb952e96a2dda685)), closes [#203](https://github.com/Bermos/Kitchen/issues/203)
+* **chart:** give the collector a startup probe ([#196](https://github.com/Bermos/Kitchen/issues/196)) ([7e003bb](https://github.com/Bermos/Kitchen/commit/7e003bb449c6a169a462954188fd95dd0a9e03c2))
+* **chart:** let the bundled registry accept the manifests builds push ([#210](https://github.com/Bermos/Kitchen/issues/210)) ([9b642f4](https://github.com/Bermos/Kitchen/commit/9b642f42f0f98981fcddaec126f45366658df4c8))
+* **operator:** end a build whose job can never create a pod, and say why ([#213](https://github.com/Bermos/Kitchen/issues/213)) ([ce0ee74](https://github.com/Bermos/Kitchen/commit/ce0ee744dc7cfd90146d72ee58a5ab424834dbe6)), closes [#202](https://github.com/Bermos/Kitchen/issues/202)
+* **operator:** give a pull request opened after its push the preview it is owed ([#216](https://github.com/Bermos/Kitchen/issues/216)) ([d77d309](https://github.com/Bermos/Kitchen/commit/d77d30969d6e40cb7481aac65d0d6d3f66ea3f0a)), closes [#201](https://github.com/Bermos/Kitchen/issues/201)
+* **operator:** label application namespaces with a Pod Security level ([#212](https://github.com/Bermos/Kitchen/issues/212)) ([c93b1bb](https://github.com/Bermos/Kitchen/commit/c93b1bb57224aea3679f36656fa11dba880ce6aa)), closes [#199](https://github.com/Bermos/Kitchen/issues/199)
+* **operator:** reconcile a project when its builds and environments change ([#214](https://github.com/Bermos/Kitchen/issues/214)) ([4bd1935](https://github.com/Bermos/Kitchen/commit/4bd1935830945f09c6811debf39723d14b30af2e)), closes [#204](https://github.com/Bermos/Kitchen/issues/204)
+* **operator:** stop Dockerfile builds dying over an image they pushed ([#211](https://github.com/Bermos/Kitchen/issues/211)) ([95b8f4d](https://github.com/Bermos/Kitchen/commit/95b8f4d14789fa4cf832edde9423704a3096aee6)), closes [#200](https://github.com/Bermos/Kitchen/issues/200)
+
 ## [0.16.0](https://github.com/Bermos/Kitchen/compare/v0.15.0...v0.16.0) (2026-08-25)
 
 
