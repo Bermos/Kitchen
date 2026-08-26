@@ -606,6 +606,7 @@ project.
 | Changing a registered client | RFC 7592 where the issuer has it, Kitchen's own prefix otherwise | The shipped provider plugin implements registration and not management; a federated issuer keeps its clients and loses the maintenance, reported on the claim |
 | API tokens for CI | better-auth's api-key plugin, exchanged for a JWT at the issuer | The plugin already holds the operator's credential; the operator stays stateless and revocation stays in one place |
 | Dashboard sessions | Rotating refresh tokens (`offline_access`), one per browser in `localStorage` | Renewal that needs no redirect and no framing of the login page; rotation is what makes browser storage defensible |
+| Account management | The dashboard calls the issuer directly, with the issuer's session cookie | A password must never pass through the operator, and the endpoints are mounted and session-gated already |
 | Preview protection | An in-path gate the routes pass through | Gateway API has no external-auth filter, and Cilium exposes none of Envoy's |
 | Gate's OAuth client | One client, one redirect URI, registered by the operator | Previews come and go without touching the client |
 | Authorization model | Two platform roles, three project roles, `operator` ⊇ `developer` | One axis cannot scope the platform and a project at once; anything more granular has to justify itself |
@@ -647,9 +648,11 @@ preserved across upgrades:
 `helm install` prints a one-time link, `https://auth.<baseDomain>/bootstrap?token=…`.
 It serves a form that creates the first administrator, and the endpoint closes
 as soon as the installation has an account — the account *is* the state, so
-nothing has to remember whether the token was used. Public sign-up stays off;
-later accounts arrive through an upstream provider or an organization
-invitation.
+nothing has to remember whether the token was used. Public sign-up stays off,
+and a later account arrives through a configured upstream provider — that, and
+nothing else. This used to say "or an organization invitation", which is not
+true and never was: accepting one requires a session, so it cannot be the thing
+that gives somebody their first. See "What account management still is not".
 
 ### The operator API (settled)
 
@@ -729,6 +732,141 @@ outside:
   dashboard revokes the token on sign-out rather than leaving it valid, and a
   week is the longest it is worth anything.
 
+### Managing an account (settled)
+
+Signing in was built and managing the account behind it was not: for several
+releases the whole of the account surface was an account menu showing an
+address and a **Sign out**, and a password could not be changed anywhere
+(issue #207). `/account` in the dashboard is that half: the display name, the
+password, and the browsers currently signed in as this account, with a control
+to sign one of them out.
+
+**It talks to the identity provider, not to the operator API**, and that is
+the design rather than an exception grudgingly made. A password is a
+credential, and the platform's rule is that the API never reads a credential
+back — routing a password change through the operator would put every password
+on the installation through a service that has no reason to see one, in order
+to reach an endpoint the issuer already mounts and already gates on its own
+session. So the browser calls the issuer directly, the way it already does for
+discovery, the token exchange and revocation. The operator API gains nothing
+and is not asked to.
+
+The screen is `ui/src/views/AccountView.vue`, its client is
+`ui/src/lib/account.ts`, and the endpoints are better-auth's own:
+`/get-session`, `/list-accounts`, `/list-sessions`, `/update-user`,
+`/change-password` and `/revoke-session`.
+
+**The credential is the issuer's session cookie**, which is a different thing
+from the bearer token every other screen uses and has a different lifetime.
+Three things have to hold for the dashboard to use it, and only the middle one
+is code:
+
+- the browser must be willing to send the cookie to a fetch from another
+  origin, which holds while the dashboard and the issuer are subdomains of one
+  site — the chart's default, `kitchen.<baseDomain>` and `auth.<baseDomain>`,
+  and *not* something the dashboard can arrange for an installation that has
+  moved `auth.host` to another domain. The screen says so when it happens: a
+  401 there is reported as the issuer not recognising the browser, naming both
+  the expired-session and the different-site cases, rather than as the
+  dashboard's own session having ended;
+- **better-auth must trust the dashboard's origin**, or it refuses every
+  cookie-bearing POST with `403 INVALID_ORIGIN` — that check *is* the CSRF
+  defence on these endpoints. `trustedOrigins` is therefore derived from the
+  same `allowedOrigins()` the CORS headers come from (`auth/src/config.ts`), so
+  the two cannot drift apart: before this, the issuer trusted only itself,
+  which was enough while nothing but its own pages posted to it;
+- the CORS headers must let the answer be read, which they already did.
+
+**There is no session freshness window** (`session.freshAge: 0`). better-auth
+guards `/list-sessions` on a session created within the last day, and nothing
+in Kitchen can make a session fresher without ending it: the dashboard's sign
+out revokes its own OAuth tokens and leaves the session at the issuer alone,
+and a new sign-in round trip reuses that session rather than replacing it. The
+default would leave an account unable to see its own sessions for six of the
+seven days one lasts, with nothing to do about it but wait to be signed out.
+Changing a password — the one operation here that is genuinely sensitive —
+proves the current password instead, which is the check that actually
+re-authenticates.
+
+**No command carries this, deliberately.** The CLI holds an API key, exchanges
+it at the issuer for a token, and never holds a session cookie — so the
+endpoints above are not reachable from it at all, and a `kitchen account`
+command would have nothing to authenticate with. That is a property of how the
+CLI signs in (below), not an omission: the credential a CLI actually holds is
+a key, and rotating one is `DELETE /projects/{name}/keys/{key}` followed by
+`POST /projects/{name}/keys` — both on the operator API, both reachable with
+`kitchen api`, and both already on a screen.
+
+### What account management still is not
+
+Everything below needs the platform to be able to **send mail**, and Kitchen
+ships no mail transport: no SMTP field on the auth service's `Config`, no
+mail-related environment variable, no sender configured on better-auth. That
+is a decision waiting to be made rather than a bug in something that exists,
+and until it is made these read as follows:
+
+- **Password reset is off at runtime, not merely absent.** Without
+  `sendResetPassword`, `POST /request-password-reset` answers
+  `400 RESET_PASSWORD_DISABLED`, and `/reset-password` needs a token only that
+  path can mint. So a forgotten password is not recoverable by the person who
+  forgot it.
+- **Changing an address is refused for the same reason.** `/change-email`
+  throws `CHANGE_EMAIL_DISABLED` without `user.changeEmail.enabled`, and then
+  "Verification email isn't enabled" without a sender. An address is proved by
+  mail or it is not proved.
+- **An organization invitation cannot create an account.**
+  `POST /organization/accept-invitation` is behind the organization session
+  middleware, so the invitee has to be signed in already — which is the thing
+  they cannot do. `organization()` is also constructed with no
+  `sendInvitationEmail`, so no invitation is ever sent. On an installation with
+  no GitHub OAuth app, the bootstrap account is still the only account that can
+  exist.
+- **The operator cannot create or reset one either.** `internal/idp` reads
+  accounts and writes only keys and OAuth clients; there is no
+  `/api/v1/accounts`, no `/api/v1/invites`, and `internal/api/members.go` says
+  as much in the error a member sees when they name an address the issuer has
+  never seen.
+
+#### Resetting a locked-out password by hand
+
+Until the decision above is made, an account that has lost its password is
+recovered at the identity provider's database, and this is the one operation on
+the platform that still needs cluster access. It is written down because the
+alternative is that it gets invented on the day it is needed.
+
+Compute a hash the way better-auth does — scrypt, `N=16384 r=16 p=1 dkLen=64`,
+formatted `<hex salt>:<hex key>` — from inside the auth pod, which has the
+implementation:
+
+```sh
+kubectl -n kitchen-system exec deploy/<release>-auth -- \
+  node --input-type=module \
+  -e 'import { hashPassword } from "@better-auth/utils/password"; console.log(await hashPassword(process.argv[1]))' \
+  -- 'the new password'
+```
+
+Then write it onto the account's `credential` row and end its sessions, so the
+old password cannot still be in use somewhere. The database is the identity
+provider's own — `kitchen_auth` on `<release>-postgres` by default, or wherever
+`postgres.external` points:
+
+```sh
+kubectl -n kitchen-system exec -it <release>-postgres-0 -- psql -U kitchen kitchen_auth
+```
+
+```sql
+UPDATE account SET password = '<hash>', "updatedAt" = now()
+ WHERE "providerId" = 'credential'
+   AND "userId" = (SELECT id FROM "user" WHERE lower(email) = lower('anna@example.com'));
+
+DELETE FROM "session"
+ WHERE "userId" = (SELECT id FROM "user" WHERE lower(email) = lower('anna@example.com'));
+```
+
+An account with no `credential` row signs in through an upstream provider and
+has no password here to reset; the row to add in that case is a new one, which
+is the operator-created-account feature that does not exist.
+
 ### How the CLI signs in (settled, for now)
 
 `kitchen` authenticates with an **API key, exchanged here for a token** — the
@@ -762,3 +900,8 @@ Until one of the two is decided, the key path is the whole of it. See
 - **Browser sign-in for the CLI**: a device authorization grant in the OAuth
   provider, or a seeded loopback client. Neither exists yet; the section above
   says what each would take.
+- **A mail transport, or a decision not to have one**: password reset, address
+  changes, invitations and operator-created accounts all wait on it, and every
+  one of them is a hole a person falls into rather than a feature nobody asked
+  for. "What account management still is not", above, is the whole list; until
+  it is decided, a locked-out account is recovered by hand at the database.
