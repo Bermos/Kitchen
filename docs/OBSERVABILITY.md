@@ -722,6 +722,7 @@ means it also surfaces on the environment's diagnostics strip.
 |---|---|---|
 | `build.queue-backed-up` | builds queued longer than N × median build time | Build CRs + activity feed |
 | `build.pod-pending` | build job pod unschedulable | job/pod status (API) |
+| `build.stalled` | a running build's job has never created a pod — admission, quota, anything the job controller retries forever | the `Stalled` condition the build reconciler writes, whose message carries the Job's newest warning event |
 | `build.failing-repeatedly` | N consecutive failures in one project | Build CRs |
 
 **Cross-project — the platform-cause detectors** (operator)

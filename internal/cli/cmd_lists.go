@@ -128,9 +128,11 @@ on --json and on "kitchen logs --build".`),
 					return "No builds yet.\n"
 				}
 				rows := make([][]string, 0, len(builds))
-				// WHY is only ever populated for a failed build, and it is
-				// the column the list exists for on a bad day: without it
-				// every failure reads as the same failure.
+				// WHY is populated for a failed build and for a running one
+				// that is not moving, and it is the column the list exists
+				// for on a bad day: without it every failure reads as the
+				// same failure, and a build stuck before its first pod reads
+				// as a build that is simply taking a while.
 				failures := false
 				for _, b := range builds {
 					if b.why() != "" {

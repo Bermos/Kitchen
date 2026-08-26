@@ -41,7 +41,7 @@ var catalogueV1 = []ID{
 	SignalGatewayUnprogrammed, SignalRouteRejected, SignalDNSMismatch, SignalCertExpiring,
 	SignalTunnelDown, SignalUnroutedHosts,
 	// Builds.
-	SignalBuildQueueBackedUp, SignalBuildPodPending, SignalBuildFailingRepeated,
+	SignalBuildQueueBackedUp, SignalBuildPodPending, SignalBuildStalled, SignalBuildFailingRepeated,
 	// Cross-project.
 	SignalLatencyCorrelated, SignalErrorCorrelated, SignalComponentUnhealthy,
 	// Continuity: the one rule whose threshold the institution sets (#141).

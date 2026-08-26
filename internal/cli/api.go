@@ -255,6 +255,14 @@ type buildFailure struct {
 // commit refused for want of review — has no container to name, and the Ready
 // condition the reconciler left is the answer instead.
 func (b build) why() string {
+	if b.Phase == "Running" {
+		// The one case where this column is not about a failure. A build
+		// whose Job has never created a pod reports Running for as long as
+		// anybody leaves it there, and the reason is nowhere a developer can
+		// reach — so the reconciler puts it on a Stalled condition and this
+		// is where it is read.
+		return firstLine(b.stalledReason(), buildWhyWidth)
+	}
 	if b.Phase != "Failed" {
 		return ""
 	}
@@ -275,6 +283,17 @@ func (b build) why() string {
 		}
 	}
 	return firstLine(line, buildWhyWidth)
+}
+
+// stalledReason is what a running build says when it is not moving, and
+// nothing when it is.
+func (b build) stalledReason() string {
+	for _, c := range b.Conditions {
+		if c.Type == "Stalled" && c.Status == "True" {
+			return c.Message
+		}
+	}
+	return ""
 }
 
 // buildWhyWidth is how much of a failure a table column may take. The whole of

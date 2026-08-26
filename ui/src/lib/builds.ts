@@ -24,3 +24,20 @@ export function buildFailureLine(build: Build): string {
   const condition = build.conditions?.find((c) => c.type === "Ready" && c.status === "False");
   return condition?.message ?? "";
 }
+
+/**
+ * A running build that is not moving, in one line.
+ *
+ * A build whose Job has never created a pod reports Running for as long as
+ * anybody leaves it there — the pods were refused before they existed, so
+ * `status.failed` stays 0 and the Job writes no condition at all. The
+ * reconciler notices, finds the warning the job controller left behind, and
+ * puts it on a `Stalled` condition; this is where a reader of the dashboard
+ * sees it, which is the whole point of its not being a `kubectl describe job`
+ * away.
+ */
+export function buildStallLine(build: Build): string {
+  if (build.phase !== "Running") return "";
+  const condition = build.conditions?.find((c) => c.type === "Stalled" && c.status === "True");
+  return condition?.message ?? "";
+}

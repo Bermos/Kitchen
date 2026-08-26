@@ -27,6 +27,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -180,6 +181,10 @@ var _ = Describe("Build Controller", func() {
 			registryHolds = &fakeCacheProbe{}
 			reconciler = &BuildReconciler{
 				Client: k8sClient, Scheme: k8sClient.Scheme(),
+				// Warning events are found with field selectors, which the
+				// cache does not serve. k8sClient talks to the API server
+				// directly, so it is the direct reader here.
+				APIReader: k8sClient,
 				GitProviders: func(*kitchenv1alpha1.Connection, string) (gitprovider.Provider, error) {
 					return source, nil
 				},
@@ -907,6 +912,120 @@ var _ = Describe("Build Controller", func() {
 
 			err := k8sClient.Get(ctx, types.NamespacedName{Name: releaseName(projectName, sha), Namespace: namespace}, &kitchenv1alpha1.Release{})
 			Expect(err).To(HaveOccurred(), "no release should exist for a failed build")
+		})
+
+		// #202: a Job whose pods are refused before they exist leaves
+		// job.Status entirely empty — no pod counted, no condition written —
+		// so the build used to report Running for as long as anybody left it
+		// there, with the reason only on a FailedCreate event on the Job.
+		Context("when the job never creates a pod", func() {
+			// startedAgo backdates the Job's start time, which is what the
+			// grace and the deadline are measured from. Nothing else about
+			// the Job moves: that is the whole failure mode.
+			startedAgo := func(d time.Duration) {
+				job := &batchv1.Job{}
+				ExpectWithOffset(1, k8sClient.Get(ctx, jobKey, job)).To(Succeed())
+				job.Status.StartTime = ptr.To(metav1.NewTime(time.Now().Add(-d)))
+				ExpectWithOffset(1, k8sClient.Status().Update(ctx, job)).To(Succeed())
+			}
+
+			// refusedAtAdmission is the event the job-controller leaves when
+			// the pods it is creating are rejected. It is the only record of
+			// the reason anywhere in the cluster.
+			refusedAtAdmission := func(name string) {
+				job := &batchv1.Job{}
+				ExpectWithOffset(1, k8sClient.Get(ctx, jobKey, job)).To(Succeed())
+				ExpectWithOffset(1, client.IgnoreAlreadyExists(k8sClient.Create(ctx, &corev1.Event{
+					ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: appNS},
+					InvolvedObject: corev1.ObjectReference{
+						Kind: "Job", Namespace: appNS, Name: job.Name, UID: job.UID, APIVersion: "batch/v1",
+					},
+					Reason: "FailedCreate",
+					Message: `Error creating: pods "` + buildName + `-x" is forbidden: ` +
+						`violates PodSecurity "baseline:latest": seccompProfile`,
+					Type:          corev1.EventTypeWarning,
+					LastTimestamp: metav1.Now(),
+				}))).To(Succeed())
+			}
+
+			It("looks at the job again rather than waiting on a watch that will not fire", func() {
+				reconcileOnce()
+
+				result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: buildKey})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.RequeueAfter).To(Equal(buildRunningRequeue))
+			})
+
+			It("says why, on the build, while it still reports Running", func() {
+				reconcileOnce()
+				refusedAtAdmission("stall-admission.1")
+				startedAgo(buildStallGrace + time.Minute)
+
+				reconcileOnce()
+
+				build := &kitchenv1alpha1.Build{}
+				Expect(k8sClient.Get(ctx, buildKey, build)).To(Succeed())
+				Expect(build.Status.Phase).To(Equal(kitchenv1alpha1.BuildRunning),
+					"the job may still be admitted; the stall is not a failure yet")
+				stalled := meta.FindStatusCondition(build.Status.Conditions, condStalled)
+				Expect(stalled).NotTo(BeNil())
+				Expect(stalled.Status).To(Equal(metav1.ConditionTrue))
+				Expect(stalled.Reason).To(Equal(reasonJobNoPod))
+				Expect(stalled.Message).To(ContainSubstring("violates PodSecurity"))
+			})
+
+			It("says nothing for a job that has simply not finished", func() {
+				reconcileOnce()
+				startedAgo(buildStallGrace - time.Minute)
+
+				reconcileOnce()
+
+				build := &kitchenv1alpha1.Build{}
+				Expect(k8sClient.Get(ctx, buildKey, build)).To(Succeed())
+				Expect(meta.FindStatusCondition(build.Status.Conditions, condStalled)).To(BeNil())
+			})
+
+			It("clears the stall once a pod exists", func() {
+				reconcileOnce()
+				refusedAtAdmission("stall-cleared.1")
+				startedAgo(buildStallGrace + time.Minute)
+				reconcileOnce()
+
+				job := &batchv1.Job{}
+				Expect(k8sClient.Get(ctx, jobKey, job)).To(Succeed())
+				job.Status.Active = 1
+				Expect(k8sClient.Status().Update(ctx, job)).To(Succeed())
+
+				reconcileOnce()
+
+				build := &kitchenv1alpha1.Build{}
+				Expect(k8sClient.Get(ctx, buildKey, build)).To(Succeed())
+				Expect(build.Status.Phase).To(Equal(kitchenv1alpha1.BuildRunning))
+				Expect(meta.IsStatusConditionFalse(build.Status.Conditions, condStalled)).To(BeTrue())
+			})
+
+			It("ends the build rather than reporting Running forever", func() {
+				reconcileOnce()
+				refusedAtAdmission("stall-deadline.1")
+				startedAgo(buildStallDeadline + time.Minute)
+
+				reconcileOnce()
+
+				build := &kitchenv1alpha1.Build{}
+				Expect(k8sClient.Get(ctx, buildKey, build)).To(Succeed())
+				Expect(build.Status.Phase).To(Equal(kitchenv1alpha1.BuildFailed))
+				Expect(build.Status.CompletedAt).NotTo(BeNil())
+				Expect(build.Status.Failure).NotTo(BeNil())
+				Expect(build.Status.Failure.Reason).To(Equal(reasonJobNoPod))
+				Expect(build.Status.Failure.Message).To(ContainSubstring("violates PodSecurity"))
+
+				cond := meta.FindStatusCondition(build.Status.Conditions, condReady)
+				Expect(cond).NotTo(BeNil())
+				// Nothing about the commit caused this, so it is not
+				// reasonBuildFailed: fail() reports it on the commit as a
+				// platform error rather than as a failing build.
+				Expect(cond.Reason).To(Equal(reasonBuildStalled))
+			})
 		})
 
 		It("records which container failed the build, and what it printed", func() {

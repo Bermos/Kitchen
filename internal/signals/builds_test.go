@@ -120,6 +120,47 @@ func TestBuildPodPendingFires(t *testing.T) {
 	}
 }
 
+// #202: the Job's pods were refused at admission, so there is no pod to read
+// and the Job's own status never moves. The reconciler is the one thing that
+// can tell, and it says so on a condition.
+func TestBuildStalledFires(t *testing.T) {
+	snapshot := newSnapshot()
+	stalled := build("build-1", kitchenv1alpha1.BuildRunning, 10*time.Minute)
+	stalled.Status.Conditions = []metav1.Condition{{
+		Type:               buildStalledCondition,
+		Status:             metav1.ConditionTrue,
+		Reason:             "JobHasNoPod",
+		Message:            `the build job has created no pod: violates PodSecurity "baseline:latest"`,
+		LastTransitionTime: metav1.NewTime(testNow.Add(-8 * time.Minute)),
+	}}
+	snapshot.Builds = []kitchenv1alpha1.Build{stalled}
+
+	finding := expectOne(t, evaluate(t, SignalBuildStalled, snapshot))
+	expectDetail(t, finding, "violates PodSecurity")
+	expectDetail(t, finding, "nothing is executing")
+	if finding.Fingerprint != "build.stalled/shop/build-1" {
+		t.Fatalf("fingerprint = %q", finding.Fingerprint)
+	}
+}
+
+func TestBuildStalledStaysQuietOnceThePodExists(t *testing.T) {
+	snapshot := newSnapshot()
+	moving := build("build-1", kitchenv1alpha1.BuildRunning, 10*time.Minute)
+	moving.Status.Conditions = []metav1.Condition{{
+		Type:               buildStalledCondition,
+		Status:             metav1.ConditionFalse,
+		Reason:             "JobProgressing",
+		Message:            "the build job has a pod",
+		LastTransitionTime: metav1.NewTime(testNow.Add(-time.Minute)),
+	}}
+	snapshot.Builds = []kitchenv1alpha1.Build{
+		moving,
+		build("build-2", kitchenv1alpha1.BuildRunning, 10*time.Minute),
+	}
+
+	expectNone(t, evaluate(t, SignalBuildStalled, snapshot))
+}
+
 func TestBuildPodPendingStaysQuietWhileScheduled(t *testing.T) {
 	snapshot := newSnapshot()
 	snapshot.Builds = []kitchenv1alpha1.Build{
