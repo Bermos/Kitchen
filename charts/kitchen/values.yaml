@@ -1096,7 +1096,11 @@ auth:
   # -- Let an unknown upstream account create a Kitchen account. Off by
   # default: everyone with a GitHub account would otherwise be a platform user.
   allowSocialSignUp: false
-  # -- Extra browser origins allowed to call the identity provider.
+  # -- Extra browser origins allowed to call the identity provider. The
+  # dashboard's own origin is derived from `api.externalURL` and needs no entry
+  # here. An origin listed here may make a *signed-in* call — the account
+  # screen's password change and session list are refused from anywhere else —
+  # so this is trust, not merely a CORS header.
   trustedOrigins: []
   # -- Container port the service binds to.
   port: 8080

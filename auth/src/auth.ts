@@ -6,7 +6,7 @@ import { passkey } from "@better-auth/passkey";
 import { sso } from "@better-auth/sso";
 import type { Pool } from "pg";
 
-import type { Config } from "./config.js";
+import { allowedOrigins, type Config } from "./config.js";
 
 export const LOGIN_PATH = "/login";
 export const CONSENT_PATH = "/consent";
@@ -34,7 +34,29 @@ export function authOptions(config: Config, database: Pool): BetterAuthOptions {
 		basePath: "/",
 		secret: config.secret,
 		database,
-		trustedOrigins: [config.baseURL, ...config.trustedOrigins],
+		// Every origin a browser may reach this service from, derived in one
+		// place so that the CORS allow-list and this list cannot disagree —
+		// `allowedOrigins` says what turns on it. What is new here is the
+		// dashboard: it holds the account screen, and every write that screen
+		// makes is a cookie-bearing cross-origin POST, which better-auth refuses
+		// with `INVALID_ORIGIN` unless the dashboard is trusted. Listing the
+		// issuer alone was enough only while nothing but the issuer's own pages
+		// posted here.
+		trustedOrigins: [...allowedOrigins(config)],
+		session: {
+			// No freshness window. better-auth guards `/list-sessions` on a session
+			// created within the last day by default, and nothing in Kitchen can
+			// make a session fresher without ending it: the dashboard's sign-out
+			// revokes its own OAuth tokens and leaves the session here alone, and a
+			// new sign-in round trip reuses it rather than replacing it. So the
+			// default would leave the account screen unable to list sessions for
+			// six of the seven days one lasts, with nothing anyone could do about
+			// it but wait to be signed out. What the window would have protected is
+			// reading one's own sessions and revoking them; the one genuinely
+			// sensitive operation, changing a password, asks for the current
+			// password instead — which is the check that actually re-authenticates.
+			freshAge: 0,
+		},
 		telemetry: { enabled: false },
 		emailAndPassword: {
 			enabled: true,

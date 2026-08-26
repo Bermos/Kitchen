@@ -1522,7 +1522,7 @@ kubectl delete namespace kitchen-system
 | `auth.github.clientId` / `.clientSecret` | `""` | Upstream GitHub OAuth app. |
 | `auth.github.existingSecret` / `.existingSecretKey` | `""` / `clientSecret` | Read the client secret from an existing secret. |
 | `auth.allowSocialSignUp` | `false` | Let an unknown GitHub account create a Kitchen account. |
-| `auth.trustedOrigins` | `[]` | Extra browser origins. |
+| `auth.trustedOrigins` | `[]` | Extra browser origins allowed to make signed-in calls to the identity provider. The dashboard's own is derived from `api.externalURL`. |
 | `auth.port` | `8080` | Container port. |
 | `auth.service.type` / `.port` | `ClusterIP` / `80` | |
 | `auth.route.enabled` | `true` | Publish the issuer on the shared Gateway. |

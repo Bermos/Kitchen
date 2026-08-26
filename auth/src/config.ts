@@ -52,7 +52,12 @@ export interface Config {
 	ui?: UIClientConfig;
 	/** Upstream GitHub OAuth app, when one is configured. */
 	github?: GitHubConfig;
-	/** Extra origins allowed to call the API from a browser. */
+	/**
+	 * Extra origins a browser may call this service from, beyond the ones
+	 * `allowedOrigins` already derives. They reach both the CORS headers and
+	 * better-auth's origin check, so an entry here is trusted to make a
+	 * signed-in write, not merely to read an answer.
+	 */
 	trustedOrigins: string[];
 	/**
 	 * Whether an unknown upstream account may create a Kitchen account. Off by
@@ -207,4 +212,49 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 		throw new Error(`invalid configuration:\n  - ${problems.join("\n  - ")}`);
 	}
 	return config;
+}
+
+/**
+ * Origins a browser may call this service from.
+ *
+ * The dashboard and the identity provider sit on different hostnames by
+ * design, so every call the dashboard's JavaScript makes here — fetching the
+ * discovery document, exchanging the authorization code, changing a
+ * password — is cross-origin. Two separate things turn on this one list, and
+ * they must not drift apart:
+ *
+ * - the CORS headers (`src/server.ts`), without which the browser refuses to
+ *   let the dashboard's script read anything this service returns;
+ * - better-auth's own origin check, which refuses any cookie-bearing POST
+ *   whose `Origin` is not trusted. That is the CSRF defence on every endpoint
+ *   the account screen calls, and an origin missing from here is a `403
+ *   INVALID_ORIGIN` rather than a browser-side failure.
+ *
+ * The list is derived rather than configured: the platform already tells this
+ * service where its UI lives, through the API URL and the UI client's redirect
+ * URIs. Only known origins are reflected, never `*`, because a wildcard cannot
+ * be combined with credentials.
+ */
+export function allowedOrigins(config: Config): ReadonlySet<string> {
+	const origins = new Set<string>();
+	const add = (value: string | undefined): void => {
+		if (!value) {
+			return;
+		}
+		try {
+			origins.add(new URL(value).origin);
+		} catch {
+			// A malformed entry is the config validator's problem, not ours.
+		}
+	};
+
+	add(config.baseURL);
+	add(config.apiURL);
+	for (const uri of config.ui?.redirectURIs ?? []) {
+		add(uri);
+	}
+	for (const origin of config.trustedOrigins) {
+		add(origin);
+	}
+	return origins;
 }

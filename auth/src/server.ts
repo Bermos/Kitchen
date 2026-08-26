@@ -5,7 +5,7 @@ import type { Pool } from "pg";
 import type { Auth } from "./auth.js";
 import { CONSENT_PATH, LOGIN_PATH } from "./auth.js";
 import { bootstrapFirstUser, isBootstrapped, tokenMatches } from "./bootstrap.js";
-import type { Config } from "./config.js";
+import { allowedOrigins, type Config } from "./config.js";
 import { handleKitchenRequest, isKitchenPath } from "./directory.js";
 import { log } from "./log.js";
 import { bootstrapPage, consentPage, loginPage, messagePage } from "./pages.js";
@@ -83,43 +83,6 @@ async function clientName(auth: Auth, clientId: string): Promise<string> {
 		log.warn("could not resolve the client name", { clientId, error: String(error) });
 		return clientId;
 	}
-}
-
-/**
- * Origins the browser may call this service from.
- *
- * The dashboard and the identity provider sit on different hostnames by
- * design, so every call the dashboard's JavaScript makes here — fetching the
- * discovery document, exchanging the authorization code — is cross-origin and
- * unreadable without these headers.
- *
- * The list is derived rather than configured: the platform already tells this
- * service where its UI lives, through the API URL and the UI client's redirect
- * URIs. Only known origins are reflected, never `*`, because a wildcard cannot
- * be combined with credentials.
- */
-export function allowedOrigins(config: Config): ReadonlySet<string> {
-	const origins = new Set<string>();
-	const add = (value: string | undefined): void => {
-		if (!value) {
-			return;
-		}
-		try {
-			origins.add(new URL(value).origin);
-		} catch {
-			// A malformed entry is the config validator's problem, not ours.
-		}
-	};
-
-	add(config.baseURL);
-	add(config.apiURL);
-	for (const uri of config.ui?.redirectURIs ?? []) {
-		add(uri);
-	}
-	for (const origin of config.trustedOrigins) {
-		add(origin);
-	}
-	return origins;
 }
 
 export function createServer(auth: Auth, config: Config, pool: Pool): Server {
