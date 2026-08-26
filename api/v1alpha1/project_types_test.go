@@ -17,11 +17,60 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 )
+
+// A plain bool with omitempty cannot say "off": false is the zero value, so
+// the field is dropped from the serialized object, and a CRD default of true
+// then fills the gap the client meant to leave empty. Both of PreviewsSpec's
+// switches are pointers for that reason, and this is the assertion that says
+// so — it fails the moment either goes back to being a bool.
+func TestPreviewsSpecCanSayOff(t *testing.T) {
+	off, err := json.Marshal(PreviewsSpec{Enabled: ptr.To(false), Protected: ptr.To(false)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"enabled":false`, `"protected":false`} {
+		if !strings.Contains(string(off), want) {
+			t.Errorf("want %s in the serialized spec, got %s", want, off)
+		}
+	}
+
+	// And an unset spec still says nothing at all, so the API server's
+	// defaults are what decide it.
+	unset, err := json.Marshal(PreviewsSpec{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(unset) != "{}" {
+		t.Errorf("want an unset spec to serialize to {}, got %s", unset)
+	}
+}
+
+// An absent value reads as on, which is what the CRD's default would have
+// made of it anyway — so a Project written before the field existed, or one
+// read from a client that dropped it, gets previews rather than losing them.
+func TestPreviewsSpecDefaultsToOn(t *testing.T) {
+	var unset PreviewsSpec
+	if !unset.IsEnabled() {
+		t.Error("want an unset previews spec to be enabled")
+	}
+	if !unset.IsProtected() {
+		t.Error("want an unset previews spec to be protected")
+	}
+	if (PreviewsSpec{Enabled: ptr.To(false)}).IsEnabled() {
+		t.Error("want an explicit false to turn previews off")
+	}
+	if !(PreviewsSpec{Enabled: ptr.To(true)}).IsEnabled() {
+		t.Error("want an explicit true to turn previews on")
+	}
+}
 
 func TestScaleToZeroPolicyCovers(t *testing.T) {
 	cases := []struct {

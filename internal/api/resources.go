@@ -247,7 +247,7 @@ func (s *Server) createProject(w http.ResponseWriter, req *http.Request) {
 			Registry: kitchenv1alpha1.RegistrySpec{
 				ConnectionRef: kitchenv1alpha1.LocalObjectReference{Name: body.Registry},
 			},
-			Previews: kitchenv1alpha1.PreviewsSpec{Enabled: previews},
+			Previews: kitchenv1alpha1.PreviewsSpec{Enabled: ptr.To(previews)},
 			Build: kitchenv1alpha1.ProjectBuildSpec{
 				RootDirectory:  body.RootDirectory,
 				DockerfilePath: body.DockerfilePath,
@@ -733,7 +733,7 @@ func (s *Server) patchProject(w http.ResponseWriter, req *http.Request) {
 		project.Spec.Source.RequirePullRequest = *body.RequirePullRequest
 	}
 	if body.Previews != nil {
-		project.Spec.Previews.Enabled = *body.Previews
+		project.Spec.Previews.Enabled = body.Previews
 	}
 	if body.PreviewsProtected != nil {
 		project.Spec.Previews.Protected = body.PreviewsProtected

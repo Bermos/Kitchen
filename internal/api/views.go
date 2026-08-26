@@ -161,7 +161,7 @@ func newProjectView(project *kitchenv1alpha1.Project, role access.ProjectRole) p
 		Registry:           project.Spec.Registry.ConnectionRef.Name,
 		ProductionBranch:   project.Spec.Source.ProductionBranch,
 		RequirePullRequest: project.Spec.Source.RequirePullRequest,
-		Previews:           project.Spec.Previews.Enabled,
+		Previews:           project.Spec.Previews.IsEnabled(),
 		PreviewsProtected:  project.Spec.Previews.IsProtected(),
 		BuildStrategy:      string(project.Spec.Build.Strategy),
 		DockerfilePath:     project.Spec.Build.DockerfilePath,

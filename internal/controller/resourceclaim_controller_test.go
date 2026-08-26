@@ -132,7 +132,7 @@ var _ = Describe("ResourceClaim Controller", func() {
 				Registry: kitchenv1alpha1.RegistrySpec{
 					ConnectionRef: kitchenv1alpha1.LocalObjectReference{Name: "registry"},
 				},
-				Previews: kitchenv1alpha1.PreviewsSpec{Enabled: true, Protected: ptr.To(false)},
+				Previews: kitchenv1alpha1.PreviewsSpec{Enabled: ptr.To(true), Protected: ptr.To(false)},
 			},
 		}
 		Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, project))).To(Succeed())

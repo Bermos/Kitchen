@@ -79,8 +79,18 @@ type RegistrySpec struct {
 
 // PreviewsSpec configures preview environments for pull requests.
 type PreviewsSpec struct {
+	// Enabled says whether a pull request against this Project gets a preview
+	// environment of its own. It defaults to on: the preview is the review
+	// vehicle, and a project that wants pull requests generally wants them
+	// looked at somewhere.
+	//
+	// It is a pointer for the reason Protected next to it is: a plain bool
+	// with omitempty cannot express false — the field is dropped from the
+	// serialized object, and the API server then applies the default, so
+	// turning previews off would be silently undone on every write.
 	// +kubebuilder:default=true
-	Enabled bool `json:"enabled,omitempty"`
+	// +optional
+	Enabled *bool `json:"enabled,omitempty"`
 
 	// Protected gates preview URLs behind platform login: the Environment's
 	// route goes through the forward-auth gate, which sends anonymous
@@ -100,6 +110,14 @@ type PreviewsSpec struct {
 	// pull request closes.
 	// +optional
 	TTLAfterClosed *metav1.Duration `json:"ttlAfterClosed,omitempty"`
+}
+
+// IsEnabled reports whether this Project gets preview environments. Previews
+// written before the field existed get them: it is the reading that matches
+// the default, and the API server defaults it to true on the next write
+// anyway.
+func (p PreviewsSpec) IsEnabled() bool {
+	return p.Enabled == nil || *p.Enabled
 }
 
 // IsProtected reports whether previews of this Project are gated behind

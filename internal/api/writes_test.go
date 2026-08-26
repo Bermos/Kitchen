@@ -82,7 +82,7 @@ func TestPatchingAProjectsSettings(t *testing.T) {
 	if err := h.server.get(context.Background(), "shop", stored); err != nil {
 		t.Fatal(err)
 	}
-	if stored.Spec.Source.ProductionBranch != "stable" || stored.Spec.Previews.Enabled {
+	if stored.Spec.Source.ProductionBranch != "stable" || stored.Spec.Previews.IsEnabled() {
 		t.Fatalf("the settings did not stick: %+v", stored.Spec)
 	}
 	if stored.Spec.Build.Strategy != kitchenv1alpha1.BuildStrategyBuildpacks ||
@@ -163,7 +163,7 @@ func TestPatchingAProjectRefusesEnvVarsAndNamesTheRouteThatTakesThem(t *testing.
 	if len(stored.Spec.Env) != 0 {
 		t.Fatalf("the refused variables were written anyway: %+v", stored.Spec.Env)
 	}
-	if !stored.Spec.Previews.Enabled {
+	if !stored.Spec.Previews.IsEnabled() {
 		t.Fatal("the settings in a refused request were written anyway")
 	}
 }

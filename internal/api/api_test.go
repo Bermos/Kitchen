@@ -33,6 +33,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
@@ -181,7 +182,7 @@ func fixtures() []runtime.Object {
 			Registry: kitchenv1alpha1.RegistrySpec{
 				ConnectionRef: kitchenv1alpha1.LocalObjectReference{Name: "registry"},
 			},
-			Previews: kitchenv1alpha1.PreviewsSpec{Enabled: true},
+			Previews: kitchenv1alpha1.PreviewsSpec{Enabled: ptr.To(true)},
 		},
 		Status: kitchenv1alpha1.ProjectStatus{
 			LatestBuildRef: &kitchenv1alpha1.LocalObjectReference{Name: testBuild},

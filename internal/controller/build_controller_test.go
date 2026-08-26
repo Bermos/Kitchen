@@ -1003,6 +1003,45 @@ var _ = Describe("Build Controller", func() {
 				err := k8sClient.Get(ctx, previewKey, &kitchenv1alpha1.Environment{})
 				Expect(err).To(HaveOccurred(), "a closed request's preview must stay torn down")
 			})
+
+			// The one spec here that writes spec.previews to a real API
+			// server, which is the only place the field's own bug was
+			// visible: enabled was a plain bool with omitempty, so false was
+			// dropped from the serialized object and the CRD's default put it
+			// straight back. The project read "previews on" whatever it had
+			// been told, and this spec could not be written until the field
+			// became a pointer.
+			It("gives a project with previews turned off none, however late the request arrives", func() {
+				projectKey := types.NamespacedName{Name: projectName, Namespace: namespace}
+				project := &kitchenv1alpha1.Project{}
+				Expect(k8sClient.Get(ctx, projectKey, project)).To(Succeed())
+				project.Spec.Previews.Enabled = ptr.To(false)
+				Expect(k8sClient.Update(ctx, project)).To(Succeed())
+				Expect(k8sClient.Get(ctx, projectKey, project)).To(Succeed())
+				Expect(project.Spec.Previews.IsEnabled()).To(BeFalse(),
+					"the API server defaulted previews back on, so nothing below is being tested")
+
+				reconcileOnce()
+				completeJob()
+				createBuildPod(`{"containerimage.digest":"sha256:feedface"}`)
+				reconcileOnce()
+				recordPullRequest(10)
+				reconcileOnce()
+
+				// The build still succeeds and still produces a release —
+				// turning previews off decides where a release goes, not
+				// whether the commit is built.
+				build := &kitchenv1alpha1.Build{}
+				Expect(k8sClient.Get(ctx, buildKey, build)).To(Succeed())
+				Expect(build.Status.Phase).To(Equal(kitchenv1alpha1.BuildSucceeded))
+				Expect(k8sClient.Get(ctx, types.NamespacedName{
+					Name: releaseName(projectName, sha), Namespace: namespace,
+				}, &kitchenv1alpha1.Release{})).To(Succeed())
+
+				Expect(build.Status.Preview).To(BeEmpty())
+				err := k8sClient.Get(ctx, previewKey, &kitchenv1alpha1.Environment{})
+				Expect(err).To(HaveOccurred(), "previews are off: the request gets no environment")
+			})
 		})
 
 		It("marks the build failed when the job fails", func() {
