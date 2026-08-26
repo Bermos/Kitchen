@@ -110,17 +110,20 @@ test-e2e: manifests generate fmt vet ## Run the e2e tests. Expected an isolated 
 	}
 	go test ./test/e2e/ -v -ginkgo.v
 
+# GOTOOLCHAIN is set on all three so the linter type-checks the tree with the
+# Go go.mod names rather than whatever is on PATH. See GO_TOOLCHAIN below for
+# what goes wrong without it.
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
-	$(GOLANGCI_LINT) run
+	GOTOOLCHAIN=$(GO_TOOLCHAIN) $(GOLANGCI_LINT) run
 
 .PHONY: lint-fix
 lint-fix: golangci-lint ## Run golangci-lint linter and perform fixes
-	$(GOLANGCI_LINT) run --fix
+	GOTOOLCHAIN=$(GO_TOOLCHAIN) $(GOLANGCI_LINT) run --fix
 
 .PHONY: lint-config
 lint-config: golangci-lint ## Verify golangci-lint linter configuration
-	$(GOLANGCI_LINT) config verify
+	GOTOOLCHAIN=$(GO_TOOLCHAIN) $(GOLANGCI_LINT) config verify
 
 .PHONY: hooks
 hooks: ## Install the git hooks and the generated-file merge driver.
@@ -357,6 +360,24 @@ $(HELM): $(LOCALBIN)
 # module, and golangci-lint refuses to analyze code targeting a newer Go than
 # the one it was built with — so a PATH toolchain older than the pin would
 # produce a linter that rejects the repo.
+#
+# The linter is also *run* under it, which is a separate problem with the same
+# answer. golangci-lint type-checks through `go list -export`, so the export
+# data it reads is written by the go on PATH, while the decoder that reads it
+# is the golang.org/x/tools the pinned golangci-lint vendored. A newer
+# toolchain writes a newer export data format — go1.27 writes version 4, and
+# v1.63.4 tops out at version 2 — and the linter then resolves nothing and
+# reports every identifier in the tree as undefined, which reads as "the
+# repository does not compile" rather than as a version mismatch.
+#
+# GOTOOLCHAIN=auto does not save us: it upgrades to satisfy the `toolchain`
+# line and never downgrades, so a machine on go1.27 stays on go1.27. Naming
+# the version forces the downgrade, at the cost of one toolchain download on a
+# machine that has not got it — which building the tools already required.
+# Being set in the recipe, it also wins over a GOTOOLCHAIN in the environment,
+# so there is no combination of local Go and local settings left for this to
+# fail under. That is why there is no "your Go is too new" diagnostic here:
+# with the pin in place nothing can reach the condition it would report.
 GO_TOOLCHAIN = $(shell awk '/^toolchain /{print $$2}' go.mod)
 
 define go-install-tool
