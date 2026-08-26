@@ -229,6 +229,15 @@ jobs:
           print("the registry config parses, and every tag pattern is a valid regex")
           CHECK
 
+      # zot is OCI-native and refuses a manifest media type it was not told to
+      # accept, so the rendered config above says nothing about whether a build
+      # can publish. The script runs the zot image values.yaml pins on the
+      # config the chart renders and pushes a real image at it, in Docker
+      # manifest schema 2 — what both build strategies emit by default — and in
+      # OCI's, since BuildKit emits those whenever an attestation is asked for.
+      - name: Check the registry accepts the manifests builds push
+        run: hack/check-registry-accepts-docker-manifests.sh
+
       - name: Check no immutable field carries a versioned label
         run: |
           set -euo pipefail
