@@ -31,6 +31,10 @@ import (
 const (
 	testProject = "shop"
 	testValue   = "debug"
+
+	// testRefusal is the sentence the fake platform refuses with. The
+	// assertions are about where it ends up rather than what it says.
+	testRefusal = "adding a connection needs the operator role; you are a member"
 )
 
 func TestWhoamiAnswersTheAccountAsJSON(t *testing.T) {
@@ -499,13 +503,53 @@ func TestAPIPassesTheBodyThroughUnchanged(t *testing.T) {
 func TestAPIRelaysARefusalAndItsStatus(t *testing.T) {
 	h := newHarness(t)
 	h.platform.refuseStatus = 403
-	h.platform.refuseMessage = "adding a connection needs the operator role; you are a member"
+	h.platform.refuseMessage = testRefusal
 
 	if code := h.run("api", "POST", "/connections", "--data", "{}", "--json"); code != exitForbidden {
 		t.Fatalf("exit %d, wanted %d", code, exitForbidden)
 	}
 	if !strings.Contains(h.stdout.String(), "operator role") {
 		t.Fatalf("the platform's own sentence was not printed: %s", h.stdout.String())
+	}
+}
+
+func TestAPIRefusalIsOneDocumentUnderJSON(t *testing.T) {
+	h := newHarness(t)
+	h.platform.refuseStatus = 403
+	h.platform.refuseMessage = testRefusal
+
+	if code := h.run("api", "POST", "/connections", "--data", "{}", "--json"); code != exitForbidden {
+		t.Fatalf("exit %d, wanted %d", code, exitForbidden)
+	}
+
+	// failure decodes the whole of stdout, so the refusal body printed
+	// alongside the envelope is this failing rather than an assertion of its
+	// own: two documents is what --json promises there will not be.
+	refusal := h.failure()
+	if refusal.Status != 403 {
+		t.Fatalf("unexpected status: %+v", refusal)
+	}
+	if !strings.Contains(refusal.Message, "operator role") {
+		t.Fatalf("the platform's own sentence is not in the envelope: %+v", refusal)
+	}
+}
+
+func TestAPIIgnoreStatusPrintsTheRefusalBodyAndSucceeds(t *testing.T) {
+	h := newHarness(t)
+	h.platform.refuseStatus = 403
+	h.platform.refuseMessage = testRefusal
+
+	code := h.run("api", "POST", "/connections", "--data", "{}", "--ignore-status", "--json")
+	if code != exitOK {
+		t.Fatalf("exit %d, stderr: %s", code, h.stderr.String())
+	}
+
+	// Nothing is returned, so nothing is suppressed: the body is the answer,
+	// and it is still one document.
+	body := errorBody{}
+	h.answer(&body)
+	if !strings.Contains(body.Error, "operator role") {
+		t.Fatalf("unexpected body: %s", h.stdout.String())
 	}
 }
 

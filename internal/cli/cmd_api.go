@@ -88,9 +88,11 @@ parsing the body.`),
 		"print the body and exit 0 even when the platform refused, for a caller that wants to read the refusal")
 
 	return describe(cmd, meta{
-		Calls:  []string{"any endpoint under /api/v1 — see docs/API.md"},
-		Output: output{Mode: outputDocument, Note: "the platform's own response body, unchanged. --stream makes it NDJSON"},
-		Needs:  needs{Auth: true},
+		Calls: []string{"any endpoint under /api/v1 — see docs/API.md"},
+		Output: output{Mode: outputDocument, Note: "the platform's own response body, unchanged. " +
+			"A refusal is the usual error document, which carries the body's own sentence; " +
+			"--ignore-status prints the body instead and exits 0. --stream makes it NDJSON"},
+		Needs: needs{Auth: true},
 		Examples: []example{
 			{"Read something no command covers yet", "kitchen api GET /domains --json"},
 			{"Attach a custom domain",
@@ -151,10 +153,21 @@ func callAPI(
 
 	// The body is printed whatever the status: a refusal names the role it
 	// wanted, and that sentence is the most useful thing the request produced.
-	if err := printBody(printer, answer); err != nil {
-		return err
+	//
+	// Under --json it is printed unless the refusal is about to be returned
+	// as well. Every command answers a failure with one {"error": {...}}
+	// document, and fromStatus reads the body's own sentence into it, so
+	// printing both would put two JSON documents on a stdout that promises
+	// exactly one — and lose nothing by not doing it. --ignore-status returns
+	// no error, so it still prints the body and exits 0, which is the whole
+	// of what it is for.
+	refused := status >= 400 && !ignoreStatus
+	if !refused || !printer.json {
+		if err := printBody(printer, answer); err != nil {
+			return err
+		}
 	}
-	if status >= 400 && !ignoreStatus {
+	if refused {
 		return fromStatus(status, answer).doing(method + " " + path)
 	}
 	return nil
