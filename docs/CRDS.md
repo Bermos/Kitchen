@@ -402,7 +402,8 @@ spec:
                                         # absent = unclassified, shown as such and never defaulted.
                                         # Claims narrow it, environments must be rated at least it
   scaleToZero:                          # only does anything where the platform allows it
-    mode: previews                      # previews (default) | always | never
+    mode: previews                      # previews (default) | always | never; overridden
+                                        # by runtime.notRequestDriven below
     idleAfter: 5m                       # quiet for this long, then no pods at all
     maxReplicas: 5                      # ceiling for a cold-started environment
   access:                               # who may do what with this project
@@ -420,6 +421,8 @@ spec:
   runtime:
     port: 3000                          # omit to take the detected framework's
     replicas: 2                         # previews always get 1
+    notRequestDriven: false             # does work nobody asked for, so nothing of
+                                        # this project idles — previews included
     singleton: false                    # two of this must never run at once:
                                         # strategy Recreate, and replicas > 1 refused
     command: [./server]                 # replaces the image's entrypoint; exec
@@ -503,6 +506,18 @@ preview shares the project's environment variables, so a preview that emails
 customers nightly is a bad afternoon and a preview worker draining the
 production queue is a worse one. The list merges per `name`, so two people
 adding two workers do not drop each other's.
+
+`runtime.notRequestDriven` is a workload that does work nobody asked for, and
+it turns idling off for every environment of the Project — previews included,
+which is where it matters, since previews idle by default. Scale to zero is
+request-driven by construction: the interceptor brings an environment back on
+the next request to its URL, and there is no request for a background loop.
+Parked, it stops, and the hole that leaves in whatever it was collecting is
+indistinguishable from the upstream having been down. It lives on the runtime
+because it describes what the workload *is*, but the idling decision reads the
+Project's live value rather than the Release's frozen copy, for the same
+reason `scaleToZero` is not snapshotted at all: a rollback must not quietly
+start parking an environment again.
 
 `runtime.singleton` is a workload two of which must never run at once. It
 becomes `strategy: Recreate` on the Deployment — the old pod stops before the
@@ -972,8 +987,9 @@ keys the log store — beside `kitchen.run`, which it lifts off the Job name the
 Job controller stamps on every pod. A preview materializes only the processes
 that opted in; the rest are reported `suspended` rather than silently dropped.
 
-Where the platform idles environments (`Kitchen.spec.scaleToZero.enabled`) and the
-Project's `spec.scaleToZero` covers this type, the reconciler also writes an
+Where the platform idles environments (`Kitchen.spec.scaleToZero.enabled`), the
+Project has not declared its workload `notRequestDriven`, and the Project's
+`spec.scaleToZero` covers this type, the reconciler also writes an
 `HTTPScaledObject` for it and addresses the application through the KEDA HTTP add-on's
 interceptor rather than directly — as the Gateway's backend on an open environment, as
 the gate's upstream on a protected one. The workload's replica count then belongs to
@@ -981,6 +997,9 @@ KEDA: the reconciler stops writing it, because the number it would write is the 
 autoscaler just moved. Everything that can go wrong here falls back to plain Deployment
 routing with the environment's own replicas, and says why in `ScaleToZero` — an
 application parked behind an interceptor nothing is watching would never come back.
+`ScaleToZero` is also where an environment that does not idle says which of the
+reasons applies: `NotRequestDriven` for a workload that does work nobody asked for,
+`AlwaysOn` for a mode that simply does not cover this type.
 
 ## `Domain` (namespaced: kitchen-system)
 

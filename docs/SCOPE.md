@@ -128,7 +128,11 @@ These aren't nice-to-haves — the first three are the product.
   upstream where it is protected. Which environments idle is each Project's own
   `spec.scaleToZero`: previews by default, production only when asked. Turning it on
   costs the first visitor a cold start, which is why the interceptor's readiness
-  timeout is a documented value rather than a hidden one.
+  timeout is a documented value rather than a hidden one. An idle environment
+  stops doing *everything*, not only serving — there are no pods, so a background
+  loop stops with it — which is why a project whose workload is not request-driven
+  says so in `spec.runtime.notRequestDriven` and keeps its pods everywhere,
+  previews included.
   - **KEDA is the one platform dependency Kitchen's *chart* does not bundle**, against
     the usual rule. The HTTP add-on ships a `ScaledObject` of KEDA's own CRD, and Helm
     builds and validates a release's entire manifest before applying any of it, so a

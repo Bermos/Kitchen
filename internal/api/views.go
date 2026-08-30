@@ -143,7 +143,11 @@ type projectView struct {
 	// Singleton is a workload two of which must never run at once. It is
 	// deployed by stopping the old copy before starting the new one, and it
 	// cannot be given more than one replica.
-	Singleton             bool            `json:"singleton"`
+	Singleton bool `json:"singleton"`
+	// NotRequestDriven is a workload that does work nobody asked for, so no
+	// environment of this project idles down to no pods — not even a
+	// preview, which would otherwise idle by default.
+	NotRequestDriven      bool            `json:"notRequestDriven"`
 	ProductionEnvironment string          `json:"productionEnvironment,omitempty"`
 	LatestBuild           string          `json:"latestBuild,omitempty"`
 	CreatedAt             time.Time       `json:"createdAt"`
@@ -193,6 +197,7 @@ func newProjectView(project *kitchenv1alpha1.Project, role access.ProjectRole) p
 		Args:               project.Spec.Runtime.Args,
 		PreviewArgs:        project.Spec.Runtime.PreviewArgs,
 		Singleton:          project.Spec.Runtime.Singleton,
+		NotRequestDriven:   project.Spec.Runtime.NotRequestDriven,
 	}
 	if quantity, ok := project.Spec.Runtime.Resources.Limits[corev1.ResourceCPU]; ok {
 		view.CPU = quantity.String()

@@ -397,6 +397,12 @@ type patchProjectRequest struct {
 	// It refuses `replicas` above 1 rather than clamping it: a value quietly
 	// lowered reads back as a setting that did not take.
 	Singleton *bool `json:"singleton,omitempty"`
+	// NotRequestDriven declares that this workload does work nobody asked
+	// for, which turns idling off for every one of the project's
+	// environments — previews included, which is where it matters, since
+	// previews idle by default. The environment says so in its ScaleToZero
+	// condition rather than merely not idling.
+	NotRequestDriven *bool `json:"notRequestDriven,omitempty"`
 	// PromotionStages replaces the project's staged pipeline wholesale, in
 	// promotion order; an empty list removes it, restoring the default
 	// build-straight-to-production flow. The stages are topology — what each
@@ -712,6 +718,9 @@ func applyProjectBuildAndRuntime(project *kitchenv1alpha1.Project, body patchPro
 	}
 	if body.Singleton != nil {
 		project.Spec.Runtime.Singleton = *body.Singleton
+	}
+	if body.NotRequestDriven != nil {
+		project.Spec.Runtime.NotRequestDriven = *body.NotRequestDriven
 	}
 	// Checked after both, because a PATCH may carry either one alone: the
 	// combination is what is refused, and it is refused here so the caller
@@ -1782,6 +1791,7 @@ func changedProjectFields(body patchProjectRequest, continuity continuityChange)
 		{"args", body.Args != nil},
 		{"previewArgs", body.PreviewArgs != nil},
 		{"singleton", body.Singleton != nil},
+		{"notRequestDriven", body.NotRequestDriven != nil},
 		{"promotionStages", body.PromotionStages != nil},
 		{"processes", body.Processes != nil},
 		{"dataClass", body.DataClass != nil},

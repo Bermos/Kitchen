@@ -407,6 +407,42 @@ It replaces the whole list, and — like the environment variables and the port 
 it reaches an environment through the next release. What is running keeps its
 own processes until something builds.
 
+A worker's `health` goes on the same record. It has to name the port it is
+checked on, because a worker publishes none of its own:
+
+```sh
+kitchen api PATCH /projects/shop --data '{"processes":[
+  {"name":"worker","type":"worker","command":["node","worker.js"],
+   "health":{"path":"/healthz","port":9000}}
+]}'
+```
+
+### The rest of a project's settings
+
+The same reasoning covers everything else `PATCH /projects/{name}` takes, and
+it is a decision rather than a gap: the port, the replica count, the compute
+request, the classification and the four runtime declarations below are all
+one JSON body written occasionally by an admin, and a flag-shaped spelling of
+them would be a second surface to keep in step with the first.
+
+```sh
+kitchen api PATCH /projects/shop --data '{
+  "health": {"path": "/healthz"},
+  "command": ["./server"], "args": ["--config=prod.toml"],
+  "previewArgs": ["--config=fake.toml"],
+  "singleton": true,
+  "notRequestDriven": true}'
+```
+
+`health` is what the platform asks before it sends anyone to a new replica;
+`command`, `args` and `previewArgs` are how the image is started, with the
+preview override the sibling of an environment variable's preview value;
+`singleton` says two of this must never run at once, and refuses more than one
+replica rather than clamping it; `notRequestDriven` says the workload does
+work nobody asked for, so none of its environments idle down to no pods.
+[Projects](api/projects.md#changing-a-projects-settings) is the whole of what
+the body takes.
+
 ### Rolling back
 
 Rollback is not a special operation: a `Release` is an immutable snapshot of an
@@ -867,6 +903,7 @@ cannot write it carries on and exchanges every time.
 | Following a deploy | Poll the build, stream its logs, then watch for the release and the environment | All four are things the API already answers; the CLI renders them and drives nothing |
 | The exit status of a deploy | The build's | "Did my build pass" and "is it live yet" are different questions; the second is in the result, where a caller can read the phase and the URL |
 | Credentials on the command line | `--api-key-file` and `--api-key-stdin` preferred, `--api-key` documented as visible in the process list | The convenient spelling should not be the one that leaks |
+| A project's settings | No command; `kitchen api PATCH /projects/{name}` | One JSON body written occasionally by an admin — a port, a replica count, a health check, a process list, arguments, a classification. A flag per field would be a second surface to keep in step with the first, and a list of records with commands and schedules in it has no flag-shaped spelling worth having |
 | Account management | No command, and none possible | Changing a password, or ending a session, is done at the identity provider against its session cookie — and this CLI holds a key, never a session. It is not an endpoint `kitchen api` reaches either, because that reaches the operator API and these are not on it ([AUTH.md](AUTH.md), "Managing an account") |
 
 ## Open

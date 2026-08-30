@@ -144,6 +144,27 @@ func (r *EnvironmentReconciler) reconcileScaleToZero(
 	switch {
 	case interceptor == nil, !routed:
 		return nil, nil, r.deleteHTTPScaledObject(ctx, appNS, env.Name)
+	// The Project's live declaration, not the Release's frozen copy of it —
+	// the same reading the policy itself gets, and for the same reason: an
+	// application that turns out to do work nobody asked for must not have
+	// to wait for a build to stop being parked, and a rollback must not
+	// quietly start parking it again.
+	//
+	// It is checked before the policy so that an environment which would
+	// not have idled anyway still says which of the two reasons applies.
+	// "This workload is not request-driven" is the more useful sentence, and
+	// it stays true when somebody later widens the mode.
+	case project.Spec.Runtime.NotRequestDriven:
+		if err := r.deleteHTTPScaledObject(ctx, appNS, env.Name); err != nil {
+			return nil, nil, err
+		}
+		return nil, &metav1.Condition{
+			Status: metav1.ConditionFalse,
+			Reason: "NotRequestDriven",
+			Message: "spec.runtime.notRequestDriven is set on this Project: the workload does work nobody " +
+				"asked for, and an idle environment stops doing everything rather than only serving. " +
+				"Every environment of this project keeps its pods",
+		}, nil
 	case !policy.Covers(env.Spec.Type):
 		if err := r.deleteHTTPScaledObject(ctx, appNS, env.Name); err != nil {
 			return nil, nil, err

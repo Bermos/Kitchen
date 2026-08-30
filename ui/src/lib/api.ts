@@ -119,6 +119,10 @@ export interface Project {
    * the old copy before starting the new one, and it cannot be given more
    * than one replica. */
   singleton?: boolean;
+  /** This workload does work nobody asked for, so no environment of this
+   * project idles down to no pods — not even a preview, which would
+   * otherwise idle by default. */
+  notRequestDriven?: boolean;
   productionEnvironment?: string;
   latestBuild?: string;
   createdAt: string;
@@ -214,6 +218,9 @@ export interface ProjectSettings {
    * is refused rather than clamped: a value quietly lowered would read back
    * as a setting that did not take. */
   singleton?: boolean;
+  /** Declare that the workload does work nobody asked for, which turns
+   * idling off for every environment of the project. */
+  notRequestDriven?: boolean;
   /** Reclassify the project's data; "" removes the classification. Always
    * allowed — environments rated below the new class read as non-compliant
    * in the inventory and at promotion, rather than the correction being

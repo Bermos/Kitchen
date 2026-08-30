@@ -41,6 +41,11 @@ import (
 // commands, schedules and resources in it would be worse than the JSON body:
 // `kitchen api PATCH /projects/shop --data @processes.json` is the honest
 // form, and it is in the examples below so that nobody has to work it out.
+//
+// The same decision covers the rest of that body — the health check, the
+// command and arguments, the singleton and not-request-driven declarations.
+// docs/CLI.md records it in the decisions table rather than leaving it to be
+// inferred from the absence of a command.
 
 func newProcessesCommand(r *Runtime) *cobra.Command {
 	var environmentName string
@@ -64,9 +69,14 @@ runs in previews only if it was opted in.
 Changing the list is a project setting, written with the rest of them:
 
   kitchen api PATCH /projects/shop --data '{"processes":[
-    {"name":"worker","type":"worker","command":["node","worker.js"],"replicas":2},
+    {"name":"worker","type":"worker","command":["node","worker.js"],"replicas":2,
+     "health":{"path":"/healthz","port":9000}},
     {"name":"nightly-report","type":"cron","schedule":"0 3 * * *","command":["node","report.js"]}
   ]}'
+
+A worker's health check must name the port it is made against, because a worker
+publishes none of its own; a scheduled process takes none at all, since how a
+run went is its exit status.
 
 It replaces the whole list, and it reaches an environment through the next
 release — what is running keeps its own processes until something builds.`),

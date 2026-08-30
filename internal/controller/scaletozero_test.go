@@ -288,6 +288,43 @@ var _ = Describe("Scale to zero", func() {
 		Expect(replicas["min"]).To(Equal(int64(0)))
 	})
 
+	// #240: idling is request-driven by construction, so it is exactly wrong
+	// for a workload that does work nobody asked for — and the environment
+	// has to say which of the two reasons it does not idle for, rather than
+	// leaving it to be read off the absence of a scaled object.
+	It("keeps a workload that is not request-driven awake, previews included, and says why", func() {
+		reconcileOnce()
+		reconcileOnce()
+		Expect(scaledObject()).NotTo(BeNil(), "a preview idles by default")
+
+		project := &kitchenv1alpha1.Project{}
+		Expect(k8sClient.Get(ctx, projectKey, project)).To(Succeed())
+		project.Spec.Runtime.NotRequestDriven = true
+		Expect(k8sClient.Update(ctx, project)).To(Succeed())
+
+		reconcileOnce()
+
+		Expect(scaledObject()).To(BeNil())
+		Expect(string(route().Spec.Rules[0].BackendRefs[0].Name)).To(Equal(envName),
+			"traffic goes to the application, not through an interceptor")
+
+		env := &kitchenv1alpha1.Environment{}
+		Expect(k8sClient.Get(ctx, envKey, env)).To(Succeed())
+		cond := meta.FindStatusCondition(env.Status.Conditions, condScaleToZero)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		Expect(cond.Reason).To(Equal("NotRequestDriven"))
+
+		By("outranking a policy that would otherwise idle everything")
+		setPolicy(kitchenv1alpha1.ScaleToZeroPolicy{Mode: kitchenv1alpha1.ScaleToZeroAlways})
+		reconcileOnce()
+
+		Expect(scaledObject()).To(BeNil())
+		Expect(k8sClient.Get(ctx, envKey, env)).To(Succeed())
+		Expect(meta.FindStatusCondition(env.Status.Conditions, condScaleToZero).Reason).
+			To(Equal("NotRequestDriven"))
+	})
+
 	It("never lets the ceiling fall below the replicas the environment runs", func() {
 		env := &kitchenv1alpha1.Environment{}
 		Expect(k8sClient.Get(ctx, envKey, env)).To(Succeed())

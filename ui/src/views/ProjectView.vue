@@ -261,6 +261,9 @@ const settings = reactive({
   // count because it is the same decision from the other side, and the form
   // keeps the two consistent rather than letting the API refuse the pair.
   singleton: false,
+  // Work nobody asked for. Idling is request-driven by construction, so an
+  // application with a background loop is the one it silently breaks.
+  notRequestDriven: false,
   // "" is unclassified — a state shown as such, never a default.
   dataClass: "",
   // "" is undesignated, for the same reason: Kitchen does not decide what is
@@ -351,6 +354,7 @@ function loadSettings(from: Project) {
   settings.args = wordLines(from.args);
   settings.previewArgs = wordLines(from.previewArgs);
   settings.singleton = from.singleton ?? false;
+  settings.notRequestDriven = from.notRequestDriven ?? false;
   settings.dataClass = from.dataClass ?? "";
   settings.criticality = from.criticality ?? "";
   settings.rto = from.rto ?? "";
@@ -395,6 +399,7 @@ async function saveSettings() {
       // to take it away.
       previewArgs: wordsOf(settings.previewArgs),
       singleton: settings.singleton,
+      notRequestDriven: settings.notRequestDriven,
       dataClass: settings.dataClass,
       criticality: settings.criticality,
       rto: settings.rto,
@@ -1047,10 +1052,12 @@ function host(url?: string): string {
                 <UInput v-model="settings.memory" placeholder="unset" class="w-full font-mono" />
               </UFormField>
             </div>
-            <!-- The switch sits under the replica count because it is the
-                 same decision from the other side, and turning it on takes
-                 the count to 1 here rather than leaving the API to refuse
-                 the pair. -->
+            <!-- Two declarations about what the workload is rather than
+                 about how much of it there should be, and they sit under the
+                 replica count because both are that number's other half: one
+                 says it must stay at one, the other that it must never reach
+                 zero. Turning the first on takes the count to 1 here rather
+                 than leaving the API to refuse the pair. -->
             <USwitch
               v-model="settings.singleton"
               label="Never run two at once"
@@ -1058,6 +1065,14 @@ function host(url?: string): string {
                 rolling deploy would overlap the two for a few seconds, and that loop would run twice against one
                 store. Deploys stop the old copy before starting the new one, so there is a gap in serving, and
                 the replica count is fixed at 1."
+            />
+            <USwitch
+              v-model="settings.notRequestDriven"
+              label="Does work nobody asked for"
+              description="An idle environment stops doing everything, not only serving — so an application with a
+                background loop, a poller or an ingest job goes quiet with a gap in its data that looks exactly like
+                the upstream having been down. Turning this on keeps every environment of this project awake,
+                previews included."
             />
           </div>
 
