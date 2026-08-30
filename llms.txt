@@ -1,0 +1,79 @@
+# Kitchen
+
+> A self-hosted Vercel alternative for people who bring their own Kubernetes
+> cluster: `git push` → build → deploy → URL. It ships as one Helm chart — an
+> operator, a REST API, a dashboard and a CLI — and it abstracts the cluster
+> away on purpose. Nothing a developer or an operator does in the normal
+> running of the platform needs `kubectl`.
+
+Two audiences use these documents, and the split matters more than usual here.
+An **application developer** deploys something onto an installation somebody
+else runs; an **operator** owns the cluster and the platform on it. A document
+written for one is close to useless to the other.
+
+Every link below is a path in this repository. Prefix with
+`https://raw.githubusercontent.com/Bermos/Kitchen/main/` to fetch the plain
+text of one.
+
+## Start here
+
+- [docs/AGENTS.md](docs/AGENTS.md): For an agent working inside an application
+  repository that deploys to Kitchen. The machine-readable surfaces, the output
+  and exit-code contract, what makes an application deployable, and what not
+  to do. Read this one whole before the others.
+- [docs/DEPLOYING.md](docs/DEPLOYING.md): The same ground for a person, in
+  order: an account, a project, a first deploy, environment variables, a
+  custom domain, previews, logs, a rollback.
+- [README.md](README.md): What Kitchen is, what a cluster needs before it, and
+  the `helm install`. Addressed to whoever installs it.
+
+## Configuring a project
+
+- [docs/CONFIG.md](docs/CONFIG.md): `kitchen.json` — a project's build and
+  runtime settings committed beside its code. Every key, the merge rules, and
+  the short list of what a file in a repository is deliberately not allowed to
+  decide.
+- [docs/schemas/kitchen.schema.json](docs/schemas/kitchen.schema.json): The
+  JSON Schema for that file, for a `$schema` key or for validation.
+
+## Driving the platform from a program
+
+- [docs/CLI.md](docs/CLI.md): The `kitchen` CLI in full. `kitchen schema`
+  publishes the same surface as one JSON document, generated from the commands
+  themselves, and is the thing to read rather than this page when the two
+  disagree.
+- [docs/API.md](docs/API.md): The REST API: getting a token, the authorization
+  model, the whole route table, the status codes. Each resource's bodies are a
+  page of its own under `docs/api/`.
+- [docs/AUTH.md](docs/AUTH.md): The identity provider, the role model, single
+  sign-on for deployed applications, and how a protected preview URL is gated.
+
+## Understanding what the platform did
+
+- [docs/CRDS.md](docs/CRDS.md): The operator's data model and reconcile flows —
+  Kitchen, Connection, Project, Build, Release, Environment, Domain,
+  ResourceClaim. Where a "why did it do that" question ends up.
+- [docs/OBSERVABILITY.md](docs/OBSERVABILITY.md): Logs, metrics, traces and
+  network flows: what is collected, by what, and what can be asked of it.
+- [docs/COMPLIANCE.md](docs/COMPLIANCE.md): The evidence layer — the
+  hash-chained audit log, the attestations attached to every artifact, and the
+  policy that decides what may be promoted.
+- [docs/BACKUP.md](docs/BACKUP.md): What one archive holds, what it does not,
+  and the tested way back.
+
+## Running an installation
+
+- [charts/kitchen/README.md](charts/kitchen/README.md): Every chart value, the
+  prerequisites, and the upgrade and uninstall paths.
+- [docs/SCOPE.md](docs/SCOPE.md): Who the product is for, what is in it, and
+  the decisions — taken and open — that shaped it.
+
+## Optional
+
+- [CONTRIBUTING.md](CONTRIBUTING.md): Commit conventions, what CI runs, and how
+  a release is cut. For changes to Kitchen itself.
+- [CLAUDE.md](CLAUDE.md): The design premises and house rules an agent working
+  on Kitchen's own source needs. Not for an agent working on an application
+  that deploys to it.
+- [docs/UI.md](docs/UI.md): The dashboard's design guide, half of it enforced
+  by a test.
