@@ -234,7 +234,7 @@ func (r *Runtime) bearer(ctx context.Context) (string, error) {
 	if key == "" {
 		return "", fail(codeUnauthenticated, "not signed in to "+base).
 			withHint("run `kitchen login --api " + base + "`, or set KITCHEN_API_KEY " +
-				"(an API key from a project's Keys tab) or KITCHEN_TOKEN")
+				"(an API key from a project's People tab) or KITCHEN_TOKEN")
 	}
 
 	issuer, err := r.issuerFor(ctx, base, current)

@@ -134,8 +134,8 @@ nothing here has to read a value in order to change a different variable.
 
   kitchen env set DATABASE_POOL=10 LOG_LEVEL=debug
   kitchen env set API_URL=https://api.example.com --preview API_URL=https://api.invalid
-  kitchen env set API_KEY --from-secret shop-api-key:key
-  kitchen env set DATABASE_URL --from-claim shop-db:url
+  kitchen env set --from-secret API_KEY=kitchen-project-secrets:shop-api-key
+  kitchen env set --from-claim DATABASE_URL=shop-db:url
   kitchen env set --from-file .env
 
 A name with no value clears it: "kitchen env set LOG_LEVEL=" leaves the
@@ -167,7 +167,7 @@ variable in place with nothing in it.`),
 			{"Set one, with a different value in previews",
 				"kitchen env set API_URL=https://api.example.com --preview API_URL=https://api.invalid --json"},
 			{"Read a whole file of them", "kitchen env set --from-file .env --json"},
-			{"Point one at a Secret", "kitchen env set API_KEY --from-secret shop-api-key:key --json"},
+			{"Point one at a Secret", "kitchen env set --from-secret API_KEY=kitchen-project-secrets:shop-api-key --json"},
 		},
 	})
 }

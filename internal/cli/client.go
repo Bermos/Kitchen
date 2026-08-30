@@ -451,7 +451,7 @@ func exchange(ctx context.Context, httpClient *http.Client, issuer, key string) 
 		if res.StatusCode == http.StatusUnauthorized {
 			f.Code = codeUnauthenticated
 			f.Hint = "the identity provider does not know this key: it may have been revoked, " +
-				"or it belongs to another installation. Issue a new one from the project's Keys tab " +
+				"or it belongs to another installation. Issue a new one from the project's People tab " +
 				"(or POST /projects/{name}/keys) and run `kitchen login` again"
 		}
 		return "", f
