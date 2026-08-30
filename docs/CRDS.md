@@ -655,6 +655,11 @@ spec:
 status:
   phase: Succeeded                      # Queued | Running | Succeeded | Failed | Cancelled
   detectedFramework: nextjs
+  config:                               # the commit's own kitchen.json, when it carried one
+    path: kitchen.json                  # relative to the repository root
+    build: { strategy: dockerfile }     # only the keys the file actually set
+    runtime: { port: 3000 }
+    env: [{ name: NODE_ENV, value: production }]
   image: harbor.example.com/kitchen/my-shop@sha256:ab12...   # digest, never a tag
   artifact:
     repository: harbor.example.com/kitchen/my-shop
@@ -823,6 +828,20 @@ a directory to be about. Detection runs only
 where configuration left the question open: `strategy: dockerfile` never reads the
 repository, and `strategy: buildpacks` reads it only to learn what to tell the
 lifecycle, building anyway if it cannot.
+
+Beside detection, and independently of it, the build reads the commit's own
+`kitchen.json` — one more request, made whatever the strategy is, from the project's
+root directory. What it declares lands on `status.config`, and what it declares wins:
+the strategy and the Dockerfile it names configure the build Job, and its runtime,
+variables and processes are merged over the project's into the Release this build
+writes. So a rollback replays the configuration its commit declared rather than
+today's, and a build of an old commit builds it the way that commit asked. The file
+is recorded on the Build before the Job exists, because it is read once and applied
+twice — a later reconcile writes the Release, and re-reading the repository there
+would spend a second request answering a question that has an answer, and answer it
+differently if the branch moved underneath. A file that is *wrong* fails the build
+with reason `ConfigInvalid`; one that cannot be read parks it exactly as detection
+does. What it may and may not say is [docs/CONFIG.md](CONFIG.md).
 
 The job's output reaches ClickHouse the same way every other container's does — the
 node's collector tails it — so the build pod is labelled `kitchen.bermos.dev/build`
