@@ -447,6 +447,11 @@ var publishedShapes = map[string]struct {
 		"pack answers for less than it was asked for — retention removed part of the window, or " +
 		"a section hit its cap — and `signed` false means the platform holds no key, so there " +
 		"is no envelope beside it", auditPackTaken{}},
+	"configCheck": {"A kitchen.json that was read and accepted, and every setting it takes over " +
+		"from the project — in the dotted form the API and the dashboard name them in. An empty " +
+		"`declares` is a valid file that changes nothing", configCheck{}},
+	"configSchema": {"Where the JSON Schema for kitchen.json is published, for a file's `$schema` key",
+		configSchemaURL{}},
 	"schema": {"This document", schema{}},
 	"version": {"The CLI's own release, and the toolchain and platform it was built for. " +
 		"\"dev\" is a binary nothing stamped — built from a working directory rather than " +
