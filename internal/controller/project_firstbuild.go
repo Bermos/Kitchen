@@ -96,9 +96,16 @@ func (r *ProjectReconciler) ensureInitialBuild(
 		// repository nothing can see. Asking about the repository itself is
 		// what tells the two apart.
 		if detect.UnreadableRepository(ctx, provider, project.Spec.Source.Repo) {
-			setCond(condInitialBuild, metav1.ConditionFalse, "RepositoryUnreadable",
+			setCond(condInitialBuild, metav1.ConditionFalse, reasonRepositoryUnreadable,
 				detect.UnreadableRepositoryMessage(conn.Name, project.Spec.Source.Repo))
-			return false
+			// Unlike the branch below, this one does improve by being asked
+			// again: what has to change is a credential held at the provider
+			// — a token's repository access, an app installation, a secret
+			// somebody replaced — and the platform sees none of that happen.
+			// Without the retry the project is not slow to recover but unable
+			// to: nothing short of a write to the Project object would ever
+			// ask again.
+			return true
 		}
 		// An empty repository, or a production branch that is not there.
 		// Both are the project's own configuration meeting the repository,

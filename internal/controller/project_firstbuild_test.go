@@ -245,6 +245,39 @@ var _ = Describe("Project first build", func() {
 		Expect(cond.Message).NotTo(ContainSubstring("push a commit"))
 	})
 
+	It("keeps asking while the repository cannot be read", func() {
+		// The credential is fixed at the provider, where the platform cannot
+		// see it happen, so the only thing that ever asks again is the
+		// requeue. Without it the project stays broken until somebody writes
+		// to the Project object.
+		provider.err = fmt.Errorf("%w: trunk at acme/shop", gitprovider.ErrFileNotFound)
+		provider.unreadable = true
+
+		result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: projectKey})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.RequeueAfter).To(BeNumerically(">", 0), "an unreadable repository is asked about again")
+
+		project := &kitchenv1alpha1.Project{}
+		Expect(k8sClient.Get(ctx, projectKey, project)).To(Succeed())
+		ready := meta.FindStatusCondition(project.Status.Conditions, condReady)
+		Expect(ready).NotTo(BeNil())
+		Expect(ready.Status).To(Equal(metav1.ConditionFalse),
+			"a project whose repository nothing can read is not a ready project")
+		Expect(ready.Reason).To(Equal(reasonRepositoryUnreadable))
+
+		// And it recovers on its own once the credential reaches the
+		// repository, without anything writing to the Project.
+		provider.err = nil
+		provider.unreadable = false
+
+		result, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: projectKey})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.RequeueAfter).To(BeZero())
+		Expect(buildsOfProject()).To(HaveLen(1))
+		Expect(k8sClient.Get(ctx, projectKey, project)).To(Succeed())
+		Expect(meta.IsStatusConditionTrue(project.Status.Conditions, condReady)).To(BeTrue())
+	})
+
 	It("leaves a project that has already built something alone", func() {
 		existing := &kitchenv1alpha1.Build{
 			ObjectMeta: metav1.ObjectMeta{Name: projectName + "-bld-pushed000000", Namespace: namespace},

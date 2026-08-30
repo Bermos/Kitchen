@@ -504,8 +504,8 @@ spec:
       concurrencyPolicy: Forbid         # Allow | Forbid | Replace
       previews: false                   # the default, and a decision
 status:
-  conditions: [...]                     # Ready, SourceConnected, WebhookRegistered,
-                                        # InitialBuild
+  conditions: [...]                     # Ready, SourceConnected, RegistryConnected,
+                                        # WebhookRegistered, InitialBuild
   productionEnvironmentRef: { name: my-shop-production }
   latestBuildRef: { name: my-shop-bld-8f3a2c1 }
   initialBuildRef: { name: my-shop-bld-8f3a2c1 }   # the build the platform made
@@ -517,6 +517,24 @@ push: the reconciler resolves the production branch's tip and creates one
 Build of it as soon as both connections are usable, and records it here so it
 is never done twice. The `InitialBuild` condition carries why it has not
 happened yet when it has not.
+
+Two of those reasons look alike and are not. `NoCommit` — an empty repository,
+or a production branch that is not there — is the project's own configuration
+meeting the repository, and asking again changes nothing, so the project is
+left alone until somebody pushes or corrects the branch; it is still a ready
+project. `RepositoryUnreadable` is the opposite: what has to change is a
+credential held at the provider — a token's repository access, an app
+installation, a secret somebody replaced — and none of that is something the
+platform can watch happen. So the project keeps asking, every 30 seconds,
+until the repository answers; it also reports `Ready=False` with that reason
+meanwhile, because a project whose source nothing can read is not going to
+build. Both are how a credential fixed at the provider reaches the platform on
+its own rather than waiting for something to write to the Project.
+
+The project's Connections are watched for the same reason: a connection whose
+capabilities or credential verdict has just changed enqueues every project
+bound to it, source and registry alike. The Build and Environment watches
+cannot cover that case — a project that has never built has neither.
 
 `access` is the project's membership, and it is the whole of the answer: an
 account with no entry holds no role here at all, so the project is not in
