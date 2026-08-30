@@ -89,6 +89,36 @@ an empty string clears one. The repository and the two connections are
 deliberately not editable: rebinding a project to another repository is a
 different project.
 
+`command`, `args` and `previewArgs` are how the application is started, in
+exec form — a list of words, never a shell line, so nothing is split, quoted
+or handed to a shell:
+
+```json
+{"command": ["./server"], "args": ["--config=prod.toml"], "previewArgs": ["--config=fake.toml"]}
+```
+
+Absent, the image's own entrypoint runs, which is what an image built for this
+project usually wants and never what a buildpacks-built one does. Each field
+replaces its whole list and `[]` clears it, where leaving the field out keeps
+whatever it had.
+
+`previewArgs` replaces `args` in preview environments and is the sibling of an
+environment variable's `previewValue`: a preview runs against a fake or a
+seeded data source where production runs against the real one, from the same
+commit and the same artifact — the artifact is built once and never rebuilt,
+so "build a second image for previews" is not available and an entrypoint
+script translating variables into flags is exactly the per-project boilerplate
+this deletes. It replaces the list rather than extending it, because removing
+a flag is half of what a preview wants — and an empty override is no override,
+exactly as an empty `previewValue` is, which is how one is taken away.
+
+All three are snapshotted into the release, so a rollback restores the
+arguments it ran with — arguments are configuration, and a rollback that
+restored the image but not the flags would have restored the wrong thing.
+`GET /releases/{name}/config-diff` reports them alongside the port and the
+replica count. The `PORT` contract is unchanged: a buildpacks-built image
+still reads it.
+
 `health` is what the platform asks the application before it sends anyone to
 a new pod — on every deploy, and on every rollback, which is the one deploy
 path that must not add a second outage to the one it is fixing:

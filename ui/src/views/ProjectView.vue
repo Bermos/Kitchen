@@ -248,6 +248,15 @@ const settings = reactive({
   healthTimeout: 0,
   healthFailures: 0,
   healthStartupFailures: 0,
+  // The command and the arguments, one word per line. Exec form is a list of
+  // words and never a shell line, so the field is a list of lines rather than
+  // one box to be split on spaces: an argument with a space in it is ordinary,
+  // and splitting would quietly break it.
+  command: "",
+  args: "",
+  // Empty is no override, the same reading an empty preview value gets, so
+  // an empty box is how one is taken away and no switch is needed to say so.
+  previewArgs: "",
   // "" is unclassified — a state shown as such, never a default.
   dataClass: "",
   // "" is undesignated, for the same reason: Kitchen does not decide what is
@@ -272,6 +281,19 @@ const portHelp = computed(() =>
       ? `From the detected framework (${framework.value}).`
       : "From the detected framework.",
 );
+
+// A word list as the form holds it and as the API takes it: one word per
+// line, blank lines dropped. Nothing is split on spaces, because a single
+// argument containing one is ordinary and exec form has no quoting to lean on.
+function wordLines(words: string[] | undefined): string {
+  return (words ?? []).join("\n");
+}
+function wordsOf(lines: string): string[] {
+  return lines
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "");
+}
 
 const strategyOptions = [
   { label: "auto — detect the framework", value: "auto" },
@@ -307,6 +329,9 @@ function loadSettings(from: Project) {
   settings.healthTimeout = from.health?.timeoutSeconds ?? 0;
   settings.healthFailures = from.health?.failureThreshold ?? 0;
   settings.healthStartupFailures = from.health?.startupFailureThreshold ?? 0;
+  settings.command = wordLines(from.command);
+  settings.args = wordLines(from.args);
+  settings.previewArgs = wordLines(from.previewArgs);
   settings.dataClass = from.dataClass ?? "";
   settings.criticality = from.criticality ?? "";
   settings.rto = from.rto ?? "";
@@ -344,6 +369,12 @@ async function saveSettings() {
         failureThreshold: settings.healthFailures,
         startupFailureThreshold: settings.healthStartupFailures,
       },
+      command: wordsOf(settings.command),
+      args: wordsOf(settings.args),
+      // An emptied box sends an empty list rather than nothing: absent would
+      // keep the override already there, and clearing the box has to be able
+      // to take it away.
+      previewArgs: wordsOf(settings.previewArgs),
       dataClass: settings.dataClass,
       criticality: settings.criticality,
       rto: settings.rto,
@@ -987,6 +1018,38 @@ function host(url?: string): string {
               </UFormField>
               <UFormField label="Memory" help="Per replica, e.g. 512Mi.">
                 <UInput v-model="settings.memory" placeholder="unset" class="w-full font-mono" />
+              </UFormField>
+            </div>
+          </div>
+
+          <!-- How it starts. Exec form is a list of words, so each field is
+               a list of lines: an argument with a space in it is ordinary,
+               and one box split on spaces would quietly break it. -->
+          <div class="rounded-md border border-default bg-muted p-5 space-y-4">
+            <div>
+              <h2 class="text-sm font-medium text-highlighted">How it starts</h2>
+              <p class="text-xs text-muted mt-1 max-w-3xl">
+                What the image is started with, when its own entrypoint is not what this project wants.
+                <span class="text-toned font-medium">One word per line</span> — this is never a shell line, so
+                nothing is split, quoted or expanded. Preview arguments are the sibling of a variable's preview
+                value: the same commit and the same artifact, pointed somewhere else. A release carries all
+                three, so a rollback restores the arguments it ran with.
+              </p>
+            </div>
+            <div class="grid gap-4 sm:grid-cols-3">
+              <UFormField label="Command" help="Replaces the entrypoint. Empty keeps the image's own.">
+                <UTextarea v-model="settings.command" :rows="3" placeholder="./server" class="w-full font-mono" />
+              </UFormField>
+              <UFormField label="Arguments" help="Passed to it. Empty passes none.">
+                <UTextarea v-model="settings.args" :rows="3" placeholder="--config=prod.toml" class="w-full font-mono" />
+              </UFormField>
+              <UFormField label="Preview arguments" help="Used instead, in previews. Empty runs the ones beside it.">
+                <UTextarea
+                  v-model="settings.previewArgs"
+                  :rows="3"
+                  placeholder="--config=fake.toml"
+                  class="w-full font-mono"
+                />
               </UFormField>
             </div>
           </div>

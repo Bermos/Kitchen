@@ -72,7 +72,12 @@ func withSnapshots(t *testing.T, h *harness) {
 				Name: "shop-session", Key: "secret"}},
 			{Name: "DEBUG_PANEL", Value: "off", PreviewValue: "on"},
 		},
-		Runtime: kitchenv1alpha1.RuntimeSpec{Port: 3000, Replicas: ptr.To(int32(3))},
+		Runtime: kitchenv1alpha1.RuntimeSpec{
+			Port:     3000,
+			Replicas: ptr.To(int32(3)),
+			Command:  []string{"./server"},
+			Args:     []string{"--config=prod.toml"},
+		},
 		Processes: []kitchenv1alpha1.ProcessSpec{
 			{Name: "nightly", Type: kitchenv1alpha1.ProcessCron, Schedule: "0 3 * * *"},
 			{Name: "mailer", Type: kitchenv1alpha1.ProcessWorker},
@@ -96,6 +101,8 @@ func withSnapshots(t *testing.T, h *harness) {
 		Runtime: kitchenv1alpha1.RuntimeSpec{
 			Port:     3000,
 			Replicas: ptr.To(int32(2)),
+			Command:  []string{"./server"},
+			Args:     []string{"--config=old.toml"},
 			Resources: corev1.ResourceRequirements{
 				Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse(snapshotMemory)},
 			},
@@ -255,6 +262,14 @@ func TestTheConfigDiffReportsTheRuntimeAndTheProcesses(t *testing.T) {
 	}
 	if got := runtime["port"]; got.Changed {
 		t.Errorf("want the port unchanged, got %+v", got)
+	}
+	// Arguments are configuration, and a rollback that restored the image but
+	// not the flags would have restored the wrong thing.
+	if got := runtime["args"]; !got.Changed || got.From != "--config=prod.toml" || got.To != "--config=old.toml" {
+		t.Errorf("want the arguments reported, got %+v", got)
+	}
+	if got := runtime["command"]; got.Changed || got.To != "./server" {
+		t.Errorf("want the command unchanged and reported, got %+v", got)
 	}
 	if !body.Runtime[0].Changed {
 		t.Errorf("want the changed runtime fields first, got %+v", body.Runtime[0])

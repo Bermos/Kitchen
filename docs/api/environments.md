@@ -104,7 +104,11 @@ The runtime and the process list are reported as themselves, with both values:
 a port, a replica count and a cron expression are configuration a viewer
 already reads off the project. Every runtime field is listed with a `changed`
 flag rather than only the differing ones, so that "the port is the same" is an
-answer instead of an absence.
+answer instead of an absence. `command`, `args` and `previewArgs` are in that
+list too, rendered as their words joined by a space — arguments are
+configuration, and a rollback that restored the image but not the flags would
+have restored the wrong thing, which is exactly what this route exists to say
+first.
 
 Both releases must belong to the same project, and a release cannot be compared
 against itself; either is a `400`.
