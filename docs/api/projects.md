@@ -266,6 +266,13 @@ The answer is the project, so a client that changed a variable renders the new
 list without a second read. Variables land in the next release's snapshot, like
 every other project setting.
 
+A `fromSecret` usually names one of [the project's own
+secrets](secrets.md) — the credentials Kitchen did not mint, written through a
+route of their own and never read back. That is what a credential should be
+rather than a literal `value`: the project's configuration then holds a
+reference, and rotating the credential is one write that touches no
+configuration at all.
+
 ## Who is on a project
 
 Membership is a project `admin`'s to *change*, which is the point of it: adding

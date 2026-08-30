@@ -231,8 +231,17 @@ func (r *EnvironmentReconciler) applyWorkerDeployment(
 	name := ProcessWorkloadName(env.Name, process.Name)
 	podLabels := processLabels(labels, process.Name)
 
+	// A worker runs continuously, so a rotated project secret reaches it the
+	// same way it reaches the web process: by rolling the pods that read it.
+	// A scheduled job needs none of this — its next run is a new pod, which
+	// reads whatever the Secret holds when it starts.
+	secretsRevision, err := projectSecretsRevision(ctx, r.Client, appNS, podEnv)
+	if err != nil {
+		return err
+	}
+
 	deploy := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: appNS}}
-	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, deploy, func() error {
+	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, deploy, func() error {
 		deploy.Labels = podLabels
 		deploy.Spec.Replicas = ptr.To(process.ReplicaCount())
 		// A Deployment's selector is immutable, so it is written once and
@@ -245,6 +254,7 @@ func (r *EnvironmentReconciler) applyWorkerDeployment(
 			}}
 		}
 		deploy.Spec.Template.Labels = podLabels
+		applyProjectSecretsRevision(&deploy.Spec.Template.ObjectMeta, secretsRevision)
 		deploy.Spec.Template.Spec = processPodSpec(release, project, podEnv, process)
 		return nil
 	})

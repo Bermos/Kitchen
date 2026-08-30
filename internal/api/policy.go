@@ -215,6 +215,24 @@ func (s *Server) routes() []route {
 		// applied to a write.
 		{"PATCH /api/v1/projects/{name}/env", s.patchProjectEnv,
 			onProject(access.ProjectDeveloper, ofProject, "changing a project's environment variables")},
+		// The project's own secrets — a credential Kitchen did not mint, which
+		// an environment variable then reads instead of carrying in cleartext.
+		// They sit beside the variables and take the same roles for the same
+		// reason: this is the day job, not the project's settings, and the
+		// whole point is that it is no harder than `env` was.
+		//
+		// **Reading is a viewer's and it is names only.** A value never leaves
+		// the operator — no route here answers one — so the read is exactly
+		// what `GET /projects/{name}` already tells a viewer about a
+		// variable: that there is one, and what to reference it by. Hiding the
+		// list from a viewer would withhold nothing and would leave the
+		// Variables screen unable to say where a variable's value comes from.
+		{"GET /api/v1/projects/{name}/secrets", s.listProjectSecrets,
+			onProject(access.ProjectViewer, ofProject, "reading a project's secrets")},
+		{"PUT /api/v1/projects/{name}/secrets/{secret}", s.setProjectSecret,
+			onProject(access.ProjectDeveloper, ofProject, "setting a project's secret")},
+		{"DELETE /api/v1/projects/{name}/secrets/{secret}", s.deleteProjectSecret,
+			onProject(access.ProjectDeveloper, ofProject, "deleting a project's secret")},
 		{"DELETE /api/v1/projects/{name}", s.deleteProject,
 			onProject(access.ProjectAdmin, ofProject, "deleting a project")},
 		{"GET /api/v1/projects/{name}/builds", s.listProjectBuilds,

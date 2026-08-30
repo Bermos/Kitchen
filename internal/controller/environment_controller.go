@@ -610,8 +610,17 @@ func (r *EnvironmentReconciler) applyDeployment(
 	runtimeSpec := release.Spec.ConfigSnapshot.Runtime
 	port := containerPort(runtimeSpec)
 
+	// What the project's own secrets look like to *this* workload, so that
+	// rotating one rolls the pods that read it. Read before the mutation
+	// below rather than inside it, because a conflict retry would otherwise
+	// read the cluster again for an answer that cannot have changed.
+	secretsRevision, err := projectSecretsRevision(ctx, r.Client, appNS, podEnv)
+	if err != nil {
+		return err
+	}
+
 	deploy := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: env.Name, Namespace: appNS}}
-	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, deploy, func() error {
+	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, deploy, func() error {
 		deploy.Labels = labels
 		// While the environment idles the replica count is left exactly as it
 		// stands: KEDA is what parks the pods and what brings them back, and
@@ -643,6 +652,7 @@ func (r *EnvironmentReconciler) applyDeployment(
 			MatchLabels: map[string]string{labelEnvironment: env.Name},
 		}
 		deploy.Spec.Template.Labels = labels
+		applyProjectSecretsRevision(&deploy.Spec.Template.ObjectMeta, secretsRevision)
 		// A registry that wanted a credential to push wants one to pull. The
 		// build already put that docker config in this namespace, under a
 		// name derived from the same Connection, so the Deployment only has
@@ -1173,10 +1183,51 @@ func (r *EnvironmentReconciler) mapPlatformToEnvironments(ctx context.Context, _
 	return requests
 }
 
+// mapProjectSecretsToEnvironments enqueues every environment of the project
+// whose secrets have just changed, so a rotated value rolls the workloads that
+// read it instead of waiting for the next unrelated reconcile.
+//
+// It reads the project off the mirrored Secret's own label rather than off its
+// namespace, so the one Secret this cares about is the one it answers for.
+func (r *EnvironmentReconciler) mapProjectSecretsToEnvironments(
+	ctx context.Context,
+	obj client.Object,
+) []ctrl.Request {
+	if obj.GetName() != ProjectSecretsName {
+		return nil
+	}
+	project := obj.GetLabels()[labelProject]
+	if project == "" {
+		return nil
+	}
+	environments := &kitchenv1alpha1.EnvironmentList{}
+	if err := r.List(ctx, environments); err != nil {
+		logf.FromContext(ctx).Error(err, "could not list environments after a project secret changed",
+			"project", project)
+		return nil
+	}
+	requests := make([]ctrl.Request, 0, len(environments.Items))
+	for i := range environments.Items {
+		env := &environments.Items[i]
+		if env.Spec.ProjectRef.Name != project {
+			continue
+		}
+		requests = append(requests, ctrl.Request{NamespacedName: types.NamespacedName{
+			Namespace: env.Namespace, Name: env.Name,
+		}})
+	}
+	return requests
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *EnvironmentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&kitchenv1alpha1.Environment{}).
+		// The project's own secrets. Nothing about the Environment changes
+		// when one is set or rotated, so without this the pods reading it
+		// would keep the value they started with until something else caused
+		// a reconcile.
+		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.mapProjectSecretsToEnvironments)).
 		Watches(&appsv1.Deployment{}, handler.EnqueueRequestsFromMapFunc(r.mapChildToEnvironment)).
 		// A run finishing is the event this feature is about, and a Job is
 		// where it lands. Both carry the environment label the mapper reads,

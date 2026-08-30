@@ -60,6 +60,9 @@ export type Route =
   | "GET /api/v1/projects/{name}"
   | "PATCH /api/v1/projects/{name}"
   | "PATCH /api/v1/projects/{name}/env"
+  | "GET /api/v1/projects/{name}/secrets"
+  | "PUT /api/v1/projects/{name}/secrets/{secret}"
+  | "DELETE /api/v1/projects/{name}/secrets/{secret}"
   | "DELETE /api/v1/projects/{name}"
   | "GET /api/v1/projects/{name}/builds"
   | "POST /api/v1/projects/{name}/builds"
@@ -186,6 +189,9 @@ export const POLICY: Readonly<Record<Route, Requirement>> = {
   "GET /api/v1/projects/{name}": { kind: "projectRole", role: "viewer", doing: "reading a project" },
   "PATCH /api/v1/projects/{name}": { kind: "projectRole", role: "admin", doing: "changing a project's settings" },
   "PATCH /api/v1/projects/{name}/env": { kind: "projectRole", role: "developer", doing: "changing a project's environment variables" },
+  "GET /api/v1/projects/{name}/secrets": { kind: "projectRole", role: "viewer", doing: "reading a project's secrets" },
+  "PUT /api/v1/projects/{name}/secrets/{secret}": { kind: "projectRole", role: "developer", doing: "setting a project's secret" },
+  "DELETE /api/v1/projects/{name}/secrets/{secret}": { kind: "projectRole", role: "developer", doing: "deleting a project's secret" },
   "DELETE /api/v1/projects/{name}": { kind: "projectRole", role: "admin", doing: "deleting a project" },
   "GET /api/v1/projects/{name}/builds": { kind: "projectRole", role: "viewer", doing: "reading a project's builds" },
   "POST /api/v1/projects/{name}/builds": { kind: "projectRole", role: "developer", doing: "starting a build" },

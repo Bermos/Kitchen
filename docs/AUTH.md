@@ -376,7 +376,7 @@ can be.
 | Role | What it is |
 |---|---|
 | `admin` | Everything `developer` may do, plus membership, the project's own settings (git source, registry, previews policy), and deleting it |
-| `developer` | The day job: builds, redeploys, rollbacks, environment variables, domains, claims, logs, deleting an environment |
+| `developer` | The day job: builds, redeploys, rollbacks, environment variables, the project's own secrets, domains, claims, logs, deleting an environment |
 | `viewer` | Reads status, URLs, builds, releases and logs — and may open a protected preview. No writes |
 
 `operator` contains `developer` deliberately, for three reasons: a
@@ -454,7 +454,7 @@ whoever can claim that address at the issuer.
 | `/platform/*`, `PATCH /settings`, `/connections/{name}` (bar its repository listing) and every connection write, `/updates`, `GET /environments/{name}/objects`, `GET /compliance`, `GET /audit/verify` | `operator` |
 | `GET /settings` | `operator` — it carries the base domain, the issuer, the gateway address and the operator list itself |
 | `DELETE /projects/{name}`, the project's own settings, membership and key writes | project `admin` |
-| Builds and cancellations, releases, environment variables, environments, domains, claims | project `developer` |
+| Builds and cancellations, releases, environment variables, the project's own secrets, environments, domains, claims | project `developer` |
 | Projects, builds, releases, environments, logs, metrics, requests, diagnostics, signals, traces, and a project's members and keys | project `viewer` |
 | `POST /projects` | any account a person signs in as — see [Machine accounts](#machine-accounts) |
 | `GET /connections/{name}/repositories` | any account |

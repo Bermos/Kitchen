@@ -90,7 +90,10 @@ type ProjectReconciler struct {
 // level is read off the platform singleton and reconciled onto namespaces that
 // already exist, which needs update and patch.
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch
+// The project's own secrets are mirrored into the application namespace and
+// deleted with the project, so this reconciler writes and removes Secrets as
+// well as reading them.
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile prepares everything a Project needs before its first build.
 func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -126,6 +129,14 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 
 	if err := ensureNamespace(ctx, r.Client, appNamespace(project.Name), project.Name); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// The project's own secrets, mirrored from the copy the API writes into
+	// the platform namespace. It happens on every reconcile rather than at
+	// namespace creation, so a namespace that already exists — which is every
+	// namespace after the first reconcile — gets them too.
+	if err := r.mirrorProjectSecrets(ctx, project); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -206,6 +217,13 @@ func (r *ProjectReconciler) finalize(ctx context.Context, project *kitchenv1alph
 
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: appNamespace(project.Name)}}
 	if err := r.Delete(ctx, ns); err != nil && !apierrors.IsNotFound(err) {
+		return ctrl.Result{}, err
+	}
+
+	// The application namespace took the mirrored copy of the project's
+	// secrets with it; the source the API wrote is in the platform namespace,
+	// and goes here.
+	if err := r.deleteProjectSecrets(ctx, project); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -564,6 +582,11 @@ func existenceChanged() predicate.Predicate {
 func (r *ProjectReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&kitchenv1alpha1.Project{}).
+		// The project's own secrets: the API writes them into the platform
+		// namespace owner-referenced by the Project, and this is what carries
+		// a new or rotated value into the application namespace on the spot
+		// rather than on the next unrelated write to the Project.
+		Owns(&corev1.Secret{}).
 		// The Project's status is derived from Builds and Environments, and
 		// nothing owner-references them, so without these watches it is
 		// refreshed only when the Project object itself changes. A project
