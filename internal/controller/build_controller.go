@@ -48,6 +48,7 @@ import (
 	"github.com/Bermos/Kitchen/internal/framework"
 	"github.com/Bermos/Kitchen/internal/gitprovider"
 	"github.com/Bermos/Kitchen/internal/provider"
+	"github.com/Bermos/Kitchen/internal/repoconfig"
 )
 
 const (
@@ -159,6 +160,14 @@ const (
 	// repository at all. It keeps the Build queued rather than failing it —
 	// nothing about the commit caused it.
 	reasonSourceUnreadable = "SourceUnreadable"
+
+	// reasonConfigInvalid is the commit's own kitchen.json being wrong: bad
+	// JSON, a key nothing recognises, or a declaration the file is not
+	// allowed to make. It fails the build rather than being built around,
+	// because the file exists so that committing a change to it changes the
+	// deploy — a setting quietly ignored would make that untrue in exactly
+	// the case where somebody is watching for it.
+	reasonConfigInvalid = "ConfigInvalid"
 
 	// reasonBuildFailed marks the one failure that is the repository's own:
 	// the build ran and the image did not come out. Every other reason is
@@ -297,7 +306,7 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	}
 
 	builds := r.platformBuilds(ctx)
-	strategy := resolveStrategy(project, builds.DefaultStrategy)
+	strategy := resolveStrategy(project, build, builds.DefaultStrategy)
 	switch strategy {
 	case kitchenv1alpha1.BuildStrategyDockerfile, kitchenv1alpha1.BuildStrategyBuildpacks,
 		kitchenv1alpha1.BuildStrategyAuto:
@@ -362,6 +371,16 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		if waiting, res := r.gateConcurrency(ctx, build, builds.Concurrency); waiting {
 			return res, nil
 		}
+		// What the commit itself asked for, read once here and recorded
+		// before anything is created: the build Job is planned from it, and
+		// the Release this build writes is merged from it on a later
+		// reconcile, which cannot read the repository again without spending
+		// a second request on a question that has an answer.
+		if stop, err := r.readConfig(ctx, build, project); stop != nil {
+			return *stop, err
+		}
+		strategy = resolveStrategy(project, build, builds.DefaultStrategy)
+		target.Strategy = strategy
 		detected, stop, err := r.decide(ctx, build, project, strategy)
 		if stop != nil {
 			return *stop, err
@@ -477,18 +496,22 @@ func sbomGenerator(attest kitchenv1alpha1.BuildAttestationSpec) string {
 }
 
 // resolveStrategy is how a build gets made, as far as configuration decides
-// it. A Project that names a strategy is obeyed; one left on "auto" takes the
-// platform's default, which is where an operator says what an unconfigured
-// project should do.
+// it. The commit's own kitchen.json is asked first, then the Project; one
+// left on "auto" takes the platform's default, which is where an operator
+// says what an unconfigured project should do.
+//
+// The file comes first because it is the only one of the three that travels
+// with the code: a commit that added a Dockerfile said so in the same change.
 //
 // "auto" all the way down stays "auto", and is answered by reading the
 // repository — see decide. An operator who wants one strategy for everything
 // says so in Kitchen.spec.builds.defaultStrategy, and detection never runs.
 func resolveStrategy(
 	project *kitchenv1alpha1.Project,
+	build *kitchenv1alpha1.Build,
 	platformDefault kitchenv1alpha1.BuildStrategy,
 ) kitchenv1alpha1.BuildStrategy {
-	strategy := project.Spec.Build.Strategy
+	strategy := repoconfig.Strategy(build.Status.Config, project.Spec.Build.Strategy)
 	if strategy == "" || strategy == kitchenv1alpha1.BuildStrategyAuto {
 		strategy = platformDefault
 	}
@@ -653,7 +676,7 @@ func dockerfilePod(
 	if root := buildRootDir(project); root != "" {
 		buildContext += ":" + root
 	}
-	dockerfile := project.Spec.Build.DockerfilePath
+	dockerfile := buildDockerfilePath(project, build)
 	if dockerfile == "" {
 		dockerfile = "Dockerfile"
 	}
@@ -899,6 +922,21 @@ func (r *BuildReconciler) succeed(
 		return ctrl.Result{}, err
 	}
 
+	// The project's settings, with the commit's own kitchen.json applied over
+	// them. It is refused rather than merged where the two cannot both be
+	// true — a file that names a variable the project binds to a credential —
+	// and that refusal fails the build here, after the image was pushed,
+	// because the conflict is between a file read before the build and a
+	// project that could have been edited during it.
+	snapshot, err := repoconfig.Snapshot(kitchenv1alpha1.ConfigSnapshot{
+		Env:       project.Spec.Env,
+		Runtime:   runtimeFor(project, build),
+		Processes: project.Spec.Processes,
+	}, build.Status.Config)
+	if err != nil {
+		return r.fail(ctx, build, project, reasonConfigInvalid, err.Error())
+	}
+
 	release := &kitchenv1alpha1.Release{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      releaseName(project.Name, build.Spec.Git.SHA),
@@ -906,14 +944,10 @@ func (r *BuildReconciler) succeed(
 			Labels:    map[string]string{labelProject: project.Name, labelManagedByKey: labelManagedByValue},
 		},
 		Spec: kitchenv1alpha1.ReleaseSpec{
-			ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: project.Name},
-			BuildRef:   kitchenv1alpha1.LocalObjectReference{Name: build.Name},
-			Image:      image,
-			ConfigSnapshot: kitchenv1alpha1.ConfigSnapshot{
-				Env:       project.Spec.Env,
-				Runtime:   runtimeFor(project, build),
-				Processes: project.Spec.Processes,
-			},
+			ProjectRef:     kitchenv1alpha1.LocalObjectReference{Name: project.Name},
+			BuildRef:       kitchenv1alpha1.LocalObjectReference{Name: build.Name},
+			Image:          image,
+			ConfigSnapshot: snapshot,
 		},
 	}
 	if err := r.Audit.Record(ctx, audit.Transition{

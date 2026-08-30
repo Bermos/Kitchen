@@ -18,15 +18,19 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
+	ctrl "sigs.k8s.io/controller-runtime"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/detect"
 	"github.com/Bermos/Kitchen/internal/framework"
 	"github.com/Bermos/Kitchen/internal/gitprovider"
+	"github.com/Bermos/Kitchen/internal/repoconfig"
 )
 
 // errSourceUnreadable is the repository not being readable right now, which
@@ -65,7 +69,7 @@ func (r *BuildReconciler) detectFramework(
 		Repo:               project.Spec.Source.Repo,
 		Ref:                build.Spec.Git.SHA,
 		RootDirectory:      buildRootDir(project),
-		DockerfilePath:     project.Spec.Build.DockerfilePath,
+		DockerfilePath:     buildDockerfilePath(project, build),
 		ConsiderDockerfile: strategy == kitchenv1alpha1.BuildStrategyAuto,
 	})
 }
@@ -115,4 +119,64 @@ func (r *BuildReconciler) sourceReaderFor(
 			errSourceUnreadable, conn.Spec.Provider)
 	}
 	return reader, nil
+}
+
+// buildDockerfilePath is the Dockerfile this build uses, relative to the
+// project's root directory: the one the commit's own kitchen.json named, and
+// the project's setting where it named none.
+func buildDockerfilePath(project *kitchenv1alpha1.Project, build *kitchenv1alpha1.Build) string {
+	return repoconfig.DockerfilePath(build.Status.Config, project.Spec.Build.DockerfilePath)
+}
+
+// readConfig reads the commit's kitchen.json and records it on the Build,
+// before the build Job exists.
+//
+// It is written to the status straight away rather than with the rest of the
+// build's outcome, for the same reason the source provenance is: what follows
+// creates a Job, and a status update that failed after that would leave a
+// build running against a file nothing remembers reading — which the Release
+// at the end would then be merged without.
+//
+// A non-nil first return is the Build having been parked or failed, and the
+// caller returns it: a repository that cannot be read right now parks, and a
+// file that is wrong fails, saying which line to fix.
+func (r *BuildReconciler) readConfig(
+	ctx context.Context,
+	build *kitchenv1alpha1.Build,
+	project *kitchenv1alpha1.Project,
+) (*ctrl.Result, error) {
+	if build.Status.Config != nil {
+		return nil, nil
+	}
+	reader, err := r.sourceReaderFor(ctx, project)
+	if err != nil {
+		res, updateErr := r.pending(ctx, build, reasonSourceUnreadable, err)
+		return &res, updateErr
+	}
+	config, err := repoconfig.Read(ctx, reader, repoconfig.Target{
+		Repo:          project.Spec.Source.Repo,
+		Ref:           build.Spec.Git.SHA,
+		RootDirectory: buildRootDir(project),
+	})
+	switch {
+	case errors.Is(err, repoconfig.ErrSourceUnreadable):
+		res, updateErr := r.pending(ctx, build, reasonSourceUnreadable, err)
+		return &res, updateErr
+	case err != nil:
+		res, updateErr := r.fail(ctx, build, project, reasonConfigInvalid, err.Error())
+		return &res, updateErr
+	case config == nil:
+		// No file, which is the ordinary case. Nothing is recorded: an
+		// absent file is the project being configured entirely by the
+		// dashboard, exactly as it was before this existed.
+		return nil, nil
+	}
+
+	build.Status.Config = config
+	logf.FromContext(ctx).Info("build read the commit's own configuration",
+		"build", build.Name, "project", project.Name, "file", config.Path, "declares", config.Declares())
+	if err := r.Status().Update(ctx, build); err != nil {
+		return &ctrl.Result{}, err
+	}
+	return nil, nil
 }
