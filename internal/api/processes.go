@@ -21,18 +21,17 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
-	"strings"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/appconfig"
 	"github.com/Bermos/Kitchen/internal/audit"
 	"github.com/Bermos/Kitchen/internal/clickhouse"
 	"github.com/Bermos/Kitchen/internal/controller"
@@ -54,166 +53,15 @@ import (
 // from three weeks ago still has its output even though nothing in the cluster
 // remembers it happened.
 
-// processRequest is one entry of the list a settings PATCH replaces.
-//
-// Resources are the two strings the runtime already takes — `cpu` and
-// `memory`, applied as request and limit alike — rather than the full
-// Kubernetes ResourceRequirements, because the project's own runtime is
-// written that way and a process asking for its capacity in a second
-// vocabulary would be the incoherence, not the saving.
-type processRequest struct {
-	Name    string   `json:"name"`
-	Type    string   `json:"type"`
-	Command []string `json:"command,omitempty"`
-	Args    []string `json:"args,omitempty"`
-	// Replicas is a worker's copy count. Zero is allowed and means a worker
-	// that is declared and parked, which is how one is turned off without
-	// losing its command.
-	Replicas *int32 `json:"replicas,omitempty"`
-	CPU      string `json:"cpu,omitempty"`
-	Memory   string `json:"memory,omitempty"`
-	// Schedule is a cron process's five-field expression, read in UTC.
-	Schedule string `json:"schedule,omitempty"`
-	// ConcurrencyPolicy is Allow, Forbid or Replace; empty means Forbid.
-	ConcurrencyPolicy string `json:"concurrencyPolicy,omitempty"`
-	// Timeout is a Go duration ("30m") bounding one run. Empty means an hour.
-	Timeout string `json:"timeout,omitempty"`
-	// Previews opts this process into preview environments. It is off unless
-	// asked for; see ProcessSpec.Previews for why that is the decision and
-	// not an omission.
-	Previews bool `json:"previews,omitempty"`
-	// Health is a worker's health check, and it has to name the port it is
-	// made against: a process publishes none of its own. It is refused on a
-	// scheduled process, whose verdict is its run's exit status.
-	Health *healthRequest `json:"health,omitempty"`
-}
+// processRequest and the validation behind it live in internal/appconfig,
+// which is where the shapes an application's settings arrive in moved when a
+// repository's kitchen.json became a second way to send the same ones. The
+// aliases keep this package reading as it did; there is one implementation of
+// what a process is.
+type processRequest = appconfig.Process
 
-// processesFromRequest validates a whole process list and turns it into the
-// spec. It replaces rather than merges, like the promotion stages and unlike
-// the environment variables: the list is short, ordered by nothing, and a
-// merge would leave no way to delete an entry.
 func processesFromRequest(requests []processRequest) ([]kitchenv1alpha1.ProcessSpec, error) {
-	if len(requests) == 0 {
-		return nil, nil
-	}
-	processes := make([]kitchenv1alpha1.ProcessSpec, 0, len(requests))
-	seen := map[string]bool{}
-	for _, request := range requests {
-		process, err := processFromRequest(request)
-		if err != nil {
-			return nil, err
-		}
-		if seen[process.Name] {
-			return nil, fmt.Errorf("process %q is listed twice", process.Name)
-		}
-		seen[process.Name] = true
-		processes = append(processes, process)
-	}
-	return processes, nil
-}
-
-func processFromRequest(request processRequest) (kitchenv1alpha1.ProcessSpec, error) {
-	process := kitchenv1alpha1.ProcessSpec{
-		Name:     strings.TrimSpace(request.Name),
-		Type:     kitchenv1alpha1.ProcessType(strings.TrimSpace(request.Type)),
-		Command:  request.Command,
-		Args:     request.Args,
-		Previews: request.Previews,
-	}
-	if err := validateProcessName(process.Name); err != nil {
-		return process, err
-	}
-	switch process.Type {
-	case kitchenv1alpha1.ProcessWorker, kitchenv1alpha1.ProcessCron:
-	default:
-		return process, fmt.Errorf("process %q: type must be worker or cron (got %q)", process.Name, request.Type)
-	}
-
-	schedule := strings.TrimSpace(request.Schedule)
-	switch {
-	case process.Type == kitchenv1alpha1.ProcessCron && schedule == "":
-		return process, fmt.Errorf("process %q: a cron process needs a schedule", process.Name)
-	case process.Type == kitchenv1alpha1.ProcessWorker && schedule != "":
-		return process, fmt.Errorf(
-			"process %q: a worker runs continuously and has no schedule — give it type cron to run it on one", process.Name)
-	}
-	process.Schedule = schedule
-
-	if policy := strings.TrimSpace(request.ConcurrencyPolicy); policy != "" {
-		switch kitchenv1alpha1.ConcurrencyPolicy(policy) {
-		case kitchenv1alpha1.ConcurrencyAllow, kitchenv1alpha1.ConcurrencyForbid, kitchenv1alpha1.ConcurrencyReplace:
-			process.ConcurrencyPolicy = kitchenv1alpha1.ConcurrencyPolicy(policy)
-		default:
-			return process, fmt.Errorf(
-				"process %q: concurrencyPolicy must be Allow, Forbid or Replace (got %q)", process.Name, policy)
-		}
-	}
-	if timeout := strings.TrimSpace(request.Timeout); timeout != "" {
-		parsed, err := time.ParseDuration(timeout)
-		if err != nil || parsed <= 0 {
-			return process, fmt.Errorf(
-				"process %q: timeout must be a positive Go duration like 30m or 2h (got %q)", process.Name, timeout)
-		}
-		process.Timeout = &metav1.Duration{Duration: parsed}
-	}
-	if request.Replicas != nil {
-		if *request.Replicas < 0 {
-			return process, fmt.Errorf("process %q: replicas cannot be negative (got %d)", process.Name, *request.Replicas)
-		}
-		process.Replicas = request.Replicas
-	}
-	if request.Health != nil {
-		if process.Type == kitchenv1alpha1.ProcessCron {
-			return process, fmt.Errorf(
-				"process %q: a scheduled process is not kept alive by a health check — how a run went is its exit status",
-				process.Name)
-		}
-		health, err := healthFromRequest(*request.Health, fmt.Sprintf("process %q health", process.Name), true)
-		if err != nil {
-			return process, err
-		}
-		process.Health = health
-	}
-	if err := applyProcessResources(&process, request); err != nil {
-		return process, err
-	}
-	return process, nil
-}
-
-func applyProcessResources(process *kitchenv1alpha1.ProcessSpec, request processRequest) error {
-	for name, value := range map[corev1.ResourceName]string{
-		corev1.ResourceCPU:    strings.TrimSpace(request.CPU),
-		corev1.ResourceMemory: strings.TrimSpace(request.Memory),
-	} {
-		if value == "" {
-			continue
-		}
-		if _, err := resource.ParseQuantity(value); err != nil {
-			return fmt.Errorf("process %q: %s must be a Kubernetes quantity like 250m or 512Mi (got %q)",
-				process.Name, name, value)
-		}
-		if err := applyResource(&process.Resources, name, value); err != nil {
-			return fmt.Errorf("process %q: %w", process.Name, err)
-		}
-	}
-	return nil
-}
-
-// validateProcessName is the DNS-label rule the CRD states, checked here so
-// the refusal is a sentence rather than an admission-webhook message.
-func validateProcessName(name string) error {
-	if name == "" {
-		return fmt.Errorf("every process needs a name")
-	}
-	if name == "web" {
-		return fmt.Errorf(
-			"a process cannot be called \"web\": the web process is the project's own runtime " +
-				"(its port, replicas and resources), and this list is what the project runs besides it")
-	}
-	if err := validateProjectName(name); err != nil {
-		return fmt.Errorf("process %q: %w", name, err)
-	}
-	return nil
+	return appconfig.Processes(requests)
 }
 
 // processView is one process of one environment: what the release declared,

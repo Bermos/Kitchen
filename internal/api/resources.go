@@ -28,7 +28,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
-	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation"
@@ -37,6 +36,7 @@ import (
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/access"
+	"github.com/Bermos/Kitchen/internal/appconfig"
 	"github.com/Bermos/Kitchen/internal/audit"
 	"github.com/Bermos/Kitchen/internal/clickhouse"
 	"github.com/Bermos/Kitchen/internal/controller"
@@ -120,11 +120,6 @@ type createProjectRequest struct {
 	DockerfilePath   string `json:"dockerfilePath,omitempty"`
 }
 
-// maxProjectNameLength is what fits: the platform derives object names from
-// the project's — the longest, a Release's "<project>-rel-<12-char sha>",
-// adds 17 characters and still has to fit Kubernetes' 63-character limit.
-const maxProjectNameLength = 46
-
 // defaultProductionBranch is the CRD's own default for
 // spec.source.productionBranch, applied here as well so the response is
 // honest against a client the API server never defaulted for.
@@ -133,18 +128,7 @@ const defaultProductionBranch = "main"
 // validateProjectName checks a name before it becomes namespaces, hostnames
 // and generated object names, which is why plain DNS-1123 is not enough.
 func validateProjectName(name string) error {
-	if name == "" {
-		return errors.New("name is required")
-	}
-	if len(name) > maxProjectNameLength {
-		return fmt.Errorf(
-			"name must be at most %d characters: the names the platform derives from it (releases, namespaces, hostnames) have to fit Kubernetes' 63-character limit",
-			maxProjectNameLength)
-	}
-	if errs := validation.IsDNS1123Label(name); len(errs) > 0 {
-		return fmt.Errorf("name must work as a DNS label — lowercase letters, digits and '-', starting and ending alphanumeric (got %q)", name)
-	}
-	return nil
+	return appconfig.ValidateProjectName(name)
 }
 
 // requireConnection answers whether the named Connection can back the given
@@ -658,24 +642,7 @@ func envVarsFromRequest(vars []envVarRequest, existing []kitchenv1alpha1.EnvVar)
 // applications get the guaranteed class, not a burstable surprise — or clears
 // it for an empty value.
 func applyResource(resources *corev1.ResourceRequirements, name corev1.ResourceName, value string) error {
-	if value == "" {
-		delete(resources.Requests, name)
-		delete(resources.Limits, name)
-		return nil
-	}
-	quantity, err := resource.ParseQuantity(value)
-	if err != nil {
-		return fmt.Errorf("%s must be a Kubernetes quantity like 250m or 512Mi (got %q)", name, value)
-	}
-	if resources.Requests == nil {
-		resources.Requests = corev1.ResourceList{}
-	}
-	if resources.Limits == nil {
-		resources.Limits = corev1.ResourceList{}
-	}
-	resources.Requests[name] = quantity
-	resources.Limits[name] = quantity
-	return nil
+	return appconfig.ApplyResource(resources, name, value)
 }
 
 // applyProjectBuildAndRuntime sets the build and runtime half of a settings
