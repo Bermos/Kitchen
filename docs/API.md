@@ -161,6 +161,9 @@ name against `internal/api/policy.go`, so a route that moves fails them too.
 | GET | `/projects/{name}` | One project — its env vars by name, never their values | `viewer` |
 | PATCH | `/projects/{name}` | Change its settings — branch, previews, build, runtime. Not its env vars | `admin` |
 | PATCH | `/projects/{name}/env` | Change its environment variables — the whole list | `developer` |
+| GET | `/projects/{name}/secrets` | Its own secrets by name, and the reference each is read by. Never a value | `viewer` |
+| PUT | `/projects/{name}/secrets/{secret}` | Set one, or replace the value of one already there. The value goes in and never comes back out | `developer` |
+| DELETE | `/projects/{name}/secrets/{secret}` | Remove one, unless a variable still reads it | `developer` |
 | DELETE | `/projects/{name}` | Delete it, and everything derived from it | `admin` |
 | GET | `/projects/{name}/builds` | That project's builds, newest first | `viewer` |
 | POST | `/projects/{name}/builds` | Build a commit — a rebuild | `developer` |
@@ -289,6 +292,7 @@ such changes two changes to two different files.
 - [Accounts](api/accounts.md) — who the caller is, and what they may do
 - [Access and recertification](api/access.md) — who holds what, the cycles that review it, and the writes the platform did not make
 - [Projects](api/projects.md) — settings, environment variables, membership, CI keys, and deletion
+- [A project's own secrets](api/secrets.md) — the credentials Kitchen did not mint, written once and never read back
 - [Builds](api/builds.md) — starting and cancelling one, what it reused, and the evidence it left
 - [Environments and releases](api/environments.md) — rolling back, what is running, what is wrong with it, and the bar an environment sets
 - [Workers and scheduled jobs](api/processes.md) — the processes a project runs besides its web one, their runs, and running one now
@@ -332,6 +336,7 @@ such changes two changes to two different files.
 | Environment variables | A route of their own, `PATCH /projects/{name}/env`, rather than a field the settings route lets a developer through for | A whole route is the unit of authorization; a handler that decided by which key the body carried would apply the response-body exception to a write, and a dropped `env` would be a lost write that read as a successful one |
 | The operator list | On `GET`/`PATCH /settings`, which are already operator-only, rather than a surface of its own | It is the platform's own access list, like the base domain and the issuer beside it; a list that is enforced against and seeded on upgrade but served by nothing is one somebody opens `kubectl` to read |
 | Credentials | Write-only: the operator stores them in Secrets and never echoes them | "Credentials never leave the operator" survives the API growing a write surface |
+| A project's own secrets | A resource of their own under the project, write-only like a connection's credential, mirrored into the application namespace by the operator | An application needs credentials the platform did not mint, and the two ways of giving it one were `kubectl create secret` and a variable's value in cleartext; the API cannot write into the application namespace, so it writes the source the reconciler mirrors |
 | Introspection shapes | Kubernetes' own vocabulary — replicas, restarts, manifests | The exception that proves the rule above: these endpoints exist to explain the platform's machinery, and a reader comparing them against `kubectl` should not have to translate |
 | Empty request surfaces | `edge.routed` beside the numbers, on every request answer | "Nothing reaches this environment through the edge" and "nothing was asked of it in this window" are both zeroes and different sentences; four empty charts would describe the platform rather than the application |
 | The crash report | One endpoint that joins five sources, all-or-nothing | Troubleshooting should be reading rather than hunting, and a section that failed silently would be read as evidence that nothing happened |

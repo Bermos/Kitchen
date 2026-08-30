@@ -57,7 +57,19 @@ const (
 	// singleton's.
 	KindRetention = "Retention"
 
-	// KindEvidenceExport is the third, and it records a *read*: somebody
+	// KindProjectSecret is the third such kind: a credential a project gave
+	// its own application — a database it runs itself, a third-party API key
+	// — being set, replaced or deleted. The record carries the secret's name
+	// and never its value.
+	//
+	// The Kubernetes object behind it is a Secret, and recording it as one
+	// would name an object the developer who wrote it has never seen; folded
+	// into KindProject it would be buried among every settings change the
+	// project ever had. "Every credential this application was given, and
+	// when each was last rotated" has to be one query, so it is one kind.
+	KindProjectSecret = "ProjectSecret"
+
+	// KindEvidenceExport is the fourth, and it records a *read*: somebody
 	// took an audit pack of a project (#142). The pack is the platform's
 	// whole compliance answer for one project over one range, and "who
 	// exported the evidence, for which window, and what digest did they get"
