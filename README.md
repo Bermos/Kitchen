@@ -12,6 +12,24 @@ three, and the operator writes the flows and owns the schema under all of it.
 
 ## Docs
 
+The two audiences want different pages, and the split is worth reading before
+the list. [Deploying an application](docs/DEPLOYING.md) is for somebody who has
+an app and wants it running on an installation they do not operate; everything
+under it is for whoever runs the installation, or works on Kitchen itself.
+[llms.txt](llms.txt) is the same map for something that is not a person.
+
+**If you are deploying an application onto Kitchen:**
+
+- [Deploying an application](docs/DEPLOYING.md) — an account, a project, a first
+  deploy, environment variables, a custom domain, previews, logs, a rollback
+- [`kitchen.json`](docs/CONFIG.md) — a project's build and runtime settings,
+  committed beside the code they describe
+- [Kitchen for agents](docs/AGENTS.md) — the same ground for a coding agent
+  working in an application repository: the machine-readable surfaces, the
+  output and exit-code contract, and what not to do
+
+**If you run the installation, or work on Kitchen:**
+
 - [Contributing](CONTRIBUTING.md) — commit conventions and how a release is cut
 - [Project scope](docs/SCOPE.md) — who it is for, components, decisions, phasing
 - [CRD schema](docs/CRDS.md) — the operator's data model and reconcile flows
