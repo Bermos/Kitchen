@@ -30,6 +30,20 @@ export interface EnvVar {
   fromClaim?: KeyRef;
 }
 
+/**
+ * One of a project's own secrets: a credential the platform did not mint.
+ *
+ * There is no value here and there never will be one — the API answers a name
+ * and the reference an environment variable reads it by, and nothing else
+ * exists to answer. `reference` is served rather than derived so that nothing
+ * in this dashboard has to know the name of the object the platform keeps
+ * secrets in.
+ */
+export interface ProjectSecret {
+  name: string;
+  reference: KeyRef;
+}
+
 /** One environment variable as written. Nothing reads a value back, so an
  * absent `value` keeps the stored one and an empty one clears it. */
 export interface EnvVarWrite {
@@ -2887,6 +2901,18 @@ export const api = {
   updateProjectEnv: (name: string, env: EnvVarWrite[]) =>
     request<Project>("PATCH", `/projects/${name}/env`, { env }),
   deleteProject: (name: string) => request<Project>("DELETE", `/projects/${name}`),
+
+  // A project's own secrets: the credentials Kitchen did not mint. The write
+  // is the same request whether it is a new secret or a rotation, and the
+  // value travels one way — no response on this API carries one, which is why
+  // there is no `getProjectSecret` here to call.
+  projectSecrets: (project: string) => list<ProjectSecret>(`/projects/${project}/secrets`)(),
+  setProjectSecret: (project: string, name: string, value: string) =>
+    request<ProjectSecret>("PUT", `/projects/${project}/secrets/${encodeURIComponent(name)}`, { value }),
+  // Answers 204, or 409 naming the environment variables that still read it —
+  // which is the sentence the screen shows rather than swallows.
+  deleteProjectSecret: (project: string, name: string) =>
+    request<void>("DELETE", `/projects/${project}/secrets/${encodeURIComponent(name)}`),
   // A project's people. Reading the list is a viewer's — knowing who else is
   // on a project is part of knowing what the project is — and the three
   // writes are an admin's. They name the member in the body rather than in

@@ -12,6 +12,7 @@ import { useAsync, usePoll } from "../lib/useAsync";
 import ClaimModal from "../components/ClaimModal.vue";
 import ConditionsTable from "../components/ConditionsTable.vue";
 import EnvVarsPanel from "../components/EnvVarsPanel.vue";
+import ProjectSecretsPanel from "../components/ProjectSecretsPanel.vue";
 import EnvironmentCard from "../components/EnvironmentCard.vue";
 import KeysPanel from "../components/KeysPanel.vue";
 import MembersPanel from "../components/MembersPanel.vue";
@@ -925,14 +926,15 @@ function host(url?: string): string {
       <!-- Variables: read by anybody who can read the project, changed by a
            developer. It is a tab rather than a section of the settings form
            because the settings form is an admin's and this is not — a
-           developer who is not an admin has this and nothing else here. -->
-      <EnvVarsPanel
-        v-else-if="tab === 'variables'"
-        :project="project.name"
-        :role="project.role"
-        :env="project.env"
-        @saved="refresh"
-      />
+           developer who is not an admin has this and nothing else here.
+
+           The project's own secrets sit under them because they are the
+           choice the variables' values used to be: a credential goes in a
+           secret, and a variable points at it. -->
+      <div v-else-if="tab === 'variables'" class="space-y-10">
+        <EnvVarsPanel :project="project.name" :role="project.role" :env="project.env" @saved="refresh" />
+        <ProjectSecretsPanel :project="project.name" :role="project.role" :env="project.env" @saved="refresh" />
+      </div>
 
       <!-- People, and the CI keys underneath them: they are one list. A key
            is a non-human member of exactly one project, so its grant is in
