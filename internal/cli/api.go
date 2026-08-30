@@ -231,24 +231,35 @@ type buildCache struct {
 // build is `GET /builds/{name}`. Phase is one of Queued, Running, Succeeded,
 // Failed or Cancelled.
 type build struct {
-	Name              string      `json:"name"`
-	Project           string      `json:"project"`
-	Phase             string      `json:"phase,omitempty"`
-	Git               revision    `json:"git"`
-	DetectedFramework string      `json:"detectedFramework,omitempty"`
-	Image             string      `json:"image,omitempty"`
-	StartedAt         *time.Time  `json:"startedAt,omitempty"`
-	CompletedAt       *time.Time  `json:"completedAt,omitempty"`
-	CreatedAt         time.Time   `json:"createdAt"`
-	Conditions        []condition `json:"conditions,omitempty"`
-	Artifact          *artifact   `json:"artifact,omitempty"`
-	Cache             *buildCache `json:"cache,omitempty"`
-	Gates             []gate      `json:"gates,omitempty"`
-	Source            *source     `json:"source,omitempty"`
+	Name              string   `json:"name"`
+	Project           string   `json:"project"`
+	Phase             string   `json:"phase,omitempty"`
+	Git               revision `json:"git"`
+	DetectedFramework string   `json:"detectedFramework,omitempty"`
+	// Config is the kitchen.json this commit carried, when it carried one.
+	Config      *repoConfig `json:"config,omitempty"`
+	Image       string      `json:"image,omitempty"`
+	StartedAt   *time.Time  `json:"startedAt,omitempty"`
+	CompletedAt *time.Time  `json:"completedAt,omitempty"`
+	CreatedAt   time.Time   `json:"createdAt"`
+	Conditions  []condition `json:"conditions,omitempty"`
+	Artifact    *artifact   `json:"artifact,omitempty"`
+	Cache       *buildCache `json:"cache,omitempty"`
+	Gates       []gate      `json:"gates,omitempty"`
+	Source      *source     `json:"source,omitempty"`
 	// Failure is why a failed build failed: which container stopped it, how
 	// it exited, and the last of what it printed. Absent on every build that
 	// did not fail.
 	Failure *buildFailure `json:"failure,omitempty"`
+}
+
+// repoConfig is the commit's own kitchen.json: where it was read from, and
+// every setting it took over from the project. It answers what was declared
+// rather than what it was declared as — the values are already in the
+// release's snapshot, and a second copy here is a second thing to disagree.
+type repoConfig struct {
+	Path     string   `json:"path"`
+	Declares []string `json:"declares"`
 }
 
 // buildFailure is a failed build's own account of itself.
