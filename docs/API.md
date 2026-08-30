@@ -274,7 +274,7 @@ name against `internal/api/policy.go`, so a route that moves fails them too.
 | GET | `/domains/{name}` | One domain, verification instructions included | `viewer` |
 | DELETE | `/domains/{name}` | Detach it; the operator removes its certificate | `developer` |
 | GET | `/claims` | Every resource claim. `?project=` filters | any account — filtered |
-| POST | `/claims` | Ask for a provisioned resource: a database from a connection, or an OAuth client from the platform's identity provider | `developer` |
+| POST | `/claims` | Ask for a provisioned resource: a database from a connection — optionally naming the Postgres version, extensions and storage it needs — or an OAuth client from the platform's identity provider | `developer` |
 | GET | `/claims/{name}` | One claim | `viewer` |
 | DELETE | `/claims/{name}` | Delete it — what happens to the data is its `deletionPolicy`'s call; an OAuth client is always deregistered | `developer` |
 

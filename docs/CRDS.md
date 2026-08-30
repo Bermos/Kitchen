@@ -109,6 +109,10 @@ spec:
       service: keda-add-ons-http-interceptor-proxy
       namespace: kitchen-system
       port: 8080
+  databases:
+    install: true                       # off by default; the operator installs CloudNativePG itself
+    namespace: kitchen-databases        # where provisioned databases live — never a project's namespace
+    operatorNamespace: cnpg-system      # where CloudNativePG itself runs
   compliance:
     audit:
       enabled: true                     # append-only, hash-chained record of every state transition
@@ -168,7 +172,7 @@ spec:
 status:
   conditions: [...]                     # Ready, GatewayProgrammed, TunnelConnected,
                                         # TelemetrySchemaReady, PreviewGateReady, RegistryReady,
-                                        # ScaleToZeroReady, ComplianceReady
+                                        # ScaleToZeroReady, DatabasesReady, ComplianceReady
   gatewayAddress: 203.0.113.7
   registry:
     host: registry.apps.example.com
@@ -178,6 +182,10 @@ status:
     namespace: keda
     version: 2.20.2                     # what the operator installed, and may upgrade
     addOnVersion: 0.15.0
+  databases:
+    managed: true                       # false: CloudNativePG was already there and is nobody's to touch
+    namespace: cnpg-system
+    version: 0.29.0                     # the chart the operator installed, and may upgrade
   compliance:
     audit:
       recording: true                   # false with a message when there is nowhere to append to
@@ -222,6 +230,20 @@ a cluster that already served the add-on's API is recorded with it false and
 never written to again. The install runs as a job under an account the chart
 creates only when asked (`scaleToZero.install.enabled`), because it is bound to
 cluster-admin.
+
+`databases.install` is the third, and the reasoning is the same one applied to
+a different dependency. CloudNativePG ships CRDs and an admission webhook of
+its own and is a popular thing for a cluster to already run, so a chart cannot
+bundle it: Helm will not adopt a release another one owns. But a platform that
+owns its cluster should not answer "install this yourself first" to "give me a
+database", and the operator is under none of Helm's constraints — so it
+installs it, as a job under the same kind of cluster-admin account the chart
+only creates when asked (`databases.install.enabled`).
+
+`status.databases.managed` keeps it a seed rather than a takeover, exactly as
+`status.scaleToZero.managed` does. What it decides, though, is narrower here:
+who may *upgrade* CloudNativePG, not who may use it. A `cnpg` connection
+provisions into whichever CloudNativePG the cluster runs, whoever installed it.
 
 `registry` is why a fresh installation can build something without anyone
 having a registry account first. The chart runs zot and its volume; the
@@ -350,7 +372,7 @@ kind: Connection
 metadata:
   name: github-main
 spec:
-  provider: github                      # github | gitlab | gitea | dockerRegistry | neon | ...
+  provider: github                      # github | gitlab | gitea | dockerRegistry | neon | cnpg
   credentialsSecretRef: { name: github-app-creds }   # synced from Infisical
   config:
     appId: "12345"
@@ -367,9 +389,40 @@ it as a special case — it is deletable, replaceable, and pickable exactly like
 one someone created on the connections page.
 
 First-party providers: `github`, `gitlab` and `gitea` (capabilities `gitSource` and
-`statusChecks`), `dockerRegistry` (capability `imageStore`),
-`neon` (capability `database`). The operator matches on **capabilities**, not provider names,
-so CloudNativePG can later implement `database` too.
+`statusChecks`), `dockerRegistry` (capability `imageStore`), and two that
+implement `database` — `neon` for a hosted Postgres and `cnpg` for one this
+cluster runs itself. The operator matches on **capabilities**, not provider
+names, which is why the second database provider cost the claim nothing.
+
+**`cnpg` is the one provider with no credential**, and so the one whose
+`credentialsSecretRef` may be left out: it provisions with the operator's own
+service account, into the cluster Kitchen is installed in, and there is
+nothing for anybody to store or rotate. A CEL rule on the spec keeps that the
+exception — every other provider is still refused without one, and a `cnpg`
+connection naming one is refused for naming a credential nothing reads. Its
+`Connected` condition is a fact about this cluster rather than about a remote
+API: true when `postgresql.cnpg.io` is served, false with the install
+instruction when it is not.
+
+Its `config` is the operator's own defaults for every claim through it, and
+the whole of it is optional:
+
+```yaml
+spec:
+  provider: cnpg
+  config:
+    namespace: kitchen-databases        # where the databases live; default is the singleton's
+    storageSize: 20Gi                   # what a claim that names no size gets
+    storageClass: fast-ssd              # default: the cluster's own default StorageClass
+    instances: 1                        # Postgres instances per database
+    images:                             # replaces the platform's catalogue entirely
+      - repository: registry.internal/postgres
+        majors: ["16", "17"]
+        extensions: [timescaledb]       # what this image promises; claims are refused against it
+```
+
+`images` is the operator's and not the claim's on purpose: a developer asking
+for an extension should not be able to choose the image it arrives in.
 
 ## `Project` (namespaced: kitchen-system)
 
@@ -1070,7 +1123,13 @@ spec:
   deletionPolicy: Retain                # Retain (default) | Delete — what deleting the claim does to the data
   dataClass: confidential               # never above the project's class; absent = unclassified
   config:
-    previewBranching: true              # Neon: DB branch per preview Environment
+    previewBranching: true              # a database of its own per preview Environment
+    postgres:                           # what the database itself has to be; all of it optional
+      version: "17"                     # major version; empty takes the platform's default
+      extensions: [postgis, vector]     # created at bootstrap; unsuppliable ones fail the claim
+      storage:
+        size: 40Gi
+        storageClass: fast-ssd
 status:
   phase: Bound                          # Pending | Bound | Failed
   secretName: shop-db-binding           # binding keys: url, host, port, user, password, database
@@ -1088,15 +1147,40 @@ status:
 
 Reconcile: require the `database` capability on the Connection (Pending, saying so,
 until the Connection reconciler has validated it), provision through the plugin
-(`internal/provider/database` — Neon today, generic enough for CloudNativePG), and
+(`internal/provider/database` — Neon, or CloudNativePG in this cluster), and
 write the binding into a Secret in the project namespace, whose keys
 `Project.spec.env` reads via `fromResourceClaim`. A provider refusal is phase
 `Failed` with the provider's own words in the `Ready` condition. With
-`previewBranching`, preview Environments each get their own DB branch and their own
+`previewBranching`, preview Environments each get their own database and their own
 binding Secret (`<claim>-binding-<environment>`), which the Environment's workload
 reads instead of the shared one; the claim controller holds a finalizer on each
-branched Environment and tears branch and Secret down when the preview goes — that
+branched Environment and tears database and Secret down when the preview goes — that
 plus preview URLs is the whole Vercel+Neon flow, self-hosted.
+
+**`config.postgres` is the claim saying which Postgres it means**, because
+"Postgres" is not one thing: an application that needs PostGIS, pgvector or a
+time-series extension otherwise binds, gets a URL, and dies on a
+`CREATE EXTENSION` in its first migration. The provisioner resolves the version
+and the extensions to an image *before* it creates anything, and a claim it
+cannot satisfy is phase `Failed` with a message naming what could not be
+supplied and what is available instead — the refusal is the feature. Extensions
+are created in the database at bootstrap, as superuser, so the application
+never needs the right to create them itself. Everything in the block is applied
+when the database is created and is not reapplied to a running one: a major
+version is not something to change under a live Postgres, and asking for a
+different database means asking for a different database.
+
+A provider that cannot be asked any of this — a hosted one — refuses the claim
+rather than provisioning it as though the block had not been written down.
+
+**Preview databases are empty, and the claim says so.** CloudNativePG has no
+copy-on-write branch, and its nearest equivalent is a `pg_basebackup` of
+production, which is slow, doubles the storage and puts production data in a
+preview environment. A preview's database inherits the parent's image,
+extensions and storage and none of its data, so its branch entry declares
+`provenance: synthetic` — which keeps production data out of previews by
+construction rather than by policy. Neon's copy-on-write branch declares
+`production`, because it is the parent's data under a new address.
 
 `spec.deletionPolicy` decides what deleting the *claim* does to the provisioned
 database: `Retain` (the default) keeps it at the provider, `Delete` deprovisions it
@@ -1104,6 +1188,15 @@ with its data. Retain is the default because a claim can front a production
 database — destroying data is opted into, never implied. Branches and binding
 Secrets are cleaned up under either policy: they belong to the platform, not to the
 data.
+
+For a database with a volume behind it, that reads concretely. `Delete` deletes
+the CloudNativePG `Cluster`, and cnpg garbage-collects its PVCs with it —
+the data is gone. `Retain` leaves the `Cluster` running in the platform's
+database namespace, still holding its volume and still costing whatever the
+volume costs; a claim of the same name created later against the same
+connection finds it by name and rebinds to it. That namespace is deliberately
+*not* the project's application namespace: deleting a project deletes that one,
+and a retained database has to survive exactly that.
 
 ### The provider contract: declaring what the data is
 

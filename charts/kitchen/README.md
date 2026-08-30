@@ -55,13 +55,17 @@ cert-manager is **not** in that list either: the chart ships it as a sub-chart
 installed into. Set `cert-manager.enabled=false` for a cluster that already
 runs one.
 
-One optional feature adds a dependency: **KEDA and its HTTP add-on**, if you
-want `scaleToZero.enabled`. They cannot be sub-charts of anything — see
-[Scale to zero](#scale-to-zero) — so they go in as two Helm releases of their
-own. That does not have to mean two commands of yours:
-`scaleToZero.install.enabled` lets the **operator** run those two installs
-itself, in order, which is a thing a chart cannot do and a controller can.
-Without either, the feature simply stays off.
+Two optional features add a dependency, and both are the same arrangement.
+**KEDA and its HTTP add-on**, if you want `scaleToZero.enabled`: they cannot be
+sub-charts of anything — see [Scale to zero](#scale-to-zero) — so they go in as
+two Helm releases of their own. And **CloudNativePG**, if you want the platform
+to provision databases into this cluster rather than through a hosted provider
+— see [Databases](#databases). Neither has to mean a command of yours:
+`scaleToZero.install.enabled` and `databases.install.enabled` let the
+**operator** run those installs itself, which is a thing a chart cannot do and
+a controller can. Without either, the feature simply stays off; and where the
+dependency is already in the cluster, the platform uses what it finds and
+installs nothing.
 
 In `acme` mode the **operator**, not the chart, creates the `ClusterIssuer` and
 the wildcard `Certificate` from `kitchen.tls.acme`. That split is deliberate:
@@ -1080,6 +1084,101 @@ what it will not do.
 Turning `scaleToZero.enabled` back off returns every environment to plain
 Deployment routing on the next reconcile and deletes the scaled objects it
 created. KEDA and the add-on are yours to uninstall separately, whenever.
+
+## Databases
+
+A `postgres` resource claim asks a connection to provision a database, and
+there are two providers behind it: **Neon**, for a hosted one, and
+**CloudNativePG**, for a database this cluster runs itself. The second exists
+because a platform whose pitch is "bring your own Kubernetes cluster" should
+not need a SaaS account before it can give an application a database — an
+air-gapped installation, or one that will not put application data at a third
+party, has one either way now.
+
+Nothing in this chart is needed to *use* it. A `cnpg` connection provisions
+into whichever CloudNativePG the cluster runs, whoever installed it, and it is
+the one connection with no credential at all: the operator provisions with its
+own service account, so there is nothing to store and nothing to rotate.
+
+```sh
+# on the connections page, or:
+kitchen api POST /connections --data '{"name": "postgres", "provider": "cnpg"}'
+```
+
+### Letting the platform install CloudNativePG
+
+If the cluster runs none, the operator can install it — the same shape, and the
+same grant, as `scaleToZero.install`:
+
+```sh
+--set databases.install.enabled=true
+```
+
+That creates a ServiceAccount bound to **cluster-admin** and sets
+`spec.databases.install` on the Kitchen object. The account is separate from
+the manager's so the grant is one visible object, revocable by setting the
+value back to false and removed with the release; the operator can only ever
+use it to run the one `helm upgrade --install` that
+`internal/controller/cnpg.go` builds, whose argv nothing from a request reaches.
+The chart version is pinned in the operator rather than floated, next to the
+catalogue of Postgres images a claim's extensions are promised from — the two
+move together.
+
+**On a cluster that already runs CloudNativePG this does nothing at all.** The
+operator records `status.databases.managed: false` and never writes to a
+release it does not own — which is the same rule KEDA gets, with one difference
+worth knowing: what the record decides is who may *upgrade* CloudNativePG, not
+who may use it. Claims provision into it just the same.
+
+```sh
+kubectl get kitchen default -o jsonpath='{.status.databases}'
+```
+
+### Where the databases live, and what deleting one means
+
+`databases.namespace` (default `kitchen-databases`) is where the provisioned
+databases go. It is deliberately not a project's own namespace: deleting a
+project deletes that one, and a claim under `deletionPolicy: Retain` has to
+survive exactly that. `databases.operatorNamespace` (default `cnpg-system`) is
+where CloudNativePG itself runs — upstream's own default, so an installation
+that later takes it over by hand finds it where the CloudNativePG documentation
+says it will be.
+
+Deleting a claim under `Delete` deletes the database and CloudNativePG collects
+its volume with it. Under `Retain` — the default — the database stays where it
+is, still holding its volume, and a claim of the same name created later
+against the same connection finds it and rebinds. Retaining is not free: the
+volume is still there and still costs whatever it costs.
+
+### Asking for the Postgres you actually need
+
+A claim can name a major version, the extensions its first migration will call
+for, and the volume behind it. They are resolved to an image *before* anything
+is created, and a claim naming an extension no image the platform can run
+supplies is refused as a claim — `Failed`, with a message saying what could not
+be supplied and what is available — rather than binding and letting the
+application die on a `CREATE EXTENSION` three minutes into its first rollout.
+Extensions are created at bootstrap as superuser, so an application never needs
+the right to create them itself.
+
+Out of the box that catalogue is CloudNativePG's own two image families: the
+standard PostgreSQL images (which add pgaudit, pgvector and Postgres Failover
+Slots to the contrib set) and the PostGIS build on top of them. An installation
+that runs its own images says so on the connection's `config.images`, and its
+claims are refused against that list instead — which is the operator's decision
+and not the developer's, because asking for an extension should not be a way to
+choose the image it arrives in.
+
+### Previews get an empty database
+
+There is no copy-on-write branch here. CloudNativePG's nearest equivalent is a
+`pg_basebackup` of the parent, which is slow, doubles the storage, and — the
+part that actually decides it — puts production data in a preview environment.
+A preview's database is a fresh one with the same version, extensions and
+storage as its parent and none of its data, and the claim says so:
+`dataProvenance: synthetic` on that branch. That is what keeps production data
+out of previews by construction rather than by policy, and it is what the
+default policy bundle's `data-provenance-preview` rule reads.
 
 ## Platform health
 

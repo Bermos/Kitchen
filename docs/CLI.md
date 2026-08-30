@@ -957,7 +957,21 @@ cannot write it carries on and exchanges every time.
   no route and renamed none — `POST /claims` gained three optional fields —
   so `kitchen api POST /claims` reaches it, and a `kitchen claims` command
   would still be one command family for two kinds of claim rather than the
-  other way round.
+  other way round. The self-hosted Postgres provider did not change it either,
+  for the same reason: `POST /claims` gained one optional nested object and
+  `POST /connections` made `credential` optional, and neither is a route.
+  Asking for a database with an extension is one line as it is:
+
+  ```sh
+  kitchen api POST /claims --data '{"name":"maps-db","project":"maps",
+    "connection":"postgres","type":"postgres",
+    "postgres":{"version":"17","extensions":["postgis"],"storage":{"size":"40Gi"}}}'
+  kitchen api GET /claims?project=maps | jq '.[] | {name, phase, postgres}'
+  ```
+
+  A claim refused for an extension nothing can supply answers `Failed` with
+  the reason in its `Ready` condition, which is on that same JSON — so the
+  refusal reaches a terminal without a command being written for it.
 - **`kitchen update`.** The platform's own upgrade — `GET /updates`,
   `POST /updates`, `GET /updates/{name}` and now
   `GET /updates/{name}/logs` — has no command family here, deliberately.
