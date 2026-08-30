@@ -660,3 +660,136 @@ func quicken(t *testing.T) {
 	buildPollInterval, logGrace, releaseWait = 5*time.Millisecond, 10*time.Millisecond, 200*time.Millisecond
 	t.Cleanup(func() { buildPollInterval, logGrace, releaseWait = poll, grace, wait })
 }
+
+// A project's own secrets. The whole of what these check is that a value goes
+// up and nothing comes back down: the CLI has no way to print one, because the
+// platform has no way to answer one.
+
+// testSecret is the secret these write, and testSecretPath the suffix its
+// writes are recorded under.
+const (
+	testSecret     = "SMTP_PASSWORD"
+	testSecretPath = "/secrets/" + testSecret
+)
+
+func TestSecretSetSendsTheValueAndPrintsTheReference(t *testing.T) {
+	h := newHarness(t)
+	h.env["KITCHEN_PROJECT"] = testProject
+
+	if code := h.run("secret", "set", testSecret, "--value", "hunter2", "--json"); code != exitOK {
+		t.Fatalf("exit %d, stderr: %s", code, h.stderr.String())
+	}
+
+	writes := h.platform.sent("PUT", testSecretPath)
+	if len(writes) != 1 {
+		t.Fatalf("wanted one write, got %d", len(writes))
+	}
+	sent := struct {
+		Value string `json:"value"`
+	}{}
+	if err := json.Unmarshal([]byte(writes[0].Body), &sent); err != nil {
+		t.Fatalf("the body is not JSON: %v", err)
+	}
+	if sent.Value != "hunter2" {
+		t.Fatalf("the value did not travel: %q", sent.Value)
+	}
+	// The answer is the reference an environment variable is written with,
+	// and nothing that could be mistaken for the value.
+	if strings.Contains(h.stdout.String(), "hunter2") {
+		t.Fatalf("the answer echoed the value: %s", h.stdout.String())
+	}
+	answer := projectSecret{}
+	if err := json.Unmarshal(h.stdout.Bytes(), &answer); err != nil {
+		t.Fatalf("stdout is not one JSON document: %v", err)
+	}
+	if answer.Name != testSecret || answer.Reference.Key != testSecret {
+		t.Fatalf("the reference does not name the secret: %+v", answer)
+	}
+}
+
+func TestSecretSetReadsAValueFromStdinAndAFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "value")
+	if err := os.WriteFile(path, []byte("from-a-file\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	h := newHarness(t)
+	h.env["KITCHEN_PROJECT"] = testProject
+	if code := h.run("secret", "set", "FROM_FILE", "--value-file", path, "--json"); code != exitOK {
+		t.Fatalf("exit %d, stderr: %s", code, h.stderr.String())
+	}
+	// The trailing newline every editor and every `echo` adds is not part of
+	// the credential.
+	if body := h.platform.sent("PUT", "/secrets/FROM_FILE")[0].Body; !strings.Contains(body, `"from-a-file"`) {
+		t.Fatalf("the file's value did not travel, or kept its newline: %s", body)
+	}
+
+	piped := newHarness(t)
+	piped.env["KITCHEN_PROJECT"] = testProject
+	piped.stdin = strings.NewReader("from-stdin\n")
+	if code := piped.run("secret", "set", "FROM_STDIN", "--value-stdin", "--json"); code != exitOK {
+		t.Fatalf("exit %d, stderr: %s", code, piped.stderr.String())
+	}
+	if body := piped.platform.sent("PUT", "/secrets/FROM_STDIN")[0].Body; !strings.Contains(body, `"from-stdin"`) {
+		t.Fatalf("the piped value did not travel: %s", body)
+	}
+}
+
+// Nothing blocks on a prompt: with no terminal to ask at, the failure names
+// the flags that answer the question rather than waiting for somebody.
+func TestSecretSetWithNoValueAndNoTerminalFailsNamingTheFlags(t *testing.T) {
+	h := newHarness(t)
+	h.env["KITCHEN_PROJECT"] = testProject
+
+	if code := h.run("secret", "set", testSecret, "--json"); code != exitUsage {
+		t.Fatalf("exit %d, wanted %d: %s", code, exitUsage, h.stderr.String())
+	}
+	if writes := h.platform.sent("PUT", testSecretPath); len(writes) != 0 {
+		t.Fatalf("a command with no value wrote anyway")
+	}
+	if !strings.Contains(h.stdout.String(), "--value-stdin") {
+		t.Fatalf("the failure does not name a flag that answers it: %s", h.stdout.String())
+	}
+}
+
+func TestSecretListPrintsNamesAndNoValues(t *testing.T) {
+	h := newHarness(t)
+	h.env["KITCHEN_PROJECT"] = testProject
+	h.platform.secrets = []projectSecret{
+		{Name: testSecret, Reference: keyRef{Name: "kitchen-project-secrets", Key: testSecret}},
+	}
+
+	if code := h.run("secret", "list", "--json"); code != exitOK {
+		t.Fatalf("exit %d, stderr: %s", code, h.stderr.String())
+	}
+	answer := list[projectSecret]{}
+	if err := json.Unmarshal(h.stdout.Bytes(), &answer); err != nil {
+		t.Fatalf("stdout is not one JSON document: %v", err)
+	}
+	if len(answer.Items) != 1 || answer.Items[0].Name != testSecret {
+		t.Fatalf("the listing does not name the secret: %+v", answer.Items)
+	}
+}
+
+func TestSecretRemoveDeletesAndReadsBackWhatIsLeft(t *testing.T) {
+	h := newHarness(t)
+	h.env["KITCHEN_PROJECT"] = testProject
+	h.platform.secrets = []projectSecret{
+		{Name: testSecret, Reference: keyRef{Name: "kitchen-project-secrets", Key: testSecret}},
+		{Name: "API_KEY", Reference: keyRef{Name: "kitchen-project-secrets", Key: "API_KEY"}},
+	}
+
+	if code := h.run("secret", "rm", testSecret, "--yes", "--json"); code != exitOK {
+		t.Fatalf("exit %d, stderr: %s", code, h.stderr.String())
+	}
+	if deletes := h.platform.sent("DELETE", testSecretPath); len(deletes) != 1 {
+		t.Fatalf("wanted one delete, got %d", len(deletes))
+	}
+	answer := list[projectSecret]{}
+	if err := json.Unmarshal(h.stdout.Bytes(), &answer); err != nil {
+		t.Fatalf("stdout is not one JSON document: %v", err)
+	}
+	if len(answer.Items) != 1 || answer.Items[0].Name != "API_KEY" {
+		t.Fatalf("what is left was not read back: %+v", answer.Items)
+	}
+}

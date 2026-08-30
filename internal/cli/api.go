@@ -78,6 +78,17 @@ type envVar struct {
 	FromClaim  *keyRef `json:"fromClaim,omitempty"`
 }
 
+// projectSecret is one of a project's own secrets — the credentials Kitchen
+// did not mint. Never its value: the API answers a name and the reference an
+// environment variable reads it by, and nothing else exists to answer.
+type projectSecret struct {
+	Name string `json:"name"`
+	// Reference is the `fromSecret` that reads this secret, answered by the
+	// platform so that nobody has to know the name of the object it keeps
+	// them in.
+	Reference keyRef `json:"reference"`
+}
+
 // project is `GET /projects/{name}`.
 type project struct {
 	Name                  string      `json:"name"`
@@ -961,6 +972,29 @@ func (c *client) setEnv(ctx context.Context, name string, env []envVarWrite) (*p
 	body := map[string]any{"env": env}
 	return answer, c.do(ctx, "changing "+name+"'s environment variables",
 		http.MethodPatch, "/projects/"+name+"/env", nil, body, answer)
+}
+
+// projectSecrets lists a project's own secrets by name. There is no read that
+// answers a value, here or anywhere else on this API.
+func (c *client) projectSecrets(ctx context.Context, project string) ([]projectSecret, error) {
+	answer := &list[projectSecret]{}
+	err := c.do(ctx, "listing "+project+"'s secrets", http.MethodGet,
+		"/projects/"+project+"/secrets", nil, nil, answer)
+	return answer.Items, err
+}
+
+// setProjectSecret sets a secret, or replaces the value of one already there.
+// The value travels one way: the answer is the name and the reference.
+func (c *client) setProjectSecret(ctx context.Context, project, name, value string) (*projectSecret, error) {
+	answer := &projectSecret{}
+	return answer, c.do(ctx, "setting the secret "+name+" on "+project, http.MethodPut,
+		"/projects/"+project+"/secrets/"+url.PathEscape(name), nil,
+		map[string]string{"value": value}, answer)
+}
+
+func (c *client) deleteProjectSecret(ctx context.Context, project, name string) error {
+	return c.do(ctx, "deleting the secret "+name+" from "+project, http.MethodDelete,
+		"/projects/"+project+"/secrets/"+url.PathEscape(name), nil, nil, nil)
 }
 
 func (c *client) projectBuilds(ctx context.Context, name string) ([]build, error) {

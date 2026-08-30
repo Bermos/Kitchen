@@ -117,6 +117,7 @@ func TestEveryCallNamesARealAPIRoute(t *testing.T) {
 		for _, call := range command.Calls {
 			if !strings.HasPrefix(call, "GET "+apiPrefix) &&
 				!strings.HasPrefix(call, "POST "+apiPrefix) &&
+				!strings.HasPrefix(call, "PUT "+apiPrefix) &&
 				!strings.HasPrefix(call, "PATCH "+apiPrefix) &&
 				!strings.HasPrefix(call, "DELETE "+apiPrefix) {
 				// The three that are not routes of this API: the dashboard's

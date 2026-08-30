@@ -202,6 +202,7 @@ give.
 | `kitchen logs` | An environment's or a build's logs, `--follow` to tail | `GET /environments/{name}/logs`, `GET /builds/{name}/logs` |
 | `kitchen processes` | The workers and scheduled jobs an environment runs, and (`runs`, `run`) one job's history and running it now | `GET /environments/{name}/processes`, `GET`/`POST /environments/{name}/processes/{process}/runs` |
 | `kitchen env list/set/rm` | The project's environment variables | `PATCH /projects/{name}/env` |
+| `kitchen secret list/set/rm` | The project's own secrets — credentials the platform did not mint | `GET /projects/{name}/secrets`, `PUT`/`DELETE /projects/{name}/secrets/{secret}` |
 | `kitchen rollback` | Put an environment back on an earlier release, saying what that changes first | `GET /releases/{name}/config-diff`, `PATCH /environments/{name}` |
 | `kitchen promote` | Ask for a release to land on an environment; the policy decides | `POST /projects/{name}/promotions` |
 | `kitchen promotions` | What promotions were asked for and what became of them | `GET /projects/{name}/promotions`, `GET /promotions/{name}` |
@@ -347,6 +348,39 @@ kitchen env rm LOG_LEVEL --yes
 
 Variables land in the next release's snapshot: what is already running keeps the
 configuration it was released with until the next deploy.
+
+### The project's own secrets
+
+A credential the platform did not mint — a database the project runs itself, an
+API key, an SMTP password — goes in a secret rather than in a variable's value.
+The variable then holds a reference, so the credential is never part of the
+project's configuration (see
+[the API reference](api/secrets.md)).
+
+```sh
+kitchen secret list
+kitchen secret set SMTP_PASSWORD                        # prompts, without echoing
+kitchen secret set SMTP_PASSWORD --value-file ./smtp    # or from a file
+pass show smtp | kitchen secret set SMTP_PASSWORD --value-stdin
+kitchen secret rm SMTP_PASSWORD --yes
+```
+
+`set` both sets a new secret and rotates an existing one: it is the same write,
+and the only way to find out which it would be first is to read a value, which
+nothing can. The value comes from `--value-file`, `--value-stdin`, `--value`, or
+a prompt that does not echo — and with no terminal to prompt at, the failure
+names those flags rather than waiting.
+
+Nothing here reads a value back, so `kitchen secret list` prints the whole list
+and reveals nothing. What it does print beside each name is the reference, so
+the line that follows never has to be typed from memory:
+
+```sh
+kitchen env set SMTP_PASSWORD --from-secret kitchen-project-secrets:SMTP_PASSWORD
+```
+
+Unlike a variable, a rotated secret reaches what is already running: the
+platform restarts whatever reads it.
 
 ### Logs
 

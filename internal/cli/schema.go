@@ -432,11 +432,16 @@ var publishedShapes = map[string]struct {
 	"environment":     {"One environment. Phase is Pending, Deploying, Live, Degraded or Terminating", environment{}},
 	"environmentList": {"A list of environments", list[environment]{}},
 	"envVarList":      {"A project's environment variables. Values are never answered", list[envVar]{}},
-	"logLine":         {"One log line, from a build or from something running", logLine{}},
-	"deployEvent":     {"One event of a followed deploy: build, log, release, environment or result", deployEvent{}},
-	"linked":          {"What a directory was linked to, and where the fact was written", linked{}},
-	"forgotten":       {"Which installations this machine no longer holds a credential for", forgotten{}},
-	"backupTaken":     {"An archive that was taken: where it went, and what the platform put in it", backupTaken{}},
+	"secret": {"One of a project's own secrets: its name, and the `fromSecret` reference an " +
+		"environment variable reads it by. Never a value — no route on the platform answers one",
+		projectSecret{}},
+	"secretList": {"A project's own secrets, by name. Values are never answered",
+		list[projectSecret]{}},
+	"logLine":     {"One log line, from a build or from something running", logLine{}},
+	"deployEvent": {"One event of a followed deploy: build, log, release, environment or result", deployEvent{}},
+	"linked":      {"What a directory was linked to, and where the fact was written", linked{}},
+	"forgotten":   {"Which installations this machine no longer holds a credential for", forgotten{}},
+	"backupTaken": {"An archive that was taken: where it went, and what the platform put in it", backupTaken{}},
 	"auditPackTaken": {"An audit pack that was exported: the two documents on disk, the sha256 of " +
 		"the bytes that were written, and what the pack holds by count. `truncated` means the " +
 		"pack answers for less than it was asked for — retention removed part of the window, or " +

@@ -61,6 +61,11 @@ type platform struct {
 	environments []environment
 	logLines     []logLine
 
+	// secrets is what /projects/{name}/secrets answers, and what a write to
+	// one appends to. Values are never in it: the fake answers the shape the
+	// API answers, which carries none.
+	secrets []projectSecret
+
 	// configDiff is what /releases/{name}/config-diff answers with: the
 	// comparison `kitchen rollback` prints before it asks. Nil answers 404,
 	// which is a platform too old to serve it.
@@ -234,6 +239,24 @@ func (p *platform) answerProjectSetup(w http.ResponseWriter, req *http.Request, 
 			return true
 		}
 		writeAnswer(w, http.StatusOK, p.detected)
+	default:
+		return p.answerSecrets(w, req, path, body)
+	}
+	return true
+}
+
+// answerSecrets is a project's own secrets: the list, the write, and the
+// delete. It hangs off answerProjectSetup rather than off serve's switch for
+// the reason that switch is split up at all — serve is a dispatch, and every
+// pair of cases added to it directly is a branch nobody reading it needs.
+func (p *platform) answerSecrets(w http.ResponseWriter, req *http.Request, path string, body []byte) bool {
+	switch {
+	case strings.HasSuffix(path, "/secrets") && req.Method == http.MethodGet:
+		writeAnswer(w, http.StatusOK, list[projectSecret]{Items: p.secrets})
+	case strings.Contains(path, "/secrets/") && req.Method == http.MethodPut:
+		p.setSecret(w, path, body)
+	case strings.Contains(path, "/secrets/") && req.Method == http.MethodDelete:
+		p.deleteSecret(w, path)
 	default:
 		return false
 	}
@@ -467,6 +490,58 @@ func (p *platform) patchEnv(w http.ResponseWriter, body []byte) {
 
 // answerLogs answers the bounded page, or the stream when the caller asked for
 // one — the same negotiation the real API does on Accept.
+// setSecret is the write half of a project's own secrets: it keeps the name,
+// answers the reference, and deliberately never stores or echoes the value —
+// so a test that found a value in an answer found a bug in the CLI.
+func (p *platform) setSecret(w http.ResponseWriter, path string, body []byte) {
+	name := path[strings.LastIndex(path, "/secrets/")+len("/secrets/"):]
+	sent := struct {
+		Value string `json:"value"`
+	}{}
+	if err := json.Unmarshal(body, &sent); err != nil || sent.Value == "" {
+		writeAnswer(w, http.StatusBadRequest, errorBody{Error: "value is required"})
+		return
+	}
+	written := projectSecret{Name: name, Reference: keyRef{Name: "kitchen-project-secrets", Key: name}}
+	p.mutex.Lock()
+	replaced := false
+	for i := range p.secrets {
+		if p.secrets[i].Name == name {
+			replaced = true
+		}
+	}
+	if !replaced {
+		p.secrets = append(p.secrets, written)
+	}
+	p.mutex.Unlock()
+	status := http.StatusCreated
+	if replaced {
+		status = http.StatusOK
+	}
+	writeAnswer(w, status, written)
+}
+
+func (p *platform) deleteSecret(w http.ResponseWriter, path string) {
+	name := path[strings.LastIndex(path, "/secrets/")+len("/secrets/"):]
+	p.mutex.Lock()
+	kept := p.secrets[:0]
+	found := false
+	for _, secret := range p.secrets {
+		if secret.Name == name {
+			found = true
+			continue
+		}
+		kept = append(kept, secret)
+	}
+	p.secrets = kept
+	p.mutex.Unlock()
+	if !found {
+		writeAnswer(w, http.StatusNotFound, errorBody{Error: "no such secret: " + name})
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (p *platform) answerLogs(w http.ResponseWriter, req *http.Request) {
 	if !strings.Contains(req.Header.Get("accept"), eventStream) {
 		writeAnswer(w, http.StatusOK, list[logLine]{Items: p.logLines})
