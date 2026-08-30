@@ -1250,3 +1250,49 @@ func TestPatchingAProjectsHealthCheck(t *testing.T) {
 		t.Fatalf("an empty health check must clear the path: %+v", stored.Spec.Runtime.Health)
 	}
 }
+
+// A workload two of which must never run at once (#239). The combination is
+// refused rather than clamped: a replica count quietly lowered reads back as
+// a setting that did not take.
+func TestASingletonProjectRefusesMoreThanOneReplica(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+
+	patch := func(body string) *httptest.ResponseRecorder {
+		t.Helper()
+		return h.do(t, http.MethodPatch, "/api/v1/projects/shop", body)
+	}
+
+	if code := patch(`{"singleton": true}`).Code; code != http.StatusOK {
+		t.Fatalf("want 200 declaring a singleton, got %d", code)
+	}
+	stored := &kitchenv1alpha1.Project{}
+	if err := h.server.get(context.Background(), "shop", stored); err != nil {
+		t.Fatal(err)
+	}
+	if !stored.Spec.Runtime.Singleton {
+		t.Fatalf("the declaration did not stick: %+v", stored.Spec.Runtime)
+	}
+
+	for name, body := range map[string]string{
+		"raising the replicas of a project already declared a singleton": `{"replicas": 3}`,
+		"declaring one while raising the replicas in the same request":   `{"singleton": true, "replicas": 3}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			recorder := patch(body)
+			if recorder.Code != http.StatusBadRequest {
+				t.Fatalf("want 400, got %d: %s", recorder.Code, recorder.Body.String())
+			}
+			// The refusal has to say what to do about it, since the caller
+			// sent one of two fields and the other one is the problem.
+			if !strings.Contains(recorder.Body.String(), "singleton") {
+				t.Errorf("the refusal does not name the declaration: %s", recorder.Body.String())
+			}
+		})
+	}
+
+	// Turning the declaration off in the same request that raises the count
+	// is not the refused combination.
+	if code := patch(`{"singleton": false, "replicas": 3}`).Code; code != http.StatusOK {
+		t.Fatalf("want 200 turning it off and scaling out, got %d", code)
+	}
+}

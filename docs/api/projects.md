@@ -89,6 +89,32 @@ an empty string clears one. The repository and the two connections are
 deliberately not editable: rebinding a project to another repository is a
 different project.
 
+`singleton` declares that two of this workload must never run at once. It
+sets the Deployment's strategy to `Recreate` — the old copy stops before the
+new one starts — and it **refuses `replicas` above 1**, rather than clamping
+it:
+
+```json
+{"error": "this project declares its workload a singleton, so it cannot run 3 replicas: set replicas to 1, or turn singleton off"}
+```
+
+The refusal is the point. A clamped value reads back as a setting that did not
+take, and a project would go on believing it runs three. The same rule is on
+the CRD as a `x-kubernetes-validations` rule, so a write that does not come
+through this route is refused too; the API checks it as well so the caller
+gets a sentence instead of CEL. Either field may be sent alone — it is the
+resulting combination that is checked.
+
+The trade is a gap in serving during a deploy, and it is the correct one for
+a workload that cannot overlap: an application with a poller, a scheduler or
+an ingest loop in the same binary as the web server runs that loop twice
+against a shared store for the few seconds a rolling update overlaps the two.
+Duplicate work is the mild version; duplicate rows in a table something reads
+as a record of what happened when is not an error at the time and not
+obviously wrong afterwards. Leader election stays the application's problem —
+not overlapping it during a deploy the platform itself initiated is the
+platform's.
+
 `command`, `args` and `previewArgs` are how the application is started, in
 exec form — a list of words, never a shell line, so nothing is split, quoted
 or handed to a shell:

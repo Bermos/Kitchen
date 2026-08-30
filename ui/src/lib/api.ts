@@ -115,6 +115,10 @@ export interface Project {
    * variable's preview value. Absent or empty means a preview runs
    * production's, which is how an override is taken away. */
   previewArgs?: string[];
+  /** Two of this workload must never run at once: it is deployed by stopping
+   * the old copy before starting the new one, and it cannot be given more
+   * than one replica. */
+  singleton?: boolean;
   productionEnvironment?: string;
   latestBuild?: string;
   createdAt: string;
@@ -206,6 +210,10 @@ export interface ProjectSettings {
   command?: string[];
   args?: string[];
   previewArgs?: string[];
+  /** Declare the workload a singleton. Sending it with more than one replica
+   * is refused rather than clamped: a value quietly lowered would read back
+   * as a setting that did not take. */
+  singleton?: boolean;
   /** Reclassify the project's data; "" removes the classification. Always
    * allowed — environments rated below the new class read as non-compliant
    * in the inventory and at promotion, rather than the correction being

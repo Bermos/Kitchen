@@ -420,6 +420,8 @@ spec:
   runtime:
     port: 3000                          # omit to take the detected framework's
     replicas: 2                         # previews always get 1
+    singleton: false                    # two of this must never run at once:
+                                        # strategy Recreate, and replicas > 1 refused
     command: [./server]                 # replaces the image's entrypoint; exec
     args: [--config=prod.toml]          # form, a list of words, never a shell line
     previewArgs: [--config=fake.toml]   # used instead of args in previews, the way
@@ -501,6 +503,17 @@ preview shares the project's environment variables, so a preview that emails
 customers nightly is a bad afternoon and a preview worker draining the
 production queue is a worse one. The list merges per `name`, so two people
 adding two workers do not drop each other's.
+
+`runtime.singleton` is a workload two of which must never run at once. It
+becomes `strategy: Recreate` on the Deployment — the old pod stops before the
+new one starts — and a CEL rule on the CRD **refuses** `replicas` above one
+rather than clamping it, because a clamped value reads back as a setting that
+did not take. For a stateless web application none of this is needed, which is
+why the default is a rolling update; for one with a poller, a scheduler or an
+ingest loop in the same binary as the web server, the few seconds a rolling
+update overlaps two pods are that loop running twice against a shared store.
+Leader election stays the application's problem; not overlapping it during a
+deploy the platform initiated is the platform's.
 
 `runtime.command` and `runtime.args` start the application container, the same
 two fields a process has and in the same exec form. `previewArgs` replaces

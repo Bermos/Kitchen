@@ -257,6 +257,10 @@ const settings = reactive({
   // Empty is no override, the same reading an empty preview value gets, so
   // an empty box is how one is taken away and no switch is needed to say so.
   previewArgs: "",
+  // Two of this workload must never run at once. It is next to the replica
+  // count because it is the same decision from the other side, and the form
+  // keeps the two consistent rather than letting the API refuse the pair.
+  singleton: false,
   // "" is unclassified — a state shown as such, never a default.
   dataClass: "",
   // "" is undesignated, for the same reason: Kitchen does not decide what is
@@ -295,6 +299,20 @@ function wordsOf(lines: string): string[] {
     .filter((line) => line !== "");
 }
 
+// Turning the singleton switch on takes the replica count with it. The API
+// refuses the pair rather than clamping it — a value quietly lowered reads
+// back as a setting that did not take — so the form must not be able to send
+// one it knows will be refused.
+watch(
+  () => settings.singleton,
+  (on) => {
+    if (on) settings.replicas = 1;
+  },
+);
+const replicasHelp = computed(() =>
+  settings.singleton ? "Fixed at 1 while this workload must never run twice." : "Previews always run 1.",
+);
+
 const strategyOptions = [
   { label: "auto — detect the framework", value: "auto" },
   { label: "dockerfile", value: "dockerfile" },
@@ -332,6 +350,7 @@ function loadSettings(from: Project) {
   settings.command = wordLines(from.command);
   settings.args = wordLines(from.args);
   settings.previewArgs = wordLines(from.previewArgs);
+  settings.singleton = from.singleton ?? false;
   settings.dataClass = from.dataClass ?? "";
   settings.criticality = from.criticality ?? "";
   settings.rto = from.rto ?? "";
@@ -375,6 +394,7 @@ async function saveSettings() {
       // keep the override already there, and clearing the box has to be able
       // to take it away.
       previewArgs: wordsOf(settings.previewArgs),
+      singleton: settings.singleton,
       dataClass: settings.dataClass,
       criticality: settings.criticality,
       rto: settings.rto,
@@ -1010,8 +1030,15 @@ function host(url?: string): string {
               <UFormField label="Port" :help="portHelp">
                 <UInput v-model="portField" type="number" min="0" placeholder="auto" class="w-full font-mono" />
               </UFormField>
-              <UFormField label="Replicas" help="Previews always run 1.">
-                <UInput v-model.number="settings.replicas" type="number" min="1" class="w-full font-mono" />
+              <UFormField label="Replicas" :help="replicasHelp">
+                <UInput
+                  v-model.number="settings.replicas"
+                  type="number"
+                  min="1"
+                  :max="settings.singleton ? 1 : undefined"
+                  :disabled="settings.singleton"
+                  class="w-full font-mono"
+                />
               </UFormField>
               <UFormField label="CPU" help="Per replica, e.g. 250m.">
                 <UInput v-model="settings.cpu" placeholder="unset" class="w-full font-mono" />
@@ -1020,6 +1047,18 @@ function host(url?: string): string {
                 <UInput v-model="settings.memory" placeholder="unset" class="w-full font-mono" />
               </UFormField>
             </div>
+            <!-- The switch sits under the replica count because it is the
+                 same decision from the other side, and turning it on takes
+                 the count to 1 here rather than leaving the API to refuse
+                 the pair. -->
+            <USwitch
+              v-model="settings.singleton"
+              label="Never run two at once"
+              description="For an application that polls, schedules or ingests in the same process as the web server: a
+                rolling deploy would overlap the two for a few seconds, and that loop would run twice against one
+                store. Deploys stop the old copy before starting the new one, so there is a gap in serving, and
+                the replica count is fixed at 1."
+            />
           </div>
 
           <!-- How it starts. Exec form is a list of words, so each field is
