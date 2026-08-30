@@ -89,6 +89,21 @@ an empty string clears one. The repository and the two connections are
 deliberately not editable: rebinding a project to another repository is a
 different project.
 
+`notRequestDriven` declares that this workload does work nobody asked for, and
+turns idling off for every one of the project's environments — previews
+included, which is where it matters, because previews idle by default. Scale to
+zero is request-driven by construction, so an idle environment stops doing
+*everything*, not only serving: a background loop, a poller or an ingest job
+goes quiet with it, and the gap that leaves in whatever it was collecting is
+indistinguishable from the upstream having been down. The environment says so
+in its `ScaleToZero` condition, with reason `NotRequestDriven`, rather than
+leaving it to be inferred from the absence of a scaled object.
+
+It takes effect immediately rather than with the next release, like the
+project's `scaleToZero` policy and unlike the rest of the runtime: whether an
+environment may be parked is a decision about the environment as it stands
+today, and a rollback must not quietly start parking one again.
+
 `singleton` declares that two of this workload must never run at once. It
 sets the Deployment's strategy to `Recreate` — the old copy stops before the
 new one starts — and it **refuses `replicas` above 1**, rather than clamping

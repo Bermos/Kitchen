@@ -1296,3 +1296,31 @@ func TestASingletonProjectRefusesMoreThanOneReplica(t *testing.T) {
 		t.Fatalf("want 200 turning it off and scaling out, got %d", code)
 	}
 }
+
+// A workload that does work nobody asked for (#240). It is a project setting
+// like the rest, and it reads back so the dashboard can say why an
+// environment does not idle.
+func TestDeclaringAWorkloadNotRequestDriven(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+
+	before := decode[projectView](t, h.do(t, http.MethodGet, "/api/v1/projects/shop", ""))
+	if before.NotRequestDriven {
+		t.Fatal("a project that said nothing must not read as not request-driven")
+	}
+
+	recorder := h.do(t, http.MethodPatch, "/api/v1/projects/shop", `{"notRequestDriven": true}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if !decode[projectView](t, recorder).NotRequestDriven {
+		t.Fatal("the declaration did not echo")
+	}
+
+	stored := &kitchenv1alpha1.Project{}
+	if err := h.server.get(context.Background(), "shop", stored); err != nil {
+		t.Fatal(err)
+	}
+	if !stored.Spec.Runtime.NotRequestDriven {
+		t.Fatalf("the declaration did not stick: %+v", stored.Spec.Runtime)
+	}
+}

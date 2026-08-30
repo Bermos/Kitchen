@@ -858,6 +858,32 @@ to its URL starts it again. That is what makes a dozen open pull requests
 nearly free: a preview costs a URL and a Deployment record until someone opens
 it.
 
+**An idle environment stops doing everything, not only serving.** There are no
+pods, so there is nothing to run a background loop, a poller, a scheduler or an
+ingest job either — and the next request restarts them from wherever they were
+when the environment went quiet. For an application that works only when asked,
+that is exactly right and costs nothing. For one that does work nobody
+requested, it is a silent hole: the environment comes back, serves, and reports
+nothing wrong, while whatever it was collecting has a gap in it that looks
+exactly like the upstream having been down. Previews idle by default, and a
+preview pointed at a real datastore will quietly write a partial record of a
+period it was asleep for.
+
+A project whose workload is not request-driven says so, and then none of its
+environments idle — previews included:
+
+```yaml
+spec:
+  runtime:
+    notRequestDriven: true
+```
+
+The environment says which of the two it is in its `ScaleToZero` condition, so
+"this one does not idle" is never something to be worked out from the absence
+of an `HTTPScaledObject`. Worker Deployments from `spec.processes` are outside
+this entirely: they serve no HTTP, so a request-driven idling policy has
+nothing to say about them either way and they keep their replicas.
+
 It is off by default, and it needs [KEDA](https://keda.sh) and its
 [HTTP add-on](https://github.com/kedacore/http-add-on) in the cluster. They go
 in as their own two Helm releases, which is how upstream ships them and — see
@@ -953,6 +979,13 @@ it is deliberately an opt-in, and until it is given a production environment
 never drops below `spec.runtime.replicas`. A `maxReplicas` below the replica
 count the environment already runs is raised to it, so idling can never shrink
 an environment.
+
+`spec.runtime.notRequestDriven` overrides all three: it is a statement about
+what the workload *is* rather than about what it should cost, so it turns
+idling off for previews as well as production and no `mode` re-enables it.
+Reach for it rather than `mode: never` whenever the reason is "this
+application does work nobody asked for" — the environment then says so, which
+`never` cannot.
 
 ### Why KEDA is not a sub-chart
 
@@ -1550,7 +1583,7 @@ kubectl delete namespace kitchen-system
 | `registry.retention.gcInterval` / `.gcDelay` | `24h` / `2h` | How often the collector runs, and how long a fresh blob is left alone. |
 | `registry.resources` | 50m/128Mi → 1Gi | |
 | `registry.logLevel` | `info` | |
-| `scaleToZero.enabled` | `false` | Idle environments down to no pods. Needs KEDA and the HTTP add-on in the cluster — installed by the operator, or by you; see [Scale to zero](#scale-to-zero). |
+| `scaleToZero.enabled` | `false` | Idle environments down to no pods. An idle environment stops doing *everything*, not only serving — a background loop stops with it, so a project whose workload is not request-driven sets `spec.runtime.notRequestDriven` and keeps its pods. Needs KEDA and the HTTP add-on in the cluster — installed by the operator, or by you; see [Scale to zero](#scale-to-zero). |
 | `scaleToZero.install.enabled` | `false` | Let the operator install KEDA and its HTTP add-on itself. Creates a ServiceAccount bound to cluster-admin; does nothing on a cluster that already runs KEDA. |
 | `scaleToZero.install.chartRepository` | `https://kedacore.github.io/charts` | Helm repository the two charts are pulled from. |
 | `scaleToZero.install.version` | `""` | KEDA chart version to install. Empty takes the operator's own pin. |

@@ -248,6 +248,33 @@ type RuntimeSpec struct {
 	// +optional
 	Singleton bool `json:"singleton,omitempty"`
 
+	// NotRequestDriven says this workload does work nobody asked for.
+	//
+	// Scale to zero is request-driven by construction: the HTTP add-on parks
+	// an environment nobody is asking for and the interceptor brings it back
+	// on the next request to its URL. For an application that works only
+	// when asked, that is free money. An application with a background loop
+	// parked stops — and stops silently. The hole that leaves in whatever it
+	// was collecting is indistinguishable from the upstream having been
+	// down, which is worse than the pods simply being gone: the environment
+	// comes back, serves, and reports nothing wrong, while its data has a
+	// gap in it that means something it did not do.
+	//
+	// Setting it turns idling off for every environment of the Project —
+	// previews included, which is where it matters, since previews idle by
+	// default and a preview pointed at a real datastore will quietly write a
+	// partial record of a period it was asleep for. The Environment says so
+	// in its ScaleToZero condition rather than merely not idling.
+	//
+	// It lives here, on the runtime, because it describes what the workload
+	// *is* rather than what it costs — but the idling decision reads the
+	// Project's live value, not the Release's frozen copy, for exactly the
+	// reason `ScaleToZeroPolicy` is not snapshotted either: rolling back
+	// must not quietly un-park an environment, and saying "this one must not
+	// be parked" must not have to wait for a build.
+	// +optional
+	NotRequestDriven bool `json:"notRequestDriven,omitempty"`
+
 	// Command replaces the image's entrypoint, and Args its arguments —
 	// the same two fields a ProcessSpec has, in the same exec form: a list
 	// of words, never a shell line, for the same reason the build jobs take

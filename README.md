@@ -331,7 +331,9 @@ Helm releases of their own — the one platform dependency the chart cannot
 bundle — but they need not be two commands of yours:
 `scaleToZero.install.enabled` has the **operator** install them, in order, as a
 job, and adopt them untouched where the cluster already runs KEDA. Previews
-idle by default, production only when a project asks — see [the chart
+idle by default, production only when a project asks, and an application that
+does work nobody requested keeps its pods everywhere — an idle environment
+stops doing everything, not only serving. See [the chart
 README](charts/kitchen/README.md#scale-to-zero).
 
 Reconcilers: Kitchen (shared Gateway, optional cloudflared, telemetry schema,
