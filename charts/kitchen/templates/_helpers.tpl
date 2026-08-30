@@ -73,6 +73,15 @@ should be one obvious object that goes away with the feature.
 {{- end }}
 
 {{/*
+The CloudNativePG install job's ServiceAccount. Separate from the manager's for
+the same reason the KEDA install account is: it is bound to cluster-admin, and
+that grant should be one obvious object that goes away with the feature.
+*/}}
+{{- define "kitchen.cnpgInstallServiceAccountName" -}}
+{{- default (printf "%s-cnpg-install" (include "kitchen.fullname" .)) .Values.databases.install.serviceAccountName }}
+{{- end }}
+
+{{/*
 The preview gate's ServiceAccount. Separate from the manager's for the same
 reason the self-update account is: it is the identity of a different workload,
 and the whole point of it is that the grant is small and visible — get, list

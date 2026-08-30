@@ -21,15 +21,33 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
+// CredentialsReference names the Secret a Connection's credential lives in.
+//
+// It is a type of its own rather than a LocalObjectReference because it is
+// the one reference in the API that may legitimately name nothing: the cnpg
+// provider provisions into the cluster Kitchen is installed in, with the
+// operator's own account, and so has no credential for anybody to store. The
+// CEL rule on ConnectionSpec is what keeps that the exception rather than a
+// hole — every other provider is still refused without one.
+type CredentialsReference struct {
+	// +optional
+	Name string `json:"name,omitempty"`
+}
+
 // ConnectionSpec defines a plugin instance: a link to an external system such
 // as a git provider, an image registry, or a database provisioner.
+// +kubebuilder:validation:XValidation:rule="self.provider == 'cnpg' || (has(self.credentialsSecretRef) && has(self.credentialsSecretRef.name) && self.credentialsSecretRef.name != ”)",message="credentialsSecretRef is required: it names the Secret holding this provider's credential. Only a cnpg connection goes without one, because it provisions Postgres into this cluster with the operator's own account and there is no credential to hold."
+// +kubebuilder:validation:XValidation:rule="self.provider != 'cnpg' || !has(self.credentialsSecretRef) || !has(self.credentialsSecretRef.name) || self.credentialsSecretRef.name == ”",message="a cnpg connection takes no credentialsSecretRef: it provisions into this cluster with the operator's own account, and a Secret here would name a credential nothing reads."
 type ConnectionSpec struct {
 	// Provider selects the plugin implementation.
-	// +kubebuilder:validation:Enum=github;gitlab;gitea;dockerRegistry;neon
+	// +kubebuilder:validation:Enum=github;gitlab;gitea;dockerRegistry;neon;cnpg
 	Provider string `json:"provider"`
 
-	// Secret holding the provider credentials (typically synced from Infisical).
-	CredentialsSecretRef LocalObjectReference `json:"credentialsSecretRef"`
+	// Secret holding the provider credentials (typically synced from
+	// Infisical). Every provider but cnpg requires one; see
+	// CredentialsReference for why that one does not.
+	// +optional
+	CredentialsSecretRef CredentialsReference `json:"credentialsSecretRef,omitempty"`
 
 	// Provider-specific configuration, validated by the plugin.
 	// +kubebuilder:pruning:PreserveUnknownFields

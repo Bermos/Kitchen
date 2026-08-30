@@ -1361,6 +1361,62 @@ scaleToZero:
     # -- Port the proxy accepts live traffic on.
     port: 8080
 
+# Postgres the platform provisions for itself.
+#
+# A `postgres` resource claim binds through a connection, and one of the two
+# providers behind that is CloudNativePG — a database in this cluster, so that
+# an installation with no SaaS account, or one that will not put application
+# data at a third party, has a database at all. Nothing here is needed to
+# *use* it: a cnpg connection provisions into whichever CloudNativePG the
+# cluster runs, whoever installed it.
+#
+# What is here is the two things the platform itself decides: which namespace
+# the databases live in, and whether the operator installs CloudNativePG when
+# the cluster has none. The chart cannot install it — it ships CRDs and an
+# admission webhook of its own, and Helm will not adopt a release somebody
+# else owns — but the operator is under no such constraint, which is the same
+# reasoning as `scaleToZero.install` and the same shape.
+databases:
+  # -- Namespace the provisioned databases live in. Deliberately not a
+  # project's own namespace: that one is deleted with its project, and a claim
+  # under `deletionPolicy: Retain` has to survive exactly that.
+  namespace: kitchen-databases
+  # -- Namespace CloudNativePG itself runs in — where the install goes, and
+  # where an existing installation is expected. Upstream's own default, so an
+  # installation that later takes it over by hand finds it where the
+  # CloudNativePG documentation says.
+  operatorNamespace: cnpg-system
+  # The platform installing its own database operator. Off by default because
+  # the job that runs helm is bound to cluster-admin — installing
+  # CloudNativePG applies CRDs, ClusterRoles and a webhook configuration — so
+  # it is a grant you make deliberately, the way `selfUpdate.enabled` is.
+  #
+  # Where CloudNativePG is already in the cluster this does nothing at all:
+  # the operator records that it installed nothing, never writes to a release
+  # it does not own, and provisions into it just the same.
+  install:
+    # -- Let the operator install CloudNativePG itself, as a Helm release of
+    # its own. Creates a ServiceAccount bound to cluster-admin, and sets
+    # `spec.databases.install` on the Kitchen object.
+    enabled: false
+    # -- Helm repository the chart is pulled from. Point it at a mirror for a
+    # cluster that cannot reach cloudnative-pg.github.io.
+    chartRepository: https://cloudnative-pg.github.io/charts
+    # -- Version of the CloudNativePG chart to install. Pinned rather than
+    # floated: it decides which Postgres images a claim's extensions can be
+    # promised from. Empty takes the operator's own pin.
+    version: ""
+    # -- How long helm is given for the install. It waits for the operator's
+    # workloads to be ready, not merely for manifests to be accepted.
+    timeout: 10m
+    # -- Name of the install job's ServiceAccount. Generated when empty.
+    serviceAccountName: ""
+    image:
+      # -- Image the install job runs helm from.
+      repository: alpine/helm
+      # -- Tag of that image.
+      tag: 3.19.0
+
 healthProbe:
   # -- Port the /healthz and /readyz endpoints bind to.
   port: 8081

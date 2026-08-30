@@ -154,6 +154,16 @@ spec:
       namespace: {{ .Values.scaleToZero.interceptor.namespace | quote }}
       port: {{ int .Values.scaleToZero.interceptor.port }}
     {{- end }}
+  databases:
+    # Where a provisioned database lives, and whether the operator installs
+    # CloudNativePG when this cluster runs none. The chart cannot install it —
+    # it ships CRDs and a webhook of its own, and Helm will not adopt a release
+    # another one owns — and the operator is under no such constraint. Where
+    # CloudNativePG is already serving, the platform records that it installed
+    # nothing and provisions into it just the same.
+    install: {{ .Values.databases.install.enabled }}
+    namespace: {{ .Values.databases.namespace | quote }}
+    operatorNamespace: {{ .Values.databases.operatorNamespace | quote }}
   compliance:
     # The audit log and the artifact attestations. Both are the operator's own
     # word about what it did, which is why they are configured here and not

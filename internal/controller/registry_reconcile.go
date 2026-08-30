@@ -236,7 +236,7 @@ func (r *KitchenReconciler) seedRegistryConnection(
 		}
 		conn.Labels[labelManagedByKey] = labelManagedByValue
 		conn.Spec.Provider = registryProviderName
-		conn.Spec.CredentialsSecretRef = kitchenv1alpha1.LocalObjectReference{
+		conn.Spec.CredentialsSecretRef = kitchenv1alpha1.CredentialsReference{
 			Name: RegistryCredentialsSecretName,
 		}
 		conn.Spec.Config = &runtime.RawExtension{Raw: config}

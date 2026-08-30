@@ -149,7 +149,7 @@ func Capabilities(providerName string) []kitchenv1alpha1.Capability {
 		}
 	case "dockerRegistry":
 		return []kitchenv1alpha1.Capability{kitchenv1alpha1.CapabilityImageStore}
-	case "neon":
+	case "neon", ProviderCNPG:
 		return []kitchenv1alpha1.Capability{kitchenv1alpha1.CapabilityDatabase}
 	default:
 		return nil
@@ -191,6 +191,12 @@ func configuredAPIURL(conn *kitchenv1alpha1.Connection, fallback string) (string
 
 func unreachable(err error) Result {
 	return Result{Message: err.Error()}
+}
+
+// unreachableBecause is a provider that could not be reached, where what
+// there is to say is a sentence rather than a transport error.
+func unreachableBecause(message string) Result {
+	return Result{Message: message}
 }
 
 func rejected(message string) Result {

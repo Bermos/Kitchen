@@ -144,7 +144,7 @@ var _ = Describe("Promotion Controller", func() {
 			ObjectMeta: metav1.ObjectMeta{Name: "promoshop-registry", Namespace: namespace},
 			Spec: kitchenv1alpha1.ConnectionSpec{
 				Provider:             "dockerRegistry",
-				CredentialsSecretRef: kitchenv1alpha1.LocalObjectReference{Name: "promoshop-registry-creds"},
+				CredentialsSecretRef: kitchenv1alpha1.CredentialsReference{Name: "promoshop-registry-creds"},
 				Config:               &runtime.RawExtension{Raw: []byte(`{"url":"registry.example.com/kitchen"}`)},
 			},
 		}

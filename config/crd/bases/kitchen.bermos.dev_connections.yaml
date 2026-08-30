@@ -56,14 +56,13 @@ spec:
                 type: object
                 x-kubernetes-preserve-unknown-fields: true
               credentialsSecretRef:
-                description: Secret holding the provider credentials (typically synced
-                  from Infisical).
+                description: |-
+                  Secret holding the provider credentials (typically synced from
+                  Infisical). Every provider but cnpg requires one; see
+                  CredentialsReference for why that one does not.
                 properties:
                   name:
-                    minLength: 1
                     type: string
-                required:
-                - name
                 type: object
               provider:
                 description: Provider selects the plugin implementation.
@@ -73,11 +72,25 @@ spec:
                 - gitea
                 - dockerRegistry
                 - neon
+                - cnpg
                 type: string
             required:
-            - credentialsSecretRef
             - provider
             type: object
+            x-kubernetes-validations:
+            - message: 'credentialsSecretRef is required: it names the Secret holding
+                this provider''s credential. Only a cnpg connection goes without one,
+                because it provisions Postgres into this cluster with the operator''s
+                own account and there is no credential to hold.'
+              rule: self.provider == 'cnpg' || (has(self.credentialsSecretRef) &&
+                has(self.credentialsSecretRef.name) && self.credentialsSecretRef.name
+                != '')
+            - message: 'a cnpg connection takes no credentialsSecretRef: it provisions
+                into this cluster with the operator''s own account, and a Secret here
+                would name a credential nothing reads.'
+              rule: self.provider != 'cnpg' || !has(self.credentialsSecretRef) ||
+                !has(self.credentialsSecretRef.name) || self.credentialsSecretRef.name
+                == ''
           status:
             description: ConnectionStatus defines the observed state of a Connection.
             properties:

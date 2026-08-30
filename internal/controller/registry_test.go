@@ -215,7 +215,7 @@ var _ = Describe("The bundled registry", func() {
 			ObjectMeta: metav1.ObjectMeta{Name: RegistryConnectionName, Namespace: PlatformNamespace},
 			Spec: kitchenv1alpha1.ConnectionSpec{
 				Provider:             "dockerRegistry",
-				CredentialsSecretRef: kitchenv1alpha1.LocalObjectReference{Name: "someone-elses-secret"},
+				CredentialsSecretRef: kitchenv1alpha1.CredentialsReference{Name: "someone-elses-secret"},
 				Config:               &runtime.RawExtension{Raw: []byte(`{"url":"harbor.example.com/kitchen"}`)},
 			},
 		})).To(Succeed())

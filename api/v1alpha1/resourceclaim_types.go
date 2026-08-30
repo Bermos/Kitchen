@@ -104,7 +104,58 @@ type ResourceClaimSpec struct {
 // claimConfig is the provider-agnostic slice of spec.config the platform
 // itself reads; everything else in there belongs to the plugin.
 type claimConfig struct {
-	PreviewBranching bool `json:"previewBranching,omitempty"`
+	PreviewBranching bool            `json:"previewBranching,omitempty"`
+	Postgres         *PostgresConfig `json:"postgres,omitempty"`
+}
+
+// PostgresConfig is the `postgres` slice of a postgres claim's spec.config:
+// what the application needs of the database beyond its existence.
+//
+// It exists because "Postgres" is not one thing. An application that needs
+// PostGIS, pgvector or a time-series extension has otherwise no way to ask
+// for one: the claim binds, the URL arrives, and the application dies on a
+// CREATE EXTENSION in its first migration — which is the wrong end of the
+// process to find out at. Naming it here means the provisioner resolves it to
+// an image before it creates anything, and a claim it cannot satisfy fails as
+// a claim, with a message saying what could not be supplied.
+//
+// Everything in here is applied when the database is *created*. A major
+// version is not something to change under a live Postgres and a volume is
+// not something to shrink, so editing this on a bound claim does not re-image
+// or re-cut anything: asking for a different database means asking for a
+// different database.
+type PostgresConfig struct {
+	// Version is the Postgres major, as a number: "17". Empty takes the
+	// platform's default, which is what most claims want.
+	// +optional
+	Version string `json:"version,omitempty"`
+
+	// Extensions the application needs — "postgis", "vector", "pg_trgm".
+	// They are created in the database when it is bootstrapped, as superuser,
+	// so the application never needs the right to CREATE EXTENSION itself;
+	// and an extension no image the platform can run supplies is a refusal
+	// rather than a database that does not have it.
+	// +optional
+	Extensions []string `json:"extensions,omitempty"`
+
+	// Storage is the volume behind the database.
+	// +optional
+	Storage PostgresStorage `json:"storage,omitempty"`
+}
+
+// PostgresStorage is the volume a self-hosted database is cut from. It means
+// nothing to a provider that has no volumes — Neon bills by usage and is not
+// asked.
+type PostgresStorage struct {
+	// Size is a Kubernetes quantity: "10Gi". Empty takes the platform's
+	// default.
+	// +optional
+	Size string `json:"size,omitempty"`
+
+	// StorageClass the volume comes from. Empty takes the cluster's default
+	// StorageClass, which Kitchen requires of every cluster anyway.
+	// +optional
+	StorageClass string `json:"storageClass,omitempty"`
 }
 
 // OIDCClientConfig is the oidcClient slice of spec.config: what the operator
@@ -187,6 +238,22 @@ func (c *ResourceClaim) PreviewBranching() bool {
 		return false
 	}
 	return cfg.PreviewBranching
+}
+
+// Postgres is what the claim asks of its database, empty for a claim of
+// another type or one that asked for nothing in particular. Config the
+// platform cannot read counts as asking for nothing — the API validates it
+// before it is written, and a claim that reached the cluster another way is
+// better provisioned plainly than not at all.
+func (c *ResourceClaim) Postgres() PostgresConfig {
+	if c.Spec.Type != ClaimTypePostgres || c.Spec.Config == nil || len(c.Spec.Config.Raw) == 0 {
+		return PostgresConfig{}
+	}
+	var cfg claimConfig
+	if err := json.Unmarshal(c.Spec.Config.Raw, &cfg); err != nil || cfg.Postgres == nil {
+		return PostgresConfig{}
+	}
+	return *cfg.Postgres
 }
 
 // ClaimPhase is the coarse lifecycle summary of a ResourceClaim.

@@ -761,7 +761,7 @@ func TestTestingAStoredCredential(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "hub", Namespace: testNamespace},
 		Spec: kitchenv1alpha1.ConnectionSpec{
 			Provider:             "github",
-			CredentialsSecretRef: kitchenv1alpha1.LocalObjectReference{Name: connectionSecretPrefix + "hub"},
+			CredentialsSecretRef: kitchenv1alpha1.CredentialsReference{Name: connectionSecretPrefix + "hub"},
 			Config:               &runtime.RawExtension{Raw: []byte(`{"apiUrl": "` + github.URL + `"}`)},
 		},
 	}
@@ -869,7 +869,7 @@ func TestDeletingAConnectionKeepsSecretsItDidNotWrite(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "synced", Namespace: testNamespace},
 		Spec: kitchenv1alpha1.ConnectionSpec{
 			Provider:             "github",
-			CredentialsSecretRef: kitchenv1alpha1.LocalObjectReference{Name: "synced-credentials"},
+			CredentialsSecretRef: kitchenv1alpha1.CredentialsReference{Name: "synced-credentials"},
 		},
 	}
 	h := newHarness(t, nil, append(fixtures(), external, conn)...)
@@ -890,7 +890,7 @@ func neonConnection() *kitchenv1alpha1.Connection {
 		ObjectMeta: metav1.ObjectMeta{Name: "neon", Namespace: testNamespace},
 		Spec: kitchenv1alpha1.ConnectionSpec{
 			Provider:             "neon",
-			CredentialsSecretRef: kitchenv1alpha1.LocalObjectReference{Name: "neon-credentials"},
+			CredentialsSecretRef: kitchenv1alpha1.CredentialsReference{Name: "neon-credentials"},
 		},
 		Status: kitchenv1alpha1.ConnectionStatus{
 			Capabilities: []kitchenv1alpha1.Capability{kitchenv1alpha1.CapabilityDatabase},

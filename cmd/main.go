@@ -92,6 +92,7 @@ func main() {
 	var uiClientID string
 	var selfUpdate controller.SelfUpdateConfig
 	var kedaInstall controller.KedaInstallConfig
+	var cnpgInstall controller.CNPGInstallConfig
 	var secureMetrics bool
 	var enableHTTP2 bool
 	var tlsOpts []func(*tls.Config)
@@ -164,6 +165,24 @@ func main() {
 			"name and port, which spec.scaleToZero.interceptor defaults to.")
 	flag.DurationVar(&kedaInstall.Timeout, "keda-install-timeout", controller.DefaultKedaInstallTimeout,
 		"How long helm is given for each of the two installs. Both wait for their workloads to be ready.")
+	// Installing the platform's own database operator. Flags for the same
+	// reason KEDA's are, and the same grant: whether the operator *may*
+	// install CloudNativePG is the chart's to say, because the account is the
+	// chart's to create. Whether it does is spec.databases.install.
+	flag.StringVar(&cnpgInstall.ServiceAccount, "cnpg-install-service-account", "",
+		"ServiceAccount the CloudNativePG install job runs as. It is separate from the manager's, and bound to "+
+			"cluster-admin, because installing CloudNativePG applies CRDs, ClusterRoles and a webhook "+
+			"configuration. Empty means this installation cannot install it for itself, which is the default.")
+	flag.StringVar(&cnpgInstall.HelmImage, "cnpg-install-image", controller.DefaultHelmImage,
+		"Image the CloudNativePG install job runs helm from.")
+	flag.StringVar(&cnpgInstall.Repository, "cnpg-chart-repository", controller.DefaultCNPGChartRepository,
+		"Helm repository the CloudNativePG chart is pulled from. Point it at a mirror for a cluster that "+
+			"cannot reach cloudnative-pg.github.io.")
+	flag.StringVar(&cnpgInstall.ChartVersion, "cnpg-chart-version", controller.DefaultCNPGChartVersion,
+		"Version of the CloudNativePG chart the platform installs. Pinned rather than floated: it decides "+
+			"which Postgres images the platform can promise a claim's extensions from.")
+	flag.DurationVar(&cnpgInstall.Timeout, "cnpg-install-timeout", controller.DefaultCNPGInstallTimeout,
+		"How long helm is given for the install. It waits for the operator's workloads to be ready.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
@@ -359,6 +378,7 @@ func main() {
 		PreviewGateImage:          previewGateImage,
 		PreviewGateServiceAccount: previewGateServiceAccount,
 		KedaInstall:               kedaInstall,
+		CNPGInstall:               cnpgInstall,
 		Audit:                     auditor,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Kitchen")

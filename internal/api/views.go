@@ -1080,6 +1080,14 @@ type claimView struct {
 	CreatedAt      time.Time       `json:"createdAt"`
 	Conditions     []conditionView `json:"conditions,omitempty"`
 
+	// Postgres is what the claim asked the database itself to be — the major
+	// version, the extensions, the volume. Absent when the claim asked for
+	// nothing in particular, which is most of them. Whether it was *granted*
+	// is the claim's phase and its conditions: a claim asking for an
+	// extension no image can supply is Failed, with the refusal as the
+	// condition's message.
+	Postgres *claimPostgresView `json:"postgres,omitempty"`
+
 	// RedirectURIs is what an oidcClient claim's client currently accepts as
 	// a callback — the list the operator keeps in step with the project's
 	// environments. It is the one part of that automation anybody can check,
@@ -1091,6 +1099,32 @@ type claimView struct {
 	// answers "unset" to a question it does have an answer to.
 	CallbackPaths []string `json:"callbackPaths,omitempty"`
 	Scopes        []string `json:"scopes,omitempty"`
+}
+
+// claimPostgresView is the claim's database requirements as it answered
+// them, flattened one level so a caller reads storage without a nested
+// object it never has to build.
+type claimPostgresView struct {
+	Version      string   `json:"version,omitempty"`
+	Extensions   []string `json:"extensions,omitempty"`
+	StorageSize  string   `json:"storageSize,omitempty"`
+	StorageClass string   `json:"storageClass,omitempty"`
+}
+
+// postgresOf is the claim's database requirements, and nothing at all for a
+// claim of another type or one that asked for nothing.
+func postgresOf(claim *kitchenv1alpha1.ResourceClaim) *claimPostgresView {
+	cfg := claim.Postgres()
+	if cfg.Version == "" && len(cfg.Extensions) == 0 &&
+		cfg.Storage.Size == "" && cfg.Storage.StorageClass == "" {
+		return nil
+	}
+	return &claimPostgresView{
+		Version:      cfg.Version,
+		Extensions:   cfg.Extensions,
+		StorageSize:  cfg.Storage.Size,
+		StorageClass: cfg.Storage.StorageClass,
+	}
 }
 
 func newClaimView(claim *kitchenv1alpha1.ResourceClaim) claimView {
@@ -1108,6 +1142,7 @@ func newClaimView(claim *kitchenv1alpha1.ResourceClaim) claimView {
 		Residency:        claim.Status.Residency,
 		CreatedAt:        claim.CreationTimestamp.Time,
 		Conditions:       conditionViews(claim.Status.Conditions),
+		Postgres:         postgresOf(claim),
 		RedirectURIs:     claim.Status.RedirectURIs,
 		CallbackPaths:    callbackPathsOf(claim),
 		Scopes:           scopesOf(claim),

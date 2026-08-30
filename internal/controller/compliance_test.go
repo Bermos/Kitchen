@@ -206,7 +206,7 @@ func attestFixtures(t *testing.T) (*BuildReconciler, *stubAttester, *kitchenv1al
 		ObjectMeta: metav1.ObjectMeta{Name: "registry", Namespace: PlatformNamespace},
 		Spec: kitchenv1alpha1.ConnectionSpec{
 			Provider:             "dockerRegistry",
-			CredentialsSecretRef: kitchenv1alpha1.LocalObjectReference{Name: "registry-creds"},
+			CredentialsSecretRef: kitchenv1alpha1.CredentialsReference{Name: "registry-creds"},
 		},
 	}
 	creds := &corev1.Secret{
