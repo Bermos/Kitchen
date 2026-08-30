@@ -392,6 +392,11 @@ type patchProjectRequest struct {
 	Command     *[]string `json:"command,omitempty"`
 	Args        *[]string `json:"args,omitempty"`
 	PreviewArgs *[]string `json:"previewArgs,omitempty"`
+	// Singleton declares that two of this workload must never run at once,
+	// which deploys it by stopping the old copy before starting the new one.
+	// It refuses `replicas` above 1 rather than clamping it: a value quietly
+	// lowered reads back as a setting that did not take.
+	Singleton *bool `json:"singleton,omitempty"`
 	// PromotionStages replaces the project's staged pipeline wholesale, in
 	// promotion order; an empty list removes it, restoring the default
 	// build-straight-to-production flow. The stages are topology — what each
@@ -704,6 +709,19 @@ func applyProjectBuildAndRuntime(project *kitchenv1alpha1.Project, body patchPro
 			return fmt.Errorf("replicas must be at least 1 (got %d) — production never scales to zero", *body.Replicas)
 		}
 		project.Spec.Runtime.Replicas = body.Replicas
+	}
+	if body.Singleton != nil {
+		project.Spec.Runtime.Singleton = *body.Singleton
+	}
+	// Checked after both, because a PATCH may carry either one alone: the
+	// combination is what is refused, and it is refused here so the caller
+	// reads a sentence rather than the CRD's admission rule quoting CEL at
+	// them. The same rule is on the CRD, since not everything writes here.
+	if project.Spec.Runtime.Singleton && project.Spec.Runtime.Replicas != nil && *project.Spec.Runtime.Replicas > 1 {
+		return fmt.Errorf(
+			"this project declares its workload a singleton, so it cannot run %d replicas: "+
+				"set replicas to 1, or turn singleton off",
+			*project.Spec.Runtime.Replicas)
 	}
 	if body.CPU != nil {
 		if err := applyResource(&project.Spec.Runtime.Resources, corev1.ResourceCPU, strings.TrimSpace(*body.CPU)); err != nil {
@@ -1763,6 +1781,7 @@ func changedProjectFields(body patchProjectRequest, continuity continuityChange)
 		{"command", body.Command != nil},
 		{"args", body.Args != nil},
 		{"previewArgs", body.PreviewArgs != nil},
+		{"singleton", body.Singleton != nil},
 		{"promotionStages", body.PromotionStages != nil},
 		{"processes", body.Processes != nil},
 		{"dataClass", body.DataClass != nil},

@@ -622,6 +622,23 @@ func (r *EnvironmentReconciler) applyDeployment(
 		if !idles {
 			deploy.Spec.Replicas = ptr.To(desiredReplicas(env, runtimeSpec))
 		}
+		// A workload that must not run twice does not get a rolling update:
+		// the old pod stops before the new one starts. The cost is a gap in
+		// serving during a deploy, and the project asked for it — the
+		// alternative is a few seconds of its background loop running twice
+		// against a shared store, which is not an error at the time.
+		//
+		// Turning the declaration off puts the rolling update back, but only
+		// then: writing the type unconditionally would clear the surge and
+		// unavailability parameters the API server defaults onto it, so
+		// every reconcile would differ from what it had just written and
+		// update the Deployment for ever.
+		switch {
+		case runtimeSpec.Singleton:
+			deploy.Spec.Strategy = appsv1.DeploymentStrategy{Type: appsv1.RecreateDeploymentStrategyType}
+		case deploy.Spec.Strategy.Type == appsv1.RecreateDeploymentStrategyType:
+			deploy.Spec.Strategy = appsv1.DeploymentStrategy{Type: appsv1.RollingUpdateDeploymentStrategyType}
+		}
 		deploy.Spec.Selector = &metav1.LabelSelector{
 			MatchLabels: map[string]string{labelEnvironment: env.Name},
 		}

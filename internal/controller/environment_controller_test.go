@@ -406,6 +406,65 @@ var _ = Describe("Environment Controller", func() {
 			Expect(meta.FindStatusCondition(env.Status.Conditions, condPreviewProtected)).To(BeNil())
 		})
 
+		// A workload that must not run twice is deployed by stopping the old
+		// copy first (#239). The rolling update comes back when the
+		// declaration is withdrawn — a Deployment left on Recreate would
+		// keep the outage the declaration paid for after the reason for it
+		// had gone.
+		It("recreates rather than rolls a singleton, and rolls again once it is not one", func() {
+			release := &kitchenv1alpha1.Release{}
+			releaseKey := types.NamespacedName{Name: releaseName, Namespace: namespace}
+			Expect(k8sClient.Get(ctx, releaseKey, release)).To(Succeed())
+
+			deployKey := types.NamespacedName{Name: envName, Namespace: appNS}
+			deploy := &appsv1.Deployment{}
+
+			reconcileOnce()
+			Expect(k8sClient.Get(ctx, deployKey, deploy)).To(Succeed())
+			Expect(deploy.Spec.Strategy.Type).To(Equal(appsv1.RollingUpdateDeploymentStrategyType))
+
+			// The snapshot is immutable at admission, so the declaration
+			// arrives the way a rollback's would: on another Release.
+			singleton := release.DeepCopy()
+			singleton.ObjectMeta = metav1.ObjectMeta{Name: releaseName + "-single", Namespace: namespace}
+			singleton.Spec.ConfigSnapshot.Runtime.Singleton = true
+			singleton.Spec.ConfigSnapshot.Runtime.Replicas = ptr.To(int32(1))
+			Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, singleton))).To(Succeed())
+
+			env := &kitchenv1alpha1.Environment{}
+			Expect(k8sClient.Get(ctx, envKey, env)).To(Succeed())
+			env.Spec.ReleaseRef = kitchenv1alpha1.LocalObjectReference{Name: singleton.Name}
+			Expect(k8sClient.Update(ctx, env)).To(Succeed())
+
+			reconcileOnce()
+			Expect(k8sClient.Get(ctx, deployKey, deploy)).To(Succeed())
+			Expect(deploy.Spec.Strategy.Type).To(Equal(appsv1.RecreateDeploymentStrategyType))
+
+			Expect(k8sClient.Get(ctx, envKey, env)).To(Succeed())
+			env.Spec.ReleaseRef = kitchenv1alpha1.LocalObjectReference{Name: releaseName}
+			Expect(k8sClient.Update(ctx, env)).To(Succeed())
+
+			reconcileOnce()
+			Expect(k8sClient.Get(ctx, deployKey, deploy)).To(Succeed())
+			Expect(deploy.Spec.Strategy.Type).To(Equal(appsv1.RollingUpdateDeploymentStrategyType))
+		})
+
+		// Refused at admission, not clamped: a replica count quietly lowered
+		// reads back as a setting that did not take.
+		It("refuses a project that declares a singleton and asks for three of it", func() {
+			project := &kitchenv1alpha1.Project{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: projectName, Namespace: namespace}, project)).
+				To(Succeed())
+			project.Spec.Runtime.Singleton = true
+			project.Spec.Runtime.Replicas = ptr.To(int32(3))
+			err := k8sClient.Update(ctx, project)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("singleton"))
+
+			project.Spec.Runtime.Replicas = ptr.To(int32(1))
+			Expect(k8sClient.Update(ctx, project)).To(Succeed())
+		})
+
 		It("cleans up children when the environment is deleted", func() {
 			reconcileOnce()
 			reconcileOnce()

@@ -196,6 +196,15 @@ func (h *HealthSpec) HTTPPath() string {
 }
 
 // RuntimeSpec describes how an application runs.
+//
+// The singleton rule is a refusal rather than a clamp, and deliberately: a
+// value silently lowered reads back as a setting that did not take, and the
+// project would go on believing it runs three. `has(self.singleton)` is the
+// exact question for an `omitempty` bool — false is an absent key — and the
+// replicas half has to allow an absent one too, since the CRD's own default
+// only fills it in on a write.
+//
+// +kubebuilder:validation:XValidation:rule="!has(self.singleton) || !self.singleton || !has(self.replicas) || self.replicas <= 1",message="a singleton workload cannot run more than one replica: leave replicas at 1, or turn singleton off"
 type RuntimeSpec struct {
 	// Container port the application listens on, and the value of PORT in
 	// every environment.
@@ -214,6 +223,30 @@ type RuntimeSpec struct {
 	// +kubebuilder:default=1
 	// +optional
 	Replicas *int32 `json:"replicas,omitempty"`
+
+	// Singleton says two of this workload must never run at once.
+	//
+	// Kitchen models what an application *is* in a fair amount of detail —
+	// its criticality, its data class, its residency — and had no way to
+	// record the much simpler fact that a second copy of it is a bug. For a
+	// stateless web application it is not: a rolling update overlaps the
+	// outgoing pod and the incoming one for a few seconds and nobody
+	// notices. For an application with a poller, a scheduler or an ingest
+	// loop in the same binary as the web server, those few seconds are the
+	// loop running twice against a shared store — and duplicate rows in a
+	// table something downstream reads as a record of what happened when is
+	// not an error at the time and not obviously wrong afterwards.
+	//
+	// What it does is set `strategy: Recreate` on the Deployment: the old
+	// pod stops before the new one starts. The cost is a gap in serving
+	// during a deploy, which is the correct trade for a workload that cannot
+	// overlap — and the project has said so. It also refuses Replicas above
+	// one, at admission and at the API, rather than clamping it.
+	//
+	// Leader election stays the application's problem. Not overlapping it
+	// during a deploy the platform itself initiated is the platform's.
+	// +optional
+	Singleton bool `json:"singleton,omitempty"`
 
 	// Command replaces the image's entrypoint, and Args its arguments —
 	// the same two fields a ProcessSpec has, in the same exec form: a list
