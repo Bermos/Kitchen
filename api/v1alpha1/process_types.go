@@ -81,8 +81,15 @@ const DefaultRunTimeout = time.Hour
 // string, and it is not only shorter: the field is `omitempty`, so an absent
 // schedule is an absent key and `has` is the exact question.
 //
+// The health rules are the same shape of refusal rather than a silent
+// omission. A process publishes no container port of its own, so a health
+// check that named none would be a setting that read back and did nothing;
+// and a scheduled run's verdict is its exit status, not a probe.
+//
 // +kubebuilder:validation:XValidation:rule="self.type != 'cron' || has(self.schedule)",message="a cron process needs a schedule"
 // +kubebuilder:validation:XValidation:rule="self.type != 'worker' || !has(self.schedule)",message="a worker runs continuously and has no schedule; use type cron"
+// +kubebuilder:validation:XValidation:rule="!has(self.health) || has(self.health.port)",message="a process health check must name the port it is made against: a process publishes no port of its own"
+// +kubebuilder:validation:XValidation:rule="self.type != 'cron' || !has(self.health)",message="a scheduled process is not kept alive by a health check; how a run went is its exit status"
 type ProcessSpec struct {
 	// Name identifies the process within the project. It is a DNS label
 	// because it appears in the name of everything the process
@@ -129,6 +136,16 @@ type ProcessSpec struct {
 	// Resources is what one replica, or one run, asks for.
 	// +optional
 	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
+
+	// Health is how the platform checks that a worker is working. It is
+	// opt-in here where it is automatic for the web process, and the reason
+	// is the same one that makes a worker cheap: nothing addresses it, so
+	// there is no port to fall back on and no request whose failure would
+	// otherwise show. A worker that serves a health listener says which port
+	// on it; one that does not gets no probes, and its liveness is whether
+	// its process is still running.
+	// +optional
+	Health *HealthSpec `json:"health,omitempty"`
 
 	// Schedule is the cron expression a scheduled process runs on, in the
 	// five-field form `batch/v1` takes, interpreted in UTC. Required for a

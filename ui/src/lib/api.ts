@@ -40,6 +40,45 @@ export interface EnvVarWrite {
   fromClaim?: KeyRef;
 }
 
+/**
+ * What the platform asks a workload before it sends anyone to it, with every
+ * timing resolved.
+ *
+ * It is always present on a project: every environment is probed, and a
+ * project that declared nothing is reported with the default check — a TCP
+ * connect to the container's port — rather than with nothing, which would
+ * read as "not checked". On a worker it is absent unless the worker asked
+ * for one.
+ */
+export interface Health {
+  /** The HTTP path the probe asks for. Empty means a TCP connect, which is
+   * deliberately not `GET /`: plenty of applications answer that before they
+   * are ready, and one that 404s there would never become Ready at all. */
+  path?: string;
+  /** The port probed. Empty on a project means the container's own. */
+  port?: number;
+  periodSeconds: number;
+  timeoutSeconds: number;
+  failureThreshold: number;
+  /** The generous one. A container has this many checks x the period to
+   * come up before the platform gives up on it, and it is separate from
+   * failureThreshold precisely so that slow startup does not have to loosen
+   * the threshold that catches a wedge afterwards. */
+  startupFailureThreshold: number;
+}
+
+/** A health check as a settings PATCH carries it. Every number is optional
+ * and 0 takes the platform's default; sending `{}` restores the default
+ * check. */
+export interface HealthSettings {
+  path?: string;
+  port?: number;
+  periodSeconds?: number;
+  timeoutSeconds?: number;
+  failureThreshold?: number;
+  startupFailureThreshold?: number;
+}
+
 export interface Project {
   name: string;
   /** The calling account's role on this project: "admin", "developer" or
@@ -66,6 +105,8 @@ export interface Project {
   replicas?: number;
   cpu?: string;
   memory?: string;
+  /** What the platform checks the application with. Always present. */
+  health?: Health;
   productionEnvironment?: string;
   latestBuild?: string;
   createdAt: string;
@@ -148,6 +189,9 @@ export interface ProjectSettings {
   replicas?: number;
   cpu?: string;
   memory?: string;
+  /** Replace the health check the platform probes with. `{}` restores the
+   * default one. */
+  health?: HealthSettings;
   /** Reclassify the project's data; "" removes the classification. Always
    * allowed — environments rated below the new class read as non-compliant
    * in the inventory and at promotion, rather than the correction being
@@ -1026,6 +1070,10 @@ export interface Process {
   readyReplicas?: number;
   cpu?: string;
   memory?: string;
+  /** The worker's health check, timings resolved. Absent for a worker that
+   * declared none: unlike the web process, a worker is probed only where it
+   * asked to be. */
+  health?: Health;
   workload?: string;
   suspended?: boolean;
   reason?: string;

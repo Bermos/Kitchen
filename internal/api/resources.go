@@ -374,6 +374,11 @@ type patchProjectRequest struct {
 	Replicas *int32           `json:"replicas,omitempty"`
 	CPU      *string          `json:"cpu,omitempty"`
 	Memory   *string          `json:"memory,omitempty"`
+	// Health is what the platform asks the application before it sends
+	// anyone to it, and how often. Sending it replaces the whole check;
+	// sending `{}` restores the default one, which is a TCP connect to the
+	// container's port — every environment is probed either way.
+	Health *healthRequest `json:"health,omitempty"`
 	// PromotionStages replaces the project's staged pipeline wholesale, in
 	// promotion order; an empty list removes it, restoring the default
 	// build-straight-to-production flow. The stages are topology — what each
@@ -696,6 +701,13 @@ func applyProjectBuildAndRuntime(project *kitchenv1alpha1.Project, body patchPro
 		if err := applyResource(&project.Spec.Runtime.Resources, corev1.ResourceMemory, strings.TrimSpace(*body.Memory)); err != nil {
 			return err
 		}
+	}
+	if body.Health != nil {
+		health, err := healthFromRequest(*body.Health, "health", false)
+		if err != nil {
+			return err
+		}
+		project.Spec.Runtime.Health = health
 	}
 	return nil
 }
@@ -1718,6 +1730,7 @@ func changedProjectFields(body patchProjectRequest, continuity continuityChange)
 		{"replicas", body.Replicas != nil},
 		{"cpu", body.CPU != nil},
 		{"memory", body.Memory != nil},
+		{"health", body.Health != nil},
 		{"promotionStages", body.PromotionStages != nil},
 		{"processes", body.Processes != nil},
 		{"dataClass", body.DataClass != nil},

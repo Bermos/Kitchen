@@ -111,22 +111,27 @@ type projectView struct {
 	//
 	// An operator reads `admin` on every project, including one they are not
 	// listed on, which is access.ProjectRoleFor's rule and not this view's.
-	Role                  string          `json:"role"`
-	Repo                  string          `json:"repo"`
-	Connection            string          `json:"connection"`
-	Registry              string          `json:"registry"`
-	ProductionBranch      string          `json:"productionBranch"`
-	RequirePullRequest    bool            `json:"requirePullRequest"`
-	Previews              bool            `json:"previews"`
-	PreviewsProtected     bool            `json:"previewsProtected"`
-	BuildStrategy         string          `json:"buildStrategy,omitempty"`
-	DockerfilePath        string          `json:"dockerfilePath,omitempty"`
-	RootDirectory         string          `json:"rootDirectory,omitempty"`
-	Env                   []envVarView    `json:"env,omitempty"`
-	Port                  int32           `json:"port,omitempty"`
-	Replicas              *int32          `json:"replicas,omitempty"`
-	CPU                   string          `json:"cpu,omitempty"`
-	Memory                string          `json:"memory,omitempty"`
+	Role               string       `json:"role"`
+	Repo               string       `json:"repo"`
+	Connection         string       `json:"connection"`
+	Registry           string       `json:"registry"`
+	ProductionBranch   string       `json:"productionBranch"`
+	RequirePullRequest bool         `json:"requirePullRequest"`
+	Previews           bool         `json:"previews"`
+	PreviewsProtected  bool         `json:"previewsProtected"`
+	BuildStrategy      string       `json:"buildStrategy,omitempty"`
+	DockerfilePath     string       `json:"dockerfilePath,omitempty"`
+	RootDirectory      string       `json:"rootDirectory,omitempty"`
+	Env                []envVarView `json:"env,omitempty"`
+	Port               int32        `json:"port,omitempty"`
+	Replicas           *int32       `json:"replicas,omitempty"`
+	CPU                string       `json:"cpu,omitempty"`
+	Memory             string       `json:"memory,omitempty"`
+	// Health is what the platform checks the application with, timings
+	// resolved. It is always present, because every environment is probed:
+	// a project that declared nothing is reported with the default check
+	// rather than with nothing, which would read as "not checked".
+	Health                *healthView     `json:"health,omitempty"`
 	ProductionEnvironment string          `json:"productionEnvironment,omitempty"`
 	LatestBuild           string          `json:"latestBuild,omitempty"`
 	CreatedAt             time.Time       `json:"createdAt"`
@@ -171,6 +176,7 @@ func newProjectView(project *kitchenv1alpha1.Project, role access.ProjectRole) p
 		Replicas:           project.Spec.Runtime.Replicas,
 		CreatedAt:          project.CreationTimestamp.Time,
 		Conditions:         conditionViews(project.Status.Conditions),
+		Health:             newHealthView(project.Spec.Runtime.Health),
 	}
 	if quantity, ok := project.Spec.Runtime.Resources.Limits[corev1.ResourceCPU]; ok {
 		view.CPU = quantity.String()

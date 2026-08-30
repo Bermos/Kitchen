@@ -62,7 +62,21 @@ much of it.
 | `schedule` | cron | A five-field cron expression, **read in UTC**. Required on a cron process and refused on a worker. |
 | `concurrencyPolicy` | cron | `Allow`, `Forbid` (the default) or `Replace`. A job that takes longer than its interval is far more often running behind than meant to run twice. |
 | `timeout` | cron | A Go duration bounding one run; an hour by default. It becomes the Job's `activeDeadlineSeconds`. |
+| `health` | worker | A health check, the same shape the project's web process takes — and it **must name the `port`** it is made against, because a worker publishes none of its own. Refused on a cron process: how a run went is its exit status, not a probe. |
 | `previews` | both | Whether it runs in preview environments. **Off unless asked for** — see below. |
+
+A worker is probed only where it asked to be, which is the opposite of the web
+process — every environment of a project is probed whether or not it declared
+a check, because there is a port to fall back on. A worker with no health
+listener has none, so its liveness is whether its process is still running:
+
+```json
+{"name": "worker", "type": "worker", "command": ["node", "worker.js"],
+ "health": {"path": "/healthz", "port": 9000}}
+```
+
+The timings and their defaults are the web process's — see
+[Changing a project's settings](projects.md#changing-a-projects-settings).
 
 The write **replaces the whole list**; an empty list removes every process. It
 is a project *declaration*, so it reaches an environment through the next

@@ -285,6 +285,11 @@ spec:
                     The two rules test `has(self.schedule)` rather than comparing to an empty
                     string, and it is not only shorter: the field is `omitempty`, so an absent
                     schedule is an absent key and `has` is the exact question.
+
+                    The health rules are the same shape of refusal rather than a silent
+                    omission. A process publishes no container port of its own, so a health
+                    check that named none would be a setting that read back and did nothing;
+                    and a scheduled run's verdict is its exit status, not a probe.
                   properties:
                     args:
                       items:
@@ -317,6 +322,74 @@ spec:
                       - Forbid
                       - Replace
                       type: string
+                    health:
+                      description: |-
+                        Health is how the platform checks that a worker is working. It is
+                        opt-in here where it is automatic for the web process, and the reason
+                        is the same one that makes a worker cheap: nothing addresses it, so
+                        there is no port to fall back on and no request whose failure would
+                        otherwise show. A worker that serves a health listener says which port
+                        on it; one that does not gets no probes, and its liveness is whether
+                        its process is still running.
+                      properties:
+                        failureThreshold:
+                          description: |-
+                            FailureThreshold is how many checks in a row have to fail before a
+                            running container is taken out of service — and, where the check is an
+                            HTTP one, restarted. Defaults to DefaultProbeFailureThreshold.
+                          format: int32
+                          minimum: 1
+                          type: integer
+                        path:
+                          description: |-
+                            Path is the HTTP path the platform asks for. A 2xx or 3xx answer is
+                            the application saying it is working.
+
+                            **Left unset, the check is a TCP connect to the port instead.** That
+                            is a weaker claim than an HTTP 200 and much better than asserting a
+                            readiness nothing established. It is deliberately not `GET /`: plenty
+                            of applications answer that before they are ready, and one that 404s
+                            there would never become Ready at all.
+                          maxLength: 253
+                          pattern: ^/
+                          type: string
+                        periodSeconds:
+                          description: |-
+                            PeriodSeconds is how often the check is made. Defaults to
+                            DefaultProbePeriodSeconds.
+                          format: int32
+                          minimum: 1
+                          type: integer
+                        port:
+                          description: |-
+                            Port the probe is made against, when it is not the port the
+                            application is published on. A separate admin or metrics listener is
+                            the usual reason.
+                          format: int32
+                          maximum: 65535
+                          minimum: 1
+                          type: integer
+                        startupFailureThreshold:
+                          description: |-
+                            StartupFailureThreshold is the same count for a container that has not
+                            answered yet, and it is generous — DefaultStartupFailureThreshold
+                            checks, so a container has StartupFailureThreshold x PeriodSeconds to
+                            come up before the platform gives up on it.
+
+                            It is a separate number, and that is the whole point of a startup
+                            probe: slow startup is a legitimate state, and a liveness threshold
+                            loose enough to tolerate it is too loose to catch a wedge afterwards.
+                          format: int32
+                          minimum: 1
+                          type: integer
+                        timeoutSeconds:
+                          description: |-
+                            TimeoutSeconds is how long one check may take before it counts as a
+                            failure. Defaults to DefaultProbeTimeoutSeconds.
+                          format: int32
+                          minimum: 1
+                          type: integer
+                      type: object
                     name:
                       description: |-
                         Name identifies the process within the project. It is a DNS label
@@ -453,6 +526,12 @@ spec:
                   - message: a worker runs continuously and has no schedule; use type
                       cron
                     rule: self.type != 'worker' || !has(self.schedule)
+                  - message: 'a process health check must name the port it is made
+                      against: a process publishes no port of its own'
+                    rule: '!has(self.health) || has(self.health.port)'
+                  - message: a scheduled process is not kept alive by a health check;
+                      how a run went is its exit status
+                    rule: self.type != 'cron' || !has(self.health)
                 type: array
                 x-kubernetes-list-map-keys:
                 - name
@@ -548,6 +627,76 @@ spec:
               runtime:
                 description: RuntimeSpec describes how an application runs.
                 properties:
+                  health:
+                    description: |-
+                      Health is how the platform checks that the application is working.
+                      Every environment gets probes whether or not this is set — absent, they
+                      are a TCP connect to the container port on the platform's default
+                      timings — and setting it is how an application says what working means
+                      for it.
+
+                      Like the rest of RuntimeSpec it is snapshotted into the Release, so a
+                      rollback restores the check the release was running with, and previews
+                      inherit it from production.
+                    properties:
+                      failureThreshold:
+                        description: |-
+                          FailureThreshold is how many checks in a row have to fail before a
+                          running container is taken out of service — and, where the check is an
+                          HTTP one, restarted. Defaults to DefaultProbeFailureThreshold.
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      path:
+                        description: |-
+                          Path is the HTTP path the platform asks for. A 2xx or 3xx answer is
+                          the application saying it is working.
+
+                          **Left unset, the check is a TCP connect to the port instead.** That
+                          is a weaker claim than an HTTP 200 and much better than asserting a
+                          readiness nothing established. It is deliberately not `GET /`: plenty
+                          of applications answer that before they are ready, and one that 404s
+                          there would never become Ready at all.
+                        maxLength: 253
+                        pattern: ^/
+                        type: string
+                      periodSeconds:
+                        description: |-
+                          PeriodSeconds is how often the check is made. Defaults to
+                          DefaultProbePeriodSeconds.
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      port:
+                        description: |-
+                          Port the probe is made against, when it is not the port the
+                          application is published on. A separate admin or metrics listener is
+                          the usual reason.
+                        format: int32
+                        maximum: 65535
+                        minimum: 1
+                        type: integer
+                      startupFailureThreshold:
+                        description: |-
+                          StartupFailureThreshold is the same count for a container that has not
+                          answered yet, and it is generous — DefaultStartupFailureThreshold
+                          checks, so a container has StartupFailureThreshold x PeriodSeconds to
+                          come up before the platform gives up on it.
+
+                          It is a separate number, and that is the whole point of a startup
+                          probe: slow startup is a legitimate state, and a liveness threshold
+                          loose enough to tolerate it is too loose to catch a wedge afterwards.
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      timeoutSeconds:
+                        description: |-
+                          TimeoutSeconds is how long one check may take before it counts as a
+                          failure. Defaults to DefaultProbeTimeoutSeconds.
+                        format: int32
+                        minimum: 1
+                        type: integer
+                    type: object
                   port:
                     description: |-
                       Container port the application listens on, and the value of PORT in

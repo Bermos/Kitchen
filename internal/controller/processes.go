@@ -189,20 +189,29 @@ func processPodSpec(
 	podEnv []corev1.EnvVar,
 	process kitchenv1alpha1.ProcessSpec,
 ) corev1.PodSpec {
+	container := corev1.Container{
+		Name:      AppContainerName,
+		Image:     release.Spec.Image,
+		Command:   process.Command,
+		Args:      process.Args,
+		Env:       processEnv(podEnv, process.Name),
+		Resources: process.Resources,
+	}
+	// A worker that declared a health check is probed the way the web
+	// process is — it publishes no port of its own, so the check names the
+	// one it listens on, which is why admission refuses a process health
+	// check without a port. A scheduled run is not probed at all: how it
+	// went is its exit status, and admission refuses the field there too.
+	if process.Type == kitchenv1alpha1.ProcessWorker {
+		applyProbes(&container, process.Health, 0)
+	}
 	return corev1.PodSpec{
 		// The same credential the web process pulls with. Without it the pods
 		// sit in ImagePullBackOff while everything else reads as healthy.
 		ImagePullSecrets: []corev1.LocalObjectReference{
 			{Name: registrySecretName(project.Spec.Registry.ConnectionRef.Name)},
 		},
-		Containers: []corev1.Container{{
-			Name:      AppContainerName,
-			Image:     release.Spec.Image,
-			Command:   process.Command,
-			Args:      process.Args,
-			Env:       processEnv(podEnv, process.Name),
-			Resources: process.Resources,
-		}},
+		Containers: []corev1.Container{container},
 	}
 }
 

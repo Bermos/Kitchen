@@ -67,6 +67,134 @@ type EnvVar struct {
 	FromResourceClaim *ResourceClaimKeySelector `json:"fromResourceClaim,omitempty"`
 }
 
+// HealthSpec is how the platform finds out whether an application is
+// *working*, rather than merely started.
+//
+// Until it existed, Kubernetes marked a pod Ready the moment its container
+// process began, so an application applying a migration, warming a cache or
+// opening a connection pool took production traffic while it was still doing
+// it — on every deploy, and on every rollback, which is the one deploy path
+// that must not add a second outage to the one it is fixing.
+//
+// A health endpoint is where an application says what "working" means for it:
+// the queue is being drained, the feed is current, the migration finished.
+// Absent one, the platform still checks something it can check itself — see
+// [HealthSpec.Path].
+type HealthSpec struct {
+	// Path is the HTTP path the platform asks for. A 2xx or 3xx answer is
+	// the application saying it is working.
+	//
+	// **Left unset, the check is a TCP connect to the port instead.** That
+	// is a weaker claim than an HTTP 200 and much better than asserting a
+	// readiness nothing established. It is deliberately not `GET /`: plenty
+	// of applications answer that before they are ready, and one that 404s
+	// there would never become Ready at all.
+	// +kubebuilder:validation:Pattern=`^/`
+	// +kubebuilder:validation:MaxLength=253
+	// +optional
+	Path string `json:"path,omitempty"`
+
+	// Port the probe is made against, when it is not the port the
+	// application is published on. A separate admin or metrics listener is
+	// the usual reason.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=65535
+	// +optional
+	Port int32 `json:"port,omitempty"`
+
+	// PeriodSeconds is how often the check is made. Defaults to
+	// DefaultProbePeriodSeconds.
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	PeriodSeconds int32 `json:"periodSeconds,omitempty"`
+
+	// TimeoutSeconds is how long one check may take before it counts as a
+	// failure. Defaults to DefaultProbeTimeoutSeconds.
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	TimeoutSeconds int32 `json:"timeoutSeconds,omitempty"`
+
+	// FailureThreshold is how many checks in a row have to fail before a
+	// running container is taken out of service — and, where the check is an
+	// HTTP one, restarted. Defaults to DefaultProbeFailureThreshold.
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	FailureThreshold int32 `json:"failureThreshold,omitempty"`
+
+	// StartupFailureThreshold is the same count for a container that has not
+	// answered yet, and it is generous — DefaultStartupFailureThreshold
+	// checks, so a container has StartupFailureThreshold x PeriodSeconds to
+	// come up before the platform gives up on it.
+	//
+	// It is a separate number, and that is the whole point of a startup
+	// probe: slow startup is a legitimate state, and a liveness threshold
+	// loose enough to tolerate it is too loose to catch a wedge afterwards.
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	StartupFailureThreshold int32 `json:"startupFailureThreshold,omitempty"`
+}
+
+// The probe timings a health check takes when it names none. They are the
+// platform's, not Kubernetes' — the kubelet's own defaults put the failure
+// threshold at 3 and the period at 10, which is what these agree with, and
+// leave the startup threshold there too, which is what these do not.
+const (
+	DefaultProbePeriodSeconds      = int32(10)
+	DefaultProbeTimeoutSeconds     = int32(2)
+	DefaultProbeFailureThreshold   = int32(3)
+	DefaultStartupFailureThreshold = int32(30)
+)
+
+// Period, Timeout, Failures and StartupFailures read one timing, defaulted.
+// A nil receiver answers the defaults, so a workload that declared no health
+// check at all is still described by the same four numbers.
+func (h *HealthSpec) Period() int32 {
+	if h == nil || h.PeriodSeconds <= 0 {
+		return DefaultProbePeriodSeconds
+	}
+	return h.PeriodSeconds
+}
+
+func (h *HealthSpec) Timeout() int32 {
+	if h == nil || h.TimeoutSeconds <= 0 {
+		return DefaultProbeTimeoutSeconds
+	}
+	return h.TimeoutSeconds
+}
+
+func (h *HealthSpec) Failures() int32 {
+	if h == nil || h.FailureThreshold <= 0 {
+		return DefaultProbeFailureThreshold
+	}
+	return h.FailureThreshold
+}
+
+func (h *HealthSpec) StartupFailures() int32 {
+	if h == nil || h.StartupFailureThreshold <= 0 {
+		return DefaultStartupFailureThreshold
+	}
+	return h.StartupFailureThreshold
+}
+
+// ProbePort is the port the checks are made against: the health check's own
+// where it names one, otherwise the container's. Zero means there is nothing
+// to probe — a workload with no port of its own that declared no health check
+// — and no probes are written at all.
+func (h *HealthSpec) ProbePort(containerPort int32) int32 {
+	if h != nil && h.Port > 0 {
+		return h.Port
+	}
+	return containerPort
+}
+
+// HTTPPath is the path an HTTP check asks for, or empty for a TCP connect.
+func (h *HealthSpec) HTTPPath() string {
+	if h == nil {
+		return ""
+	}
+	return h.Path
+}
+
 // RuntimeSpec describes how an application runs.
 type RuntimeSpec struct {
 	// Container port the application listens on, and the value of PORT in
@@ -90,6 +218,18 @@ type RuntimeSpec struct {
 	// Compute resources per replica.
 	// +optional
 	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
+
+	// Health is how the platform checks that the application is working.
+	// Every environment gets probes whether or not this is set — absent, they
+	// are a TCP connect to the container port on the platform's default
+	// timings — and setting it is how an application says what working means
+	// for it.
+	//
+	// Like the rest of RuntimeSpec it is snapshotted into the Release, so a
+	// rollback restores the check the release was running with, and previews
+	// inherit it from production.
+	// +optional
+	Health *HealthSpec `json:"health,omitempty"`
 }
 
 // BuildStrategy selects how an image is produced from a repository.

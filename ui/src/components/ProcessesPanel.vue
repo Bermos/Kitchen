@@ -122,6 +122,16 @@ function commandOf(process: Process): string {
   const words = [...(process.command ?? []), ...(process.args ?? [])];
   return words.length ? words.join(" ") : "the image's own entrypoint";
 }
+
+// A worker's health check in one line: what is asked, where, and how often.
+// A worker is probed only where it asked to be, so there is nothing to show
+// for one that declared none.
+function healthOf(process: Process): string {
+  const health = process.health;
+  if (!health) return "";
+  const target = health.path ? `GET ${health.path} on :${health.port}` : `TCP :${health.port}`;
+  return `${target} every ${health.periodSeconds}s, ${health.failureThreshold} failures out`;
+}
 </script>
 
 <template>
@@ -191,6 +201,10 @@ function commandOf(process: Process): string {
             <template v-if="process.cpu || process.memory">
               <dt class="text-dimmed">Resources</dt>
               <dd class="text-toned">{{ [process.cpu, process.memory].filter(Boolean).join(" / ") }}</dd>
+            </template>
+            <template v-if="process.health">
+              <dt class="text-dimmed">Health</dt>
+              <dd class="text-toned font-mono break-all">{{ healthOf(process) }}</dd>
             </template>
             <template v-if="process.workload">
               <dt class="text-dimmed">Workload</dt>

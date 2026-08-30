@@ -634,13 +634,20 @@ func (r *EnvironmentReconciler) applyDeployment(
 		deploy.Spec.Template.Spec.ImagePullSecrets = []corev1.LocalObjectReference{
 			{Name: registrySecretName(project.Spec.Registry.ConnectionRef.Name)},
 		}
-		deploy.Spec.Template.Spec.Containers = []corev1.Container{{
+		app := corev1.Container{
 			Name:      AppContainerName,
 			Image:     release.Spec.Image,
 			Ports:     []corev1.ContainerPort{{Name: "http", ContainerPort: port}},
 			Env:       podEnv,
 			Resources: runtimeSpec.Resources,
-		}}
+		}
+		// Every environment is probed, whether or not the project declared a
+		// health check: absent one it is a TCP connect to the container port,
+		// which is a weaker claim than an HTTP 200 and a far better one than
+		// the readiness nothing used to establish. Previews inherit the
+		// check with the rest of the snapshot.
+		applyProbes(&app, runtimeSpec.Health, port)
+		deploy.Spec.Template.Spec.Containers = []corev1.Container{app}
 		return nil
 	})
 	return err
@@ -891,6 +898,10 @@ func (r *EnvironmentReconciler) updateStatus(
 
 	env.Status.URL = fmt.Sprintf("%s://%s", scheme, host)
 	env.Status.ObservedRelease = release.Name
+	// Live is the Deployment's availability, which is its ready replicas,
+	// which is the readiness probe applyDeployment writes. That chain is why
+	// the probes are worth having: before them this number said the process
+	// had started, and the platform reported a health it had never checked.
 	if available {
 		env.Status.Phase = kitchenv1alpha1.EnvironmentLive
 	} else {
