@@ -26,6 +26,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/provider"
 )
 
 // The criticality surface (issue #141): the designation on the way in, and
@@ -705,8 +706,12 @@ func (g *complianceGraph) function(project *kitchenv1alpha1.Project) complianceF
 		return assembled.connections[i].Name < assembled.connections[j].Name
 	})
 
-	for provider := range providers {
-		assembled.thirdParties = append(assembled.thirdParties, provider)
+	for name := range providers {
+		// A provider that is this platform is not a third party — see
+		// provider.ThirdParty.
+		if provider.ThirdParty(name) {
+			assembled.thirdParties = append(assembled.thirdParties, name)
+		}
 	}
 	sort.Strings(assembled.thirdParties)
 	return assembled

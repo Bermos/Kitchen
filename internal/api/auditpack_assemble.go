@@ -31,6 +31,7 @@ import (
 	"github.com/Bermos/Kitchen/internal/attestation"
 	"github.com/Bermos/Kitchen/internal/clickhouse"
 	"github.com/Bermos/Kitchen/internal/policy"
+	"github.com/Bermos/Kitchen/internal/provider"
 	"github.com/Bermos/Kitchen/internal/retention"
 )
 
@@ -483,8 +484,12 @@ func (s *Server) packInventory(
 		return inventory.Domains[i].Hostname < inventory.Domains[j].Hostname
 	})
 
-	for provider := range providers {
-		inventory.ThirdParties = append(inventory.ThirdParties, provider)
+	for name := range providers {
+		// A provider that is this platform is not a third party — see
+		// provider.ThirdParty.
+		if provider.ThirdParty(name) {
+			inventory.ThirdParties = append(inventory.ThirdParties, name)
+		}
 	}
 	sort.Strings(inventory.ThirdParties)
 	return inventory

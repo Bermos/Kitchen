@@ -164,6 +164,13 @@ jobs:
                  --set scaleToZero.enabled=true \
                  --set scaleToZero.interceptor.namespace=keda-system \
                  --set scaleToZero.interceptor.port=9090
+          # The platform's own Postgres: the defaults, and an installation that
+          # lets the operator put CloudNativePG in for itself.
+          render ${CHART_BASE} ${CHART_ACME} \
+                 --set databases.install.enabled=true
+          render ${CHART_BASE} ${CHART_ACME} \
+                 --set databases.namespace=databases \
+                 --set databases.operatorNamespace=cnpg
           # Plain HTTP: the way a cluster comes up before DNS and certificates.
           render ${CHART_BASE} --set kitchen.tls.mode=none
 
@@ -406,6 +413,45 @@ jobs:
             echo "::error::the interceptor namespace does not match the chart README's install"
             exit 1
           }
+
+      - name: Check the chart does not try to bundle CloudNativePG
+        run: |
+          set -euo pipefail
+          # The same rule as KEDA's, for the same reason: CloudNativePG ships
+          # CRDs and an admission webhook of its own, and Helm will not adopt a
+          # release another one owns — so the chart carries none of its objects.
+          # What the *operator* may do is another matter, and
+          # databases.install.enabled is where it does it.
+          rendered=$(helm template kitchen charts/kitchen --namespace kitchen-system \
+            ${CHART_BASE} ${CHART_ACME} --set databases.install.enabled=true)
+          # cnpg's own kinds, and its CRDs by name. Not a bare grep for
+          # postgresql.cnpg.io: the manager ClusterRole names it as an API group
+          # the operator may write Clusters in, which is the feature and not a
+          # bundled copy of anything.
+          if grep -qE '^kind: (Cluster|Pooler|Backup|ScheduledBackup|Database)$' <<<"${rendered}" \
+             || grep -qE '^ +name: [a-z]+\.postgresql\.cnpg\.io$' <<<"${rendered}"; then
+            echo "::error::the chart renders CloudNativePG's own objects; it must point at an" \
+                 "installation instead of carrying one"
+            exit 1
+          fi
+          # The grant the operator installs with is the chart's: an account of
+          # its own bound to cluster-admin, so that turning the feature off
+          # takes the grant away with it.
+          grep -q 'name: kitchen-cnpg-install' <<<"${rendered}" || {
+            echo "::error::databases.install.enabled rendered no install ServiceAccount"
+            exit 1
+          }
+          grep -q -- '--cnpg-install-service-account=kitchen-cnpg-install' <<<"${rendered}" || {
+            echo "::error::the operator was not told which account it may install CloudNativePG with"
+            exit 1
+          }
+          # And the account exists only where it was asked for.
+          default=$(helm template kitchen charts/kitchen --namespace kitchen-system \
+            ${CHART_BASE} ${CHART_ACME})
+          if grep -q 'kitchen-cnpg-install' <<<"${default}"; then
+            echo "::error::the install account is rendered without databases.install.enabled"
+            exit 1
+          fi
 
       - name: Reject unsupported value combinations
         run: |

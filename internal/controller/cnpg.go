@@ -348,7 +348,7 @@ func (r *KitchenReconciler) runCNPGInstall(
 		if err := r.Get(ctx, saKey, sa); err != nil {
 			setCond(condDatabasesReady, metav1.ConditionFalse, "ServiceAccountMissing", fmt.Sprintf(
 				"the install job's ServiceAccount %q is missing from %s: %s. The chart creates it when "+
-					"databases.install.enabled and rbac.create are both true", saKey.Name, PlatformNamespace, err))
+					"databases.install.enabled is set", saKey.Name, PlatformNamespace, err))
 			return false
 		}
 		if err := r.Create(ctx, cnpgInstallJob(name, namespace, cfg)); err != nil && !apierrors.IsAlreadyExists(err) {

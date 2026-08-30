@@ -17,6 +17,7 @@ limitations under the License.
 package controller
 
 import (
+	"context"
 	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -132,6 +133,45 @@ var _ = Describe("Planning the CloudNativePG install", func() {
 	})
 })
 
+// The credential exception, enforced where it has to be: at admission, so a
+// Connection that reached the cluster another way cannot be shaped wrongly
+// either.
+var _ = Describe("A connection to the platform's own Postgres", func() {
+	ctx := context.Background()
+
+	It("is admitted with no credentials secret at all", func() {
+		conn := &kitchenv1alpha1.Connection{
+			ObjectMeta: metav1.ObjectMeta{Name: "cl-cnpg-admit", Namespace: "default"},
+			Spec:       kitchenv1alpha1.ConnectionSpec{Provider: "cnpg"},
+		}
+		Expect(k8sClient.Create(ctx, conn)).To(Succeed())
+		Expect(k8sClient.Delete(ctx, conn)).To(Succeed())
+	})
+
+	It("is refused when it names one, because nothing would read it", func() {
+		conn := &kitchenv1alpha1.Connection{
+			ObjectMeta: metav1.ObjectMeta{Name: "cl-cnpg-refused", Namespace: "default"},
+			Spec: kitchenv1alpha1.ConnectionSpec{
+				Provider:             "cnpg",
+				CredentialsSecretRef: kitchenv1alpha1.CredentialsReference{Name: "somewhere"},
+			},
+		}
+		err := k8sClient.Create(ctx, conn)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("takes no credentialsSecretRef"))
+	})
+
+	It("leaves every other provider requiring one", func() {
+		conn := &kitchenv1alpha1.Connection{
+			ObjectMeta: metav1.ObjectMeta{Name: "cl-neon-refused", Namespace: "default"},
+			Spec:       kitchenv1alpha1.ConnectionSpec{Provider: "neon"},
+		}
+		err := k8sClient.Create(ctx, conn)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("credentialsSecretRef is required"))
+	})
+})
+
 var _ = Describe("The CloudNativePG install job", func() {
 	cfg := CNPGInstallConfig{ServiceAccount: "kitchen-cnpg-install"}.withDefaults()
 
@@ -139,7 +179,6 @@ var _ = Describe("The CloudNativePG install job", func() {
 		bumped := cfg
 		bumped.ChartVersion = "0.30.0"
 		Expect(cnpgInstallJobName(cfg)).NotTo(Equal(cnpgInstallJobName(bumped)))
-		Expect(cnpgInstallJobName(cfg)).To(HaveLen(len(cnpgInstallJobName(cfg))))
 		Expect(len(cnpgInstallJobName(cfg))).To(BeNumerically("<=", 63))
 	})
 
