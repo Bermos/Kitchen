@@ -23,7 +23,8 @@ under it is for whoever runs the installation, or works on Kitchen itself.
 - [Deploying an application](docs/DEPLOYING.md) — an account, a project, a first
   deploy, environment variables, a custom domain, previews, logs, a rollback
 - [`kitchen.json`](docs/CONFIG.md) — a project's build and runtime settings,
-  committed beside the code they describe
+  committed beside the code they describe, and the short list of what a file in a
+  repository is deliberately not allowed to decide
 - [Kitchen for agents](docs/AGENTS.md) — the same ground for a coding agent
   working in an application repository: the machine-readable surfaces, the
   output and exit-code contract, and what not to do
@@ -37,9 +38,6 @@ under it is for whoever runs the installation, or works on Kitchen itself.
 - [The dashboard's design guide](docs/UI.md) — one page frame, one scale, and the
   rule that decides which of the two dashboards a screen belongs to
 - [REST API](docs/API.md) — the endpoints, and how to get a token for them
-- [`kitchen.json`](docs/CONFIG.md) — a project's build and runtime settings, committed
-  beside the code they describe, and the short list of what a file in a repository is
-  deliberately not allowed to decide
 - [The `kitchen` CLI](docs/CLI.md) — deploy, logs, env and rollback from a
   terminal, and the JSON surface that makes it drivable by something that is not
   a person
