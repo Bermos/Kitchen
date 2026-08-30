@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.20.0](https://github.com/Bermos/Kitchen/compare/v0.19.0...v0.20.0) (2026-08-30)
+
+
+### Features
+
+* **api:** report the kitchen.json a build read ([9471a05](https://github.com/Bermos/Kitchen/commit/9471a05ff0827d53c8c6304b84fe9827ecaa095f))
+* **cli:** kitchen config, for the file before it is pushed ([8437807](https://github.com/Bermos/Kitchen/commit/843780700dbb4bf41e8d7c8700d2738d5667b11e))
+* **operator:** build a commit the way its own kitchen.json asks ([0b07532](https://github.com/Bermos/Kitchen/commit/0b07532e4b672ea4e0026f052b82dd52912ec23e))
+* **ui:** say which settings the repository has taken over ([9e31d56](https://github.com/Bermos/Kitchen/commit/9e31d56a38a5c90f0485ed65a04e65c3faa6836b))
+
+
+### Bug fixes
+
+* **cli:** print the flag forms the CLI actually accepts ([5c01fc5](https://github.com/Bermos/Kitchen/commit/5c01fc5f5c1aeaf73ca3613cab2ee9eb1ffdb84e))
+* **operator:** ask again when a project's repository could not be read ([#249](https://github.com/Bermos/Kitchen/issues/249)) ([b0c447e](https://github.com/Bermos/Kitchen/commit/b0c447ea4a23be210349aca90f4bf6662ae63e33)), closes [#248](https://github.com/Bermos/Kitchen/issues/248)
+
+
+### Refactoring
+
+* **api:** give the shapes a project's settings arrive in one home ([f7e76b4](https://github.com/Bermos/Kitchen/commit/f7e76b43a4c200cbcc826ecae61f5ff08fee8c10))
+
+
+### Documentation
+
+* list kitchen.json once, in the section for the people who write it ([011c730](https://github.com/Bermos/Kitchen/commit/011c73027d237cc24f64c285e2c75cec8cad181c))
+* publish the machine-readable surface as something a machine can find ([a26e02a](https://github.com/Bermos/Kitchen/commit/a26e02a0ccb402ceb3594b35c216e9c9e83c4e93))
+* split the README's index by which audience each page is for ([9d85c5b](https://github.com/Bermos/Kitchen/commit/9d85c5ba197cefd13ecd39f78126a69fba201084))
+* write down kitchen.json, and what a repository may not decide ([241d46a](https://github.com/Bermos/Kitchen/commit/241d46ab3b8c6dd50056160361b0b129d7d5e036))
+* write the guide for the person deploying an application ([b5a2bd3](https://github.com/Bermos/Kitchen/commit/b5a2bd33dc54a8f15350cb4e1a99a685ba64467e))
+
 ## [0.19.0](https://github.com/Bermos/Kitchen/compare/v0.18.0...v0.19.0) (2026-08-30)
 
 
