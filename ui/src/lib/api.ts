@@ -1322,7 +1322,10 @@ export interface NewConnection {
   name: string;
   provider: string;
   config?: Record<string, unknown>;
-  credential: ConnectionCredential;
+  /** Every provider but cnpg requires one. CloudNativePG provisions with the
+   * operator's own identity, so there is nothing to store — and a credential
+   * sent for it is refused rather than kept and never read. */
+  credential?: ConnectionCredential;
 }
 
 /** What PATCH /connections/{name} accepts: a new config, a rotated
@@ -1460,6 +1463,17 @@ export interface NewDomain {
   tls?: string;
 }
 
+/** The database a postgres claim asked for: which Postgres, what it has to be
+ * able to do, and how much room it gets. All four are set when the database is
+ * created and are not changed under a running one — asking for a different
+ * database means asking for a different database. */
+export interface ClaimPostgres {
+  version?: string;
+  extensions?: string[];
+  storageSize?: string;
+  storageClass?: string;
+}
+
 export interface Claim {
   name: string;
   project: string;
@@ -1485,6 +1499,11 @@ export interface Claim {
    * its client is always deregistered. */
   deletionPolicy?: string;
   previewBranching: boolean;
+  /** What a postgres claim asked the database itself to be. Absent when it
+   * asked for nothing in particular, which is most of them. Whether it was
+   * granted is the phase and the conditions: a claim asking for an extension
+   * no image can supply is Failed, with the refusal as the message. */
+  postgres?: ClaimPostgres;
   createdAt: string;
   conditions?: Condition[];
   /** What an oidcClient claim's client currently accepts as a callback. The
@@ -1502,6 +1521,9 @@ export interface NewClaim {
   type: string;
   previewBranching?: boolean;
   deletionPolicy?: string;
+  /** postgres only: the major version, the extensions the application needs,
+   * and the volume behind the database. */
+  postgres?: ClaimPostgres;
   /** Classify the data the resource will hold. May not exceed the project's
    * class; refused in an unclassified project (classify the project first). */
   dataClass?: string;

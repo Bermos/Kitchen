@@ -30,6 +30,7 @@ const providers = [
   { label: "Gitea", value: "gitea" },
   { label: "Container registry", value: "dockerRegistry" },
   { label: "Neon", value: "neon" },
+  { label: "CloudNativePG — Postgres the platform runs itself", value: "cnpg" },
 ];
 
 const name = ref("");
@@ -42,7 +43,11 @@ const password = ref("");
 const registryURL = ref("");
 const apiURL = ref("");
 
-const usesToken = computed(() => provider.value !== "dockerRegistry");
+// The one provider with nothing to store: CloudNativePG provisions with the
+// operator's own account, so there is no credential, no field for one, and a
+// credential sent anyway is refused rather than kept and never read.
+const needsCredential = computed(() => provider.value !== "cnpg");
+const usesToken = computed(() => needsCredential.value && provider.value !== "dockerRegistry");
 
 const guidance = computed(() => providerGuidance(provider.value, apiURL.value));
 
@@ -61,15 +66,16 @@ watch(open, (value) => {
   testError.value = "";
 });
 
-const credentialGiven = computed(() =>
-  usesToken.value ? Boolean(token.value) : Boolean(username.value && password.value),
-);
+const credentialGiven = computed(() => {
+  if (!needsCredential.value) return false;
+  return usesToken.value ? Boolean(token.value) : Boolean(username.value && password.value);
+});
 
 const ready = computed(() => {
   if (!editing.value && (!name.value || !provider.value)) return false;
   if (!editing.value && provider.value === "dockerRegistry" && !registryURL.value) return false;
   // Creating needs the credential; editing without one only changes config.
-  if (!editing.value && !credentialGiven.value) return false;
+  if (!editing.value && needsCredential.value && !credentialGiven.value) return false;
   if (editing.value && !credentialGiven.value && !config.value) return false;
   return true;
 });
@@ -92,7 +98,9 @@ const testing = ref(false);
 
 // Editing can re-check the stored credential without retyping it; creating
 // has nothing to test until a credential is there.
-const testable = computed(() => credentialGiven.value || editing.value);
+// A provider with no credential is still testable, and the test is the useful
+// one: whether the platform can run a database here at all.
+const testable = computed(() => credentialGiven.value || editing.value || !needsCredential.value);
 
 // Any change to what would be tested makes the old verdict stale.
 watch([provider, token, username, password, registryURL, apiURL], () => {
@@ -144,7 +152,10 @@ async function save() {
         name: name.value,
         provider: provider.value,
         config: config.value,
-        credential: credential.value,
+        // A provider with nothing to store sends nothing: the API refuses a
+        // credential it would never read, because one somebody rotates
+        // believing it matters is worse than none.
+        credential: needsCredential.value ? credential.value : undefined,
       });
       toast.add({ title: `Connection ${created.name} created`, color: "success", icon: "i-lucide-plug" });
     }

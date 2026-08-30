@@ -56,6 +56,41 @@ function entries(value: string): string[] {
     .filter(Boolean);
 }
 
+// What the database itself has to be. All four are optional and all four are
+// applied when it is created: a major version is not something to change under
+// a live Postgres, so asking for a different one is asking for a different
+// database. An extension nothing can supply fails the claim with a message
+// naming it, which is the whole point of asking here rather than finding out
+// in a crash loop.
+const pgVersion = ref("");
+const pgExtensions = ref("");
+const pgStorageSize = ref("");
+const pgStorageClass = ref("");
+
+// The majors CloudNativePG publishes images for, newest first. Empty takes the
+// platform's own default, which is what most claims want.
+const versionOptions = [
+  { label: "the platform's default", value: "" },
+  ...["18", "17", "16", "15", "14", "13"].map((major) => ({ label: major, value: major })),
+];
+
+/** The postgres block as the API takes it, or nothing when nothing was asked
+ * for — an empty block on the claim would say the developer chose defaults
+ * they never saw. */
+function postgresRequest() {
+  const extensions = entries(pgExtensions.value);
+  const storage = {
+    ...(pgStorageSize.value.trim() ? { size: pgStorageSize.value.trim() } : {}),
+    ...(pgStorageClass.value.trim() ? { storageClass: pgStorageClass.value.trim() } : {}),
+  };
+  const postgres = {
+    ...(pgVersion.value ? { version: pgVersion.value } : {}),
+    ...(extensions.length ? { extensions } : {}),
+    ...(Object.keys(storage).length ? { storage } : {}),
+  };
+  return Object.keys(postgres).length ? postgres : undefined;
+}
+
 const policyOptions = [
   { label: "Retain — keep the database when the claim is deleted", value: "Retain" },
   { label: "Delete — destroy the database and its data with the claim", value: "Delete" },
@@ -97,6 +132,10 @@ watch(open, (value) => {
   callbackPaths.value = "";
   extraRedirectURIs.value = "";
   scopes.value = "";
+  pgVersion.value = "";
+  pgExtensions.value = "";
+  pgStorageSize.value = "";
+  pgStorageClass.value = "";
   void loadConnections();
 });
 
@@ -128,6 +167,7 @@ async function save() {
           type: type.value,
           previewBranching: previewBranching.value,
           deletionPolicy: deletionPolicy.value,
+          ...(postgresRequest() ? { postgres: postgresRequest() } : {}),
           ...(dataClass.value ? { dataClass: dataClass.value } : {}),
         };
     const created = await api.createClaim(claim);
@@ -223,15 +263,52 @@ async function save() {
           </UFormField>
           <p v-if="connectionsLoaded && !available.length" class="text-xs text-muted">
             No connection can provision databases —
-            <template v-if="managesConnections">create one first (e.g. a Neon connection) on the Connections page.</template>
-            <template v-else>ask an operator to add one (e.g. a Neon connection).</template>
+            <template v-if="managesConnections">
+              create one first on the Connections page — CloudNativePG for a database the platform runs itself and
+              needs no account anywhere, or Neon for a hosted one.
+            </template>
+            <template v-else>
+              ask an operator to add one — CloudNativePG for a database the platform runs itself, or Neon for a
+              hosted one.
+            </template>
           </p>
 
           <USwitch
             v-model="previewBranching"
             label="Preview branching"
-            description="Every preview environment gets its own database branch, created and torn down with the preview."
+            description="Every preview environment gets a database of its own, created and torn down with the preview. On a self-hosted Postgres it is a new, empty database — never a copy of production — and the claim says so."
           />
+
+          <div class="grid gap-4 sm:grid-cols-2">
+            <UFormField label="Postgres version" help="Empty takes the platform's default.">
+              <USelect v-model="pgVersion" :items="versionOptions" class="w-full" />
+            </UFormField>
+            <UFormField
+              label="Extensions"
+              help="Created in the database when it is built, so the application never has to. postgis, vector, pg_trgm."
+            >
+              <UInput v-model="pgExtensions" placeholder="postgis vector" class="w-full font-mono" />
+            </UFormField>
+          </div>
+          <p class="text-xs text-muted">
+            A version or an extension the connection cannot supply fails the claim with a message saying what is
+            available — rather than binding and letting the application die on a
+            <span class="font-mono">CREATE EXTENSION</span> later. A connection to a hosted Postgres cannot be asked
+            for either, and says so.
+          </p>
+
+          <div class="grid gap-4 sm:grid-cols-2">
+            <UFormField label="Storage" help="A Kubernetes quantity. Empty takes the platform's default.">
+              <UInput v-model="pgStorageSize" placeholder="10Gi" class="w-full font-mono" />
+            </UFormField>
+            <UFormField label="Storage class" help="Empty takes the platform's default.">
+              <UInput v-model="pgStorageClass" placeholder="fast-ssd" class="w-full font-mono" />
+            </UFormField>
+          </div>
+          <p class="text-xs text-muted">
+            All four are applied when the database is created. Changing them afterwards asks for a different
+            database rather than reshaping this one.
+          </p>
 
           <UFormField
             label="On claim deletion"
