@@ -61,7 +61,7 @@ func gitHubConnection(name, apiURL, token string) []runtime.Object {
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespace},
 		Spec: kitchenv1alpha1.ConnectionSpec{
 			Provider:             "github",
-			CredentialsSecretRef: kitchenv1alpha1.LocalObjectReference{Name: secretName},
+			CredentialsSecretRef: kitchenv1alpha1.CredentialsReference{Name: secretName},
 			Config:               &runtime.RawExtension{Raw: []byte(`{"apiUrl": "` + apiURL + `"}`)},
 		},
 	}
@@ -130,7 +130,7 @@ func TestListingRepositoriesOfAProviderWithoutEnumeration(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "lab", Namespace: testNamespace},
 		Spec: kitchenv1alpha1.ConnectionSpec{
 			Provider:             "gitlab",
-			CredentialsSecretRef: kitchenv1alpha1.LocalObjectReference{Name: connectionSecretPrefix + "lab"},
+			CredentialsSecretRef: kitchenv1alpha1.CredentialsReference{Name: connectionSecretPrefix + "lab"},
 		},
 	}
 	secret := &corev1.Secret{

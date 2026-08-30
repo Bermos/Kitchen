@@ -34,7 +34,7 @@ func connection(providerName string, config string) *kitchenv1alpha1.Connection 
 		ObjectMeta: metav1.ObjectMeta{Name: "conn", Namespace: "kitchen-system"},
 		Spec: kitchenv1alpha1.ConnectionSpec{
 			Provider:             providerName,
-			CredentialsSecretRef: kitchenv1alpha1.LocalObjectReference{Name: "creds"},
+			CredentialsSecretRef: kitchenv1alpha1.CredentialsReference{Name: "creds"},
 		},
 	}
 	if config != "" {

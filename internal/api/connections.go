@@ -93,6 +93,16 @@ var tokenProviders = map[string]bool{
 	"neon":   true,
 }
 
+// knownProviders is every provider the API accepts, credential or not, and
+// providerNames is the same list for the refusal message. cnpg is in neither
+// map above because it stores nothing.
+var knownProviders = map[string]bool{
+	"github": true, "gitlab": true, "gitea": true,
+	registryProvider: true, "neon": true, provider.ProviderCNPG: true,
+}
+
+var providerNames = []string{"github", "gitlab", "gitea", registryProvider, "neon", provider.ProviderCNPG}
+
 const registryProvider = "dockerRegistry"
 
 // connectionSecretData turns a credential into the secret the reconcilers
@@ -119,7 +129,7 @@ func connectionSecretData(providerName string, config map[string]any, credential
 		}
 		return map[string][]byte{corev1.DockerConfigJsonKey: dockerConfig}, corev1.SecretTypeDockerConfigJson, nil
 	default:
-		return nil, "", fmt.Errorf("unknown provider %q: one of github, gitlab, gitea, dockerRegistry, neon", providerName)
+		return nil, "", fmt.Errorf("unknown provider %q: one of %s", providerName, strings.Join(providerNames, ", "))
 	}
 }
 
@@ -204,13 +214,32 @@ func (s *Server) createConnection(w http.ResponseWriter, req *http.Request) {
 		badRequest(w, "name must work as a DNS label — lowercase letters, digits and '-', starting and ending alphanumeric (got %q)", body.Name)
 		return
 	}
-	if body.Credential == nil {
+	// The one provider with nothing to store: cnpg provisions Postgres into
+	// this cluster with the operator's own account. A credential sent for it
+	// is refused rather than stored and ignored, because a credential nobody
+	// reads is worse than none — somebody would rotate it believing it
+	// mattered.
+	needsCredential := provider.NeedsCredentials(body.Provider)
+	if needsCredential && body.Credential == nil {
 		badRequest(w, "credential is required: the operator stores it in a Secret and never reads it back to you")
 		return
 	}
-	data, secretType, err := connectionSecretData(body.Provider, body.Config, body.Credential)
-	if err != nil {
-		badRequest(w, "%s", err.Error())
+	if !needsCredential && body.Credential != nil {
+		badRequest(w, "provider %s takes no credential: it provisions Postgres into this cluster with the "+
+			"operator's own account, and there is nothing to store", body.Provider)
+		return
+	}
+	var data map[string][]byte
+	var secretType corev1.SecretType
+	if needsCredential {
+		var err error
+		data, secretType, err = connectionSecretData(body.Provider, body.Config, body.Credential)
+		if err != nil {
+			badRequest(w, "%s", err.Error())
+			return
+		}
+	} else if !knownProviders[body.Provider] {
+		badRequest(w, "unknown provider %q: one of %s", body.Provider, strings.Join(providerNames, ", "))
 		return
 	}
 	config, err := rawConfig(body.Config)
@@ -231,6 +260,11 @@ func (s *Server) createConnection(w http.ResponseWriter, req *http.Request) {
 	}
 
 	secretName := connectionSecretPrefix + body.Name
+	credentialsRef := kitchenv1alpha1.CredentialsReference{Name: secretName}
+	if !needsCredential {
+		credentialsRef = kitchenv1alpha1.CredentialsReference{}
+		secretName = ""
+	}
 	caller, _ := CallerFrom(ctx)
 	connection := &kitchenv1alpha1.Connection{
 		ObjectMeta: metav1.ObjectMeta{
@@ -240,7 +274,7 @@ func (s *Server) createConnection(w http.ResponseWriter, req *http.Request) {
 		},
 		Spec: kitchenv1alpha1.ConnectionSpec{
 			Provider:             body.Provider,
-			CredentialsSecretRef: kitchenv1alpha1.LocalObjectReference{Name: secretName},
+			CredentialsSecretRef: credentialsRef,
 			Config:               config,
 		},
 	}
@@ -258,9 +292,11 @@ func (s *Server) createConnection(w http.ResponseWriter, req *http.Request) {
 	}) {
 		return
 	}
-	if err := s.writeCredentialsSecret(req, secretName, data, secretType); err != nil {
-		s.writeError(w, err)
-		return
+	if needsCredential {
+		if err := s.writeCredentialsSecret(req, secretName, data, secretType); err != nil {
+			s.writeError(w, err)
+			return
+		}
 	}
 	if err := s.Client.Create(ctx, connection); err != nil {
 		s.writeError(w, err)
@@ -365,6 +401,9 @@ func (s *Server) testConnection(w http.ResponseWriter, req *http.Request) {
 	// which keeps this endpoint on the same code path as the reconciler.
 	creds := &corev1.Secret{}
 	switch {
+	case !provider.NeedsCredentials(providerName):
+		// Nothing to try: the test is whether this cluster runs the database
+		// operator, which the probe asks the cluster and not a credential.
 	case body.Credential != nil:
 		data, secretType, err := connectionSecretData(providerName, config, body.Credential)
 		if err != nil {
@@ -401,7 +440,7 @@ func (s *Server) testConnection(w http.ResponseWriter, req *http.Request) {
 
 	factory := s.Probes
 	if factory == nil {
-		factory = provider.Default
+		factory = provider.WithCluster(s.Client)
 	}
 	credProbe, err := factory(conn, creds)
 	if errors.Is(err, provider.ErrNotImplemented) {
@@ -461,6 +500,11 @@ func (s *Server) patchConnection(w http.ResponseWriter, req *http.Request) {
 		effectiveConfig = *body.Config
 	}
 
+	if body.Credential != nil && !provider.NeedsCredentials(connection.Spec.Provider) {
+		badRequest(w, "provider %s takes no credential: it provisions Postgres into this cluster with the "+
+			"operator's own account, and there is nothing to rotate", connection.Spec.Provider)
+		return
+	}
 	if body.Credential != nil {
 		data, secretType, err := connectionSecretData(connection.Spec.Provider, effectiveConfig, body.Credential)
 		if err != nil {

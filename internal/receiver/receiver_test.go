@@ -84,7 +84,7 @@ func newReceiverForProvider(
 		ObjectMeta: metav1.ObjectMeta{Name: "gh", Namespace: "default"},
 		Spec: kitchenv1alpha1.ConnectionSpec{
 			Provider:             provider,
-			CredentialsSecretRef: kitchenv1alpha1.LocalObjectReference{Name: "gh-creds"},
+			CredentialsSecretRef: kitchenv1alpha1.CredentialsReference{Name: "gh-creds"},
 		},
 	}
 

@@ -105,7 +105,7 @@ var _ = Describe("Project Controller", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: "gh", Namespace: namespace},
 				Spec: kitchenv1alpha1.ConnectionSpec{
 					Provider:             "github",
-					CredentialsSecretRef: kitchenv1alpha1.LocalObjectReference{Name: "gh-creds"},
+					CredentialsSecretRef: kitchenv1alpha1.CredentialsReference{Name: "gh-creds"},
 				},
 			}
 			Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, gh))).To(Succeed())
@@ -114,7 +114,7 @@ var _ = Describe("Project Controller", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: "registry", Namespace: namespace},
 				Spec: kitchenv1alpha1.ConnectionSpec{
 					Provider:             "dockerRegistry",
-					CredentialsSecretRef: kitchenv1alpha1.LocalObjectReference{Name: "registry-creds"},
+					CredentialsSecretRef: kitchenv1alpha1.CredentialsReference{Name: "registry-creds"},
 				},
 			}
 			Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, registry))).To(Succeed())

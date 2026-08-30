@@ -79,7 +79,7 @@ var _ = Describe("Connection Controller", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
 				Spec: kitchenv1alpha1.ConnectionSpec{
 					Provider:             providerName,
-					CredentialsSecretRef: kitchenv1alpha1.LocalObjectReference{Name: name + "-creds"},
+					CredentialsSecretRef: kitchenv1alpha1.CredentialsReference{Name: name + "-creds"},
 				},
 			}
 			if apiURL != "" {
@@ -213,7 +213,7 @@ var _ = Describe("Connection Controller", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: "gh-orphan", Namespace: namespace},
 				Spec: kitchenv1alpha1.ConnectionSpec{
 					Provider:             "github",
-					CredentialsSecretRef: kitchenv1alpha1.LocalObjectReference{Name: "does-not-exist"},
+					CredentialsSecretRef: kitchenv1alpha1.CredentialsReference{Name: "does-not-exist"},
 				},
 			}
 			Expect(k8sClient.Create(ctx, conn)).To(Succeed())

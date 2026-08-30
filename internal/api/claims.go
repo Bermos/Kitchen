@@ -22,10 +22,13 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation"
@@ -56,6 +59,14 @@ type createClaimRequest struct {
 	Type             string `json:"type"`
 	PreviewBranching bool   `json:"previewBranching,omitempty"`
 	DeletionPolicy   string `json:"deletionPolicy,omitempty"`
+
+	// Postgres is what the database itself has to be: a major version, the
+	// extensions the application will call for, and the volume behind it.
+	// Only the shape is checked here — whether an extension can actually be
+	// supplied is the provisioner's answer, and it lands on the claim as a
+	// failure with the provider's own words, because the API cannot know
+	// which images the connection was configured with.
+	Postgres *kitchenv1alpha1.PostgresConfig `json:"postgres,omitempty"`
 
 	// DataClass classifies the data the resource will hold: public,
 	// internal, confidential or strictlyConfidential. It may not exceed the
@@ -228,9 +239,16 @@ func (s *Server) claimShape(
 		if !s.requireConnection(ctx, w, "connection", body.Connection, kitchenv1alpha1.CapabilityDatabase) {
 			return nil, nil, false
 		}
+		postgres, ok := validPostgresConfig(w, body.Postgres)
+		if !ok {
+			return nil, nil, false
+		}
 		var config *runtime.RawExtension
-		if body.PreviewBranching {
-			raw, err := json.Marshal(map[string]any{"previewBranching": true})
+		if body.PreviewBranching || postgres != nil {
+			raw, err := json.Marshal(claimConfigBody{
+				PreviewBranching: body.PreviewBranching,
+				Postgres:         postgres,
+			})
 			if err != nil {
 				s.writeError(w, err)
 				return nil, nil, false
@@ -240,9 +258,17 @@ func (s *Server) claimShape(
 		return config, &kitchenv1alpha1.LocalObjectReference{Name: body.Connection}, true
 	}
 
-	// type oidcClient. There is no Connection to name: the client is
-	// registered at the identity provider the platform is already configured
-	// with, by the operator's own credential.
+	return s.oidcClaimShape(w, body)
+}
+
+// oidcClaimShape is the other half of claimShape: type oidcClient, which has
+// no Connection to name because the client is registered at the identity
+// provider the platform is already configured with, by the operator's own
+// credential.
+func (s *Server) oidcClaimShape(
+	w http.ResponseWriter,
+	body *createClaimRequest,
+) (*runtime.RawExtension, *kitchenv1alpha1.LocalObjectReference, bool) {
 	if body.Connection != "" {
 		badRequest(w, "an %s claim takes no connection: the client is registered at the platform's own "+
 			"identity provider, and there is no Connection in front of it",
@@ -253,6 +279,11 @@ func (s *Server) claimShape(
 		badRequest(w, "previewBranching belongs to a claim of type %s: an OAuth client is not branched per "+
 			"preview, its redirect list grows one entry per preview instead",
 			kitchenv1alpha1.ClaimTypePostgres)
+		return nil, nil, false
+	}
+	if body.Postgres != nil {
+		badRequest(w, "postgres belongs to a claim of type %s: an OAuth client has no version, no extensions "+
+			"and no volume", kitchenv1alpha1.ClaimTypePostgres)
 		return nil, nil, false
 	}
 	if body.DeletionPolicy != "" {
@@ -307,6 +338,92 @@ func (s *Server) claimShape(
 	}
 	return &runtime.RawExtension{Raw: raw}, nil, true
 }
+
+// claimConfigBody is spec.config as this API writes it. It is the platform's
+// own slice of that object — the plugin's half is what the provisioner reads —
+// and it is spelled here rather than reused from the CRD package because the
+// CRD's copy is unexported on purpose: what is written into a RawExtension is
+// the API's contract with its callers, and it should have to change on
+// purpose.
+type claimConfigBody struct {
+	PreviewBranching bool                            `json:"previewBranching,omitempty"`
+	Postgres         *kitchenv1alpha1.PostgresConfig `json:"postgres,omitempty"`
+}
+
+// validPostgresConfig checks the shape of what a postgres claim asks of its
+// database, and normalizes it: an empty block is nothing rather than an empty
+// object on the spec.
+//
+// Only shape. Whether the version exists and whether an extension can be
+// supplied is the provisioner's to answer against the images its Connection
+// was configured with, and the answer lands on the claim's status as a
+// failure naming what could not be supplied. The division matters: this layer
+// refuses what is not a version, that layer refuses what is not available.
+func validPostgresConfig(
+	w http.ResponseWriter,
+	cfg *kitchenv1alpha1.PostgresConfig,
+) (*kitchenv1alpha1.PostgresConfig, bool) {
+	if cfg == nil {
+		return nil, true
+	}
+	out := kitchenv1alpha1.PostgresConfig{
+		Version: strings.TrimSpace(cfg.Version),
+		Storage: kitchenv1alpha1.PostgresStorage{
+			Size:         strings.TrimSpace(cfg.Storage.Size),
+			StorageClass: strings.TrimSpace(cfg.Storage.StorageClass),
+		},
+	}
+	if out.Version != "" {
+		major, err := strconv.Atoi(out.Version)
+		if err != nil || major < 9 || major > 99 {
+			badRequest(w, "postgres.version is a major version and nothing else — \"17\", not %q. Which majors "+
+				"this connection can actually serve is the connection's answer, and a version it cannot serve "+
+				"fails the claim with the list", cfg.Version)
+			return nil, false
+		}
+	}
+	for _, extension := range cfg.Extensions {
+		extension = strings.TrimSpace(extension)
+		if extension == "" {
+			continue
+		}
+		if !extensionNamePattern.MatchString(extension) {
+			badRequest(w, "postgres.extensions are the identifiers CREATE EXTENSION takes — letters, digits "+
+				"and underscores (got %q)", extension)
+			return nil, false
+		}
+		out.Extensions = append(out.Extensions, extension)
+	}
+	if out.Storage.Size != "" {
+		quantity, err := resource.ParseQuantity(out.Storage.Size)
+		if err != nil {
+			badRequest(w, "postgres.storage.size is a Kubernetes quantity — \"10Gi\" (got %q): %s",
+				cfg.Storage.Size, err.Error())
+			return nil, false
+		}
+		if quantity.Sign() <= 0 {
+			badRequest(w, "postgres.storage.size must be more than nothing (got %q)", cfg.Storage.Size)
+			return nil, false
+		}
+	}
+	if out.Storage.StorageClass != "" {
+		if errs := validation.IsDNS1123Subdomain(out.Storage.StorageClass); len(errs) > 0 {
+			badRequest(w, "postgres.storage.storageClass must be a StorageClass name (got %q): %s",
+				cfg.Storage.StorageClass, strings.Join(errs, "; "))
+			return nil, false
+		}
+	}
+	if out.Version == "" && len(out.Extensions) == 0 && out.Storage.Size == "" && out.Storage.StorageClass == "" {
+		return nil, true
+	}
+	return &out, true
+}
+
+// extensionNamePattern is what may be written into the bootstrap SQL the
+// provisioner builds. It is checked here as well as there because a refusal
+// at the door explains itself better than one three layers in — and because
+// nothing should be able to reach a CREATE EXTENSION statement unchecked.
+var extensionNamePattern = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_-]*$`)
 
 func (s *Server) deleteClaim(w http.ResponseWriter, req *http.Request) {
 	ctx := req.Context()

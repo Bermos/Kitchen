@@ -139,6 +139,12 @@ type KitchenReconciler struct {
 	// singleton rather than failing quietly.
 	KedaInstall KedaInstallConfig
 
+	// CNPGInstall is what the chart said about installing the platform's own
+	// database operator. A zero value means the installation granted no
+	// account to install with, and spec.databases.install says so on the
+	// singleton rather than failing quietly.
+	CNPGInstall CNPGInstallConfig
+
 	// Audit is the platform's audit recorder, read here for the sequence
 	// number the platform publishes as the chain's external anchor. This
 	// reconciler records nothing itself: the Kitchen singleton is
@@ -210,6 +216,7 @@ func (r *KitchenReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	registryReady := r.reconcileRegistry(ctx, kitchen, setCond)
 	accessReady := r.reconcileAccess(ctx, kitchen, setCond)
 	idlingReady := r.reconcileKeda(ctx, kitchen, setCond)
+	databasesReady := r.reconcileDatabases(ctx, kitchen, setCond)
 	programmed := r.observeGateway(ctx, kitchen, setCond)
 	componentsHealthy := r.surveyComponents(ctx, kitchen, setCond)
 	setCond(condReady, metav1.ConditionTrue, "Reconciled", "platform infrastructure is in place")
@@ -226,9 +233,10 @@ func (r *KitchenReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		"complianceReady", complianceReady,
 		"operatorsConfigured", accessReady,
 		"scaleToZeroReady", idlingReady,
+		"databasesReady", databasesReady,
 		"componentsHealthy", componentsHealthy)
 	if !programmed || !schemaReady || !gateReady || !registryReady || !certReady ||
-		!complianceReady || !accessReady || !idlingReady || !componentsHealthy {
+		!complianceReady || !accessReady || !idlingReady || !databasesReady || !componentsHealthy {
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 	return ctrl.Result{}, nil

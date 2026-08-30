@@ -1,0 +1,40 @@
+{{- include "kitchen.validate" . -}}
+{{- if .Values.databases.install.enabled }}
+# The identity the platform installs its own database operator as.
+#
+# It is bound to cluster-admin, for the same reason the KEDA install account
+# is: the job it runs installs CloudNativePG, which applies CRDs, ClusterRoles,
+# a validating webhook configuration and a namespace. An enumerated role would
+# have to track an upstream chart's manifest across every version it releases,
+# and would break the first time it added a kind.
+#
+# What makes it acceptable rather than alarming is the same as there: it is a
+# separate account from the manager's, so the grant is visible in one place,
+# revocable by setting `databases.install.enabled=false`, and removed with the
+# release. The operator can only ever use it to run the one install the argv in
+# internal/controller/cnpg.go builds — nothing from a request reaches it.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "kitchen.cnpgInstallServiceAccountName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kitchen.labels" . | nindent 4 }}
+    app.kubernetes.io/component: cnpg-install
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "kitchen.fullname" . }}-cnpg-install
+  labels:
+    {{- include "kitchen.labels" . | nindent 4 }}
+    app.kubernetes.io/component: cnpg-install
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "kitchen.cnpgInstallServiceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

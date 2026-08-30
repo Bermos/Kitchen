@@ -110,6 +110,19 @@ spec:
             {{- end }}
             - --keda-install-timeout={{ .Values.scaleToZero.install.timeout }}
             {{- end }}
+            {{- if .Values.databases.install.enabled }}
+            # Whether the operator *may* install CloudNativePG is the chart's
+            # to say, because the account is the chart's to create — and it is
+            # a flag for the same reason self-update's are. Whether it *does*
+            # is spec.databases.install on the singleton.
+            - --cnpg-install-service-account={{ include "kitchen.cnpgInstallServiceAccountName" . }}
+            - --cnpg-install-image={{ .Values.databases.install.image.repository }}:{{ .Values.databases.install.image.tag }}
+            - --cnpg-chart-repository={{ .Values.databases.install.chartRepository }}
+            {{- with .Values.databases.install.version }}
+            - --cnpg-chart-version={{ . }}
+            {{- end }}
+            - --cnpg-install-timeout={{ .Values.databases.install.timeout }}
+            {{- end }}
             {{- with .Values.extraArgs }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

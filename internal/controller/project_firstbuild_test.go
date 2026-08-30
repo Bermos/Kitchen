@@ -131,14 +131,14 @@ var _ = Describe("Project first build", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: "seed-gh", Namespace: namespace},
 				Spec: kitchenv1alpha1.ConnectionSpec{
 					Provider:             "github",
-					CredentialsSecretRef: kitchenv1alpha1.LocalObjectReference{Name: "seed-creds"},
+					CredentialsSecretRef: kitchenv1alpha1.CredentialsReference{Name: "seed-creds"},
 				},
 			},
 			{
 				ObjectMeta: metav1.ObjectMeta{Name: "seed-registry", Namespace: namespace},
 				Spec: kitchenv1alpha1.ConnectionSpec{
 					Provider:             "dockerRegistry",
-					CredentialsSecretRef: kitchenv1alpha1.LocalObjectReference{Name: "seed-creds"},
+					CredentialsSecretRef: kitchenv1alpha1.CredentialsReference{Name: "seed-creds"},
 				},
 			},
 		} {

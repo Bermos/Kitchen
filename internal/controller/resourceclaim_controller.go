@@ -98,6 +98,13 @@ type ResourceClaimReconciler struct {
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=kitchens;domains,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;create
+// The self-hosted database provider: CloudNativePG's Clusters are what a
+// postgres claim becomes in this cluster, and the pod and node reads are how
+// the claim's residency is *reported* — the node its primary landed on is
+// where the data actually is.
+// +kubebuilder:rbac:groups=postgresql.cnpg.io,resources=clusters,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch
 
 // Reconcile drives a ResourceClaim to Bound: resolve the Connection, require
 // its database capability, provision, and write the binding Secret.
@@ -267,8 +274,23 @@ func (r *ResourceClaimReconciler) provision(
 		// binding.
 	}
 
-	instance, err := provisioner.Provision(ctx, instanceName(claim))
-	if err != nil {
+	instance, err := provisionInstance(ctx, claim, provisioner)
+	switch {
+	case errors.Is(err, database.ErrNotReady):
+		// The database exists and is coming up. That is Pending and not
+		// Failed: a database the platform runs itself takes minutes, and a
+		// claim that read Failed for every one of them would teach everybody
+		// to ignore the word.
+		result, err := r.pending(ctx, claim, "Provisioning", err)
+		return result, true, err
+	case errors.Is(err, database.ErrUnsatisfiable):
+		// The claim asked for something no image can supply. Nothing was
+		// created and retrying will refuse again, so the message is the whole
+		// answer — which is the point of asking for capabilities on the claim
+		// rather than discovering them in a crash loop.
+		result, err := r.failed(ctx, claim, "RequirementsUnsatisfiable", err)
+		return result, true, err
+	case err != nil:
 		result, err := r.failed(ctx, claim, "ProvisionFailed", err)
 		return result, true, err
 	}
@@ -286,6 +308,49 @@ func (r *ResourceClaimReconciler) provision(
 	setClaimCondition(claim, condProvisioned, metav1.ConditionTrue, "Provisioned",
 		fmt.Sprintf("%s provisioned as %s", claim.Spec.Type, instance.ID))
 	return ctrl.Result{}, false, nil
+}
+
+// provisionInstance asks the provisioner for the claim's database, with the
+// claim's requirements where the provisioner can take them.
+//
+// A claim that asks for a Postgres version, an extension or a volume through
+// a provisioner that cannot answer any of those is refused rather than
+// provisioned as though it had not asked. The alternative — provision it and
+// hope — is the exact failure this feature exists to remove, moved one
+// provider along.
+func provisionInstance(
+	ctx context.Context,
+	claim *kitchenv1alpha1.ResourceClaim,
+	provisioner database.Provisioner,
+) (database.Instance, error) {
+	name := instanceName(claim)
+	requirements := claimRequirements(claim)
+	if requirements.Empty() {
+		return provisioner.Provision(ctx, name)
+	}
+	capable, ok := provisioner.(database.CapableProvisioner)
+	if !ok {
+		return database.Instance{}, fmt.Errorf(
+			"%w: this claim asks for a Postgres version, extensions or storage, and connection %q cannot be "+
+				"asked for any of them — claim through a %s connection, which provisions into this cluster, "+
+				"or drop config.postgres from the claim",
+			database.ErrUnsatisfiable, claim.Connection(), database.ProviderCNPG)
+	}
+	return capable.ProvisionWith(ctx, name, requirements)
+}
+
+// claimRequirements reads the claim's spec.config into what the provisioner
+// takes. The two vocabularies are kept apart on purpose: the CRD's is what
+// somebody writes, the provider package's is what a provisioner answers, and
+// neither should have to move because the other did.
+func claimRequirements(claim *kitchenv1alpha1.ResourceClaim) database.Requirements {
+	cfg := claim.Postgres()
+	return database.Requirements{
+		Version:      cfg.Version,
+		Extensions:   cfg.Extensions,
+		StorageSize:  cfg.Storage.Size,
+		StorageClass: cfg.Storage.StorageClass,
+	}
 }
 
 // reconcileBranches keeps the provider-side branches in step with the
@@ -626,22 +691,53 @@ func hasCapability(conn *kitchenv1alpha1.Connection, capability kitchenv1alpha1.
 // provisionerFor builds the database provisioner for a Connection, reading
 // the API token from its credentials secret. The token never appears in any
 // status, log line or error this controller writes.
+//
+// A Connection that names no credentials secret is not an error here: the
+// self-hosted provider has no credential at all, because it provisions into
+// this cluster with the operator's own account. That is the one provider it
+// is true of, and the Connection CRD refuses an empty credentialsSecretRef
+// for every other.
 func (r *ResourceClaimReconciler) provisionerFor(ctx context.Context, conn *kitchenv1alpha1.Connection) (database.Provisioner, error) {
-	creds := &corev1.Secret{}
-	key := types.NamespacedName{Namespace: conn.Namespace, Name: conn.Spec.CredentialsSecretRef.Name}
-	if err := r.Get(ctx, key, creds); err != nil {
-		return nil, err
-	}
-	token := string(creds.Data[databaseTokenKey])
-	if token == "" {
-		return nil, fmt.Errorf("credentials secret %q has no %q key", conn.Spec.CredentialsSecretRef.Name, databaseTokenKey)
+	token := ""
+	if secretName := conn.Spec.CredentialsSecretRef.Name; secretName != "" {
+		creds := &corev1.Secret{}
+		key := types.NamespacedName{Namespace: conn.Namespace, Name: secretName}
+		if err := r.Get(ctx, key, creds); err != nil {
+			return nil, err
+		}
+		token = string(creds.Data[databaseTokenKey])
+		if token == "" {
+			return nil, fmt.Errorf("credentials secret %q has no %q key", secretName, databaseTokenKey)
+		}
 	}
 
 	factory := r.Databases
 	if factory == nil {
 		factory = database.Default
 	}
-	return factory(conn, token)
+	return factory(database.Options{
+		Connection: conn,
+		Token:      token,
+		Cluster:    r.Client,
+		Namespace:  r.databaseNamespace(ctx),
+	})
+}
+
+// databaseNamespace is where a self-hosted provisioner puts its databases —
+// the singleton's spec.databases.namespace, and the compiled-in default when
+// there is no singleton to read (a test cluster, or an operator running
+// before the platform object lands). It is deliberately not a project's
+// application namespace: that namespace is deleted with its project, and a
+// claim under deletionPolicy Retain has to survive exactly that.
+func (r *ResourceClaimReconciler) databaseNamespace(ctx context.Context) string {
+	kitchen := &kitchenv1alpha1.Kitchen{}
+	if err := r.Get(ctx, types.NamespacedName{Name: KitchenSingletonName}, kitchen); err != nil {
+		return database.DefaultDatabaseNamespace
+	}
+	if namespace := kitchen.Spec.Databases.Namespace; namespace != "" {
+		return namespace
+	}
+	return database.DefaultDatabaseNamespace
 }
 
 // provisionerForClaim resolves the claim's Connection first; used by

@@ -78,7 +78,7 @@ func sourceFixtures(
 		ObjectMeta: metav1.ObjectMeta{Name: "gh", Namespace: PlatformNamespace},
 		Spec: kitchenv1alpha1.ConnectionSpec{
 			Provider:             "github",
-			CredentialsSecretRef: kitchenv1alpha1.LocalObjectReference{Name: "gh-credentials"},
+			CredentialsSecretRef: kitchenv1alpha1.CredentialsReference{Name: "gh-credentials"},
 		},
 	}
 	credentials := &corev1.Secret{

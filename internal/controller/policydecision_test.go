@@ -92,7 +92,7 @@ func decisionFixtures(t *testing.T) (*DecisionRecorder, *fakeDecisionStore, *stu
 		ObjectMeta: metav1.ObjectMeta{Name: "registry", Namespace: PlatformNamespace},
 		Spec: kitchenv1alpha1.ConnectionSpec{
 			Provider:             "dockerRegistry",
-			CredentialsSecretRef: kitchenv1alpha1.LocalObjectReference{Name: "registry-credentials"},
+			CredentialsSecretRef: kitchenv1alpha1.CredentialsReference{Name: "registry-credentials"},
 			Config:               &runtime.RawExtension{Raw: []byte(`{"url":"registry.example.com/kitchen"}`)},
 		},
 	}

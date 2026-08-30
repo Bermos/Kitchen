@@ -137,18 +137,26 @@ func (r *ConnectionReconciler) probe(
 	conn *kitchenv1alpha1.Connection,
 	setCond func(string, metav1.ConditionStatus, string, string),
 ) time.Duration {
+	// A provider with no credential is not a provider with a missing one.
+	// cnpg provisions into this cluster with the operator's own account, so
+	// there is no Secret to find and its absence is the correct state rather
+	// than a fault to report.
 	creds := &corev1.Secret{}
-	key := types.NamespacedName{Namespace: conn.Namespace, Name: conn.Spec.CredentialsSecretRef.Name}
-	if err := r.Get(ctx, key, creds); err != nil {
-		setCond(condConnected, metav1.ConditionUnknown, reasonCredentialsMissing,
-			"not probed: "+err.Error())
-		setCond(condCredentialsValid, metav1.ConditionFalse, reasonCredentialsMissing, err.Error())
-		return connectionRetryInterval
+	if provider.NeedsCredentials(conn.Spec.Provider) {
+		key := types.NamespacedName{Namespace: conn.Namespace, Name: conn.Spec.CredentialsSecretRef.Name}
+		if err := r.Get(ctx, key, creds); err != nil {
+			setCond(condConnected, metav1.ConditionUnknown, reasonCredentialsMissing,
+				"not probed: "+err.Error())
+			setCond(condCredentialsValid, metav1.ConditionFalse, reasonCredentialsMissing, err.Error())
+			return connectionRetryInterval
+		}
 	}
 
 	factory := r.Probes
 	if factory == nil {
-		factory = provider.Default
+		// WithCluster rather than Default: the one provider that *is* this
+		// cluster is probed by asking the cluster, which no HTTP probe can do.
+		factory = provider.WithCluster(r.Client)
 	}
 	credProbe, err := factory(conn, creds)
 	if errors.Is(err, provider.ErrNotImplemented) {

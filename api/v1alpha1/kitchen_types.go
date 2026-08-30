@@ -183,6 +183,52 @@ type ScaleToZeroSpec struct {
 	Interceptor InterceptorSpec `json:"interceptor,omitempty"`
 }
 
+// DatabasesSpec is the platform's own Postgres: whether it runs one at all,
+// and where the databases it provisions live.
+//
+// A `postgres` ResourceClaim binds through a Connection, and one of the two
+// providers behind that is CloudNativePG — a database in the cluster Kitchen
+// was installed into, so that an installation with no SaaS account, or one
+// that will not put application data at a third party, has a database at all.
+// The provisioner needs nothing from here: it works against any CloudNativePG
+// in the cluster, whoever installed it. What this configures is the two
+// things the platform itself decides — whether to install one, and which
+// namespace the databases go in.
+type DatabasesSpec struct {
+	// Install lets the operator put CloudNativePG in the cluster itself, as a
+	// Helm release of its own, instead of expecting somebody to have run that
+	// install first. It is the same shape as spec.scaleToZero.install and it
+	// is off for the same reason: the job that runs helm is bound to
+	// cluster-admin, because installing an operator applies CRDs, ClusterRoles
+	// and a namespace, so the chart only creates that account when asked
+	// (`databases.install.enabled`).
+	//
+	// Where CloudNativePG is already serving, this does nothing at all. The
+	// platform records that it installed nothing and never writes to a release
+	// it does not own — cnpg is a popular thing to already have, and a
+	// platform that upgraded somebody's existing one would be a worse
+	// neighbour than one that never offered.
+	// +kubebuilder:default=false
+	// +optional
+	Install bool `json:"install,omitempty"`
+
+	// Namespace is where the provisioned database Clusters are created. It is
+	// deliberately not a project's application namespace: deleting a project
+	// deletes that namespace, and a claim under `deletionPolicy: Retain` has
+	// to survive exactly that.
+	// +kubebuilder:default=kitchen-databases
+	// +optional
+	Namespace string `json:"namespace,omitempty"`
+
+	// OperatorNamespace is where CloudNativePG itself runs — the namespace
+	// the install goes into, and the one an existing installation is expected
+	// in. It is upstream's own default, so that an installation which later
+	// takes cnpg over by hand finds it where its documentation says.
+	// +kubebuilder:default=cnpg-system
+	// +optional
+	OperatorNamespace string `json:"operatorNamespace,omitempty"`
+}
+
 // ImageRegistrySpec configures the registry the platform runs for itself: the
 // one a fresh install pushes to, so that building a project needs no registry
 // account and no credential of anyone's.
@@ -678,6 +724,15 @@ type KitchenSpec struct {
 	// +optional
 	ScaleToZero ScaleToZeroSpec `json:"scaleToZero,omitempty"`
 
+	// Databases configures the platform's own Postgres — where provisioned
+	// databases live, and whether the operator installs CloudNativePG itself.
+	// The empty-object default is what gives an installation predating the
+	// field the namespace defaults: structural defaulting only descends into
+	// objects that are present.
+	// +kubebuilder:default={}
+	// +optional
+	Databases DatabasesSpec `json:"databases,omitempty"`
+
 	// +optional
 	Observability ObservabilitySpec `json:"observability,omitempty"`
 
@@ -800,6 +855,34 @@ type ScaleToZeroStatus struct {
 	AddOnVersion string `json:"addOnVersion,omitempty"`
 }
 
+// DatabasesStatus records where CloudNativePG came from, so that "the
+// platform installed this" and "the platform found this" stay
+// distinguishable for as long as the installation lives — the same
+// distinction, for the same reason, as ScaleToZeroStatus.
+//
+// Managed is written once, when the operator's own install job succeeds, and
+// read forever after as permission to upgrade that release. A cluster that
+// already ran CloudNativePG is recorded with Managed false, and nothing the
+// operator does afterwards writes to a release it did not create. Either way
+// databases are provisioned through it: what the record decides is who may
+// upgrade it, not who may use it.
+type DatabasesStatus struct {
+	// Managed is true when the operator installed CloudNativePG, and false
+	// when it found it already serving.
+	// +optional
+	Managed bool `json:"managed,omitempty"`
+
+	// Namespace CloudNativePG itself runs in, as the platform installed it or
+	// expected to find it.
+	// +optional
+	Namespace string `json:"namespace,omitempty"`
+
+	// Version of the CloudNativePG chart the operator installed. Empty when
+	// it installed nothing.
+	// +optional
+	Version string `json:"version,omitempty"`
+}
+
 // KitchenStatus defines the observed state of the platform.
 type KitchenStatus struct {
 	// +optional
@@ -833,6 +916,12 @@ type KitchenStatus struct {
 	// or found it. Absent while nothing idles.
 	// +optional
 	ScaleToZero *ScaleToZeroStatus `json:"scaleToZero,omitempty"`
+
+	// Databases reports what the platform did about CloudNativePG: installed
+	// it, found it, or neither. Absent while nothing has asked for a
+	// database and the operator has not been told to install one.
+	// +optional
+	Databases *DatabasesStatus `json:"databases,omitempty"`
 
 	// Retention reports the retention model as it is actually in force, per
 	// class, with what each class currently holds and how far back it goes.

@@ -255,7 +255,7 @@ func fixtures() []runtime.Object {
 		ObjectMeta: metav1.ObjectMeta{Name: "gh", Namespace: testNamespace},
 		Spec: kitchenv1alpha1.ConnectionSpec{
 			Provider:             "github",
-			CredentialsSecretRef: kitchenv1alpha1.LocalObjectReference{Name: "gh-credentials"},
+			CredentialsSecretRef: kitchenv1alpha1.CredentialsReference{Name: "gh-credentials"},
 		},
 		Status: kitchenv1alpha1.ConnectionStatus{
 			Capabilities: []kitchenv1alpha1.Capability{kitchenv1alpha1.CapabilityGitSource},
@@ -265,7 +265,7 @@ func fixtures() []runtime.Object {
 		ObjectMeta: metav1.ObjectMeta{Name: "registry", Namespace: testNamespace},
 		Spec: kitchenv1alpha1.ConnectionSpec{
 			Provider:             "dockerRegistry",
-			CredentialsSecretRef: kitchenv1alpha1.LocalObjectReference{Name: "registry-credentials"},
+			CredentialsSecretRef: kitchenv1alpha1.CredentialsReference{Name: "registry-credentials"},
 		},
 		Status: kitchenv1alpha1.ConnectionStatus{
 			Capabilities: []kitchenv1alpha1.Capability{kitchenv1alpha1.CapabilityImageStore},
@@ -1124,7 +1124,7 @@ func TestCreatingAProjectChecksItsConnections(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "fresh", Namespace: testNamespace},
 		Spec: kitchenv1alpha1.ConnectionSpec{
 			Provider:             "gitea",
-			CredentialsSecretRef: kitchenv1alpha1.LocalObjectReference{Name: "fresh-credentials"},
+			CredentialsSecretRef: kitchenv1alpha1.CredentialsReference{Name: "fresh-credentials"},
 		},
 	}
 	h := newHarness(t, nil, append(fixtures(), unreconciled)...)

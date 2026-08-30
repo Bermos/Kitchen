@@ -1595,6 +1595,15 @@ kubectl delete namespace kitchen-system
 | `scaleToZero.interceptor.service` | `keda-add-ons-http-interceptor-proxy` | Interceptor Service idling environments are routed through. The add-on names it after its own chart, so this is a constant. |
 | `scaleToZero.interceptor.namespace` | `keda` | Namespace the HTTP add-on was installed into. |
 | `scaleToZero.interceptor.port` | `8080` | Port the interceptor accepts traffic on. |
+| `databases.namespace` | `kitchen-databases` | Namespace provisioned databases live in. Not a project's own, so a `Retain`ed database survives the project's deletion. |
+| `databases.operatorNamespace` | `cnpg-system` | Namespace CloudNativePG itself runs in — where the install goes, and where an existing one is expected. |
+| `databases.install.enabled` | `false` | Let the operator install CloudNativePG itself. Creates a ServiceAccount bound to cluster-admin; does nothing on a cluster that already runs it. |
+| `databases.install.chartRepository` | `https://cloudnative-pg.github.io/charts` | Helm repository the chart is pulled from. |
+| `databases.install.version` | `""` | CloudNativePG chart version to install. Empty takes the operator's own pin. |
+| `databases.install.timeout` | `10m` | How long helm is given for the install. It waits for the operator's workloads. |
+| `databases.install.serviceAccountName` | `""` | Name of the install job's ServiceAccount. Generated when empty. |
+| `databases.install.image.repository` | `alpine/helm` | Image the install job runs helm from. |
+| `databases.install.image.tag` | `3.19.0` | Tag of that image. |
 | `api.port` | `8092` | Container port for the REST API. |
 | `api.service.type` / `.port` / `.annotations` | `ClusterIP` / `80` / `{}` | |
 | `api.route.enabled` | `true` | Publish the API on the shared Gateway under `/api/`. |

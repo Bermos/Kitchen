@@ -117,8 +117,8 @@ var _ = Describe("ResourceClaim Controller", func() {
 			Scheme: k8sClient.Scheme(),
 			// The provisioner the factory hands back is the real Neon client;
 			// only its API URL points at the fake.
-			Databases: func(_ *kitchenv1alpha1.Connection, token string) (database.Provisioner, error) {
-				return &database.Neon{APIURL: fake.URL(), Token: token}, nil
+			Databases: func(opts database.Options) (database.Provisioner, error) {
+				return &database.Neon{APIURL: fake.URL(), Token: opts.Token}, nil
 			},
 		}
 
@@ -147,7 +147,7 @@ var _ = Describe("ResourceClaim Controller", func() {
 			ObjectMeta: metav1.ObjectMeta{Name: connectionName, Namespace: namespace},
 			Spec: kitchenv1alpha1.ConnectionSpec{
 				Provider:             "neon",
-				CredentialsSecretRef: kitchenv1alpha1.LocalObjectReference{Name: credentialsName},
+				CredentialsSecretRef: kitchenv1alpha1.CredentialsReference{Name: credentialsName},
 			},
 		}
 		Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, connection))).To(Succeed())
