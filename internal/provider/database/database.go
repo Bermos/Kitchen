@@ -134,9 +134,11 @@ type Instance struct {
 	// costs the claim at policy time.
 	Provenance DataProvenance
 	// Region is where the provider actually placed the instance, in the
-	// provider's own vocabulary (a Neon region id). Empty when the provider
-	// reports no placement. It is recorded on the claim's status as the
-	// placement of record — reported, not declared.
+	// provider's own vocabulary: a Neon region id, or for a database this
+	// cluster runs, the topology the node its primary landed on declares.
+	// Empty when the provider reports no placement — an unlabelled node
+	// included. It is recorded on the claim's status as the placement of
+	// record — reported, not declared.
 	Region string
 }
 
@@ -161,6 +163,13 @@ type Branch struct {
 // CreateBranch return the existing instance or branch when one under that
 // name is already there (a reconcile may run twice), and the two Delete
 // operations treat already-absent as success.
+//
+// Provision and CreateBranch may also answer ErrNotReady, which is neither
+// success nor failure: the resource exists and is not serving yet. A
+// provisioner that finishes within its own call never returns it; one that
+// creates a database the cluster then has to start does, on every reconcile
+// until it is up, and the claim waits Pending rather than reading Failed for
+// the several minutes that takes.
 //
 // The results carry the data-class half of the contract. Provision and
 // CreateBranch declare, on the Instance or Branch they return, what the data
