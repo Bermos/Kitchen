@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.19.0](https://github.com/Bermos/Kitchen/compare/v0.18.0...v0.19.0) (2026-08-30)
+
+
+### Features
+
+* **api:** let a project hold a credential the platform did not mint ([00d4d2c](https://github.com/Bermos/Kitchen/commit/00d4d2c2940b57ff20917eaccf1df8bb8ff228d3)), closes [#235](https://github.com/Bermos/Kitchen/issues/235)
+* **cli:** kitchen secret, for the credentials the platform did not mint ([a5a44e6](https://github.com/Bermos/Kitchen/commit/a5a44e62141b976e2587efad06771b65af0b65f0)), closes [#235](https://github.com/Bermos/Kitchen/issues/235)
+* **operator:** let a project declare its workload a singleton ([7edbf29](https://github.com/Bermos/Kitchen/commit/7edbf2970be2d03aeef51ab0857fbf899cf0263b)), closes [#239](https://github.com/Bermos/Kitchen/issues/239)
+* **operator:** let a project say its workload is not request-driven ([839987d](https://github.com/Bermos/Kitchen/commit/839987de1ce84c9c07ce8cefa2a4fc7bfcba90a4)), closes [#240](https://github.com/Bermos/Kitchen/issues/240)
+* **operator:** provision Postgres into the cluster with CloudNativePG ([17204bb](https://github.com/Bermos/Kitchen/commit/17204bb69a8cbef3d0e8b518cb737bf27e8cb62f))
+* **operator:** start the application container with a command and arguments ([1243478](https://github.com/Bermos/Kitchen/commit/1243478b35d87428565e2ceca02a35a51dcb9270)), closes [#237](https://github.com/Bermos/Kitchen/issues/237)
+* **ui:** a project's own secrets, beside its variables ([cfc2144](https://github.com/Bermos/Kitchen/commit/cfc2144c06ae773f44d13fcecdb861e167df5302)), closes [#235](https://github.com/Bermos/Kitchen/issues/235)
+* **ui:** ask for the Postgres a project actually needs ([5698915](https://github.com/Bermos/Kitchen/commit/56989153c1d983e886403fe26e5b76ccdc14a36c))
+
+
+### Bug fixes
+
+* **api:** a database this platform runs is not a third party ([01470d4](https://github.com/Bermos/Kitchen/commit/01470d46c0431fef52a354a527fdc7c48f2ab122))
+* **cli:** put one JSON document on stdout when "kitchen api" is refused ([#233](https://github.com/Bermos/Kitchen/issues/233)) ([63bbf6b](https://github.com/Bermos/Kitchen/commit/63bbf6bef59a7f29c3e81c74327b58a4f6e66551))
+* **operator:** a preview database that is coming up has not failed ([a8868a9](https://github.com/Bermos/Kitchen/commit/a8868a9214fbadd611f5ebb63767ffbedd0a0950))
+* **operator:** probe application containers before serving traffic from them ([b84f69b](https://github.com/Bermos/Kitchen/commit/b84f69bab7bfcb4feb64753e29dbfb9e78c8206a)), closes [#236](https://github.com/Bermos/Kitchen/issues/236)
+* **operator:** two long claim names must not land on one database ([12da526](https://github.com/Bermos/Kitchen/commit/12da526808253158893ed6bd55645fd62a6c646f))
+
+
+### Documentation
+
+* **operator:** say what ErrNotReady and Region mean on the provider contract ([4739e4e](https://github.com/Bermos/Kitchen/commit/4739e4edb2c745e724d6387439a6acbb1ce8cf31))
+* write down the self-hosted database and what it can be asked for ([ed7eee0](https://github.com/Bermos/Kitchen/commit/ed7eee05a00a87276101dd5930f78169e1aaeed4))
+
 ## [0.18.0](https://github.com/Bermos/Kitchen/compare/v0.17.0...v0.18.0) (2026-08-26)
 
 
