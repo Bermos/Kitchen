@@ -40,9 +40,10 @@ import (
 // every provisioner has, and the shape a claim asking for capabilities cannot
 // be served by.
 type plainProvisioner struct {
-	instance database.Instance
-	err      error
-	branch   database.Branch
+	instance  database.Instance
+	err       error
+	branch    database.Branch
+	branchErr error
 }
 
 func (p *plainProvisioner) Provision(context.Context, string) (database.Instance, error) {
@@ -50,7 +51,7 @@ func (p *plainProvisioner) Provision(context.Context, string) (database.Instance
 }
 func (p *plainProvisioner) Deprovision(context.Context, string) error { return nil }
 func (p *plainProvisioner) CreateBranch(context.Context, string, string) (database.Branch, error) {
-	return p.branch, nil
+	return p.branch, p.branchErr
 }
 func (p *plainProvisioner) DeleteBranch(context.Context, string, string) error { return nil }
 
@@ -314,6 +315,37 @@ var _ = Describe("A postgres claim that asks for a particular database", func() 
 			"a preview's own empty database is synthetic, and that is what keeps production data out of previews")
 		Expect(claim.Status.DataProvenance).To(Equal(string(database.ProvenanceProduction)),
 			"the primary is still the production database")
+	})
+
+	// The same distinction the claim's own phase makes, one level down: a
+	// preview database that is still coming up has not failed.
+	It("says a preview database is coming up rather than that it failed", func() {
+		provisioner = &plainProvisioner{
+			instance: bound,
+			branchErr: fmt.Errorf("%w: database kitchen-clmaps-db-clmaps-pr-9 is still coming up",
+				database.ErrNotReady),
+		}
+		env := &kitchenv1alpha1.Environment{
+			ObjectMeta: metav1.ObjectMeta{Name: previewEnv, Namespace: namespace},
+			Spec: kitchenv1alpha1.EnvironmentSpec{
+				ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: projectName},
+				Type:       kitchenv1alpha1.EnvironmentPreview,
+				Preview:    &kitchenv1alpha1.PreviewInfo{PullRequest: 9, Branch: "feature/maps"},
+				ReleaseRef: kitchenv1alpha1.LocalObjectReference{Name: projectName + "-rel-1"},
+			},
+		}
+		Expect(k8sClient.Create(ctx, env)).To(Succeed())
+
+		createClaim(`{"previewBranching":true}`)
+		reconcileOnce()
+
+		claim := getClaim()
+		Expect(claim.Status.Phase).To(Equal(kitchenv1alpha1.ClaimBound),
+			"the shared binding works either way")
+		branches := meta.FindStatusCondition(claim.Status.Conditions, condBranchesReady)
+		Expect(branches).NotTo(BeNil())
+		Expect(branches.Status).To(Equal(metav1.ConditionFalse))
+		Expect(branches.Reason).To(Equal("BranchProvisioning"))
 	})
 
 	It("keeps ErrNotReady and ErrUnsatisfiable apart", func() {

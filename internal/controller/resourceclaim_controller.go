@@ -415,7 +415,7 @@ func (r *ResourceClaimReconciler) reconcileBranches(
 		branch, err := r.ensureBranch(ctx, claim, provisioner, appNS, env.Name, previous)
 		if err != nil {
 			claim.Status.Branches = kept
-			return r.branchesNotReady(claim, "BranchFailed", err)
+			return r.branchesNotReady(claim, branchReason(err), err)
 		}
 		kept = append(kept, branch)
 		delete(previous, env.Name)
@@ -505,6 +505,17 @@ func (r *ResourceClaimReconciler) deleteBranch(
 		return err
 	}
 	return nil
+}
+
+// branchReason tells a preview database that is still coming up apart from one
+// that failed. A database the platform runs itself takes minutes, and a
+// condition that read "failed" for every one of them would teach everybody to
+// ignore the word — the same distinction the claim's own phase makes.
+func branchReason(err error) string {
+	if errors.Is(err, database.ErrNotReady) {
+		return "BranchProvisioning"
+	}
+	return "BranchFailed"
 }
 
 // branchesNotReady records why the preview branches are not in step and hands
