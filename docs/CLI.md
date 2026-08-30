@@ -108,7 +108,7 @@ in a working directory has neither, and says `dev`.
 **The CLI authenticates with an API key**, exchanged at the platform's identity
 provider for the short-lived token the API actually sees — the flow
 [API.md](API.md#getting-a-token) documents for CI, used here for a laptop as
-well. Issue one from a project's Keys tab in the dashboard, or with `POST
+well. Issue one from a project's People tab in the dashboard, or with `POST
 /projects/{name}/keys`.
 
 ```sh
@@ -340,8 +340,8 @@ Two things about the API shape this command, and both are deliberate (see
 ```sh
 kitchen env set LOG_LEVEL=debug DATABASE_POOL=10
 kitchen env set API_URL=https://api.example.com --preview API_URL=https://api.invalid
-kitchen env set API_KEY --from-secret shop-api-key:key
-kitchen env set DATABASE_URL --from-claim shop-db:url
+kitchen env set --from-secret API_KEY=kitchen-project-secrets:shop-api-key
+kitchen env set --from-claim DATABASE_URL=shop-db:url
 kitchen env set --from-file .env
 kitchen env rm LOG_LEVEL --yes
 ```
@@ -376,7 +376,7 @@ and reveals nothing. What it does print beside each name is the reference, so
 the line that follows never has to be typed from memory:
 
 ```sh
-kitchen env set SMTP_PASSWORD --from-secret kitchen-project-secrets:SMTP_PASSWORD
+kitchen env set --from-secret SMTP_PASSWORD=kitchen-project-secrets:SMTP_PASSWORD
 ```
 
 Unlike a variable, a rotated secret reaches what is already running: the

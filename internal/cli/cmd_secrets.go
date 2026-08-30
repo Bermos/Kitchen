@@ -59,7 +59,7 @@ can read it back. An environment variable then points at it, so the credential
 is never part of the project's configuration:
 
   kitchen secret set SMTP_PASSWORD
-  kitchen env set SMTP_PASSWORD --from-secret kitchen-project-secrets:SMTP_PASSWORD
+  kitchen env set --from-secret SMTP_PASSWORD=kitchen-project-secrets:SMTP_PASSWORD
 
 "kitchen secret list" prints the reference for each one, so the second line
 never has to be typed from memory.
@@ -279,7 +279,7 @@ func setSecret(parent context.Context, r *Runtime, name string, source secretVal
 	return r.printer().document(written, func(s tui.Styles) string {
 		return fmt.Sprintf("%s is set. Read it with %s\n",
 			s.Accent.Render(written.Name),
-			s.Accent.Render(fmt.Sprintf("kitchen env set %s --from-secret %s:%s",
+			s.Accent.Render(fmt.Sprintf("kitchen env set --from-secret %s=%s:%s",
 				written.Name, written.Reference.Name, written.Reference.Key)))
 	})
 }

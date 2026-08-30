@@ -69,7 +69,7 @@ Store an API key for an installation and check that it works.
 
 The key is exchanged at the platform's identity provider for a short-lived
 token, which is what the API sees; the key itself never reaches the operator.
-Issue one from a project's Keys tab in the dashboard, or with
+Issue one from a project's People tab in the dashboard, or with
 POST /projects/{name}/keys — it is a machine account with a role on that one
 project, so a key can deploy the project it was made for and nothing else.
 
@@ -254,7 +254,7 @@ Remove this machine's stored credential for an installation.
 
 It forgets; it does not revoke. The key itself still exists at the identity
 provider until somebody deletes it there — DELETE /projects/{name}/keys/{key},
-or the project's Keys tab — which is the thing to do for a key that has
+or the project's People tab — which is the thing to do for a key that has
 leaked.`),
 		Args: cobra.NoArgs,
 		RunE: run(func(cmd *cobra.Command, _ []string) error {
