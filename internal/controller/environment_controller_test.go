@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"testing"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -406,3 +407,109 @@ var _ = Describe("Environment Controller", func() {
 		})
 	})
 })
+
+// The probes an application container gets (#236). Before them the kubelet
+// marked a pod Ready the moment its process started, so every rollout served
+// from a container that had not finished coming up.
+func TestContainerProbes(t *testing.T) {
+	for name, tc := range map[string]struct {
+		health *kitchenv1alpha1.HealthSpec
+		port   int32
+
+		wantNone     bool
+		wantHTTP     string
+		wantPort     int32
+		wantLiveness bool
+		wantPeriod   int32
+		wantStartup  int32
+	}{
+		"no health check falls back to a TCP connect on the container port": {
+			port:        3000,
+			wantPort:    3000,
+			wantPeriod:  kitchenv1alpha1.DefaultProbePeriodSeconds,
+			wantStartup: kitchenv1alpha1.DefaultStartupFailureThreshold,
+		},
+		"a declared path is asked over HTTP, and buys a liveness probe": {
+			health:       &kitchenv1alpha1.HealthSpec{Path: "/healthz"},
+			port:         3000,
+			wantHTTP:     "/healthz",
+			wantPort:     3000,
+			wantLiveness: true,
+			wantPeriod:   kitchenv1alpha1.DefaultProbePeriodSeconds,
+			wantStartup:  kitchenv1alpha1.DefaultStartupFailureThreshold,
+		},
+		"a health port overrides the container's": {
+			health:      &kitchenv1alpha1.HealthSpec{Port: 9000},
+			port:        3000,
+			wantPort:    9000,
+			wantPeriod:  kitchenv1alpha1.DefaultProbePeriodSeconds,
+			wantStartup: kitchenv1alpha1.DefaultStartupFailureThreshold,
+		},
+		"declared timings are used as declared": {
+			health: &kitchenv1alpha1.HealthSpec{
+				Path: "/live", PeriodSeconds: 5, TimeoutSeconds: 1,
+				FailureThreshold: 2, StartupFailureThreshold: 60,
+			},
+			port:         8080,
+			wantHTTP:     "/live",
+			wantPort:     8080,
+			wantLiveness: true,
+			wantPeriod:   5,
+			wantStartup:  60,
+		},
+		"a workload with no port and no check is not probed at all": {
+			wantNone: true,
+		},
+		"a worker that named its port is probed on it": {
+			health:      &kitchenv1alpha1.HealthSpec{Port: 9000},
+			wantPort:    9000,
+			wantPeriod:  kitchenv1alpha1.DefaultProbePeriodSeconds,
+			wantStartup: kitchenv1alpha1.DefaultStartupFailureThreshold,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			startup, readiness, liveness := containerProbes(tc.health, tc.port)
+			if tc.wantNone {
+				if startup != nil || readiness != nil || liveness != nil {
+					t.Fatalf("want no probes at all, got %+v %+v %+v", startup, readiness, liveness)
+				}
+				return
+			}
+			if startup == nil || readiness == nil {
+				t.Fatalf("want a startup and a readiness probe, got %+v %+v", startup, readiness)
+			}
+			if (liveness != nil) != tc.wantLiveness {
+				t.Fatalf("want liveness=%v, got %+v", tc.wantLiveness, liveness)
+			}
+			// A startup probe that shared the liveness threshold would defeat
+			// the whole point of having two.
+			if startup.FailureThreshold != tc.wantStartup {
+				t.Errorf("want startup threshold %d, got %d", tc.wantStartup, startup.FailureThreshold)
+			}
+			if readiness.PeriodSeconds != tc.wantPeriod {
+				t.Errorf("want period %d, got %d", tc.wantPeriod, readiness.PeriodSeconds)
+			}
+			for _, probe := range []*corev1.Probe{startup, readiness} {
+				switch {
+				case tc.wantHTTP != "":
+					if probe.HTTPGet == nil || probe.HTTPGet.Path != tc.wantHTTP {
+						t.Fatalf("want an HTTP GET of %q, got %+v", tc.wantHTTP, probe.ProbeHandler)
+					}
+					if probe.HTTPGet.Port.IntVal != tc.wantPort {
+						t.Errorf("want port %d, got %s", tc.wantPort, probe.HTTPGet.Port.String())
+					}
+				default:
+					if probe.TCPSocket == nil {
+						t.Fatalf("want a TCP connect, got %+v", probe.ProbeHandler)
+					}
+					if probe.TCPSocket.Port.IntVal != tc.wantPort {
+						t.Errorf("want port %d, got %s", tc.wantPort, probe.TCPSocket.Port.String())
+					}
+					if probe.HTTPGet != nil {
+						t.Error("a check with no path must never become GET /")
+					}
+				}
+			}
+		})
+	}
+}

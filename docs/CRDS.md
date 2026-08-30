@@ -421,11 +421,19 @@ spec:
     port: 3000                          # omit to take the detected framework's
     replicas: 2                         # previews always get 1
     resources: { cpu: 500m, memory: 512Mi }
+    health:                             # what the platform asks before it sends
+      path: /healthz                    # anyone to a new pod. No path = a TCP
+      port: 9000                        # connect to the port above, never GET /
+      periodSeconds: 10                 # every environment is probed either way
+      timeoutSeconds: 2
+      failureThreshold: 3               # a running pod out of service
+      startupFailureThreshold: 30       # x period = how long it has to come up
   processes:                            # what it runs *besides* the web process
     - name: worker                      # a Deployment with no Service, no route
       type: worker
       command: [node, worker.js]
       replicas: 2
+      health: { port: 9000 }            # opt-in here, and it must name the port
     - name: nightly-report              # a batch/v1 CronJob; one firing is a run
       type: cron
       schedule: "0 3 * * *"             # five fields, read in UTC
@@ -489,6 +497,24 @@ preview shares the project's environment variables, so a preview that emails
 customers nightly is a bad afternoon and a preview worker draining the
 production queue is a worse one. The list merges per `name`, so two people
 adding two workers do not drop each other's.
+
+`runtime.health` is how the platform finds out whether an application is
+*working* rather than merely started, and it is the reason `status.phase:
+Live` means anything: the phase is the Deployment's availability, which is its
+ready replicas, which is the readiness probe. Every environment gets three
+probes — startup, readiness, and, where a `path` is declared, liveness. With
+no path the check is a TCP connect to the container port: a weaker claim than
+an HTTP 200, and a much better one than asserting a readiness nothing
+established. `GET /` is deliberately not the default, since plenty of
+applications answer it before they are ready and one that 404s there would
+never become Ready at all. The startup threshold is separate from the liveness
+one because slow startup is a legitimate state and a threshold loose enough to
+tolerate it is too loose to catch a wedge afterwards.
+
+A process's `health` is opt-in and has to name its `port`, both refused at
+admission rather than ignored: a worker publishes no port to fall back on, and
+a scheduled run's verdict is its exit status, so the field is refused on a
+`cron` process outright.
 
 Reconcile: ensure per-project namespace, register the git webhook via the Connection
 (signing secret generated per project), validate that the referenced Connections carry

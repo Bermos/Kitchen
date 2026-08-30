@@ -82,6 +82,10 @@ type processRequest struct {
 	// asked for; see ProcessSpec.Previews for why that is the decision and
 	// not an omission.
 	Previews bool `json:"previews,omitempty"`
+	// Health is a worker's health check, and it has to name the port it is
+	// made against: a process publishes none of its own. It is refused on a
+	// scheduled process, whose verdict is its run's exit status.
+	Health *healthRequest `json:"health,omitempty"`
 }
 
 // processesFromRequest validates a whole process list and turns it into the
@@ -158,6 +162,18 @@ func processFromRequest(request processRequest) (kitchenv1alpha1.ProcessSpec, er
 		}
 		process.Replicas = request.Replicas
 	}
+	if request.Health != nil {
+		if process.Type == kitchenv1alpha1.ProcessCron {
+			return process, fmt.Errorf(
+				"process %q: a scheduled process is not kept alive by a health check — how a run went is its exit status",
+				process.Name)
+		}
+		health, err := healthFromRequest(*request.Health, fmt.Sprintf("process %q health", process.Name), true)
+		if err != nil {
+			return process, err
+		}
+		process.Health = health
+	}
 	if err := applyProcessResources(&process, request); err != nil {
 		return process, err
 	}
@@ -216,6 +232,10 @@ type processView struct {
 	ReadyReplicas     int32  `json:"readyReplicas,omitempty"`
 	CPU               string `json:"cpu,omitempty"`
 	Memory            string `json:"memory,omitempty"`
+	// Health is the worker's health check, timings resolved. Absent for a
+	// worker that declared none — unlike the web process, a worker is
+	// probed only where it asked to be.
+	Health *healthView `json:"health,omitempty"`
 	// Workload is the Deployment or CronJob behind it, absent for a process
 	// this environment does not run.
 	Workload string `json:"workload,omitempty"`
@@ -294,6 +314,9 @@ func newProcessView(process kitchenv1alpha1.ProcessSpec, status *kitchenv1alpha1
 	}
 	if quantity, ok := process.Resources.Limits[corev1.ResourceMemory]; ok {
 		view.Memory = quantity.String()
+	}
+	if process.Health != nil {
+		view.Health = newHealthView(process.Health)
 	}
 	if status == nil {
 		// The reconciler has not been round since this release landed. Not an

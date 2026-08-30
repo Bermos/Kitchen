@@ -179,6 +179,12 @@ func TestRefusingAnUnworkableProcessList(t *testing.T) {
 		"a bad concurrency policy": `[{"name": "n", "type": "cron", "schedule": "0 3 * * *", ` +
 			`"concurrencyPolicy": "Whenever"}]`,
 		"a quantity that is not one": `[{"name": "w", "type": "worker", "cpu": "loads"}]`,
+		// A process publishes no port of its own, so a health check that
+		// named none would be a setting that read back and did nothing.
+		"a worker health check with no port": `[{"name": "w", "type": "worker", ` +
+			`"health": {"path": "/healthz"}}]`,
+		"a health check on a scheduled process": `[{"name": "n", "type": "cron", ` +
+			`"schedule": "0 3 * * *", "health": {"port": 9000}}]`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			recorder := h.do(t, http.MethodPatch, "/api/v1/projects/shop", `{"processes": `+body+`}`)

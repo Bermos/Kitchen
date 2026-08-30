@@ -238,6 +238,16 @@ const settings = reactive({
   replicas: 1,
   cpu: "",
   memory: "",
+  // The health check. An empty path is a TCP connect to the container port,
+  // which is what every environment gets when nobody has said otherwise; the
+  // four numbers are 0 for "take the platform's default", so the fields show
+  // the resolved values and send back whatever is typed over them.
+  healthPath: "",
+  healthPort: 0,
+  healthPeriod: 0,
+  healthTimeout: 0,
+  healthFailures: 0,
+  healthStartupFailures: 0,
   // "" is unclassified — a state shown as such, never a default.
   dataClass: "",
   // "" is undesignated, for the same reason: Kitchen does not decide what is
@@ -291,6 +301,12 @@ function loadSettings(from: Project) {
   settings.replicas = from.replicas ?? 1;
   settings.cpu = from.cpu ?? "";
   settings.memory = from.memory ?? "";
+  settings.healthPath = from.health?.path ?? "";
+  settings.healthPort = from.health?.port ?? 0;
+  settings.healthPeriod = from.health?.periodSeconds ?? 0;
+  settings.healthTimeout = from.health?.timeoutSeconds ?? 0;
+  settings.healthFailures = from.health?.failureThreshold ?? 0;
+  settings.healthStartupFailures = from.health?.startupFailureThreshold ?? 0;
   settings.dataClass = from.dataClass ?? "";
   settings.criticality = from.criticality ?? "";
   settings.rto = from.rto ?? "";
@@ -316,6 +332,18 @@ async function saveSettings() {
       replicas: settings.replicas,
       cpu: settings.cpu,
       memory: settings.memory,
+      health: {
+        path: settings.healthPath,
+        // 0 is not "no port": it is the check being made against whatever
+        // port the application is published on, which is what an application
+        // with one listener wants and what keeps the probe with the port when
+        // the port moves.
+        port: settings.healthPort,
+        periodSeconds: settings.healthPeriod,
+        timeoutSeconds: settings.healthTimeout,
+        failureThreshold: settings.healthFailures,
+        startupFailureThreshold: settings.healthStartupFailures,
+      },
       dataClass: settings.dataClass,
       criticality: settings.criticality,
       rto: settings.rto,
@@ -959,6 +987,61 @@ function host(url?: string): string {
               </UFormField>
               <UFormField label="Memory" help="Per replica, e.g. 512Mi.">
                 <UInput v-model="settings.memory" placeholder="unset" class="w-full font-mono" />
+              </UFormField>
+            </div>
+          </div>
+
+          <!-- Health. The copy leads with what happens when the path is
+               empty, because that is the state every project starts in and
+               the one whose consequence is least obvious: the platform still
+               checks, it just cannot ask the application anything. It is a
+               developer screen, so it says "replica" and never the word the
+               cluster uses for one. -->
+          <div class="rounded-md border border-default bg-muted p-5 space-y-4">
+            <div>
+              <h2 class="text-sm font-medium text-highlighted">Health</h2>
+              <p class="text-xs text-muted mt-1 max-w-3xl">
+                What the platform asks a new replica before it sends anyone to it — on every deploy and every
+                rollback.
+                <span class="text-toned font-medium">With no path it opens a TCP connection to the port and no
+                more</span>, which is a weaker claim than an answer and a much better one than assuming. A path
+                is where the application says what working means for it, and it is also what buys a restart when
+                a running container wedges. Previews inherit this, and a release carries it, so a rollback
+                restores the check it ran with.
+              </p>
+            </div>
+            <div class="grid gap-4 sm:grid-cols-3">
+              <UFormField
+                label="Path"
+                help="An HTTP GET answering 2xx or 3xx. Empty is a TCP connect — never GET /."
+              >
+                <UInput v-model="settings.healthPath" placeholder="/healthz" class="w-full font-mono" />
+              </UFormField>
+              <UFormField label="Port" help="Only when the check is not on the port above.">
+                <UInput
+                  v-model.number="settings.healthPort"
+                  type="number"
+                  min="0"
+                  placeholder="the application's"
+                  class="w-full font-mono"
+                />
+              </UFormField>
+              <UFormField label="Period" help="Seconds between checks. 0 takes the default.">
+                <UInput v-model.number="settings.healthPeriod" type="number" min="0" class="w-full font-mono" />
+              </UFormField>
+              <UFormField label="Timeout" help="Seconds one check may take. 0 takes the default.">
+                <UInput v-model.number="settings.healthTimeout" type="number" min="0" class="w-full font-mono" />
+              </UFormField>
+              <UFormField label="Failures" help="Checks in a row before a running pod is taken out.">
+                <UInput v-model.number="settings.healthFailures" type="number" min="0" class="w-full font-mono" />
+              </UFormField>
+              <UFormField label="Startup failures" help="The generous one: how long a pod has to come up at all.">
+                <UInput
+                  v-model.number="settings.healthStartupFailures"
+                  type="number"
+                  min="0"
+                  class="w-full font-mono"
+                />
               </UFormField>
             </div>
           </div>

@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"testing"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -423,4 +424,78 @@ func runJob(
 	}}, job.Status.Conditions...)
 	ExpectWithOffset(1, k8sClient.Status().Update(ctx, job)).To(Succeed())
 	return name
+}
+
+// A process's pod, and which of them the platform probes (#236). A worker is
+// probed only where it asked to be — it publishes no port to fall back on —
+// and a scheduled run is never probed, because how it went is its exit status.
+func TestProcessPodSpecProbes(t *testing.T) {
+	release := &kitchenv1alpha1.Release{Spec: kitchenv1alpha1.ReleaseSpec{Image: "registry.example.com/app@sha256:abc"}}
+	project := &kitchenv1alpha1.Project{Spec: kitchenv1alpha1.ProjectSpec{
+		Registry: kitchenv1alpha1.RegistrySpec{ConnectionRef: kitchenv1alpha1.LocalObjectReference{Name: "harbor"}},
+	}}
+
+	for name, tc := range map[string]struct {
+		process kitchenv1alpha1.ProcessSpec
+
+		wantProbes   bool
+		wantPort     int32
+		wantLiveness bool
+	}{
+		"a worker that declared no health check is not probed": {
+			process: kitchenv1alpha1.ProcessSpec{Name: "worker", Type: kitchenv1alpha1.ProcessWorker},
+		},
+		"a worker with a health port gets a TCP check on it": {
+			process: kitchenv1alpha1.ProcessSpec{
+				Name: "worker", Type: kitchenv1alpha1.ProcessWorker,
+				Health: &kitchenv1alpha1.HealthSpec{Port: 9000},
+			},
+			wantProbes: true,
+			wantPort:   9000,
+		},
+		"a worker with a path gets liveness too": {
+			process: kitchenv1alpha1.ProcessSpec{
+				Name: "worker", Type: kitchenv1alpha1.ProcessWorker,
+				Health: &kitchenv1alpha1.HealthSpec{Path: "/healthz", Port: 9000},
+			},
+			wantProbes:   true,
+			wantPort:     9000,
+			wantLiveness: true,
+		},
+		"a scheduled process is never probed": {
+			process: kitchenv1alpha1.ProcessSpec{
+				Name: "nightly", Type: kitchenv1alpha1.ProcessCron, Schedule: "0 3 * * *",
+				// Admission refuses this, so it can only arrive on an object
+				// written before the rule existed. It is still not probed.
+				Health: &kitchenv1alpha1.HealthSpec{Port: 9000},
+			},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			spec := processPodSpec(release, project, nil, tc.process)
+			container := spec.Containers[0]
+			if !tc.wantProbes {
+				if container.StartupProbe != nil || container.ReadinessProbe != nil || container.LivenessProbe != nil {
+					t.Fatalf("want no probes, got %+v", container)
+				}
+				return
+			}
+			if container.StartupProbe == nil || container.ReadinessProbe == nil {
+				t.Fatalf("want a startup and a readiness probe, got %+v", container)
+			}
+			if (container.LivenessProbe != nil) != tc.wantLiveness {
+				t.Fatalf("want liveness=%v, got %+v", tc.wantLiveness, container.LivenessProbe)
+			}
+			port := container.ReadinessProbe.TCPSocket
+			if container.ReadinessProbe.HTTPGet != nil {
+				if got := container.ReadinessProbe.HTTPGet.Port.IntVal; got != tc.wantPort {
+					t.Fatalf("want port %d, got %d", tc.wantPort, got)
+				}
+				return
+			}
+			if port == nil || port.Port.IntVal != tc.wantPort {
+				t.Fatalf("want a TCP check on %d, got %+v", tc.wantPort, container.ReadinessProbe.ProbeHandler)
+			}
+		})
+	}
 }

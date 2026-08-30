@@ -341,13 +341,16 @@ func TestPatchingAProjectRejectsUnusableRequests(t *testing.T) {
 	h := newHarness(t, nil, fixtures()...)
 
 	for name, body := range map[string]string{
-		"an empty production branch": `{"productionBranch": " "}`,
-		"a strategy that is not one": `{"buildStrategy": "guess"}`,
-		"a port out of range":        `{"port": 70000}`,
-		"zero replicas":              `{"replicas": 0}`,
-		"cpu that is not a quantity": `{"cpu": "fast"}`,
-		"an unknown field":           `{"branch": "main"}`,
-		"not JSON":                   `{`,
+		"an empty production branch":       `{"productionBranch": " "}`,
+		"a strategy that is not one":       `{"buildStrategy": "guess"}`,
+		"a port out of range":              `{"port": 70000}`,
+		"zero replicas":                    `{"replicas": 0}`,
+		"a health path that is not a path": `{"health": {"path": "healthz"}}`,
+		"a health port out of range":       `{"health": {"port": 70000}}`,
+		"a negative health period":         `{"health": {"periodSeconds": -1}}`,
+		"cpu that is not a quantity":       `{"cpu": "fast"}`,
+		"an unknown field":                 `{"branch": "main"}`,
+		"not JSON":                         `{`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			recorder := h.do(t, http.MethodPatch, "/api/v1/projects/shop", body)
@@ -1194,5 +1197,56 @@ func TestDeletingAClaimThatDoesNotExist(t *testing.T) {
 	recorder := h.do(t, http.MethodDelete, "/api/v1/claims/nope", "")
 	if recorder.Code != http.StatusNotFound {
 		t.Fatalf("want 404, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+// The health check a project is probed with (#236). Every project has one
+// whether or not it declared anything, so reading one back always answers
+// with resolved timings rather than with silence.
+func TestPatchingAProjectsHealthCheck(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+
+	before := decode[projectView](t, h.do(t, http.MethodGet, "/api/v1/projects/shop", ""))
+	if before.Health == nil || before.Health.Path != "" ||
+		before.Health.PeriodSeconds != kitchenv1alpha1.DefaultProbePeriodSeconds ||
+		before.Health.StartupFailureThreshold != kitchenv1alpha1.DefaultStartupFailureThreshold {
+		t.Fatalf("a project that declared nothing must still report the default check: %+v", before.Health)
+	}
+
+	recorder := h.do(t, http.MethodPatch, "/api/v1/projects/shop",
+		`{"health": {"path": "/healthz", "port": 9000, "failureThreshold": 5}}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	view := decode[projectView](t, recorder)
+	if view.Health == nil || view.Health.Path != "/healthz" || view.Health.Port != 9000 ||
+		view.Health.FailureThreshold != 5 {
+		t.Fatalf("the health check did not echo: %+v", view.Health)
+	}
+	// The timings nobody set come back resolved, not empty: "what is checked,
+	// how often" is the question, and a blank answers it only for somebody
+	// who already knows the defaults.
+	if view.Health.PeriodSeconds != kitchenv1alpha1.DefaultProbePeriodSeconds {
+		t.Errorf("want the default period resolved, got %d", view.Health.PeriodSeconds)
+	}
+
+	stored := &kitchenv1alpha1.Project{}
+	if err := h.server.get(context.Background(), "shop", stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored.Spec.Runtime.Health == nil || stored.Spec.Runtime.Health.Path != "/healthz" {
+		t.Fatalf("the health check did not stick: %+v", stored.Spec.Runtime)
+	}
+
+	// An empty object is how a declared check is taken back off — it is
+	// exactly the default one, so no removal sentinel is needed.
+	if code := h.do(t, http.MethodPatch, "/api/v1/projects/shop", `{"health": {}}`).Code; code != http.StatusOK {
+		t.Fatalf("want 200 restoring the default check, got %d", code)
+	}
+	if err := h.server.get(context.Background(), "shop", stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored.Spec.Runtime.Health.HTTPPath() != "" {
+		t.Fatalf("an empty health check must clear the path: %+v", stored.Spec.Runtime.Health)
 	}
 }

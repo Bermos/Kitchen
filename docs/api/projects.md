@@ -89,6 +89,36 @@ an empty string clears one. The repository and the two connections are
 deliberately not editable: rebinding a project to another repository is a
 different project.
 
+`health` is what the platform asks the application before it sends anyone to
+a new pod — on every deploy, and on every rollback, which is the one deploy
+path that must not add a second outage to the one it is fixing:
+
+```json
+{"health": {"path": "/healthz", "port": 9000, "periodSeconds": 10,
+            "timeoutSeconds": 2, "failureThreshold": 3, "startupFailureThreshold": 30}}
+```
+
+Every field is optional. **A project that declares nothing is still probed**:
+absent a `path` the check is a TCP connect to the port the application is
+published on, which is a weaker claim than an HTTP 200 and a far better one
+than the readiness the platform used to assert without checking. It is
+deliberately not `GET /` — plenty of applications answer that before they are
+ready, and one that 404s there would never become Ready at all. `port` is only
+for a check served somewhere other than the application's own port; the four
+numbers are seconds and counts, and `0` on any of them takes the platform's
+default (10, 2, 3 and 30). Sending `{}` restores the default check.
+
+`startupFailureThreshold` is separate from `failureThreshold` on purpose:
+slow startup is a legitimate state, and a threshold loose enough to tolerate
+it is too loose to catch a wedge afterwards. A declared `path` also buys a
+liveness probe — a TCP connect cannot tell a wedged application from a working
+one, so restarting on it would kill healthy containers for nothing.
+
+Reading a project back reports the check with every timing resolved, because
+"what is actually checked, how often" is the question, and an empty field
+answers it only for somebody who already knows the defaults. Previews inherit
+it with the rest of the runtime, and it is snapshotted into every release.
+
 `processes` is what the project runs *besides* its web process — its queue
 workers and its scheduled jobs, which share the release's image and
 environment and are started with another command. It belongs on this route
