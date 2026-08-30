@@ -113,6 +113,19 @@ const promotions = computed(() => data.value?.promotions ?? []);
 const showPipeline = computed(() => pipelineShown(project.value?.promotionStages, promotions.value));
 const framework = computed(() => data.value?.builds.find((b) => b.detectedFramework)?.detectedFramework);
 
+// What the repository is deciding for itself, read off the most recent build
+// that found a kitchen.json.
+//
+// It is on the settings tab because that is where somebody is about to change
+// a field the next build will change back. The file wins for the settings it
+// names, so a form that did not say so would be a form whose Save button
+// silently does nothing for one field in five.
+const repoConfig = computed(() => data.value?.builds.find((b) => b.config)?.config);
+const repoDeclares = computed(() => repoConfig.value?.declares ?? []);
+function declaredInRepo(field: string): boolean {
+  return repoDeclares.value.includes(field);
+}
+
 const currentRelease = computed(() => production.value?.release);
 function buildOf(release: Release) {
   return data.value?.builds.find((b) => b.name === release.build);
@@ -995,6 +1008,28 @@ function host(url?: string): string {
       <!-- Settings: everything on the project a user may change after
            creating it, and the danger zone that removes it entirely. -->
       <div v-else-if="tab === 'settings'" class="space-y-6 max-w-3xl">
+        <!-- Which of these fields the repository has taken over. Above the
+             form rather than beside each field: the answer is one list, and
+             the alternative was a badge on nine controls saying the same
+             sentence nine times. -->
+        <div v-if="repoConfig" class="rounded-md border border-info/40 bg-info/5 px-5 py-4">
+          <div class="flex items-start gap-2">
+            <UIcon name="i-lucide-file-code" class="size-4 text-info mt-0.5 shrink-0" />
+            <div class="min-w-0 space-y-1">
+              <p class="text-sm font-medium text-highlighted">
+                <span class="font-mono">{{ repoConfig.path }}</span> decides some of this
+              </p>
+              <p class="text-xs text-toned">
+                The repository declares
+                {{ repoDeclares.length }} {{ repoDeclares.length === 1 ? "setting" : "settings" }} of its own, read
+                at every commit. Changing one here holds until the next build, which sets it back to what the file
+                says — change the file instead.
+              </p>
+              <p class="text-xs text-muted font-mono break-words">{{ repoDeclares.join(", ") }}</p>
+            </div>
+          </div>
+        </div>
+
         <form class="space-y-6" @submit.prevent="saveSettings">
           <div class="rounded-md border border-default bg-muted p-5 space-y-4">
             <h2 class="text-sm font-medium text-highlighted">Git</h2>
@@ -1018,10 +1053,16 @@ function host(url?: string): string {
           <div class="rounded-md border border-default bg-muted p-5 space-y-4">
             <h2 class="text-sm font-medium text-highlighted">Build</h2>
             <div class="grid gap-4 sm:grid-cols-3">
-              <UFormField label="Strategy">
+              <UFormField
+                label="Strategy"
+                :help="declaredInRepo('build.strategy') ? 'Set by the repository; this is overwritten at every build.' : undefined"
+              >
                 <USelect v-model="settings.buildStrategy" :items="strategyOptions" class="w-full" />
               </UFormField>
-              <UFormField label="Dockerfile" help="Relative to the root directory.">
+              <UFormField
+                :label="'Dockerfile'"
+                :help="declaredInRepo('build.dockerfilePath') ? 'Set by the repository; this is overwritten at every build.' : 'Relative to the root directory.'"
+              >
                 <UInput v-model="settings.dockerfilePath" placeholder="Dockerfile" class="w-full font-mono" />
               </UFormField>
               <UFormField label="Root directory" help="For monorepos.">

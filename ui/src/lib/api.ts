@@ -275,6 +275,8 @@ export interface Build {
   phase?: string;
   git: Revision;
   detectedFramework?: string;
+  /** The kitchen.json this commit carried, when it carried one. */
+  config?: RepoConfig;
   image?: string;
   artifact?: Artifact;
   cache?: BuildCache;
@@ -286,6 +288,23 @@ export interface Build {
   completedAt?: string;
   createdAt: string;
   conditions?: Condition[];
+}
+
+/** The commit's own kitchen.json: where it was read from, and which settings
+ *  it took over from the project.
+ *
+ *  It answers what was declared rather than what it was declared as. The
+ *  values are already in the release the build produced and on the
+ *  environment running it, so repeating them here would be a second copy to
+ *  disagree with the first. What nothing else answers is which settings
+ *  stopped being editable in the dashboard, which is the thing somebody about
+ *  to edit one needs to know. */
+export interface RepoConfig {
+  /** The file, relative to the repository root. */
+  path: string;
+  /** Every setting it declares, dotted: "build.strategy", "runtime.port",
+   *  "env.NODE_ENV", "processes". */
+  declares: string[];
 }
 
 /** A failed build's own account of itself.

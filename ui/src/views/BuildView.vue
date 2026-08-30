@@ -260,6 +260,30 @@ const logStreamer = (query: LogQuery, onLine: (line: LogLine) => void, signal: A
         </div>
       </div>
 
+      <!-- What the commit asked for itself. Above the failure panel because
+           a build that failed on its own kitchen.json is a build whose first
+           question is what the file said. -->
+      <div v-if="build.config" class="rounded-md border border-default bg-elevated/50 px-5 py-4">
+        <div class="flex items-start gap-2">
+          <UIcon name="i-lucide-file-code" class="size-4 text-muted mt-0.5 shrink-0" />
+          <div class="min-w-0 space-y-1">
+            <p class="text-sm font-medium text-highlighted">
+              This commit carried <span class="font-mono">{{ build.config.path }}</span>
+            </p>
+            <p v-if="build.config.declares.length" class="text-xs text-toned">
+              It set
+              {{ build.config.declares.length }}
+              {{ build.config.declares.length === 1 ? "setting" : "settings" }}
+              the project no longer decides, and the release this build produced was frozen with them.
+            </p>
+            <p v-else class="text-xs text-toned">It declares nothing, so every setting is the project's own.</p>
+            <p v-if="build.config.declares.length" class="text-xs text-muted font-mono break-words">
+              {{ build.config.declares.join(", ") }}
+            </p>
+          </div>
+        </div>
+      </div>
+
       <!-- Why a build that says Running is not moving. Above the failure
            panel because the two are never both showing. -->
       <div v-if="stall" class="rounded-md border border-warning/40 bg-warning/5 px-5 py-4">
