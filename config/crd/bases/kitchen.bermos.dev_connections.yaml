@@ -83,14 +83,14 @@ spec:
                 because it provisions Postgres into this cluster with the operator''s
                 own account and there is no credential to hold.'
               rule: self.provider == 'cnpg' || (has(self.credentialsSecretRef) &&
-                has(self.credentialsSecretRef.name) && self.credentialsSecretRef.name
-                != '')
+                has(self.credentialsSecretRef.name) && size(self.credentialsSecretRef.name)
+                > 0)
             - message: 'a cnpg connection takes no credentialsSecretRef: it provisions
                 into this cluster with the operator''s own account, and a Secret here
                 would name a credential nothing reads.'
               rule: self.provider != 'cnpg' || !has(self.credentialsSecretRef) ||
-                !has(self.credentialsSecretRef.name) || self.credentialsSecretRef.name
-                == ''
+                !has(self.credentialsSecretRef.name) || size(self.credentialsSecretRef.name)
+                == 0
           status:
             description: ConnectionStatus defines the observed state of a Connection.
             properties:

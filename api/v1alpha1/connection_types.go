@@ -36,8 +36,8 @@ type CredentialsReference struct {
 
 // ConnectionSpec defines a plugin instance: a link to an external system such
 // as a git provider, an image registry, or a database provisioner.
-// +kubebuilder:validation:XValidation:rule="self.provider == 'cnpg' || (has(self.credentialsSecretRef) && has(self.credentialsSecretRef.name) && self.credentialsSecretRef.name != ”)",message="credentialsSecretRef is required: it names the Secret holding this provider's credential. Only a cnpg connection goes without one, because it provisions Postgres into this cluster with the operator's own account and there is no credential to hold."
-// +kubebuilder:validation:XValidation:rule="self.provider != 'cnpg' || !has(self.credentialsSecretRef) || !has(self.credentialsSecretRef.name) || self.credentialsSecretRef.name == ”",message="a cnpg connection takes no credentialsSecretRef: it provisions into this cluster with the operator's own account, and a Secret here would name a credential nothing reads."
+// +kubebuilder:validation:XValidation:rule="self.provider == 'cnpg' || (has(self.credentialsSecretRef) && has(self.credentialsSecretRef.name) && size(self.credentialsSecretRef.name) > 0)",message="credentialsSecretRef is required: it names the Secret holding this provider's credential. Only a cnpg connection goes without one, because it provisions Postgres into this cluster with the operator's own account and there is no credential to hold."
+// +kubebuilder:validation:XValidation:rule="self.provider != 'cnpg' || !has(self.credentialsSecretRef) || !has(self.credentialsSecretRef.name) || size(self.credentialsSecretRef.name) == 0",message="a cnpg connection takes no credentialsSecretRef: it provisions into this cluster with the operator's own account, and a Secret here would name a credential nothing reads."
 type ConnectionSpec struct {
 	// Provider selects the plugin implementation.
 	// +kubebuilder:validation:Enum=github;gitlab;gitea;dockerRegistry;neon;cnpg

@@ -89,6 +89,13 @@ func WithCluster(reader client.Reader) Factory {
 	}
 }
 
+// ThirdParty reports whether a provider is somebody else. Every one is except
+// cnpg, which provisions into the cluster the platform is installed in — so a
+// resilience register that listed it among the third parties a function
+// depends on would be naming the platform as its own supplier, which is both
+// wrong and the sort of wrong an auditor notices.
+func ThirdParty(providerName string) bool { return providerName != ProviderCNPG }
+
 // NeedsCredentials reports whether a provider has a credential to store at
 // all. It is what lets the reconciler and the API stop looking for a Secret
 // that is not meant to exist, rather than reporting its absence as a fault.
