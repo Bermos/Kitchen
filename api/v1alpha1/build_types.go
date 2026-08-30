@@ -488,6 +488,17 @@ type BuildStatus struct {
 	// +optional
 	DetectedFramework string `json:"detectedFramework,omitempty"`
 
+	// Config is the kitchen.json this commit carried, when it carried one.
+	//
+	// It is on the Build rather than on the Project because it belongs to a
+	// commit: the file is read at the commit under build, and a build of an
+	// older commit is built with the settings that commit declared. That is
+	// also what makes a rollback exact — the Release this build writes
+	// freezes the merged result, so redeploying it redeploys the
+	// configuration it was built with rather than today's.
+	// +optional
+	Config *RepoConfig `json:"config,omitempty"`
+
 	// Image reference by digest, never by tag.
 	// +optional
 	Image string `json:"image,omitempty"`

@@ -1,0 +1,189 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/Bermos/Kitchen/main/docs/schemas/kitchen.schema.json",
+  "title": "kitchen.json",
+  "description": "A Kitchen project's build and runtime settings, committed beside the code they describe. Read from the project's root directory at the commit under build; the settings it names win over the ones set in the dashboard, and it says nothing about the ones it does not name. It cannot carry a credential, and it cannot set the project's root directory, criticality, data class, access or preview protection.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "This document, so an editor can complete the file. The platform reads the key only to ignore it."
+    },
+    "build": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "How the commit is built.",
+      "properties": {
+        "strategy": {
+          "enum": ["auto", "dockerfile", "buildpacks"],
+          "description": "auto reads the repository and decides — a Dockerfile wins, and everything else recognised goes to buildpacks. Naming one skips that decision."
+        },
+        "dockerfilePath": {
+          "type": "string",
+          "description": "Path to the Dockerfile, relative to the project's root directory. Used when the strategy is, or resolves to, dockerfile.",
+          "examples": ["Dockerfile", "docker/Dockerfile"]
+        }
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "How the built image runs. Every key is optional, and one left out keeps whatever the project has.",
+      "properties": {
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "description": "The port the application listens on, and the value of PORT in every environment. Leave it out to take the detected framework's."
+        },
+        "replicas": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Copies of the application in production environments. Previews always run one."
+        },
+        "singleton": {
+          "type": "boolean",
+          "description": "Two of this workload must never run at once, so a deploy stops the old copy before starting the new one. Refuses replicas above 1."
+        },
+        "notRequestDriven": {
+          "type": "boolean",
+          "description": "This workload does work nobody asked for, so no environment of the project is ever idled to zero — previews included."
+        },
+        "command": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Replaces the image's entrypoint, in exec form: a list of words, never a shell line.",
+          "examples": [["node", "server.js"]]
+        },
+        "args": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Replaces the image's arguments, in exec form."
+        },
+        "previewArgs": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Replaces args in preview environments — the same commit and artifact, different flags."
+        },
+        "resources": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "What the workload asks for, as request and limit alike.",
+          "properties": {
+            "cpu": {
+              "type": "string",
+              "description": "A Kubernetes quantity.",
+              "examples": ["250m", "1"]
+            },
+            "memory": {
+              "type": "string",
+              "description": "A Kubernetes quantity.",
+              "examples": ["512Mi", "2Gi"]
+            }
+          }
+        },
+        "health": { "$ref": "#/$defs/health" }
+      }
+    },
+    "env": {
+      "type": "object",
+      "description": "Environment variables, by name. Values are literal strings and nothing else: this file is committed, so everything in it is public. A variable that should come from a secret or a provisioned resource is set in the dashboard or with `kitchen env set`, and a name declared here that the project already binds to one of those fails the build rather than shadowing it.",
+      "propertyNames": { "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
+      "additionalProperties": { "type": "string" },
+      "examples": [{ "NODE_ENV": "production" }]
+    },
+    "previewEnv": {
+      "type": "object",
+      "description": "Values that replace the ones in env for preview environments. Every name here must also be in env: a preview value replaces a value, so the variable has to have one.",
+      "propertyNames": { "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
+      "additionalProperties": { "type": "string" }
+    },
+    "processes": {
+      "type": "array",
+      "description": "The workers and scheduled jobs this project runs besides its web process. Declaring this replaces the project's whole list rather than merging into it — a worker the commit no longer names is one whose command may no longer be in the image.",
+      "items": { "$ref": "#/$defs/process" }
+    }
+  },
+  "$defs": {
+    "health": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "What the platform asks the workload before it sends anyone to it. An empty object is the default: a TCP connect to the port, on the platform's timings.",
+      "properties": {
+        "path": {
+          "type": "string",
+          "pattern": "^/",
+          "description": "The HTTP path a probe asks for; a 2xx or 3xx is the application saying it is working. Left out, the check is a TCP connect instead."
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "description": "The port the probe is made against, when it is not the one the application is published on. A process publishes none, so a process's check must name one."
+        },
+        "periodSeconds": { "type": "integer", "minimum": 1, "description": "How often the check is made. Default 10." },
+        "timeoutSeconds": { "type": "integer", "minimum": 1, "description": "How long one check may take. Default 2." },
+        "failureThreshold": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "How many failures in a row take a running container out of service. Default 3."
+        },
+        "startupFailureThreshold": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "How many the same check may fail while the container is still starting. Default 30."
+        }
+      }
+    },
+    "process": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "type"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "maxLength": 46,
+          "description": "A DNS label, and not \"web\": the web process is the project's own runtime, and this list is what it runs besides it."
+        },
+        "type": {
+          "enum": ["worker", "cron"],
+          "description": "A worker runs continuously; a cron process runs on a schedule."
+        },
+        "command": { "type": "array", "items": { "type": "string" }, "description": "Exec form: a list of words." },
+        "args": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Exec form: a list of words, appended to the command."
+        },
+        "replicas": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "A worker's copy count. Zero is a worker that is declared and parked."
+        },
+        "cpu": { "type": "string", "description": "A Kubernetes quantity." },
+        "memory": { "type": "string", "description": "A Kubernetes quantity." },
+        "schedule": {
+          "type": "string",
+          "description": "A cron process's five-field expression, read in UTC. Required for type cron and refused on a worker.",
+          "examples": ["0 3 * * *"]
+        },
+        "concurrencyPolicy": {
+          "enum": ["Allow", "Forbid", "Replace"],
+          "description": "What a scheduled process does when a run is due and the last one has not finished. Default Forbid."
+        },
+        "timeout": {
+          "type": "string",
+          "description": "A Go duration bounding one run. Default an hour.",
+          "examples": ["30m", "2h"]
+        },
+        "previews": {
+          "type": "boolean",
+          "description": "Run this process in preview environments too. Off unless asked for."
+        },
+        "health": { "$ref": "#/$defs/health" }
+      }
+    }
+  }
+}

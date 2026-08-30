@@ -60,7 +60,7 @@ func TestResolveStrategy(t *testing.T) {
 					Build: kitchenv1alpha1.ProjectBuildSpec{Strategy: tc.project},
 				},
 			}
-			if got := resolveStrategy(project, tc.platformDefault); got != tc.want {
+			if got := resolveStrategy(project, &kitchenv1alpha1.Build{}, tc.platformDefault); got != tc.want {
 				t.Errorf("resolveStrategy() = %q, want %q", got, tc.want)
 			}
 		})
