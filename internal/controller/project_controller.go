@@ -171,10 +171,20 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 	r.updateReferences(ctx, project)
 
-	if sourceOK && registryOK {
-		setCond(condReady, metav1.ConditionTrue, "Reconciled", "project is ready")
-	} else {
+	// Ready is what everything summarising a project reads, so it answers for
+	// the repository as well as for the connections: a project whose source
+	// the platform cannot see will never build, and reporting that as ready
+	// left "I fixed the token, why is my project still broken" with nothing to
+	// look at but a sub-condition.
+	initialBuild := meta.FindStatusCondition(project.Status.Conditions, condInitialBuild)
+	switch {
+	case !sourceOK || !registryOK:
 		setCond(condReady, metav1.ConditionFalse, "ConnectionsNotReady", "one or more connections are not ready")
+	case initialBuild != nil && initialBuild.Status == metav1.ConditionFalse &&
+		initialBuild.Reason == reasonRepositoryUnreadable:
+		setCond(condReady, metav1.ConditionFalse, reasonRepositoryUnreadable, initialBuild.Message)
+	default:
+		setCond(condReady, metav1.ConditionTrue, "Reconciled", "project is ready")
 	}
 
 	if err := r.Status().Update(ctx, project); err != nil {
@@ -562,6 +572,35 @@ func (r *ProjectReconciler) mapEnvironmentToProject(_ context.Context, obj clien
 	}}}
 }
 
+// mapConnectionToProjects enqueues every project bound to a Connection, so a
+// connection that has just become usable — a capability appearing, a
+// credential accepted, a rotated secret revalidated — moves the projects
+// waiting on it rather than leaving them until the next write to the Project.
+// Both refs count: a project waits on its registry as much as on its source.
+func (r *ProjectReconciler) mapConnectionToProjects(ctx context.Context, obj client.Object) []ctrl.Request {
+	conn, ok := obj.(*kitchenv1alpha1.Connection)
+	if !ok {
+		return nil
+	}
+	projects := &kitchenv1alpha1.ProjectList{}
+	if err := r.List(ctx, projects, client.InNamespace(conn.Namespace)); err != nil {
+		logf.FromContext(ctx).Error(err, "could not list projects after a connection change")
+		return nil
+	}
+	requests := make([]ctrl.Request, 0, len(projects.Items))
+	for i := range projects.Items {
+		project := &projects.Items[i]
+		if project.Spec.Source.ConnectionRef.Name != conn.Name &&
+			project.Spec.Registry.ConnectionRef.Name != conn.Name {
+			continue
+		}
+		requests = append(requests, ctrl.Request{NamespacedName: types.NamespacedName{
+			Namespace: project.Namespace, Name: project.Name,
+		}})
+	}
+	return requests
+}
+
 // existenceChanged passes creations and deletions and drops updates.
 //
 // Both refs the two watches below feed are questions about which objects
@@ -597,6 +636,13 @@ func (r *ProjectReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			builder.WithPredicates(existenceChanged())).
 		Watches(&kitchenv1alpha1.Environment{}, handler.EnqueueRequestsFromMapFunc(r.mapEnvironmentToProject),
 			builder.WithPredicates(existenceChanged())).
+		// The connections are the other half of what a project is waiting on,
+		// and the two watches above cannot help there: they map Builds and
+		// Environments back to their project, and a project that has never
+		// built has neither. No predicate, unlike those two — a Connection's
+		// status moves only when the verdict itself moved, which is exactly
+		// what the project reads off it.
+		Watches(&kitchenv1alpha1.Connection{}, handler.EnqueueRequestsFromMapFunc(r.mapConnectionToProjects)).
 		Named("project").
 		Complete(r)
 }

@@ -18,11 +18,17 @@ package controller
 
 import (
 	"context"
+	"reflect"
+	"sort"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
@@ -94,5 +100,75 @@ func TestOnlyExistenceWakesTheProject(t *testing.T) {
 	}
 	if p.Update(event.UpdateEvent{}) {
 		t.Error("a status update should not reconcile the project")
+	}
+}
+
+// A project waiting on a connection has neither a Build nor an Environment to
+// be woken through, which is what left one stuck reporting a repository its
+// credential could not read long after the credential was fixed.
+func TestConnectionsMapToEveryProjectThatUsesThem(t *testing.T) {
+	project := func(name, source, registry string) *kitchenv1alpha1.Project {
+		return &kitchenv1alpha1.Project{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: PlatformNamespace},
+			Spec: kitchenv1alpha1.ProjectSpec{
+				Source: kitchenv1alpha1.GitSourceSpec{
+					ConnectionRef: kitchenv1alpha1.LocalObjectReference{Name: source},
+					Repo:          "acme/" + name,
+				},
+				Registry: kitchenv1alpha1.RegistrySpec{
+					ConnectionRef: kitchenv1alpha1.LocalObjectReference{Name: registry},
+				},
+			},
+		}
+	}
+
+	scheme := runtime.NewScheme()
+	if err := clientgoscheme.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := kitchenv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	r := &ProjectReconciler{Client: fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(
+			project("shop", "github", "registry"),
+			project("blog", "github", "ghcr"),
+			project("docs", "gitlab", "registry"),
+		).
+		Build()}
+
+	names := func(requests []ctrl.Request) []string {
+		got := make([]string, 0, len(requests))
+		for _, request := range requests {
+			if request.Namespace != PlatformNamespace {
+				t.Errorf("enqueued %s/%s, want namespace %s", request.Namespace, request.Name, PlatformNamespace)
+			}
+			got = append(got, request.Name)
+		}
+		sort.Strings(got)
+		return got
+	}
+
+	conn := func(name string) *kitchenv1alpha1.Connection {
+		return &kitchenv1alpha1.Connection{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: PlatformNamespace},
+		}
+	}
+
+	ctx := context.Background()
+	if got := names(r.mapConnectionToProjects(ctx, conn("github"))); !reflect.DeepEqual(got, []string{"blog", "shop"}) {
+		t.Errorf("the source connection enqueued %v, want [blog shop]", got)
+	}
+	// The registry is waited on as much as the source: a project cannot build
+	// with nowhere to push the image.
+	if got := names(r.mapConnectionToProjects(ctx, conn("registry"))); !reflect.DeepEqual(got, []string{"docs", "shop"}) {
+		t.Errorf("the registry connection enqueued %v, want [docs shop]", got)
+	}
+	if got := r.mapConnectionToProjects(ctx, conn("unused")); len(got) != 0 {
+		t.Errorf("a connection nothing references enqueued %v", got)
+	}
+	if got := r.mapConnectionToProjects(ctx, &corev1.Pod{}); got != nil {
+		t.Errorf("an object of the wrong kind enqueued %v", got)
 	}
 }
