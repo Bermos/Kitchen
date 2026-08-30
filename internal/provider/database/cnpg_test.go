@@ -407,6 +407,41 @@ func connectionWithConfig(t *testing.T, config string) *kitchenv1alpha1.Connecti
 	return conn
 }
 
+// The worst thing a naming rule here can do is put two projects in one
+// database, which plain truncation would do to two long names sharing a
+// prefix.
+func TestTwoLongClaimNamesDoNotLandOnOneDatabase(t *testing.T) {
+	left := clusterName("kitchen-" + strings.Repeat("a", 40) + "-orders")
+	right := clusterName("kitchen-" + strings.Repeat("a", 40) + "-billing")
+
+	if left == right {
+		t.Fatalf("two claims resolved to the same database: %q", left)
+	}
+	for _, name := range []string{left, right} {
+		if len(name) > maxClusterName {
+			t.Fatalf("%q is longer than cnpg will take", name)
+		}
+		if strings.HasSuffix(name, "-") || strings.HasPrefix(name, "-") {
+			t.Fatalf("%q is not a DNS label", name)
+		}
+	}
+	// A name that fits is left exactly as it is — the digest is what replaces
+	// what was cut, not decoration.
+	if got := clusterName("kitchen-shop-db"); got != "kitchen-shop-db" {
+		t.Fatalf("a name that fits was rewritten to %q", got)
+	}
+}
+
+func TestAPreviewsDatabaseIsNamedAfterItsParentAndItsEnvironment(t *testing.T) {
+	name := branchName("kitchen-shop-db", "kitchen-shop-pr-41")
+	if !strings.HasPrefix(name, "kitchen-shop-db-") || !strings.Contains(name, "pr-41") {
+		t.Fatalf("unexpected branch name %q", name)
+	}
+	if len(name) > maxClusterName {
+		t.Fatalf("%q is longer than cnpg will take", name)
+	}
+}
+
 func TestTheProvisionerRefusesToBeBuiltWithoutACluster(t *testing.T) {
 	if _, err := NewCNPG(Options{Connection: connectionWithConfig(t, "")}); err == nil {
 		t.Fatal("a provisioner with nothing to provision into was built")
