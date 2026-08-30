@@ -357,16 +357,21 @@ type revisionView struct {
 }
 
 type buildView struct {
-	Name              string          `json:"name"`
-	Project           string          `json:"project"`
-	Phase             string          `json:"phase,omitempty"`
-	Git               revisionView    `json:"git"`
-	DetectedFramework string          `json:"detectedFramework,omitempty"`
-	Image             string          `json:"image,omitempty"`
-	StartedAt         *time.Time      `json:"startedAt,omitempty"`
-	CompletedAt       *time.Time      `json:"completedAt,omitempty"`
-	CreatedAt         time.Time       `json:"createdAt"`
-	Conditions        []conditionView `json:"conditions,omitempty"`
+	Name              string       `json:"name"`
+	Project           string       `json:"project"`
+	Phase             string       `json:"phase,omitempty"`
+	Git               revisionView `json:"git"`
+	DetectedFramework string       `json:"detectedFramework,omitempty"`
+	// Config is the kitchen.json the commit carried, when it carried one:
+	// where it was read from, and every setting it took over from the
+	// project. Absent means the commit had no file, which is the ordinary
+	// case and not a fault.
+	Config      *repoConfigView `json:"config,omitempty"`
+	Image       string          `json:"image,omitempty"`
+	StartedAt   *time.Time      `json:"startedAt,omitempty"`
+	CompletedAt *time.Time      `json:"completedAt,omitempty"`
+	CreatedAt   time.Time       `json:"createdAt"`
+	Conditions  []conditionView `json:"conditions,omitempty"`
 	// Artifact is what the build produced, by content, and whether the
 	// platform managed to attest it. Absent on a build that never got as far
 	// as pushing anything.
@@ -444,6 +449,33 @@ type sourceView struct {
 	Required        bool       `json:"required"`
 	CheckedAt       *time.Time `json:"checkedAt,omitempty"`
 	Message         string     `json:"message,omitempty"`
+}
+
+// repoConfigView is the commit's own kitchen.json, as a build reports it.
+//
+// It answers what it declared rather than what it said: the values are
+// already in the release's snapshot and on the environment, and repeating
+// them here would be a second copy to disagree with the first. What is not
+// answerable anywhere else is which settings stopped being the project's,
+// which is what a reader of the settings screen needs to know before editing
+// one that will be overwritten on the next build.
+type repoConfigView struct {
+	// Path the file was read from, relative to the repository root.
+	Path string `json:"path"`
+	// Declares is every setting the file took over, in dotted form —
+	// "build.strategy", "runtime.port", "env.NODE_ENV", "processes".
+	Declares []string `json:"declares"`
+}
+
+func newRepoConfigView(config *kitchenv1alpha1.RepoConfig) *repoConfigView {
+	if config == nil {
+		return nil
+	}
+	declares := config.Declares()
+	if declares == nil {
+		declares = []string{}
+	}
+	return &repoConfigView{Path: config.Path, Declares: declares}
 }
 
 func newSourceView(source *kitchenv1alpha1.SourceProvenanceStatus) *sourceView {
@@ -622,6 +654,7 @@ func newBuildView(build *kitchenv1alpha1.Build) buildView {
 			PullRequest: build.PullRequestNumber(),
 		},
 		DetectedFramework: build.Status.DetectedFramework,
+		Config:            newRepoConfigView(build.Status.Config),
 		Image:             build.Status.Image,
 		Artifact:          newArtifactView(build.Status.Artifact),
 		Cache:             newBuildCacheView(build.Status.Cache),
