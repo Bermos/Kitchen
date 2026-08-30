@@ -40,7 +40,14 @@ Also not in the archive, and named in its own manifest so nobody has to guess:
   not — wherever that registry runs. The bundled registry's volume is not here.
 - **Application data.** A database a `ResourceClaim` provisioned belongs to the
   provider running it. The claim is restored; what it points at is Neon's, or
-  whoever else's, to keep.
+  whoever else's, to keep. **That includes the databases this platform runs
+  itself**: a CloudNativePG claim's data lives in a volume in
+  `spec.databases.namespace`, which this archive does not carry and this
+  restore does not recreate. It survives a restore only if the namespace and
+  its volumes did — or if something else is backing them up. CloudNativePG has
+  its own backup machinery for exactly this, and pointing it somewhere is a
+  decision an installation that keeps production data here has to make
+  deliberately.
 - **The platform's upgrade history** (`PlatformUpdate` objects), which describes
   a cluster that will not exist by the time anyone is restoring.
 - **Secrets outside the platform namespace.** The registry pull credential in

@@ -18,6 +18,8 @@ package database
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -593,10 +595,16 @@ func branchName(parent, environment string) string {
 	return truncateName(prefix+"-"+environment, maxClusterName)
 }
 
+// truncateName shortens a name to fit, and replaces what it cut with a digest
+// of the whole rather than simply dropping it. Two claims whose names share a
+// long prefix would otherwise land on one Cluster — which is two projects
+// sharing one database, and the worst outcome anything in this file can have.
 func truncateName(name string, limit int) string {
 	name = strings.ToLower(name)
-	if len(name) > limit {
-		name = name[:limit]
+	if len(name) <= limit {
+		return strings.Trim(name, "-")
 	}
-	return strings.Trim(name, "-")
+	sum := sha256.Sum256([]byte(name))
+	suffix := "-" + hex.EncodeToString(sum[:])[:8]
+	return strings.Trim(name[:limit-len(suffix)], "-") + suffix
 }

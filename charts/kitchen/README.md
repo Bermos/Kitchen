@@ -1150,6 +1150,13 @@ is, still holding its volume, and a claim of the same name created later
 against the same connection finds it and rebinds. Retaining is not free: the
 volume is still there and still costs whatever it costs.
 
+**These databases are not in the platform's backup archive**, and that is worth
+knowing before production data lands in one: the archive carries the custom
+resources and the platform's own secrets, so a restore brings the *claim* back
+and not the data behind it ([BACKUP.md](../../docs/BACKUP.md)). CloudNativePG
+has its own backup machinery, and an installation keeping production data here
+should point it somewhere.
+
 ### Asking for the Postgres you actually need
 
 A claim can name a major version, the extensions its first migration will call
