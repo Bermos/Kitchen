@@ -52,7 +52,9 @@ Also not in the archive, and named in its own manifest so nobody has to guess:
   its volumes did — or if something else is backing them up. CloudNativePG has
   its own backup machinery for exactly this, and pointing it somewhere is a
   decision an installation that keeps production data here has to make
-  deliberately.
+  deliberately — a per-claim backup policy that makes that decision once, on
+  the platform, is the second phase of
+  [issue #245](https://github.com/Bermos/Kitchen/issues/245).
 - **Volumes a `volume` claim mounts into an application.** They live in the
   project's application namespace, on whatever StorageClass the claim named,
   and this archive carries neither them nor their data: the claim is
@@ -79,8 +81,10 @@ that died is not a backup. Taking one is recorded in the audit log as an
 `export` against the Kitchen object, because "who took a copy of everything,
 and when" is exactly the sentence an audit log exists to be able to produce.
 
-The same thing from a terminal, which is what a scheduled backup uses — a
-backup that only happens when somebody remembers to click is not a backup:
+The same thing from a terminal, which is what a scheduled backup is built out
+of — a backup that only happens when somebody remembers to click is not a
+backup, and [Automating it](#automating-it) below is the whole of that
+sentence:
 
 ```sh
 kitchen backup                                   # into the current directory
@@ -120,6 +124,75 @@ provider migrates it from its own plugin set on every start
 ([`auth/src/db.ts`](../auth/src/db.ts)), so an archive carrying DDL would be
 carrying a second, staler opinion about what the tables look like. The
 consequence is the version rule below.
+
+## Automating it
+
+**Nothing here takes a backup on its own yet, and this section is what to do
+until it does.** The archive is good and the restore is tested; what is missing
+is a schedule, somewhere off-cluster to put the result, and — the part that
+actually loses data — anything that says the backups have stopped. The design
+for all three is [issue #245](https://github.com/Bermos/Kitchen/issues/245).
+
+Say what today is honestly: a Kitchen installation is backed up exactly as
+often as somebody remembers to open the Backup screen, and the archive's only
+destinations are that person's downloads folder and whatever `kitchen backup`
+was pointed at.
+
+### What that is missing, in the order it costs you
+
+1. **A schedule.** `cmd/backup` — the same exporter behind the button, shipped
+   in the operator's image precisely so that a scheduled backup and a manual
+   one produce the same archive — has always been written for a CronJob, and
+   no CronJob has ever been created for it.
+2. **A destination.** `POST /platform/backup` streams `Content-Disposition:
+   attachment`. There is nowhere to send an archive, so even a hand-wired
+   schedule writes it onto a volume on the cluster the archive exists to
+   survive the loss of.
+3. **A signal when it stops.** This is the one to care about. Every backup
+   system's characteristic failure is not a corrupt archive, it is six weeks of
+   no archive that nobody noticed — and a `CronJob` whose pods fail silently is
+   how that happens, the same way it happens to a project's scheduled jobs. A
+   platform whose last successful backup was in March should say so on its own
+   status, unasked.
+
+### Wiring one yourself in the meantime
+
+`/backup` is at the root of the operator's image and takes `--output`, so a
+CronJob of it is a small manifest. Two things it needs that the chart does not
+create: a ServiceAccount that may read the platform's objects and every Secret
+in `kitchen-system`, and a second container that moves the file somewhere else
+— an `emptyDir` shared between an init container that exports and a main
+container that uploads, which is the shape the buildpacks build job already
+uses.
+
+Be clear-eyed about what that gets you. It is a schedule and an upload; it is
+not the missing third item. Nothing watches it, so it belongs beside whatever
+already alerts on this cluster, and the check worth alerting on is the age of
+the newest object at the destination rather than the exit code of the last run.
+`kitchen backup --json` answers one object read back off the archive it just
+wrote — the accounts row count included — which is the thing to assert on,
+because an archive that carries the objects and silently carries no accounts
+looks exactly like a healthy one until the restore.
+
+The grant is the part to think about rather than copy. A backup reads every
+credential the platform holds; that is the same power the operator's own
+ServiceAccount has, so an account for this is about making the grant legible
+and removable, not about reducing it.
+
+### And where the archive goes is now a credential store
+
+This is worth settling before the first upload rather than after. An archive
+holds every secret the platform has, in the clear — the Cloudflare token, the
+git app keys, the attestation signing key, the identity provider's signing
+secret, and every connection credential the API wrote. Putting one in a bucket
+nightly makes **that bucket the cluster's root credential store**, and it should
+be locked down as one: its own bucket, no public access, server-side encryption,
+credentials that can write and list but that are not the same credentials the
+platform holds, and object versioning or object lock if the threat you care
+about includes somebody deleting the backups before deleting the cluster.
+
+Keep the destination's own credential outside the platform too. It is in the
+archive, and the archive is in the destination.
 
 ## Restoring
 
