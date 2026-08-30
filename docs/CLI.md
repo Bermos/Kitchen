@@ -477,6 +477,52 @@ work nobody asked for, so none of its environments idle down to no pods.
 [Projects](api/projects.md#changing-a-projects-settings) is the whole of what
 the body takes.
 
+### The settings the repository keeps
+
+A project can carry its build and runtime settings in a `kitchen.json` beside
+its code, read at every commit the platform builds. `kitchen config` is the
+half of that which lives in a terminal:
+
+```sh
+kitchen config check                          # the file in this directory
+kitchen config check apps/web/kitchen.json    # one in a monorepo
+kitchen config schema                         # the URL for the file's own $schema
+```
+
+`check` refuses the file the way a build would and lists what it declares, in
+the dotted form the API and the dashboard name settings in:
+
+```console
+$ kitchen config check
+kitchen.json is valid, and takes over 4 settings from the project:
+  build.strategy
+  env.NODE_ENV
+  processes
+  runtime.port
+```
+
+```console
+$ kitchen config check --json
+{"path":"kitchen.json","declares":["build.strategy","env.NODE_ENV","processes","runtime.port"]}
+```
+
+**It is the one command here that reaches nothing at all** — no platform, no
+credential, no network — which is what makes it usable in a pre-commit hook or
+a pull request's own checks. It runs the operator's parser, compiled into the
+same release, so a file it accepts is a file the build accepts and a file it
+refuses would have failed a build several minutes in. It exits `0` for a valid
+file, `1` for an invalid one, and `5` when there is no file at all: a project
+configured entirely in the dashboard is the ordinary case, and a hook running
+this over every repository should be able to tell "nothing to check" from
+"what is here is wrong".
+
+What it cannot tell you is whether the file conflicts with the project it will
+be built for — a variable the project takes from a provisioned database cannot
+be given a literal value in the file, and that is settled against the project,
+not against the file. The build says so; this does not.
+
+[docs/CONFIG.md](CONFIG.md) is what the file may and may not say.
+
 ### Rolling back
 
 Rollback is not a special operation: a `Release` is an immutable snapshot of an

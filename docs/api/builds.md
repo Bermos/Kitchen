@@ -28,6 +28,58 @@ immutable, so a rebuild is always a new `Build` with a generated name
 
 Answers `201` with the new build.
 
+## What the commit configured for itself
+
+A repository can carry its own settings, in a `kitchen.json` at the project's
+root directory. The build reads it at the commit under build, and reports what
+it found:
+
+```sh
+curl -sS -H "authorization: Bearer $TOKEN" \
+  https://kitchen.apps.example.com/api/v1/builds/shop-bld-abc123def456
+```
+
+```json
+{
+  "name": "shop-bld-abc123def456",
+  "project": "shop",
+  "phase": "Succeeded",
+  "config": {
+    "path": "kitchen.json",
+    "declares": ["build.strategy", "env.NODE_ENV", "processes", "runtime.port"]
+  }
+}
+```
+
+`config` is absent on a build whose commit carried no file, which is the
+ordinary case and not a fault. When it is there, `declares` names every
+setting the file took over from the project, in the dotted form the dashboard
+and `kitchen config check` use. **It answers what was declared rather than
+what it was declared as**: the values are already in the release this build
+produced and on the environment running it, so a second copy here would be a
+second thing to disagree with the first.
+
+The settings a file may carry, and the ones it may not, are
+[the configuration file's own page](../CONFIG.md). Two consequences show up
+here rather than there:
+
+- **A build fails when its file is wrong**, with `reason: ConfigInvalid` on
+  the Ready condition and the sentence to fix in `message`. Bad JSON, a key
+  nothing recognises and a declaration the file is not allowed to make are all
+  final: the same commit will not parse differently on the next attempt, so
+  the build fails rather than waiting. A repository that cannot be *read* is
+  the other case and behaves as it does for framework detection — the build
+  stays `Queued` with `SourceUnreadable`.
+- **A conflict with the project fails the build after the image was pushed.**
+  The file is read before the build and the release is written after it, and
+  the one refusal that needs both is a variable the file gives a literal value
+  to that the project binds to a secret or a resource claim. That is refused
+  rather than resolved either way, with the same `ConfigInvalid`.
+
+`kitchen config check` runs the same parser locally, with no credential and no
+network, which is the cheaper place to find all of this out — see
+[the CLI](../CLI.md).
+
 ## Cancelling a build
 
 ```sh
