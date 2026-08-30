@@ -76,6 +76,20 @@ export function providerGuidance(provider: string, apiUrl?: string): ProviderGui
         permissions: ["A personal or organization API key from the Neon console."],
         link: { href: "https://console.neon.tech/app/settings/api-keys", label: "API keys in the Neon console" },
       };
+    case "cnpg":
+      return {
+        tokenLabel: "No credential",
+        purpose:
+          "Kitchen provisions each claim its own PostgreSQL database, run here on the platform, with the operator's own identity — so there is no account to open and no credential to store or rotate.",
+        permissions: [
+          "CloudNativePG has to be running. The platform installs it for you when databases.install.enabled is set on the chart; otherwise install it yourself and the connection finds it.",
+          "Testing this connection asks whether CloudNativePG is answering — there is no credential to check.",
+        ],
+        link: {
+          href: "https://cloudnative-pg.io/documentation/current/installation_upgrade/",
+          label: "Installing CloudNativePG",
+        },
+      };
     case "gitlab":
       return {
         tokenLabel: "Access token",

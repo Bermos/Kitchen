@@ -451,6 +451,30 @@ async function deleteProject() {
   }
 }
 
+// What a postgres claim asked the database itself to be, as short badges —
+// the major version, the extensions, the volume. Most claims ask for none of
+// it and get nothing here.
+function claimRequirements(claim: Claim): string[] {
+  const postgres = claim.postgres;
+  if (!postgres) return [];
+  return [
+    ...(postgres.version ? [`pg ${postgres.version}`] : []),
+    ...(postgres.extensions ?? []),
+    ...(postgres.storageSize ? [postgres.storageSize] : []),
+    ...(postgres.storageClass ? [postgres.storageClass] : []),
+  ];
+}
+
+// The refusal a failed claim carries, which is the whole point of failing as a
+// claim rather than as an application: the Ready condition's message names
+// what could not be supplied and what is available instead.
+function claimRefusal(claim: Claim): string {
+  const ready = claim.conditions?.find((condition) => condition.type === "Ready");
+  return ready?.message || "the platform could not provision this claim";
+}
+
+const refusedClaims = computed(() => (data.value?.claims ?? []).filter((claim) => claim.phase === "Failed"));
+
 // Deleting a claim is honest about its blast radius: what happens to the
 // data is the deletionPolicy's call, and the confirmation says which it is
 // before asking for the click. An OAuth client is not data and has no policy
@@ -862,7 +886,20 @@ function host(url?: string): string {
                 <td class="px-3 py-2">
                   <UBadge color="neutral" variant="subtle" size="sm" class="font-mono">{{ claim.type }}</UBadge>
                   <UBadge v-if="claim.previewBranching" color="neutral" variant="subtle" size="sm" class="ml-1">
-                    branch per preview
+                    database per preview
+                  </UBadge>
+                  <!-- What the claim asked the database itself to be. Absent
+                       on most claims, and shown where it is not, because an
+                       extension is the thing a failed claim was refused for. -->
+                  <UBadge
+                    v-for="requirement in claimRequirements(claim)"
+                    :key="requirement"
+                    color="neutral"
+                    variant="subtle"
+                    size="sm"
+                    class="ml-1 font-mono"
+                  >
+                    {{ requirement }}
                   </UBadge>
                 </td>
                 <td class="px-3 py-2 text-xs whitespace-nowrap">
@@ -916,6 +953,16 @@ function host(url?: string): string {
                   >
                     Delete
                   </UButton>
+                </td>
+              </tr>
+              <!-- Why a claim was refused, in the provider's own words. A
+                   claim that cannot be satisfied — an extension no image
+                   ships, a version nothing publishes — fails here rather than
+                   in the application three minutes later, and that is only
+                   worth anything if the reason is where the claim is. -->
+              <tr v-for="claim in refusedClaims" :key="`${claim.name}-why`" class="border-b border-muted last:border-0">
+                <td colspan="9" class="px-3 py-2 text-xs text-error">
+                  <span class="font-mono">{{ claim.name }}</span> — {{ claimRefusal(claim) }}
                 </td>
               </tr>
             </tbody>
