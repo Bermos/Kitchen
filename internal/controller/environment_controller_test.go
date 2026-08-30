@@ -111,7 +111,15 @@ var _ = Describe("Environment Controller", func() {
 							{Name: "PUBLIC_API", Value: "https://api.example.com", PreviewValue: "https://api-staging.example.com"},
 							{Name: "SESSION_SECRET", SecretRef: &kitchenv1alpha1.SecretKeySelector{Name: "shop-secrets", Key: "session"}},
 						},
-						Runtime: kitchenv1alpha1.RuntimeSpec{Port: 8080, Replicas: ptr.To(int32(2))},
+						Runtime: kitchenv1alpha1.RuntimeSpec{
+							Port:     8080,
+							Replicas: ptr.To(int32(2)),
+							// Same artifact, different flags: what a preview
+							// runs instead of production's arguments.
+							Command:     []string{"./server"},
+							Args:        []string{"--config=prod.toml"},
+							PreviewArgs: []string{"--config=fake.toml"},
+						},
 					},
 				},
 			}
@@ -159,6 +167,14 @@ var _ = Describe("Environment Controller", func() {
 			Expect(container.Ports[0].ContainerPort).To(Equal(int32(8080)))
 			Expect(*deploy.Spec.Replicas).To(Equal(int32(2)))
 			Expect(container.Env).To(ContainElement(corev1.EnvVar{Name: "PUBLIC_API", Value: "https://api.example.com"}))
+			Expect(container.Args).To(Equal([]string{"--config=prod.toml"}), "production runs the release's arguments")
+			// Nothing is Ready until the platform has asked. Absent a health
+			// path the question is a TCP connect, never GET /.
+			Expect(container.ReadinessProbe).NotTo(BeNil())
+			Expect(container.ReadinessProbe.TCPSocket.Port.IntValue()).To(Equal(8080))
+			Expect(container.StartupProbe.FailureThreshold).To(
+				Equal(kitchenv1alpha1.DefaultStartupFailureThreshold), "startup gets the generous threshold")
+			Expect(container.LivenessProbe).To(BeNil(), "a TCP connect cannot tell a wedge from a working pod")
 			// The platform's own variables come first, so that a project
 			// setting one of them wins.
 			Expect(container.Env[0]).To(Equal(corev1.EnvVar{Name: "PORT", Value: "8080"}))
@@ -253,6 +269,10 @@ var _ = Describe("Environment Controller", func() {
 			Expect(*deploy.Spec.Replicas).To(Equal(int32(1)), "previews always run a single replica")
 			Expect(deploy.Spec.Template.Spec.Containers[0].Env).To(
 				ContainElement(corev1.EnvVar{Name: "PUBLIC_API", Value: "https://api-staging.example.com"}))
+			Expect(deploy.Spec.Template.Spec.Containers[0].Args).To(
+				Equal([]string{"--config=fake.toml"}), "a preview runs the preview arguments")
+			Expect(deploy.Spec.Template.Spec.Containers[0].Command).To(
+				Equal([]string{"./server"}), "the command is not overridden per environment")
 
 			route := &gatewayv1.HTTPRoute{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: envName, Namespace: appNS}, route)).To(Succeed())
@@ -508,6 +528,67 @@ func TestContainerProbes(t *testing.T) {
 					if probe.HTTPGet != nil {
 						t.Error("a check with no path must never become GET /")
 					}
+				}
+			}
+		})
+	}
+}
+
+// Which arguments an environment starts the application with (#237). A
+// preview override is the sibling of an environment variable's preview value:
+// same commit, same artifact, different flags.
+func TestRuntimeArgsForAnEnvironmentType(t *testing.T) {
+	for name, tc := range map[string]struct {
+		runtime kitchenv1alpha1.RuntimeSpec
+		envType kitchenv1alpha1.EnvironmentType
+		want    []string
+	}{
+		"production runs the project's arguments": {
+			runtime: kitchenv1alpha1.RuntimeSpec{Args: []string{"--config=prod.toml"}},
+			envType: kitchenv1alpha1.EnvironmentProduction,
+			want:    []string{"--config=prod.toml"},
+		},
+		"production ignores the preview override": {
+			runtime: kitchenv1alpha1.RuntimeSpec{
+				Args:        []string{"--config=prod.toml"},
+				PreviewArgs: []string{"--config=fake.toml"},
+			},
+			envType: kitchenv1alpha1.EnvironmentProduction,
+			want:    []string{"--config=prod.toml"},
+		},
+		"a preview takes the override where there is one": {
+			runtime: kitchenv1alpha1.RuntimeSpec{
+				Args:        []string{"--config=prod.toml"},
+				PreviewArgs: []string{"--config=fake.toml"},
+			},
+			envType: kitchenv1alpha1.EnvironmentPreview,
+			want:    []string{"--config=fake.toml"},
+		},
+		"a preview inherits production's where there is none": {
+			runtime: kitchenv1alpha1.RuntimeSpec{Args: []string{"--config=prod.toml"}},
+			envType: kitchenv1alpha1.EnvironmentPreview,
+			want:    []string{"--config=prod.toml"},
+		},
+		// An empty override is no override, the same reading an empty
+		// previewValue gets — which is what lets one be taken away through
+		// an API that cannot tell an absent field from a cleared one.
+		"an empty override is no override": {
+			runtime: kitchenv1alpha1.RuntimeSpec{
+				Args:        []string{"--config=prod.toml"},
+				PreviewArgs: []string{},
+			},
+			envType: kitchenv1alpha1.EnvironmentPreview,
+			want:    []string{"--config=prod.toml"},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := tc.runtime.ArgsFor(tc.envType)
+			if len(got) != len(tc.want) {
+				t.Fatalf("want %v, got %v", tc.want, got)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("want %v, got %v", tc.want, got)
 				}
 			}
 		})

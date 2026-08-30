@@ -215,6 +215,43 @@ type RuntimeSpec struct {
 	// +optional
 	Replicas *int32 `json:"replicas,omitempty"`
 
+	// Command replaces the image's entrypoint, and Args its arguments —
+	// the same two fields a ProcessSpec has, in the same exec form: a list
+	// of words, never a shell line, for the same reason the build jobs take
+	// two containers instead of an `sh -c`.
+	//
+	// Plenty of programs are configured by flags rather than by environment
+	// variables, and the alternative was an entrypoint script in every
+	// project translating one into the other — which is precisely the
+	// per-project boilerplate Kitchen exists to delete.
+	//
+	// The `PORT` contract is untouched: a buildpacks-built image still reads
+	// it, and an image started with a command of its own is free to ignore
+	// it exactly as a Dockerfile build already could.
+	// +optional
+	// +listType=atomic
+	Command []string `json:"command,omitempty"`
+
+	// +optional
+	// +listType=atomic
+	Args []string `json:"args,omitempty"`
+
+	// PreviewArgs replaces Args in preview environments, and is the sibling
+	// of EnvVar.PreviewValue — the same idea for the same reason. A preview
+	// runs against a fake or a seeded data source where production runs
+	// against the real one, from the same commit and the same artifact,
+	// because the artifact is built once and never rebuilt.
+	//
+	// It replaces the list rather than extending it: an override that
+	// appended could not remove a flag, and removing one is half of what a
+	// preview wants. An empty list is no override, exactly as an empty
+	// PreviewValue is — the sibling is the sibling all the way down, and it
+	// is what lets an override be taken away through an API that never
+	// distinguishes an absent field from a cleared one.
+	// +optional
+	// +listType=atomic
+	PreviewArgs []string `json:"previewArgs,omitempty"`
+
 	// Compute resources per replica.
 	// +optional
 	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
@@ -230,6 +267,23 @@ type RuntimeSpec struct {
 	// inherit it from production.
 	// +optional
 	Health *HealthSpec `json:"health,omitempty"`
+}
+
+// ArgsFor is the argument list an environment of this type starts the
+// application with: the preview override where there is one and this is a
+// preview, production's otherwise.
+//
+// An empty PreviewArgs is no override, the same reading an empty PreviewValue
+// gets. A preview that should be started with no arguments at all where
+// production has some is the one thing this cannot say, and it is the price of
+// the two overrides meaning the same thing — which matters more, because the
+// alternative is a difference between an absent list and an empty one that no
+// JSON body could express and no read of the project could report.
+func (r RuntimeSpec) ArgsFor(envType EnvironmentType) []string {
+	if envType == EnvironmentPreview && len(r.PreviewArgs) > 0 {
+		return r.PreviewArgs
+	}
+	return r.Args
 }
 
 // BuildStrategy selects how an image is produced from a repository.

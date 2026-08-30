@@ -2999,6 +2999,21 @@ func (in *RuntimeSpec) DeepCopyInto(out *RuntimeSpec) {
 		*out = new(int32)
 		**out = **in
 	}
+	if in.Command != nil {
+		in, out := &in.Command, &out.Command
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
+	if in.Args != nil {
+		in, out := &in.Args, &out.Args
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
+	if in.PreviewArgs != nil {
+		in, out := &in.PreviewArgs, &out.PreviewArgs
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
 	in.Resources.DeepCopyInto(&out.Resources)
 	if in.Health != nil {
 		in, out := &in.Health, &out.Health

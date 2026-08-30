@@ -379,6 +379,19 @@ type patchProjectRequest struct {
 	// sending `{}` restores the default one, which is a TCP connect to the
 	// container's port — every environment is probed either way.
 	Health *healthRequest `json:"health,omitempty"`
+	// Command replaces the image's entrypoint and Args its arguments, in
+	// exec form: a list of words, never a shell line. PreviewArgs replaces
+	// Args in preview environments, the way an environment variable's
+	// previewValue replaces its value — same commit, same artifact,
+	// different flags.
+	//
+	// Each replaces its whole list and `[]` clears it — which for
+	// PreviewArgs is how an override is taken away, since an empty override
+	// is no override just as an empty previewValue is. Leaving a field out
+	// keeps whatever it had.
+	Command     *[]string `json:"command,omitempty"`
+	Args        *[]string `json:"args,omitempty"`
+	PreviewArgs *[]string `json:"previewArgs,omitempty"`
 	// PromotionStages replaces the project's staged pipeline wholesale, in
 	// promotion order; an empty list removes it, restoring the default
 	// build-straight-to-production flow. The stages are topology — what each
@@ -708,6 +721,22 @@ func applyProjectBuildAndRuntime(project *kitchenv1alpha1.Project, body patchPro
 			return err
 		}
 		project.Spec.Runtime.Health = health
+	}
+	// Exec form throughout, so nothing here is split, quoted or handed to a
+	// shell: the words arrive as words and reach the container as words.
+	// An empty list is kept as an empty list rather than folded to nil,
+	// because "started with no arguments" is a thing to be able to say.
+	for _, list := range []struct {
+		words *[]string
+		into  *[]string
+	}{
+		{body.Command, &project.Spec.Runtime.Command},
+		{body.Args, &project.Spec.Runtime.Args},
+		{body.PreviewArgs, &project.Spec.Runtime.PreviewArgs},
+	} {
+		if list.words != nil {
+			*list.into = *list.words
+		}
 	}
 	return nil
 }
@@ -1731,6 +1760,9 @@ func changedProjectFields(body patchProjectRequest, continuity continuityChange)
 		{"cpu", body.CPU != nil},
 		{"memory", body.Memory != nil},
 		{"health", body.Health != nil},
+		{"command", body.Command != nil},
+		{"args", body.Args != nil},
+		{"previewArgs", body.PreviewArgs != nil},
 		{"promotionStages", body.PromotionStages != nil},
 		{"processes", body.Processes != nil},
 		{"dataClass", body.DataClass != nil},

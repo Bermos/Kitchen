@@ -304,6 +304,19 @@ func portString(value int32) string {
 	return strconv.FormatInt(int64(value), 10)
 }
 
+// wordList renders a command or an argument list for the diff. Arguments are
+// configuration a viewer already reads off the project, so unlike a variable's
+// value they travel as themselves — and a rollback that restored the image but
+// not the flags would have restored the wrong thing, which is exactly what
+// this route exists to say before the write is made.
+//
+// The words are joined with a space rather than rendered as JSON because the
+// answer is read by a person; an empty list is empty, which reads as "the
+// image's own", the same as an absent one.
+func wordList(words []string) string {
+	return strings.Join(words, " ")
+}
+
 // diffRuntime reports the runtime fields, changed ones first. Every field is
 // listed rather than only the differing ones: "the port is the same" is an
 // answer, and a list that shrinks to nothing would leave a reader unable to
@@ -312,6 +325,9 @@ func diffRuntime(release, against kitchenv1alpha1.RuntimeSpec) []fieldChangeView
 	fields := []fieldChangeView{
 		{Field: "port", To: portString(release.Port), From: portString(against.Port)},
 		{Field: "replicas", To: replicaCount(release.Replicas), From: replicaCount(against.Replicas)},
+		{Field: "command", To: wordList(release.Command), From: wordList(against.Command)},
+		{Field: "args", To: wordList(release.Args), From: wordList(against.Args)},
+		{Field: "previewArgs", To: wordList(release.PreviewArgs), From: wordList(against.PreviewArgs)},
 		{Field: "cpuRequest",
 			To:   quantityString(release.Resources.Requests, corev1.ResourceCPU),
 			From: quantityString(against.Resources.Requests, corev1.ResourceCPU)},

@@ -131,7 +131,15 @@ type projectView struct {
 	// resolved. It is always present, because every environment is probed:
 	// a project that declared nothing is reported with the default check
 	// rather than with nothing, which would read as "not checked".
-	Health                *healthView     `json:"health,omitempty"`
+	Health *healthView `json:"health,omitempty"`
+	// Command and Args are what the application is started with, in exec
+	// form; absent means the image's own entrypoint. PreviewArgs is what a
+	// preview runs instead of Args — the sibling of an environment
+	// variable's preview value, and absent means a preview runs
+	// production's, which is the reading an empty list gets too.
+	Command               []string        `json:"command,omitempty"`
+	Args                  []string        `json:"args,omitempty"`
+	PreviewArgs           []string        `json:"previewArgs,omitempty"`
 	ProductionEnvironment string          `json:"productionEnvironment,omitempty"`
 	LatestBuild           string          `json:"latestBuild,omitempty"`
 	CreatedAt             time.Time       `json:"createdAt"`
@@ -177,6 +185,9 @@ func newProjectView(project *kitchenv1alpha1.Project, role access.ProjectRole) p
 		CreatedAt:          project.CreationTimestamp.Time,
 		Conditions:         conditionViews(project.Status.Conditions),
 		Health:             newHealthView(project.Spec.Runtime.Health),
+		Command:            project.Spec.Runtime.Command,
+		Args:               project.Spec.Runtime.Args,
+		PreviewArgs:        project.Spec.Runtime.PreviewArgs,
 	}
 	if quantity, ok := project.Spec.Runtime.Resources.Limits[corev1.ResourceCPU]; ok {
 		view.CPU = quantity.String()

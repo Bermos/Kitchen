@@ -635,8 +635,14 @@ func (r *EnvironmentReconciler) applyDeployment(
 			{Name: registrySecretName(project.Spec.Registry.ConnectionRef.Name)},
 		}
 		app := corev1.Container{
-			Name:      AppContainerName,
-			Image:     release.Spec.Image,
+			Name:  AppContainerName,
+			Image: release.Spec.Image,
+			// The arguments are the release's, and a preview's are the
+			// preview override where the release declared one: same commit,
+			// same artifact, different flags — which is the whole point,
+			// since the artifact is built once and never rebuilt.
+			Command:   runtimeSpec.Command,
+			Args:      runtimeSpec.ArgsFor(env.Spec.Type),
 			Ports:     []corev1.ContainerPort{{Name: "http", ContainerPort: port}},
 			Env:       podEnv,
 			Resources: runtimeSpec.Resources,

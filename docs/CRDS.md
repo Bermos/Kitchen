@@ -420,6 +420,10 @@ spec:
   runtime:
     port: 3000                          # omit to take the detected framework's
     replicas: 2                         # previews always get 1
+    command: [./server]                 # replaces the image's entrypoint; exec
+    args: [--config=prod.toml]          # form, a list of words, never a shell line
+    previewArgs: [--config=fake.toml]   # used instead of args in previews, the way
+                                        # an env var's previewValue replaces its value
     resources: { cpu: 500m, memory: 512Mi }
     health:                             # what the platform asks before it sends
       path: /healthz                    # anyone to a new pod. No path = a TCP
@@ -497,6 +501,15 @@ preview shares the project's environment variables, so a preview that emails
 customers nightly is a bad afternoon and a preview worker draining the
 production queue is a worse one. The list merges per `name`, so two people
 adding two workers do not drop each other's.
+
+`runtime.command` and `runtime.args` start the application container, the same
+two fields a process has and in the same exec form. `previewArgs` replaces
+`args` in a preview: same commit, same artifact, different flags — which is
+the point, since the artifact is built once and never rebuilt, so a preview
+that needs a fake data source cannot get one by building a second image. An
+empty `previewArgs` is no override, the reading an empty `previewValue` gets
+too. All three are in the snapshot, so a rollback restores the arguments the
+release ran with.
 
 `runtime.health` is how the platform finds out whether an application is
 *working* rather than merely started, and it is the reason `status.phase:

@@ -107,6 +107,14 @@ export interface Project {
   memory?: string;
   /** What the platform checks the application with. Always present. */
   health?: Health;
+  /** What the application is started with, in exec form — a list of words,
+   * never a shell line. Absent means the image's own entrypoint. */
+  command?: string[];
+  args?: string[];
+  /** What a preview runs instead of `args`: the sibling of an environment
+   * variable's preview value. Absent or empty means a preview runs
+   * production's, which is how an override is taken away. */
+  previewArgs?: string[];
   productionEnvironment?: string;
   latestBuild?: string;
   createdAt: string;
@@ -192,6 +200,12 @@ export interface ProjectSettings {
   /** Replace the health check the platform probes with. `{}` restores the
    * default one. */
   health?: HealthSettings;
+  /** Replace what the application is started with. Each replaces its whole
+   * list and `[]` clears it — an application started with no arguments,
+   * where leaving the field out keeps whatever it had. */
+  command?: string[];
+  args?: string[];
+  previewArgs?: string[];
   /** Reclassify the project's data; "" removes the classification. Always
    * allowed — environments rated below the new class read as non-compliant
    * in the inventory and at promotion, rather than the correction being
