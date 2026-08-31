@@ -1203,6 +1203,52 @@ func TestRebuildingANamedCommit(t *testing.T) {
 	}
 }
 
+// The whole message a caller pastes in reaches the Build as the pair every
+// client reads: the subject a row shows, and the body behind it.
+func TestABuildRequestSplitsTheCommitMessage(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+
+	recorder := h.do(t, http.MethodPost, "/api/v1/projects/shop/builds",
+		`{"sha":"fedcba9876543210","branch":"topic",`+
+			`"message":"fix(api): answer the subject\n\nAnd the body under it.\n"}`)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	build := decode[buildView](t, recorder)
+	if build.Git.Message != "fix(api): answer the subject" {
+		t.Errorf("want the subject alone, got %q", build.Git.Message)
+	}
+	if build.Git.Body != "And the body under it." {
+		t.Errorf("want the body behind it, got %q", build.Git.Body)
+	}
+}
+
+// A build recorded before the two were stored apart carries the whole message
+// in a spec that cannot be rewritten. It is answered split all the same.
+func TestABuildRecordedBeforeTheSplitIsAnsweredSplit(t *testing.T) {
+	build := &kitchenv1alpha1.Build{
+		ObjectMeta: metav1.ObjectMeta{Name: "shop-bld-old", Namespace: testNamespace,
+			Labels: map[string]string{kitchenv1alpha1.ProjectLabel: "shop"}},
+		Spec: kitchenv1alpha1.BuildSpec{
+			ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: "shop"},
+			Git: kitchenv1alpha1.GitRevision{
+				SHA:     "fedcba9876543210",
+				Branch:  "main",
+				Message: "chore: the whole thing\n\nBody, trailers and all.\n\nCo-Authored-By: somebody",
+			},
+		},
+	}
+	h := newHarness(t, nil, append(fixtures(), build)...)
+
+	view := decode[buildView](t, h.do(t, http.MethodGet, "/api/v1/builds/shop-bld-old", ""))
+	if view.Git.Message != "chore: the whole thing" {
+		t.Errorf("want the subject alone, got %q", view.Git.Message)
+	}
+	if view.Git.Body != "Body, trailers and all.\n\nCo-Authored-By: somebody" {
+		t.Errorf("want the rest as the body, got %q", view.Git.Body)
+	}
+}
+
 func TestRebuildingAFreshCommitFallsBackToTheProductionBranch(t *testing.T) {
 	h := newHarness(t, nil, fixtures()...)
 

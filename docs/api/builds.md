@@ -28,6 +28,36 @@ immutable, so a rebuild is always a new `Build` with a generated name
 
 Answers `201` with the new build.
 
+`message` may be given alongside, and is split the way a message arriving on a
+push is: the first line becomes the commit's **subject** and the rest its
+**body**. Whatever a caller sends — a whole `git log` entry, trailers included
+— reaches the `Build` as that pair.
+
+## What a build says about its commit
+
+```json
+{
+  "git": {
+    "sha": "abc123def456789",
+    "branch": "main",
+    "message": "feat(api): answer a commit as a subject and a body",
+    "body": "A build list is a table of subjects, so a message with a body\nunder it was being rendered into a row fourteen lines tall.",
+    "author": "bermos",
+    "pullRequest": 261
+  }
+}
+```
+
+`message` is **the subject alone** — the commit's first line — because every
+surface that shows a commit shows it in a row: a build list, a release list,
+the command palette, an audit pack. `body` is everything under it, absent for
+the majority of commits that have none, and it keeps the shape it was written
+in; a body longer than 4 KiB is cut, the repository keeping the whole of it.
+
+A build recorded before the platform stored the two separately has the whole
+message in its spec, which is immutable, and is answered here split the same
+way — so no client has to know which it is reading.
+
 ## What the commit configured for itself
 
 A repository can carry its own settings, in a `kitchen.json` at the project's

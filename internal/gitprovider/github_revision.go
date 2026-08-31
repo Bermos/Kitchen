@@ -21,7 +21,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"strings"
+
+	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 )
 
 // githubCommit is the part of the commits API's answer a Build needs.
@@ -62,17 +63,12 @@ func (g *GitHub) HeadRevision(ctx context.Context, repo, ref string) (Revision, 
 	if commit.Author != nil && commit.Author.Login != "" {
 		author = commit.Author.Login
 	}
+	subject, body := kitchenv1alpha1.SplitCommitMessage(commit.Commit.Message)
 	return Revision{
 		SHA:     commit.SHA,
 		Branch:  ref,
-		Message: subject(commit.Commit.Message),
+		Message: subject,
+		Body:    body,
 		Author:  author,
 	}, nil
-}
-
-// subject is a commit message's first line. The rest is a body nothing in the
-// platform shows, and a Build's status is read in table rows.
-func subject(message string) string {
-	line, _, _ := strings.Cut(message, "\n")
-	return strings.TrimSpace(line)
 }

@@ -10,6 +10,7 @@ import { useAsync, usePoll } from "../lib/useAsync";
 import ConditionsTable from "../components/ConditionsTable.vue";
 import LogViewer from "../components/LogViewer.vue";
 import OperatorOnly from "../components/OperatorOnly.vue";
+import CommitBody from "../components/CommitBody.vue";
 import PageHeader from "../components/PageHeader.vue";
 import PhaseBadge from "../components/PhaseBadge.vue";
 import VEXPanel from "../components/VEXPanel.vue";
@@ -258,6 +259,15 @@ const logStreamer = (query: LogQuery, onLine: (line: LogLine) => void, signal: A
           <p class="text-xs text-muted mb-1">Image</p>
           <p class="text-sm text-toned font-mono truncate" :title="build.image">{{ build.image || "not pushed yet" }}</p>
         </div>
+      </div>
+
+      <!-- What the commit said about itself, under the subject in the header.
+           Most commits have no body and this is not rendered at all; where
+           there is one it is the page's own subject matter, so it is shown
+           rather than hidden behind a control. -->
+      <div v-if="build.git.body" class="rounded-md border border-default px-5 py-4 space-y-2">
+        <p class="text-xs text-muted">Commit message</p>
+        <CommitBody :body="build.git.body" />
       </div>
 
       <!-- What the commit asked for itself. Above the failure panel because

@@ -145,6 +145,34 @@ func deliverTo(
 	return rec
 }
 
+// A push delivers the whole commit message. A Build carries it as two: the
+// subject every screen shows it by, and the body behind it.
+func TestPushSplitsTheCommitMessage(t *testing.T) {
+	r, handler := newReceiver(t)
+	body := []byte(`{
+		"ref": "refs/heads/main",
+		"after": "8f3a2c1d0abc456789ab",
+		"repository": {"full_name": "acme/shop"},
+		"head_commit": {"message": "feat(api): add checkout\n\nThe body, which the build page shows.\n\nCo-Authored-By: somebody", "author": {"username": "bermos"}}
+	}`)
+
+	if rec := deliver(handler, "push", body, sign(body)); rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	build := &kitchenv1alpha1.Build{}
+	key := types.NamespacedName{Name: "shop-bld-8f3a2c1d0abc", Namespace: "default"}
+	if err := r.Client.Get(context.Background(), key, build); err != nil {
+		t.Fatalf("expected build to be created: %v", err)
+	}
+	if build.Spec.Git.Message != "feat(api): add checkout" {
+		t.Errorf("expected the subject alone, got %q", build.Spec.Git.Message)
+	}
+	if build.Spec.Git.Body != "The body, which the build page shows.\n\nCo-Authored-By: somebody" {
+		t.Errorf("expected the body under it, got %q", build.Spec.Git.Body)
+	}
+}
+
 func TestPushCreatesBuild(t *testing.T) {
 	r, handler := newReceiver(t)
 	body := []byte(`{

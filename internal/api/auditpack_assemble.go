@@ -779,7 +779,9 @@ func packChangeLog(
 		}
 		change.Commit = build.Spec.Git.SHA
 		change.Branch = build.Spec.Git.Branch
-		change.Message = build.Spec.Git.Message
+		// A build recorded before the platform stored subjects alone still
+		// carries a whole message; the change log is a table of one-line rows.
+		change.Message = kitchenv1alpha1.CommitSubject(build.Spec.Git.Message)
 		change.Author = build.Spec.Git.Author
 		if artifact := build.Status.Artifact; artifact != nil {
 			change.Digest = artifact.Digest

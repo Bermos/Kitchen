@@ -10,6 +10,8 @@ import { pipelineShown } from "../lib/promotions";
 import { releaseHistoryEntry, releaseHistoryLabel } from "../lib/status";
 import { useAsync, usePoll } from "../lib/useAsync";
 import ClaimModal from "../components/ClaimModal.vue";
+import CommitBody from "../components/CommitBody.vue";
+import CommitBodyToggle from "../components/CommitBodyToggle.vue";
 import ConditionsTable from "../components/ConditionsTable.vue";
 import EnvVarsPanel from "../components/EnvVarsPanel.vue";
 import ProjectSecretsPanel from "../components/ProjectSecretsPanel.vue";
@@ -34,6 +36,13 @@ function openBuild(build: string, event: MouseEvent) {
   if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
   if ((event.target as HTMLElement | null)?.closest("a")) return;
   void router.push({ name: "build", params: { name: build } });
+}
+
+/** The build whose commit message is open, if any. One at a time, so the list
+ *  stays a list of subjects with one of them answered at length. */
+const expandedMessage = ref<string | null>(null);
+function toggleMessage(build: string) {
+  expandedMessage.value = expandedMessage.value === build ? null : build;
 }
 
 const { data, error, loading, refresh } = useAsync(async () => {
@@ -661,7 +670,12 @@ function host(url?: string): string {
                 </span>
               </td>
               <td class="px-3 py-2">
-                <p class="text-highlighted truncate max-w-md">{{ buildOf(release)?.git.message || release.build }}</p>
+                <p
+                  class="text-highlighted truncate max-w-2xl"
+                  :title="buildOf(release)?.git.message || release.build"
+                >
+                  {{ buildOf(release)?.git.message || release.build }}
+                </p>
                 <p class="text-xs text-muted font-mono mt-0.5">
                   {{ shortSHA(buildOf(release)?.git.sha) }} · {{ buildOf(release)?.git.branch || "—" }} ·
                   {{ buildOf(release)?.git.author || "—" }}
@@ -765,7 +779,8 @@ function host(url?: string): string {
                   <td class="px-3 py-2">
                     <RouterLink
                       :to="{ name: 'build', params: { name: build.name } }"
-                      class="text-toned hover:text-highlighted hover:underline"
+                      class="block max-w-2xl truncate text-toned hover:text-highlighted hover:underline"
+                      :title="build.git.message || build.name"
                       >{{ build.git.message || build.name }}</RouterLink
                     >
                   </td>
@@ -803,34 +818,52 @@ function host(url?: string): string {
             </tr>
             <!-- The whole row opens the build. Only the subject used to, which
                  in a row this wide is a link most clicks miss. -->
-            <tr
-              v-for="build in data?.builds"
-              :key="build.name"
-              class="border-b border-muted last:border-0 hover:bg-elevated/40 cursor-pointer"
-              @click="openBuild(build.name, $event)"
-            >
-              <td class="px-3 py-2 w-24 font-mono text-xs text-toned align-top">{{ shortSHA(build.git.sha) }}</td>
-              <td class="px-3 py-2">
-                <RouterLink :to="{ name: 'build', params: { name: build.name } }" class="text-highlighted hover:underline">
-                  {{ build.git.message || build.name }}
-                </RouterLink>
-                <p class="text-xs text-muted font-mono mt-0.5">
-                  {{ build.git.branch }}<span v-if="build.git.pullRequest"> · #{{ build.git.pullRequest }}</span>
-                </p>
-                <!-- Why it failed, so that two failed builds read as two
-                     failures rather than as the same one twice. -->
-                <p v-if="buildFailureLine(build)" class="text-xs text-error mt-1 break-words">
-                  {{ buildFailureLine(build) }}
-                </p>
-              </td>
-              <td class="px-3 py-2 align-top"><PhaseBadge :phase="build.phase" /></td>
-              <td class="px-3 py-2 font-mono text-xs text-muted whitespace-nowrap align-top">
-                {{ duration(build.startedAt, build.completedAt) }}
-              </td>
-              <td class="px-3 py-2 text-right text-xs text-muted whitespace-nowrap align-top">
-                {{ timeAgo(build.createdAt) }}
-              </td>
-            </tr>
+            <template v-for="build in data?.builds" :key="build.name">
+              <tr
+                class="border-b border-muted last:border-0 hover:bg-elevated/40 cursor-pointer"
+                @click="openBuild(build.name, $event)"
+              >
+                <td class="px-3 py-2 w-24 font-mono text-xs text-toned align-top">{{ shortSHA(build.git.sha) }}</td>
+                <td class="px-3 py-2">
+                  <span class="flex items-center gap-1 max-w-2xl">
+                    <RouterLink
+                      :to="{ name: 'build', params: { name: build.name } }"
+                      class="block min-w-0 truncate text-highlighted hover:underline"
+                      :title="build.git.message || build.name"
+                    >
+                      {{ build.git.message || build.name }}
+                    </RouterLink>
+                    <!-- The rest of what the commit said, for a commit that
+                         said more than its subject. -->
+                    <CommitBodyToggle
+                      v-if="build.git.body"
+                      :open="expandedMessage === build.name"
+                      @toggle="toggleMessage(build.name)"
+                    />
+                  </span>
+                  <p class="text-xs text-muted font-mono mt-0.5">
+                    {{ build.git.branch }}<span v-if="build.git.pullRequest"> · #{{ build.git.pullRequest }}</span>
+                  </p>
+                  <!-- Why it failed, so that two failed builds read as two
+                       failures rather than as the same one twice. -->
+                  <p v-if="buildFailureLine(build)" class="text-xs text-error mt-1 break-words">
+                    {{ buildFailureLine(build) }}
+                  </p>
+                </td>
+                <td class="px-3 py-2 align-top"><PhaseBadge :phase="build.phase" /></td>
+                <td class="px-3 py-2 font-mono text-xs text-muted whitespace-nowrap align-top">
+                  {{ duration(build.startedAt, build.completedAt) }}
+                </td>
+                <td class="px-3 py-2 text-right text-xs text-muted whitespace-nowrap align-top">
+                  {{ timeAgo(build.createdAt) }}
+                </td>
+              </tr>
+              <tr v-if="expandedMessage === build.name" class="border-b border-muted last:border-0">
+                <td colspan="5" class="px-3 py-2 bg-elevated/30">
+                  <CommitBody :body="build.git.body" />
+                </td>
+              </tr>
+            </template>
           </tbody>
         </table>
       </div>

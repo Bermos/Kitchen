@@ -481,6 +481,9 @@ func (r *GitWebhookReceiver) createBuild(
 	sha, branch, message, author string,
 	pullRequest *int32,
 ) ([]string, error) {
+	// A push carries the whole commit message; a Build carries it as the two
+	// things the platform shows — the subject in every row, the body behind it.
+	subject, commitBody := kitchenv1alpha1.SplitCommitMessage(message)
 	build := &kitchenv1alpha1.Build{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      kitchenv1alpha1.BuildNameFor(project.Name, sha),
@@ -492,7 +495,8 @@ func (r *GitWebhookReceiver) createBuild(
 			Git: kitchenv1alpha1.GitRevision{
 				SHA:         sha,
 				Branch:      branch,
-				Message:     message,
+				Message:     subject,
+				Body:        commitBody,
 				Author:      author,
 				PullRequest: pullRequest,
 			},

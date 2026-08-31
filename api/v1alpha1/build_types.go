@@ -19,6 +19,7 @@ package v1alpha1
 import (
 	"fmt"
 	"strconv"
+	"strings"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -62,6 +63,55 @@ func BuildNameFor(project, sha string) string {
 	return fmt.Sprintf("%s-bld-%s", project, sha)
 }
 
+// CommitBodyLimit is how much of a commit body a Build keeps. A message is
+// written for whoever reads `git log` and nothing bounds it: a squashed branch
+// carries every subject it swallowed, and a generated one can carry a diff. A
+// Build's spec is not a git object store, and the object it lives in has a
+// size of its own to stay under, so the body is cut here and the repository
+// keeps the whole of it.
+const CommitBodyLimit = 4096
+
+// SplitCommitMessage separates a commit message into the two things the
+// platform shows it as: the subject every table row renders, and the body
+// behind it. It is the one implementation of what GitRevision.Message and
+// GitRevision.Body mean, and everything that writes a revision — the webhook
+// receiver, the API and the provider that resolves a branch to its tip — goes
+// through it, so that a Build is split the same way whichever created it.
+//
+// The body keeps the shape it was written in, paragraphs and trailers and
+// all; only the blank space around it goes, and the tail beyond
+// CommitBodyLimit.
+func SplitCommitMessage(message string) (subject, body string) {
+	subject, rest, _ := strings.Cut(message, "\n")
+	subject = strings.TrimSpace(subject)
+	// The blank line under the subject goes, and so does the trailing
+	// newline every provider sends — but not the indent on the body's first
+	// line, which TrimSpace would take and which is a code block as often as
+	// it is nothing.
+	body = strings.ReplaceAll(rest, "\r\n", "\n")
+	body = strings.TrimRight(strings.TrimLeft(body, "\n"), " \t\n")
+	if len(body) > CommitBodyLimit {
+		// Cut on a rune boundary: the field is a string in an object that is
+		// serialised as JSON, and half a rune is not one.
+		body = strings.ToValidUTF8(body[:CommitBodyLimit], "") + "…"
+	}
+	return subject, body
+}
+
+// CommitSubject is a commit message's first line alone. Writers split with
+// SplitCommitMessage; this is for the readers that have only a message —
+// a Build recorded before the platform split them, whose spec is immutable.
+func CommitSubject(message string) string {
+	subject, _ := SplitCommitMessage(message)
+	return subject
+}
+
+// CommitBody is everything under that first line, on the same terms.
+func CommitBody(message string) string {
+	_, body := SplitCommitMessage(message)
+	return body
+}
+
 // GitRevision identifies the commit a Build builds.
 type GitRevision struct {
 	// +kubebuilder:validation:MinLength=7
@@ -70,8 +120,24 @@ type GitRevision struct {
 	// +kubebuilder:validation:MinLength=1
 	Branch string `json:"branch"`
 
+	// Message is the commit's *subject* — its first line and nothing else.
+	// Every surface the platform shows it on is a row in a table: a build
+	// list, a release list, the command palette, an audit pack. Writers split
+	// a message with SplitCommitMessage rather than each reader trimming what
+	// it was given.
 	// +optional
 	Message string `json:"message,omitempty"`
+
+	// Body is the rest of the commit message, under the subject: what the
+	// commit says about itself at length, kept so that a build can be asked
+	// and not only skimmed. Empty for the great majority of commits, which
+	// have no body at all, and cut at CommitBodyLimit for the few that have a
+	// long one. The schema's limit is that cut plus a little: it counts
+	// characters where the cut counts bytes, and the ellipsis marking a cut
+	// body is one more.
+	// +kubebuilder:validation:MaxLength=4100
+	// +optional
+	Body string `json:"body,omitempty"`
 
 	// +optional
 	Author string `json:"author,omitempty"`

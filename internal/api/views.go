@@ -349,11 +349,34 @@ func newExceptionView(exception *kitchenv1alpha1.Exception) exceptionView {
 }
 
 type revisionView struct {
-	SHA         string `json:"sha"`
-	Branch      string `json:"branch"`
-	Message     string `json:"message,omitempty"`
+	SHA     string `json:"sha"`
+	Branch  string `json:"branch"`
+	Message string `json:"message,omitempty"`
+	// Body is what the commit said under its subject, for a client that
+	// offers to show it. Absent for a commit that has none.
+	Body        string `json:"body,omitempty"`
 	Author      string `json:"author,omitempty"`
 	PullRequest *int32 `json:"pullRequest,omitempty"`
+}
+
+// newRevisionView answers the subject and the body separately whatever the
+// Build holds. One recorded before the platform split them has the whole
+// message under `message` and its spec is immutable, so the split happens
+// here rather than in each of the three clients.
+func newRevisionView(build *kitchenv1alpha1.Build) revisionView {
+	git := build.Spec.Git
+	body := git.Body
+	if body == "" {
+		body = kitchenv1alpha1.CommitBody(git.Message)
+	}
+	return revisionView{
+		SHA:         git.SHA,
+		Branch:      git.Branch,
+		Message:     kitchenv1alpha1.CommitSubject(git.Message),
+		Body:        body,
+		Author:      git.Author,
+		PullRequest: build.PullRequestNumber(),
+	}
 }
 
 type buildView struct {
@@ -643,16 +666,10 @@ func newArtifactView(artifact *kitchenv1alpha1.ArtifactStatus) *artifactView {
 
 func newBuildView(build *kitchenv1alpha1.Build) buildView {
 	view := buildView{
-		Name:    build.Name,
-		Project: build.Spec.ProjectRef.Name,
-		Phase:   string(build.Status.Phase),
-		Git: revisionView{
-			SHA:         build.Spec.Git.SHA,
-			Branch:      build.Spec.Git.Branch,
-			Message:     build.Spec.Git.Message,
-			Author:      build.Spec.Git.Author,
-			PullRequest: build.PullRequestNumber(),
-		},
+		Name:              build.Name,
+		Project:           build.Spec.ProjectRef.Name,
+		Phase:             string(build.Status.Phase),
+		Git:               newRevisionView(build),
 		DetectedFramework: build.Status.DetectedFramework,
 		Config:            newRepoConfigView(build.Status.Config),
 		Image:             build.Status.Image,

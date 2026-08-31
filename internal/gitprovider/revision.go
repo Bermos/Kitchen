@@ -29,6 +29,9 @@ type Revision struct {
 	// Message is the commit's subject line, empty when the provider gives
 	// none.
 	Message string
+	// Body is the rest of the message under that line, empty for a commit
+	// that has none — which is most of them.
+	Body string
 	// Author is the provider's identity for whoever wrote it, empty when the
 	// provider cannot attribute it to an account.
 	Author string

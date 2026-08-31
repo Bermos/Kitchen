@@ -264,7 +264,11 @@ export interface NewProject {
 export interface Revision {
   sha: string;
   branch: string;
+  /** The commit's subject: its first line, which is what every row shows. */
   message?: string;
+  /** What the commit said under that line, for the screens that offer to show
+   *  it. Absent for a commit that has no body, which is most of them. */
+  body?: string;
   author?: string;
   pullRequest?: number;
 }

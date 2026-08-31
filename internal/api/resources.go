@@ -1117,6 +1117,9 @@ func (s *Server) revisionToBuild(
 	if err != nil {
 		return kitchenv1alpha1.GitRevision{}, err
 	}
+	// Whatever the caller pasted in — a subject, or a whole `git log` entry —
+	// is split the same way a push is.
+	subject, commitBody := kitchenv1alpha1.SplitCommitMessage(body.Message)
 
 	if body.SHA == "" {
 		if len(previous) == 0 {
@@ -1128,8 +1131,8 @@ func (s *Server) revisionToBuild(
 		if body.Branch != "" {
 			revision.Branch = body.Branch
 		}
-		if body.Message != "" {
-			revision.Message = body.Message
+		if subject != "" {
+			revision.Message, revision.Body = subject, commitBody
 		}
 		return *revision, nil
 	}
@@ -1138,7 +1141,7 @@ func (s *Server) revisionToBuild(
 		return kitchenv1alpha1.GitRevision{}, fmt.Errorf("sha %q is too short: give at least the seven-character short form", body.SHA)
 	}
 
-	revision := kitchenv1alpha1.GitRevision{SHA: body.SHA, Branch: body.Branch, Message: body.Message}
+	revision := kitchenv1alpha1.GitRevision{SHA: body.SHA, Branch: body.Branch, Message: subject, Body: commitBody}
 	// A commit that has been built before carries its own branch and
 	// authorship; a caller naming a fresh sha has to say which branch it is
 	// on, unless the production branch is a fair assumption.
@@ -1148,7 +1151,9 @@ func (s *Server) revisionToBuild(
 				revision.Branch = previous[i].Spec.Git.Branch
 			}
 			if revision.Message == "" {
-				revision.Message = previous[i].Spec.Git.Message
+				// The pair, or a subject from one build with a body from
+				// another: two commits' messages spliced into one revision.
+				revision.Message, revision.Body = previous[i].Spec.Git.Message, previous[i].Spec.Git.Body
 			}
 			revision.Author = previous[i].Spec.Git.Author
 			// From the spec, not Build.PullRequestNumber(): this writes a
