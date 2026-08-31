@@ -261,6 +261,72 @@ var _ = Describe("Workers and scheduled jobs", func() {
 			"a scheduled run is not a replica of the web process")
 	})
 
+	// The declaration the web process got in #239 and a worker did not (#250).
+	// Left alone a worker takes the API server's default rolling update, which
+	// at one replica surges to a second copy: two of a poller, every rollout.
+	It("recreates rather than rolls a singleton worker, and rolls again once it is not one", func() {
+		environment(prodName, kitchenv1alpha1.EnvironmentProduction)
+
+		deploy, found := deployment(prodName + "-worker")
+		Expect(found).To(BeTrue())
+		Expect(deploy.Spec.Strategy.Type).To(Equal(appsv1.RollingUpdateDeploymentStrategyType),
+			"a queue consumer is fine overlapping, so this is not the default")
+
+		By("declaring it a singleton")
+		single := baseProcesses()
+		single[0].Singleton = true
+		single[0].Replicas = ptr.To(int32(1))
+		declare(single)
+		reconcileAgain(prodName)
+
+		deploy, found = deployment(prodName + "-worker")
+		Expect(found).To(BeTrue())
+		Expect(deploy.Spec.Strategy.Type).To(Equal(appsv1.RecreateDeploymentStrategyType))
+
+		By("putting the rolling update back when the declaration is withdrawn")
+		declare(baseProcesses())
+		reconcileAgain(prodName)
+
+		deploy, found = deployment(prodName + "-worker")
+		Expect(found).To(BeTrue())
+		Expect(deploy.Spec.Strategy.Type).To(Equal(appsv1.RollingUpdateDeploymentStrategyType),
+			"a Deployment left on Recreate keeps an outage after the reason for it has gone")
+	})
+
+	// Refused at admission, not clamped: a count quietly lowered reads back as
+	// a setting that did not take.
+	It("refuses a singleton worker that asks for three of itself, and a singleton schedule", func() {
+		project := &kitchenv1alpha1.Project{}
+		key := types.NamespacedName{Name: projectName, Namespace: namespace}
+		Expect(k8sClient.Get(ctx, key, project)).To(Succeed())
+
+		project.Spec.Processes = []kitchenv1alpha1.ProcessSpec{{
+			Name: "worker", Type: kitchenv1alpha1.ProcessWorker,
+			Singleton: true, Replicas: ptr.To(int32(3)),
+		}}
+		err := k8sClient.Update(ctx, project)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("singleton"))
+
+		By("refusing it on a schedule, whose answer to the same question is concurrencyPolicy")
+		Expect(k8sClient.Get(ctx, key, project)).To(Succeed())
+		project.Spec.Processes = []kitchenv1alpha1.ProcessSpec{{
+			Name: "nightly", Type: kitchenv1alpha1.ProcessCron,
+			Schedule: "0 3 * * *", Singleton: true,
+		}}
+		err = k8sClient.Update(ctx, project)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("concurrencyPolicy"))
+
+		By("accepting the worker at one replica")
+		Expect(k8sClient.Get(ctx, key, project)).To(Succeed())
+		project.Spec.Processes = []kitchenv1alpha1.ProcessSpec{{
+			Name: "worker", Type: kitchenv1alpha1.ProcessWorker,
+			Singleton: true, Replicas: ptr.To(int32(1)),
+		}}
+		Expect(k8sClient.Update(ctx, project)).To(Succeed())
+	})
+
 	It("runs a scheduled job as a CronJob that does not retry", func() {
 		environment(prodName, kitchenv1alpha1.EnvironmentProduction)
 

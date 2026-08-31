@@ -86,10 +86,20 @@ const DefaultRunTimeout = time.Hour
 // check that named none would be a setting that read back and did nothing;
 // and a scheduled run's verdict is its exit status, not a probe.
 //
+// The singleton rules are `RuntimeSpec`'s, read for a process. A worker is
+// exactly the workload that declaration was filed for and the one it did not
+// reach (#250), and it refuses a second replica rather than clamping one for
+// the same reason: a value silently lowered reads back as a setting that did
+// not take. A scheduled process is refused it outright, because whether two of
+// its runs may overlap is `concurrencyPolicy` — a second spelling of that
+// question would be a setting that reads back and does nothing.
+//
 // +kubebuilder:validation:XValidation:rule="self.type != 'cron' || has(self.schedule)",message="a cron process needs a schedule"
 // +kubebuilder:validation:XValidation:rule="self.type != 'worker' || !has(self.schedule)",message="a worker runs continuously and has no schedule; use type cron"
 // +kubebuilder:validation:XValidation:rule="!has(self.health) || has(self.health.port)",message="a process health check must name the port it is made against: a process publishes no port of its own"
 // +kubebuilder:validation:XValidation:rule="self.type != 'cron' || !has(self.health)",message="a scheduled process is not kept alive by a health check; how a run went is its exit status"
+// +kubebuilder:validation:XValidation:rule="!has(self.singleton) || !self.singleton || self.type == 'worker'",message="only a worker can be a singleton: whether two runs of a scheduled process may overlap is concurrencyPolicy, and Forbid is its default"
+// +kubebuilder:validation:XValidation:rule="!has(self.singleton) || !self.singleton || !has(self.replicas) || self.replicas <= 1",message="a singleton worker cannot run more than one replica: leave replicas at 1, or turn singleton off"
 type ProcessSpec struct {
 	// Name identifies the process within the project. It is a DNS label
 	// because it appears in the name of everything the process
@@ -132,6 +142,29 @@ type ProcessSpec struct {
 	// +kubebuilder:default=1
 	// +optional
 	Replicas *int32 `json:"replicas,omitempty"`
+
+	// Singleton says two of this worker must never run at once.
+	//
+	// It is `RuntimeSpec.Singleton` for a process, and it exists because the
+	// web process is the one that least needed it. A poller moved out of the
+	// web binary into a worker — which is the arrangement that makes the web
+	// process safely scalable — would otherwise lose the guarantee it had by
+	// staying in it: a worker takes the API server's default rolling update,
+	// which at one replica surges to two copies on every rollout.
+	//
+	// What it does is what it does for the web process: `strategy: Recreate`
+	// on the Deployment, so the old pod stops before the new one starts. A
+	// worker is not addressed, so the gap that costs the web process a few
+	// seconds of serving costs a worker only a few seconds of not consuming.
+	// It refuses Replicas above one rather than clamping it, and it is
+	// refused on a scheduled process, whose answer to the same question is
+	// ConcurrencyPolicy.
+	//
+	// One replica does not imply it, and deliberately: a queue consumer at
+	// one replica is usually fine overlapping, and inferring the constraint
+	// from the count would make the count mean two things.
+	// +optional
+	Singleton bool `json:"singleton,omitempty"`
 
 	// Resources is what one replica, or one run, asks for.
 	// +optional

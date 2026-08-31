@@ -251,6 +251,24 @@ func (r *EnvironmentReconciler) applyWorkerDeployment(
 	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, deploy, func() error {
 		deploy.Labels = podLabels
 		deploy.Spec.Replicas = ptr.To(process.ReplicaCount())
+		// A worker that must not run twice does not get a rolling update
+		// either (#250). Left alone it would take the API server's default,
+		// which at one replica surges to a second copy and takes none away —
+		// so the process the platform recommends *moving* a poller into
+		// would be the one that overlapped it, which inverts the whole
+		// declaration. Recreate stops the old pod first; nothing addresses a
+		// worker, so the gap costs it only a few seconds of not consuming.
+		//
+		// Withdrawing the declaration puts the rolling update back, and only
+		// then: writing the type unconditionally would clear the surge and
+		// unavailability parameters the API server defaults onto it, so
+		// every reconcile would differ from what it had just written.
+		switch {
+		case process.Singleton:
+			deploy.Spec.Strategy = appsv1.DeploymentStrategy{Type: appsv1.RecreateDeploymentStrategyType}
+		case deploy.Spec.Strategy.Type == appsv1.RecreateDeploymentStrategyType:
+			deploy.Spec.Strategy = appsv1.DeploymentStrategy{Type: appsv1.RollingUpdateDeploymentStrategyType}
+		}
 		// A Deployment's selector is immutable, so it is written once and
 		// then left exactly as it was found — the same rule the component
 		// survey follows for the workloads it labels.

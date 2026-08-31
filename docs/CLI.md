@@ -451,6 +451,19 @@ kitchen api PATCH /projects/shop --data '{"processes":[
 ]}'
 ```
 
+So does `singleton`, which is the declaration a poller moved out of the web
+process needs: two of this worker must never run at once, so a deploy stops
+the old copy before starting the new one instead of overlapping the two. It
+refuses more than one replica rather than clamping the count, and a scheduled
+job is refused it — whether two of *its* runs may overlap is
+`concurrencyPolicy`. `kitchen processes` prints it on the worker's row.
+
+```sh
+kitchen api PATCH /projects/shop --data '{"processes":[
+  {"name":"poller","type":"worker","command":["node","poll.js"],"singleton":true}
+]}'
+```
+
 ### The rest of a project's settings
 
 The same reasoning covers everything else `PATCH /projects/{name}` takes, and
@@ -471,9 +484,10 @@ kitchen api PATCH /projects/shop --data '{
 `health` is what the platform asks before it sends anyone to a new replica;
 `command`, `args` and `previewArgs` are how the image is started, with the
 preview override the sibling of an environment variable's preview value;
-`singleton` says two of this must never run at once, and refuses more than one
-replica rather than clamping it; `notRequestDriven` says the workload does
-work nobody asked for, so none of its environments idle down to no pods.
+`singleton` says two of the *web* process must never run at once, and refuses
+more than one replica rather than clamping it — a worker says the same thing on
+its own entry, above; `notRequestDriven` says the workload does work nobody
+asked for, so none of its environments idle down to no pods.
 [Projects](api/projects.md#changing-a-projects-settings) is the whole of what
 the body takes.
 

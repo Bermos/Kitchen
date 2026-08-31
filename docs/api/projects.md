@@ -130,6 +130,12 @@ obviously wrong afterwards. Leader election stays the application's problem —
 not overlapping it during a deploy the platform itself initiated is the
 platform's.
 
+This is `spec.runtime`, so it is the *web* process that is declared here. A
+worker declares it on its own entry in `processes`, and the arrangement that
+moves a poller out of the web binary into one is exactly the arrangement that
+needs it — see
+[a worker that must never run twice](processes.md#a-worker-that-must-never-run-twice).
+
 `command`, `args` and `previewArgs` are how the application is started, in
 exec form — a list of words, never a shell line, so nothing is split, quoted
 or handed to a shell:

@@ -78,8 +78,14 @@ type processView struct {
 	Timeout           string `json:"timeout,omitempty"`
 	Replicas          int32  `json:"replicas,omitempty"`
 	ReadyReplicas     int32  `json:"readyReplicas,omitempty"`
-	CPU               string `json:"cpu,omitempty"`
-	Memory            string `json:"memory,omitempty"`
+	// Singleton is a worker two of which must never run at once, so its
+	// deploys stop the old pod before starting the new one. It is reported
+	// because it is the difference between a rollout that overlaps two
+	// copies of a poller and one that does not, and nothing else on the row
+	// shows it.
+	Singleton bool   `json:"singleton,omitempty"`
+	CPU       string `json:"cpu,omitempty"`
+	Memory    string `json:"memory,omitempty"`
 	// Health is the worker's health check, timings resolved. Absent for a
 	// worker that declared none — unlike the web process, a worker is
 	// probed only where it asked to be.
@@ -156,6 +162,7 @@ func newProcessView(process kitchenv1alpha1.ProcessSpec, status *kitchenv1alpha1
 		view.Timeout = (time.Duration(process.TimeoutSeconds()) * time.Second).String()
 	} else {
 		view.Replicas = process.ReplicaCount()
+		view.Singleton = process.Singleton
 	}
 	if quantity, ok := process.Resources.Limits[corev1.ResourceCPU]; ok {
 		view.CPU = quantity.String()

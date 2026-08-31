@@ -156,6 +156,10 @@ function healthOf(process: Process): string {
           <StatusDot :tone="tone(process)" :pulse="(process.active ?? 0) > 0" />
           <span class="font-mono text-highlighted">{{ process.name }}</span>
           <UBadge color="neutral" variant="subtle" size="sm">{{ process.type }}</UBadge>
+          <!-- A worker that must never run twice deploys differently from
+               every other row here, and the replica count does not say so:
+               1/1 ready reads the same either way. -->
+          <UBadge v-if="process.singleton" color="neutral" variant="outline" size="sm">one at a time</UBadge>
           <span v-if="process.schedule" class="font-mono text-xs text-muted">{{ process.schedule }}</span>
           <span class="text-xs" :class="process.healthy || process.suspended ? 'text-muted' : 'text-error'">
             {{ state(process) }}
@@ -192,6 +196,14 @@ function healthOf(process: Process): string {
           <dl class="grid grid-cols-[8rem_1fr] gap-x-4 gap-y-1">
             <dt class="text-dimmed">Command</dt>
             <dd class="font-mono text-toned break-all">{{ commandOf(process) }}</dd>
+            <template v-if="process.singleton">
+              <dt class="text-dimmed">Deploys</dt>
+              <dd class="text-toned">
+                One copy at a time — the old copy stops before the new one starts, so a deploy never overlaps two of
+                it. That is a few seconds of this worker not consuming, which is the trade a poller or an ingest
+                loop asked for.
+              </dd>
+            </template>
             <template v-if="process.type === 'cron'">
               <dt class="text-dimmed">Concurrency</dt>
               <dd class="text-toned">{{ process.concurrencyPolicy }}</dd>

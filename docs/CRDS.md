@@ -505,6 +505,8 @@ spec:
       type: worker
       command: [node, worker.js]
       replicas: 2
+      singleton: false                  # two of this worker must never run at
+                                        # once: Recreate, and replicas > 1 refused
       health: { port: 9000 }            # opt-in here, and it must name the port
     - name: nightly-report              # a batch/v1 CronJob; one firing is a run
       type: cron
@@ -600,8 +602,8 @@ Project's live value rather than the Release's frozen copy, for the same
 reason `scaleToZero` is not snapshotted at all: a rollback must not quietly
 start parking an environment again.
 
-`runtime.singleton` is a workload two of which must never run at once. It
-becomes `strategy: Recreate` on the Deployment — the old pod stops before the
+`runtime.singleton` is the *web* workload two of which must never run at once.
+It becomes `strategy: Recreate` on the Deployment — the old pod stops before the
 new one starts — and a CEL rule on the CRD **refuses** `replicas` above one
 rather than clamping it, because a clamped value reads back as a setting that
 did not take. For a stateless web application none of this is needed, which is
@@ -610,6 +612,18 @@ ingest loop in the same binary as the web server, the few seconds a rolling
 update overlaps two pods are that loop running twice against a shared store.
 Leader election stays the application's problem; not overlapping it during a
 deploy the platform initiated is the platform's.
+
+A worker says the same thing on its own entry, with `processes[].singleton`,
+and it reads exactly the same way: `strategy: Recreate` on that worker's
+Deployment, `replicas` above one refused rather than clamped. It is there
+because the web process is the one that least needed it — a poller moved out
+of the web binary into a worker, which is the arrangement that makes the web
+process safely scalable, would otherwise take the API server's default rolling
+update, and at one replica that surges to a second copy and takes none away.
+One replica does not imply the declaration: a queue consumer at one replica is
+usually fine overlapping, and inferring the constraint from the count would
+make the count mean two things. A `cron` process is refused it — whether two
+of its runs may overlap is `concurrencyPolicy`, whose default is `Forbid`.
 
 `runtime.command` and `runtime.args` start the application container, the same
 two fields a process has and in the same exec form. `previewArgs` replaces

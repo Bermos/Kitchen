@@ -397,6 +397,14 @@ spec:
                         omission. A process publishes no container port of its own, so a health
                         check that named none would be a setting that read back and did nothing;
                         and a scheduled run's verdict is its exit status, not a probe.
+
+                        The singleton rules are `RuntimeSpec`'s, read for a process. A worker is
+                        exactly the workload that declaration was filed for and the one it did not
+                        reach (#250), and it refuses a second replica rather than clamping one for
+                        the same reason: a value silently lowered reads back as a setting that did
+                        not take. A scheduled process is refused it outright, because whether two of
+                        its runs may overlap is `concurrencyPolicy` — a second spelling of that
+                        question would be a setting that reads back and does nothing.
                       properties:
                         args:
                           items:
@@ -604,6 +612,29 @@ spec:
                             five-field form `batch/v1` takes, interpreted in UTC. Required for a
                             cron process and refused on a worker, both at admission.
                           type: string
+                        singleton:
+                          description: |-
+                            Singleton says two of this worker must never run at once.
+
+                            It is `RuntimeSpec.Singleton` for a process, and it exists because the
+                            web process is the one that least needed it. A poller moved out of the
+                            web binary into a worker — which is the arrangement that makes the web
+                            process safely scalable — would otherwise lose the guarantee it had by
+                            staying in it: a worker takes the API server's default rolling update,
+                            which at one replica surges to two copies on every rollout.
+
+                            What it does is what it does for the web process: `strategy: Recreate`
+                            on the Deployment, so the old pod stops before the new one starts. A
+                            worker is not addressed, so the gap that costs the web process a few
+                            seconds of serving costs a worker only a few seconds of not consuming.
+                            It refuses Replicas above one rather than clamping it, and it is
+                            refused on a scheduled process, whose answer to the same question is
+                            ConcurrencyPolicy.
+
+                            One replica does not imply it, and deliberately: a queue consumer at
+                            one replica is usually fine overlapping, and inferring the constraint
+                            from the count would make the count mean two things.
+                          type: boolean
                         timeout:
                           description: |-
                             Timeout is how long one run may take before the platform stops it.
@@ -641,6 +672,15 @@ spec:
                       - message: a scheduled process is not kept alive by a health
                           check; how a run went is its exit status
                         rule: self.type != 'cron' || !has(self.health)
+                      - message: 'only a worker can be a singleton: whether two runs
+                          of a scheduled process may overlap is concurrencyPolicy,
+                          and Forbid is its default'
+                        rule: '!has(self.singleton) || !self.singleton || self.type
+                          == ''worker'''
+                      - message: 'a singleton worker cannot run more than one replica:
+                          leave replicas at 1, or turn singleton off'
+                        rule: '!has(self.singleton) || !self.singleton || !has(self.replicas)
+                          || self.replicas <= 1'
                     type: array
                     x-kubernetes-list-map-keys:
                     - name
