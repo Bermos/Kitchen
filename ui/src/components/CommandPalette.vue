@@ -2,7 +2,6 @@
 import { onMounted, onUnmounted, ref, shallowRef } from "vue";
 import { useRouter } from "vue-router";
 import { api, type Build, type Domain, type Environment, type Project } from "../lib/api";
-import { commitSubject } from "../lib/format";
 import { callerFor } from "../lib/me";
 import { operatorMode } from "../lib/mode";
 import { may } from "../lib/policy";
@@ -83,7 +82,7 @@ const groups = () => {
       label: "Builds",
       // The newest fifty are the ones anyone jumps to.
       items: inv.builds.slice(0, 50).map((b) => ({
-        label: commitSubject(b.git.message) || b.name,
+        label: b.git.message || b.name,
         suffix: b.name,
         icon: "i-lucide-hammer",
         onSelect: () => go({ name: "build", params: { name: b.name } }),

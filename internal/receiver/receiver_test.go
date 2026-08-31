@@ -145,16 +145,15 @@ func deliverTo(
 	return rec
 }
 
-// A push delivers the whole commit message. What a Build carries is its first
-// line: the body is prose for `git log`, and every screen that shows this
-// shows it in a table row.
-func TestPushStoresTheCommitSubject(t *testing.T) {
+// A push delivers the whole commit message. A Build carries it as two: the
+// subject every screen shows it by, and the body behind it.
+func TestPushSplitsTheCommitMessage(t *testing.T) {
 	r, handler := newReceiver(t)
 	body := []byte(`{
 		"ref": "refs/heads/main",
 		"after": "8f3a2c1d0abc456789ab",
 		"repository": {"full_name": "acme/shop"},
-		"head_commit": {"message": "feat(api): add checkout\n\nThe body, which nothing shows.\n\nCo-Authored-By: somebody", "author": {"username": "bermos"}}
+		"head_commit": {"message": "feat(api): add checkout\n\nThe body, which the build page shows.\n\nCo-Authored-By: somebody", "author": {"username": "bermos"}}
 	}`)
 
 	if rec := deliver(handler, "push", body, sign(body)); rec.Code != http.StatusAccepted {
@@ -168,6 +167,9 @@ func TestPushStoresTheCommitSubject(t *testing.T) {
 	}
 	if build.Spec.Git.Message != "feat(api): add checkout" {
 		t.Errorf("expected the subject alone, got %q", build.Spec.Git.Message)
+	}
+	if build.Spec.Git.Body != "The body, which the build page shows.\n\nCo-Authored-By: somebody" {
+		t.Errorf("expected the body under it, got %q", build.Spec.Git.Body)
 	}
 }
 

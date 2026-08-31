@@ -63,10 +63,12 @@ func (g *GitHub) HeadRevision(ctx context.Context, repo, ref string) (Revision, 
 	if commit.Author != nil && commit.Author.Login != "" {
 		author = commit.Author.Login
 	}
+	subject, body := kitchenv1alpha1.SplitCommitMessage(commit.Commit.Message)
 	return Revision{
 		SHA:     commit.SHA,
 		Branch:  ref,
-		Message: kitchenv1alpha1.CommitSubject(commit.Commit.Message),
+		Message: subject,
+		Body:    body,
 		Author:  author,
 	}, nil
 }

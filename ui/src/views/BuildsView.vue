@@ -3,8 +3,10 @@ import { computed, ref } from "vue";
 import { useRouter } from "vue-router";
 import { api, type Build } from "../lib/api";
 import { buildFailureLine, buildStallLine } from "../lib/builds";
-import { commitSubject, duration, formatDurationSeconds, shortSHA, timeAgo } from "../lib/format";
+import { duration, formatDurationSeconds, shortSHA, timeAgo } from "../lib/format";
 import { useAsync, usePoll } from "../lib/useAsync";
+import CommitBody from "../components/CommitBody.vue";
+import CommitBodyToggle from "../components/CommitBodyToggle.vue";
 import PageHeader from "../components/PageHeader.vue";
 import PhaseBadge from "../components/PhaseBadge.vue";
 
@@ -36,6 +38,13 @@ usePoll(() => void refreshStatus(), 10000, () => true);
 const queue = computed(() => status.value?.builds);
 /** A queue is only interesting while something is in it. */
 const waiting = computed(() => queue.value?.waiting ?? []);
+
+// The rest of a commit message, on the row that asked for it. One at a time:
+// two open bodies is a list nobody can scan, and a list is read by subjects.
+const expanded = ref<string | null>(null);
+function toggleMessage(name: string) {
+  expanded.value = expanded.value === name ? null : name;
+}
 
 const project = ref<string>("");
 const projects = computed(() => [...new Set((data.value ?? []).map((b) => b.project))].sort());
@@ -131,44 +140,62 @@ const visible = computed(() => (project.value ? (data.value ?? []).filter((b) =>
                does nothing when you click it, which is what this was. The
                anchor stays for the keyboard and the middle click; the row
                handler is for the other nine tenths. -->
-          <tr
-            v-for="build in visible"
-            :key="build.name"
-            class="border-b border-muted last:border-0 hover:bg-elevated/40 cursor-pointer"
-            @click="open(build.name, $event)"
-          >
-            <td class="px-3 py-2">
-              <RouterLink :to="{ name: 'build', params: { name: build.name } }" class="group">
-                <span
-                  class="block max-w-2xl truncate text-highlighted group-hover:underline"
-                  :title="commitSubject(build.git.message) || build.name"
-                  >{{ commitSubject(build.git.message) || build.name }}</span
-                >
+          <template v-for="build in visible" :key="build.name">
+            <tr
+              class="border-b border-muted last:border-0 hover:bg-elevated/40 cursor-pointer"
+              @click="open(build.name, $event)"
+            >
+              <td class="px-3 py-2">
+                <span class="flex items-center gap-1 max-w-2xl">
+                  <RouterLink :to="{ name: 'build', params: { name: build.name } }" class="group min-w-0">
+                    <span
+                      class="block truncate text-highlighted group-hover:underline"
+                      :title="build.git.message || build.name"
+                      >{{ build.git.message || build.name }}</span
+                    >
+                  </RouterLink>
+                  <!-- What the commit says under its subject, for the ones
+                       that say anything. Its own control rather than the
+                       row's click, which opens the build. -->
+                  <CommitBodyToggle
+                    v-if="build.git.body"
+                    :open="expanded === build.name"
+                    @toggle="toggleMessage(build.name)"
+                  />
+                </span>
                 <span class="block text-xs text-muted font-mono mt-0.5">
                   {{ shortSHA(build.git.sha) }} · {{ build.git.branch
                   }}<span v-if="build.git.pullRequest"> · #{{ build.git.pullRequest }}</span>
                 </span>
-              </RouterLink>
-              <!-- Why it failed, on the row, so that a list of failures is
-                   readable as a list of *different* failures. -->
-              <span v-if="failureOf(build)" class="block text-xs text-error mt-1 break-words">
-                {{ failureOf(build) }}
-              </span>
-              <!-- And why one that says Running is not moving, which without
-                   this is only on a warning event on the Job. -->
-              <span v-else-if="stallOf(build)" class="block text-xs text-warning mt-1 break-words">
-                {{ stallOf(build) }}
-              </span>
-            </td>
-            <td class="px-3 py-2">
-              <RouterLink :to="{ name: 'project', params: { name: build.project } }" class="text-toned hover:underline">
-                {{ build.project }}
-              </RouterLink>
-            </td>
-            <td class="px-3 py-2"><PhaseBadge :phase="build.phase" /></td>
-            <td class="px-3 py-2 font-mono text-xs text-muted">{{ duration(build.startedAt, build.completedAt) }}</td>
-            <td class="px-3 py-2 text-right text-xs text-muted whitespace-nowrap">{{ timeAgo(build.createdAt) }}</td>
-          </tr>
+                <!-- Why it failed, on the row, so that a list of failures is
+                     readable as a list of *different* failures. -->
+                <span v-if="failureOf(build)" class="block text-xs text-error mt-1 break-words">
+                  {{ failureOf(build) }}
+                </span>
+                <!-- And why one that says Running is not moving, which without
+                     this is only on a warning event on the Job. -->
+                <span v-else-if="stallOf(build)" class="block text-xs text-warning mt-1 break-words">
+                  {{ stallOf(build) }}
+                </span>
+              </td>
+              <td class="px-3 py-2">
+                <RouterLink
+                  :to="{ name: 'project', params: { name: build.project } }"
+                  class="text-toned hover:underline"
+                >
+                  {{ build.project }}
+                </RouterLink>
+              </td>
+              <td class="px-3 py-2"><PhaseBadge :phase="build.phase" /></td>
+              <td class="px-3 py-2 font-mono text-xs text-muted">{{ duration(build.startedAt, build.completedAt) }}</td>
+              <td class="px-3 py-2 text-right text-xs text-muted whitespace-nowrap">{{ timeAgo(build.createdAt) }}</td>
+            </tr>
+            <tr v-if="expanded === build.name" class="border-b border-muted last:border-0">
+              <td colspan="5" class="px-3 py-2 bg-elevated/30">
+                <CommitBody :body="build.git.body" />
+              </td>
+            </tr>
+          </template>
         </tbody>
       </table>
     </div>

@@ -501,16 +501,27 @@ spec:
                 properties:
                   author:
                     type: string
+                  body:
+                    description: |-
+                      Body is the rest of the commit message, under the subject: what the
+                      commit says about itself at length, kept so that a build can be asked
+                      and not only skimmed. Empty for the great majority of commits, which
+                      have no body at all, and cut at CommitBodyLimit for the few that have a
+                      long one. The schema's limit is that cut plus a little: it counts
+                      characters where the cut counts bytes, and the ellipsis marking a cut
+                      body is one more.
+                    maxLength: 4100
+                    type: string
                   branch:
                     minLength: 1
                     type: string
                   message:
                     description: |-
                       Message is the commit's *subject* — its first line and nothing else.
-                      A commit body is prose written for whoever reads `git log`, and every
-                      surface the platform shows this on is a row in a table: a build list, a
-                      release list, the command palette, an audit pack. Writers normalise it
-                      with CommitSubject rather than each reader trimming what it was given.
+                      Every surface the platform shows it on is a row in a table: a build
+                      list, a release list, the command palette, an audit pack. Writers split
+                      a message with SplitCommitMessage rather than each reader trimming what
+                      it was given.
                     type: string
                   pullRequest:
                     description: Pull request number, when the commit belongs to one.

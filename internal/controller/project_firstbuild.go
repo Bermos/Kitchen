@@ -192,6 +192,7 @@ func buildForRevision(
 				SHA:     revision.SHA,
 				Branch:  branch,
 				Message: revision.Message,
+				Body:    revision.Body,
 				Author:  revision.Author,
 			},
 		},

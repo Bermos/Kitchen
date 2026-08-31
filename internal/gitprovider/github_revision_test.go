@@ -31,7 +31,7 @@ func TestHeadRevisionResolvesABranch(t *testing.T) {
 		}
 		_, _ = w.Write([]byte(`{
 			"sha": "0123456789abcdef0123456789abcdef01234567",
-			"commit": {"message": "add the checkout\n\nwith a body nobody shows", "author": {"name": "Ada Lovelace"}},
+			"commit": {"message": "add the checkout\n\nwith a body the build page shows", "author": {"name": "Ada Lovelace"}},
 			"author": {"login": "ada"}
 		}`))
 	}))
@@ -46,6 +46,7 @@ func TestHeadRevisionResolvesABranch(t *testing.T) {
 		SHA:     "0123456789abcdef0123456789abcdef01234567",
 		Branch:  "main",
 		Message: "add the checkout",
+		Body:    "with a body the build page shows",
 		Author:  "ada",
 	}
 	if revision != want {
