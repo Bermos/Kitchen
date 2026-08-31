@@ -196,6 +196,14 @@ var _ = Describe("Environment Controller", func() {
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: envName, Namespace: appNS}, svc)).To(Succeed())
 			Expect(svc.Spec.Ports[0].Port).To(Equal(int32(80)))
 			Expect(svc.Spec.Ports[0].TargetPort.IntValue()).To(Equal(8080))
+			// The component label as well as the environment's: every worker
+			// and every scheduled run carries the environment label too, and
+			// a Service selector cannot say "and no process label".
+			Expect(svc.Spec.Selector).To(Equal(map[string]string{
+				labelEnvironment: envName, LabelComponent: ComponentWeb,
+			}))
+			Expect(deploy.Spec.Template.Labels).To(HaveKeyWithValue(LabelComponent, ComponentWeb),
+				"the web pods carry what the Service selects on")
 
 			By("checking the HTTPRoute")
 			route := &gatewayv1.HTTPRoute{}

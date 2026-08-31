@@ -76,10 +76,18 @@ func (s *Server) environmentWorkload(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// The web process's pods, and only those. The environment label alone is
+	// on everything the environment materializes — its workers and its
+	// scheduled runs included — so listing on it would count a worker's
+	// restarts against the Deployment whose replica counts are reported
+	// beside them. Those have their own route; see the processes endpoints.
 	pods := &corev1.PodList{}
 	if err := s.reader().List(ctx, pods,
 		client.InNamespace(appNS),
-		client.MatchingLabels{controller.LabelEnvironment: env.Name},
+		client.MatchingLabels{
+			controller.LabelEnvironment: env.Name,
+			controller.LabelComponent:   controller.ComponentWeb,
+		},
 	); err != nil {
 		s.writeError(w, err)
 		return
