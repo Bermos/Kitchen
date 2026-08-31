@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"strings"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -51,7 +52,7 @@ var _ = Describe("Planning the KEDA install", func() {
 		kitchen := idling(true)
 		kitchen.Spec.ScaleToZero.Enabled = false
 
-		plan := planKeda(kitchen, permitted, "keda", false, false)
+		plan := planKeda(kitchen, permitted, "keda", false, false, nil)
 		Expect(plan.clear).To(BeTrue())
 		Expect(plan.ready).To(BeTrue())
 		Expect(plan.install).To(BeFalse())
@@ -60,7 +61,7 @@ var _ = Describe("Planning the KEDA install", func() {
 	It("adopts an add-on that is already serving, and records that it owns nothing", func() {
 		kitchen := idling(true)
 
-		plan := planKeda(kitchen, permitted, "keda", true, true)
+		plan := planKeda(kitchen, permitted, "keda", true, true, nil)
 		Expect(plan.install).To(BeFalse())
 		Expect(plan.status).To(Equal(metav1.ConditionTrue))
 		Expect(plan.reason).To(Equal("AddOnPresent"))
@@ -73,13 +74,13 @@ var _ = Describe("Planning the KEDA install", func() {
 		kitchen := idling(true)
 		kitchen.Status.ScaleToZero = &kitchenv1alpha1.ScaleToZeroStatus{Namespace: "keda"}
 
-		plan := planKeda(kitchen, permitted, "keda", true, true)
+		plan := planKeda(kitchen, permitted, "keda", true, true, nil)
 		Expect(plan.install).To(BeFalse())
 		Expect(plan.reason).To(Equal("AddOnPresent"))
 	})
 
 	It("says nothing idles when the add-on is absent and it was not asked to install", func() {
-		plan := planKeda(idling(false), permitted, "keda", false, false)
+		plan := planKeda(idling(false), permitted, "keda", false, false, nil)
 		Expect(plan.install).To(BeFalse())
 		Expect(plan.status).To(Equal(metav1.ConditionFalse))
 		Expect(plan.reason).To(Equal("NotInstalled"))
@@ -88,26 +89,26 @@ var _ = Describe("Planning the KEDA install", func() {
 	})
 
 	It("names the chart value when asked to install without a grant", func() {
-		plan := planKeda(idling(true), KedaInstallConfig{}.withDefaults(), "keda", false, false)
+		plan := planKeda(idling(true), KedaInstallConfig{}.withDefaults(), "keda", false, false, nil)
 		Expect(plan.install).To(BeFalse())
 		Expect(plan.reason).To(Equal("InstallNotPermitted"))
 		Expect(plan.message).To(ContainSubstring("scaleToZero.install.enabled=true"))
 	})
 
 	It("refuses to install over a KEDA it does not own", func() {
-		plan := planKeda(idling(true), permitted, "keda", false, true)
+		plan := planKeda(idling(true), permitted, "keda", false, true, nil)
 		Expect(plan.install).To(BeFalse())
 		Expect(plan.reason).To(Equal("KedaNotOurs"))
 		Expect(plan.ready).To(BeTrue())
 	})
 
 	It("installs when neither half is in the cluster", func() {
-		plan := planKeda(idling(true), permitted, "keda", false, false)
+		plan := planKeda(idling(true), permitted, "keda", false, false, nil)
 		Expect(plan.install).To(BeTrue())
 	})
 
 	It("refuses a namespace that is not a namespace name", func() {
-		plan := planKeda(idling(true), permitted, "Keda System", false, false)
+		plan := planKeda(idling(true), permitted, "Keda System", false, false, nil)
 		Expect(plan.install).To(BeFalse())
 		Expect(plan.reason).To(Equal("NamespaceInvalid"))
 	})
@@ -119,7 +120,7 @@ var _ = Describe("Planning the KEDA install", func() {
 			Version: permitted.ChartVersion, AddOnVersion: permitted.AddOnChartVersion,
 		}
 
-		plan := planKeda(kitchen, permitted, "keda", true, false)
+		plan := planKeda(kitchen, permitted, "keda", true, false, nil)
 		Expect(plan.install).To(BeFalse())
 		Expect(plan.status).To(Equal(metav1.ConditionTrue))
 		Expect(plan.reason).To(Equal("AddOnInstalled"))
@@ -132,8 +133,51 @@ var _ = Describe("Planning the KEDA install", func() {
 			Managed: true, Namespace: "keda", Version: "2.0.0", AddOnVersion: "0.1.0",
 		}
 
-		plan := planKeda(kitchen, permitted, "keda", true, false)
+		plan := planKeda(kitchen, permitted, "keda", true, false, nil)
 		Expect(plan.install).To(BeTrue())
+	})
+
+	// Issue #244, in the shape it was found in for CloudNativePG and lives in
+	// here too: the platform installed the pair, the status write recording
+	// it did not land, and the next reconcile read the add-on it had just
+	// installed as somebody else's — permanently, since the branch it took
+	// rewrote the record it had misread.
+	It("keeps what it installed even where the record of it was lost", func() {
+		kitchen := idling(true)
+
+		plan := planKeda(kitchen, permitted, "keda", true, false, &kitchenv1alpha1.ScaleToZeroStatus{
+			Managed: true, Namespace: "keda",
+			Version: permitted.ChartVersion, AddOnVersion: permitted.AddOnChartVersion,
+		})
+		Expect(plan.reason).To(Equal("AddOnInstalled"))
+		Expect(plan.record).NotTo(BeNil())
+		Expect(plan.record.Managed).To(BeTrue())
+		Expect(plan.install).To(BeFalse())
+	})
+
+	It("corrects a record that disclaims the releases its own job installed", func() {
+		kitchen := idling(true)
+		kitchen.Status.ScaleToZero = &kitchenv1alpha1.ScaleToZeroStatus{Namespace: "keda"}
+
+		plan := planKeda(kitchen, permitted, "keda", true, false, &kitchenv1alpha1.ScaleToZeroStatus{
+			Managed: true, Namespace: "keda",
+			Version: permitted.ChartVersion, AddOnVersion: permitted.AddOnChartVersion,
+		})
+		Expect(plan.reason).To(Equal("AddOnInstalled"))
+		Expect(plan.record.Managed).To(BeTrue())
+		Expect(plan.message).NotTo(ContainSubstring("installed nothing"))
+	})
+
+	It("writes no record at all where the one there already agrees", func() {
+		installed := &kitchenv1alpha1.ScaleToZeroStatus{
+			Managed: true, Namespace: "keda",
+			Version: permitted.ChartVersion, AddOnVersion: permitted.AddOnChartVersion,
+		}
+		kitchen := idling(true)
+		kitchen.Status.ScaleToZero = installed.DeepCopy()
+
+		plan := planKeda(kitchen, permitted, "keda", true, false, installed)
+		Expect(plan.record).To(BeNil(), "an identical record would be a status write every 30 seconds")
 	})
 
 	It("leaves its own install where it is once the grant is withdrawn", func() {
@@ -142,7 +186,7 @@ var _ = Describe("Planning the KEDA install", func() {
 			Managed: true, Namespace: "keda", Version: "2.0.0", AddOnVersion: "0.1.0",
 		}
 
-		plan := planKeda(kitchen, KedaInstallConfig{}.withDefaults(), "keda", true, false)
+		plan := planKeda(kitchen, KedaInstallConfig{}.withDefaults(), "keda", true, false, nil)
 		Expect(plan.install).To(BeFalse())
 		Expect(plan.reason).To(Equal("AddOnInstalled"))
 	})
@@ -187,6 +231,13 @@ var _ = Describe("The KEDA install job", func() {
 			// way to run something else.
 			Expect(container.Command[0]).NotTo(Equal("sh"))
 		}
+
+		// The job's name is sanitised into a DNS label and so cannot be read
+		// back as a version pair. The labels are what a later reconcile reads
+		// ownership from, so they say what the name cannot.
+		Expect(job.Labels[labelInstallVersion]).To(Equal(cfg.ChartVersion))
+		Expect(job.Labels[labelInstallAddOnVersion]).To(Equal(cfg.AddOnChartVersion))
+		Expect(job.Labels[labelInstallNamespace]).To(Equal("keda"))
 
 		Expect(job.Spec.Template.Spec.ServiceAccountName).To(Equal(cfg.ServiceAccount))
 		Expect(*job.Spec.BackoffLimit).To(Equal(int32(0)))
@@ -350,6 +401,82 @@ var _ = Describe("Running the KEDA install", func() {
 			Namespace: PlatformNamespace, Name: kedaInstallJobName(reconciler.KedaInstall),
 		}, job)
 		Expect(err).To(HaveOccurred(), "adoption must not install anything")
+	})
+
+	// The end of issue #244, reconciled rather than planned: this envtest
+	// cluster serves the add-on's API, so a platform whose record of its own
+	// install was lost is exactly the cluster the bug was found on.
+	It("reads its own completed install job rather than the record of it", func() {
+		own := pinned("2.0.0-evidence")
+		track(&corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
+			Name: own.ServiceAccount, Namespace: PlatformNamespace,
+		}})
+
+		job := kedaInstallJob(kedaInstallJobName(own), "keda", own)
+		track(job)
+		now := metav1.Now()
+		job.Status.StartTime = &now
+		job.Status.CompletionTime = &now
+		job.Status.Succeeded = 1
+		job.Status.Conditions = []batchv1.JobCondition{
+			{Type: batchv1.JobSuccessCriteriaMet, Status: corev1.ConditionTrue},
+			{Type: batchv1.JobComplete, Status: corev1.ConditionTrue},
+		}
+		Expect(k8sClient.Status().Update(ctx, job)).To(Succeed())
+
+		// The state the lost write leaves behind: the add-on is serving, and
+		// the singleton remembers nothing about having installed it.
+		reconciler.KedaInstall = own
+		kitchen.Status.ScaleToZero = nil
+
+		Expect(reconciler.reconcileKeda(ctx, kitchen, setCond)).To(BeTrue())
+		Expect(condition().Reason).To(Equal("AddOnInstalled"))
+		Expect(kitchen.Status.ScaleToZero).NotTo(BeNil())
+		Expect(kitchen.Status.ScaleToZero.Managed).To(BeTrue())
+		Expect(kitchen.Status.ScaleToZero.Version).To(Equal(own.ChartVersion))
+		Expect(kitchen.Status.ScaleToZero.AddOnVersion).To(Equal(own.AddOnChartVersion))
+	})
+
+	It("takes a job that only failed as no evidence of anything", func() {
+		own := pinned("2.0.0-failed-evidence")
+		job := kedaInstallJob(kedaInstallJobName(own), "keda", own)
+		track(job)
+		now := metav1.Now()
+		job.Status.StartTime = &now
+		job.Status.Failed = 1
+		job.Status.Conditions = []batchv1.JobCondition{
+			{Type: batchv1.JobFailureTarget, Status: corev1.ConditionTrue},
+			{Type: batchv1.JobFailed, Status: corev1.ConditionTrue, Message: "helm: release failed"},
+		}
+		Expect(k8sClient.Status().Update(ctx, job)).To(Succeed())
+
+		found, err := reconciler.latestCompletedInstall(ctx, kedaInstallComponent)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeNil(), "a helm run that died half-way may have applied nothing")
+	})
+
+	It("reads the newest install that finished, because a bump is a new job", func() {
+		older := pinned("2.0.0-older")
+		newer := pinned("2.0.0-newer")
+
+		for i, own := range []KedaInstallConfig{older, newer} {
+			job := kedaInstallJob(kedaInstallJobName(own), "keda", own)
+			track(job)
+			finished := metav1.NewTime(metav1.Now().Add(time.Duration(i) * time.Hour))
+			job.Status.StartTime = &finished
+			job.Status.CompletionTime = &finished
+			job.Status.Succeeded = 1
+			job.Status.Conditions = []batchv1.JobCondition{
+				{Type: batchv1.JobSuccessCriteriaMet, Status: corev1.ConditionTrue},
+				{Type: batchv1.JobComplete, Status: corev1.ConditionTrue},
+			}
+			Expect(k8sClient.Status().Update(ctx, job)).To(Succeed())
+		}
+
+		found, err := reconciler.latestCompletedInstall(ctx, kedaInstallComponent)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).NotTo(BeNil())
+		Expect(found.Labels[labelInstallVersion]).To(Equal(newer.ChartVersion))
 	})
 
 	It("carries no condition at all while the platform idles nothing", func() {

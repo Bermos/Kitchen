@@ -206,18 +206,30 @@ type kedaPlan struct {
 // one, a pinned one, one its GitOps owns — has to be able to, and a platform
 // that "helpfully" upgraded it would be a worse neighbour than one that never
 // offered.
+//
+// installed is what the cluster itself says the platform installed — a
+// completed install job of the operator's own making — and it is what
+// ownership is read from first, with the record second and only where there
+// is no job left to read. See installevidence.go for why that order is the
+// one that matters.
 func planKeda(
 	kitchen *kitchenv1alpha1.Kitchen,
 	cfg KedaInstallConfig,
 	namespace string,
 	addOnServed, kedaServed bool,
+	installed *kitchenv1alpha1.ScaleToZeroStatus,
 ) kedaPlan {
 	if !kitchen.Spec.ScaleToZero.Enabled {
 		return kedaPlan{clear: true, ready: true}
 	}
 
 	recorded := kitchen.Status.ScaleToZero
-	managed := recorded != nil && recorded.Managed
+
+	owned := installed
+	if owned == nil && recorded != nil && recorded.Managed {
+		owned = recorded
+	}
+	managed := owned != nil
 
 	if addOnServed && !managed {
 		return kedaPlan{
@@ -229,12 +241,14 @@ func planKeda(
 		}
 	}
 
-	if addOnServed && managed && !kedaVersionsMoved(kitchen, cfg) {
+	if addOnServed && managed && !kedaVersionsMoved(kitchen, cfg, owned) {
 		return kedaPlan{
+			// Written on every pass rather than once, so that a record which
+			// disagrees with the cluster is corrected instead of believed.
+			record: correctedScaleToZero(recorded, owned),
 			status: metav1.ConditionTrue, reason: "AddOnInstalled",
-			message: fmt.Sprintf("the platform installed KEDA %s and its HTTP add-on %s into %s",
-				recorded.Version, recorded.AddOnVersion, recorded.Namespace),
-			ready: true,
+			message: kedaInstalledMessage(owned),
+			ready:   true,
 		}
 	}
 
@@ -325,7 +339,14 @@ func (r *KitchenReconciler) reconcileKeda(
 		}
 	}
 
-	plan := planKeda(kitchen, cfg, namespace, addOnServed, kedaServed)
+	installJob, err := r.latestCompletedInstall(ctx, kedaInstallComponent)
+	if err != nil {
+		setCond(condScaleToZeroReady, metav1.ConditionFalse, "InstallJobUnreadable",
+			"could not tell whether the platform installed KEDA itself: "+err.Error())
+		return false
+	}
+
+	plan := planKeda(kitchen, cfg, namespace, addOnServed, kedaServed, kedaInstalled(installJob, cfg, namespace))
 	switch {
 	case plan.clear:
 		meta.RemoveStatusCondition(&kitchen.Status.Conditions, condScaleToZeroReady)
@@ -343,20 +364,67 @@ func (r *KitchenReconciler) reconcileKeda(
 }
 
 // kedaVersionsMoved reports whether the operator's pinned pair has moved since
-// it installed. It is what makes an operator upgrade carry its dependency
-// forward instead of leaving the platform on whatever the first install
-// happened to pull.
-func kedaVersionsMoved(kitchen *kitchenv1alpha1.Kitchen, cfg KedaInstallConfig) bool {
-	recorded := kitchen.Status.ScaleToZero
-	if recorded == nil {
-		return false
-	}
+// it installed the pair given. It is what makes an operator upgrade carry its
+// dependency forward instead of leaving the platform on whatever the first
+// install happened to pull.
+//
+// An *unknown* installed version counts as moved, which is how an install job
+// from before the operator labelled them settles: reinstalling at the pin is
+// what a helm `upgrade --install` at the versions already installed does
+// anyway, and it ends with both recorded.
+func kedaVersionsMoved(
+	kitchen *kitchenv1alpha1.Kitchen,
+	cfg KedaInstallConfig,
+	installed *kitchenv1alpha1.ScaleToZeroStatus,
+) bool {
 	// Only an installation that still permits the install may act on drift;
 	// otherwise the answer is "leave it exactly as it is".
 	if !kitchen.Spec.ScaleToZero.Install || !cfg.Enabled() {
 		return false
 	}
-	return recorded.Version != cfg.ChartVersion || recorded.AddOnVersion != cfg.AddOnChartVersion
+	return installed.Version != cfg.ChartVersion || installed.AddOnVersion != cfg.AddOnChartVersion
+}
+
+// kedaInstalled turns the platform's own evidence — a completed install job it
+// created — into the record that evidence justifies. Nil where there is no
+// such job, which is the only state in which the record is taken at its word.
+func kedaInstalled(
+	job *batchv1.Job,
+	cfg KedaInstallConfig,
+	namespace string,
+) *kitchenv1alpha1.ScaleToZeroStatus {
+	if job == nil {
+		return nil
+	}
+	// The pair is named by one job, so a name that identifies one version
+	// identifies both.
+	atPin := kedaInstallJobName(cfg)
+	return &kitchenv1alpha1.ScaleToZeroStatus{
+		Managed:      true,
+		Namespace:    installedInto(job, namespace),
+		Version:      installedVersion(job, labelInstallVersion, atPin, cfg.ChartVersion),
+		AddOnVersion: installedVersion(job, labelInstallAddOnVersion, atPin, cfg.AddOnChartVersion),
+	}
+}
+
+// correctedScaleToZero is the record to write where it differs from the one
+// already there, and nil where it does not — a plan that rewrites an identical
+// record would be a status update on every reconcile.
+func correctedScaleToZero(recorded, owned *kitchenv1alpha1.ScaleToZeroStatus) *kitchenv1alpha1.ScaleToZeroStatus {
+	if recorded != nil && *recorded == *owned {
+		return nil
+	}
+	return owned
+}
+
+// kedaInstalledMessage says what the platform installed, and stays legible
+// where an install job from before the labels leaves the versions unknown.
+func kedaInstalledMessage(owned *kitchenv1alpha1.ScaleToZeroStatus) string {
+	if owned.Version == "" || owned.AddOnVersion == "" {
+		return fmt.Sprintf("the platform installed KEDA and its HTTP add-on into %s", owned.Namespace)
+	}
+	return fmt.Sprintf("the platform installed KEDA %s and its HTTP add-on %s into %s",
+		owned.Version, owned.AddOnVersion, owned.Namespace)
 }
 
 // runKedaInstall creates the install job, or reads the outcome of the one it
@@ -469,10 +537,15 @@ var nonAlphanumeric = regexp.MustCompile(`[^a-zA-Z0-9]+`)
 // against a DNS label first and reaches helm as its own argument, never a
 // shell's.
 func kedaInstallJob(name, namespace string, cfg KedaInstallConfig) *batchv1.Job {
-	labels := map[string]string{
+	// The job says what it installed and where, because it is what a later
+	// reconcile reads ownership from — see installevidence.go.
+	labels := installLabels(map[string]string{
 		labelManagedByKey:  labelManagedByValue,
 		labelComponentKind: kedaInstallComponent,
-	}
+	}, namespace, map[string]string{
+		labelInstallVersion:      cfg.ChartVersion,
+		labelInstallAddOnVersion: cfg.AddOnChartVersion,
+	})
 
 	// --install, so a rerun at a new version upgrades what is there rather
 	// than failing; --wait, so the next release finds the last one running.
