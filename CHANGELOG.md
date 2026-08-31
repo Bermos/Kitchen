@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.21.0](https://github.com/Bermos/Kitchen/compare/v0.20.0...v0.21.0) (2026-08-31)
+
+
+### Features
+
+* **api:** read a commit as a subject and a body, and let the dashboard open it ([#260](https://github.com/Bermos/Kitchen/issues/260)) ([3bbf4c8](https://github.com/Bermos/Kitchen/commit/3bbf4c8b625cfbf65eec9d12e9427be4e20998aa))
+* **operator:** let a worker say two of it must never run at once ([#258](https://github.com/Bermos/Kitchen/issues/258)) ([9e388a0](https://github.com/Bermos/Kitchen/commit/9e388a0e4e6835d83fa2e596fae800a9051d5984)), closes [#250](https://github.com/Bermos/Kitchen/issues/250)
+
+
+### Bug fixes
+
+* **operator:** keep workers and cron pods out of the environment's Service ([#257](https://github.com/Bermos/Kitchen/issues/257)) ([eb12e88](https://github.com/Bermos/Kitchen/commit/eb12e88f9b0a7abb04ccb12b7aebdbec79323d00)), closes [#256](https://github.com/Bermos/Kitchen/issues/256)
+* **operator:** read who installed a dependency from the job, not a lost record ([#259](https://github.com/Bermos/Kitchen/issues/259)) ([c0f090d](https://github.com/Bermos/Kitchen/commit/c0f090d2a4f87acd5b56daa956f3049e0c376794)), closes [#244](https://github.com/Bermos/Kitchen/issues/244)
+
 ## [0.20.0](https://github.com/Bermos/Kitchen/compare/v0.19.0...v0.20.0) (2026-08-30)
 
 
