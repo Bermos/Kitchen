@@ -28,6 +28,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -228,6 +229,36 @@ var _ = Describe("Workers and scheduled jobs", func() {
 		service := &corev1.Service{}
 		Expect(errors.IsNotFound(k8sClient.Get(ctx,
 			types.NamespacedName{Name: prodName + "-worker", Namespace: appNS}, service))).To(BeTrue())
+	})
+
+	It("keeps a worker and a scheduled run out of the environment's Service", func() {
+		environment(prodName, kitchenv1alpha1.EnvironmentProduction)
+
+		svc := &corev1.Service{}
+		Expect(k8sClient.Get(ctx,
+			types.NamespacedName{Name: prodName, Namespace: appNS}, svc)).To(Succeed())
+		selector := labels.SelectorFromSet(svc.Spec.Selector)
+
+		web, found := deployment(prodName)
+		Expect(found).To(BeTrue())
+		Expect(selector.Matches(labels.Set(web.Spec.Template.Labels))).To(BeTrue(),
+			"the web pods are what the URL is meant to reach")
+
+		// A worker has no port to answer the application's on, so a worker
+		// pod behind this Service is a backend that refuses connections —
+		// which is what one bad endpoint in three looked like in production.
+		worker, found := deployment(prodName + "-worker")
+		Expect(found).To(BeTrue())
+		Expect(selector.Matches(labels.Set(worker.Spec.Template.Labels))).To(BeFalse(),
+			"a worker is not addressed, and nothing else's Service addresses it either")
+
+		// A finished run is not ready and therefore harmless; a running one
+		// has no probes either, so it would take its share of the traffic for
+		// as long as the run took.
+		cron, found := cronJob(prodName + "-nightly")
+		Expect(found).To(BeTrue())
+		Expect(selector.Matches(labels.Set(cron.Spec.JobTemplate.Spec.Template.Labels))).To(BeFalse(),
+			"a scheduled run is not a replica of the web process")
 	})
 
 	It("runs a scheduled job as a CronJob that does not retry", func() {

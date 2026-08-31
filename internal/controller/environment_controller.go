@@ -57,16 +57,41 @@ const (
 	// KitchenSingletonName is the name of the cluster-wide Kitchen object.
 	KitchenSingletonName = "default"
 
-	// LabelEnvironment marks everything an Environment materializes, and is
-	// what its Deployment and Service select their pods on. It is exported
-	// because the API finds those pods the same way, and a second spelling of
-	// a selector is a bug waiting for the first rename.
+	// LabelEnvironment marks everything an Environment materializes — the web
+	// process, its workers and its scheduled runs — and is what its Deployment
+	// selects its pods on. It is exported because the API finds those pods the
+	// same way, and a second spelling of a selector is a bug waiting for the
+	// first rename.
+	//
+	// It is deliberately not enough on its own to name the web pods: see
+	// LabelComponent, which is what the Service selects on as well.
 	LabelEnvironment = "kitchen.bermos.dev/environment"
 
 	// LabelProject names the project everything an Environment materializes
 	// belongs to. The usage collector attributes a container's resources with
 	// it, which is the join a metrics scrape of the kubelet cannot make.
 	LabelProject = "kitchen.bermos.dev/project"
+
+	// LabelComponent names which part of an Environment a pod is, and exists
+	// because a Service selector is equality-only. Every pod an Environment
+	// materializes carries LabelEnvironment — the web process's, its workers'
+	// and its scheduled runs' alike — so "has no process label" is the thing
+	// the Service would have to say and the one thing it cannot. The web
+	// pods carry something positive to select on instead.
+	//
+	// Only the web process has a component: a worker and a scheduled run are
+	// told apart by LabelProcess, which they carry and it does not. It is
+	// exported because the API lists the web process's pods with it, and a
+	// second spelling of a selector is a bug waiting for the first rename.
+	//
+	// Not to be confused with the platform's own two: labelComponentKey and
+	// labelComponentKind are `app.kubernetes.io` keys on the workloads the
+	// chart and the operator install, and say nothing about an application's.
+	LabelComponent = "kitchen.bermos.dev/component"
+
+	// ComponentWeb is the value LabelComponent takes on the pods behind the
+	// Environment's Service — the ones that listen on the application port.
+	ComponentWeb = "web"
 
 	// AppContainerName is the container an Environment's pod runs the
 	// application in. The API reads the workload's image and resources back
@@ -620,8 +645,9 @@ func (r *EnvironmentReconciler) applyDeployment(
 	}
 
 	deploy := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: env.Name, Namespace: appNS}}
+	podLabels := webLabels(labels)
 	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, deploy, func() error {
-		deploy.Labels = labels
+		deploy.Labels = podLabels
 		// While the environment idles the replica count is left exactly as it
 		// stands: KEDA is what parks the pods and what brings them back, and
 		// writing a number here every reconcile would undo whichever it had
@@ -648,10 +674,18 @@ func (r *EnvironmentReconciler) applyDeployment(
 		case deploy.Spec.Strategy.Type == appsv1.RecreateDeploymentStrategyType:
 			deploy.Spec.Strategy = appsv1.DeploymentStrategy{Type: appsv1.RollingUpdateDeploymentStrategyType}
 		}
+		// The selector is the environment label alone and stays that way: a
+		// Deployment's selector is immutable, so narrowing it to the component
+		// label an existing installation's Deployment was created without
+		// would be a recreate rather than a rollout. It still matches these
+		// pods; that it also matches a worker's costs nothing, because a
+		// worker pod already carries a controller reference to its own
+		// ReplicaSet and is never adopted. Anything that lists pods rather
+		// than owning them needs the component label, not this one.
 		deploy.Spec.Selector = &metav1.LabelSelector{
 			MatchLabels: map[string]string{labelEnvironment: env.Name},
 		}
-		deploy.Spec.Template.Labels = labels
+		deploy.Spec.Template.Labels = podLabels
 		applyProjectSecretsRevision(&deploy.Spec.Template.ObjectMeta, secretsRevision)
 		// A registry that wanted a credential to push wants one to pull. The
 		// build already put that docker config in this namespace, under a
@@ -697,7 +731,21 @@ func (r *EnvironmentReconciler) applyService(
 	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: env.Name, Namespace: appNS}}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, svc, func() error {
 		svc.Labels = labels
-		svc.Spec.Selector = map[string]string{labelEnvironment: env.Name}
+		// The component label, not the environment label alone: every worker
+		// and every scheduled run carries the latter too, and a worker has no
+		// port to answer the application's on — so selecting on it made every
+		// worker pod a backend of the URL that refused connections, and every
+		// running cron pod one for as long as the run took.
+		//
+		// An installation upgrading into this narrows its Service before the
+		// web pods that applyDeployment has just relabelled are ready, so the
+		// endpoint set is briefly empty. That is one rollout, once, against a
+		// Service that was serving a share of its traffic to processes that
+		// refuse it.
+		svc.Spec.Selector = map[string]string{
+			labelEnvironment: env.Name,
+			LabelComponent:   ComponentWeb,
+		}
 		svc.Spec.Ports = []corev1.ServicePort{{
 			Name:       "http",
 			Port:       servicePort,
@@ -1131,6 +1179,21 @@ func childLabels(projectName string, env *kitchenv1alpha1.Environment) map[strin
 		labelEnvironmentNS: env.Namespace,
 		labelManagedByKey:  labelManagedByValue,
 	}
+}
+
+// webLabels are the environment's child labels plus the one that says these
+// pods are the web process — the counterpart to processLabels, which adds the
+// process name to the same base. A copy rather than a mutation: the base map
+// is what every other child of the environment is labelled with, workers
+// included, and a web component label reaching them would put them straight
+// back behind the Service.
+func webLabels(base map[string]string) map[string]string {
+	labels := make(map[string]string, len(base)+1)
+	for key, value := range base {
+		labels[key] = value
+	}
+	labels[LabelComponent] = ComponentWeb
+	return labels
 }
 
 // mapChildToEnvironment enqueues the owning Environment for a labeled child.

@@ -8,7 +8,12 @@ a worker and a scheduled job add a list to that snapshot and nothing else.
 
 - A **worker** runs continuously and is never addressed: a Deployment with no
   Service and no route. Nothing publishes it, so nothing needs a certificate
-  for it.
+  for it — and nothing *else's* Service reaches it either. Every pod an
+  environment materializes carries the same environment label, so the pods
+  behind the URL carry a second one, `kitchen.bermos.dev/component: web`, and
+  that is what the environment's Service selects on. Without it a worker — no
+  port, and none wanted — was an endpoint of the URL that refused every
+  connection it was handed.
 - A **scheduled job** runs on a cron expression: a `batch/v1` CronJob, and one
   firing is a *run*.
 

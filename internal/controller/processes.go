@@ -46,6 +46,12 @@ import (
 //
 //   - **A worker is a Deployment with no Service and no HTTPRoute.** Nothing
 //     addresses it, so there is nothing to publish and no certificate to want.
+//     Nothing *else's* Service addresses it either, which is a separate claim
+//     and was not true for a while: these pods carry the environment label,
+//     the environment's own Service selected on that label alone, and a
+//     worker has no port to answer the application's on — so every worker was
+//     a backend of the URL that refused connections. The web pods carry
+//     LabelComponent for the Service to select on instead.
 //   - **A scheduled job is a batch/v1 CronJob**, and its runs are Jobs. Their
 //     logs are already collected — every container on the node is — but a run
 //     is only *findable* if the pipeline knows which run it was, which is why
@@ -217,7 +223,8 @@ func processPodSpec(
 
 // applyWorkerDeployment materializes a worker: a Deployment, and nothing else.
 // No Service, no HTTPRoute, no certificate — a worker is not addressed, which
-// is the whole of what makes it cheap.
+// is the whole of what makes it cheap. Its pods deliberately carry no
+// component label: that is what keeps them out of the environment's Service.
 func (r *EnvironmentReconciler) applyWorkerDeployment(
 	ctx context.Context,
 	env *kitchenv1alpha1.Environment,

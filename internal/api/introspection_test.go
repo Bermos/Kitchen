@@ -18,6 +18,7 @@ package api
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -37,6 +38,16 @@ import (
 // appNamespace is where the fixtures' workload runs — the namespace the
 // operator derives from the project name.
 const appNamespace = "kitchen-shop"
+
+// webPodLabels are what the reconciler writes on the web process's pods: the
+// environment label everything it materializes carries, and the component
+// label that tells them from a worker's pods and a scheduled run's.
+func webPodLabels() map[string]string {
+	return map[string]string{
+		controller.LabelEnvironment: testEnvironment,
+		controller.LabelComponent:   controller.ComponentWeb,
+	}
+}
 
 // workloadFixtures are the objects the environment reconciler would have
 // materialized for the fixtures' production environment: a Deployment mid-
@@ -78,7 +89,7 @@ func workloadFixtures() []runtime.Object {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "shop-production-aaa",
 			Namespace: appNamespace,
-			Labels:    map[string]string{controller.LabelEnvironment: testEnvironment},
+			Labels:    webPodLabels(),
 		},
 		Spec: corev1.PodSpec{NodeName: "node-1"},
 		Status: corev1.PodStatus{
@@ -96,7 +107,7 @@ func workloadFixtures() []runtime.Object {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "shop-production-bbb",
 			Namespace: appNamespace,
-			Labels:    map[string]string{controller.LabelEnvironment: testEnvironment},
+			Labels:    webPodLabels(),
 		},
 		Spec: corev1.PodSpec{NodeName: "node-2"},
 		Status: corev1.PodStatus{
@@ -126,11 +137,28 @@ func workloadFixtures() []runtime.Object {
 			ContainerStatuses: []corev1.ContainerStatus{{Name: "app", RestartCount: 9}},
 		},
 	}
+	// This environment's own worker, which carries the environment label and
+	// no component: it is not a replica of the thing behind the URL, and its
+	// restarts are not the web process's.
+	worker := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "shop-production-ingest-ddd",
+			Namespace: appNamespace,
+			Labels: map[string]string{
+				controller.LabelEnvironment: testEnvironment,
+				controller.LabelProcess:     "ingest",
+			},
+		},
+		Status: corev1.PodStatus{
+			Phase:             corev1.PodRunning,
+			ContainerStatuses: []corev1.ContainerStatus{{Name: "app", RestartCount: 7}},
+		},
+	}
 	service := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{Name: testEnvironment, Namespace: appNamespace},
-		Spec:       corev1.ServiceSpec{Selector: map[string]string{controller.LabelEnvironment: testEnvironment}},
+		Spec:       corev1.ServiceSpec{Selector: webPodLabels()},
 	}
-	return []runtime.Object{deployment, serving, crashing, stranger, service}
+	return []runtime.Object{deployment, serving, crashing, stranger, worker, service}
 }
 
 func TestWorkloadReportsWhatIsRunning(t *testing.T) {
@@ -149,13 +177,19 @@ func TestWorkloadReportsWhatIsRunning(t *testing.T) {
 	if workload.Replicas != want {
 		t.Fatalf("want replicas %+v, got %+v", want, workload.Replicas)
 	}
-	// The environment's own two pods add up to five; another environment's pod
-	// in the same namespace carries nine, which must not be counted here.
+	// The web process's own two pods add up to five. Another environment's pod
+	// in the same namespace carries nine and this environment's worker seven,
+	// and neither is a replica of the Deployment reported above.
 	if workload.Restarts != 5 {
-		t.Fatalf("want 5 restarts across the environment's pods, got %d", workload.Restarts)
+		t.Fatalf("want 5 restarts across the web process's pods, got %d", workload.Restarts)
 	}
 	if len(workload.Pods) != 2 {
-		t.Fatalf("want the environment's two pods, got %d: %+v", len(workload.Pods), workload.Pods)
+		t.Fatalf("want the web process's two pods, got %d: %+v", len(workload.Pods), workload.Pods)
+	}
+	for _, pod := range workload.Pods {
+		if strings.Contains(pod.Name, "-ingest-") {
+			t.Fatalf("a worker's pod is not a replica of the web process: %+v", workload.Pods)
+		}
 	}
 	if workload.Resources == nil || workload.Resources.CPURequest != "100m" ||
 		workload.Resources.MemoryRequest != "128Mi" || workload.Resources.MemoryLimit != "256Mi" {

@@ -591,6 +591,15 @@ through its Go types, to avoid tying the build to its release cadence.
   of the path and publish the preview. Both work because everything in front
   keeps the visitor's `Host` header, which is the only thing the interceptor
   routes on.
+- **Every pod an Environment materializes carries the environment label — the
+  web process's, its workers' and its scheduled runs' alike.** A Service
+  selector is equality-only, so "has no process label" cannot be expressed and
+  the environment's Service selected its own workers into the URL, where a
+  worker with no port refused a third of production's requests and nothing
+  reported it. The web pods carry `kitchen.bermos.dev/component: web` for the
+  Service to select on. Anything that *lists* pods as the web process's needs
+  that label too; anything that owns them keeps the environment label, because
+  a Deployment's selector is immutable.
 - **Anything that should appear in the component survey needs
   `app.kubernetes.io/part-of: kitchen`** and, to be readable,
   `app.kubernetes.io/component`. The survey selects on the former rather than on
