@@ -7,6 +7,7 @@ import {
   formatMemory,
   parseQuantity,
   shortImage,
+  commitSubject,
   shortSHA,
   timeAgo,
   uptime,
@@ -53,6 +54,16 @@ describe("format", () => {
   it("shas shorten to seven characters", () => {
     expect(shortSHA("8f3a2c1d0000000")).toBe("8f3a2c1");
     expect(shortSHA(undefined)).toBe("—");
+  });
+
+  it("shows a commit as its subject line alone", () => {
+    expect(commitSubject("feat(api): add the route")).toBe("feat(api): add the route");
+    expect(commitSubject("feat(api): add the route\n\nA body nothing shows.\n\nCo-Authored-By: somebody")).toBe(
+      "feat(api): add the route",
+    );
+    expect(commitSubject("  fix: trim what surrounds it  \nbody")).toBe("fix: trim what surrounds it");
+    expect(commitSubject("")).toBe("");
+    expect(commitSubject(undefined)).toBe("");
   });
 
   it("says how coarse a chart's buckets are", () => {

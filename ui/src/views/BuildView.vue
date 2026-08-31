@@ -3,7 +3,7 @@ import { computed, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 import { api, type EvidenceSet, type LogLine, type LogQuery, type QualityGate } from "../lib/api";
 import { buildStallLine } from "../lib/builds";
-import { duration, shortSHA, timeAgo } from "../lib/format";
+import { commitSubject, duration, shortSHA, timeAgo } from "../lib/format";
 import { callerFor } from "../lib/me";
 import { may } from "../lib/policy";
 import { useAsync, usePoll } from "../lib/useAsync";
@@ -207,7 +207,7 @@ const logStreamer = (query: LogQuery, onLine: (line: LogLine) => void, signal: A
     <UAlert v-if="error" color="error" variant="soft" icon="i-lucide-triangle-alert" :title="error" />
     <template v-else-if="build">
       <PageHeader
-        :title="build.git.message || build.name"
+        :title="commitSubject(build.git.message) || build.name"
         :breadcrumb="[
           { label: 'Overview', to: '/' },
           { label: build.project, to: { name: 'project', params: { name: build.project } } },

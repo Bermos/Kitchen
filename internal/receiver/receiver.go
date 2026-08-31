@@ -490,9 +490,11 @@ func (r *GitWebhookReceiver) createBuild(
 		Spec: kitchenv1alpha1.BuildSpec{
 			ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: project.Name},
 			Git: kitchenv1alpha1.GitRevision{
-				SHA:         sha,
-				Branch:      branch,
-				Message:     message,
+				SHA:    sha,
+				Branch: branch,
+				// A push carries the whole commit message, body and all;
+				// what a Build's spec means by it is the subject.
+				Message:     kitchenv1alpha1.CommitSubject(message),
 				Author:      author,
 				PullRequest: pullRequest,
 			},

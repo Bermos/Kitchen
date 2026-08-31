@@ -19,6 +19,7 @@ package v1alpha1
 import (
 	"fmt"
 	"strconv"
+	"strings"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -62,6 +63,16 @@ func BuildNameFor(project, sha string) string {
 	return fmt.Sprintf("%s-bld-%s", project, sha)
 }
 
+// CommitSubject is a commit message's first line, with the surrounding blank
+// space removed. It is the one implementation of what GitRevision.Message
+// means, and everything that writes a revision — the webhook receiver, the API
+// and the provider that resolves a branch to its tip — goes through it, so
+// that a Build carries a subject whichever of them created it.
+func CommitSubject(message string) string {
+	line, _, _ := strings.Cut(message, "\n")
+	return strings.TrimSpace(line)
+}
+
 // GitRevision identifies the commit a Build builds.
 type GitRevision struct {
 	// +kubebuilder:validation:MinLength=7
@@ -70,6 +81,11 @@ type GitRevision struct {
 	// +kubebuilder:validation:MinLength=1
 	Branch string `json:"branch"`
 
+	// Message is the commit's *subject* — its first line and nothing else.
+	// A commit body is prose written for whoever reads `git log`, and every
+	// surface the platform shows this on is a row in a table: a build list, a
+	// release list, the command palette, an audit pack. Writers normalise it
+	// with CommitSubject rather than each reader trimming what it was given.
 	// +optional
 	Message string `json:"message,omitempty"`
 

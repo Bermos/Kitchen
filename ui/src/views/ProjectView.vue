@@ -3,7 +3,7 @@ import { computed, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { api, CRITICALITIES, DATA_CLASSES, type Claim, type Project, type Release } from "../lib/api";
 import { buildFailureLine } from "../lib/builds";
-import { duration, shortImage, shortSHA, timeAgo } from "../lib/format";
+import { commitSubject, duration, shortImage, shortSHA, timeAgo } from "../lib/format";
 import { callerFor } from "../lib/me";
 import { may } from "../lib/policy";
 import { pipelineShown } from "../lib/promotions";
@@ -661,7 +661,12 @@ function host(url?: string): string {
                 </span>
               </td>
               <td class="px-3 py-2">
-                <p class="text-highlighted truncate max-w-md">{{ buildOf(release)?.git.message || release.build }}</p>
+                <p
+                  class="text-highlighted truncate max-w-2xl"
+                  :title="commitSubject(buildOf(release)?.git.message) || release.build"
+                >
+                  {{ commitSubject(buildOf(release)?.git.message) || release.build }}
+                </p>
                 <p class="text-xs text-muted font-mono mt-0.5">
                   {{ shortSHA(buildOf(release)?.git.sha) }} · {{ buildOf(release)?.git.branch || "—" }} ·
                   {{ buildOf(release)?.git.author || "—" }}
@@ -765,8 +770,9 @@ function host(url?: string): string {
                   <td class="px-3 py-2">
                     <RouterLink
                       :to="{ name: 'build', params: { name: build.name } }"
-                      class="text-toned hover:text-highlighted hover:underline"
-                      >{{ build.git.message || build.name }}</RouterLink
+                      class="block max-w-2xl truncate text-toned hover:text-highlighted hover:underline"
+                      :title="commitSubject(build.git.message) || build.name"
+                      >{{ commitSubject(build.git.message) || build.name }}</RouterLink
                     >
                   </td>
                   <td class="px-3 py-2"><PhaseBadge :phase="build.phase" /></td>
@@ -811,8 +817,12 @@ function host(url?: string): string {
             >
               <td class="px-3 py-2 w-24 font-mono text-xs text-toned align-top">{{ shortSHA(build.git.sha) }}</td>
               <td class="px-3 py-2">
-                <RouterLink :to="{ name: 'build', params: { name: build.name } }" class="text-highlighted hover:underline">
-                  {{ build.git.message || build.name }}
+                <RouterLink
+                  :to="{ name: 'build', params: { name: build.name } }"
+                  class="block max-w-2xl truncate text-highlighted hover:underline"
+                  :title="commitSubject(build.git.message) || build.name"
+                >
+                  {{ commitSubject(build.git.message) || build.name }}
                 </RouterLink>
                 <p class="text-xs text-muted font-mono mt-0.5">
                   {{ build.git.branch }}<span v-if="build.git.pullRequest"> · #{{ build.git.pullRequest }}</span>

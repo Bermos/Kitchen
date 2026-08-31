@@ -63,6 +63,12 @@ spec:
                     minLength: 1
                     type: string
                   message:
+                    description: |-
+                      Message is the commit's *subject* — its first line and nothing else.
+                      A commit body is prose written for whoever reads `git log`, and every
+                      surface the platform shows this on is a row in a table: a build list, a
+                      release list, the command palette, an audit pack. Writers normalise it
+                      with CommitSubject rather than each reader trimming what it was given.
                     type: string
                   pullRequest:
                     description: Pull request number, when the commit belongs to one.

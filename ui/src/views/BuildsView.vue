@@ -3,7 +3,7 @@ import { computed, ref } from "vue";
 import { useRouter } from "vue-router";
 import { api, type Build } from "../lib/api";
 import { buildFailureLine, buildStallLine } from "../lib/builds";
-import { duration, formatDurationSeconds, shortSHA, timeAgo } from "../lib/format";
+import { commitSubject, duration, formatDurationSeconds, shortSHA, timeAgo } from "../lib/format";
 import { useAsync, usePoll } from "../lib/useAsync";
 import PageHeader from "../components/PageHeader.vue";
 import PhaseBadge from "../components/PhaseBadge.vue";
@@ -139,7 +139,11 @@ const visible = computed(() => (project.value ? (data.value ?? []).filter((b) =>
           >
             <td class="px-3 py-2">
               <RouterLink :to="{ name: 'build', params: { name: build.name } }" class="group">
-                <span class="text-highlighted group-hover:underline">{{ build.git.message || build.name }}</span>
+                <span
+                  class="block max-w-2xl truncate text-highlighted group-hover:underline"
+                  :title="commitSubject(build.git.message) || build.name"
+                  >{{ commitSubject(build.git.message) || build.name }}</span
+                >
                 <span class="block text-xs text-muted font-mono mt-0.5">
                   {{ shortSHA(build.git.sha) }} · {{ build.git.branch
                   }}<span v-if="build.git.pullRequest"> · #{{ build.git.pullRequest }}</span>

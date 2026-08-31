@@ -28,6 +28,13 @@ immutable, so a rebuild is always a new `Build` with a generated name
 
 Answers `201` with the new build.
 
+`message` may be given alongside, and is stored as **the commit's subject: its
+first line and nothing under it**. Whatever a caller sends — a whole `git log`
+entry, body and trailers included — is trimmed to that one line before it
+reaches the `Build`, the same as a message arriving on a push. Every surface
+that shows a commit shows it in a row: a build list, a release list, the
+command palette, an audit pack.
+
 ## What the commit configured for itself
 
 A repository can carry its own settings, in a `kitchen.json` at the project's

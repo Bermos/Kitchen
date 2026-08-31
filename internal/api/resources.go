@@ -1117,6 +1117,8 @@ func (s *Server) revisionToBuild(
 	if err != nil {
 		return kitchenv1alpha1.GitRevision{}, err
 	}
+	// Whatever the caller pasted in, a revision carries the subject alone.
+	body.Message = kitchenv1alpha1.CommitSubject(body.Message)
 
 	if body.SHA == "" {
 		if len(previous) == 0 {

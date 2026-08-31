@@ -57,6 +57,18 @@ export function uptime(iso: string | undefined): string {
   return formatDurationSeconds((Date.now() - started) / 1000);
 }
 
+/** A commit's subject: its first line, and nothing of the body under it.
+ *
+ * The platform stores the subject alone (`CommitSubject`, in the API types),
+ * but a build created before it did carries whatever the push delivered — a
+ * paragraph, three trailers and a session link, rendered in full into a table
+ * row. Every screen shows a commit through here, so those rows read as one
+ * line too. */
+export function commitSubject(message: string | undefined): string {
+  if (!message) return "";
+  return message.split("\n", 1)[0].trim();
+}
+
 export function shortSHA(sha: string | undefined): string {
   return sha ? sha.slice(0, 7) : "—";
 }
