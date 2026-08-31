@@ -287,6 +287,17 @@ func TestParseRefusals(t *testing.T) {
 			mentions: "listed twice",
 		},
 		{
+			name:     "a singleton worker that runs three",
+			file:     `{"processes": [{"name": "w", "type": "worker", "singleton": true, "replicas": 3}]}`,
+			mentions: "never run at once",
+		},
+		{
+			name: "a singleton schedule",
+			file: `{"processes": [{"name": "n", "type": "cron", "schedule": "0 3 * * *", ` +
+				`"singleton": true}]}`,
+			mentions: "concurrencyPolicy",
+		},
+		{
 			name:     "something that is not JSON",
 			file:     `{"runtime": }`,
 			mentions: "not valid JSON",

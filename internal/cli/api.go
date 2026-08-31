@@ -823,9 +823,13 @@ type process struct {
 	Timeout           string `json:"timeout,omitempty"`
 	Replicas          int32  `json:"replicas,omitempty"`
 	ReadyReplicas     int32  `json:"readyReplicas,omitempty"`
-	CPU               string `json:"cpu,omitempty"`
-	Memory            string `json:"memory,omitempty"`
-	Workload          string `json:"workload,omitempty"`
+	// Singleton is a worker two of which must never run at once: its deploys
+	// stop the old pod before starting the new one instead of overlapping the
+	// two.
+	Singleton bool   `json:"singleton,omitempty"`
+	CPU       string `json:"cpu,omitempty"`
+	Memory    string `json:"memory,omitempty"`
+	Workload  string `json:"workload,omitempty"`
 	// Suspended is a process this environment declares and does not run: a
 	// preview whose process was not opted in. Reason says so in a sentence.
 	Suspended bool   `json:"suspended,omitempty"`

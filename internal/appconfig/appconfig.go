@@ -139,8 +139,14 @@ type Process struct {
 	// that is declared and parked, which is how one is turned off without
 	// losing its command.
 	Replicas *int32 `json:"replicas,omitempty"`
-	CPU      string `json:"cpu,omitempty"`
-	Memory   string `json:"memory,omitempty"`
+	// Singleton says two of this worker must never run at once, so a deploy
+	// stops the old copy before starting the new one. It refuses more than
+	// one replica rather than clamping the count, and it is refused on a
+	// scheduled process: whether two of *its* runs may overlap is
+	// ConcurrencyPolicy.
+	Singleton bool   `json:"singleton,omitempty"`
+	CPU       string `json:"cpu,omitempty"`
+	Memory    string `json:"memory,omitempty"`
 	// Schedule is a cron process's five-field expression, read in UTC.
 	Schedule string `json:"schedule,omitempty"`
 	// ConcurrencyPolicy is Allow, Forbid or Replace; empty means Forbid.
@@ -231,6 +237,24 @@ func ProcessSpec(request Process) (kitchenv1alpha1.ProcessSpec, error) {
 			return process, fmt.Errorf("process %q: replicas cannot be negative (got %d)", process.Name, *request.Replicas)
 		}
 		process.Replicas = request.Replicas
+	}
+	if request.Singleton {
+		if process.Type == kitchenv1alpha1.ProcessCron {
+			return process, fmt.Errorf(
+				"process %q: only a worker can be a singleton — whether two runs of a scheduled process may "+
+					"overlap is concurrencyPolicy, and Forbid (the default) is what says they may not",
+				process.Name)
+		}
+		// Refused rather than clamped, the same way the project's own
+		// runtime refuses it: a replica count quietly lowered reads back as
+		// a setting that did not take.
+		if request.Replicas != nil && *request.Replicas > 1 {
+			return process, fmt.Errorf(
+				"process %q: it says two of this worker must never run at once, so it cannot ask for %d replicas — "+
+					"leave replicas at 1, or turn singleton off",
+				process.Name, *request.Replicas)
+		}
+		process.Singleton = true
 	}
 	if request.Health != nil {
 		if process.Type == kitchenv1alpha1.ProcessCron {

@@ -63,6 +63,7 @@ much of it.
 | `type` | both | `worker` or `cron`. |
 | `command`, `args` | both | Exec form — a list of words, never a shell line. Absent runs the image's own entrypoint, which is what a worker with its own image wants and never what a buildpacks-built one does. |
 | `replicas` | worker | How many copies. `0` is allowed: a worker declared and parked, which is how one is turned off without losing its command. |
+| `singleton` | worker | Two of this worker must never run at once — see below. Refuses `replicas` above 1, and refused on a cron process. |
 | `cpu`, `memory` | both | Kubernetes quantities, applied as request and limit alike — the same two strings the web process takes. |
 | `schedule` | cron | A five-field cron expression, **read in UTC**. Required on a cron process and refused on a worker. |
 | `concurrencyPolicy` | cron | `Allow`, `Forbid` (the default) or `Replace`. A job that takes longer than its interval is far more often running behind than meant to run twice. |
@@ -89,6 +90,38 @@ Release: what is running keeps the processes its own release declared until
 something builds. That is the same rule the port and the replica count follow,
 and it is what makes a rollback exact — the release being rolled back to runs
 the worker command it was built with, not today's.
+
+### A worker that must never run twice
+
+`singleton` is [the project runtime's own declaration](projects.md#changing-a-projects-settings)
+read for one process, and a worker is the workload it matters most to. Left
+off, a worker is rolled out the way anything else is: at one replica the
+default rolling update surges to a second copy and takes none away, so every
+deploy runs two of it for a few seconds. For a queue consumer that is usually
+fine. For a poller, a scheduler or an ingest loop it is the loop running twice
+against a shared store — which is not an error at the time, and is a doubled
+request rate nobody attributes to a deploy afterwards.
+
+```json
+{"name": "poller", "type": "worker", "command": ["node", "poll.js"], "singleton": true}
+```
+
+It becomes `strategy: Recreate` on the worker's Deployment: the old copy stops
+before the new one starts. Nothing addresses a worker, so what the web process
+pays as a gap in serving a worker pays as a few seconds of not consuming.
+
+Two rules go with it, both at admission and at this route:
+
+- **More than one replica is refused, not clamped.** A count quietly lowered
+  reads back as a setting that did not take, and the project would go on
+  believing it runs three.
+- **A cron process cannot be one.** Whether two of its runs may overlap is
+  `concurrencyPolicy`, whose default is already `Forbid`; a second spelling of
+  that question would be a setting that read back and did nothing.
+
+One replica does not imply it. A queue consumer at one replica is usually fine
+overlapping, and inferring the constraint from the count would make the count
+mean two things.
 
 ### Previews are off by default
 

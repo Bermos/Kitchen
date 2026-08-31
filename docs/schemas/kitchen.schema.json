@@ -162,6 +162,10 @@
           "minimum": 0,
           "description": "A worker's copy count. Zero is a worker that is declared and parked."
         },
+        "singleton": {
+          "type": "boolean",
+          "description": "Two of this worker must never run at once, so a deploy stops the old copy before starting the new one. Refuses replicas above 1, and refused on a scheduled process — whether two of its runs may overlap is concurrencyPolicy."
+        },
         "cpu": { "type": "string", "description": "A Kubernetes quantity." },
         "memory": { "type": "string", "description": "A Kubernetes quantity." },
         "schedule": {

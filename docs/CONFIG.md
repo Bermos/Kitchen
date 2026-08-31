@@ -160,6 +160,7 @@ The workers and scheduled jobs the project runs besides its web process —
 | `type` | `worker` (runs continuously) or `cron` (runs on a schedule). |
 | `command`, `args` | Exec form, as above. |
 | `replicas` | A worker's copy count. Zero is a worker that is declared and parked. |
+| `singleton` | Two of this worker must never run at once, so a deploy stops the old copy before starting the new one. Refuses `replicas` above 1, and refused on a `cron` — that question is `concurrencyPolicy`. |
 | `cpu`, `memory` | Kubernetes quantities. |
 | `schedule` | A five-field cron expression, read in UTC. Required for `cron`, refused on a `worker`. |
 | `concurrencyPolicy` | `Allow`, `Forbid` (the default) or `Replace`, when a run is due and the last one has not finished. |

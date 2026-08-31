@@ -153,6 +153,13 @@ func TestDeclaringProcessesWithTheProjectsSettings(t *testing.T) {
 		return project
 	}
 
+	// A worker that must never run twice says so on its own entry, which is
+	// what a poller moved out of the web process needs (#250).
+	declared := By(`{"processes": [{"name": "poller", "type": "worker", "singleton": true}]}`)
+	if poller := kitchenv1alpha1.FindProcess(declared.Spec.Processes, "poller"); poller == nil || !poller.Singleton {
+		t.Fatalf("the worker's singleton declaration did not stick: %+v", declared.Spec.Processes)
+	}
+
 	// The write replaces rather than merges, like the promotion stages: the
 	// list is short and unordered, and a merge would leave no way to delete.
 	if project := By(`{"processes": [{"name": "worker", "type": "worker"}]}`); len(project.Spec.Processes) != 1 {
@@ -185,6 +192,15 @@ func TestRefusingAnUnworkableProcessList(t *testing.T) {
 			`"health": {"path": "/healthz"}}]`,
 		"a health check on a scheduled process": `[{"name": "n", "type": "cron", ` +
 			`"schedule": "0 3 * * *", "health": {"port": 9000}}]`,
+		// Refused rather than clamped, the same way the project's own runtime
+		// refuses it: a count quietly lowered reads back as a setting that
+		// did not take.
+		"a singleton worker asking for three of itself": `[{"name": "w", "type": "worker", ` +
+			`"singleton": true, "replicas": 3}]`,
+		// Whether two runs of a schedule may overlap is concurrencyPolicy, so
+		// a second spelling of it would read back and do nothing.
+		"a singleton schedule": `[{"name": "n", "type": "cron", "schedule": "0 3 * * *", ` +
+			`"singleton": true}]`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			recorder := h.do(t, http.MethodPatch, "/api/v1/projects/shop", `{"processes": `+body+`}`)
@@ -224,6 +240,37 @@ func TestReadingWhatAnEnvironmentRuns(t *testing.T) {
 	}
 	if nightly.ConcurrencyPolicy != string(kitchenv1alpha1.ConcurrencyForbid) {
 		t.Fatalf("the default concurrency policy is not reported: %q", nightly.ConcurrencyPolicy)
+	}
+}
+
+// A worker that must never run twice is deployed differently from every other
+// one, and its replica count does not say so — 1/1 ready reads the same either
+// way — so the declaration is on the answer (#250).
+func TestASingletonWorkerSaysSoWhenAnEnvironmentIsRead(t *testing.T) {
+	objs := withProcesses()
+	for _, obj := range objs {
+		release, ok := obj.(*kitchenv1alpha1.Release)
+		if !ok || release.Name != testRelease {
+			continue
+		}
+		release.Spec.ConfigSnapshot.Processes[0].Singleton = true
+		release.Spec.ConfigSnapshot.Processes[0].Replicas = ptr.To(int32(1))
+	}
+	h := newHarness(t, nil, objs...)
+
+	recorder := h.do(t, http.MethodGet, processesPath, "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	body := decode[struct {
+		Items []processView `json:"items"`
+	}](t, recorder)
+
+	if !body.Items[0].Singleton {
+		t.Fatalf("the worker's singleton declaration is not reported: %+v", body.Items[0])
+	}
+	if body.Items[1].Singleton {
+		t.Fatalf("a schedule cannot be a singleton, so it must never claim to be: %+v", body.Items[1])
 	}
 }
 

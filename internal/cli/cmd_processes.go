@@ -78,6 +78,12 @@ A worker's health check must name the port it is made against, because a worker
 publishes none of its own; a scheduled process takes none at all, since how a
 run went is its exit status.
 
+A worker that must never run twice — a poller, a scheduler, an ingest loop —
+says so with "singleton": true, which deploys it by stopping the old copy
+before starting the new one instead of overlapping the two. It refuses more
+than one replica, and a scheduled process is refused it: whether two of its
+runs may overlap is concurrencyPolicy.
+
 It replaces the whole list, and it reaches an environment through the next
 release — what is running keeps its own processes until something builds.`),
 		Args: cobra.NoArgs,
@@ -288,7 +294,10 @@ func renderProcesses(s tui.Styles, processes []process) string {
 	for _, p := range processes {
 		rows = append(rows, []string{p.Name, p.Type, processSchedule(p), processState(s, p), processNote(p)})
 	}
-	return s.Table([]string{"NAME", "TYPE", "SCHEDULE", "STATE", "LAST RUN"}, rows)
+	// The last column is headed NOTE rather than LAST RUN because a worker
+	// has no runs and still has something to say there — that it must never
+	// run twice — and a suspended process has only ever put its reason in it.
+	return s.Table([]string{"NAME", "TYPE", "SCHEDULE", "STATE", "NOTE"}, rows)
 }
 
 func processSchedule(p process) string {
@@ -320,13 +329,18 @@ func processState(s tui.Styles, p process) string {
 	}
 }
 
-// processNote is the last thing that happened to a scheduled process, and the
-// reason a suspended one is not running.
+// processNote is the last thing that happened to a scheduled process, the
+// reason a suspended one is not running, and — for a worker, which has neither
+// — the one thing about it a replica count does not say: that two of it must
+// never run at once, so a deploy stops the old copy first.
 func processNote(p process) string {
 	if p.Suspended {
 		return p.Reason
 	}
 	if p.LastRun == nil {
+		if p.Singleton {
+			return "never two at once: deploys stop the old copy first"
+		}
 		return ""
 	}
 	note := strings.ToLower(p.LastRun.Phase) + " " + runStarted(*p.LastRun)

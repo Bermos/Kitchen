@@ -1130,6 +1130,11 @@ export interface Process {
   timeout?: string;
   replicas?: number;
   readyReplicas?: number;
+  /** A worker two of which must never run at once: deploying it stops the old
+   * pod before starting the new one, where a rolling update would overlap
+   * them. Never set on a scheduled job, whose answer to the same question is
+   * its concurrency policy. */
+  singleton?: boolean;
   cpu?: string;
   memory?: string;
   /** The worker's health check, timings resolved. Absent for a worker that
