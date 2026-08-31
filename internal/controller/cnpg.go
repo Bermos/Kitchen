@@ -199,16 +199,29 @@ type databasesPlan struct {
 // permanently — and, unlike KEDA, it is *used* either way: a claim provisions
 // through whichever CloudNativePG is there. What the record decides is who
 // may upgrade it, not who may use it.
+//
+// installed is what the cluster itself says the platform installed — a
+// completed install job of the operator's own making — and it is what
+// ownership is read from first. The record is second, and only where there is
+// no job left to read: a record is one status write, and a write that is lost
+// used to leave this planner concluding the exact opposite of the truth,
+// permanently, since the branch it then took rewrote the record it had just
+// misread.
 func planDatabases(
 	kitchen *kitchenv1alpha1.Kitchen,
 	cfg CNPGInstallConfig,
 	namespace string,
 	served bool,
+	installed *kitchenv1alpha1.DatabasesStatus,
 ) databasesPlan {
 	recorded := kitchen.Status.Databases
-	managed := recorded != nil && recorded.Managed
 
-	if served && !managed {
+	owned := installed
+	if owned == nil && recorded != nil && recorded.Managed {
+		owned = recorded
+	}
+
+	if served && owned == nil {
 		return databasesPlan{
 			record: &kitchenv1alpha1.DatabasesStatus{Namespace: namespace},
 			status: metav1.ConditionTrue, reason: "OperatorPresent",
@@ -218,12 +231,14 @@ func planDatabases(
 		}
 	}
 
-	if served && managed && !cnpgVersionMoved(kitchen, cfg) {
+	if served && owned != nil && !cnpgVersionMoved(kitchen, cfg, owned.Version) {
 		return databasesPlan{
+			// Written on every pass rather than once, so that a record which
+			// disagrees with the cluster is corrected instead of believed.
+			record: correctedDatabases(recorded, owned),
 			status: metav1.ConditionTrue, reason: "OperatorInstalled",
-			message: fmt.Sprintf("the platform installed CloudNativePG %s into %s",
-				recorded.Version, recorded.Namespace),
-			ready: true,
+			message: cnpgInstalledMessage(owned),
+			ready:   true,
 		}
 	}
 
@@ -272,7 +287,14 @@ func (r *KitchenReconciler) reconcileDatabases(
 		return false
 	}
 
-	plan := planDatabases(kitchen, cfg, namespace, served)
+	installJob, err := r.latestCompletedInstall(ctx, cnpgInstallComponent)
+	if err != nil {
+		setCond(condDatabasesReady, metav1.ConditionFalse, "InstallJobUnreadable",
+			"could not tell whether the platform installed CloudNativePG itself: "+err.Error())
+		return false
+	}
+
+	plan := planDatabases(kitchen, cfg, namespace, served, cnpgInstalled(installJob, cfg, namespace))
 	switch {
 	case plan.clear:
 		meta.RemoveStatusCondition(&kitchen.Status.Conditions, condDatabasesReady)
@@ -303,20 +325,58 @@ func cnpgNamespace(kitchen *kitchenv1alpha1.Kitchen) string {
 const DefaultCNPGOperatorNamespace = "cnpg-system"
 
 // cnpgVersionMoved reports whether the operator's pin has moved since it
-// installed. It is what makes an operator upgrade carry its dependency
-// forward instead of leaving the platform on whatever the first install
-// happened to pull.
-func cnpgVersionMoved(kitchen *kitchenv1alpha1.Kitchen, cfg CNPGInstallConfig) bool {
-	recorded := kitchen.Status.Databases
-	if recorded == nil {
-		return false
-	}
+// installed the version given. It is what makes an operator upgrade carry its
+// dependency forward instead of leaving the platform on whatever the first
+// install happened to pull.
+//
+// An *unknown* installed version counts as moved, which is how an install job
+// from before the operator labelled them settles: reinstalling at the pin is
+// what a helm `upgrade --install` at the version already installed does
+// anyway, and it ends with the version recorded.
+func cnpgVersionMoved(kitchen *kitchenv1alpha1.Kitchen, cfg CNPGInstallConfig, installed string) bool {
 	// Only an installation that still permits the install may act on drift;
 	// otherwise the answer is "leave it exactly as it is".
 	if !kitchen.Spec.Databases.Install || !cfg.Enabled() {
 		return false
 	}
-	return recorded.Version != cfg.ChartVersion
+	return installed != cfg.ChartVersion
+}
+
+// cnpgInstalled turns the platform's own evidence — a completed install job
+// it created — into the record that evidence justifies. Nil where there is no
+// such job, which is the only state in which the record is taken at its word.
+func cnpgInstalled(
+	job *batchv1.Job,
+	cfg CNPGInstallConfig,
+	namespace string,
+) *kitchenv1alpha1.DatabasesStatus {
+	if job == nil {
+		return nil
+	}
+	return &kitchenv1alpha1.DatabasesStatus{
+		Managed:   true,
+		Namespace: installedInto(job, namespace),
+		Version:   installedVersion(job, labelInstallVersion, cnpgInstallJobName(cfg), cfg.ChartVersion),
+	}
+}
+
+// correctedDatabases is the record to write where it differs from the one
+// already there, and nil where it does not — a plan that rewrites an
+// identical record would be a status update on every reconcile.
+func correctedDatabases(recorded, owned *kitchenv1alpha1.DatabasesStatus) *kitchenv1alpha1.DatabasesStatus {
+	if recorded != nil && *recorded == *owned {
+		return nil
+	}
+	return owned
+}
+
+// cnpgInstalledMessage says what the platform installed, and stays legible
+// where an install job from before the labels leaves the version unknown.
+func cnpgInstalledMessage(owned *kitchenv1alpha1.DatabasesStatus) string {
+	if owned.Version == "" {
+		return fmt.Sprintf("the platform installed CloudNativePG into %s", owned.Namespace)
+	}
+	return fmt.Sprintf("the platform installed CloudNativePG %s into %s", owned.Version, owned.Namespace)
 }
 
 // runCNPGInstall creates the install job, or reads the outcome of the one it
@@ -413,10 +473,12 @@ func cnpgInstallJobName(cfg CNPGInstallConfig) string {
 // reaches helm as its own argument, never a shell's — there is no shell in
 // this pod at all.
 func cnpgInstallJob(name, namespace string, cfg CNPGInstallConfig) *batchv1.Job {
-	labels := map[string]string{
+	// The job says what it installed and where, because it is what a later
+	// reconcile reads ownership from — see installevidence.go.
+	labels := installLabels(map[string]string{
 		labelManagedByKey:  labelManagedByValue,
 		labelComponentKind: cnpgInstallComponent,
-	}
+	}, namespace, map[string]string{labelInstallVersion: cfg.ChartVersion})
 
 	// --install, so a rerun at a new version upgrades what is there rather
 	// than failing; --wait, so a claim that provisions immediately afterwards

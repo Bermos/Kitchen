@@ -245,6 +245,16 @@ only creates when asked (`databases.install.enabled`).
 who may *upgrade* CloudNativePG, not who may use it. A `cnpg` connection
 provisions into whichever CloudNativePG the cluster runs, whoever installed it.
 
+Both `managed` flags are *re-derived* on every reconcile rather than remembered
+from the one that installed. The install job is what says the platform
+installed a dependency — it is the operator's own, it carries the chart
+versions and namespace it installed as labels, and it outlives the reconcile
+that read it — so a status write that does not land costs a pass rather than
+the ownership of a release. It used to cost the ownership: the record was
+minted once, and a platform that had lost it read the cluster as somebody
+else's, said so emphatically, and never upgraded the release it had made
+itself.
+
 `registry` is why a fresh installation can build something without anyone
 having a registry account first. The chart runs zot and its volume; the
 operator publishes it on the shared Gateway and seeds a `dockerRegistry`

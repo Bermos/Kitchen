@@ -829,11 +829,16 @@ type ImageRegistryStatus struct {
 // installed this" and "the platform found this" stay distinguishable for as
 // long as the installation lives.
 //
-// The distinction is the whole of the adoption rule: Managed is written once,
-// when the operator's own install job succeeds, and read forever after as
-// permission to upgrade those two releases. A cluster that already ran KEDA
-// when scale-to-zero was switched on is recorded with Managed false, and
-// nothing the operator does afterwards writes to a release it did not create.
+// The distinction is the whole of the adoption rule: Managed is what the
+// operator reads as permission to upgrade those two releases. A cluster that
+// already ran KEDA when scale-to-zero was switched on is recorded with Managed
+// false, and nothing the operator does afterwards writes to a release it did
+// not create.
+//
+// It is a copy rather than the fact itself. The operator's own install job is
+// the fact — it says what it installed and where, and outlives the reconcile
+// that read it — and this record is re-derived from it on every pass, so that
+// a status write that never lands costs a pass and not the releases.
 type ScaleToZeroStatus struct {
 	// Managed is true when the operator installed KEDA and the HTTP add-on,
 	// and false when it found them already serving.
@@ -860,12 +865,16 @@ type ScaleToZeroStatus struct {
 // distinguishable for as long as the installation lives — the same
 // distinction, for the same reason, as ScaleToZeroStatus.
 //
-// Managed is written once, when the operator's own install job succeeds, and
-// read forever after as permission to upgrade that release. A cluster that
-// already ran CloudNativePG is recorded with Managed false, and nothing the
-// operator does afterwards writes to a release it did not create. Either way
-// databases are provisioned through it: what the record decides is who may
-// upgrade it, not who may use it.
+// Managed is what the operator reads as permission to upgrade that release. A
+// cluster that already ran CloudNativePG is recorded with Managed false, and
+// nothing the operator does afterwards writes to a release it did not create.
+// Either way databases are provisioned through it: what the record decides is
+// who may upgrade it, not who may use it.
+//
+// It is a copy rather than the fact itself. The operator's own install job is
+// the fact — it says what it installed and where, and outlives the reconcile
+// that read it — and this record is re-derived from it on every pass, so that
+// a status write that never lands costs a pass and not the release.
 type DatabasesStatus struct {
 	// Managed is true when the operator installed CloudNativePG, and false
 	// when it found it already serving.

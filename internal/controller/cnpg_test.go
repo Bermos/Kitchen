@@ -22,6 +22,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	batchv1 "k8s.io/api/batch/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
@@ -48,7 +49,7 @@ var _ = Describe("Planning the CloudNativePG install", func() {
 	permitted := CNPGInstallConfig{ServiceAccount: "kitchen-cnpg-install"}.withDefaults()
 
 	It("says nothing at all where no database has been asked for", func() {
-		plan := planDatabases(wantsDatabases(false), permitted, "cnpg-system", false)
+		plan := planDatabases(wantsDatabases(false), permitted, "cnpg-system", false, nil)
 		Expect(plan.clear).To(BeTrue())
 		Expect(plan.ready).To(BeTrue())
 		Expect(plan.install).To(BeFalse())
@@ -58,7 +59,7 @@ var _ = Describe("Planning the CloudNativePG install", func() {
 	// for a cluster to already run, and the platform provisions into it
 	// happily while never writing to a release it did not create.
 	It("adopts a CloudNativePG that is already serving, and records that it owns nothing", func() {
-		plan := planDatabases(wantsDatabases(true), permitted, "cnpg-system", true)
+		plan := planDatabases(wantsDatabases(true), permitted, "cnpg-system", true, nil)
 		Expect(plan.install).To(BeFalse())
 		Expect(plan.status).To(Equal(metav1.ConditionTrue))
 		Expect(plan.reason).To(Equal("OperatorPresent"))
@@ -72,18 +73,18 @@ var _ = Describe("Planning the CloudNativePG install", func() {
 		kitchen := wantsDatabases(true)
 		kitchen.Status.Databases = &kitchenv1alpha1.DatabasesStatus{Namespace: "cnpg-system"}
 
-		plan := planDatabases(kitchen, permitted, "cnpg-system", true)
+		plan := planDatabases(kitchen, permitted, "cnpg-system", true, nil)
 		Expect(plan.install).To(BeFalse())
 		Expect(plan.reason).To(Equal("OperatorPresent"))
 	})
 
 	It("installs where the cluster runs none and the installation asked it to", func() {
-		plan := planDatabases(wantsDatabases(true), permitted, "cnpg-system", false)
+		plan := planDatabases(wantsDatabases(true), permitted, "cnpg-system", false, nil)
 		Expect(plan.install).To(BeTrue())
 	})
 
 	It("refuses to install without the account the chart only creates when asked", func() {
-		plan := planDatabases(wantsDatabases(true), CNPGInstallConfig{}.withDefaults(), "cnpg-system", false)
+		plan := planDatabases(wantsDatabases(true), CNPGInstallConfig{}.withDefaults(), "cnpg-system", false, nil)
 		Expect(plan.install).To(BeFalse())
 		Expect(plan.reason).To(Equal("InstallNotPermitted"))
 		Expect(plan.message).To(ContainSubstring("databases.install.enabled"))
@@ -91,7 +92,7 @@ var _ = Describe("Planning the CloudNativePG install", func() {
 	})
 
 	It("refuses a namespace that is not a namespace before creating a cluster-admin job", func() {
-		plan := planDatabases(wantsDatabases(true), permitted, "Not A Namespace", false)
+		plan := planDatabases(wantsDatabases(true), permitted, "Not A Namespace", false, nil)
 		Expect(plan.install).To(BeFalse())
 		Expect(plan.reason).To(Equal("NamespaceInvalid"))
 	})
@@ -102,7 +103,7 @@ var _ = Describe("Planning the CloudNativePG install", func() {
 			Managed: true, Namespace: "cnpg-system", Version: permitted.ChartVersion,
 		}
 
-		plan := planDatabases(kitchen, permitted, "cnpg-system", true)
+		plan := planDatabases(kitchen, permitted, "cnpg-system", true, nil)
 		Expect(plan.install).To(BeFalse())
 		Expect(plan.status).To(Equal(metav1.ConditionTrue))
 		Expect(plan.reason).To(Equal("OperatorInstalled"))
@@ -117,7 +118,58 @@ var _ = Describe("Planning the CloudNativePG install", func() {
 			Managed: true, Namespace: "cnpg-system", Version: "0.0.1",
 		}
 
-		plan := planDatabases(kitchen, permitted, "cnpg-system", true)
+		plan := planDatabases(kitchen, permitted, "cnpg-system", true, nil)
+		Expect(plan.install).To(BeTrue())
+	})
+
+	// Issue #244: the platform installed CloudNativePG, the status write that
+	// recorded it did not land, and every reconcile afterwards read the
+	// cluster as somebody else's and said so — permanently, because the
+	// branch it took rewrote the record it had just misread. The install job
+	// is the fact the record was only a copy of.
+	It("keeps what it installed even where the record of it was lost", func() {
+		kitchen := wantsDatabases(true)
+
+		plan := planDatabases(kitchen, permitted, "cnpg-system", true, &kitchenv1alpha1.DatabasesStatus{
+			Managed: true, Namespace: "cnpg-system", Version: permitted.ChartVersion,
+		})
+		Expect(plan.reason).To(Equal("OperatorInstalled"))
+		Expect(plan.record).NotTo(BeNil())
+		Expect(plan.record.Managed).To(BeTrue())
+		Expect(plan.record.Version).To(Equal(permitted.ChartVersion))
+		Expect(plan.install).To(BeFalse())
+	})
+
+	It("corrects a record that disclaims a release its own job installed", func() {
+		kitchen := wantsDatabases(true)
+		kitchen.Status.Databases = &kitchenv1alpha1.DatabasesStatus{Namespace: "cnpg-system"}
+
+		plan := planDatabases(kitchen, permitted, "cnpg-system", true, &kitchenv1alpha1.DatabasesStatus{
+			Managed: true, Namespace: "cnpg-system", Version: permitted.ChartVersion,
+		})
+		Expect(plan.reason).To(Equal("OperatorInstalled"))
+		Expect(plan.record.Managed).To(BeTrue())
+		Expect(plan.message).NotTo(ContainSubstring("installed nothing"))
+	})
+
+	It("writes no record at all where the one there already agrees", func() {
+		installed := &kitchenv1alpha1.DatabasesStatus{
+			Managed: true, Namespace: "cnpg-system", Version: permitted.ChartVersion,
+		}
+		kitchen := wantsDatabases(true)
+		kitchen.Status.Databases = installed.DeepCopy()
+
+		plan := planDatabases(kitchen, permitted, "cnpg-system", true, installed)
+		Expect(plan.reason).To(Equal("OperatorInstalled"))
+		Expect(plan.record).To(BeNil(), "an identical record would be a status write every 30 seconds")
+	})
+
+	// An install job from before the operator labelled them says who
+	// installed CloudNativePG but not which version. Unknown reads as drift,
+	// and drift reinstalls at the pin — which is what records the version.
+	It("reinstalls at the pin where its own job does not say what it installed", func() {
+		plan := planDatabases(wantsDatabases(true), permitted, "cnpg-system", true,
+			&kitchenv1alpha1.DatabasesStatus{Managed: true, Namespace: "cnpg-system"})
 		Expect(plan.install).To(BeTrue())
 	})
 
@@ -127,7 +179,7 @@ var _ = Describe("Planning the CloudNativePG install", func() {
 			Managed: true, Namespace: "cnpg-system", Version: "0.0.1",
 		}
 
-		plan := planDatabases(kitchen, CNPGInstallConfig{}.withDefaults(), "cnpg-system", true)
+		plan := planDatabases(kitchen, CNPGInstallConfig{}.withDefaults(), "cnpg-system", true, nil)
 		Expect(plan.install).To(BeFalse())
 		Expect(plan.reason).To(Equal("OperatorInstalled"))
 	})
@@ -200,5 +252,38 @@ var _ = Describe("The CloudNativePG install job", func() {
 		Expect(container.Args).To(ContainElement("--wait"))
 		Expect(job.Spec.Template.Spec.ServiceAccountName).To(Equal("kitchen-cnpg-install"))
 		Expect(*job.Spec.BackoffLimit).To(BeEquivalentTo(0))
+	})
+
+	// The job's name is sanitised into a DNS label and so cannot be read back
+	// as a version. The labels are what a later reconcile reads ownership
+	// from, so they say what the name cannot.
+	It("says what it installed and where, in labels a later reconcile can read", func() {
+		job := cnpgInstallJob(cnpgInstallJobName(cfg), "cnpg-system", cfg)
+		Expect(job.Labels[labelInstallVersion]).To(Equal(cfg.ChartVersion))
+		Expect(job.Labels[labelInstallNamespace]).To(Equal("cnpg-system"))
+
+		owned := cnpgInstalled(job, cfg, "somewhere-else")
+		Expect(owned.Managed).To(BeTrue())
+		Expect(owned.Version).To(Equal(cfg.ChartVersion))
+		Expect(owned.Namespace).To(Equal("cnpg-system"), "what it installed, not what is configured now")
+	})
+
+	It("reads a job from before the labels by its name, and no further", func() {
+		unlabelled := cnpgInstallJob(cnpgInstallJobName(cfg), "cnpg-system", cfg)
+		unlabelled.Labels = map[string]string{}
+
+		owned := cnpgInstalled(unlabelled, cfg, "cnpg-system")
+		Expect(owned.Managed).To(BeTrue())
+		Expect(owned.Version).To(Equal(cfg.ChartVersion), "its name can only be this pin's")
+
+		older := cnpgInstalled(&batchv1.Job{ObjectMeta: metav1.ObjectMeta{
+			Name: "kitchen-cnpg-install-0-0-1",
+		}}, cfg, "cnpg-system")
+		Expect(older.Managed).To(BeTrue())
+		Expect(older.Version).To(BeEmpty(), "unknown, which the next install settles")
+	})
+
+	It("is no evidence at all when there is no job", func() {
+		Expect(cnpgInstalled(nil, cfg, "cnpg-system")).To(BeNil())
 	})
 })

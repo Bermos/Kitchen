@@ -33,6 +33,7 @@ import (
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -872,6 +873,13 @@ func (r *KitchenReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&kitchenv1alpha1.Kitchen{}).
+		// One at a time, said rather than inherited. Every reconcile here
+		// computes the whole of status and writes it in one update, so two
+		// passes over the singleton at once are two whole-object writes
+		// racing: the loser gets a conflict and its conclusions are dropped.
+		// That is the default, and it is load-bearing enough that raising it
+		// should be a decision somebody makes on purpose.
+		WithOptions(controller.Options{MaxConcurrentReconciles: 1}).
 		Watches(&gatewayv1.Gateway{}, handler.EnqueueRequestsFromMapFunc(r.mapToSingleton)).
 		Watches(&appsv1.Deployment{}, handler.EnqueueRequestsFromMapFunc(r.mapToSingleton)).
 		Watches(&appsv1.Deployment{}, handler.EnqueueRequestsFromMapFunc(r.mapPlatformWorkload)).
