@@ -1299,10 +1299,12 @@ the bind record besides.
 
 ### `type: oidcClient` — single sign-on for the application
 
-The second type, and the one with no Connection: the provider is the identity
-provider the Kitchen object's `spec.auth` already names, and the operator
-registers clients there with the service credential it holds. `connectionRef` is
-therefore *refused* on this type at admission, and required on every other.
+The second type, and one the platform provisions itself, so there is no
+Connection: the provider is the identity provider the Kitchen object's
+`spec.auth` already names, and the operator registers clients there with the
+service credential it holds. `connectionRef` is therefore *refused* on this
+type at admission — the refusal names the type — and required on every type
+a Connection provisions.
 
 ```yaml
 apiVersion: kitchen.bermos.dev/v1alpha1
