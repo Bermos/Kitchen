@@ -34,18 +34,38 @@ type CredentialsReference struct {
 	Name string `json:"name,omitempty"`
 }
 
+// ConnectionProvidersWithoutCredential is the set of providers that hold no
+// credential, because they provision into the cluster the platform is
+// installed in with the operator's own account. It is what the two rules on
+// ConnectionSpec are written against; the set in the markers is held to this
+// one by a test, since a marker cannot read a Go value.
+var ConnectionProvidersWithoutCredential = []string{"cnpg"}
+
+// ProviderNeedsCredential reports whether a provider has a credential to
+// store at all. It is what lets the reconciler and the API stop looking for
+// a Secret that is not meant to exist, rather than reporting its absence as
+// a fault.
+func ProviderNeedsCredential(provider string) bool {
+	for _, name := range ConnectionProvidersWithoutCredential {
+		if name == provider {
+			return false
+		}
+	}
+	return true
+}
+
 // ConnectionSpec defines a plugin instance: a link to an external system such
 // as a git provider, an image registry, or a database provisioner.
-// +kubebuilder:validation:XValidation:rule="self.provider == 'cnpg' || (has(self.credentialsSecretRef) && has(self.credentialsSecretRef.name) && size(self.credentialsSecretRef.name) > 0)",message="credentialsSecretRef is required: it names the Secret holding this provider's credential. Only a cnpg connection goes without one, because it provisions Postgres into this cluster with the operator's own account and there is no credential to hold."
-// +kubebuilder:validation:XValidation:rule="self.provider != 'cnpg' || !has(self.credentialsSecretRef) || !has(self.credentialsSecretRef.name) || size(self.credentialsSecretRef.name) == 0",message="a cnpg connection takes no credentialsSecretRef: it provisions into this cluster with the operator's own account, and a Secret here would name a credential nothing reads."
+// +kubebuilder:validation:XValidation:rule="self.provider in ['cnpg'] || (has(self.credentialsSecretRef) && has(self.credentialsSecretRef.name) && size(self.credentialsSecretRef.name) > 0)",message="credentialsSecretRef is required: it names the Secret holding this provider's credential. Only a provider that provisions into this cluster with the operator's own account goes without one.",messageExpression="'credentialsSecretRef is required: it names the Secret holding the credential of a ' + self.provider + ' connection. Only a provider that provisions into this cluster with the account the operator itself holds (cnpg) goes without one.'"
+// +kubebuilder:validation:XValidation:rule="!(self.provider in ['cnpg']) || !has(self.credentialsSecretRef) || !has(self.credentialsSecretRef.name) || size(self.credentialsSecretRef.name) == 0",message="this provider takes no credentialsSecretRef: it provisions into this cluster with the operator's own account, and a Secret here would name a credential nothing reads.",messageExpression="'a ' + self.provider + ' connection takes no credentialsSecretRef: it provisions into this cluster with the account the operator itself holds, and a Secret here would name a credential nothing reads.'"
 type ConnectionSpec struct {
 	// Provider selects the plugin implementation.
 	// +kubebuilder:validation:Enum=github;gitlab;gitea;dockerRegistry;neon;cnpg
 	Provider string `json:"provider"`
 
 	// Secret holding the provider credentials (typically synced from
-	// Infisical). Every provider but cnpg requires one; see
-	// CredentialsReference for why that one does not.
+	// Infisical). Every provider outside ConnectionProvidersWithoutCredential
+	// requires one; see CredentialsReference for why those do not.
 	// +optional
 	CredentialsSecretRef CredentialsReference `json:"credentialsSecretRef,omitempty"`
 

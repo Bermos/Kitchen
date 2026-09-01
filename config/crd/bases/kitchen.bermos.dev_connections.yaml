@@ -58,8 +58,8 @@ spec:
               credentialsSecretRef:
                 description: |-
                   Secret holding the provider credentials (typically synced from
-                  Infisical). Every provider but cnpg requires one; see
-                  CredentialsReference for why that one does not.
+                  Infisical). Every provider outside ConnectionProvidersWithoutCredential
+                  requires one; see CredentialsReference for why those do not.
                 properties:
                   name:
                     type: string
@@ -79,18 +79,25 @@ spec:
             type: object
             x-kubernetes-validations:
             - message: 'credentialsSecretRef is required: it names the Secret holding
-                this provider''s credential. Only a cnpg connection goes without one,
-                because it provisions Postgres into this cluster with the operator''s
-                own account and there is no credential to hold.'
-              rule: self.provider == 'cnpg' || (has(self.credentialsSecretRef) &&
+                this provider''s credential. Only a provider that provisions into
+                this cluster with the operator''s own account goes without one.'
+              messageExpression: '''credentialsSecretRef is required: it names the
+                Secret holding the credential of a '' + self.provider + '' connection.
+                Only a provider that provisions into this cluster with the account
+                the operator itself holds (cnpg) goes without one.'''
+              rule: self.provider in ['cnpg'] || (has(self.credentialsSecretRef) &&
                 has(self.credentialsSecretRef.name) && size(self.credentialsSecretRef.name)
                 > 0)
-            - message: 'a cnpg connection takes no credentialsSecretRef: it provisions
+            - message: 'this provider takes no credentialsSecretRef: it provisions
                 into this cluster with the operator''s own account, and a Secret here
                 would name a credential nothing reads.'
-              rule: self.provider != 'cnpg' || !has(self.credentialsSecretRef) ||
-                !has(self.credentialsSecretRef.name) || size(self.credentialsSecretRef.name)
-                == 0
+              messageExpression: '''a '' + self.provider + '' connection takes no
+                credentialsSecretRef: it provisions into this cluster with the account
+                the operator itself holds, and a Secret here would name a credential
+                nothing reads.'''
+              rule: '!(self.provider in [''cnpg'']) || !has(self.credentialsSecretRef)
+                || !has(self.credentialsSecretRef.name) || size(self.credentialsSecretRef.name)
+                == 0'
           status:
             description: ConnectionStatus defines the observed state of a Connection.
             properties:

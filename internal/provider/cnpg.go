@@ -99,7 +99,11 @@ func ThirdParty(providerName string) bool { return providerName != ProviderCNPG 
 // NeedsCredentials reports whether a provider has a credential to store at
 // all. It is what lets the reconciler and the API stop looking for a Secret
 // that is not meant to exist, rather than reporting its absence as a fault.
-func NeedsCredentials(providerName string) bool { return providerName != ProviderCNPG }
+// The set of providers without one is the API package's, because the CRD's
+// admission rule is written against the same set.
+func NeedsCredentials(providerName string) bool {
+	return kitchenv1alpha1.ProviderNeedsCredential(providerName)
+}
 
 func cnpgClusterListGVK() schema.GroupVersionKind {
 	return schema.GroupVersionKind{Group: "postgresql.cnpg.io", Version: "v1", Kind: "ClusterList"}

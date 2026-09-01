@@ -1631,8 +1631,8 @@ spec:
               credentialsSecretRef:
                 description: |-
                   Secret holding the provider credentials (typically synced from
-                  Infisical). Every provider but cnpg requires one; see
-                  CredentialsReference for why that one does not.
+                  Infisical). Every provider outside ConnectionProvidersWithoutCredential
+                  requires one; see CredentialsReference for why those do not.
                 properties:
                   name:
                     type: string
@@ -1652,18 +1652,25 @@ spec:
             type: object
             x-kubernetes-validations:
             - message: 'credentialsSecretRef is required: it names the Secret holding
-                this provider''s credential. Only a cnpg connection goes without one,
-                because it provisions Postgres into this cluster with the operator''s
-                own account and there is no credential to hold.'
-              rule: self.provider == 'cnpg' || (has(self.credentialsSecretRef) &&
+                this provider''s credential. Only a provider that provisions into
+                this cluster with the operator''s own account goes without one.'
+              messageExpression: '''credentialsSecretRef is required: it names the
+                Secret holding the credential of a '' + self.provider + '' connection.
+                Only a provider that provisions into this cluster with the account
+                the operator itself holds (cnpg) goes without one.'''
+              rule: self.provider in ['cnpg'] || (has(self.credentialsSecretRef) &&
                 has(self.credentialsSecretRef.name) && size(self.credentialsSecretRef.name)
                 > 0)
-            - message: 'a cnpg connection takes no credentialsSecretRef: it provisions
+            - message: 'this provider takes no credentialsSecretRef: it provisions
                 into this cluster with the operator''s own account, and a Secret here
                 would name a credential nothing reads.'
-              rule: self.provider != 'cnpg' || !has(self.credentialsSecretRef) ||
-                !has(self.credentialsSecretRef.name) || size(self.credentialsSecretRef.name)
-                == 0
+              messageExpression: '''a '' + self.provider + '' connection takes no
+                credentialsSecretRef: it provisions into this cluster with the account
+                the operator itself holds, and a Secret here would name a credential
+                nothing reads.'''
+              rule: '!(self.provider in [''cnpg'']) || !has(self.credentialsSecretRef)
+                || !has(self.credentialsSecretRef.name) || size(self.credentialsSecretRef.name)
+                == 0'
           status:
             description: ConnectionStatus defines the observed state of a Connection.
             properties:
@@ -7130,6 +7137,11 @@ spec:
               ResourceClaimSpec is a Project's request for a provisioned resource — a
               Postgres database from a capable Connection, or an OAuth client from the
               platform's own identity provider.
+
+              The two rules below are written against the set of types that take no
+              Connection — ClaimTypesWithoutConnection — rather than against a named
+              exception, and the refusal names the type it refused. The set in the
+              markers is held to the table by a test, since a marker cannot read one.
             properties:
               config:
                 description: Provider-specific configuration, validated by the plugin.
@@ -7138,7 +7150,8 @@ spec:
               connectionRef:
                 description: |-
                   Connection with a capability matching Type (e.g. database). Required
-                  for every type but oidcClient, which has no Connection to name.
+                  for every type that takes one, and refused on the types the platform
+                  provisions itself — see ClaimTypes.
                 properties:
                   name:
                     minLength: 1
@@ -7208,14 +7221,19 @@ spec:
             type: object
             x-kubernetes-validations:
             - message: 'connectionRef is required: it names the Connection that provisions
-                the resource. Only an oidcClient claim goes without one, because the
-                platform''s own identity provider provisions it.'
-              rule: self.type == 'oidcClient' || has(self.connectionRef)
-            - message: 'an oidcClient claim takes no connectionRef: the client is
-                registered at the identity provider named by the Kitchen object''s
-                spec.auth, and a Connection here would name a provider nothing would
+                the resource. Only a claim the platform provisions itself goes without
+                one.'
+              messageExpression: '''connectionRef is required: it names the Connection
+                that provisions a '' + self.type + '' claim. Only a claim of a type
+                the platform provisions itself (oidcClient) goes without one.'''
+              rule: self.type in ['oidcClient'] || has(self.connectionRef)
+            - message: 'this claim type takes no connectionRef: the platform provisions
+                it itself, and a Connection here would name a provider nothing would
                 ask.'
-              rule: self.type != 'oidcClient' || !has(self.connectionRef)
+              messageExpression: '''a '' + self.type + '' claim takes no connectionRef:
+                the platform provisions it itself, and a Connection here would name
+                a provider nothing would ask.'''
+              rule: '!(self.type in [''oidcClient'']) || !has(self.connectionRef)'
           status:
             description: ResourceClaimStatus defines the observed state of a ResourceClaim.
             properties:
