@@ -931,8 +931,25 @@ function host(url?: string): string {
                 <td class="px-3 py-2 text-highlighted font-medium">{{ claim.name }}</td>
                 <td class="px-3 py-2">
                   <UBadge color="neutral" variant="subtle" size="sm" class="font-mono">{{ claim.type }}</UBadge>
-                  <UBadge v-if="claim.previewBranching" color="neutral" variant="subtle" size="sm" class="ml-1">
-                    database per preview
+                  <!-- What a preview gets, in the provider's own words on
+                       hover: the fact a preview writing to production is
+                       marked on, rather than implied by the absence of a
+                       badge. -->
+                  <UBadge
+                    v-if="claim.previewMode"
+                    :color="claim.previewMode === 'shared' ? 'warning' : 'neutral'"
+                    variant="subtle"
+                    size="sm"
+                    class="ml-1"
+                    :title="claim.previewReason"
+                  >
+                    previews: {{ claim.previewMode }}
+                  </UBadge>
+                  <UBadge v-if="claim.keepsPodsRunning" color="warning" variant="subtle" size="sm" class="ml-1">
+                    no scale to zero
+                  </UBadge>
+                  <UBadge v-if="claim.forcesRecreate" color="warning" variant="subtle" size="sm" class="ml-1">
+                    downtime on deploy
                   </UBadge>
                   <!-- What the claim asked the database itself to be. Absent
                        on most claims, and shown where it is not, because an

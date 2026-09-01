@@ -1526,7 +1526,20 @@ export interface Claim {
    * deleted; Delete destroys it and its data. An oidcClient claim has none:
    * its client is always deregistered. */
   deletionPolicy?: string;
-  previewBranching: boolean;
+  /** What a preview environment of the project binds to, as the reconciler
+   * resolved it from the provider's declaration and the claim's own choice:
+   * "branch", "fresh", "shared" or "none". previewReason is the sentence
+   * behind it — the provider's own words, or why previews get nothing.
+   * Both are absent until the claim has been reconciled. previewChoice is
+   * what the claim itself asked for, absent for the provider's default. */
+  previewMode?: string;
+  previewReason?: string;
+  previewChoice?: string;
+  /** The provider's declarations about the workload that reads the claim:
+   * no environment reading it idles to zero, and it is deployed by
+   * recreation with a gap in serving. Absent means neither. */
+  keepsPodsRunning?: boolean;
+  forcesRecreate?: boolean;
   /** What a postgres claim asked the database itself to be. Absent when it
    * asked for nothing in particular, which is most of them. Whether it was
    * granted is the phase and the conditions: a claim asking for an extension
@@ -1542,12 +1555,42 @@ export interface Claim {
   scopes?: string[];
 }
 
+/** One provider's declaration for one claim type, from GET /claim-types:
+ * what a preview gets and why, which preview modes a claim may name, and
+ * what the binding does to the workload. */
+export interface ClaimProvider {
+  provider: string;
+  previewMode: string;
+  previewNote: string;
+  previewChoices: string[];
+  keepsPodsRunning?: boolean;
+  forcesRecreate?: boolean;
+  workloadNote?: string;
+}
+
+/** One kind of claim the platform admits, with every provider that can
+ * fulfil it. The rows of the matrix in docs/api/claims.md, served so the
+ * developer choosing a dependency sees what they are choosing. */
+export interface ClaimType {
+  type: string;
+  resource: string;
+  /** Empty for a type the platform provisions itself, which takes no
+   * connection. */
+  capability?: string;
+  holdsData: boolean;
+  providers: ClaimProvider[];
+}
+
 export interface NewClaim {
   name: string;
   project: string;
   connection: string;
   type: string;
-  previewBranching?: boolean;
+  /** What the project's previews bind to: the mode the connection's provider
+   * declares (GET /claim-types says which), "shared" for production's own
+   * resource — asked for by name, never a default — or "none". Absent takes
+   * the provider's declaration. */
+  previewMode?: string;
   deletionPolicy?: string;
   /** postgres only: the major version, the extensions the application needs,
    * and the volume behind the database. */
@@ -3266,6 +3309,7 @@ export const api = {
   createDomain: (domain: NewDomain) => request<Domain>("POST", "/domains", domain),
   deleteDomain: (name: string) => request<Domain>("DELETE", `/domains/${name}`),
   claims: list<Claim>("/claims"),
+  claimTypes: () => request<ClaimType[]>("GET", "/claim-types"),
   createClaim: (claim: NewClaim) => request<Claim>("POST", "/claims", claim),
   // Answers 202: the operator's finalizer finishes the teardown — branches,
   // binding secrets and, under deletionPolicy Delete, the database itself.

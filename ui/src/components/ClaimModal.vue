@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { api, DATA_CLASSES, type NewClaim } from "../lib/api";
+import { api, DATA_CLASSES, type ClaimProvider, type ClaimType, type Connection, type NewClaim } from "../lib/api";
 import { connectionChoices, noteFor, selectableChoices, type ConnectionChoice } from "../lib/connections";
 import { callerFor } from "../lib/me";
 import { may } from "../lib/policy";
@@ -20,7 +20,11 @@ const open = ref(false);
 
 const name = ref("");
 const connection = ref("");
-const previewBranching = ref(false);
+// "" takes the provider's declared mode. What that is, and what the two
+// alternatives mean, comes from the catalogue below — the point being that
+// the developer sees "previews get a fresh, empty database" or "previews
+// read and write production" at the moment they choose, not after.
+const previewMode = ref("");
 const deletionPolicy = ref("Retain");
 // "" is unclassified. A class above the project's is refused by the API with
 // the rule spelled out, so the select offers the vocabulary and lets the
@@ -98,6 +102,59 @@ const policyOptions = [
 
 const connections = ref<ConnectionChoice[]>([]);
 const connectionsLoaded = ref(false);
+// The catalogue of what can be claimed and what each provider declares,
+// and the provider behind each connection, so the declaration for the one
+// chosen can be looked up.
+const claimTypes = ref<ClaimType[]>([]);
+const providerOf = ref<Record<string, string>>({});
+
+async function loadClaimTypes() {
+  try {
+    claimTypes.value = await api.claimTypes();
+  } catch {
+    claimTypes.value = [];
+  }
+}
+
+/** The declaration behind the selected connection (or the platform itself,
+ * for a type that takes none). Undefined until both are known. */
+const declaration = computed<ClaimProvider | undefined>(() => {
+  const claimType = claimTypes.value.find((entry) => entry.type === type.value);
+  if (!claimType) return undefined;
+  if (!claimType.capability) return claimType.providers[0];
+  const provider = providerOf.value[connection.value];
+  return claimType.providers.find((entry) => entry.provider === provider);
+});
+
+/** Whether the type holds data — the case in which a shared preview writes
+ * to production and has to be chosen by name. */
+const holdsData = computed(() => claimTypes.value.find((entry) => entry.type === type.value)?.holdsData ?? true);
+
+const PREVIEW_LABELS: Record<string, string> = {
+  branch: "a branch of production's data — cheap, and production-derived",
+  fresh: "a fresh, empty resource of its own — never a copy of production",
+  shared: "production itself — previews read and write what production does",
+  none: "nothing — the variables that read this claim are left out of previews",
+};
+
+/** What previews get, as the options of the picker: the provider's own
+ * mode first and preselected, then shared and none, each saying what it
+ * means. A provider whose own mode is shared for a data-holding type
+ * preselects nothing: that choice is made by name or not at all. */
+const previewOptions = computed(() => {
+  const declared = declaration.value;
+  if (!declared) return [];
+  return declared.previewChoices.map((mode) => ({
+    label: `${mode} — ${mode === declared.previewMode ? declared.previewNote : PREVIEW_LABELS[mode] ?? mode}`,
+    value: mode,
+  }));
+});
+
+watch(declaration, (declared) => {
+  if (!declared) return;
+  const defaultMode = declared.previewMode === "shared" && holdsData.value ? "none" : declared.previewMode;
+  if (!declared.previewChoices.includes(previewMode.value)) previewMode.value = defaultMode;
+});
 
 // Every connection is listed and the ones that cannot provision a database
 // say so, on the same terms as the project's own two pickers — and read out
@@ -109,9 +166,12 @@ const connectionsLoaded = ref(false);
 async function loadConnections() {
   connectionsLoaded.value = false;
   try {
-    connections.value = connectionChoices(await api.connections(), "database");
+    const all: Connection[] = await api.connections();
+    connections.value = connectionChoices(all, "database");
+    providerOf.value = Object.fromEntries(all.map((entry) => [entry.name, entry.provider ?? ""]));
   } catch {
     connections.value = [];
+    providerOf.value = {};
   } finally {
     connectionsLoaded.value = true;
   }
@@ -125,7 +185,7 @@ watch(open, (value) => {
   if (!value) return;
   name.value = "";
   connection.value = "";
-  previewBranching.value = false;
+  previewMode.value = "";
   deletionPolicy.value = "Retain";
   dataClass.value = "";
   type.value = "postgres";
@@ -137,6 +197,7 @@ watch(open, (value) => {
   pgStorageSize.value = "";
   pgStorageClass.value = "";
   void loadConnections();
+  void loadClaimTypes();
 });
 
 const ready = computed(() => Boolean(name.value && (isOIDC.value || connection.value)));
@@ -165,7 +226,7 @@ async function save() {
           project: props.project,
           connection: connection.value,
           type: type.value,
-          previewBranching: previewBranching.value,
+          ...(previewMode.value ? { previewMode: previewMode.value } : {}),
           deletionPolicy: deletionPolicy.value,
           ...(postgresRequest() ? { postgres: postgresRequest() } : {}),
           ...(dataClass.value ? { dataClass: dataClass.value } : {}),
@@ -273,10 +334,41 @@ async function save() {
             </template>
           </p>
 
-          <USwitch
-            v-model="previewBranching"
-            label="Preview branching"
-            description="Every preview environment gets a database of its own, created and torn down with the preview. On a self-hosted Postgres it is a new, empty database — never a copy of production — and the claim says so."
+          <UFormField
+            label="Previews get"
+            :help="
+              declaration
+                ? `What this connection's provider declares a preview environment gets. Shared is never a default: it has to be chosen here.`
+                : 'Choose a connection to see what its provider gives a preview environment.'
+            "
+          >
+            <USelect
+              v-model="previewMode"
+              :items="previewOptions"
+              :disabled="!previewOptions.length"
+              placeholder="the provider's own declaration"
+              class="w-full"
+            />
+          </UFormField>
+          <UAlert
+            v-if="previewMode === 'shared' && holdsData"
+            color="warning"
+            variant="subtle"
+            icon="i-lucide-triangle-alert"
+            title="Previews will read and write production's data"
+            description="Every preview environment of this project binds to the production resource itself. Nothing isolates a pull request's changes from production."
+          />
+          <UAlert
+            v-if="declaration?.keepsPodsRunning || declaration?.forcesRecreate"
+            color="warning"
+            variant="subtle"
+            icon="i-lucide-triangle-alert"
+            :title="
+              declaration?.keepsPodsRunning
+                ? 'Environments reading this claim will not scale to zero'
+                : 'Environments reading this claim will have downtime on every deploy'
+            "
+            :description="declaration?.workloadNote"
           />
 
           <div class="grid gap-4 sm:grid-cols-2">
