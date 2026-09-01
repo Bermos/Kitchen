@@ -85,8 +85,6 @@ func TestAClaimIsRefusedAnotherTypesFields(t *testing.T) {
 // cross-type refusal can be exercised without knowing what the field means.
 func sampleField(name string) string {
 	switch name {
-	case "previewBranching":
-		return `"previewBranching": true`
 	case kitchenv1alpha1.ClaimTypePostgres:
 		return `"postgres": {"version": "17"}`
 	case "callbackPaths":

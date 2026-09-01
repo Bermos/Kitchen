@@ -157,11 +157,14 @@ reads them from there:
 ```sh
 kitchen api POST /claims --data '{
   "name": "shop-db", "project": "shop", "connection": "postgres",
-  "type": "postgres", "previewBranching": true}'
+  "type": "postgres"}'
 ```
 
-`previewBranching` gives every preview environment a database of its own, so a
-review never runs against production data.
+Every preview environment gets a database of its own — a branch of
+production's from Neon, a fresh empty one from the platform's own Postgres —
+so a review never runs against production data unless the claim says
+`"previewMode": "shared"` by name. [Claims](api/claims.md) carries what each
+provider declares.
 
 **Nothing is injected automatically** — you choose the variable name and point
 it at the binding:

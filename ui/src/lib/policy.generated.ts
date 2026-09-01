@@ -172,6 +172,7 @@ export type Route =
   | "POST /api/v1/domains"
   | "GET /api/v1/domains/{name}"
   | "DELETE /api/v1/domains/{name}"
+  | "GET /api/v1/claim-types"
   | "GET /api/v1/claims"
   | "POST /api/v1/claims"
   | "GET /api/v1/claims/{name}"
@@ -301,6 +302,7 @@ export const POLICY: Readonly<Record<Route, Requirement>> = {
   "POST /api/v1/domains": { kind: "projectRole", role: "developer", doing: "attaching a domain" },
   "GET /api/v1/domains/{name}": { kind: "projectRole", role: "viewer", doing: "reading a domain" },
   "DELETE /api/v1/domains/{name}": { kind: "projectRole", role: "developer", doing: "removing a domain" },
+  "GET /api/v1/claim-types": { kind: "authenticated" },
   "GET /api/v1/claims": { kind: "visibleProjects" },
   "POST /api/v1/claims": { kind: "projectRole", role: "developer", doing: "claiming a resource" },
   "GET /api/v1/claims/{name}": { kind: "projectRole", role: "viewer", doing: "reading a resource claim" },

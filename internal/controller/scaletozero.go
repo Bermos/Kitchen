@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -137,6 +138,11 @@ func (r *EnvironmentReconciler) reconcileScaleToZero(
 	// from. Nothing could deliver the request that cold-starts it, so it stays
 	// on its pods.
 	routed bool,
+	// pinnedBy names the claims this environment reads whose provider
+	// declares the binding holds the workload up — a worker holding an
+	// outbound connection never goes quiet, so there is nothing for the
+	// interceptor to park.
+	pinnedBy []string,
 ) (*idleBackend, *metav1.Condition, error) {
 	interceptor := interceptorBackend(kitchen)
 	policy := project.Spec.ScaleToZero
@@ -164,6 +170,20 @@ func (r *EnvironmentReconciler) reconcileScaleToZero(
 			Message: "spec.runtime.notRequestDriven is set on this Project: the workload does work nobody " +
 				"asked for, and an idle environment stops doing everything rather than only serving. " +
 				"Every environment of this project keeps its pods",
+		}, nil
+	// A claim's provider can say the same thing about the binding it hands
+	// over, and it is checked next for the same reason: the sentence naming
+	// the claim stays true whatever the mode says.
+	case len(pinnedBy) > 0:
+		if err := r.deleteHTTPScaledObject(ctx, appNS, env.Name); err != nil {
+			return nil, nil, err
+		}
+		return nil, &metav1.Condition{
+			Status: metav1.ConditionFalse,
+			Reason: "ClaimKeepsPodsRunning",
+			Message: fmt.Sprintf("the provider behind claim %s declares that its binding holds the workload up "+
+				"(status.keepsPodsRunning on the claim), so every environment reading it keeps its pods. "+
+				"Release the claim to idle this environment", strings.Join(pinnedBy, ", ")),
 		}, nil
 	case !policy.Covers(env.Spec.Type):
 		if err := r.deleteHTTPScaledObject(ctx, appNS, env.Name); err != nil {

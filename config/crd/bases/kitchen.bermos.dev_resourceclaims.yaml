@@ -264,18 +264,54 @@ spec:
                 - masked
                 - synthetic
                 type: string
+              forcesRecreate:
+                description: |-
+                  ForcesRecreate is the provider's declaration that what it provisions
+                  can be attached to one pod at a time, so the workload reading it is
+                  deployed by recreation — stopped, then started — with a gap in serving
+                  on every deploy. The environment reconciler reads it and sets the
+                  strategy.
+                type: boolean
               instanceID:
                 description: |-
                   InstanceID is the provider-side identifier of the provisioned resource,
                   opaque to the platform. It is what deprovisioning and branch operations
                   address.
                 type: string
+              keepsPodsRunning:
+                description: |-
+                  KeepsPodsRunning is the provider's declaration that this claim's
+                  binding holds the workload up — a worker holding an outbound
+                  connection, say — so no environment reading it idles to zero. The
+                  environment reconciler reads it and says so on the environment.
+                type: boolean
               phase:
                 description: ClaimPhase is the coarse lifecycle summary of a ResourceClaim.
                 enum:
                 - Pending
                 - Bound
                 - Failed
+                type: string
+              previewMode:
+                description: |-
+                  PreviewMode is what a preview Environment of the claim's project binds
+                  to, as the reconciler resolved it from the provider's declaration and
+                  the claim's own choice: branch, fresh, shared or none. It is written
+                  here rather than read off the provider each time because it is the
+                  fact a preview's workload, the policy engine and the screen all act
+                  on, and they should act on one answer. Empty until the claim has been
+                  reconciled by an operator that declares.
+                enum:
+                - branch
+                - fresh
+                - shared
+                - none
+                type: string
+              previewReason:
+                description: |-
+                  PreviewReason is why previews bind nothing, when PreviewMode is none,
+                  and the sentence behind the mode otherwise — the provider's own words
+                  about what a preview gets.
                 type: string
               redirectURIs:
                 description: |-

@@ -273,8 +273,9 @@ name against `internal/api/policy.go`, so a route that moves fails them too.
 | POST | `/domains` | Attach one — the response carries the DNS record to create | `developer` |
 | GET | `/domains/{name}` | One domain, verification instructions included | `viewer` |
 | DELETE | `/domains/{name}` | Detach it; the operator removes its certificate | `developer` |
+| GET | `/claim-types` | What can be claimed: every claim type, and what each provider that fulfils it declares about previews, idling and deploys | any account |
 | GET | `/claims` | Every resource claim. `?project=` filters | any account — filtered |
-| POST | `/claims` | Ask for a provisioned resource: a database from a connection — optionally naming the Postgres version, extensions and storage it needs — or an OAuth client from the platform's identity provider | `developer` |
+| POST | `/claims` | Ask for a provisioned resource: a database from a connection — optionally naming the Postgres version, extensions and storage it needs, and what previews get — or an OAuth client from the platform's identity provider | `developer` |
 | GET | `/claims/{name}` | One claim | `viewer` |
 | DELETE | `/claims/{name}` | Delete it — what happens to the data is its `deletionPolicy`'s call; an OAuth client is always deregistered | `developer` |
 
@@ -296,7 +297,8 @@ such changes two changes to two different files.
 - [Builds](api/builds.md) — starting and cancelling one, what it reused, and the evidence it left
 - [Environments and releases](api/environments.md) — rolling back, what is running, what is wrong with it, and the bar an environment sets
 - [Workers and scheduled jobs](api/processes.md) — the processes a project runs besides its web one, their runs, and running one now
-- [Connections and claims](api/connections.md) — the credentials the platform holds, and asking one for a resource
+- [Connections](api/connections.md) — the credentials the platform holds
+- [Claims](api/claims.md) — asking for a resource, and what every provider declares about previews, idling and deploys
 - [Custom domains](api/domains.md) — putting an environment on an address of its own
 - [Logs and queries](api/logs.md) — reading them, following them live, querying them, and saving a query
 - [Metrics, traffic and traces](api/telemetry.md) — the golden signals, the request rows behind them, and the spans

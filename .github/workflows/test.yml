@@ -51,6 +51,18 @@ jobs:
             exit 1
           }
 
+      # The claim provider matrix in docs/api/claims.md is generated from the
+      # declarations next to the provisioners (hack/gen-claim-matrix). Same
+      # reason, same shape: a declaration that moved without the page moving
+      # with it is caught here, before the tests.
+      - name: Check the claim provider matrix is in sync
+        run: |
+          go run ./hack/gen-claim-matrix
+          git diff --exit-code -- docs/api/claims.md || {
+            echo "::error::docs/api/claims.md is stale. Run 'make claim-matrix' and commit the result."
+            exit 1
+          }
+
       - name: Running Tests
         run: |
           go mod tidy

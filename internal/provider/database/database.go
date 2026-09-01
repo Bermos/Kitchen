@@ -59,6 +59,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/provider/contract"
 )
 
 // ErrUnsupportedProvider is returned by Default for providers without an
@@ -269,6 +270,28 @@ const (
 	// with the operator's own account, into the cluster it was installed in.
 	ProviderCNPG = "cnpg"
 )
+
+// Declarations is what each database provider says about itself before it
+// has provisioned anything: what a preview environment gets, and what the
+// binding does to the workload that reads it. Written next to Default so
+// that a provider and its declaration are added together — the test on
+// internal/provider/declarations refuses one without the other.
+//
+// Both keep the DataProvenance they report on every Instance and Branch;
+// the declaration is what a developer sees *before* choosing, the provenance
+// is what the provider vouches for *after*.
+var Declarations = map[string]contract.Declaration{
+	ProviderNeon: {
+		Preview: contract.PreviewBranch,
+		PreviewNote: "a copy-on-write branch of production's data under its own address — cheap, " +
+			"and production-derived: the branch declares provenance production",
+	},
+	ProviderCNPG: {
+		Preview: contract.PreviewFresh,
+		PreviewNote: "a new, empty database with the same version, extensions and storage, never a " +
+			"copy of production: the branch declares provenance synthetic",
+	},
+}
 
 // Default resolves the built-in providers.
 func Default(opts Options) (Provisioner, error) {

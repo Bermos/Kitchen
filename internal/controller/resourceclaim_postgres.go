@@ -38,8 +38,8 @@ import (
 // The postgres half of the ResourceClaim reconciler: a database from a
 // database-capable Connection, provisioned through internal/provider/database
 // — Neon, or CloudNativePG in this cluster — with its binding written into a
-// Secret in the application namespace and, with previewBranching, one branch
-// and one Secret per preview Environment.
+// Secret in the application namespace and, where the provider gives previews
+// a database of their own, one branch and one Secret per preview Environment.
 //
 // It is the first contract and the one the others are shaped after: a
 // Connection matched on a capability, a provisioner built from it, a typed
@@ -108,7 +108,9 @@ func (postgresContract) reconcile(
 		return result, err
 	}
 
-	branchErr := r.reconcileBranches(ctx, claim, project.Name, provisioner, appNS, conn.Spec.Provider)
+	claimType, _ := claim.Type()
+	mode := declare(claim, claimType, conn.Spec.Provider)
+	branchErr := r.reconcileBranches(ctx, claim, project.Name, provisioner, appNS, conn.Spec.Provider, mode.Isolated())
 
 	// The declaration travels in the bind's audit record: what the data
 	// derives from and where the provider put it are the two facts the
@@ -121,6 +123,7 @@ func (postgresContract) reconcile(
 		"secret":         claim.Status.SecretName,
 		"dataProvenance": claim.Status.DataProvenance,
 		"residency":      claim.Status.Residency,
+		"previewMode":    claim.Status.PreviewMode,
 	}); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -277,10 +280,11 @@ func claimRequirements(claim *kitchenv1alpha1.ResourceClaim) database.Requiremen
 
 // reconcileBranches keeps the provider-side branches in step with the
 // project's preview Environments: one branch and one binding Secret per live
-// preview while previewBranching is on, none otherwise, and a deleted
-// Environment's branch torn down before this controller's finalizer lets it
-// go. A returned error is also recorded on the PreviewBranchesReady
-// condition; the claim itself stays bound.
+// preview while the claim's preview mode gives previews a resource of their
+// own (branching), none otherwise, and a deleted Environment's branch torn
+// down before this controller's finalizer lets it go. A returned error is
+// also recorded on the PreviewBranchesReady condition; the claim itself
+// stays bound.
 func (r *ResourceClaimReconciler) reconcileBranches(
 	ctx context.Context,
 	claim *kitchenv1alpha1.ResourceClaim,
@@ -288,8 +292,8 @@ func (r *ResourceClaimReconciler) reconcileBranches(
 	provisioner database.Provisioner,
 	appNS string,
 	provider string,
+	branching bool,
 ) error {
-	branching := claim.PreviewBranching()
 
 	previous := map[string]kitchenv1alpha1.ClaimBranch{}
 	for _, branch := range claim.Status.Branches {

@@ -195,6 +195,19 @@ type ResourceClaimSpec struct {
 // reads its own slice through DecodeConfig — this struct names no contract,
 // so that adding one is a new package rather than a new field here.
 type claimConfig struct {
+	// PreviewMode is the claim's own choice of what its previews bind to,
+	// against what the provider declares it can give them: the provider's
+	// declared mode, "shared" — the production resource itself, which is
+	// why it has to be asked for by name — or "none". Empty takes the
+	// provider's declaration, unless that is shared and the type holds
+	// data, in which case previews get nothing and the status says why.
+	PreviewMode string `json:"previewMode,omitempty"`
+
+	// PreviewBranching is what the choice used to be called, before a
+	// provider declared what a branch even was: true asked for a resource
+	// of the preview's own, and absent quietly gave previews production.
+	// It is still read, as the provider's own mode, so a claim written
+	// under the old name keeps its branches.
 	PreviewBranching bool `json:"previewBranching,omitempty"`
 }
 
@@ -330,15 +343,20 @@ func (c *ResourceClaim) Connection() string {
 	return c.Spec.ConnectionRef.Name
 }
 
-// PreviewBranching reports whether spec.config asks for a database branch per
-// preview Environment. Config the platform cannot read counts as off — the
-// plugin's own validation is where a malformed config becomes an error.
-func (c *ResourceClaim) PreviewBranching() bool {
+// PreviewChoice is what the claim asked its previews to bind to: a preview
+// mode by name, or empty for the provider's own declaration. Config the
+// platform cannot read counts as asking for nothing in particular — the
+// API validates a config before it is written.
+//
+// The old previewBranching flag reads as no choice at all, deliberately: it
+// asked for the preview's own resource, and that is what the provider's
+// declaration now gives by default.
+func (c *ResourceClaim) PreviewChoice() string {
 	var cfg claimConfig
 	if !c.DecodeConfig(&cfg) {
-		return false
+		return ""
 	}
-	return cfg.PreviewBranching
+	return cfg.PreviewMode
 }
 
 // Postgres is what the claim asks of its database, empty for a claim of
@@ -435,6 +453,38 @@ type ResourceClaimStatus struct {
 	// defaulted.
 	// +optional
 	Residency string `json:"residency,omitempty"`
+
+	// PreviewMode is what a preview Environment of the claim's project binds
+	// to, as the reconciler resolved it from the provider's declaration and
+	// the claim's own choice: branch, fresh, shared or none. It is written
+	// here rather than read off the provider each time because it is the
+	// fact a preview's workload, the policy engine and the screen all act
+	// on, and they should act on one answer. Empty until the claim has been
+	// reconciled by an operator that declares.
+	// +kubebuilder:validation:Enum=branch;fresh;shared;none
+	// +optional
+	PreviewMode string `json:"previewMode,omitempty"`
+
+	// PreviewReason is why previews bind nothing, when PreviewMode is none,
+	// and the sentence behind the mode otherwise — the provider's own words
+	// about what a preview gets.
+	// +optional
+	PreviewReason string `json:"previewReason,omitempty"`
+
+	// KeepsPodsRunning is the provider's declaration that this claim's
+	// binding holds the workload up — a worker holding an outbound
+	// connection, say — so no environment reading it idles to zero. The
+	// environment reconciler reads it and says so on the environment.
+	// +optional
+	KeepsPodsRunning bool `json:"keepsPodsRunning,omitempty"`
+
+	// ForcesRecreate is the provider's declaration that what it provisions
+	// can be attached to one pod at a time, so the workload reading it is
+	// deployed by recreation — stopped, then started — with a gap in serving
+	// on every deploy. The environment reconciler reads it and sets the
+	// strategy.
+	// +optional
+	ForcesRecreate bool `json:"forcesRecreate,omitempty"`
 
 	// RedirectURIs is the redirect list an oidcClient claim's client is
 	// registered with, as the operator last wrote it. It is what a reconcile

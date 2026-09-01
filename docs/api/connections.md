@@ -1,4 +1,4 @@
-# Kitchen — Connections and claims
+# Kitchen — Connections
 
 A Connection is a credential the platform holds on an installation's behalf.
 The API never reads one back — writing a credential means the operator creates
@@ -7,127 +7,11 @@ the Secret from the request body, and no response echoes it.
 Part of the [REST API](../API.md), which carries the authentication, the
 authorization model and the full route table these sections belong to.
 
-## Creating a claim
+## Claims
 
-```sh
-curl -sS -X POST -H "authorization: Bearer $TOKEN" \
-  -d '{"name": "shop-db", "project": "shop", "connection": "neon", "type": "postgres", "previewBranching": true}' \
-  https://kitchen.apps.example.com/api/v1/claims
-```
-
-A claim asks for something the project needs; the reconciler writes the
-credentials into a binding secret that `Project.spec.env`'s `fromClaim`
-references, and the API never reads them back. There are two `type`s, and each
-is refused the other's fields rather than having them ignored:
-
-**`postgres`** asks a Connection with the `database` capability to provision a
-database. `previewBranching` gives every preview environment a database of its
-own. `deletionPolicy` (`Retain`, the default, or `Delete`) decides what
-deleting the claim later does to the provisioned database — `Retain` is the
-default because destroying data has to be asked for, never implied.
-
-`postgres` is the block that says *which* Postgres, because "Postgres" is not
-one thing: an application that needs PostGIS, pgvector or a time-series
-extension otherwise binds, gets a URL, and dies on a `CREATE EXTENSION` in its
-first migration.
-
-```sh
-curl -sS -X POST -H "authorization: Bearer $TOKEN" \
-  -d '{"name": "maps-db", "project": "maps", "connection": "postgres", "type": "postgres",
-       "postgres": {"version": "17", "extensions": ["postgis"],
-                    "storage": {"size": "40Gi", "storageClass": "fast-ssd"}}}' \
-  https://kitchen.apps.example.com/api/v1/claims
-```
-
-| Field | Default | What it does |
-|---|---|---|
-| `postgres.version` | the platform's own | The major version, as a number: `"17"` |
-| `postgres.extensions` | none | Created in the database when it is built, as superuser, so the application never needs the right to create them |
-| `postgres.storage.size` | the platform's own | A Kubernetes quantity — `"40Gi"` |
-| `postgres.storage.storageClass` | the cluster's default | The class the volume is cut from |
-
-This endpoint checks the *shape* — a version that is a version, extension names
-that are identifiers, a size that parses. Whether they can be **supplied** is
-the provisioner's answer, and it lands on the claim: a claim asking for an
-extension no image the connection can run ships is `Failed`, and its `Ready`
-condition names what could not be supplied and what is available instead. That
-is the whole point of asking here — the refusal is the feature, and it arrives
-before there is a database rather than three minutes into a rollout. A
-connection to a hosted Postgres cannot be asked for any of it and refuses the
-claim saying so, rather than provisioning as though the block had not been
-written down.
-
-Everything in the block is applied when the database is **created**. A major
-version is not something to change under a live Postgres and a volume is not
-something to shrink, so editing it on a bound claim reshapes nothing: asking
-for a different database means asking for a different database.
-
-**What `deletionPolicy` means for a database with a volume behind it.** For the
-self-hosted provider, `Delete` deletes the database and CloudNativePG collects
-its volume with it — the data is gone. `Retain` leaves the database running in
-the platform's own database namespace, still holding its volume, and a claim of
-the same name created later against the same connection finds it and rebinds to
-it. That namespace is deliberately not the project's own: deleting a project
-deletes that one, and a retained database has to survive exactly that.
-
-Either type takes an optional `dataClass` — `public`, `internal`,
-`confidential` or `strictlyConfidential` — classifying the data the resource
-will hold. It may not exceed the [project](projects.md)'s own class
-(classification narrows going down, never widens), and a classified claim in
-an unclassified project is refused the same way: classify the project first.
-Absent means unclassified, shown as such in the
-[inventory](audit.md#the-classification-inventory) rather than defaulted.
-
-The answer carries two facts the *provider* supplies once the claim binds,
-alongside the class the caller chose. `dataProvenance` is the provider's
-declaration of what the provisioned data derives from — `production`,
-`masked` or `synthetic`; absent means the provider declared nothing, which
-policy treats as the worst case rather than as clean. Neon declares
-`production` for both a fresh database and every preview branch, because a
-branch of a production database is production-derived. The self-hosted
-provider declares `production` for the claim's own database and **`synthetic`
-for every preview**: it has no copy-on-write branch, and a preview gets a
-fresh, empty database with the same version, extensions and storage rather
-than a slow copy of production — which keeps production data out of previews
-by construction rather than by policy. `residency` is where
-the provider reported the resource actually is — a Neon region id for the
-hosted provider, and for a self-hosted database the topology of the node its
-primary actually landed on, empty where the nodes say nothing about
-themselves. Reported, not declared. Both are visible on the environment screen, where a preview
-running on production-derived data is marked rather than implied, and both
-are enforced at promotion by the default bundle's `data-provenance-preview`
-rule.
-
-**`oidcClient`** asks the platform's own identity provider for an OAuth
-client, so that the application signs its users in with the same accounts as
-the dashboard:
-
-```sh
-curl -sS -X POST -H "authorization: Bearer $TOKEN" \
-  -d '{"name": "shop-auth", "project": "shop", "type": "oidcClient"}' \
-  https://kitchen.apps.example.com/api/v1/claims
-```
-
-It takes **no `connection`** — the provider is the issuer the platform is
-already configured with — and no `deletionPolicy`, because its client is
-always deregistered with the claim. Three optional fields shape it, and the
-answer carries all three with the platform's defaults filled in, so a claim
-never reports "unset" for something it does have an answer to:
-
-| Field | Default | What it does |
-|---|---|---|
-| `callbackPaths` | `["/auth/callback", "/api/auth/callback/kitchen"]` | Appended to every URL the project's environments are reachable at |
-| `redirectURIs` | none | Registered verbatim, for addresses the platform does not own — `http://localhost:3000/auth/callback` |
-| `scopes` | `["openid", "profile", "email", "offline_access"]` | What the client may ask the issuer for; `openid` is required |
-
-`redirectURIs` in the *answer* is a different thing from the one in the
-request: it is what the client currently accepts, which the operator keeps in
-step with the project's environments as previews come and go. It is the one
-part of that automation anybody can check.
-
-Deleting a claim answers `202`: the operator's finalizer still has branches,
-binding secrets, the registered client and — under `Delete` — the database
-itself to remove.
+Asking a connection for a resource is its own page: [Claims](claims.md) —
+what a claim is, what each type takes, and the matrix of what every provider
+declares about previews, idling and deploys.
 
 ## Connections
 
