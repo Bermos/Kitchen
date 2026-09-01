@@ -18,17 +18,12 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/url"
 	"regexp"
-	"slices"
-	"strconv"
 	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation"
@@ -47,11 +42,10 @@ import (
 // createClaimRequest asks for one provisioned resource. deletionPolicy
 // defaults to Retain, mirroring the CRD: destroying data is opted into.
 //
-// The last three fields belong to type oidcClient, and the first two to type
-// postgres. Sending a field of the other type's is refused rather than
-// ignored: a request that says previewBranching and gets an OAuth client has
-// been misunderstood, and the caller should hear about it here rather than
-// wonder later why no branches appeared.
+// The fields after dataClass each belong to one type — previewBranching and
+// postgres to postgres, the last three to oidcClient — and each type's
+// shaper (claims_postgres.go, claims_oidc.go) says which. Sending a field
+// of another type's is refused rather than ignored.
 type createClaimRequest struct {
 	Name             string `json:"name"`
 	Project          string `json:"project"`
@@ -110,11 +104,9 @@ func (s *Server) createClaim(w http.ResponseWriter, req *http.Request) {
 		badRequest(w, "name must work as a DNS label — lowercase letters, digits and '-', starting and ending alphanumeric (got %q)", body.Name)
 		return
 	}
-	switch body.Type {
-	case kitchenv1alpha1.ClaimTypePostgres, kitchenv1alpha1.ClaimTypeOIDCClient:
-	default:
-		badRequest(w, "type must be %s or %s (got %q)",
-			kitchenv1alpha1.ClaimTypePostgres, kitchenv1alpha1.ClaimTypeOIDCClient, body.Type)
+	claimType, shaper, ok := claimShaperFor(body.Type)
+	if !ok {
+		badRequest(w, "type must be one of %s (got %q)", strings.Join(kitchenv1alpha1.ClaimTypeNames(), ", "), body.Type)
 		return
 	}
 	if body.Project == "" {
@@ -137,6 +129,12 @@ func (s *Server) createClaim(w http.ResponseWriter, req *http.Request) {
 		badRequest(w, "deletionPolicy must be Retain or Delete (got %q)", body.DeletionPolicy)
 		return
 	}
+	if policy != "" && !claimType.HoldsData {
+		badRequest(w, "%s claim takes no deletionPolicy: the policy decides what happens to provisioned "+
+			"data, and %s holds none — it is always removed with the claim",
+			withArticle(claimType.Name), withArticle(claimType.Resource))
+		return
+	}
 	dataClass, err := dataClassFromRequest(body.DataClass)
 	if err != nil {
 		badRequest(w, "%s", err.Error())
@@ -157,7 +155,7 @@ func (s *Server) createClaim(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	config, ref, ok := s.claimShape(ctx, w, &body)
+	config, ref, ok := s.claimShape(ctx, w, claimType, shaper, &body)
 	if !ok {
 		return
 	}
@@ -216,207 +214,130 @@ func (s *Server) createClaim(w http.ResponseWriter, req *http.Request) {
 	writeJSON(w, http.StatusCreated, newClaimView(claim))
 }
 
+// claimShaper is the API's half of one claim type: the fields of a create
+// request that belong to the type, how they become the config the reconciler
+// reads, and the type's own slice of the claim's view. The reconciler's half
+// is the contract in internal/controller; the two are registered against the
+// same table, kitchenv1alpha1.ClaimTypes, and the tests on each refuse a row
+// without a registration.
+type claimShaper interface {
+	// fields is every type-specific field of createClaimRequest this type
+	// reads. A request that sets a field of another type's is refused
+	// rather than quietly ignored: a request that says previewBranching and
+	// gets an OAuth client has been misunderstood, and the caller should
+	// hear about it here rather than wonder later why no branches appeared.
+	fields() []claimField
+
+	// config validates the type's fields and answers spec.config as the
+	// reconciler will read it, nil when nothing was asked. ok=false means a
+	// refusal has already been written.
+	config(w http.ResponseWriter, body *createClaimRequest) (config *runtime.RawExtension, ok bool)
+
+	// view fills the type's own fields of the claim's view.
+	view(claim *kitchenv1alpha1.ResourceClaim, view *claimView)
+
+	// deletionOutcome says, in a sentence, what deleting the claim does to
+	// what it provisioned.
+	deletionOutcome(claim *kitchenv1alpha1.ResourceClaim) string
+}
+
+// claimField is one type-specific field of createClaimRequest: how to tell
+// it was sent, and what a claim of another type lacks that makes it
+// meaningless there.
+type claimField struct {
+	name string
+	set  func(body *createClaimRequest) bool
+	// lacks completes "a <resource> has ..." in the refusal — "no redirect
+	// list", "no version, no extensions and no volume".
+	lacks string
+}
+
+// claimShapers is the registry: one shaper per row of
+// kitchenv1alpha1.ClaimTypes.
+var claimShapers = map[string]claimShaper{
+	kitchenv1alpha1.ClaimTypePostgres:   postgresClaimShaper{},
+	kitchenv1alpha1.ClaimTypeOIDCClient: oidcClaimShaper{},
+}
+
+// claimShaperFor resolves a request's type to the table's row and the API's
+// shaper for it; ok is false for a type either does not know.
+func claimShaperFor(typeName string) (kitchenv1alpha1.ClaimType, claimShaper, bool) {
+	claimType, ok := kitchenv1alpha1.LookupClaimType(typeName)
+	if !ok {
+		return kitchenv1alpha1.ClaimType{}, nil, false
+	}
+	shaper, ok := claimShapers[claimType.Name]
+	if !ok {
+		return claimType, nil, false
+	}
+	return claimType, shaper, true
+}
+
 // claimShape validates the half of the request that belongs to the claim's
 // type, and answers with the two things that differ between types: the
 // Connection the claim provisions through, and the config the reconciler
 // reads. ok=false means a refusal has already been written.
 //
-// The two types are refused each other's fields rather than quietly ignoring
-// them, and the CRD refuses the same shapes at admission — this is the layer
-// that can say why in a sentence.
+// A type is refused the fields of every other type rather than quietly
+// ignoring them, and the CRD refuses the same shapes at admission — this is
+// the layer that can say why in a sentence.
 func (s *Server) claimShape(
 	ctx context.Context,
 	w http.ResponseWriter,
+	claimType kitchenv1alpha1.ClaimType,
+	shaper claimShaper,
 	body *createClaimRequest,
 ) (*runtime.RawExtension, *kitchenv1alpha1.LocalObjectReference, bool) {
-	if body.Type == kitchenv1alpha1.ClaimTypePostgres {
-		if len(body.CallbackPaths) > 0 || len(body.RedirectURIs) > 0 || len(body.Scopes) > 0 {
-			badRequest(w, "callbackPaths, redirectURIs and scopes belong to a claim of type %s: "+
-				"a %s claim provisions a database, which has no redirect list",
-				kitchenv1alpha1.ClaimTypeOIDCClient, kitchenv1alpha1.ClaimTypePostgres)
-			return nil, nil, false
-		}
-		if !s.requireConnection(ctx, w, "connection", body.Connection, kitchenv1alpha1.CapabilityDatabase) {
-			return nil, nil, false
-		}
-		postgres, ok := validPostgresConfig(w, body.Postgres)
-		if !ok {
-			return nil, nil, false
-		}
-		var config *runtime.RawExtension
-		if body.PreviewBranching || postgres != nil {
-			raw, err := json.Marshal(claimConfigBody{
-				PreviewBranching: body.PreviewBranching,
-				Postgres:         postgres,
-			})
-			if err != nil {
-				s.writeError(w, err)
-				return nil, nil, false
-			}
-			config = &runtime.RawExtension{Raw: raw}
-		}
-		return config, &kitchenv1alpha1.LocalObjectReference{Name: body.Connection}, true
+	mine := map[string]bool{}
+	for _, field := range shaper.fields() {
+		mine[field.name] = true
 	}
-
-	return s.oidcClaimShape(w, body)
-}
-
-// oidcClaimShape is the other half of claimShape: type oidcClient, which has
-// no Connection to name because the client is registered at the identity
-// provider the platform is already configured with, by the operator's own
-// credential.
-func (s *Server) oidcClaimShape(
-	w http.ResponseWriter,
-	body *createClaimRequest,
-) (*runtime.RawExtension, *kitchenv1alpha1.LocalObjectReference, bool) {
-	if body.Connection != "" {
-		badRequest(w, "an %s claim takes no connection: the client is registered at the platform's own "+
-			"identity provider, and there is no Connection in front of it",
-			kitchenv1alpha1.ClaimTypeOIDCClient)
-		return nil, nil, false
-	}
-	if body.PreviewBranching {
-		badRequest(w, "previewBranching belongs to a claim of type %s: an OAuth client is not branched per "+
-			"preview, its redirect list grows one entry per preview instead",
-			kitchenv1alpha1.ClaimTypePostgres)
-		return nil, nil, false
-	}
-	if body.Postgres != nil {
-		badRequest(w, "postgres belongs to a claim of type %s: an OAuth client has no version, no extensions "+
-			"and no volume", kitchenv1alpha1.ClaimTypePostgres)
-		return nil, nil, false
-	}
-	if body.DeletionPolicy != "" {
-		badRequest(w, "an %s claim takes no deletionPolicy: the policy decides what happens to provisioned "+
-			"data, and an OAuth client holds none — it is always deregistered with the claim",
-			kitchenv1alpha1.ClaimTypeOIDCClient)
-		return nil, nil, false
-	}
-
-	cfg := kitchenv1alpha1.OIDCClientConfig{}
-	for _, path := range body.CallbackPaths {
-		path = strings.TrimSpace(path)
-		if !strings.HasPrefix(path, "/") {
-			badRequest(w, "callbackPaths are paths, not URLs, and start with '/' (got %q): they are appended "+
-				"to every URL the project's environments are reachable at, which is what keeps previews "+
-				"working without anyone writing their URLs down", path)
-			return nil, nil, false
-		}
-		cfg.CallbackPaths = append(cfg.CallbackPaths, path)
-	}
-	for _, uri := range body.RedirectURIs {
-		uri = strings.TrimSpace(uri)
-		parsed, err := url.Parse(uri)
-		if err != nil || !parsed.IsAbs() || parsed.Host == "" ||
-			(parsed.Scheme != "http" && parsed.Scheme != "https") {
-			badRequest(w, "redirectURIs are absolute http(s) URLs (got %q): they are registered verbatim, "+
-				"for the addresses the platform does not own", uri)
-			return nil, nil, false
-		}
-		cfg.RedirectURIs = append(cfg.RedirectURIs, uri)
-	}
-	for _, scope := range body.Scopes {
-		scope = strings.TrimSpace(scope)
-		if scope == "" || strings.ContainsAny(scope, " \t") {
-			badRequest(w, "scopes are single words (got %q)", scope)
-			return nil, nil, false
-		}
-		cfg.Scopes = append(cfg.Scopes, scope)
-	}
-	if len(cfg.Scopes) > 0 && !slices.Contains(cfg.Scopes, "openid") {
-		badRequest(w, "scopes must include openid: without it the issuer answers with an OAuth token and no "+
-			"identity, which is not what a sign-in needs")
-		return nil, nil, false
-	}
-	if len(cfg.CallbackPaths) == 0 && len(cfg.RedirectURIs) == 0 && len(cfg.Scopes) == 0 {
-		return nil, nil, true
-	}
-	raw, err := json.Marshal(cfg)
-	if err != nil {
-		s.writeError(w, err)
-		return nil, nil, false
-	}
-	return &runtime.RawExtension{Raw: raw}, nil, true
-}
-
-// claimConfigBody is spec.config as this API writes it. It is the platform's
-// own slice of that object — the plugin's half is what the provisioner reads —
-// and it is spelled here rather than reused from the CRD package because the
-// CRD's copy is unexported on purpose: what is written into a RawExtension is
-// the API's contract with its callers, and it should have to change on
-// purpose.
-type claimConfigBody struct {
-	PreviewBranching bool                            `json:"previewBranching,omitempty"`
-	Postgres         *kitchenv1alpha1.PostgresConfig `json:"postgres,omitempty"`
-}
-
-// validPostgresConfig checks the shape of what a postgres claim asks of its
-// database, and normalizes it: an empty block is nothing rather than an empty
-// object on the spec.
-//
-// Only shape. Whether the version exists and whether an extension can be
-// supplied is the provisioner's to answer against the images its Connection
-// was configured with, and the answer lands on the claim's status as a
-// failure naming what could not be supplied. The division matters: this layer
-// refuses what is not a version, that layer refuses what is not available.
-func validPostgresConfig(
-	w http.ResponseWriter,
-	cfg *kitchenv1alpha1.PostgresConfig,
-) (*kitchenv1alpha1.PostgresConfig, bool) {
-	if cfg == nil {
-		return nil, true
-	}
-	out := kitchenv1alpha1.PostgresConfig{
-		Version: strings.TrimSpace(cfg.Version),
-		Storage: kitchenv1alpha1.PostgresStorage{
-			Size:         strings.TrimSpace(cfg.Storage.Size),
-			StorageClass: strings.TrimSpace(cfg.Storage.StorageClass),
-		},
-	}
-	if out.Version != "" {
-		major, err := strconv.Atoi(out.Version)
-		if err != nil || major < 9 || major > 99 {
-			badRequest(w, "postgres.version is a major version and nothing else — \"17\", not %q. Which majors "+
-				"this connection can actually serve is the connection's answer, and a version it cannot serve "+
-				"fails the claim with the list", cfg.Version)
-			return nil, false
-		}
-	}
-	for _, extension := range cfg.Extensions {
-		extension = strings.TrimSpace(extension)
-		if extension == "" {
+	for _, other := range kitchenv1alpha1.ClaimTypes {
+		if other.Name == claimType.Name {
 			continue
 		}
-		if !extensionNamePattern.MatchString(extension) {
-			badRequest(w, "postgres.extensions are the identifiers CREATE EXTENSION takes — letters, digits "+
-				"and underscores (got %q)", extension)
-			return nil, false
-		}
-		out.Extensions = append(out.Extensions, extension)
-	}
-	if out.Storage.Size != "" {
-		quantity, err := resource.ParseQuantity(out.Storage.Size)
-		if err != nil {
-			badRequest(w, "postgres.storage.size is a Kubernetes quantity — \"10Gi\" (got %q): %s",
-				cfg.Storage.Size, err.Error())
-			return nil, false
-		}
-		if quantity.Sign() <= 0 {
-			badRequest(w, "postgres.storage.size must be more than nothing (got %q)", cfg.Storage.Size)
-			return nil, false
+		for _, field := range claimShapers[other.Name].fields() {
+			if mine[field.name] || !field.set(body) {
+				continue
+			}
+			badRequest(w, "%s belongs to a claim of type %s: %s claim provisions %s, which has %s",
+				field.name, other.Name, withArticle(claimType.Name), withArticle(claimType.Resource), field.lacks)
+			return nil, nil, false
 		}
 	}
-	if out.Storage.StorageClass != "" {
-		if errs := validation.IsDNS1123Subdomain(out.Storage.StorageClass); len(errs) > 0 {
-			badRequest(w, "postgres.storage.storageClass must be a StorageClass name (got %q): %s",
-				cfg.Storage.StorageClass, strings.Join(errs, "; "))
-			return nil, false
+
+	var ref *kitchenv1alpha1.LocalObjectReference
+	if claimType.TakesConnection() {
+		if !s.requireConnection(ctx, w, "connection", body.Connection, claimType.Capability) {
+			return nil, nil, false
 		}
+		ref = &kitchenv1alpha1.LocalObjectReference{Name: body.Connection}
+	} else if body.Connection != "" {
+		badRequest(w, "%s claim takes no connection: the platform provisions %s itself, and there is no "+
+			"Connection in front of it", withArticle(claimType.Name), withArticle(claimType.Resource))
+		return nil, nil, false
 	}
-	if out.Version == "" && len(out.Extensions) == 0 && out.Storage.Size == "" && out.Storage.StorageClass == "" {
-		return nil, true
+
+	config, ok := shaper.config(w, body)
+	if !ok {
+		return nil, nil, false
 	}
-	return &out, true
+	return config, ref, true
+}
+
+// withArticle is the noun with its indefinite article — "a database", "an
+// OAuth client", "an oidcClient" — for the sentences the refusals are made
+// of. Good enough for the nouns the table holds; it is not a linguist.
+func withArticle(noun string) string {
+	if noun == "" {
+		return noun
+	}
+	switch noun[0] {
+	case 'a', 'e', 'i', 'o', 'u', 'A', 'E', 'I', 'O', 'U':
+		return "an " + noun
+	default:
+		return "a " + noun
+	}
 }
 
 // extensionNamePattern is what may be written into the bootstrap SQL the
@@ -434,12 +355,9 @@ func (s *Server) deleteClaim(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	caller, _ := CallerFrom(ctx)
-	outcome := "the database is kept at the provider"
-	switch {
-	case claim.Spec.Type == kitchenv1alpha1.ClaimTypeOIDCClient:
-		outcome = "the OAuth client is deregistered"
-	case claim.Spec.DeletionPolicy == kitchenv1alpha1.ClaimDelete:
-		outcome = "the database is deprovisioned"
+	outcome := "the provisioned resource is left where it is"
+	if _, shaper, ok := claimShaperFor(claim.Spec.Type); ok {
+		outcome = shaper.deletionOutcome(claim)
 	}
 	if !s.recorded(w, req, audit.Transition{
 		Object:    claim,

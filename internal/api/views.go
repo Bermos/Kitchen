@@ -1151,34 +1151,12 @@ type claimView struct {
 	Scopes        []string `json:"scopes,omitempty"`
 }
 
-// claimPostgresView is the claim's database requirements as it answered
-// them, flattened one level so a caller reads storage without a nested
-// object it never has to build.
-type claimPostgresView struct {
-	Version      string   `json:"version,omitempty"`
-	Extensions   []string `json:"extensions,omitempty"`
-	StorageSize  string   `json:"storageSize,omitempty"`
-	StorageClass string   `json:"storageClass,omitempty"`
-}
-
-// postgresOf is the claim's database requirements, and nothing at all for a
-// claim of another type or one that asked for nothing.
-func postgresOf(claim *kitchenv1alpha1.ResourceClaim) *claimPostgresView {
-	cfg := claim.Postgres()
-	if cfg.Version == "" && len(cfg.Extensions) == 0 &&
-		cfg.Storage.Size == "" && cfg.Storage.StorageClass == "" {
-		return nil
-	}
-	return &claimPostgresView{
-		Version:      cfg.Version,
-		Extensions:   cfg.Extensions,
-		StorageSize:  cfg.Storage.Size,
-		StorageClass: cfg.Storage.StorageClass,
-	}
-}
-
+// newClaimView is the claim as the API answers it. The fields every type
+// has are filled here; the type's own — the postgres block, the OAuth
+// client's registration — are filled by its shaper, so that a type nobody
+// registered answers nothing rather than something another type's.
 func newClaimView(claim *kitchenv1alpha1.ResourceClaim) claimView {
-	return claimView{
+	view := claimView{
 		Name:             claim.Name,
 		Project:          claim.Spec.ProjectRef.Name,
 		Connection:       claim.Connection(),
@@ -1192,26 +1170,10 @@ func newClaimView(claim *kitchenv1alpha1.ResourceClaim) claimView {
 		Residency:        claim.Status.Residency,
 		CreatedAt:        claim.CreationTimestamp.Time,
 		Conditions:       conditionViews(claim.Status.Conditions),
-		Postgres:         postgresOf(claim),
 		RedirectURIs:     claim.Status.RedirectURIs,
-		CallbackPaths:    callbackPathsOf(claim),
-		Scopes:           scopesOf(claim),
 	}
-}
-
-// callbackPathsOf and scopesOf are the oidcClient configuration as the
-// reconciler will read it, defaults included, and nothing at all for a claim
-// of another type.
-func callbackPathsOf(claim *kitchenv1alpha1.ResourceClaim) []string {
-	if claim.Spec.Type != kitchenv1alpha1.ClaimTypeOIDCClient {
-		return nil
+	if _, shaper, ok := claimShaperFor(claim.Spec.Type); ok {
+		shaper.view(claim, &view)
 	}
-	return claim.OIDCClient().CallbackPaths
-}
-
-func scopesOf(claim *kitchenv1alpha1.ResourceClaim) []string {
-	if claim.Spec.Type != kitchenv1alpha1.ClaimTypeOIDCClient {
-		return nil
-	}
-	return claim.OIDCClient().Scopes
+	return view
 }
