@@ -401,6 +401,18 @@ var _ = Describe("ResourceClaim Controller", func() {
 			})
 		}
 
+		// cleanupPreviewWorkload removes what the environment reconciler
+		// materialized for the preview, so that a later test which expects
+		// the environment to wait does not find a Deployment already there.
+		cleanupPreviewWorkload := func() {
+			for _, obj := range []client.Object{
+				&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: previewEnvName, Namespace: appNS}},
+				&corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: previewEnvName, Namespace: appNS}},
+			} {
+				ExpectWithOffset(1, client.IgnoreNotFound(k8sClient.Delete(ctx, obj))).To(Succeed())
+			}
+		}
+
 		It("gives each preview its own branch and binding secret", func() {
 			createPreview()
 			branchingClaim()
@@ -475,6 +487,133 @@ var _ = Describe("ResourceClaim Controller", func() {
 			Expect(k8sClient.Get(ctx, envKey, env)).To(Succeed())
 			Expect(controllerutil.ContainsFinalizer(env, claimBranchFinalizer)).To(BeFalse(),
 				"a deleted claim must not keep holding Environments")
+		})
+
+		It("records what the provider declares previews get, and honours the claim's own choice", func() {
+			createPreview()
+			createClaim(nil)
+			reconcileOnce()
+
+			claim := getClaim()
+			Expect(claim.Status.PreviewMode).To(Equal("branch"), "Neon declares a branch, and no choice takes the declaration")
+			Expect(claim.Status.PreviewReason).NotTo(BeEmpty())
+			Expect(claim.Status.Branches).To(HaveLen(1), "the declared mode gives the preview a branch of its own")
+
+			By("asking for production itself, by name")
+			Expect(k8sClient.Delete(ctx, claim)).To(Succeed())
+			reconcileOnce()
+			createClaim(func(claim *kitchenv1alpha1.ResourceClaim) {
+				claim.Spec.Config = &runtime.RawExtension{Raw: []byte(`{"previewMode": "shared"}`)}
+			})
+			reconcileOnce()
+			claim = getClaim()
+			Expect(claim.Status.PreviewMode).To(Equal("shared"))
+			Expect(claim.Status.Branches).To(BeEmpty(), "a shared preview reads production's binding and gets no branch")
+			Expect(fake.BranchNamed("kitchen-"+claimName, previewEnvName)).To(BeNil())
+		})
+
+		It("deploys a preview without the variables of a claim that binds nothing there, and says why", func() {
+			kitchen := &kitchenv1alpha1.Kitchen{
+				ObjectMeta: metav1.ObjectMeta{Name: KitchenSingletonName},
+				Spec:       kitchenv1alpha1.KitchenSpec{BaseDomain: "apps.example.com", TLS: acmeTLS()},
+			}
+			Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, kitchen))).To(Succeed())
+			release := &kitchenv1alpha1.Release{
+				ObjectMeta: metav1.ObjectMeta{Name: projectName + "-rel-1", Namespace: namespace},
+				Spec: kitchenv1alpha1.ReleaseSpec{
+					ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: projectName},
+					BuildRef:   kitchenv1alpha1.LocalObjectReference{Name: projectName + "-bld-1"},
+					Image:      "registry.example.com/clshop@sha256:1234",
+					ConfigSnapshot: kitchenv1alpha1.ConfigSnapshot{
+						Env: []kitchenv1alpha1.EnvVar{
+							{Name: "PUBLIC_NAME", Value: "shop"},
+							{Name: "DATABASE_URL", FromResourceClaim: &kitchenv1alpha1.ResourceClaimKeySelector{Name: claimName, Key: "url"}},
+						},
+					},
+				},
+			}
+			Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, release))).To(Succeed())
+			defer func() {
+				Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, release))).To(Succeed())
+			}()
+			createPreview()
+			createClaim(func(claim *kitchenv1alpha1.ResourceClaim) {
+				claim.Spec.Config = &runtime.RawExtension{Raw: []byte(`{"previewMode": "none"}`)}
+			})
+			reconcileOnce()
+			Expect(getClaim().Status.PreviewMode).To(Equal("none"))
+
+			environmentReconciler := &EnvironmentReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := environmentReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: envKey})
+			Expect(err).NotTo(HaveOccurred())
+			defer cleanupPreviewWorkload()
+
+			deploy := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: appNS, Name: previewEnvName}, deploy)).To(Succeed(),
+				"the preview deploys: nothing for previews is not a failure")
+			names := []string{}
+			for _, v := range deploy.Spec.Template.Spec.Containers[0].Env {
+				names = append(names, v.Name)
+			}
+			Expect(names).To(ContainElement("PUBLIC_NAME"))
+			Expect(names).NotTo(ContainElement("DATABASE_URL"), "the claim binds nothing here, so its variable is left out")
+
+			env := &kitchenv1alpha1.Environment{}
+			Expect(k8sClient.Get(ctx, envKey, env)).To(Succeed())
+			bound := meta.FindStatusCondition(env.Status.Conditions, condClaimsBound)
+			Expect(bound).NotTo(BeNil(), "the environment says which claim binds nothing and why")
+			Expect(bound.Status).To(Equal(metav1.ConditionFalse))
+			Expect(bound.Message).To(ContainSubstring(claimName))
+			Expect(bound.Message).To(ContainSubstring("nothing in preview"))
+		})
+
+		It("acts on a provider that holds pods up or attaches once, as the claim's status declares it", func() {
+			kitchen := &kitchenv1alpha1.Kitchen{
+				ObjectMeta: metav1.ObjectMeta{Name: KitchenSingletonName},
+				Spec:       kitchenv1alpha1.KitchenSpec{BaseDomain: "apps.example.com", TLS: acmeTLS()},
+			}
+			Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, kitchen))).To(Succeed())
+			release := &kitchenv1alpha1.Release{
+				ObjectMeta: metav1.ObjectMeta{Name: projectName + "-rel-1", Namespace: namespace},
+				Spec: kitchenv1alpha1.ReleaseSpec{
+					ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: projectName},
+					BuildRef:   kitchenv1alpha1.LocalObjectReference{Name: projectName + "-bld-1"},
+					Image:      "registry.example.com/clshop@sha256:1234",
+					ConfigSnapshot: kitchenv1alpha1.ConfigSnapshot{
+						Env: []kitchenv1alpha1.EnvVar{
+							{Name: "DATABASE_URL", FromResourceClaim: &kitchenv1alpha1.ResourceClaimKeySelector{Name: claimName, Key: "url"}},
+						},
+					},
+				},
+			}
+			Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, release))).To(Succeed())
+			defer func() {
+				Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, release))).To(Succeed())
+			}()
+			createPreview()
+			createClaim(func(claim *kitchenv1alpha1.ResourceClaim) {
+				claim.Spec.Config = &runtime.RawExtension{Raw: []byte(`{"previewMode": "shared"}`)}
+			})
+			reconcileOnce()
+
+			// No shipped provider declares either yet; the status is what
+			// the environment acts on, so it is written as a provider would.
+			claim := getClaim()
+			claim.Status.KeepsPodsRunning = true
+			claim.Status.ForcesRecreate = true
+			Expect(k8sClient.Status().Update(ctx, claim)).To(Succeed())
+
+			environmentReconciler := &EnvironmentReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := environmentReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: envKey})
+			Expect(err).NotTo(HaveOccurred())
+			defer cleanupPreviewWorkload()
+
+			deploy := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: appNS, Name: previewEnvName}, deploy)).To(Succeed())
+			Expect(deploy.Spec.Strategy.Type).To(Equal(appsv1.RecreateDeploymentStrategyType),
+				"a resource that attaches once forces a recreate")
+			Expect(deploy.Spec.Template.Spec.Containers[0].Env[len(deploy.Spec.Template.Spec.Containers[0].Env)-1].
+				ValueFrom.SecretKeyRef.Name).To(Equal(claimName+"-binding"), "a shared preview reads production's binding")
 		})
 
 		It("injects the branch binding into the preview's workload", func() {

@@ -143,15 +143,19 @@ func TestDecodeConfigIsTheOneDoorToSpecConfig(t *testing.T) {
 	if claim.DecodeConfig(&cfg) {
 		t.Error("a claim with no config has nothing to decode")
 	}
-	claim.Spec.Config = &runtime.RawExtension{Raw: []byte(`{"previewBranching": true, "postgres": {"version": "17"}}`)}
-	if !claim.PreviewBranching() {
-		t.Error("previewBranching is the platform's own slice of the config")
+	claim.Spec.Config = &runtime.RawExtension{Raw: []byte(`{"previewMode": "shared", "postgres": {"version": "17"}}`)}
+	if claim.PreviewChoice() != "shared" {
+		t.Error("previewMode is the platform's own slice of the config")
 	}
 	if got := claim.Postgres().Version; got != "17" {
 		t.Errorf("the postgres slice is read through the same door, got version %q", got)
 	}
+	claim.Spec.Config = &runtime.RawExtension{Raw: []byte(`{"previewBranching": true}`)}
+	if claim.PreviewChoice() != "" {
+		t.Error("the old previewBranching flag asked for the preview's own resource, which is now the provider's default")
+	}
 	claim.Spec.Config = &runtime.RawExtension{Raw: []byte(`not json`)}
-	if claim.PreviewBranching() || claim.Postgres().Version != "" {
+	if claim.PreviewChoice() != "" || claim.Postgres().Version != "" {
 		t.Error("a config the platform cannot read counts as asking for nothing")
 	}
 }

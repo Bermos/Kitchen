@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -47,6 +48,7 @@ import (
 	"github.com/Bermos/Kitchen/internal/clickhouse"
 	"github.com/Bermos/Kitchen/internal/gitprovider"
 	"github.com/Bermos/Kitchen/internal/previewgate"
+	"github.com/Bermos/Kitchen/internal/provider/contract"
 )
 
 const (
@@ -122,7 +124,12 @@ const (
 
 	environmentFinalizer = "kitchen.bermos.dev/environment-cleanup"
 
-	condReady             = "Ready"
+	condReady = "Ready"
+	// condClaimsBound says whether every claim this environment reads has
+	// given it a binding. It is False on a preview for which a claim binds
+	// nothing — by the claim's own declaration, with its reason — and the
+	// environment deploys without the variable rather than failing.
+	condClaimsBound       = "ClaimsBound"
 	condWorkloadAvailable = "WorkloadAvailable"
 	condRouteProgrammed   = "RouteProgrammed"
 	condPreviewProtected  = "PreviewProtected"
@@ -241,7 +248,7 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		gate = nil
 	}
 
-	podEnv, requeue, err := r.resolveEnv(ctx, env, release)
+	podEnv, effects, requeue, err := r.resolveEnv(ctx, env, release)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -249,6 +256,7 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return r.notReady(ctx, env, "ClaimNotBound",
 			fmt.Errorf("a referenced ResourceClaim is not bound yet"))
 	}
+	recordClaimsBound(env, effects)
 	// The platform's own variables go first, so that a project setting one of
 	// them wins: the kubelet takes the last value of a repeated name, and an
 	// application that has been told where to send its spans knows something
@@ -267,12 +275,13 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	runtimeSpec := release.Spec.ConfigSnapshot.Runtime
 	idle, idleCond, err := r.reconcileScaleToZero(ctx, env, project, kitchen, appNS, host, labels,
-		servicePort, desiredReplicas(env, runtimeSpec), !unprotectable)
+		servicePort, desiredReplicas(env, runtimeSpec), !unprotectable, effects.keepsPodsRunning)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 
-	if err := r.applyDeployment(ctx, env, release, project, appNS, labels, podEnv, idle != nil); err != nil {
+	if err := r.applyDeployment(ctx, env, release, project, appNS, labels, podEnv, idle != nil,
+		len(effects.forcesRecreate) > 0); err != nil {
 		return ctrl.Result{}, err
 	}
 	if err := r.applyService(ctx, env, release, appNS, labels); err != nil {
@@ -465,16 +474,44 @@ func ensureNamespace(ctx context.Context, c client.Client, name, projectName str
 	return nil
 }
 
-// resolveEnv turns the Release's config snapshot into container env vars for
-// this environment type. It returns requeue=true when a referenced
-// ResourceClaim exists but has no binding secret yet.
+// claimEffects is what the claims an Environment reads do to it, gathered
+// while their bindings are resolved: which of them bind nothing in a
+// preview and why, and which of them constrain the workload — hold its pods
+// up, or force a recreate on every deploy. Each is the provider's own
+// declaration, recorded on the claim by its reconciler; this reconciler
+// only acts on it and says so.
+type claimEffects struct {
+	// unboundInPreview names each claim that binds nothing in this preview
+	// and the claim's own reason. The variables that read it are left out of
+	// the pod, and the environment says why instead of failing.
+	unboundInPreview []string
+	// keepsPodsRunning names each claim whose binding holds the workload up.
+	keepsPodsRunning []string
+	// forcesRecreate names each claim whose resource can be attached once.
+	forcesRecreate []string
+}
+
+// resolveEnv turns the Release's frozen env into container env vars, resolving
+// claim references through their binding secrets. requeue=true means a
+// referenced ResourceClaim has no binding for this environment yet: the
+// claim is unbound, or a preview whose branch is still coming up, or a claim
+// an older operator bound without saying what previews get.
+//
+// A preview reads what the claim's preview mode says it reads — its own
+// branch, production's binding when the claim asked for shared, or nothing
+// when the mode is none. The last is the one that must not look like a
+// failure: the claim has said, on its status, why previews get nothing, and
+// the environment deploys without the variable and carries that sentence on
+// its ClaimsBound condition.
 func (r *EnvironmentReconciler) resolveEnv(
 	ctx context.Context,
 	env *kitchenv1alpha1.Environment,
 	release *kitchenv1alpha1.Release,
-) ([]corev1.EnvVar, bool, error) {
+) ([]corev1.EnvVar, claimEffects, bool, error) {
 	isPreview := env.Spec.Type == kitchenv1alpha1.EnvironmentPreview
 	var out []corev1.EnvVar
+	effects := claimEffects{}
+	seen := map[string]bool{}
 	for _, v := range release.Spec.ConfigSnapshot.Env {
 		switch {
 		case v.FromResourceClaim != nil:
@@ -482,26 +519,51 @@ func (r *EnvironmentReconciler) resolveEnv(
 			key := types.NamespacedName{Namespace: env.Namespace, Name: v.FromResourceClaim.Name}
 			if err := r.Get(ctx, key, claim); err != nil {
 				if apierrors.IsNotFound(err) {
-					return nil, true, nil
+					return nil, effects, true, nil
 				}
-				return nil, false, err
+				return nil, effects, false, err
 			}
 			if claim.Status.SecretName == "" {
-				return nil, true, nil
+				return nil, effects, true, nil
+			}
+			if !seen[claim.Name] {
+				seen[claim.Name] = true
+				if claim.Status.KeepsPodsRunning {
+					effects.keepsPodsRunning = append(effects.keepsPodsRunning, claim.Name)
+				}
+				if claim.Status.ForcesRecreate {
+					effects.forcesRecreate = append(effects.forcesRecreate, claim.Name)
+				}
 			}
 			secretName := claim.Status.SecretName
-			// A branching claim gives every preview its own database branch;
-			// the preview reads the branch's binding, and waits for it the
-			// same way an unbound claim is waited for.
-			if isPreview && claim.PreviewBranching() {
-				secretName = ""
-				for _, branch := range claim.Status.Branches {
-					if branch.Environment == env.Name {
-						secretName = branch.SecretName
+			if isPreview {
+				switch mode := contract.PreviewMode(claim.Status.PreviewMode); {
+				case mode.Isolated():
+					// The preview reads its own branch's binding, and waits
+					// for it the same way an unbound claim is waited for.
+					secretName = ""
+					for _, branch := range claim.Status.Branches {
+						if branch.Environment == env.Name {
+							secretName = branch.SecretName
+						}
 					}
-				}
-				if secretName == "" {
-					return nil, true, nil
+					if secretName == "" {
+						return nil, effects, true, nil
+					}
+				case mode == contract.PreviewShared:
+					// Production's own binding, because the claim asked for
+					// exactly that by name.
+				case mode == contract.PreviewNone:
+					if !slices.Contains(effects.unboundInPreview, claim.Name+": "+claim.Status.PreviewReason) {
+						effects.unboundInPreview = append(effects.unboundInPreview,
+							claim.Name+": "+claim.Status.PreviewReason)
+					}
+					continue
+				default:
+					// The claim was bound by an operator that had not yet
+					// resolved what previews get. Its reconciler writes the
+					// mode on its next pass; nothing is guessed until then.
+					return nil, effects, true, nil
 				}
 			}
 			out = append(out, corev1.EnvVar{
@@ -527,7 +589,7 @@ func (r *EnvironmentReconciler) resolveEnv(
 			out = append(out, corev1.EnvVar{Name: v.Name, Value: value})
 		}
 	}
-	return out, false, nil
+	return out, effects, false, nil
 }
 
 // platformEnv is everything the platform tells an application about itself.
@@ -631,6 +693,11 @@ func (r *EnvironmentReconciler) applyDeployment(
 	// idles says KEDA owns the replica count on this Deployment, because the
 	// environment is allowed to park at zero.
 	idles bool,
+	// recreate says a claim this environment reads provisions something that
+	// can be attached to one pod at a time, so the old pod has to stop
+	// before the new one starts — the claim's status.forcesRecreate, which
+	// its provider declared.
+	recreate bool,
 ) error {
 	runtimeSpec := release.Spec.ConfigSnapshot.Runtime
 	port := containerPort(runtimeSpec)
@@ -661,7 +728,9 @@ func (r *EnvironmentReconciler) applyDeployment(
 		// the old pod stops before the new one starts. The cost is a gap in
 		// serving during a deploy, and the project asked for it — the
 		// alternative is a few seconds of its background loop running twice
-		// against a shared store, which is not an error at the time.
+		// against a shared store, which is not an error at the time. A claim
+		// whose provider declares its resource attaches to one pod at a time
+		// forces the same thing, for the same reason.
 		//
 		// Turning the declaration off puts the rolling update back, but only
 		// then: writing the type unconditionally would clear the surge and
@@ -669,7 +738,7 @@ func (r *EnvironmentReconciler) applyDeployment(
 		// every reconcile would differ from what it had just written and
 		// update the Deployment for ever.
 		switch {
-		case runtimeSpec.Singleton:
+		case runtimeSpec.Singleton || recreate:
 			deploy.Spec.Strategy = appsv1.DeploymentStrategy{Type: appsv1.RecreateDeploymentStrategyType}
 		case deploy.Spec.Strategy.Type == appsv1.RecreateDeploymentStrategyType:
 			deploy.Spec.Strategy = appsv1.DeploymentStrategy{Type: appsv1.RollingUpdateDeploymentStrategyType}
@@ -1118,6 +1187,26 @@ func (r *EnvironmentReconciler) unprotectable(
 	return ctrl.Result{RequeueAfter: time.Minute}, nil
 }
 
+// recordClaimsBound puts on the Environment which of its claims bind nothing
+// here, and why, in the claims' own words. It is only ever False: a preview
+// for which every claim binds carries no condition, because that is the
+// ordinary case and not worth a line on every object.
+func recordClaimsBound(env *kitchenv1alpha1.Environment, effects claimEffects) {
+	if len(effects.unboundInPreview) == 0 {
+		meta.RemoveStatusCondition(&env.Status.Conditions, condClaimsBound)
+		return
+	}
+	meta.SetStatusCondition(&env.Status.Conditions, metav1.Condition{
+		Type:   condClaimsBound,
+		Status: metav1.ConditionFalse,
+		Reason: "NothingForPreviews",
+		Message: "deployed without the variables read from " + strings.Join(effects.unboundInPreview, "; ") +
+			". The claim binds nothing in a preview environment, by its provider's declaration and the claim's " +
+			"own choice",
+		ObservedGeneration: env.Generation,
+	})
+}
+
 // notReady records a Ready=False condition with the given reason and retries.
 func (r *EnvironmentReconciler) notReady(
 	ctx context.Context,
@@ -1137,6 +1226,32 @@ func (r *EnvironmentReconciler) notReady(
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
+}
+
+// mapClaimToEnvironments enqueues every Environment of a claim's project. A
+// claim binding, or its reconciler resolving what previews get, is what
+// unblocks an environment waiting on it — and a declaration that holds pods
+// up has to reach an environment that is already running.
+func (r *EnvironmentReconciler) mapClaimToEnvironments(ctx context.Context, obj client.Object) []ctrl.Request {
+	claim, ok := obj.(*kitchenv1alpha1.ResourceClaim)
+	if !ok {
+		return nil
+	}
+	environments := &kitchenv1alpha1.EnvironmentList{}
+	if err := r.List(ctx, environments, client.InNamespace(claim.Namespace)); err != nil {
+		logf.FromContext(ctx).Error(err, "could not list environments after a claim change")
+		return nil
+	}
+	requests := make([]ctrl.Request, 0, len(environments.Items))
+	for i := range environments.Items {
+		if environments.Items[i].Spec.ProjectRef.Name != claim.Spec.ProjectRef.Name {
+			continue
+		}
+		requests = append(requests, ctrl.Request{NamespacedName: types.NamespacedName{
+			Namespace: environments.Items[i].Namespace, Name: environments.Items[i].Name,
+		}})
+	}
+	return requests
 }
 
 // AppNamespace is the namespace a project's workloads run in. It is exported
@@ -1299,6 +1414,7 @@ func (r *EnvironmentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&batchv1.Job{}, handler.EnqueueRequestsFromMapFunc(r.mapChildToEnvironment)).
 		Watches(&kitchenv1alpha1.Kitchen{}, handler.EnqueueRequestsFromMapFunc(r.mapPlatformToEnvironments)).
 		Watches(&kitchenv1alpha1.Domain{}, handler.EnqueueRequestsFromMapFunc(r.mapDomainToEnvironment)).
+		Watches(&kitchenv1alpha1.ResourceClaim{}, handler.EnqueueRequestsFromMapFunc(r.mapClaimToEnvironments)).
 		Named("environment").
 		Complete(r)
 }
