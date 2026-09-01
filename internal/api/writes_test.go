@@ -902,12 +902,12 @@ func TestCreatingAClaim(t *testing.T) {
 	h := newHarness(t, nil, append(fixtures(), neonConnection())...)
 
 	recorder := h.do(t, http.MethodPost, "/api/v1/claims",
-		`{"name": "orders-db", "project": "shop", "connection": "neon", "type": "postgres", "previewBranching": true}`)
+		`{"name": "orders-db", "project": "shop", "connection": "neon", "type": "postgres", "previewMode": "branch"}`)
 	if recorder.Code != http.StatusCreated {
 		t.Fatalf("want 201, got %d: %s", recorder.Code, recorder.Body.String())
 	}
 	view := decode[claimView](t, recorder)
-	if view.Name != "orders-db" || view.Project != feedProject || view.Connection != "neon" || !view.PreviewBranching {
+	if view.Name != "orders-db" || view.Project != feedProject || view.Connection != "neon" || view.PreviewChoice != "branch" {
 		t.Fatalf("the response does not echo the request: %+v", view)
 	}
 
@@ -918,8 +918,8 @@ func TestCreatingAClaim(t *testing.T) {
 	if stored.Spec.ProjectRef.Name != feedProject || stored.Spec.ConnectionRef.Name != "neon" || stored.Spec.Type != "postgres" {
 		t.Fatalf("the claim did not stick: %+v", stored.Spec)
 	}
-	if !stored.PreviewBranching() {
-		t.Fatal("previewBranching did not reach spec.config")
+	if stored.PreviewChoice() != "branch" {
+		t.Fatal("previewMode did not reach spec.config")
 	}
 }
 
@@ -938,8 +938,8 @@ func TestCreatingAClaimWithDeletionPolicyDelete(t *testing.T) {
 	if stored.Spec.DeletionPolicy != kitchenv1alpha1.ClaimDelete {
 		t.Fatalf("want deletionPolicy Delete, got %q", stored.Spec.DeletionPolicy)
 	}
-	if stored.PreviewBranching() {
-		t.Fatal("previewBranching was not asked for")
+	if stored.PreviewChoice() != "" {
+		t.Fatal("no previewMode was asked for, so the provider's own applies")
 	}
 }
 
@@ -1144,8 +1144,8 @@ func TestCreatingAClaimRefusesTheOtherTypesFields(t *testing.T) {
 	for name, body := range map[string]string{
 		"a connection on an oidcClient claim": `{"name": "shop-auth", "project": "shop", "connection": "neon",
 			"type": "oidcClient"}`,
-		"preview branching on an oidcClient claim": `{"name": "shop-auth", "project": "shop", "connection": "",
-			"type": "oidcClient", "previewBranching": true}`,
+		"a preview mode the platform cannot give an oidcClient claim": `{"name": "shop-auth", "project": "shop",
+			"connection": "", "type": "oidcClient", "previewMode": "fresh"}`,
 		"a deletion policy on an oidcClient claim": `{"name": "shop-auth", "project": "shop", "connection": "",
 			"type": "oidcClient", "deletionPolicy": "Delete"}`,
 		"callback paths on a postgres claim": `{"name": "orders-db", "project": "shop", "connection": "neon",

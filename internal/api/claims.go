@@ -18,6 +18,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -31,6 +32,9 @@ import (
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/audit"
 	"github.com/Bermos/Kitchen/internal/clickhouse"
+	"github.com/Bermos/Kitchen/internal/provider/contract"
+	"github.com/Bermos/Kitchen/internal/provider/declarations"
+	"github.com/Bermos/Kitchen/internal/provider/oidcclient"
 )
 
 // The resource claim write surface: asking a database-capable Connection to
@@ -42,17 +46,24 @@ import (
 // createClaimRequest asks for one provisioned resource. deletionPolicy
 // defaults to Retain, mirroring the CRD: destroying data is opted into.
 //
-// The fields after dataClass each belong to one type — previewBranching and
-// postgres to postgres, the last three to oidcClient — and each type's
-// shaper (claims_postgres.go, claims_oidc.go) says which. Sending a field
-// of another type's is refused rather than ignored.
+// The fields after dataClass each belong to one type — postgres to
+// postgres, the last three to oidcClient — and each type's shaper
+// (claims_postgres.go, claims_oidc.go) says which. Sending a field of
+// another type's is refused rather than ignored.
 type createClaimRequest struct {
-	Name             string `json:"name"`
-	Project          string `json:"project"`
-	Connection       string `json:"connection"`
-	Type             string `json:"type"`
-	PreviewBranching bool   `json:"previewBranching,omitempty"`
-	DeletionPolicy   string `json:"deletionPolicy,omitempty"`
+	Name       string `json:"name"`
+	Project    string `json:"project"`
+	Connection string `json:"connection"`
+	Type       string `json:"type"`
+
+	// PreviewMode is what the project's preview environments bind to: the
+	// mode the connection's provider declares (GET /claim-types says which),
+	// "shared" for production's own resource — which has to be asked for by
+	// name, because a preview reading production data is never a default —
+	// or "none". Empty takes the provider's declaration.
+	PreviewMode string `json:"previewMode,omitempty"`
+
+	DeletionPolicy string `json:"deletionPolicy,omitempty"`
 
 	// Postgres is what the database itself has to be: a major version, the
 	// extensions the application will call for, and the volume behind it.
@@ -156,6 +167,10 @@ func (s *Server) createClaim(w http.ResponseWriter, req *http.Request) {
 	}
 
 	config, ref, ok := s.claimShape(ctx, w, claimType, shaper, &body)
+	if !ok {
+		return
+	}
+	config, ok = s.withPreviewMode(ctx, w, claimType, ref, &body, config)
 	if !ok {
 		return
 	}
@@ -323,6 +338,80 @@ func (s *Server) claimShape(
 		return nil, nil, false
 	}
 	return config, ref, true
+}
+
+// withPreviewMode validates the claim's choice of what its previews bind to
+// against what the connection's provider declares, and writes it into
+// spec.config beside the type's own block.
+//
+// The choice is checked here, at the door, so that a claim asking a
+// provider for a mode it cannot give is refused with the provider's own
+// declaration rather than created and left binding nothing in previews.
+// The reconciler makes the same decision again from the claim's status —
+// this layer is the one that can say it in a sentence before anything
+// exists.
+func (s *Server) withPreviewMode(
+	ctx context.Context,
+	w http.ResponseWriter,
+	claimType kitchenv1alpha1.ClaimType,
+	ref *kitchenv1alpha1.LocalObjectReference,
+	body *createClaimRequest,
+	config *runtime.RawExtension,
+) (*runtime.RawExtension, bool) {
+	choice := contract.PreviewMode(strings.TrimSpace(body.PreviewMode))
+	if choice == "" {
+		return config, true
+	}
+	if !choice.Known() {
+		badRequest(w, "previewMode must be one of %s (got %q): what a preview environment binds to",
+			joinModes(contract.PreviewModes), body.PreviewMode)
+		return nil, false
+	}
+	provider := oidcclient.ProviderName
+	if ref != nil {
+		conn := &kitchenv1alpha1.Connection{}
+		if err := s.get(ctx, ref.Name, conn); err != nil {
+			s.writeError(w, err)
+			return nil, false
+		}
+		provider = conn.Spec.Provider
+	}
+	declaration, declared := declarations.Lookup(claimType.Name, provider)
+	if choice.Isolated() && (!declared || declaration.Preview != choice) {
+		gives := "nothing"
+		if declared {
+			gives = fmt.Sprintf("%s — %s", declaration.Preview, declaration.PreviewNote)
+		}
+		badRequest(w, "previewMode %q is not something %s gives a preview: it gives %s. Ask for that, for "+
+			"shared (production's own %s — previews read and write it), or for none",
+			choice, provider, gives, claimType.Resource)
+		return nil, false
+	}
+
+	// spec.config is one object: the type's block, plus the platform's own
+	// previewMode beside it.
+	merged := map[string]any{}
+	if config != nil {
+		if err := json.Unmarshal(config.Raw, &merged); err != nil {
+			s.writeError(w, err)
+			return nil, false
+		}
+	}
+	merged["previewMode"] = string(choice)
+	raw, err := json.Marshal(merged)
+	if err != nil {
+		s.writeError(w, err)
+		return nil, false
+	}
+	return &runtime.RawExtension{Raw: raw}, true
+}
+
+func joinModes(modes []contract.PreviewMode) string {
+	names := make([]string, 0, len(modes))
+	for _, mode := range modes {
+		names = append(names, string(mode))
+	}
+	return strings.Join(names, ", ")
 }
 
 // withArticle is the noun with its indefinite article — "a database", "an

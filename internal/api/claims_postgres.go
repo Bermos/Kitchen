@@ -39,11 +39,6 @@ type postgresClaimShaper struct{}
 func (postgresClaimShaper) fields() []claimField {
 	return []claimField{
 		{
-			name:  "previewBranching",
-			set:   func(body *createClaimRequest) bool { return body.PreviewBranching },
-			lacks: "no branch per preview",
-		},
-		{
 			name:  "postgres",
 			set:   func(body *createClaimRequest) bool { return body.Postgres != nil },
 			lacks: "no version, no extensions and no volume",
@@ -52,19 +47,17 @@ func (postgresClaimShaper) fields() []claimField {
 }
 
 // config is spec.config as this API writes it for a postgres claim: the
-// platform's previewBranching, and the postgres block the provisioner reads.
+// postgres block the provisioner reads. The platform's own previewMode is
+// written beside it by createClaim, for every type alike.
 func (postgresClaimShaper) config(w http.ResponseWriter, body *createClaimRequest) (*runtime.RawExtension, bool) {
 	postgres, ok := validPostgresConfig(w, body.Postgres)
 	if !ok {
 		return nil, false
 	}
-	if !body.PreviewBranching && postgres == nil {
+	if postgres == nil {
 		return nil, true
 	}
-	raw, err := json.Marshal(claimConfigBody{
-		PreviewBranching: body.PreviewBranching,
-		Postgres:         postgres,
-	})
+	raw, err := json.Marshal(claimConfigBody{Postgres: postgres})
 	if err != nil {
 		badRequest(w, "%s", err.Error())
 		return nil, false
@@ -83,15 +76,12 @@ func (postgresClaimShaper) deletionOutcome(claim *kitchenv1alpha1.ResourceClaim)
 	return "the database is kept at the provider"
 }
 
-// claimConfigBody is spec.config as this API writes it. It is the platform's
-// own slice of that object — the plugin's half is what the provisioner reads —
-// and it is spelled here rather than reused from the CRD package because the
-// CRD's copy is unexported on purpose: what is written into a RawExtension is
-// the API's contract with its callers, and it should have to change on
-// purpose.
+// claimConfigBody is the postgres slice of spec.config as this API writes
+// it. It is spelled here rather than reused from the CRD package because
+// what is written into a RawExtension is the API's contract with its
+// callers, and it should have to change on purpose.
 type claimConfigBody struct {
-	PreviewBranching bool                            `json:"previewBranching,omitempty"`
-	Postgres         *kitchenv1alpha1.PostgresConfig `json:"postgres,omitempty"`
+	Postgres *kitchenv1alpha1.PostgresConfig `json:"postgres,omitempty"`
 }
 
 // claimPostgresView is the claim's database requirements as it answered

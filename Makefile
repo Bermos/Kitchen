@@ -82,6 +82,25 @@ ui-policy-verify: ui-policy ## Fail if the dashboard's generated policy is out o
 		exit 1; \
 	}
 
+# The matrix of what every claim provider declares about previews, idling
+# and deploys, in docs/api/claims.md. The declarations are Go values next to
+# the provisioners (internal/provider/declarations); the page carries a
+# generated block between markers, and this target rewrites only that block.
+# The package's own test fails when the page and a fresh render differ, so
+# it runs wherever `manifests` runs.
+CLAIM_MATRIX ?= docs/api/claims.md
+
+.PHONY: claim-matrix
+claim-matrix: ## Regenerate the claim provider matrix in docs/api/claims.md.
+	go run ./hack/gen-claim-matrix -o $(CLAIM_MATRIX)
+
+.PHONY: claim-matrix-verify
+claim-matrix-verify: claim-matrix ## Fail if the generated claim matrix is out of date.
+	@git diff --exit-code -- $(CLAIM_MATRIX) || { \
+		echo "$(CLAIM_MATRIX) is out of date. Run 'make claim-matrix' and commit the result."; \
+		exit 1; \
+	}
+
 .PHONY: fmt
 fmt: ## Run go fmt against code.
 	go fmt ./...
@@ -91,7 +110,7 @@ vet: ## Run go vet against code.
 	go vet ./...
 
 .PHONY: test
-test: manifests generate ui-policy fmt vet setup-envtest ## Run tests.
+test: manifests generate ui-policy claim-matrix fmt vet setup-envtest ## Run tests.
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test $$(go list ./... | grep -v /e2e) -coverprofile cover.out
 
 # TODO(user): To use a different vendor for e2e tests, modify the setup under 'tests/e2e'.
@@ -152,7 +171,7 @@ check-commits: ## Check the commit messages this branch adds to origin/main (BAS
 ##@ Build
 
 .PHONY: build
-build: manifests generate ui-policy fmt vet ## Build the manager, preview-gate, backup and restore binaries.
+build: manifests generate ui-policy claim-matrix fmt vet ## Build the manager, preview-gate, backup and restore binaries.
 	go build -ldflags "$(LDFLAGS)" -o bin/manager cmd/main.go
 	go build -ldflags "$(LDFLAGS)" -o bin/gate cmd/gate/main.go
 	go build -ldflags "$(LDFLAGS)" -o bin/backup cmd/backup/main.go
@@ -171,7 +190,7 @@ cli-install: ## Install the kitchen CLI into GOBIN.
 	go install -ldflags "$(LDFLAGS)" ./cmd/kitchen
 
 .PHONY: run
-run: manifests generate ui-policy fmt vet ## Run a controller from your host.
+run: manifests generate ui-policy claim-matrix fmt vet ## Run a controller from your host.
 	go run ./cmd/main.go
 
 .PHONY: ui-build

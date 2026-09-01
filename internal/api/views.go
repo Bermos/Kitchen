@@ -1109,14 +1109,29 @@ func newDomainView(domain *kitchenv1alpha1.Domain) domainView {
 }
 
 type claimView struct {
-	Name             string `json:"name"`
-	Project          string `json:"project"`
-	Connection       string `json:"connection"`
-	Type             string `json:"type"`
-	Phase            string `json:"phase,omitempty"`
-	Secret           string `json:"secret,omitempty"`
-	DeletionPolicy   string `json:"deletionPolicy,omitempty"`
-	PreviewBranching bool   `json:"previewBranching"`
+	Name           string `json:"name"`
+	Project        string `json:"project"`
+	Connection     string `json:"connection"`
+	Type           string `json:"type"`
+	Phase          string `json:"phase,omitempty"`
+	Secret         string `json:"secret,omitempty"`
+	DeletionPolicy string `json:"deletionPolicy,omitempty"`
+	// PreviewMode is what a preview environment of the project binds to, as
+	// the reconciler resolved it from the provider's declaration and the
+	// claim's own choice: branch, fresh, shared or none. PreviewReason is
+	// the sentence behind it — the provider's own words, or why previews
+	// get nothing. Both are empty until the claim has been reconciled.
+	// PreviewChoice is what the claim itself asked for, empty for the
+	// provider's default.
+	PreviewMode   string `json:"previewMode,omitempty"`
+	PreviewReason string `json:"previewReason,omitempty"`
+	PreviewChoice string `json:"previewChoice,omitempty"`
+	// KeepsPodsRunning and ForcesRecreate are the provider's declarations
+	// of what the binding does to the workload that reads it: no
+	// environment reading the claim idles to zero, and the workload is
+	// deployed by recreation with a gap in serving. Absent means neither.
+	KeepsPodsRunning bool `json:"keepsPodsRunning,omitempty"`
+	ForcesRecreate   bool `json:"forcesRecreate,omitempty"`
 	// DataClass is the claim's declared sensitivity class — never above its
 	// project's, which the create refuses. Absent means unclassified.
 	DataClass string `json:"dataClass,omitempty"`
@@ -1164,7 +1179,11 @@ func newClaimView(claim *kitchenv1alpha1.ResourceClaim) claimView {
 		Phase:            string(claim.Status.Phase),
 		Secret:           claim.Status.SecretName,
 		DeletionPolicy:   string(claim.Spec.DeletionPolicy),
-		PreviewBranching: claim.PreviewBranching(),
+		PreviewMode:      claim.Status.PreviewMode,
+		PreviewReason:    claim.Status.PreviewReason,
+		PreviewChoice:    claim.PreviewChoice(),
+		KeepsPodsRunning: claim.Status.KeepsPodsRunning,
+		ForcesRecreate:   claim.Status.ForcesRecreate,
 		DataClass:        string(claim.Spec.DataClass),
 		DataProvenance:   claim.Status.DataProvenance,
 		Residency:        claim.Status.Residency,

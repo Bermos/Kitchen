@@ -598,7 +598,11 @@ func (s *Server) routes() []route {
 		{"DELETE /api/v1/domains/{name}", s.deleteDomain,
 			onProject(access.ProjectDeveloper, ofDomain, "removing a domain")},
 
-		// Claims name their project outright.
+		// Claims name their project outright. The catalogue of what can be
+		// claimed, and what each provider declares about it, is a fact about
+		// the platform and holds no credential: anyone signed in reads it,
+		// because it is what the developer choosing a dependency sees.
+		{"GET /api/v1/claim-types", s.listClaimTypes, anyCaller()},
 		{"GET /api/v1/claims", s.listClaims, acrossProjects()},
 		{"POST /api/v1/claims", s.createClaim,
 			onProject(access.ProjectDeveloper, ofProjectInBody, "claiming a resource")},

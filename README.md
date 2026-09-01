@@ -380,8 +380,9 @@ connections with create/rotate/delete — credentials go to the operator and are
 never read back — and the editable platform settings, with an operator mode
 that surfaces `status.conditions` on everything and the Kubernetes objects the
 operator materialized for an environment. Resource claims provision through
-their connection (Neon Postgres first, a DB branch per preview with
-`previewBranching`) with create/delete in the dashboard, and custom domains
+their connection (Neon Postgres first, a database of the preview's own by
+the provider's declaration — `previewMode` on the claim chooses otherwise)
+with create/delete in the dashboard, and custom domains
 attach from the environment screen — the dashboard shows the DNS record to
 create and tracks verification, certificate and routing live. A claim of type
 `oidcClient` needs no connection at all: it registers an OAuth client at the

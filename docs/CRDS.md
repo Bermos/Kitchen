@@ -1184,7 +1184,7 @@ spec:
   deletionPolicy: Retain                # Retain (default) | Delete — what deleting the claim does to the data
   dataClass: confidential               # never above the project's class; absent = unclassified
   config:
-    previewBranching: true              # a database of its own per preview Environment
+    previewMode: fresh                  # what previews get: the provider's declared mode (default), shared or none
     postgres:                           # what the database itself has to be; all of it optional
       version: "17"                     # major version; empty takes the platform's default
       extensions: [postgis, vector]     # created at bootstrap; unsuppliable ones fail the claim
@@ -1198,7 +1198,9 @@ status:
   dataProvenance: production            # the provider's declaration: production | masked | synthetic;
                                         # absent = undeclared, treated by policy as the worst case
   residency: aws-eu-central-1           # where the provider reported the resource actually is
-  branches:                             # one per preview Environment, with previewBranching
+  previewMode: fresh                    # what previews bind to, resolved: branch | fresh | shared | none
+  previewReason: a new, empty database… # the provider's own words, or why previews get nothing
+  branches:                             # one per preview Environment, under branch or fresh
     - environment: my-shop-pr-41
       id: br-def456
       secretName: shop-db-binding-my-shop-pr-41
@@ -1211,12 +1213,18 @@ until the Connection reconciler has validated it), provision through the plugin
 (`internal/provider/database` — Neon, or CloudNativePG in this cluster), and
 write the binding into a Secret in the project namespace, whose keys
 `Project.spec.env` reads via `fromResourceClaim`. A provider refusal is phase
-`Failed` with the provider's own words in the `Ready` condition. With
-`previewBranching`, preview Environments each get their own database and their own
+`Failed` with the provider's own words in the `Ready` condition. Under a
+preview mode of `branch` or `fresh` — the provider's declaration, and the
+default — preview Environments each get their own database and their own
 binding Secret (`<claim>-binding-<environment>`), which the Environment's workload
 reads instead of the shared one; the claim controller holds a finalizer on each
 branched Environment and tears database and Secret down when the preview goes — that
-plus preview URLs is the whole Vercel+Neon flow, self-hosted.
+plus preview URLs is the whole Vercel+Neon flow, self-hosted. `previewMode:
+shared` binds previews to production's own database, and has to be asked for by
+name; `none` binds them to nothing, and the Environment says so rather than
+failing. `status.keepsPodsRunning` and `status.forcesRecreate` are the
+provider's declarations about the workload, which the Environment reconciler
+acts on. [docs/api/claims.md](api/claims.md) carries the matrix.
 
 **`config.postgres` is the claim saying which Postgres it means**, because
 "Postgres" is not one thing: an application that needs PostGIS, pgvector or a
