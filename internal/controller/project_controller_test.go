@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -249,13 +250,22 @@ var _ = Describe("Project Controller", func() {
 					EnvironmentRef: kitchenv1alpha1.LocalObjectReference{Name: environment.Name},
 				},
 			}
-			claim := &kitchenv1alpha1.ResourceClaim{
-				ObjectMeta: metav1.ObjectMeta{Name: projectName + "-db", Namespace: namespace},
-				Spec: kitchenv1alpha1.ResourceClaimSpec{
-					ProjectRef:    kitchenv1alpha1.LocalObjectReference{Name: projectName},
-					ConnectionRef: &kitchenv1alpha1.LocalObjectReference{Name: "neon"},
-					Type:          "postgres",
-				},
+			// One claim of every registered type: a project's teardown must
+			// take every kind of dependency with it, not only the first one
+			// the platform learned to provision.
+			claims := make([]client.Object, 0, len(kitchenv1alpha1.ClaimTypes))
+			for _, claimType := range kitchenv1alpha1.ClaimTypes {
+				claim := &kitchenv1alpha1.ResourceClaim{
+					ObjectMeta: metav1.ObjectMeta{Name: projectName + "-" + strings.ToLower(claimType.Name), Namespace: namespace},
+					Spec: kitchenv1alpha1.ResourceClaimSpec{
+						ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: projectName},
+						Type:       claimType.Name,
+					},
+				}
+				if claimType.TakesConnection() {
+					claim.Spec.ConnectionRef = &kitchenv1alpha1.LocalObjectReference{Name: "neon"}
+				}
+				claims = append(claims, claim)
 			}
 			// A stranger's build must survive the neighbor's teardown.
 			bystander := &kitchenv1alpha1.Build{
@@ -265,7 +275,7 @@ var _ = Describe("Project Controller", func() {
 					Git:        kitchenv1alpha1.GitRevision{SHA: "abc123def456789", Branch: "main"},
 				},
 			}
-			for _, obj := range []client.Object{build, release, environment, domain, claim, bystander} {
+			for _, obj := range append([]client.Object{build, release, environment, domain, bystander}, claims...) {
 				Expect(k8sClient.Create(ctx, obj)).To(Succeed())
 			}
 			DeferCleanup(func() {
@@ -284,7 +294,7 @@ var _ = Describe("Project Controller", func() {
 				return errors.IsNotFound(k8sClient.Get(ctx, projectKey, &kitchenv1alpha1.Project{}))
 			}).Should(BeTrue(), "project should be gone after finalization")
 
-			for _, gone := range []client.Object{build, release, environment, domain, claim} {
+			for _, gone := range append([]client.Object{build, release, environment, domain}, claims...) {
 				key := types.NamespacedName{Name: gone.GetName(), Namespace: namespace}
 				err := k8sClient.Get(ctx, key, gone)
 				Expect(errors.IsNotFound(err)).To(BeTrue(), gone.GetName()+" should be garbage-collected")

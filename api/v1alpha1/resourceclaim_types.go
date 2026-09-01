@@ -44,23 +44,112 @@ const (
 
 	// ClaimTypeOIDCClient is an OAuth client at the platform's own identity
 	// provider, so that a deployed application signs its users in with the
-	// same accounts the dashboard uses. It is the one claim type with no
+	// same accounts the dashboard uses. It is a claim type with no
 	// Connection: the provider is the issuer the platform is already
 	// configured with, and the operator registers the client with the
 	// service credential it holds for it.
 	ClaimTypeOIDCClient = "oidcClient"
 )
 
+// ClaimType is what the platform knows about one kind of claim before any
+// provisioner is involved: what a Connection has to be able to do for it,
+// what to call the thing it provisions, and whether deleting it can destroy
+// data.
+//
+// It is a table rather than a set of switch statements because the same
+// three facts are needed in four places — the CRD's admission rules, the
+// claim reconciler, the REST API and the dashboard — and a type that is
+// registered once cannot be half-added. The CRD's `type` enum and its two
+// CEL rules are markers, which cannot read a Go value, so a test holds them
+// to this table instead (see resourceclaim_types_test.go).
+type ClaimType struct {
+	// Name is the value of spec.type.
+	Name string
+
+	// Capability is what a Connection must be able to do to provision this
+	// type, and the reconciler matches Connections on it — never on a
+	// provider name. Empty for a type the platform provisions itself, which
+	// is exactly the set of types that take no connectionRef.
+	Capability Capability
+
+	// Resource is the noun for what the claim provisions — "database",
+	// "OAuth client" — in every sentence the platform writes about it.
+	Resource string
+
+	// HoldsData says whether the provisioned resource holds data that
+	// spec.deletionPolicy exists to protect. A type that does not — an OAuth
+	// client holds permission to sign people in, not data — is always
+	// deprovisioned with its claim, and refuses a deletionPolicy.
+	HoldsData bool
+}
+
+// TakesConnection reports whether a claim of this type names a Connection.
+func (t ClaimType) TakesConnection() bool { return t.Capability != "" }
+
+// ClaimTypes is every kind of claim the platform admits. A new type is a row
+// here, a contract package beside internal/provider/database, and a
+// registration in the reconciler and the API; the tests on each of those
+// refuse a row without its registration and a registration without its row.
+var ClaimTypes = []ClaimType{
+	{Name: ClaimTypePostgres, Capability: CapabilityDatabase, Resource: "database", HoldsData: true},
+	{Name: ClaimTypeOIDCClient, Resource: "OAuth client"},
+}
+
+// LookupClaimType finds a claim type by the value of spec.type.
+func LookupClaimType(name string) (ClaimType, bool) {
+	for _, t := range ClaimTypes {
+		if t.Name == name {
+			return t, true
+		}
+	}
+	return ClaimType{}, false
+}
+
+// ClaimTypeNames is every admitted spec.type, in table order — what the
+// CRD's enum has to be, and what a refusal lists.
+func ClaimTypeNames() []string {
+	names := make([]string, 0, len(ClaimTypes))
+	for _, t := range ClaimTypes {
+		names = append(names, t.Name)
+	}
+	return names
+}
+
+// ClaimTypesWithoutConnection is the set of types the platform provisions
+// itself — the set the CRD's connectionRef rules are written against.
+func ClaimTypesWithoutConnection() []string {
+	names := make([]string, 0, len(ClaimTypes))
+	for _, t := range ClaimTypes {
+		if !t.TakesConnection() {
+			names = append(names, t.Name)
+		}
+	}
+	return names
+}
+
+// Type is the claim's ClaimType, and false for a type the table does not
+// know — which the CRD's enum refuses at admission, so it is reachable only
+// by an object written before the type was removed.
+func (c *ResourceClaim) Type() (ClaimType, bool) {
+	return LookupClaimType(c.Spec.Type)
+}
+
 // ResourceClaimSpec is a Project's request for a provisioned resource — a
 // Postgres database from a capable Connection, or an OAuth client from the
 // platform's own identity provider.
-// +kubebuilder:validation:XValidation:rule="self.type == 'oidcClient' || has(self.connectionRef)",message="connectionRef is required: it names the Connection that provisions the resource. Only an oidcClient claim goes without one, because the platform's own identity provider provisions it."
-// +kubebuilder:validation:XValidation:rule="self.type != 'oidcClient' || !has(self.connectionRef)",message="an oidcClient claim takes no connectionRef: the client is registered at the identity provider named by the Kitchen object's spec.auth, and a Connection here would name a provider nothing would ask."
+//
+// The two rules below are written against the set of types that take no
+// Connection — ClaimTypesWithoutConnection — rather than against a named
+// exception, and the refusal names the type it refused. The set in the
+// markers is held to the table by a test, since a marker cannot read one.
+// +kubebuilder:validation:XValidation:rule="self.type in ['oidcClient'] || has(self.connectionRef)",message="connectionRef is required: it names the Connection that provisions the resource. Only a claim the platform provisions itself goes without one.",messageExpression="'connectionRef is required: it names the Connection that provisions a ' + self.type + ' claim. Only a claim of a type the platform provisions itself (oidcClient) goes without one.'"
+// +kubebuilder:validation:XValidation:rule="!(self.type in ['oidcClient']) || !has(self.connectionRef)",message="this claim type takes no connectionRef: the platform provisions it itself, and a Connection here would name a provider nothing would ask.",messageExpression="'a ' + self.type + ' claim takes no connectionRef: the platform provisions it itself, and a Connection here would name a provider nothing would ask.'"
 type ResourceClaimSpec struct {
 	ProjectRef LocalObjectReference `json:"projectRef"`
 
 	// Connection with a capability matching Type (e.g. database). Required
-	// for every type but oidcClient, which has no Connection to name.
+	// for every type that takes one, and refused on the types the platform
+	// provisions itself — see ClaimTypes.
 	// +optional
 	ConnectionRef *LocalObjectReference `json:"connectionRef,omitempty"`
 
@@ -101,11 +190,28 @@ type ResourceClaimSpec struct {
 	DataClass DataClass `json:"dataClass,omitempty"`
 }
 
-// claimConfig is the provider-agnostic slice of spec.config the platform
-// itself reads; everything else in there belongs to the plugin.
+// claimConfig is the contract-agnostic slice of spec.config the platform
+// itself reads. Everything else in there belongs to one contract, which
+// reads its own slice through DecodeConfig — this struct names no contract,
+// so that adding one is a new package rather than a new field here.
 type claimConfig struct {
-	PreviewBranching bool            `json:"previewBranching,omitempty"`
-	Postgres         *PostgresConfig `json:"postgres,omitempty"`
+	PreviewBranching bool `json:"previewBranching,omitempty"`
+}
+
+// DecodeConfig reads spec.config into v, and reports whether there was a
+// readable config to decode. A claim with no config, or one the platform
+// cannot read, leaves v as it was and answers false: the API validates a
+// config before it is written, and a claim that reached the cluster another
+// way is better provisioned plainly than not at all.
+//
+// It is the one door to spec.config. A contract reads its own slice through
+// it — the postgres block, the oidcClient block — and the platform reads
+// claimConfig, and neither has to know what else is in there.
+func (c *ResourceClaim) DecodeConfig(v any) bool {
+	if c.Spec.Config == nil || len(c.Spec.Config.Raw) == 0 {
+		return false
+	}
+	return json.Unmarshal(c.Spec.Config.Raw, v) == nil
 }
 
 // PostgresConfig is the `postgres` slice of a postgres claim's spec.config:
@@ -203,10 +309,8 @@ var DefaultOIDCScopes = []string{"openid", "profile", "email", "offline_access"}
 // than not at all.
 func (c *ResourceClaim) OIDCClient() OIDCClientConfig {
 	cfg := OIDCClientConfig{}
-	if c.Spec.Config != nil && len(c.Spec.Config.Raw) > 0 {
-		if err := json.Unmarshal(c.Spec.Config.Raw, &cfg); err != nil {
-			cfg = OIDCClientConfig{}
-		}
+	if !c.DecodeConfig(&cfg) {
+		cfg = OIDCClientConfig{}
 	}
 	if len(cfg.CallbackPaths) == 0 {
 		cfg.CallbackPaths = DefaultOIDCCallbackPaths
@@ -230,11 +334,8 @@ func (c *ResourceClaim) Connection() string {
 // preview Environment. Config the platform cannot read counts as off — the
 // plugin's own validation is where a malformed config becomes an error.
 func (c *ResourceClaim) PreviewBranching() bool {
-	if c.Spec.Config == nil || len(c.Spec.Config.Raw) == 0 {
-		return false
-	}
 	var cfg claimConfig
-	if err := json.Unmarshal(c.Spec.Config.Raw, &cfg); err != nil {
+	if !c.DecodeConfig(&cfg) {
 		return false
 	}
 	return cfg.PreviewBranching
@@ -246,11 +347,13 @@ func (c *ResourceClaim) PreviewBranching() bool {
 // before it is written, and a claim that reached the cluster another way is
 // better provisioned plainly than not at all.
 func (c *ResourceClaim) Postgres() PostgresConfig {
-	if c.Spec.Type != ClaimTypePostgres || c.Spec.Config == nil || len(c.Spec.Config.Raw) == 0 {
+	if c.Spec.Type != ClaimTypePostgres {
 		return PostgresConfig{}
 	}
-	var cfg claimConfig
-	if err := json.Unmarshal(c.Spec.Config.Raw, &cfg); err != nil || cfg.Postgres == nil {
+	var cfg struct {
+		Postgres *PostgresConfig `json:"postgres,omitempty"`
+	}
+	if !c.DecodeConfig(&cfg) || cfg.Postgres == nil {
 		return PostgresConfig{}
 	}
 	return *cfg.Postgres

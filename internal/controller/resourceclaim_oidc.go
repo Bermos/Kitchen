@@ -48,7 +48,8 @@ const oidcProviderName = "kitchen"
 // people in at, and the same accounts.
 //
 // It is the second claim type, and it is deliberately the same shape as the
-// first: a claim binds to a Secret in the application namespace, and
+// first (resourceclaim_postgres.go): a claim binds to a Secret in the
+// application namespace, and
 // `fromResourceClaim` puts that Secret's keys into the application's
 // environment. Nothing about consuming a claim had to learn a new concept.
 //
@@ -99,6 +100,30 @@ const (
 // out an hour after they signed in, and the issuer only mints a refresh token
 // for a client that asked to be able to use one.
 var oidcGrantTypes = []string{"authorization_code", "refresh_token"}
+
+// oidcContract is the claimContract for type oidcClient. The platform is
+// its own provider here, so conn is always nil and never read.
+type oidcContract struct{}
+
+func (oidcContract) reconcile(
+	ctx context.Context,
+	r *ResourceClaimReconciler,
+	claim *kitchenv1alpha1.ResourceClaim,
+	project *kitchenv1alpha1.Project,
+	_ *kitchenv1alpha1.Connection,
+) (ctrl.Result, error) {
+	return r.reconcileOIDCClaim(ctx, claim, project)
+}
+
+// finalize deregisters the client. No Connection, no branches, and nothing
+// deletionPolicy has a say over: what goes is the OAuth client, always.
+func (oidcContract) finalize(
+	ctx context.Context,
+	r *ResourceClaimReconciler,
+	claim *kitchenv1alpha1.ResourceClaim,
+) error {
+	return r.deregisterOIDCClient(ctx, claim)
+}
 
 // reconcileOIDCClaim drives an oidcClient claim to Bound: register the client
 // if it is not registered, write the binding the application reads, and keep
