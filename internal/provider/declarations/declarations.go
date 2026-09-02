@@ -34,6 +34,7 @@ import (
 	"strings"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/provider/cache"
 	"github.com/Bermos/Kitchen/internal/provider/contract"
 	"github.com/Bermos/Kitchen/internal/provider/database"
 	"github.com/Bermos/Kitchen/internal/provider/inngest"
@@ -87,6 +88,9 @@ func Lookup(claimType, provider string) (contract.Declaration, bool) {
 	case kitchenv1alpha1.ClaimTypeInngest:
 		declaration, ok := inngest.Declarations[provider]
 		return declaration, ok
+	case kitchenv1alpha1.ClaimTypeRedis:
+		declaration, ok := cache.Declarations[provider]
+		return declaration, ok
 	}
 	return contract.Declaration{}, false
 }
@@ -106,6 +110,8 @@ func providersOf(claimType string) []string {
 		return []string{volume.ProviderName}
 	case kitchenv1alpha1.ClaimTypeInngest:
 		return []string{inngest.ProviderCloud}
+	case kitchenv1alpha1.ClaimTypeRedis:
+		return []string{cache.ProviderValkey, cache.ProviderRedis}
 	}
 	return nil
 }

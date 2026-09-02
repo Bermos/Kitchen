@@ -34,6 +34,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/provider/cache"
 	"github.com/Bermos/Kitchen/internal/provider/objectstore"
 )
 
@@ -141,6 +142,8 @@ func Default(conn *kitchenv1alpha1.Connection, creds *corev1.Secret) (Probe, err
 		return newRegistryProbe(conn, creds)
 	case objectstore.ProviderS3:
 		return newS3Probe(conn, creds)
+	case cache.ProviderRedis:
+		return newRedisProbe(creds)
 	default:
 		return nil, fmt.Errorf("%w: %s", ErrNotImplemented, conn.Spec.Provider)
 	}
@@ -168,6 +171,8 @@ func Capabilities(providerName string) []kitchenv1alpha1.Capability {
 		return []kitchenv1alpha1.Capability{kitchenv1alpha1.CapabilityObjectStore}
 	case "inngest":
 		return []kitchenv1alpha1.Capability{kitchenv1alpha1.CapabilityBackgroundJobs}
+	case cache.ProviderValkey, cache.ProviderRedis:
+		return []kitchenv1alpha1.Capability{kitchenv1alpha1.CapabilityCache}
 	default:
 		return nil
 	}

@@ -22,10 +22,10 @@ operator stores it in a Secret it manages, and every response is the same
 credential-free view `GET` answers.
 
 The providers are `github`, `gitlab`, `gitea`, `dockerRegistry`, `neon`,
-`cnpg`, `s3` and `inngest`. **`cnpg` is the one with no credential at all** — it provisions
-Postgres into this cluster with the operator's own service account, so there
-is nothing to store, nothing to rotate, and a `credential` sent for it is
-refused rather than kept and never read:
+`cnpg`, `s3`, `inngest`, `valkey` and `redis`. **`cnpg` and `valkey` are the two with no
+credential at all** — they provision into this cluster with the operator's own
+service account, so there is nothing to store, nothing to rotate, and a
+`credential` sent for either is refused rather than kept and never read:
 
 ```sh
 curl -sS -X POST -H "authorization: Bearer $TOKEN" \
@@ -151,6 +151,37 @@ one environment reads nothing in the others, and previews need the branch
 environments. It is validated with `GET /account`, and the connection reports
 the `backgroundJobs` capability.
 
+A `valkey` connection is the in-cluster cache: the operator runs one Valkey per
+claim through it, under its own service account, so it takes no credential.
+Its `config` is optional and is the operator's defaults for every claim through
+it: `namespace` (where the instances run, `kitchen-caches` by default),
+`maxMemory`, `storageSize` and `storageClass` (the volume a `queue` gets — a
+`cache` gets none), and `images`, the catalogue of what this installation will
+run a cache from. Testing it asks nothing of a provider, because there is none
+to ask: it is accepted, and the claims through it report what they found.
+
+A `redis` connection is a server somebody else runs — Upstash, ElastiCache,
+Aiven, or a Valkey a team already has. Its whole credential is the URL, because
+a Redis address carries its own password:
+
+```json
+{"name": "upstash", "provider": "redis",
+ "credential": {"url": "rediss://:password@eu2-x.upstash.io:6379"}}
+```
+
+The scheme is `redis://` or `rediss://` and nothing else — `rediss` is the
+encrypted one, and the binding tells the application which it got rather than
+letting it guess. Its `config` says what the operator knows about the server
+and the provisioner will not guess:
+
+| Field | Default | What it does |
+|---|---|---|
+| `usage` | unset | What the server's `maxmemory-policy` is configured for: `cache` for an evicting server, `queue` for one that refuses writes when it is full. Left unset, a claim naming a `usage` is **refused** — a queue bound to an evicting server loses jobs silently, and that is the incident this contract exists to prevent |
+| `databases` | `16` | How many logical databases the server offers. A claim gets one and every preview of it gets another, so a claim whose preview would run past the last is refused rather than bound to a keyspace the server rejects |
+
+Testing it dials the server and authenticates — `PING`, and the server's own
+`+PONG`. Both providers report the `cache` capability.
+
 `POST /connections/test` runs that credential past the provider **without
 storing anything**: no Secret is written and no connection is created, so a
 token that turns out to be wrong leaves nothing to clean up. It takes the same
@@ -229,7 +260,7 @@ who still has a repository to name:
 
 | Answer | What it means |
 |---|---|
-| `"supported": false` | The provider has no listing behind it — today, that means `dockerRegistry`, `neon`, `inngest`, `gitlab`, or `gitea`. `message` says which |
+| `"supported": false` | The provider has no listing behind it — today, that means `dockerRegistry`, `neon`, `inngest`, `valkey`, `redis`, `gitlab`, or `gitea`. `message` says which |
 | `"truncated": true` | The credential can see more than the listing carries. It stops at 500, most recently pushed first |
 | `502` | The provider refused or could not be reached; the body carries its own words — a token that has expired says so here |
 

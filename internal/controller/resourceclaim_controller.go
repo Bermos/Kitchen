@@ -37,6 +37,7 @@ import (
 	"github.com/Bermos/Kitchen/internal/activity"
 	"github.com/Bermos/Kitchen/internal/audit"
 	"github.com/Bermos/Kitchen/internal/clickhouse"
+	"github.com/Bermos/Kitchen/internal/provider/cache"
 	"github.com/Bermos/Kitchen/internal/provider/database"
 	"github.com/Bermos/Kitchen/internal/provider/inngest"
 	"github.com/Bermos/Kitchen/internal/provider/objectstore"
@@ -80,6 +81,9 @@ type ResourceClaimReconciler struct {
 	// inngest contract. Defaults to inngest.Default; tests inject providers
 	// pointed at httptest.
 	Inngest inngest.Factory
+	// Caches resolves a cache Provisioner for a Connection, for the redis
+	// contract. Defaults to cache.Default; tests inject their own.
+	Caches cache.Factory
 	// Audit appends this reconciler's state transitions to the tamper-evident
 	// log. Unlike Activity it is waited on: a transition it refuses is a
 	// transition this reconciler does not make. May be nil.

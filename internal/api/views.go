@@ -1132,6 +1132,11 @@ type claimView struct {
 	// deployed by recreation with a gap in serving. Absent means neither.
 	KeepsPodsRunning bool `json:"keepsPodsRunning,omitempty"`
 	ForcesRecreate   bool `json:"forcesRecreate,omitempty"`
+	// Redis is what a redis claim asked its instance to be — the usage, the
+	// memory limit, the version. Absent when it asked for nothing in
+	// particular.
+	Redis *claimRedisView `json:"redis,omitempty"`
+
 	// DataClass is the claim's declared sensitivity class — never above its
 	// project's, which the create refuses. Absent means unclassified.
 	DataClass string `json:"dataClass,omitempty"`

@@ -59,6 +59,7 @@ const typeOptions = [
   { label: "oidcClient — single sign-on from the platform", value: "oidcClient" },
   { label: "volume — a persistent disk mounted into one process", value: "volume" },
   { label: "inngest — durable background work from Inngest Cloud", value: "inngest" },
+  { label: "redis — a cache or a queue from a connection", value: "redis" },
 ];
 const isOIDC = computed(() => type.value === "oidcClient");
 const isPostgres = computed(() => type.value === "postgres");
@@ -86,6 +87,30 @@ function objectStoreRequest() {
 const isVolume = computed(() => type.value === "volume");
 
 const isInngest = computed(() => type.value === "inngest");
+const isRedis = computed(() => type.value === "redis");
+
+// The redis half. `usage` is the only one that is really a choice: a cache
+// may evict what it holds when it fills up and a queue may not, and an
+// application handed the wrong one loses work without being told. It is
+// asked here rather than defaulted quietly for that reason.
+const redisUsage = ref("cache");
+const redisMaxMemory = ref("");
+const redisVersion = ref("");
+
+const redisUsageOptions = [
+  { label: "cache — may evict what it holds when it fills up", value: "cache" },
+  { label: "queue — must not; the write fails instead", value: "queue" },
+];
+
+/** The redis block as the API takes it. `usage` always goes, because the
+ * developer chose it here rather than inheriting a default they never saw. */
+function redisRequest() {
+  return {
+    usage: redisUsage.value,
+    ...(redisMaxMemory.value.trim() ? { maxMemory: redisMaxMemory.value.trim() } : {}),
+    ...(redisVersion.value.trim() ? { version: redisVersion.value.trim() } : {}),
+  };
+}
 
 // The inngest half. The app ID is the one thing the application has to
 // match — its Inngest client is created with it — and the environment is
@@ -309,6 +334,9 @@ watch(open, (value) => {
   volMountPath.value = "";
   volSize.value = "";
   volStorageClass.value = "";
+  redisUsage.value = "cache";
+  redisMaxMemory.value = "";
+  redisVersion.value = "";
   inngestApp.value = "";
   inngestEnvironment.value = "";
   void loadConnections();
@@ -373,6 +401,7 @@ async function save() {
         deletionPolicy: deletionPolicy.value,
         ...(isPostgres.value && postgresRequest() ? { postgres: postgresRequest() } : {}),
         ...(isObjectStore.value && objectStoreRequest() ? { objectStore: objectStoreRequest() } : {}),
+        ...(isRedis.value ? { redis: redisRequest() } : {}),
         ...(dataClass.value ? { dataClass: dataClass.value } : {}),
       };
     }
@@ -388,7 +417,9 @@ async function save() {
             ? "i-lucide-hard-drive"
           : isInngest.value
             ? "i-lucide-workflow"
-            : "i-lucide-database",
+            : isRedis.value
+              ? "i-lucide-zap"
+              : "i-lucide-database",
     });
     open.value = false;
     emit("saved");
@@ -632,6 +663,39 @@ async function save() {
             "
             :description="declaration?.workloadNote"
           />
+
+          <template v-if="isRedis">
+            <UFormField
+              label="What it is for"
+              help="A cache may evict what it holds when it fills up; a queue may not — the write fails instead, where the application can retry."
+              required
+            >
+              <USelect v-model="redisUsage" :items="redisUsageOptions" class="w-full" />
+            </UFormField>
+            <UAlert
+              v-if="redisUsage === 'queue'"
+              color="neutral"
+              variant="subtle"
+              icon="i-lucide-shield-check"
+              title="This instance will refuse writes rather than drop work"
+              description="A queue keeps what is in it on disk and stops accepting writes when it is full. That is the point: a queue that evicts loses jobs and reports nothing."
+            />
+            <div class="grid gap-4 sm:grid-cols-2">
+              <UFormField label="Max memory" help="A Kubernetes quantity. Empty takes the platform's default.">
+                <UInput v-model="redisMaxMemory" placeholder="512Mi" class="w-full font-mono" />
+              </UFormField>
+              <UFormField label="Valkey version" help="A major version. Empty takes the platform's default.">
+                <UInput v-model="redisVersion" placeholder="8" class="w-full font-mono" />
+              </UFormField>
+            </div>
+            <p class="text-xs text-muted">
+              The secret carries <span class="font-mono">url</span>, <span class="font-mono">host</span>,
+              <span class="font-mono">port</span>, <span class="font-mono">password</span> and
+              <span class="font-mono">tls</span>. A connection to a server the platform does not run cannot be
+              asked for any of this and refuses the claim saying so, rather than binding a server that will not
+              behave the way the claim assumed.
+            </p>
+          </template>
 
           <template v-if="isObjectStore">
             <div class="grid gap-4 sm:grid-cols-2">

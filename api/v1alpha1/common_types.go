@@ -386,7 +386,7 @@ func (m TLSMode) Scheme() string {
 
 // Capability is an abstract feature a Connection provider implements. The
 // operator matches on capabilities, never on provider names.
-// +kubebuilder:validation:Enum=gitSource;statusChecks;imageStore;database;objectStore;backgroundJobs
+// +kubebuilder:validation:Enum=gitSource;statusChecks;imageStore;database;objectStore;backgroundJobs;cache
 type Capability string
 
 const (
@@ -401,4 +401,8 @@ const (
 	// sleeps, fan-out, cron — run by a service the application's worker
 	// connects out to. An inngest claim is provisioned through it.
 	CapabilityBackgroundJobs Capability = "backgroundJobs"
+	// CapabilityCache is a Redis-speaking server a redis claim is
+	// provisioned from: somewhere to put what an application can afford to
+	// recompute, or work it cannot afford to lose.
+	CapabilityCache Capability = "cache"
 )

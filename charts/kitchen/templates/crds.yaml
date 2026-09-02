@@ -1648,6 +1648,8 @@ spec:
                 - cnpg
                 - s3
                 - inngest
+                - valkey
+                - redis
                 type: string
             required:
             - provider
@@ -1660,8 +1662,8 @@ spec:
                 Secret holding the credential of a '' + self.provider + '' connection.
                 Only a provider that provisions into this cluster with the account
                 the operator itself holds (cnpg) goes without one.'''
-              rule: self.provider in ['cnpg'] || (has(self.credentialsSecretRef) &&
-                has(self.credentialsSecretRef.name) && size(self.credentialsSecretRef.name)
+              rule: self.provider in ['cnpg', 'valkey'] || (has(self.credentialsSecretRef)
+                && has(self.credentialsSecretRef.name) && size(self.credentialsSecretRef.name)
                 > 0)
             - message: 'this provider takes no credentialsSecretRef: it provisions
                 into this cluster with the operator''s own account, and a Secret here
@@ -1670,7 +1672,7 @@ spec:
                 credentialsSecretRef: it provisions into this cluster with the account
                 the operator itself holds, and a Secret here would name a credential
                 nothing reads.'''
-              rule: '!(self.provider in [''cnpg'']) || !has(self.credentialsSecretRef)
+              rule: '!(self.provider in [''cnpg'', ''valkey'']) || !has(self.credentialsSecretRef)
                 || !has(self.credentialsSecretRef.name) || size(self.credentialsSecretRef.name)
                 == 0'
           status:
@@ -1691,6 +1693,7 @@ spec:
                   - database
                   - objectStore
                   - backgroundJobs
+                  - cache
                   type: string
                 type: array
               conditions:
@@ -7279,6 +7282,7 @@ spec:
                 - objectStore
                 - volume
                 - inngest
+                - redis
                 type: string
                 x-kubernetes-validations:
                 - message: 'type is immutable: delete the claim and ask for the other

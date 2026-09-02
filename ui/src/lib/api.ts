@@ -1545,6 +1545,16 @@ export interface ClaimInngest {
   mode: string;
 }
 
+/** What a redis claim asked its instance to be. `usage` is the one that
+ * matters: a cache may evict what it holds when it fills up and a queue may
+ * not, and an application handed the wrong one loses work without being
+ * told. */
+export interface ClaimRedis {
+  usage?: string;
+  maxMemory?: string;
+  version?: string;
+}
+
 export interface Claim {
   name: string;
   project: string;
@@ -1583,6 +1593,9 @@ export interface Claim {
    * recreation with a gap in serving. Absent means neither. */
   keepsPodsRunning?: boolean;
   forcesRecreate?: boolean;
+  /** What a redis claim asked its instance to be. Absent when it asked for
+   * nothing in particular. */
+  redis?: ClaimRedis;
   /** What a postgres claim asked the database itself to be. Absent when it
    * asked for nothing in particular, which is most of them. Whether it was
    * granted is the phase and the conditions: a claim asking for an extension
@@ -1667,6 +1680,9 @@ export interface NewClaim {
   redirectURIs?: string[];
   /** oidcClient only: what the client may ask the issuer for. */
   scopes?: string[];
+  /** redis only: what the instance is for, how much memory it may use, and
+   * which Valkey. */
+  redis?: ClaimRedis;
 }
 
 export interface Settings {
