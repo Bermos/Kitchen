@@ -1,14 +1,11 @@
 # Kitchen — Claims
 
 A claim asks the platform for something the project needs and does not want
-to install itself — a database, a bucket, single sign-on, a disk — and binds
-it into the project's environments. The credentials it produces stay in the
-cluster: the API hands out the claim's status, never the secret's contents. A
-volume produces no credential at all, only a mount.
-to install itself — a database, a bucket, single sign-on, durable background
-work — and binds it into the project's environments. The credentials it
-produces stay in the cluster:
-the API hands out the claim's status, never the secret's contents.
+to install itself — a database, a cache or a queue, a bucket, a disk, single
+sign-on, durable background work — and binds it into the project's
+environments. The credentials it produces stay in the cluster: the API hands
+out the claim's status, never the secret's contents. A volume produces no
+credential at all, only a mount.
 
 Part of the [REST API](../API.md), which carries the authentication, the
 authorization model and the full route table these sections belong to. The

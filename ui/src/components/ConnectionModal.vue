@@ -33,6 +33,8 @@ const providers = [
   { label: "CloudNativePG — Postgres the platform runs itself", value: "cnpg" },
   { label: "S3-compatible object store — MinIO, AWS S3, Cloudflare R2", value: "s3" },
   { label: "Inngest Cloud — durable background work", value: "inngest" },
+  { label: "Valkey — a cache the platform runs itself", value: "valkey" },
+  { label: "Redis — a cache or queue somewhere else: Upstash, ElastiCache, Aiven", value: "redis" },
 ];
 
 const name = ref("");
@@ -54,13 +56,21 @@ const s3ForcePathStyle = ref(false);
 const s3ScopedCredentials = ref(true);
 const accessKeyId = ref("");
 const secretAccessKey = ref("");
+// A redis server's whole credential is its URL: the address and the password
+// are the same string, and the scheme decides whether the connection is
+// encrypted.
+const redisURL = ref("");
 
-// The one provider with nothing to store: CloudNativePG provisions with the
-// operator's own account, so there is no credential, no field for one, and a
-// credential sent anyway is refused rather than kept and never read.
-const needsCredential = computed(() => provider.value !== "cnpg");
+// The two providers with nothing to store: CloudNativePG and the in-cluster
+// Valkey provision with the operator's own account, so there is no
+// credential, no field for one, and a credential sent anyway is refused
+// rather than kept and never read.
+const needsCredential = computed(() => provider.value !== "cnpg" && provider.value !== "valkey");
 const isS3 = computed(() => provider.value === "s3");
-const usesToken = computed(() => needsCredential.value && provider.value !== "dockerRegistry" && !isS3.value);
+const isRedis = computed(() => provider.value === "redis");
+const usesToken = computed(
+  () => needsCredential.value && provider.value !== "dockerRegistry" && !isS3.value && !isRedis.value,
+);
 
 const guidance = computed(() => providerGuidance(provider.value, apiURL.value));
 
@@ -81,6 +91,7 @@ watch(open, (value) => {
   s3ScopedCredentials.value = true;
   accessKeyId.value = "";
   secretAccessKey.value = "";
+  redisURL.value = "";
   testResult.value = null;
   testError.value = "";
 });
@@ -88,6 +99,7 @@ watch(open, (value) => {
 const credentialGiven = computed(() => {
   if (!needsCredential.value) return false;
   if (isS3.value) return Boolean(accessKeyId.value && secretAccessKey.value);
+  if (isRedis.value) return Boolean(redisURL.value);
   return usesToken.value ? Boolean(token.value) : Boolean(username.value && password.value);
 });
 
@@ -117,6 +129,7 @@ const config = computed(() => {
 
 const credential = computed(() => {
   if (isS3.value) return { accessKeyId: accessKeyId.value, secretAccessKey: secretAccessKey.value };
+  if (isRedis.value) return { url: redisURL.value.trim() };
   return usesToken.value ? { token: token.value } : { username: username.value, password: password.value };
 });
 
@@ -134,7 +147,7 @@ const testable = computed(() => credentialGiven.value || editing.value || !needs
 
 // Any change to what would be tested makes the old verdict stale.
 watch(
-  [provider, token, username, password, registryURL, apiURL, s3Endpoint, s3Region, s3ForcePathStyle, s3ScopedCredentials, accessKeyId, secretAccessKey],
+  [provider, token, username, password, registryURL, apiURL, s3Endpoint, s3Region, s3ForcePathStyle, s3ScopedCredentials, accessKeyId, secretAccessKey, redisURL],
   () => {
     testResult.value = null;
     testError.value = "";
@@ -269,6 +282,24 @@ async function save() {
             <USwitch v-model="s3ScopedCredentials" />
           </UFormField>
         </template>
+
+        <!-- A redis server's whole credential is its URL, so it is asked for
+             as one field rather than a host and a password that would have to
+             be recombined. rediss:// is the encrypted one, and the binding
+             tells the application which it got. -->
+        <UFormField
+          v-if="isRedis"
+          label="Server URL"
+          help="redis:// or rediss:// — rediss is the encrypted one. The password is part of the URL."
+          :required="!editing"
+        >
+          <UInput
+            v-model="redisURL"
+            type="password"
+            placeholder="rediss://:password@eu2-x.upstash.io:6379"
+            class="w-full font-mono"
+          />
+        </UFormField>
 
         <UFormField
           v-if="usesToken"

@@ -1022,8 +1022,12 @@ cannot write it carries on and exchanges every time.
   `POST /connections` made `credential` optional, and neither is a route.
   The `volume` claim type is the same decision a third time: one required
   nested object on `POST /claims`, no new route, and `kitchen api POST
-  /claims` carries it. Asking for a database with an extension is one line
-  as it is:
+  /claims` carries it. So are `objectStore`, `inngest` and `redis`, which
+  between them added five claim types to that route and not one route — which
+  is the point of a claim type being a row in a table rather than a surface of
+  its own. `kitchen env set --from-claim` already reads any of their bindings
+  by name, and it did not have to learn what a bucket or a queue is to do it.
+  Asking for a database with an extension is one line as it is:
 
   ```sh
   kitchen api POST /claims --data '{"name":"maps-db","project":"maps",
@@ -1035,6 +1039,23 @@ cannot write it carries on and exchanges every time.
   A claim refused for an extension nothing can supply answers `Failed` with
   the reason in its `Ready` condition, which is on that same JSON — so the
   refusal reaches a terminal without a command being written for it.
+- **`kitchen addons`.** The one surface here that *did* add routes — five of
+  them, `GET`, `POST`, `PATCH` and `DELETE` under `/addons` — and still gets
+  no command, which is a decision rather than an omission by default. What an
+  addon is, is a dependency the platform installs into its own cluster: that
+  sits beside installing the chart and following the bootstrap link, in the
+  cluster-bootstrap exception, and it is the operator's rather than something
+  anybody does in the normal running of a project. Turning one on is one
+  line, and reading what the cluster has is another:
+
+  ```sh
+  kitchen api GET /addons | jq '.items[] | {id, permitted, serving, managed}'
+  kitchen api PATCH /addons/cloudnative-pg --data '{"install":true}'
+  ```
+
+  The refusal an unpermitted entry answers with names the chart value that
+  would permit it, and setting that value is a `helm upgrade` — which is not
+  something a CLI command could have finished either.
 - **`kitchen update`.** The platform's own upgrade — `GET /updates`,
   `POST /updates`, `GET /updates/{name}` and now
   `GET /updates/{name}/logs` — has no command family here, deliberately.
