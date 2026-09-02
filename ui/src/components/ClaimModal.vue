@@ -7,12 +7,20 @@ import { may } from "../lib/policy";
 
 // The create flow for resource claims: ask for something the project needs
 // and let the platform provision it. Three kinds today — a database from a
-// database-capable connection, a bucket from an object store, and an OAuth
-// client from the platform's own identity provider. The binding credentials stay in the cluster either way:
-// the reconciler writes them into a secret the project's env vars reference,
-// and nothing here ever sees them.
+// database-capable connection, a bucket from an object store, an OAuth client
+// from the platform's own identity provider, and a persistent volume mounted
+// into one of the project's processes. The binding credentials of the first
+// three stay in the cluster: the reconciler writes them into a secret the
+// project's env vars reference, and nothing here ever sees them. The volume
+// produces a mount rather than a credential, and the one thing it has to say
+// up front is what it costs the process that mounts it.
 
-const props = defineProps<{ project: string }>();
+const props = defineProps<{
+  project: string;
+  /** The names of the project's declared processes, for the volume picker.
+   * The web process is implicit and always offered. */
+  processes?: string[];
+}>();
 const emit = defineEmits<{ saved: [] }>();
 
 const toast = useToast();
@@ -35,15 +43,16 @@ const dataClassOptions = [
   ...DATA_CLASSES.map((value) => ({ label: value, value: value as string })),
 ];
 
-// The three things the platform provisions. A database and a bucket come
-// from a connection somebody configured; an OAuth client comes from the
-// identity provider the platform already runs, which is why it asks for no
-// connection.
+// The four things the platform provisions. A database and a bucket come from
+// a connection somebody configured; an OAuth client comes from the identity
+// provider the platform already runs; a volume comes from the cluster's own
+// storage — which is why the last two ask for no connection.
 const type = ref("postgres");
 const typeOptions = [
   { label: "postgres — a database from a connection", value: "postgres" },
   { label: "objectStore — a bucket from a connection", value: "objectStore" },
   { label: "oidcClient — single sign-on from the platform", value: "oidcClient" },
+  { label: "volume — a persistent disk mounted into one process", value: "volume" },
 ];
 const isOIDC = computed(() => type.value === "oidcClient");
 const isPostgres = computed(() => type.value === "postgres");
@@ -68,6 +77,7 @@ function objectStoreRequest() {
   };
   return Object.keys(block).length ? block : undefined;
 }
+const isVolume = computed(() => type.value === "volume");
 
 // The oidcClient half. All three are lists typed as free text, because all
 // three are usually left alone: the defaults are what the help text says, and
@@ -94,6 +104,19 @@ const pgVersion = ref("");
 const pgExtensions = ref("");
 const pgStorageSize = ref("");
 const pgStorageClass = ref("");
+
+// The volume half: which process mounts it, where, and what it has to be.
+// The process is the one thing a volume claim cannot go without — a volume
+// attaches to one copy of a process at a time, and every process of the
+// environment would otherwise want it.
+const volProcess = ref("web");
+const volMountPath = ref("");
+const volSize = ref("");
+const volStorageClass = ref("");
+const processOptions = computed(() => [
+  { label: "web — the web process", value: "web" },
+  ...(props.processes ?? []).map((process) => ({ label: process, value: process })),
+]);
 
 // The majors CloudNativePG publishes images for, newest first. Empty takes the
 // platform's own default, which is what most claims want.
@@ -127,6 +150,15 @@ const policyOptions = computed(() => [
   { label: `Retain — keep the ${resourceNoun.value} when the claim is deleted`, value: "Retain" },
   { label: `Delete — destroy the ${resourceNoun.value} and its data with the claim`, value: "Delete" },
 ]);
+/** The volume block as the API takes it. */
+function volumeRequest() {
+  return {
+    process: volProcess.value,
+    size: volSize.value.trim(),
+    mountPath: volMountPath.value.trim(),
+    ...(volStorageClass.value.trim() ? { storageClass: volStorageClass.value.trim() } : {}),
+  };
+}
 
 const connectionsLoaded = ref(false);
 // The catalogue of what can be claimed and what each provider declares,
@@ -239,47 +271,76 @@ watch(open, (value) => {
   bucketVersioning.value = false;
   bucketPublicRead.value = false;
   bucketSize.value = "";
+  volProcess.value = "web";
+  volMountPath.value = "";
+  volSize.value = "";
+  volStorageClass.value = "";
   void loadConnections();
   void loadClaimTypes();
 });
 
-const ready = computed(() => Boolean(name.value && (isOIDC.value || connection.value)));
+const ready = computed(() => {
+  if (!name.value) return false;
+  if (isOIDC.value) return true;
+  if (isVolume.value) return Boolean(volProcess.value && volSize.value.trim() && volMountPath.value.trim());
+  return Boolean(connection.value);
+});
 
 const saving = ref(false);
 async function save() {
   if (!ready.value || saving.value) return;
   saving.value = true;
   try {
-    // Each type sends its own fields and none of the other's: the API
+    // Each type sends its own fields and none of the others': the API
     // refuses a request that mixes them, because a claim that quietly
     // ignored half of what it was asked for is worse than one that says so.
-    const claim: NewClaim = isOIDC.value
-      ? {
-          name: name.value,
-          project: props.project,
-          connection: "",
-          type: type.value,
-          callbackPaths: entries(callbackPaths.value),
-          redirectURIs: entries(extraRedirectURIs.value),
-          scopes: entries(scopes.value),
-          ...(dataClass.value ? { dataClass: dataClass.value } : {}),
-        }
-      : {
-          name: name.value,
-          project: props.project,
-          connection: connection.value,
-          type: type.value,
-          ...(previewMode.value ? { previewMode: previewMode.value } : {}),
-          deletionPolicy: deletionPolicy.value,
-          ...(isPostgres.value && postgresRequest() ? { postgres: postgresRequest() } : {}),
-          ...(isObjectStore.value && objectStoreRequest() ? { objectStore: objectStoreRequest() } : {}),
-          ...(dataClass.value ? { dataClass: dataClass.value } : {}),
-        };
+    let claim: NewClaim;
+    if (isOIDC.value) {
+      claim = {
+        name: name.value,
+        project: props.project,
+        connection: "",
+        type: type.value,
+        callbackPaths: entries(callbackPaths.value),
+        redirectURIs: entries(extraRedirectURIs.value),
+        scopes: entries(scopes.value),
+        ...(dataClass.value ? { dataClass: dataClass.value } : {}),
+      };
+    } else if (isVolume.value) {
+      claim = {
+        name: name.value,
+        project: props.project,
+        connection: "",
+        type: type.value,
+        volume: volumeRequest(),
+        ...(previewMode.value ? { previewMode: previewMode.value } : {}),
+        deletionPolicy: deletionPolicy.value,
+        ...(dataClass.value ? { dataClass: dataClass.value } : {}),
+      };
+    } else {
+      claim = {
+        name: name.value,
+        project: props.project,
+        connection: connection.value,
+        type: type.value,
+        ...(previewMode.value ? { previewMode: previewMode.value } : {}),
+        deletionPolicy: deletionPolicy.value,
+        ...(isPostgres.value && postgresRequest() ? { postgres: postgresRequest() } : {}),
+        ...(isObjectStore.value && objectStoreRequest() ? { objectStore: objectStoreRequest() } : {}),
+        ...(dataClass.value ? { dataClass: dataClass.value } : {}),
+      };
+    }
     const created = await api.createClaim(claim);
     toast.add({
       title: `Claim ${created.name} created`,
       color: "success",
-      icon: isOIDC.value ? "i-lucide-key-round" : isObjectStore.value ? "i-lucide-folder-archive" : "i-lucide-database",
+      icon: isOIDC.value
+        ? "i-lucide-key-round"
+        : isObjectStore.value
+          ? "i-lucide-folder-archive"
+          : isVolume.value
+            ? "i-lucide-hard-drive"
+            : "i-lucide-database",
     });
     open.value = false;
     emit("saved");
@@ -299,7 +360,7 @@ async function save() {
   <UModal
     v-model:open="open"
     title="New resource claim"
-    :description="`Ask the platform to provision something for ${props.project}. The credentials land in a secret the project's env vars can reference — they are never shown here.`"
+    :description="`Ask the platform to provision something for ${props.project}. Credentials land in a secret the project's env vars can reference — they are never shown here; a volume lands as a mount.`"
   >
     <slot>
       <UButton icon="i-lucide-plus" size="sm">New claim</UButton>
@@ -350,6 +411,67 @@ async function save() {
           <p class="text-xs text-muted">
             Deleting this claim deregisters the client, and nothing can be signed in with it afterwards.
           </p>
+        </template>
+
+        <template v-else-if="isVolume">
+          <p class="text-xs text-muted">
+            A persistent disk for an application that writes where it was told to write — a legacy service, SQLite,
+            anything that keeps its state on a filesystem. It is mounted into exactly one of this project's processes,
+            and it survives every deploy and restart of that process.
+          </p>
+
+          <!-- The cost, stated where the claim is made and not only in the
+               docs: the same sentence the "Never run two at once" switch
+               says about a singleton, because it is the same trade. -->
+          <UAlert
+            color="warning"
+            variant="subtle"
+            icon="i-lucide-triangle-alert"
+            title="Deploys of this process will have a gap in serving, and it runs one copy"
+            description="A volume can be attached to one copy of a process at a time. Deploys stop the old copy before
+              starting the new one — a rolling deploy would leave the new copy waiting for a disk the old one never
+              lets go of — so there is a gap in serving on every deploy, and the replica count of that process is fixed
+              at 1. A storage class the platform detects to support shared access lifts both, and the claim says which
+              it found."
+          />
+
+          <div class="grid gap-4 sm:grid-cols-2">
+            <UFormField label="Process" help="The one process that mounts the volume." required>
+              <USelect v-model="volProcess" :items="processOptions" class="w-full" />
+            </UFormField>
+            <UFormField label="Mount path" help="Where the volume appears inside the process." required>
+              <UInput v-model="volMountPath" placeholder="/data" class="w-full font-mono" />
+            </UFormField>
+          </div>
+
+          <div class="grid gap-4 sm:grid-cols-2">
+            <UFormField label="Size" help="A Kubernetes quantity. Set when the volume is created; it is not shrunk." required>
+              <UInput v-model="volSize" placeholder="10Gi" class="w-full font-mono" />
+            </UFormField>
+            <UFormField label="Storage class" help="Empty takes the platform's default.">
+              <UInput v-model="volStorageClass" placeholder="fast-ssd" class="w-full font-mono" />
+            </UFormField>
+          </div>
+
+          <UFormField
+            label="Previews get"
+            help="A fresh, empty volume of the same size for each preview, torn down with it — never production's own, which the process could not share."
+          >
+            <USelect
+              v-model="previewMode"
+              :items="previewOptions"
+              :disabled="!previewOptions.length"
+              placeholder="the platform's own declaration"
+              class="w-full"
+            />
+          </UFormField>
+
+          <UFormField
+            label="On claim deletion"
+            help="Retain is the default: deleting a claim must not be able to destroy the data on a production volume. A retained volume outlives the project, and a claim of the same name binds to it again. Preview volumes are always cleaned up."
+          >
+            <USelect v-model="deletionPolicy" :items="policyOptions" class="w-full" />
+          </UFormField>
         </template>
 
         <template v-else>

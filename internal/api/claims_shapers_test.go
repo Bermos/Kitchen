@@ -89,6 +89,8 @@ func sampleField(name string) string {
 		return `"postgres": {"version": "17"}`
 	case kitchenv1alpha1.ClaimTypeObjectStore:
 		return `"objectStore": {"versioning": true}`
+	case kitchenv1alpha1.ClaimTypeVolume:
+		return `"volume": {"process": "web", "size": "1Gi", "mountPath": "/data"}`
 	case "callbackPaths":
 		return `"callbackPaths": ["/auth/callback"]`
 	case "redirectURIs":

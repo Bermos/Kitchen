@@ -141,6 +141,10 @@ export interface Project {
   latestBuild?: string;
   createdAt: string;
   conditions?: Condition[];
+  /** The project's workers and scheduled jobs as it declares them now — what
+   * an environment actually runs is its release's list, on
+   * GET /environments/{name}/processes. */
+  processes?: Process[];
   /** The project's staged pipeline, in promotion order. Absent for the
    * default build-straight-to-production flow. Stages are topology — what
    * each environment demands lives on the Environment's requirements. */
@@ -1494,6 +1498,22 @@ export interface NewDomain {
   tls?: string;
 }
 
+/** The volume a volume claim asked for — which process mounts it, where, how
+ * big, from which class — and, once the reconciler has looked, what the
+ * platform made of it: the access mode the class was detected to support
+ * (ReadWriteOnce caps the process at one replica and forces a recreate on
+ * every deploy; ReadWriteMany lifts both) and the claim behind it. */
+export interface ClaimVolume {
+  process: string;
+  size: string;
+  storageClass?: string;
+  mountPath: string;
+  accessMode?: string;
+  accessModeReason?: string;
+  claimName?: string;
+  persistentVolume?: string;
+}
+
 /** The database a postgres claim asked for: which Postgres, what it has to be
  * able to do, and how much room it gets. All four are set when the database is
  * created and are not changed under a running one — asking for a different
@@ -1561,6 +1581,8 @@ export interface Claim {
   /** What an objectStore claim asked its bucket to be. Absent when it asked
    * for nothing in particular. */
   objectStore?: ClaimObjectStore;
+  /** What a volume claim asked for, and what the platform made of it. */
+  volume?: ClaimVolume;
   createdAt: string;
   conditions?: Condition[];
   /** What an oidcClient claim's client currently accepts as a callback. The
@@ -1613,6 +1635,10 @@ export interface NewClaim {
   postgres?: ClaimPostgres;
   /** objectStore only: versioning, public reads and a size for the bucket. */
   objectStore?: ClaimObjectStore;
+  /** volume only, and required there: the process that mounts it ("web", or
+   * one of the project's processes), its size, the mount path, and
+   * optionally the storage class. */
+  volume?: { process: string; size: string; mountPath: string; storageClass?: string };
   /** Classify the data the resource will hold. May not exceed the project's
    * class; refused in an unclassified project (classify the project first). */
   dataClass?: string;

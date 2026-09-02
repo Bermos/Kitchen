@@ -53,6 +53,14 @@ Also not in the archive, and named in its own manifest so nobody has to guess:
   its own backup machinery for exactly this, and pointing it somewhere is a
   decision an installation that keeps production data here has to make
   deliberately.
+- **Volumes a `volume` claim mounts into an application.** They live in the
+  project's application namespace, on whatever StorageClass the claim named,
+  and this archive carries neither them nor their data: the claim is
+  restored, and a restored claim under `Retain` re-binds to its volume only if
+  the volume survived — which it does on the same cluster, and does not on a
+  new one. Backing up that data is the cluster storage's job, or a
+  [snapshot](#pvc-snapshots-an-option-not-the-plan) where the cluster can
+  take one.
 - **The platform's upgrade history** (`PlatformUpdate` objects), which describes
   a cluster that will not exist by the time anyone is restoring.
 - **Secrets outside the platform namespace.** The registry pull credential in

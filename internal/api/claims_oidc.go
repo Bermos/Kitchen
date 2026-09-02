@@ -58,7 +58,11 @@ func (oidcClaimShaper) fields() []claimField {
 
 // config validates the client's registration details and answers them as
 // the reconciler reads them, nil when the claim takes every default.
-func (oidcClaimShaper) config(w http.ResponseWriter, body *createClaimRequest) (*runtime.RawExtension, bool) {
+func (oidcClaimShaper) config(
+	w http.ResponseWriter,
+	body *createClaimRequest,
+	_ *kitchenv1alpha1.Project,
+) (*runtime.RawExtension, bool) {
 	cfg := kitchenv1alpha1.OIDCClientConfig{}
 	for _, path := range body.CallbackPaths {
 		path = strings.TrimSpace(path)

@@ -34,7 +34,6 @@ import (
 	"github.com/Bermos/Kitchen/internal/clickhouse"
 	"github.com/Bermos/Kitchen/internal/provider/contract"
 	"github.com/Bermos/Kitchen/internal/provider/declarations"
-	"github.com/Bermos/Kitchen/internal/provider/oidcclient"
 )
 
 // The resource claim write surface: asking a database-capable Connection to
@@ -79,6 +78,11 @@ type createClaimRequest struct {
 	// store can honour each is the provisioner's answer, landing on the
 	// claim as a refusal naming what it could not supply.
 	ObjectStore *kitchenv1alpha1.ObjectStoreConfig `json:"objectStore,omitempty"`
+	// Volume is what a volume claim asks for: the process that mounts it,
+	// the size, the StorageClass and the mount path. The process is checked
+	// against the project here; the class and what it supports are the
+	// cluster's answer, and land on the claim.
+	Volume *kitchenv1alpha1.VolumeConfig `json:"volume,omitempty"`
 
 	// DataClass classifies the data the resource will hold: public,
 	// internal, confidential or strictlyConfidential. It may not exceed the
@@ -173,7 +177,7 @@ func (s *Server) createClaim(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	config, ref, ok := s.claimShape(ctx, w, claimType, shaper, &body)
+	config, ref, ok := s.claimShape(ctx, w, claimType, shaper, project, &body)
 	if !ok {
 		return
 	}
@@ -251,9 +255,14 @@ type claimShaper interface {
 	fields() []claimField
 
 	// config validates the type's fields and answers spec.config as the
-	// reconciler will read it, nil when nothing was asked. ok=false means a
-	// refusal has already been written.
-	config(w http.ResponseWriter, body *createClaimRequest) (config *runtime.RawExtension, ok bool)
+	// reconciler will read it, nil when nothing was asked. project is the
+	// one the claim is for, for a type whose request names something of
+	// the project's. ok=false means a refusal has already been written.
+	config(
+		w http.ResponseWriter,
+		body *createClaimRequest,
+		project *kitchenv1alpha1.Project,
+	) (config *runtime.RawExtension, ok bool)
 
 	// view fills the type's own fields of the claim's view.
 	view(claim *kitchenv1alpha1.ResourceClaim, view *claimView)
@@ -280,6 +289,7 @@ var claimShapers = map[string]claimShaper{
 	kitchenv1alpha1.ClaimTypePostgres:    postgresClaimShaper{},
 	kitchenv1alpha1.ClaimTypeOIDCClient:  oidcClaimShaper{},
 	kitchenv1alpha1.ClaimTypeObjectStore: objectStoreClaimShaper{},
+	kitchenv1alpha1.ClaimTypeVolume:      volumeClaimShaper{},
 }
 
 // claimShaperFor resolves a request's type to the table's row and the API's
@@ -309,6 +319,7 @@ func (s *Server) claimShape(
 	w http.ResponseWriter,
 	claimType kitchenv1alpha1.ClaimType,
 	shaper claimShaper,
+	project *kitchenv1alpha1.Project,
 	body *createClaimRequest,
 ) (*runtime.RawExtension, *kitchenv1alpha1.LocalObjectReference, bool) {
 	mine := map[string]bool{}
@@ -341,7 +352,7 @@ func (s *Server) claimShape(
 		return nil, nil, false
 	}
 
-	config, ok := shaper.config(w, body)
+	config, ok := shaper.config(w, body, project)
 	if !ok {
 		return nil, nil, false
 	}
@@ -375,7 +386,9 @@ func (s *Server) withPreviewMode(
 			joinModes(contract.PreviewModes), body.PreviewMode)
 		return nil, false
 	}
-	provider := oidcclient.ProviderName
+	// The provider is the connection's; for a type the platform provisions
+	// itself it is the one provider the declarations list for the type.
+	provider := ""
 	if ref != nil {
 		conn := &kitchenv1alpha1.Connection{}
 		if err := s.get(ctx, ref.Name, conn); err != nil {
@@ -383,8 +396,26 @@ func (s *Server) withPreviewMode(
 			return nil, false
 		}
 		provider = conn.Spec.Provider
+	} else {
+		for _, d := range declarations.All() {
+			if d.Type == claimType.Name {
+				provider = d.Provider
+				break
+			}
+		}
 	}
 	declaration, declared := declarations.Lookup(claimType.Name, provider)
+	if choice == contract.PreviewShared && declared && declaration.ForcesRecreate {
+		// A resource that attaches to one pod at a time cannot be shared
+		// between production and a preview without taking it from
+		// production: the reconciler would give previews nothing, and this
+		// is the layer that can say so before the claim exists.
+		badRequest(w, "previewMode \"shared\" is refused for a %s claim: %s declares that its %s attaches to "+
+			"one pod at a time, so a preview mounting production's would take it from production. Ask for "+
+			"%s — %s — or for none", claimType.Name, provider, claimType.Resource, declaration.Preview,
+			declaration.PreviewNote)
+		return nil, false
+	}
 	if choice.Isolated() && (!declared || declaration.Preview != choice) {
 		gives := "nothing"
 		if declared {

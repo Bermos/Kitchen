@@ -477,6 +477,17 @@ async function deleteProject() {
 // major version, extensions and volume; a bucket's versioning, public reads
 // and size. Most claims ask for none of it and get nothing here.
 function claimRequirements(claim: Claim): string[] {
+  // A volume's is the mount itself: which process, where, how big, and — once
+  // the platform has looked — whether it attaches to one copy or many.
+  if (claim.volume) {
+    const volume = claim.volume;
+    return [
+      `${volume.process}:${volume.mountPath}`,
+      volume.size,
+      ...(volume.storageClass ? [volume.storageClass] : []),
+      ...(volume.accessMode ? [volume.accessMode] : []),
+    ];
+  }
   const postgres = claim.postgres;
   if (postgres) {
     return [
@@ -520,9 +531,27 @@ function claimDeletionOutcome(claim: Claim): string {
       ? "The bucket, its objects and its credential are being deleted at the store."
       : "The bucket and its objects are kept at the store; only the platform's binding is removed.";
   }
+  if (claim.type === "volume") {
+    return claim.deletionPolicy === "Delete"
+      ? "The volume and the data on it are being deleted."
+      : "The volume is kept; a claim of the same name binds to it again.";
+  }
   return claim.deletionPolicy === "Delete"
     ? "The database and its data are being deprovisioned."
     : "The database is kept at the provider; only the platform's binding is removed.";
+}
+
+// The confirmation's own sentence, which says what the policy does to the data
+// before asking for the click — for the kind of resource this claim is.
+function claimDeletionWarning(claim: Claim): string {
+  if (claim.type === "volume") {
+    return claim.deletionPolicy === "Delete"
+      ? "This claim's policy is Delete: the volume and ALL THE DATA ON IT are deleted. Preview volumes go too. There is no undo."
+      : "This claim's policy is Retain: the volume and its data are kept, even if the project is later deleted, and a claim of the same name binds to it again. Preview volumes are removed, and the process that mounted it deploys without it until then.";
+  }
+  return claim.deletionPolicy === "Delete"
+    ? `This claim's policy is Delete: the ${claim.type} database and ALL ITS DATA are destroyed at ${claim.connection}. Preview branches and the binding secrets go too. There is no undo.`
+    : `This claim's policy is Retain: the ${claim.type} database and its data are kept at ${claim.connection}, but the platform forgets it — preview branches and the binding secrets are removed, and environments referencing it will fail to deploy until the variable is removed.`;
 }
 
 const claimToDelete = ref<Claim | null>(null);
@@ -928,7 +957,7 @@ function host(url?: string): string {
       <!-- Resources: provisioned claims (databases, OIDC clients, …) bound to this project. -->
       <div v-else-if="tab === 'resources'" class="space-y-3">
         <div v-if="mayClaim" class="flex justify-end">
-          <ClaimModal :project="project.name" @saved="refresh">
+          <ClaimModal :project="project.name" :processes="project.processes?.map((p) => p.name)" @saved="refresh">
             <UButton icon="i-lucide-plus" size="sm">New claim</UButton>
           </ClaimModal>
         </div>
@@ -938,8 +967,9 @@ function host(url?: string): string {
               <tr v-if="!data?.claims.length">
                 <td class="px-3 py-8 text-center text-muted">
                   No resource claims — a claim asks for something the project needs (a database or a bucket from a
-                  connection, or single sign-on from the platform's own identity provider) and binds it into the
-                  project's environment through a secret its env vars reference.
+                  connection, single sign-on from the platform's own identity provider, or a persistent volume for
+                  one process) and binds it into the project's environments — through a secret its env vars
+                  reference, or as a mount.
                 </td>
               </tr>
               <tr v-for="claim in data?.claims" :key="claim.name" class="border-b border-muted last:border-0">
@@ -1002,6 +1032,11 @@ function host(url?: string): string {
                 </td>
                 <td class="px-3 py-2 font-mono text-xs text-toned">
                   <template v-if="claim.connection">via {{ claim.connection }}</template>
+                  <template v-else-if="claim.volume">
+                    <span :title="claim.volume.accessModeReason">
+                      {{ claim.volume.mountPath }} on {{ claim.volume.process }}
+                    </span>
+                  </template>
                   <template v-else-if="claim.redirectURIs?.length">
                     <span :title="claim.redirectURIs.join('\n')">
                       {{ claim.redirectURIs.length }} redirect URI{{ claim.redirectURIs.length === 1 ? "" : "s" }}
@@ -1010,8 +1045,13 @@ function host(url?: string): string {
                   <template v-else>—</template>
                 </td>
                 <td class="px-3 py-2"><PhaseBadge :phase="claim.phase" /></td>
-                <td class="px-3 py-2 font-mono text-xs text-muted truncate max-w-48" :title="claim.secret">
-                  {{ claim.secret || "not bound yet" }}
+                <!-- What the binding is: the secret the env vars read, or
+                     for a volume the claim its process mounts. -->
+                <td
+                  class="px-3 py-2 font-mono text-xs text-muted truncate max-w-48"
+                  :title="claim.secret || claim.volume?.claimName"
+                >
+                  {{ claim.secret || claim.volume?.claimName || "not bound yet" }}
                 </td>
                 <td class="px-3 py-2 text-xs text-muted whitespace-nowrap">
                   <template v-if="claim.type === 'oidcClient'">on delete: deregister the client</template>
@@ -1416,11 +1456,7 @@ function host(url?: string): string {
     <UModal
       :open="claimToDelete !== null"
       :title="`Delete claim ${claimToDelete?.name}?`"
-      :description="
-        claimToDelete?.deletionPolicy === 'Delete'
-          ? `This claim's policy is Delete: the ${claimToDelete?.type} database and ALL ITS DATA are destroyed at ${claimToDelete?.connection}. Preview branches and the binding secrets go too. There is no undo.`
-          : `This claim's policy is Retain: the ${claimToDelete?.type} database and its data are kept at ${claimToDelete?.connection}, but the platform forgets it — preview branches and the binding secrets are removed, and environments referencing it will fail to deploy until the variable is removed.`
-      "
+      :description="claimToDelete ? claimDeletionWarning(claimToDelete) : ''"
       @update:open="(open: boolean) => { if (!open) claimToDelete = null; }"
     >
       <template #footer>

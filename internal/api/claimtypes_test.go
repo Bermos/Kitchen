@@ -51,9 +51,13 @@ func TestListingClaimTypes(t *testing.T) {
 			if provider.PreviewMode == "" || provider.PreviewNote == "" {
 				t.Errorf("%s via %s declares no preview mode, or no reason", view.Type, provider.Provider)
 			}
-			if !slices.Contains(provider.PreviewChoices, string(contract.PreviewShared)) ||
+			// Shared is offered by every provider but one whose resource
+			// attaches to one pod at a time: a preview sharing that would
+			// take it from production.
+			if slices.Contains(provider.PreviewChoices, string(contract.PreviewShared)) == provider.ForcesRecreate ||
 				!slices.Contains(provider.PreviewChoices, string(contract.PreviewNone)) {
-				t.Errorf("%s via %s must offer shared and none among %v", view.Type, provider.Provider, provider.PreviewChoices)
+				t.Errorf("%s via %s must offer none, and shared exactly when it does not force a recreate: %v",
+					view.Type, provider.Provider, provider.PreviewChoices)
 			}
 			if provider.PreviewChoices[0] != provider.PreviewMode {
 				t.Errorf("%s via %s lists its own mode first: %v", view.Type, provider.Provider, provider.PreviewChoices)

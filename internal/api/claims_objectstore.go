@@ -46,7 +46,11 @@ func (objectStoreClaimShaper) fields() []claimField {
 
 // config is spec.config as this API writes it for an objectStore claim: the
 // objectStore block the provisioner reads, nothing when nothing was asked.
-func (objectStoreClaimShaper) config(w http.ResponseWriter, body *createClaimRequest) (*runtime.RawExtension, bool) {
+func (objectStoreClaimShaper) config(
+	w http.ResponseWriter,
+	body *createClaimRequest,
+	_ *kitchenv1alpha1.Project,
+) (*runtime.RawExtension, bool) {
 	cfg, ok := validObjectStoreConfig(w, body.ObjectStore)
 	if !ok {
 		return nil, false

@@ -20,7 +20,6 @@ rules:
   resources:
   - events
   - nodes
-  - persistentvolumeclaims
   - pods
   - serviceaccounts
   verbs:
@@ -31,11 +30,22 @@ rules:
   - ""
   resources:
   - namespaces
+  - persistentvolumeclaims
   - secrets
   - services
   verbs:
   - create
   - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - persistentvolumes
+  verbs:
   - get
   - list
   - patch
@@ -223,6 +233,14 @@ rules:
   - snapshot.storage.k8s.io
   resources:
   - volumesnapshotclasses
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - storage.k8s.io
+  resources:
+  - storageclasses
   verbs:
   - get
   - list

@@ -466,6 +466,7 @@ func main() {
 		Scheme:   mgr.GetScheme(),
 		Activity: recorder,
 		Audit:    auditor,
+		Reader:   mgr.GetAPIReader(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "ResourceClaim")
 		os.Exit(1)

@@ -137,6 +137,9 @@ func (r *EnvironmentReconciler) reconcileProcesses(
 	appNS string,
 	labels map[string]string,
 	podEnv []corev1.EnvVar,
+	// mounts are the environment's volume claims; each process gets the
+	// ones that name it, and nothing else's.
+	mounts []mountedVolume,
 ) ([]kitchenv1alpha1.ProcessStatus, error) {
 	declared := release.Spec.ConfigSnapshot.Processes
 	statuses := make([]kitchenv1alpha1.ProcessStatus, 0, len(declared))
@@ -160,16 +163,19 @@ func (r *EnvironmentReconciler) reconcileProcesses(
 		live[name] = true
 		status.Workload = name
 
+		processMounts := mountsFor(mounts, process.Name)
 		switch process.Type {
 		case kitchenv1alpha1.ProcessCron:
-			if err := r.applyCronJob(ctx, env, release, project, appNS, labels, podEnv, process); err != nil {
+			if err := r.applyCronJob(ctx, env, release, project, appNS, labels, podEnv, process,
+				processMounts); err != nil {
 				return nil, err
 			}
 			if err := r.observeCronJob(ctx, env, appNS, process, &status); err != nil {
 				return nil, err
 			}
 		default:
-			if err := r.applyWorkerDeployment(ctx, env, release, project, appNS, labels, podEnv, process); err != nil {
+			if err := r.applyWorkerDeployment(ctx, env, release, project, appNS, labels, podEnv, process,
+				processMounts); err != nil {
 				return nil, err
 			}
 			if err := r.observeWorker(ctx, appNS, name, &status); err != nil {
@@ -194,14 +200,17 @@ func processPodSpec(
 	project *kitchenv1alpha1.Project,
 	podEnv []corev1.EnvVar,
 	process kitchenv1alpha1.ProcessSpec,
+	mounts []mountedVolume,
 ) corev1.PodSpec {
+	volumes, volumeMounts := podVolumes(mounts)
 	container := corev1.Container{
-		Name:      AppContainerName,
-		Image:     release.Spec.Image,
-		Command:   process.Command,
-		Args:      process.Args,
-		Env:       processEnv(podEnv, process.Name),
-		Resources: process.Resources,
+		Name:         AppContainerName,
+		Image:        release.Spec.Image,
+		Command:      process.Command,
+		Args:         process.Args,
+		Env:          processEnv(podEnv, process.Name),
+		Resources:    process.Resources,
+		VolumeMounts: volumeMounts,
 	}
 	// A worker that declared a health check is probed the way the web
 	// process is — it publishes no port of its own, so the check names the
@@ -218,6 +227,10 @@ func processPodSpec(
 			{Name: registrySecretName(project.Spec.Registry.ConnectionRef.Name)},
 		},
 		Containers: []corev1.Container{container},
+		// The volume claims that name this process, and no other's: a
+		// volume that attaches once, mounted by two processes, is the
+		// Multi-Attach failure the claim names a process to avoid.
+		Volumes: volumes,
 	}
 }
 
@@ -234,6 +247,7 @@ func (r *EnvironmentReconciler) applyWorkerDeployment(
 	labels map[string]string,
 	podEnv []corev1.EnvVar,
 	process kitchenv1alpha1.ProcessSpec,
+	mounts []mountedVolume,
 ) error {
 	name := ProcessWorkloadName(env.Name, process.Name)
 	podLabels := processLabels(labels, process.Name)
@@ -250,7 +264,11 @@ func (r *EnvironmentReconciler) applyWorkerDeployment(
 	deploy := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: appNS}}
 	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, deploy, func() error {
 		deploy.Labels = podLabels
-		deploy.Spec.Replicas = ptr.To(process.ReplicaCount())
+		// A worker mounting a volume that attaches to one pod at a time
+		// runs one replica whatever it asked for, and is recreated below —
+		// the claim's declaration, read off its status, rather than the
+		// process's own singleton flag.
+		deploy.Spec.Replicas = ptr.To(capReplicas(process.ReplicaCount(), mounts))
 		// A worker that must not run twice does not get a rolling update
 		// either (#250). Left alone it would take the API server's default,
 		// which at one replica surges to a second copy and takes none away —
@@ -264,7 +282,7 @@ func (r *EnvironmentReconciler) applyWorkerDeployment(
 		// unavailability parameters the API server defaults onto it, so
 		// every reconcile would differ from what it had just written.
 		switch {
-		case process.Singleton:
+		case process.Singleton || attachesOnce(mounts):
 			deploy.Spec.Strategy = appsv1.DeploymentStrategy{Type: appsv1.RecreateDeploymentStrategyType}
 		case deploy.Spec.Strategy.Type == appsv1.RecreateDeploymentStrategyType:
 			deploy.Spec.Strategy = appsv1.DeploymentStrategy{Type: appsv1.RollingUpdateDeploymentStrategyType}
@@ -280,7 +298,7 @@ func (r *EnvironmentReconciler) applyWorkerDeployment(
 		}
 		deploy.Spec.Template.Labels = podLabels
 		applyProjectSecretsRevision(&deploy.Spec.Template.ObjectMeta, secretsRevision)
-		deploy.Spec.Template.Spec = processPodSpec(release, project, podEnv, process)
+		deploy.Spec.Template.Spec = processPodSpec(release, project, podEnv, process, mounts)
 		return nil
 	})
 	return err
@@ -296,6 +314,12 @@ func (r *EnvironmentReconciler) applyCronJob(
 	labels map[string]string,
 	podEnv []corev1.EnvVar,
 	process kitchenv1alpha1.ProcessSpec,
+	// mounts are the volume claims naming this process. A scheduled run
+	// mounts them like a worker does; with a volume that attaches once, a
+	// run overlapping the last one on another node waits for it to finish
+	// — bounded by the run's timeout, and avoided by the default
+	// concurrency policy, Forbid.
+	mounts []mountedVolume,
 ) error {
 	name := ProcessWorkloadName(env.Name, process.Name)
 	childLabels := processLabels(labels, process.Name)
@@ -317,7 +341,7 @@ func (r *EnvironmentReconciler) applyCronJob(
 		cron.Spec.JobTemplate.Spec.BackoffLimit = ptr.To(runBackoffLimit)
 		cron.Spec.JobTemplate.Spec.ActiveDeadlineSeconds = ptr.To(process.TimeoutSeconds())
 		cron.Spec.JobTemplate.Spec.Template.Labels = childLabels
-		podSpec := processPodSpec(release, project, podEnv, process)
+		podSpec := processPodSpec(release, project, podEnv, process, mounts)
 		// Never, not OnFailure: with a backoff limit of zero a restarting
 		// container would retry inside a Job that can never fail, which is
 		// exactly the silent failure this feature exists to end.

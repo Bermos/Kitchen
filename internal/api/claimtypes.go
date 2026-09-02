@@ -90,7 +90,7 @@ func claimTypeViews() []claimTypeView {
 				Provider:         d.Provider,
 				PreviewMode:      string(d.Preview),
 				PreviewNote:      d.PreviewNote,
-				PreviewChoices:   previewChoices(d.Preview),
+				PreviewChoices:   previewChoices(d.Preview, d.ForcesRecreate),
 				KeepsPodsRunning: d.KeepsPodsRunning,
 				ForcesRecreate:   d.ForcesRecreate,
 				WorkloadNote:     d.WorkloadNote,
@@ -103,10 +103,16 @@ func claimTypeViews() []claimTypeView {
 
 // previewChoices is what a claim may name as its previewMode against a
 // provider that declares the given mode: the mode itself, shared, and none,
-// each once and in that order.
-func previewChoices(declared contract.PreviewMode) []string {
+// each once and in that order. A provider whose resource attaches to one pod
+// at a time is not offered shared: a preview mounting production's would
+// take it from production, and the API refuses the choice.
+func previewChoices(declared contract.PreviewMode, attachesOnce bool) []string {
 	choices := []string{}
-	for _, mode := range []contract.PreviewMode{declared, contract.PreviewShared, contract.PreviewNone} {
+	modes := []contract.PreviewMode{declared, contract.PreviewShared, contract.PreviewNone}
+	if attachesOnce {
+		modes = []contract.PreviewMode{declared, contract.PreviewNone}
+	}
+	for _, mode := range modes {
 		if mode == "" {
 			continue
 		}
