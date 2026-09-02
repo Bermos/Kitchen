@@ -23,6 +23,13 @@
           "type": "string",
           "description": "Path to the Dockerfile, relative to the project's root directory, which it may not leave. Used when the strategy is, or resolves to, dockerfile.",
           "examples": ["Dockerfile", "docker/Dockerfile"]
+        },
+        "dockerfileTarget": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_.-]*$",
+          "maxLength": 128,
+          "description": "Which stage of a multi-stage Dockerfile produces the image to run. Leave it out to ship the file's last stage. A stage the file does not declare fails the build, and so does naming one on a commit built with buildpacks, which has no stages.",
+          "examples": ["web", "runtime"]
         }
       }
     },
@@ -244,6 +251,13 @@
         "dockerfilePath": {
           "type": "string",
           "description": "The Dockerfile, relative to rootDirectory. Default Dockerfile."
+        },
+        "dockerfileTarget": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_.-]*$",
+          "maxLength": 128,
+          "description": "Which stage of this workload's multi-stage Dockerfile produces its image. Leave it out to build the stage the project names — its build.dockerfileTarget, or the file's last stage where the project names none either. A stage the file does not declare fails the build naming this workload, and so does naming one on a workload built with buildpacks, which has no stages.",
+          "examples": ["worker", "migrate"]
         },
         "rootDirectory": {
           "type": "string",

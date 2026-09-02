@@ -97,6 +97,17 @@ type RepoBuildConfig struct {
 	// is the whole of what a build sees.
 	// +optional
 	DockerfilePath string `json:"dockerfilePath,omitempty"`
+
+	// DockerfileTarget is the stage of a multi-stage Dockerfile to ship,
+	// declared by the commit rather than by the project — which is where it
+	// belongs, for the same reason DockerfilePath does: the stage a file has
+	// is a fact about the file, so a rebuild of an old commit builds the
+	// stage that commit asked for rather than the one the project names
+	// today.
+	// +kubebuilder:validation:Pattern=`^[A-Za-z][A-Za-z0-9_.-]*$`
+	// +kubebuilder:validation:MaxLength=128
+	// +optional
+	DockerfileTarget string `json:"dockerfileTarget,omitempty"`
 }
 
 // RepoRuntimeConfig is the runtime half of kitchen.json: the subset of
@@ -179,6 +190,9 @@ func (c *RepoConfig) Declares() []string {
 		}
 		if b.DockerfilePath != "" {
 			fields = append(fields, "build.dockerfilePath")
+		}
+		if b.DockerfileTarget != "" {
+			fields = append(fields, "build.dockerfileTarget")
 		}
 	}
 	if r := c.Runtime; r != nil {

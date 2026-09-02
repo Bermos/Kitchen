@@ -129,6 +129,7 @@ function repoTypedIn(term: string) {
 // writes nothing, so asking again is the whole of correcting a wrong answer.
 const rootDirectory = ref("");
 const dockerfilePath = ref("");
+const dockerfileTarget = ref("");
 const detection = ref<Detection>();
 const detecting = ref(false);
 const detectError = ref("");
@@ -159,6 +160,19 @@ async function detect() {
     if (run === detectRun) detecting.value = false;
   }
 }
+
+// The stages the preflight found, as something to choose from: the file's
+// last stage first, because that is what a build ships when nothing says
+// otherwise. A stage the answer no longer offers is dropped rather than kept
+// as a value nothing in the list matches — the repository the form is now
+// about is a different one.
+const stageOptions = computed(() => [
+  { label: "the last stage", value: "" },
+  ...(detection.value?.stages ?? []).map((stage) => ({ label: stage, value: stage })),
+]);
+watch(stageOptions, (options) => {
+  if (!options.some((option) => option.value === dockerfileTarget.value)) dockerfileTarget.value = "";
+});
 
 // Typing settles before the provider is asked, and every field the answer is
 // about restarts the clock.
@@ -227,6 +241,7 @@ async function create() {
       previews: previews.value,
       rootDirectory: rootDirectory.value || undefined,
       dockerfilePath: dockerfilePath.value || undefined,
+      dockerfileTarget: dockerfileTarget.value || undefined,
     });
     open.value = false;
     name.value = "";
@@ -236,6 +251,7 @@ async function create() {
     branchEdited.value = false;
     rootDirectory.value = "";
     dockerfilePath.value = "";
+    dockerfileTarget.value = "";
     detection.value = undefined;
     toast.add({ title: `Project ${project.name} created`, color: "success", icon: "i-lucide-check" });
     emit("created");
@@ -348,6 +364,19 @@ async function create() {
               <UInput v-model="dockerfilePath" placeholder="Dockerfile" class="w-full font-mono" />
             </UFormField>
           </div>
+          <!-- Only for a Dockerfile that has stages to choose between. A
+               single-stage file names none, and asking which stage to ship
+               where there is one would be a question about every repository.
+               It is offered here rather than only in settings because the
+               project's first build starts as it is created, and a build of
+               the wrong stage succeeds. -->
+          <UFormField
+            v-if="stageOptions.length > 1"
+            label="Stage to ship"
+            help="Which stage of the multi-stage Dockerfile produces the image to run."
+          >
+            <USelect v-model="dockerfileTarget" :items="stageOptions" class="w-full max-w-60" />
+          </UFormField>
           <p v-if="detecting" class="text-xs text-muted flex items-center gap-1.5">
             <UIcon name="i-lucide-loader-circle" class="animate-spin" />
             Reading the repository…

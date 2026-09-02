@@ -77,6 +77,10 @@ var _ = Describe("Build Controller", func() {
 			// two settings mean together is what several of these assert.
 			monorepoRoot       = "apps/shop"
 			monorepoDockerfile = "docker/prod.Dockerfile"
+			// The stage the target assertions ask for, spelled once: what
+			// several of them are about is that this one string reaches the
+			// builder and the Build alike.
+			stageWeb = "web"
 		)
 
 		ctx := context.Background()
@@ -671,6 +675,103 @@ var _ = Describe("Build Controller", func() {
 			Expect(creator.Image).To(Equal(BuildpacksBuilderImage))
 			Expect(creator.Args).To(ContainElement("-app=/workspace/source/apps/shop"))
 			Expect(strings.Join(creator.Args, " ")).NotTo(ContainSubstring("prod.Dockerfile"))
+		})
+
+		// The stage of a multi-stage Dockerfile is the one build input whose
+		// absence produces a *working* image of the wrong thing, so the two
+		// things that can go wrong with it are both tested here: it reaches
+		// the builder, and it is refused where it cannot.
+		It("ships the stage the project named, not the file's last one", func() {
+			project := &kitchenv1alpha1.Project{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: projectName, Namespace: namespace}, project)).To(Succeed())
+			project.Spec.Build.Strategy = kitchenv1alpha1.BuildStrategyDockerfile
+			project.Spec.Build.DockerfileTarget = stageWeb
+			Expect(k8sClient.Update(ctx, project)).To(Succeed())
+
+			source = &fakeSource{files: map[string]string{
+				"Dockerfile": "FROM node AS build\nFROM nginx AS web\nFROM node AS test\n",
+			}}
+
+			reconcileOnce()
+
+			job := &batchv1.Job{}
+			Expect(k8sClient.Get(ctx, jobKey, job)).To(Succeed())
+			Expect(strings.Join(job.Spec.Template.Spec.Containers[0].Args, " ")).
+				To(ContainSubstring("target=" + stageWeb))
+
+			build := &kitchenv1alpha1.Build{}
+			Expect(k8sClient.Get(ctx, buildKey, build)).To(Succeed())
+			// Recorded on the build, because the project's setting moves and
+			// what this build produced does not.
+			Expect(build.Status.DockerfileTarget).To(Equal(stageWeb))
+		})
+
+		It("asks for no target at all when the project named none", func() {
+			source = &fakeSource{files: map[string]string{"Dockerfile": "FROM scratch\n"}}
+
+			reconcileOnce()
+
+			job := &batchv1.Job{}
+			Expect(k8sClient.Get(ctx, jobKey, job)).To(Succeed())
+			// `target=` with nothing after it is not the same request as no
+			// target, so the option is absent rather than empty.
+			Expect(strings.Join(job.Spec.Template.Spec.Containers[0].Args, " ")).
+				NotTo(ContainSubstring("target="))
+
+			build := &kitchenv1alpha1.Build{}
+			Expect(k8sClient.Get(ctx, buildKey, build)).To(Succeed())
+			Expect(build.Status.DockerfileTarget).To(BeEmpty())
+		})
+
+		It("takes the stage the commit's own file names over the project's", func() {
+			project := &kitchenv1alpha1.Project{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: projectName, Namespace: namespace}, project)).To(Succeed())
+			project.Spec.Build.Strategy = kitchenv1alpha1.BuildStrategyDockerfile
+			project.Spec.Build.DockerfileTarget = stageWeb
+			Expect(k8sClient.Update(ctx, project)).To(Succeed())
+
+			source = &fakeSource{files: map[string]string{
+				"Dockerfile":   "FROM node AS web\nFROM node AS worker\n",
+				"kitchen.json": `{"build": {"dockerfileTarget": "worker"}}`,
+			}}
+
+			reconcileOnce()
+
+			job := &batchv1.Job{}
+			Expect(k8sClient.Get(ctx, jobKey, job)).To(Succeed())
+			Expect(strings.Join(job.Spec.Template.Spec.Containers[0].Args, " ")).
+				To(ContainSubstring("target=worker"))
+
+			build := &kitchenv1alpha1.Build{}
+			Expect(k8sClient.Get(ctx, buildKey, build)).To(Succeed())
+			Expect(build.Status.DockerfileTarget).To(Equal("worker"))
+			Expect(build.Status.Config.Declares()).To(ContainElement("build.dockerfileTarget"))
+		})
+
+		// The lifecycle has no stages, so a target it was handed could only be
+		// ignored — and an ignored target is the successful build of the wrong
+		// artifact the setting exists to stop.
+		It("refuses to build a buildpacks commit that named a Dockerfile stage", func() {
+			project := &kitchenv1alpha1.Project{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: projectName, Namespace: namespace}, project)).To(Succeed())
+			project.Spec.Build.Strategy = kitchenv1alpha1.BuildStrategyBuildpacks
+			project.Spec.Build.DockerfileTarget = stageWeb
+			Expect(k8sClient.Update(ctx, project)).To(Succeed())
+
+			source = &fakeSource{files: map[string]string{"package.json": `{"dependencies":{"nuxt":"3.14.0"}}`}}
+
+			reconcileOnce()
+
+			Expect(apierrors.IsNotFound(k8sClient.Get(ctx, jobKey, &batchv1.Job{}))).To(BeTrue())
+
+			build := &kitchenv1alpha1.Build{}
+			Expect(k8sClient.Get(ctx, buildKey, build)).To(Succeed())
+			Expect(build.Status.Phase).To(Equal(kitchenv1alpha1.BuildFailed))
+			ready := meta.FindStatusCondition(build.Status.Conditions, condReady)
+			Expect(ready).NotTo(BeNil())
+			Expect(ready.Reason).To(Equal(reasonTargetNotSupported))
+			Expect(ready.Message).To(ContainSubstring("buildpacks"))
+			Expect(ready.Message).To(ContainSubstring(stageWeb))
 		})
 
 		It("fails with a sentence of its own when there is nothing to detect", func() {

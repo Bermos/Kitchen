@@ -183,6 +183,22 @@ const (
 	// the two moved too far.
 	reasonBuildOutOfMemory = "BuildOutOfMemory"
 
+	// reasonTargetNotSupported is a build that named a Dockerfile stage and
+	// is not being built from a Dockerfile. The buildpacks lifecycle has no
+	// stages — it turns one application directory into one image — so the
+	// target it was handed could only be ignored, and an ignored target is
+	// the successful build of the wrong artifact this whole setting exists
+	// to stop. Nothing is built, and the message says which of the two
+	// settings to change.
+	reasonTargetNotSupported = "DockerfileTargetNotSupported"
+
+	// reasonTargetNotFound is a build whose Dockerfile has no stage by the
+	// name it was given. BuildKit is what discovers it — the file is not read
+	// before the build — and this is where its own sentence about a target it
+	// could not find is turned into one naming the stage, the file and where
+	// the name was declared.
+	reasonTargetNotFound = "DockerfileTargetNotFound"
+
 	// reasonSourceUnreviewed is a build refused because the commit cannot be
 	// shown to have arrived through a reviewed pull request. It is a distinct
 	// reason from a build that failed, because nothing was built: the change
@@ -402,6 +418,12 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		// which is the build that was always here.
 		web = webPlan(project, build, registry, strategy)
 		plans := buildPlansFor(project, build, registry, web)
+		// Checked once every plan is settled and before anything is created:
+		// a stage means nothing to a lifecycle that has none, and an image
+		// built ignoring one would be pushed and reported as a success.
+		if stop, err := r.refuseUnbuildableTarget(ctx, build, project, plans); stop != nil {
+			return *stop, err
+		}
 		// Planned before the Job exists, because the plan is part of the pod
 		// spec and a Job's template cannot be edited afterwards. The web
 		// process's cache is the one recorded on the Build: it is the one
@@ -414,10 +436,11 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 			if !plan.isWeb() {
 				planCacheStatus = r.planCache(ctx, build, project, builds.Cache, target, plan)
 				workloads = append(workloads, kitchenv1alpha1.WorkloadBuildStatus{
-					Name:       plan.Workload,
-					Job:        plan.Job,
-					Repository: plan.Repository,
-					Phase:      kitchenv1alpha1.BuildRunning,
+					Name:             plan.Workload,
+					Job:              plan.Job,
+					Repository:       plan.Repository,
+					DockerfileTarget: plan.DockerfileTarget,
+					Phase:            kitchenv1alpha1.BuildRunning,
 				})
 			}
 			// A workload names its strategy outright, so detection has
@@ -434,6 +457,7 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 			log.Info("build job created",
 				"namespace", appNS, "job", plan.Job, "image", plan.Tag, "workload", plan.Workload,
 				"strategy", plan.Strategy, "framework", planDetected.Name,
+				"target", plan.DockerfileTarget,
 				"cache", planCacheStatus.Ref, "cacheWarm", planCacheStatus.Warm)
 		}
 		if err := r.Audit.Record(ctx, audit.Transition{
@@ -459,6 +483,12 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		}
 		build.Status.Phase = kitchenv1alpha1.BuildRunning
 		build.Status.DetectedFramework = detected.Name
+		// What this build was told to produce, recorded at the moment it was
+		// told: the project's setting moves, and this build does not. This is
+		// the unit's own stage — the web process's, and the one every
+		// workload that named none was built to; each workload's is recorded
+		// on its own row below.
+		build.Status.DockerfileTarget = web.DockerfileTarget
 		build.Status.Cache = cache
 		build.Status.Workloads = workloads
 		build.Status.StartedAt = ptr.To(metav1.Now())
@@ -491,21 +521,7 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		// deleted with the job and the Build is not.
 		build.Status.Failure = r.diagnoseJobFailure(ctx, failure.Job, failure.Message)
 		build.Status.Workloads = workloadStatuses(outcomes, nil)
-		// A build killed for its memory is a build failure with a cause, not
-		// a non-zero exit like any other: the ceiling it hit is the platform's
-		// own setting, and the sentence that says so is the difference between
-		// a fix and "the build died and I do not know why".
-		reason := reasonBuildFailed
-		if outOfMemory(build.Status.Failure) {
-			reason = reasonBuildOutOfMemory
-			build.Status.Failure.Message = outOfMemoryMessage(build.Status.Failure, builds.Resources.Memory)
-		}
-		// Which workload died is the first thing a unit's owner needs, and
-		// the message the diagnosis produced says everything but that.
-		message := failureMessage(build.Status.Failure, failure.Message)
-		if !failure.Plan.isWeb() {
-			message = failure.Plan.describe() + ": " + message
-		}
+		reason, message := restateFailure(project, build, *failure, builds.Resources.Memory)
 		return r.fail(ctx, build, project, reason, gitCreds.explain(message))
 	}
 	if !allComplete(outcomes) {
@@ -516,6 +532,46 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		return r.observeRunning(ctx, build, project, pendingJob(outcomes, job))
 	}
 	return r.succeed(ctx, build, project, job, target, outcomes)
+}
+
+// restateFailure is what a failed Job becomes on the Build: the reason the
+// platform files it under, and the sentence a person reads.
+//
+// Two failures are restated rather than reported as the exit status they are,
+// because in both cases the exit status is not the answer:
+//
+//   - A build killed for its memory hit the platform's own ceiling, and the
+//     sentence that says so is the difference between a fix and "the build
+//     died and I do not know why".
+//   - A build that asked for a stage its Dockerfile does not have fails in the
+//     builder's own words about an option nobody typed. It is the repository's
+//     own failure like any other broken build, and it is restated because the
+//     fix is a name in one of three places.
+//
+// The diagnosis is already on build.Status.Failure, written from the pod by
+// the caller; this refines its message and names which image of the commit
+// died, which is the first thing a unit's owner needs and the one thing the
+// diagnosis cannot say.
+func restateFailure(
+	project *kitchenv1alpha1.Project,
+	build *kitchenv1alpha1.Build,
+	failure planOutcome,
+	memoryCeiling string,
+) (string, string) {
+	reason := reasonBuildFailed
+	switch {
+	case outOfMemory(build.Status.Failure):
+		reason = reasonBuildOutOfMemory
+		build.Status.Failure.Message = outOfMemoryMessage(build.Status.Failure, memoryCeiling)
+	case targetNotFound(failure.Plan, build.Status.Failure):
+		reason = reasonTargetNotFound
+		build.Status.Failure.Message = targetNotFoundMessage(project, build, failure.Plan)
+	}
+	message := failureMessage(build.Status.Failure, failure.Message)
+	if !failure.Plan.isWeb() {
+		message = failure.Plan.describe() + ": " + message
+	}
+	return reason, message
 }
 
 // observePlans reads back the Job behind every image this Build produces.
@@ -889,6 +945,16 @@ func dockerfilePod(
 		"--frontend", "dockerfile.v0",
 		"--opt", "context=" + buildContext,
 		"--opt", "filename=" + dockerfile,
+	}
+	// The stage of that file to ship, and the whole of what stops a
+	// multi-stage build shipping whichever stage happens to be written last.
+	// Empty is the last stage, which is what every build did before this
+	// could be said, so the option is added only when there is one — a
+	// `target=` with nothing after it is not the same request. It comes off
+	// the plan for the reason the Dockerfile does: one commit builds several
+	// files, and a stage is a fact about the file it is a stage of.
+	if plan.DockerfileTarget != "" {
+		args = append(args, "--opt", "target="+plan.DockerfileTarget)
 	}
 	for _, attestation := range attestations {
 		args = append(args, "--opt", attestation)
@@ -1795,9 +1861,13 @@ func (r *BuildReconciler) fail(
 	// failure: the distinction is the provider's, and it separates "your
 	// Dockerfile is broken" from "the platform is". A build that ran out of
 	// memory is on the first side of that line — it ran, and what it asked
-	// for was more than a build may take.
+	// for was more than a build may take. So is a build that named a stage
+	// its own Dockerfile does not declare: the builder ran and the repository
+	// is what has to change.
 	state := gitprovider.CommitFailure
-	if reason != reasonBuildFailed && reason != reasonBuildOutOfMemory {
+	switch reason {
+	case reasonBuildFailed, reasonBuildOutOfMemory, reasonTargetNotFound:
+	default:
 		state = gitprovider.CommitError
 	}
 	r.git().reportBuild(ctx, project, build, state, message)

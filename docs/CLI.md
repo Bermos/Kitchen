@@ -250,9 +250,11 @@ answer:
 
 That is the point of the command rather than a `kitchen api POST /projects`.
 **Creating a project starts a build of its production branch immediately**, so
-`--root-directory` and `--dockerfile` are sent with the project rather than
-patched onto it: a monorepo whose application is in `apps/shop` would otherwise
-fail one build before anybody realised what to correct.
+`--root-directory`, `--dockerfile` and `--dockerfile-target` are sent with the
+project rather than patched onto it: a monorepo whose application is in
+`apps/shop` would otherwise fail one build before anybody realised what to
+correct — and a multi-stage Dockerfile whose last stage is not the runtime would
+not fail at all, it would ship the wrong image and report success.
 
 A repository the platform recognised nothing in — and that has no Dockerfile
 either — is a question rather than a refusal, since the detector reads one
@@ -274,12 +276,18 @@ The preflight also settles which branch production deploys from: with no
 project is created on that one — which is why the command works the same on a
 repository whose trunk is called `master` or `trunk` as on one called `main`.
 
+`--dockerfile-target` is which stage of a multi-stage Dockerfile to ship;
+leaving it off ships the file's last stage. The preflight answers the stages the
+file declares, so naming one it has none of is the third question the command
+asks — `--yes` answers that one too, because the person may be naming a stage
+the change they are about to push adds.
+
 The preflight is advice, so a platform that cannot reach the provider to give
 any is reported on stderr and the project is still created. The flags are
 `--repo`, `--connection`, `--registry`, `--production-branch`, `--previews`,
-`--root-directory`, `--dockerfile`, `--link` (on by default) and `--yes`;
-leaving `--previews` off leaves the platform's default alone rather than
-turning previews off.
+`--root-directory`, `--dockerfile`, `--dockerfile-target`, `--link` (on by
+default) and `--yes`; leaving `--previews` off leaves the platform's default
+alone rather than turning previews off.
 
 There is no repository picker. The command takes `owner/name` from the checkout
 or from `--repo`, which is why `GET /connections/{name}/repositories` has no
@@ -456,6 +464,13 @@ one commit produces several images that ship as one release and roll back
 together — which is what makes a monorepo one project rather than four. Without
 one it runs the project's image with another command. `kitchen builds` and
 `kitchen api GET /builds/<name>` list what a commit produced under `workloads`.
+
+`build.dockerfileTarget` on such a workload is which stage of its Dockerfile to
+ship — the per-workload counterpart of `--dockerfile-target` on `kitchen
+projects create`, and it goes through `kitchen api` for the same reason the
+rest of the record does. A workload that names none is built to the project's
+stage rather than to the file's last one, and each row under `workloads` says
+which stage that image was built to.
 
 It replaces the whole list, and — like the environment variables and the port —
 it reaches an environment through the next release. What is running keeps its
@@ -1017,7 +1032,7 @@ cannot write it carries on and exchanges every time.
 | Following a deploy | Poll the build, stream its logs, then watch for the release and the environment | All four are things the API already answers; the CLI renders them and drives nothing |
 | The exit status of a deploy | The build's | "Did my build pass" and "is it live yet" are different questions; the second is in the result, where a caller can read the phase and the URL |
 | Credentials on the command line | `--api-key-file` and `--api-key-stdin` preferred, `--api-key` documented as visible in the process list | The convenient spelling should not be the one that leaks |
-| A project's settings | No command; `kitchen api PATCH /projects/{name}` | One JSON body written occasionally by an admin — a port, a replica count, a health check, a security posture, a process list, arguments, a classification. A flag per field would be a second surface to keep in step with the first, and a list of records with commands and schedules in it has no flag-shaped spelling worth having |
+| A project's settings | No command; `kitchen api PATCH /projects/{name}` | One JSON body written occasionally by an admin — a port, a replica count, a health check, a security posture, a process list, arguments, a classification, the Dockerfile stage to ship (which `projects create` does carry, since the first build starts with the project). A flag per field would be a second surface to keep in step with the first, and a list of records with commands and schedules in it has no flag-shaped spelling worth having |
 | Account management | No command, and none possible | Changing a password, or ending a session, is done at the identity provider against its session cookie — and this CLI holds a key, never a session. It is not an endpoint `kitchen api` reaches either, because that reaches the operator API and these are not on it ([AUTH.md](AUTH.md), "Managing an account") |
 
 ## Open

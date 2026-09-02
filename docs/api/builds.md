@@ -74,6 +74,7 @@ produces all of them.
       "phase": "Succeeded",
       "repository": "registry.example.com/kitchen/shop-api",
       "image": "registry.example.com/kitchen/shop-api@sha256:9f2c…",
+      "dockerfileTarget": "api",
       "job": "shop-bld-abc123def456-api"
     }
   ]
@@ -158,6 +159,46 @@ here rather than there:
 `kitchen config check` runs the same parser locally, with no credential and no
 network, which is the cheaper place to find all of this out — see
 [the CLI](../CLI.md).
+
+## Which stage of the Dockerfile it shipped
+
+```json
+{"name": "shop-bld-abc123def456", "phase": "Succeeded", "dockerfileTarget": "web"}
+```
+
+`dockerfileTarget` is the stage the build was told to produce, absent for the
+file's last stage — which is what a build ships when nothing says otherwise.
+It is **what this build was given**, recorded when its job was created, not
+what the project says today: the setting moves, the image does not, and a
+screen that recomputed it would describe an artifact nobody built.
+
+**Every image the commit produces has one.** The `dockerfileTarget` above is
+the project's own — the web process's — and each row of `workloads` carries the
+stage that workload's build was told to produce. One multi-stage file yielding
+an API, a worker and a migration runner is exactly the case the setting exists
+for, so which stage each image got is part of what this commit produced. There
+is one chain behind every one of them: the workload's own
+`build.dockerfileTarget`, else the commit's `kitchen.json` (`config.declares`
+says when it declared one), else the project's setting — see
+[processes](processes.md#which-stage-each-workload-ships).
+
+Two failures belong to it, and both exist because the alternative is a
+successful build of the wrong thing:
+
+- **`reason: DockerfileTargetNotFound`** — the Dockerfile declares no stage by
+  that name. Nothing reads the file before the build, so BuildKit is what
+  discovers it; the message names the workload, its file, the stage asked for
+  and where the name was declared. It is the repository's own failure, and
+  reports on the commit as a failure rather than as a platform error.
+- **`reason: DockerfileTargetNotSupported`** — the image is built with
+  buildpacks, which has no stages at all. Nothing is built: a lifecycle handed
+  a target could only ignore it, and an ignored target is the wrong image
+  again. The message names the workload it is about. Clear the target, or build
+  that workload with the `dockerfile` strategy.
+
+`POST /connections/{name}/detect` answers the stages a Dockerfile declares, so
+the choice can be made from what the file has rather than typed — see
+[connections](connections.md).
 
 ## Cancelling a build
 

@@ -294,6 +294,21 @@ build context is still a form field. Without it, a root directory one level
 off is a build that fails several minutes after the project was created and
 reads like the platform is broken.
 
+When the project's Dockerfile is where the request says it is, the answer also
+carries `stages`: the names it declares with `FROM … AS <name>`, in file order,
+which is what a `dockerfileTarget` may be one of.
+
+```sh
+{"detected": true, "framework": "dockerfile", "strategy": "dockerfile", "ref": "main",
+ "rootDirectory": "apps/shop", "dockerfile": true, "stages": ["deps", "build", "web"],
+ "files": ["Dockerfile", "package.json"]}
+```
+
+It is one more read of the repository and only when there is a file to read.
+A single-stage Dockerfile names no stages and answers none, which is why an
+empty `stages` is not a verdict about a target being wrong — it is the ordinary
+file, and the only stage it has is its last one.
+
 Every field of the request is the value the form currently holds, and asking
 again with a corrected `rootDirectory` or `dockerfilePath` is the whole of
 fixing it. `ref` may be left out, in which case the repository is read at the
@@ -329,6 +344,7 @@ the build strategy can be set afterwards, and the build is still what decides.
 bare verdict is a question it asks rather than a refusal — `--yes` answers it,
 and `kitchen api POST /connections/gh/detect` asks it on its own.
 
-Both fields it exists to correct — `rootDirectory` and `dockerfilePath` — are
-accepted by `POST /projects`, so a form that showed a wrong verdict can create
-the project with the right build context rather than fixing it afterwards.
+Every field it exists to correct — `rootDirectory`, `dockerfilePath` and the
+`dockerfileTarget` its `stages` are the choices for — is accepted by
+`POST /projects`, so a form that showed a wrong verdict can create the project
+with the right build context rather than fixing it afterwards.

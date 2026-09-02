@@ -70,6 +70,17 @@ path, and the commit's own [`kitchen.json`](CONFIG.md). An application in
 fields to `apps/shop` and `docker/prod.Dockerfile`. Nothing above it is part of
 the build, whichever strategy runs it.
 
+**A multi-stage Dockerfile ships its last stage** unless the project says which
+stage to ship. That is worth a moment, because getting it wrong does not look
+like a failure: a file that builds a test image or a toolchain after the
+runtime ends on one of those, and the build succeeds, pushes it and deploys it.
+When the preflight finds a Dockerfile with named stages the dialog offers them,
+and the choice is stored as the project's Dockerfile stage — settable
+afterwards on the project's Settings tab, and overridable per commit with
+`build.dockerfileTarget` in [`kitchen.json`](CONFIG.md). A stage the file does
+not declare fails the build naming the ones it has, and naming a stage on a
+project built with buildpacks fails it too: that lifecycle has no stages.
+
 As you fill it in, it runs a preflight against the actual repository and tells
 you what it found: the framework it detected, the port that framework listens
 on, and the files it matched. A root directory that is wrong is a message in
@@ -344,6 +355,8 @@ whose problem it is:
 | `RepositoryUnreadable` | The connection's credential cannot see the repository. Operator's, or the wrong repository. |
 | `FrameworkNotDetected` | Yours. No Dockerfile, and nothing recognised. |
 | `ConfigInvalid` | Yours. The commit's `kitchen.json` is wrong; the message says how. |
+| `DockerfileTargetNotFound` | Yours. The Dockerfile declares no stage by the name asked for; the message names the ones it has. |
+| `DockerfileTargetNotSupported` | Yours. A Dockerfile stage was asked for on a commit built with buildpacks, which has none. |
 | `SourceUnreviewed` | The project requires a reviewed pull request for production commits and this one arrived without. |
 
 **Running, but wrong:**

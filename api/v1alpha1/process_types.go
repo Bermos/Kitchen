@@ -311,6 +311,30 @@ type ProcessBuildSpec struct {
 	// +optional
 	DockerfilePath string `json:"dockerfilePath,omitempty"`
 
+	// DockerfileTarget is which stage of that Dockerfile produces this
+	// workload's image — BuildKit's `--target`. Empty is not "the last
+	// stage": it is "nothing of its own to say", and the project's answer
+	// stands in — the commit's own kitchen.json where it declared one, and
+	// `ProjectBuildSpec.DockerfileTarget` where it did not. A unit built
+	// from one multi-stage file names the stage once and each workload that
+	// differs says so.
+	//
+	// It is per workload because that is the shape the feature is for: one
+	// file that yields an API, a worker and a migration runner is ordinary
+	// practice, and without a stage of its own each of them ships whichever
+	// stage was written last — a build that succeeds and produces the wrong
+	// thing.
+	//
+	// A workload built with buildpacks inherits nothing — the lifecycle has
+	// no stages, so the unit's stage is not a stage of anything that image
+	// builds — but one that names a stage itself keeps it and is refused for
+	// it. A stage this workload's Dockerfile does not declare fails the
+	// build naming this workload.
+	// +kubebuilder:validation:Pattern=`^[A-Za-z][A-Za-z0-9_.-]*$`
+	// +kubebuilder:validation:MaxLength=128
+	// +optional
+	DockerfileTarget string `json:"dockerfileTarget,omitempty"`
+
 	// RootDirectory is the directory of the repository this workload is
 	// built from — this workload's **build root**, on exactly the terms
 	// `ProjectBuildSpec.RootDirectory` is the project's: it is what is

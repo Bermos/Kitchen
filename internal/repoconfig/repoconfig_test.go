@@ -198,6 +198,14 @@ func TestParseRefusals(t *testing.T) {
 			mentions: "rootDirectory cannot be set here",
 		},
 		{
+			// Refused here rather than at the build: a name no stage could
+			// have will never match one, and BuildKit would say so several
+			// minutes into a build in its own words.
+			name:     "a Dockerfile target no stage could be called",
+			file:     `{"build": {"dockerfileTarget": "web stage"}}`,
+			mentions: "dockerfileTarget must name a stage",
+		},
+		{
 			name:     "a variable pointing at a secret",
 			file:     `{"env": {"DATABASE_URL": {"secretRef": {"name": "db", "key": "url"}}}}`,
 			mentions: "cannot take its value from secretRef",
@@ -341,6 +349,26 @@ func TestDeclares(t *testing.T) {
 	}
 	if !config.DeclaresEnv("NODE_ENV") || config.DeclaresEnv("PORT") {
 		t.Errorf("DeclaresEnv is wrong about what the file names")
+	}
+}
+
+// The stage of the Dockerfile travels with the commit for the reason the
+// Dockerfile path does: which stages a file has is a fact about the file, so a
+// rebuild of an old commit builds the stage that commit asked for.
+func TestTheDockerfileTargetTravelsWithTheCommit(t *testing.T) {
+	if got := DockerfileTarget(nil, "web"); got != "web" {
+		t.Errorf("DockerfileTarget(nil) = %q, want the project's", got)
+	}
+
+	config, err := Parse([]byte(`{"build": {"dockerfileTarget": "worker"}}`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if got := DockerfileTarget(config, "web"); got != "worker" {
+		t.Errorf("the file did not win: %q", got)
+	}
+	if got := fmt.Sprint(config.Declares()); got != "[build.dockerfileTarget]" {
+		t.Errorf("Declares() = %s", got)
 	}
 }
 

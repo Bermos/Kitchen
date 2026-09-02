@@ -228,6 +228,11 @@ func TestRefusingAnUnworkableProcessList(t *testing.T) {
 			`"dockerfilePath": "../shared/Dockerfile"}}]`,
 		"an absolute workload Dockerfile": `[{"name": "api", "type": "service", "port": 8080, ` +
 			`"build": {"dockerfilePath": "/Dockerfile"}}]`,
+		// A stage is refused on the shape of its name, by the one rule the
+		// project's own target is refused by: a name the dockerfile frontend
+		// cannot hold could never match a stage that exists.
+		"a workload stage no Dockerfile stage could be called": `[{"name": "api", "type": "service", ` +
+			`"port": 8080, "build": {"dockerfileTarget": "1st stage"}}]`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			recorder := h.do(t, http.MethodPatch, "/api/v1/projects/shop", `{"processes": `+body+`}`)
@@ -298,7 +303,8 @@ func TestAWorkloadsBuildPathsAreSpelledTheWayABuildSpellsThem(t *testing.T) {
 	recorder := h.do(t, http.MethodPatch, "/api/v1/projects/shop", `{
 		"processes": [
 			{"name": "api", "type": "service", "port": 8080,
-			 "build": {"rootDirectory": " ./services/api/ ", "dockerfilePath": "./docker/prod.Dockerfile"}},
+			 "build": {"rootDirectory": " ./services/api/ ", "dockerfilePath": "./docker/prod.Dockerfile",
+			           "dockerfileTarget": " api-runtime "}},
 			{"name": "worker", "type": "worker", "build": {"rootDirectory": "."}}
 		]
 	}`)
@@ -320,6 +326,11 @@ func TestAWorkloadsBuildPathsAreSpelledTheWayABuildSpellsThem(t *testing.T) {
 	}
 	if api.Build.DockerfilePath != "docker/prod.Dockerfile" {
 		t.Errorf("the Dockerfile was not cleaned: %q", api.Build.DockerfilePath)
+	}
+	// A stage is spelled by the same one place, so it reads back as the name
+	// a build would look for rather than as what was typed around it.
+	if api.Build.DockerfileTarget != "api-runtime" {
+		t.Errorf("the stage was not spelled the way a build spells it: %q", api.Build.DockerfileTarget)
 	}
 
 	// "." is the repository itself, not a path component — the reading the

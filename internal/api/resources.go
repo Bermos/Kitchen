@@ -118,6 +118,12 @@ type createProjectRequest struct {
 	Previews         *bool  `json:"previews,omitempty"`
 	RootDirectory    string `json:"rootDirectory,omitempty"`
 	DockerfilePath   string `json:"dockerfilePath,omitempty"`
+	// DockerfileTarget is the stage of a multi-stage Dockerfile to ship. It
+	// is here for the reason the two paths are: the preflight lists the
+	// stages the file declares while the form is still open, and a project
+	// created without the one it meant builds a different stage and reports
+	// success.
+	DockerfileTarget string `json:"dockerfileTarget,omitempty"`
 }
 
 // defaultProductionBranch is the CRD's own default for
@@ -183,6 +189,7 @@ func (s *Server) createProject(w http.ResponseWriter, req *http.Request) {
 	body.ProductionBranch = strings.TrimSpace(body.ProductionBranch)
 	body.RootDirectory = normalizeRootDirectory(body.RootDirectory)
 	body.DockerfilePath = normalizeDockerfilePath(body.DockerfilePath)
+	body.DockerfileTarget = normalizeDockerfileTarget(body.DockerfileTarget)
 
 	if err := validateProjectName(body.Name); err != nil {
 		badRequest(w, "%s", err.Error())
@@ -193,6 +200,10 @@ func (s *Server) createProject(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	if err := checkBuildPath("dockerfilePath", body.DockerfilePath, withinBuildRoot); err != nil {
+		badRequest(w, "%s", err.Error())
+		return
+	}
+	if err := checkDockerfileTarget(body.DockerfileTarget); err != nil {
 		badRequest(w, "%s", err.Error())
 		return
 	}
@@ -241,8 +252,9 @@ func (s *Server) createProject(w http.ResponseWriter, req *http.Request) {
 			},
 			Previews: kitchenv1alpha1.PreviewsSpec{Enabled: ptr.To(previews)},
 			Build: kitchenv1alpha1.ProjectBuildSpec{
-				RootDirectory:  body.RootDirectory,
-				DockerfilePath: body.DockerfilePath,
+				RootDirectory:    body.RootDirectory,
+				DockerfilePath:   body.DockerfilePath,
+				DockerfileTarget: body.DockerfileTarget,
 			},
 			// Creating a project is self-service, and the account that creates
 			// one is its admin (docs/AUTH.md, "Who may do what"). The grant is
@@ -352,7 +364,10 @@ type patchProjectRequest struct {
 	PreviewsProtected  *bool   `json:"previewsProtected,omitempty"`
 	BuildStrategy      *string `json:"buildStrategy,omitempty"`
 	DockerfilePath     *string `json:"dockerfilePath,omitempty"`
-	RootDirectory      *string `json:"rootDirectory,omitempty"`
+	// DockerfileTarget is the stage of a multi-stage Dockerfile to ship; an
+	// empty string clears it, which is the file's last stage again.
+	DockerfileTarget *string `json:"dockerfileTarget,omitempty"`
+	RootDirectory    *string `json:"rootDirectory,omitempty"`
 	// Env is on this request only so that it can be refused by name. This
 	// route is the project's own settings and is the admin's; environment
 	// variables are the day job and are the developer's, on
@@ -688,6 +703,13 @@ func applyProjectBuildAndRuntime(project *kitchenv1alpha1.Project, body patchPro
 			return err
 		}
 		project.Spec.Build.DockerfilePath = dockerfile
+	}
+	if body.DockerfileTarget != nil {
+		target := normalizeDockerfileTarget(*body.DockerfileTarget)
+		if err := checkDockerfileTarget(target); err != nil {
+			return err
+		}
+		project.Spec.Build.DockerfileTarget = target
 	}
 	if body.RootDirectory != nil {
 		root := normalizeRootDirectory(*body.RootDirectory)
@@ -1788,6 +1810,7 @@ func changedProjectFields(body patchProjectRequest, continuity continuityChange)
 		{"previewsProtected", body.PreviewsProtected != nil},
 		{"buildStrategy", body.BuildStrategy != nil},
 		{"dockerfilePath", body.DockerfilePath != nil},
+		{"dockerfileTarget", body.DockerfileTarget != nil},
 		{"rootDirectory", body.RootDirectory != nil},
 		{"port", body.Port != nil},
 		{"replicas", body.Replicas != nil},

@@ -145,6 +145,9 @@ export interface Project {
   previewsProtected: boolean;
   buildStrategy?: string;
   dockerfilePath?: string;
+  /** The stage of a multi-stage Dockerfile this project ships. Absent is the
+   * file's last stage. */
+  dockerfileTarget?: string;
   rootDirectory?: string;
   env?: EnvVar[];
   port?: number;
@@ -254,6 +257,9 @@ export interface ProjectSettings {
   previewsProtected?: boolean;
   buildStrategy?: string;
   dockerfilePath?: string;
+  /** The stage of a multi-stage Dockerfile to ship; an empty string clears it,
+   * which is the file's last stage again. */
+  dockerfileTarget?: string;
   rootDirectory?: string;
   port?: number;
   replicas?: number;
@@ -302,6 +308,10 @@ export interface NewProject {
    * corrected it on the form rather than after a failed build. */
   rootDirectory?: string;
   dockerfilePath?: string;
+  /** The stage of a multi-stage Dockerfile to ship, sent with the project
+   * because creating one starts a build and a build of the wrong stage
+   * succeeds. */
+  dockerfileTarget?: string;
 }
 
 export interface Revision {
@@ -322,6 +332,9 @@ export interface Build {
   phase?: string;
   git: Revision;
   detectedFramework?: string;
+  /** The stage of the Dockerfile this build was told to produce, absent for
+   * the file's last stage. What it was given, not what the project says now. */
+  dockerfileTarget?: string;
   /** The kitchen.json this commit carried, when it carried one. */
   config?: RepoConfig;
   image?: string;
@@ -348,6 +361,10 @@ export interface BuildWorkload {
   image?: string;
   repository?: string;
   job?: string;
+  /** The stage of this workload's Dockerfile its build was told to produce,
+   * absent for the file's last stage. What it was given, not what the project
+   * says now. */
+  dockerfileTarget?: string;
   message?: string;
 }
 
@@ -1243,6 +1260,10 @@ export interface Process {
 export interface ProcessBuild {
   strategy: string;
   dockerfilePath?: string;
+  /** The stage of that Dockerfile this workload names. Absent means it names
+   * none and the project's own stage stands in; what each image was actually
+   * built to is on the build. */
+  dockerfileTarget?: string;
   rootDirectory?: string;
 }
 
@@ -1544,6 +1565,10 @@ export interface Detection {
   ref?: string;
   rootDirectory?: string;
   dockerfile: boolean;
+  /** The named stages that Dockerfile declares, in file order, so the stage to
+   * ship is chosen from what the file has rather than typed. Absent for a
+   * single-stage file and for a repository with no Dockerfile to read. */
+  stages?: string[];
   files?: string[];
   /** The repository itself could not be read: it is not there, or the
    * connection's credential cannot see it. The one `detected: false` that

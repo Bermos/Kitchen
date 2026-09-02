@@ -86,6 +86,14 @@ type detectionView struct {
 	// silently changes the strategy.
 	Dockerfile bool `json:"dockerfile"`
 
+	// Stages are the named stages that Dockerfile declares, in file order,
+	// so the stage to ship can be chosen from what the file has rather than
+	// typed and found out about later. Absent for a repository with no
+	// Dockerfile where the project says one is, and for one whose stages are
+	// all unnamed — which is the ordinary single-stage file, and is why an
+	// empty list is not an answer about a target being wrong.
+	Stages []string `json:"stages,omitempty"`
+
 	// Files are the names at the build root, so somebody who disagrees with
 	// the verdict can see what it was reached from.
 	Files []string `json:"files,omitempty"`
@@ -231,6 +239,15 @@ func (s *Server) detectRepository(w http.ResponseWriter, req *http.Request) {
 		Dockerfile:    signals.Dockerfile,
 		Files:         signals.Files,
 	}
+	if signals.Dockerfile {
+		// One more read, and only when there is a file to read: what stages
+		// it declares is the difference between choosing the one to ship and
+		// guessing at it. A file that cannot be read now is not an error —
+		// the rest of the answer stands, and the field is simply absent.
+		if stages, err := detect.DockerfileStages(detectCtx, reader, target); err == nil {
+			view.Stages = stages
+		}
+	}
 	if found, ok := framework.Detect(signals); ok {
 		view.Detected = true
 		view.Framework = found.Name
@@ -280,6 +297,32 @@ func checkBuildPath(field, value, within string) error {
 		return fmt.Errorf("%s must stay inside %s (got %q)", field, within, value)
 	}
 	return nil
+}
+
+// normalizeDockerfileTarget spells a project's Dockerfile target the way a
+// build spells it. Case is left alone: the frontend matches a stage name
+// without regard to it, and lowercasing here would report back something
+// other than what was written.
+func normalizeDockerfileTarget(target string) string {
+	return detect.NormalizeTarget(target)
+}
+
+// checkDockerfileTarget refuses a target that no Dockerfile stage could be
+// called.
+//
+// Which stages a file actually has is not knowable here — the repository is
+// not read on a write, and the file changes with every commit — so what is
+// checked is the shape of the name. A name the dockerfile frontend cannot
+// hold is one that could never match a stage, and refusing it on the form
+// beats a build that fails several minutes later with a builder's sentence
+// about an option nobody typed. The preflight is where the actual stages come
+// from, and it lists them.
+func checkDockerfileTarget(target string) error {
+	if detect.ValidTarget(target) {
+		return nil
+	}
+	return fmt.Errorf("dockerfileTarget must name a stage of the Dockerfile — %s (got %q)",
+		detect.StageNameRule, target)
 }
 
 // The two things a project's build paths are relative to, named once so the
