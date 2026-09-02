@@ -56,6 +56,20 @@ func DockerfilePath(config *kitchenv1alpha1.RepoConfig, projectPath string) stri
 	return config.Build.DockerfilePath
 }
 
+// DockerfileTarget is the stage of the Dockerfile this commit ships: the
+// file's, or the project's.
+//
+// It travels with the commit for the reason the Dockerfile path does — which
+// stages a file has is a fact about the file, so a rebuild of an old commit
+// builds the stage that commit named rather than the one the project names
+// today.
+func DockerfileTarget(config *kitchenv1alpha1.RepoConfig, projectTarget string) string {
+	if config == nil || config.Build == nil || config.Build.DockerfileTarget == "" {
+		return projectTarget
+	}
+	return config.Build.DockerfileTarget
+}
+
 // Runtime overlays the file's runtime declarations onto the runtime the
 // project and the detected framework produced.
 //

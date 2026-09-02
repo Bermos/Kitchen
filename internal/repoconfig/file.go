@@ -27,6 +27,7 @@ import (
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/appconfig"
+	"github.com/Bermos/Kitchen/internal/detect"
 )
 
 // File is kitchen.json as it is written, which is not quite how the platform
@@ -47,8 +48,9 @@ type File struct {
 
 // FileBuild is the `build` object.
 type FileBuild struct {
-	Strategy       string `json:"strategy,omitempty"`
-	DockerfilePath string `json:"dockerfilePath,omitempty"`
+	Strategy         string `json:"strategy,omitempty"`
+	DockerfilePath   string `json:"dockerfilePath,omitempty"`
+	DockerfileTarget string `json:"dockerfileTarget,omitempty"`
 
 	// RootDirectory is here only so that it can be refused by name. It is
 	// the first thing somebody arriving from vercel.json will reach for, and
@@ -175,6 +177,17 @@ func (f File) buildConfig() (*kitchenv1alpha1.RepoBuildConfig, error) {
 			return nil, err
 		}
 		build.DockerfilePath = dockerfile
+	}
+	if target := detect.NormalizeTarget(f.Build.DockerfileTarget); target != "" {
+		// Refused here rather than at the build, because the file is read
+		// before anything is created and a name no stage could have will
+		// never match one: BuildKit would fail the build several minutes
+		// later with its own sentence about a target it could not find.
+		if !detect.ValidTarget(target) {
+			return nil, fmt.Errorf("%w: build.dockerfileTarget must name a stage of the Dockerfile — %s (got %q)",
+				ErrInvalid, detect.StageNameRule, f.Build.DockerfileTarget)
+		}
+		build.DockerfileTarget = target
 	}
 	if *build == (kitchenv1alpha1.RepoBuildConfig{}) {
 		return nil, nil

@@ -134,6 +134,29 @@ func buildDockerfilePath(project *kitchenv1alpha1.Project, build *kitchenv1alpha
 		repoconfig.DockerfilePath(build.Status.Config, project.Spec.Build.DockerfilePath))
 }
 
+// buildDockerfileTarget is the stage of that Dockerfile this build ships: the
+// one the commit's own kitchen.json named, and the project's setting where it
+// named none. Empty is the file's last stage.
+//
+// It is resolved here, beside the file it names a stage of, because the same
+// answer is needed three times — the builder's `--target`, the refusal a
+// buildpacks build gets, and the record written onto the Build — and a stage
+// resolved twice is a stage two of them could disagree about.
+func buildDockerfileTarget(project *kitchenv1alpha1.Project, build *kitchenv1alpha1.Build) string {
+	return detect.NormalizeTarget(
+		repoconfig.DockerfileTarget(build.Status.Config, project.Spec.Build.DockerfileTarget))
+}
+
+// dockerfileTargetSource says where a build's target was declared, so a
+// refusal sends somebody to the place they can change it rather than to the
+// other one.
+func dockerfileTargetSource(build *kitchenv1alpha1.Build) string {
+	if config := build.Status.Config; config != nil && config.Build != nil && config.Build.DockerfileTarget != "" {
+		return "this commit's " + kitchenv1alpha1.RepoConfigFileName
+	}
+	return "this project's build settings"
+}
+
 // readConfig reads the commit's kitchen.json and records it on the Build,
 // before the build Job exists.
 //

@@ -254,6 +254,7 @@ const settings = reactive({
   previewsProtected: true,
   buildStrategy: "auto",
   dockerfilePath: "",
+  dockerfileTarget: "",
   rootDirectory: "",
   // 0 is "let the platform decide": the port then comes from the framework
   // each build detects, and the field shows what that would be.
@@ -374,6 +375,7 @@ function loadSettings(from: Project) {
   settings.previewsProtected = from.previewsProtected;
   settings.buildStrategy = from.buildStrategy || "auto";
   settings.dockerfilePath = from.dockerfilePath ?? "";
+  settings.dockerfileTarget = from.dockerfileTarget ?? "";
   settings.rootDirectory = from.rootDirectory ?? "";
   settings.port = from.port ?? 0;
   settings.replicas = from.replicas ?? 1;
@@ -416,6 +418,7 @@ async function saveSettings() {
       previewsProtected: settings.previewsProtected,
       buildStrategy: settings.buildStrategy,
       dockerfilePath: settings.dockerfilePath,
+      dockerfileTarget: settings.dockerfileTarget,
       rootDirectory: settings.rootDirectory,
       port: settings.port,
       replicas: settings.replicas,
@@ -1228,6 +1231,16 @@ function host(url?: string): string {
                 :help="declaredInRepo('build.dockerfilePath') ? 'Set by the repository; this is overwritten at every build.' : 'Relative to the root directory.'"
               >
                 <UInput v-model="settings.dockerfilePath" placeholder="Dockerfile" class="w-full font-mono" />
+              </UFormField>
+              <UFormField
+                label="Dockerfile stage"
+                :help="
+                  declaredInRepo('build.dockerfileTarget')
+                    ? 'Set by the repository; this is overwritten at every build.'
+                    : 'Which stage of a multi-stage Dockerfile to ship. Empty is its last stage.'
+                "
+              >
+                <UInput v-model="settings.dockerfileTarget" placeholder="the last stage" class="w-full font-mono" />
               </UFormField>
               <UFormField label="Root directory" help="For monorepos.">
                 <UInput v-model="settings.rootDirectory" placeholder="." class="w-full font-mono" />

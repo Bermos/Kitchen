@@ -91,6 +91,7 @@ func TestCreateProjectSendsTheBuildContext(t *testing.T) {
 
 	if code := h.run("projects", "create", testProject, "--repo", "acme/mono",
 		"--root-directory", "apps/shop", "--dockerfile", "Dockerfile.web",
+		"--dockerfile-target", "web",
 		"--production-branch", "trunk", "--previews",
 		"--connection", gitConnection, "--registry", registryConnection, "--json"); code != 0 {
 		t.Fatalf("exit %d: %s", code, h.stderr.String())
@@ -106,6 +107,11 @@ func TestCreateProjectSendsTheBuildContext(t *testing.T) {
 	}
 	if sent.RootDirectory != "apps/shop" || sent.DockerfilePath != "Dockerfile.web" {
 		t.Errorf("the build context did not travel with the project: %+v", sent)
+	}
+	// The stage travels with it too, and for a sharper reason: the first
+	// build starts with the project, and a build of the wrong stage succeeds.
+	if sent.DockerfileTarget != "web" {
+		t.Errorf("the Dockerfile target did not travel with the project: %+v", sent)
 	}
 	if sent.ProductionBranch != "trunk" {
 		t.Errorf("production branch %q", sent.ProductionBranch)
@@ -172,6 +178,57 @@ func TestCreateProjectDoesNotAskAboutADockerfile(t *testing.T) {
 	h.platform.detected = &detection{Detected: false, Dockerfile: true}
 
 	if code := h.run("projects", "create", testProject, "--repo", "acme/shop",
+		"--connection", gitConnection, "--registry", registryConnection, "--json"); code != 0 {
+		t.Fatalf("exit %d: %s", code, h.stderr.String())
+	}
+}
+
+// A stage the Dockerfile does not declare is a question, not a refusal — the
+// preflight read one commit, and the change about to be pushed may add it —
+// but it is asked, because the alternative is a build several minutes later
+// failing in BuildKit's words about an option nobody typed.
+func TestCreateProjectAsksAboutAStageTheDockerfileDoesNotHave(t *testing.T) {
+	h := newHarness(t)
+	h.platform.connections = twoConnections()
+	h.platform.detected = &detection{
+		Detected: true, Framework: "dockerfile", Strategy: "dockerfile",
+		Dockerfile: true, Stages: []string{"deps", "build", "web"},
+	}
+
+	// Nothing to answer the question, so it is a failure naming the flag
+	// rather than a wait — every question here has one.
+	if code := h.run("projects", "create", testProject, "--repo", "acme/shop",
+		"--dockerfile-target", "runtime",
+		"--connection", gitConnection, "--registry", registryConnection, "--json"); code == 0 {
+		t.Fatalf("a stage the file does not declare was not questioned: %s", h.stderr.String())
+	}
+	if creates := h.platform.sent("POST", "/projects"); len(creates) != 0 {
+		t.Errorf("the project was created anyway: %d creates", len(creates))
+	}
+
+	// And --yes answers it, because the person may know something the
+	// preflight does not.
+	h = newHarness(t)
+	h.platform.connections = twoConnections()
+	h.platform.detected = &detection{
+		Detected: true, Framework: "dockerfile", Strategy: "dockerfile",
+		Dockerfile: true, Stages: []string{"deps", "build", "web"},
+	}
+	if code := h.run("projects", "create", testProject, "--repo", "acme/shop",
+		"--dockerfile-target", "runtime", "--yes",
+		"--connection", gitConnection, "--registry", registryConnection, "--json"); code != 0 {
+		t.Fatalf("exit %d: %s", code, h.stderr.String())
+	}
+
+	// A stage the file does declare is no question at all.
+	h = newHarness(t)
+	h.platform.connections = twoConnections()
+	h.platform.detected = &detection{
+		Detected: true, Framework: "dockerfile", Strategy: "dockerfile",
+		Dockerfile: true, Stages: []string{"deps", "build", "web"},
+	}
+	if code := h.run("projects", "create", testProject, "--repo", "acme/shop",
+		"--dockerfile-target", "web",
 		"--connection", gitConnection, "--registry", registryConnection, "--json"); code != 0 {
 		t.Fatalf("exit %d: %s", code, h.stderr.String())
 	}

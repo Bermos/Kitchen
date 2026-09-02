@@ -63,6 +63,7 @@ func newProjectCreateCommand(r *Runtime) *cobra.Command {
 		previews   bool
 		root       string
 		dockerfile string
+		target     string
 		link       bool
 		yes        bool
 	)
@@ -84,8 +85,10 @@ a Dockerfile, and which port it will be given. A repository nothing was
 recognised in is not refused — it is a question, and --yes answers it.
 
 Creating a project starts a build of its production branch straight away, so
---root-directory and --dockerfile are sent with it rather than set afterwards:
-a monorepo corrected by a later change is corrected one failed build too late.
+--root-directory, --dockerfile and --dockerfile-target are sent with it rather
+than set afterwards: a monorepo corrected by a later change is corrected one
+failed build too late, and a multi-stage Dockerfile whose last stage is not the
+runtime ships the wrong image and reports success.
 
 It is the one command a CI key cannot run. A project's creator becomes its
 admin and an admin issues keys, so creating one is a person's; a key signed in
@@ -100,6 +103,7 @@ with KITCHEN_API_KEY is refused, and says so.`),
 				branch:     branch,
 				root:       root,
 				dockerfile: dockerfile,
+				target:     target,
 				link:       link,
 				yes:        yes,
 			}
@@ -117,6 +121,8 @@ with KITCHEN_API_KEY is refused, and says so.`),
 	cmd.Flags().BoolVar(&previews, "previews", false, "deploy a preview for every pull request")
 	cmd.Flags().StringVar(&root, "root-directory", "", "the directory within the repository to build")
 	cmd.Flags().StringVar(&dockerfile, "dockerfile", "", "a Dockerfile to build with, relative to the root directory")
+	cmd.Flags().StringVar(&target, "dockerfile-target", "",
+		"the stage of that Dockerfile to ship (default: its last stage)")
 	cmd.Flags().BoolVar(&link, "link", true, "write .kitchen/project.json for the new project")
 	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "answer every question this would otherwise ask")
 
@@ -152,6 +158,7 @@ type createOptions struct {
 	previews   *bool
 	root       string
 	dockerfile string
+	target     string
 	link       bool
 	yes        bool
 }
@@ -198,6 +205,8 @@ func createProject(parent context.Context, r *Runtime, options createOptions) er
 		r.printer().warn("could not read the repository first: %v", err)
 	} else if err := confirmLayout(r, verdict, options); err != nil {
 		return err
+	} else if err := confirmTarget(r, verdict, options); err != nil {
+		return err
 	}
 
 	// The branch the preflight settled on is the branch the project deploys
@@ -217,6 +226,7 @@ func createProject(parent context.Context, r *Runtime, options createOptions) er
 		Previews:         options.previews,
 		RootDirectory:    options.root,
 		DockerfilePath:   options.dockerfile,
+		DockerfileTarget: options.target,
 	})
 	if err != nil {
 		return err
@@ -347,6 +357,40 @@ func confirmLayout(r *Runtime, verdict *detection, options createOptions) error 
 		message = verdict.Message
 	}
 	return confirm(r, message+". Create the project anyway?", options.yes)
+}
+
+// confirmTarget asks about a --dockerfile-target the repository's Dockerfile
+// declares no stage for.
+//
+// It is a question rather than a refusal for the reason confirmLayout's is:
+// the preflight read one commit of one branch, and the person may be naming a
+// stage the change they are about to push adds. It is asked at all because
+// the alternative is finding out from a build several minutes later, in
+// BuildKit's own words about an option nobody typed.
+//
+// A file with no *named* stages says nothing here: an ordinary single-stage
+// Dockerfile lists none, and reading that as "the stage is not there" would
+// ask the question of every repository.
+func confirmTarget(r *Runtime, verdict *detection, options createOptions) error {
+	if options.target == "" || len(verdict.Stages) == 0 {
+		return nil
+	}
+	for _, stage := range verdict.Stages {
+		if strings.EqualFold(stage, options.target) {
+			return nil
+		}
+	}
+	return confirm(r, fmt.Sprintf("%s declares no stage %q — it has %s. Create the project anyway?",
+		dockerfileName(options), options.target, strings.Join(verdict.Stages, ", ")), options.yes)
+}
+
+// dockerfileName is the Dockerfile as a message should name it: the path that
+// was asked for, or the conventional name when none was.
+func dockerfileName(options createOptions) string {
+	if options.dockerfile != "" {
+		return options.dockerfile
+	}
+	return "Dockerfile"
 }
 
 // describeDetection is the verdict as one line.

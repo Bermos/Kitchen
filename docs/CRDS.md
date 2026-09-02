@@ -500,6 +500,10 @@ spec:
     strategy: auto                      # auto takes the Kitchen default; dockerfile | buildpacks decide here
     dockerfilePath: Dockerfile          # when strategy: dockerfile; relative to rootDirectory,
                                         # which it may not leave
+    dockerfileTarget: web               # which stage of a multi-stage Dockerfile to ship.
+                                        # Unset ships its last stage; a stage the file does not
+                                        # declare fails the build, and so does setting this on a
+                                        # build that resolves to buildpacks, which has no stages
     rootDirectory: .                    # the build root: the directory that is built, and what
                                         # every path the project declares is relative to. Both
                                         # strategies mean the same directory by it
@@ -784,6 +788,9 @@ spec:
 status:
   phase: Succeeded                      # Queued | Running | Succeeded | Failed | Cancelled
   detectedFramework: nextjs
+  dockerfileTarget: web                 # the stage this build was told to produce, as it was told
+                                        # it: unset for the file's last stage, and never recomputed
+                                        # from settings that have moved since
   config:                               # the commit's own kitchen.json, when it carried one
     path: kitchen.json                  # relative to the repository root
     build: { strategy: dockerfile }     # only the keys the file actually set
@@ -961,7 +968,8 @@ lifecycle, building anyway if it cannot.
 Beside detection, and independently of it, the build reads the commit's own
 `kitchen.json` — one more request, made whatever the strategy is, from the project's
 root directory. What it declares lands on `status.config`, and what it declares wins:
-the strategy and the Dockerfile it names configure the build Job, and its runtime,
+the strategy, the Dockerfile and the stage of it the file names configure the build
+Job, and its runtime,
 variables and processes are merged over the project's into the Release this build
 writes. So a rollback replays the configuration its commit declared rather than
 today's, and a build of an old commit builds it the way that commit asked. The file

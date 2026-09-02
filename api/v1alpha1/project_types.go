@@ -66,6 +66,26 @@ type ProjectBuildSpec struct {
 	// +kubebuilder:default=Dockerfile
 	DockerfilePath string `json:"dockerfilePath,omitempty"`
 
+	// DockerfileTarget is the stage of a multi-stage Dockerfile that
+	// produces the image to run — BuildKit's `--target`. Empty is the file's
+	// last stage, which is what every build shipped before this existed.
+	//
+	// It is a setting because the last stage is often not the one to run: a
+	// file that also builds a test image, a toolchain or a migration runner
+	// ends on whichever of them was written last, and a build of the wrong
+	// one **succeeds**. Naming the stage is how a project says which
+	// artifact it meant, and a name the Dockerfile does not have fails the
+	// build rather than shipping something else.
+	//
+	// It means nothing to the buildpacks lifecycle, which has no stages at
+	// all. A build that resolves to buildpacks with a target set fails
+	// saying so rather than quietly ignoring it — a target silently dropped
+	// is the same wrong image this exists to stop.
+	// +kubebuilder:validation:Pattern=`^[A-Za-z][A-Za-z0-9_.-]*$`
+	// +kubebuilder:validation:MaxLength=128
+	// +optional
+	DockerfileTarget string `json:"dockerfileTarget,omitempty"`
+
 	// RootDirectory is the build root: the directory within the repository
 	// that is built (monorepo support), and the directory every path this
 	// project declares is relative to — DockerfilePath, and the commit's own

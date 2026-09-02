@@ -153,14 +153,18 @@ const (
 // has no framework for, which is a fine thing to create a project from if it
 // has a Dockerfile or if the person knows something the detector does not.
 type detection struct {
-	Detected      bool     `json:"detected"`
-	Framework     string   `json:"framework,omitempty"`
-	Strategy      string   `json:"strategy,omitempty"`
-	Port          int32    `json:"port,omitempty"`
-	Ref           string   `json:"ref,omitempty"`
-	RootDirectory string   `json:"rootDirectory,omitempty"`
-	Dockerfile    bool     `json:"dockerfile"`
-	Files         []string `json:"files,omitempty"`
+	Detected      bool   `json:"detected"`
+	Framework     string `json:"framework,omitempty"`
+	Strategy      string `json:"strategy,omitempty"`
+	Port          int32  `json:"port,omitempty"`
+	Ref           string `json:"ref,omitempty"`
+	RootDirectory string `json:"rootDirectory,omitempty"`
+	Dockerfile    bool   `json:"dockerfile"`
+	// Stages are the named stages that Dockerfile declares, which is what
+	// --dockerfile-target may be one of. Empty for a single-stage file, and
+	// for a repository the platform has no Dockerfile to read.
+	Stages []string `json:"stages,omitempty"`
+	Files  []string `json:"files,omitempty"`
 	// Unreadable is the repository itself not having been read: it is not
 	// there, or the connection's credential cannot see it. It is the one
 	// verdict that is not about the build context, and the one a corrected
@@ -236,6 +240,9 @@ type build struct {
 	Phase             string   `json:"phase,omitempty"`
 	Git               revision `json:"git"`
 	DetectedFramework string   `json:"detectedFramework,omitempty"`
+	// DockerfileTarget is the stage of the Dockerfile this build was told to
+	// produce, empty for the file's last stage.
+	DockerfileTarget string `json:"dockerfileTarget,omitempty"`
 	// Config is the kitchen.json this commit carried, when it carried one.
 	Config      *repoConfig `json:"config,omitempty"`
 	Image       string      `json:"image,omitempty"`
@@ -925,6 +932,10 @@ type newProject struct {
 	Previews         *bool  `json:"previews,omitempty"`
 	RootDirectory    string `json:"rootDirectory,omitempty"`
 	DockerfilePath   string `json:"dockerfilePath,omitempty"`
+	// DockerfileTarget is the stage of a multi-stage Dockerfile to ship, sent
+	// with the project for the reason the two paths are: creating one starts
+	// a build, and a build that shipped the wrong stage reports success.
+	DockerfileTarget string `json:"dockerfileTarget,omitempty"`
 }
 
 // envVarWrite is one variable on the way *in*, which is the only direction a

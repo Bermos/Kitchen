@@ -554,6 +554,18 @@ type BuildStatus struct {
 	// +optional
 	DetectedFramework string `json:"detectedFramework,omitempty"`
 
+	// DockerfileTarget is the stage of the Dockerfile this build was told to
+	// produce, empty for the file's last stage. It is written when the build
+	// job is created, from the commit's own kitchen.json where it declared
+	// one and from the project where it did not.
+	//
+	// It is recorded rather than derived because the project's setting moves
+	// and a build does not: what this build shipped is the target it was
+	// given, and a screen that recomputed it from today's settings would
+	// describe an image nobody built.
+	// +optional
+	DockerfileTarget string `json:"dockerfileTarget,omitempty"`
+
 	// Config is the kitchen.json this commit carried, when it carried one.
 	//
 	// It is on the Build rather than on the Project because it belongs to a

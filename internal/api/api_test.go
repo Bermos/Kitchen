@@ -70,6 +70,9 @@ const (
 	// of that exchange, which is more repetitions of one string than goconst
 	// tolerates.
 	eventStream = "text/event-stream"
+	// webStage is the Dockerfile stage the target assertions name. It is one
+	// string in three places for the same reason eventStream is.
+	webStage = "web"
 )
 
 // issuer is a stand-in for the platform's identity provider: it serves the
@@ -1062,6 +1065,61 @@ func TestCreatingAProjectKeepsTheBuildContext(t *testing.T) {
 	}
 	if stored.Spec.Build.DockerfilePath != "Dockerfile.web" {
 		t.Errorf("the Dockerfile path did not stick: %q", stored.Spec.Build.DockerfilePath)
+	}
+}
+
+// The stage of a multi-stage Dockerfile is the one build input whose absence
+// produces a working image of the wrong thing, so it travels with the create
+// like the two paths do — and it is refused here when no stage could be called
+// that, since BuildKit would otherwise say so minutes into a build.
+func TestCreatingAProjectKeepsTheDockerfileTarget(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+
+	recorder := h.do(t, http.MethodPost, "/api/v1/projects",
+		`{"name":"blog","repo":"acme/blog","connection":"gh","registry":"registry",`+
+			`"dockerfileTarget":" `+webStage+` "}`)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	stored := &kitchenv1alpha1.Project{}
+	if err := h.server.get(context.Background(), otherProject, stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored.Spec.Build.DockerfileTarget != webStage {
+		t.Errorf("the Dockerfile target did not stick: %q", stored.Spec.Build.DockerfileTarget)
+	}
+	if !strings.Contains(recorder.Body.String(), `"dockerfileTarget":"web"`) {
+		t.Errorf("the project does not answer its own target: %s", recorder.Body.String())
+	}
+}
+
+func TestADockerfileTargetNoStageCouldBeCalledIsRefused(t *testing.T) {
+	for _, body := range []string{
+		`{"name":"blog","repo":"acme/blog","connection":"gh","registry":"registry",` +
+			`"dockerfileTarget":"web stage"}`,
+		`{"name":"blog","repo":"acme/blog","connection":"gh","registry":"registry",` +
+			`"dockerfileTarget":"--output=type=oci"}`,
+	} {
+		h := newHarness(t, nil, fixtures()...)
+		recorder := h.do(t, http.MethodPost, "/api/v1/projects", body)
+		if recorder.Code != http.StatusBadRequest {
+			t.Fatalf("want 400 for %s, got %d: %s", body, recorder.Code, recorder.Body.String())
+		}
+		if !strings.Contains(recorder.Body.String(), "dockerfileTarget") {
+			t.Errorf("the refusal does not name the field: %s", recorder.Body.String())
+		}
+	}
+
+	// And on the settings PATCH, which is the other way in — where an empty
+	// string is not a refusal but the way the target is cleared.
+	h := newHarness(t, nil, fixtures()...)
+	if recorder := h.do(t, http.MethodPatch, "/api/v1/projects/shop",
+		`{"dockerfileTarget":"web/stage"}`); recorder.Code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if recorder := h.do(t, http.MethodPatch, "/api/v1/projects/shop",
+		`{"dockerfileTarget":""}`); recorder.Code != http.StatusOK {
+		t.Fatalf("clearing the target: want 200, got %d: %s", recorder.Code, recorder.Body.String())
 	}
 }
 

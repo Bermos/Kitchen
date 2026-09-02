@@ -79,10 +79,17 @@ it.
 |---|---|
 | `strategy` | `auto`, `dockerfile` or `buildpacks`. `auto` reads the repository and decides — a Dockerfile wins, and everything else recognised goes to buildpacks. |
 | `dockerfilePath` | The Dockerfile, relative to the project's root directory — which it may not leave, since the root directory is all a build sees. Used when the strategy is, or resolves to, `dockerfile`. |
+| `dockerfileTarget` | Which stage of that Dockerfile produces the image to run — BuildKit's `--target`. Leave it out to ship the file's last stage. A stage the file does not declare fails the build; so does naming one on a commit built with `buildpacks`, which has no stages. |
 
 ```json
-{"build": {"strategy": "dockerfile", "dockerfilePath": "docker/prod.Dockerfile"}}
+{"build": {"strategy": "dockerfile", "dockerfilePath": "docker/prod.Dockerfile", "dockerfileTarget": "web"}}
 ```
+
+A multi-stage Dockerfile ends on whichever stage was written last, and that is
+often not the runtime — a file that also builds a test image or a toolchain
+ships one of those, with a green build and nothing to notice. `dockerfileTarget`
+is how a commit says which artifact it meant, and it travels with the commit:
+rebuilding an old one builds the stage that commit asked for.
 
 ### `runtime`
 

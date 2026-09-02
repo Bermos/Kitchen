@@ -24,10 +24,11 @@ their defaults:
 {"productionBranch": "main", "previews": true}
 ```
 
-`rootDirectory` and `dockerfilePath` may be set here too, which is what
-`POST /connections/{name}/detect` exists to get right: the preflight reads the
-repository the way a build would, and a build context it showed to be wrong is
-corrected on the form rather than after the first build has failed.
+`rootDirectory`, `dockerfilePath` and `dockerfileTarget` may be set here too,
+which is what `POST /connections/{name}/detect` exists to get right: the
+preflight reads the repository the way a build would — down to the stages the
+Dockerfile declares — and a build context it showed to be wrong is corrected on
+the form rather than after the first build has failed.
 
 **The root directory is the build root**, and `dockerfilePath` is relative to
 it — so a project whose application is in `apps/shop` and whose build file is
@@ -39,6 +40,20 @@ context, and the buildpacks lifecycle is pointed at it. Nothing above it is
 part of the build, so a path that leaves it — `../shared/Dockerfile`,
 `/Dockerfile` — is a `400` here and on the settings PATCH rather than a build
 that fails without being able to say why.
+
+**`dockerfileTarget` is which stage of that Dockerfile to ship** — BuildKit's
+`--target`, and absent means the file's last stage, which is what every build
+did before the field existed. It is here because the last stage is frequently
+not the runtime: a file that also builds a test image or a toolchain ends on
+whichever of them was written last, and a build of the wrong one *succeeds*.
+The preflight answers `stages` for exactly this reason, so the choice is made
+from the names the file declares. A name no stage could have — anything but a
+letter followed by letters, digits, dots, dashes and underscores — is a `400`
+here and on the settings PATCH; a name the Dockerfile does not declare is not
+knowable until the build, and fails it with a message naming the stages the
+file has. Naming a target on a project built with `buildpacks` fails the build
+too: the lifecycle has no stages, so the only thing it could do with a target
+is ignore it, and an ignored target is the same wrong image.
 
 From a terminal this is [`kitchen projects create`](../CLI.md#creating-a-project),
 which runs the preflight, creates the project and links the directory to it in
@@ -91,14 +106,16 @@ optional and absent ones keep their value:
 
 ```json
 {"productionBranch": "trunk", "previews": true, "previewsProtected": false,
- "buildStrategy": "dockerfile", "dockerfilePath": "build/Dockerfile", "rootDirectory": "apps/shop",
+ "buildStrategy": "dockerfile", "dockerfilePath": "build/Dockerfile", "dockerfileTarget": "web", "rootDirectory": "apps/shop",
  "port": 8080, "replicas": 3, "cpu": "250m", "memory": "512Mi"}
 ```
 
 `cpu` and `memory` are Kubernetes quantities and set request and limit alike;
-an empty string clears one. `rootDirectory` and `dockerfilePath` mean here
-exactly what they mean on the create above — the build root, and a path
-relative to it — and are refused with a `400` for the same reason. The
+an empty string clears one. `rootDirectory`, `dockerfilePath` and
+`dockerfileTarget` mean here exactly what they mean on the create above — the
+build root, a path relative to it, and the stage of that file to ship — and are
+refused with a `400` for the same reasons. An empty `dockerfileTarget` clears
+the target, which is the file's last stage again. The
 repository and the two connections are deliberately not editable: rebinding a
 project to another repository is a different project.
 

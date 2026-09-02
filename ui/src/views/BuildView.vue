@@ -224,6 +224,10 @@ const logStreamer = (query: LogQuery, onLine: (line: LogLine) => void, signal: A
           <span v-if="build.git.pullRequest" class="font-mono">#{{ build.git.pullRequest }}</span>
           <span v-if="build.git.author" class="font-mono">{{ build.git.author }}</span>
           <span v-if="build.detectedFramework" class="font-mono">{{ build.detectedFramework }}, detected</span>
+          <!-- Which stage of a multi-stage Dockerfile this build shipped. It
+               is the build's own record rather than the project's setting,
+               which is the point: the setting moves and the image does not. -->
+          <span v-if="build.dockerfileTarget" class="font-mono">stage {{ build.dockerfileTarget }}</span>
         </template>
         <template #actions>
           <UButton

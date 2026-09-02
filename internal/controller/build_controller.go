@@ -183,6 +183,22 @@ const (
 	// the two moved too far.
 	reasonBuildOutOfMemory = "BuildOutOfMemory"
 
+	// reasonTargetNotSupported is a build that named a Dockerfile stage and
+	// is not being built from a Dockerfile. The buildpacks lifecycle has no
+	// stages — it turns one application directory into one image — so the
+	// target it was handed could only be ignored, and an ignored target is
+	// the successful build of the wrong artifact this whole setting exists
+	// to stop. Nothing is built, and the message says which of the two
+	// settings to change.
+	reasonTargetNotSupported = "DockerfileTargetNotSupported"
+
+	// reasonTargetNotFound is a build whose Dockerfile has no stage by the
+	// name it was given. BuildKit is what discovers it — the file is not read
+	// before the build — and this is where its own sentence about a target it
+	// could not find is turned into one naming the stage, the file and where
+	// the name was declared.
+	reasonTargetNotFound = "DockerfileTargetNotFound"
+
 	// reasonSourceUnreviewed is a build refused because the commit cannot be
 	// shown to have arrived through a reviewed pull request. It is a distinct
 	// reason from a build that failed, because nothing was built: the change
@@ -397,6 +413,13 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 			strategy = detected.Strategy
 			target.Strategy = strategy
 		}
+		// Checked once the strategy is settled and before anything is
+		// created: a stage means nothing to a lifecycle that has none, and a
+		// build that ignored it would push the wrong image and report
+		// success.
+		if stop, err := r.refuseUnbuildableTarget(ctx, build, project, strategy); stop != nil {
+			return *stop, err
+		}
 		// Every image this commit produces, the project's own first. A
 		// project whose workloads declare no build of their own plans one,
 		// which is the build that was always here.
@@ -459,6 +482,9 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		}
 		build.Status.Phase = kitchenv1alpha1.BuildRunning
 		build.Status.DetectedFramework = detected.Name
+		// What this build was told to produce, recorded at the moment it was
+		// told: the project's setting moves, and this build does not.
+		build.Status.DockerfileTarget = buildDockerfileTarget(project, build)
 		build.Status.Cache = cache
 		build.Status.Workloads = workloads
 		build.Status.StartedAt = ptr.To(metav1.Now())
@@ -496,9 +522,17 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		// own setting, and the sentence that says so is the difference between
 		// a fix and "the build died and I do not know why".
 		reason := reasonBuildFailed
-		if outOfMemory(build.Status.Failure) {
+		switch {
+		case outOfMemory(build.Status.Failure):
 			reason = reasonBuildOutOfMemory
 			build.Status.Failure.Message = outOfMemoryMessage(build.Status.Failure, builds.Resources.Memory)
+		// A build that asked for a stage its Dockerfile does not have fails
+		// in the builder's own words about an option nobody typed. It is the
+		// repository's own failure like any other broken build, and it is
+		// restated here because the fix is a name in one of two files.
+		case targetNotFound(build, build.Status.Failure):
+			reason = reasonTargetNotFound
+			build.Status.Failure.Message = targetNotFoundMessage(project, build)
 		}
 		// Which workload died is the first thing a unit's owner needs, and
 		// the message the diagnosis produced says everything but that.
@@ -867,6 +901,12 @@ func dockerfilePod(
 		buildContext += ":" + root
 	}
 	dockerfile := plan.DockerfilePath
+	// The stage of that file to ship, and the whole of what stops a
+	// multi-stage build shipping whichever stage happens to be written last.
+	// Empty is the last stage, which is what every build did before a project
+	// could say otherwise, so the option is added only when there is one — a
+	// `target=` with nothing after it is not the same request.
+	target := buildDockerfileTarget(project, build)
 
 	output := "type=image,name=" + plan.Tag + ",push=true"
 	attestations := []string{}
@@ -889,6 +929,9 @@ func dockerfilePod(
 		"--frontend", "dockerfile.v0",
 		"--opt", "context=" + buildContext,
 		"--opt", "filename=" + dockerfile,
+	}
+	if target != "" {
+		args = append(args, "--opt", "target="+target)
 	}
 	for _, attestation := range attestations {
 		args = append(args, "--opt", attestation)
@@ -1795,9 +1838,13 @@ func (r *BuildReconciler) fail(
 	// failure: the distinction is the provider's, and it separates "your
 	// Dockerfile is broken" from "the platform is". A build that ran out of
 	// memory is on the first side of that line — it ran, and what it asked
-	// for was more than a build may take.
+	// for was more than a build may take. So is a build that named a stage
+	// its own Dockerfile does not declare: the builder ran and the repository
+	// is what has to change.
 	state := gitprovider.CommitFailure
-	if reason != reasonBuildFailed && reason != reasonBuildOutOfMemory {
+	switch reason {
+	case reasonBuildFailed, reasonBuildOutOfMemory, reasonTargetNotFound:
+	default:
 		state = gitprovider.CommitError
 	}
 	r.git().reportBuild(ctx, project, build, state, message)

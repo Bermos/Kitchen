@@ -111,22 +111,25 @@ type projectView struct {
 	//
 	// An operator reads `admin` on every project, including one they are not
 	// listed on, which is access.ProjectRoleFor's rule and not this view's.
-	Role               string       `json:"role"`
-	Repo               string       `json:"repo"`
-	Connection         string       `json:"connection"`
-	Registry           string       `json:"registry"`
-	ProductionBranch   string       `json:"productionBranch"`
-	RequirePullRequest bool         `json:"requirePullRequest"`
-	Previews           bool         `json:"previews"`
-	PreviewsProtected  bool         `json:"previewsProtected"`
-	BuildStrategy      string       `json:"buildStrategy,omitempty"`
-	DockerfilePath     string       `json:"dockerfilePath,omitempty"`
-	RootDirectory      string       `json:"rootDirectory,omitempty"`
-	Env                []envVarView `json:"env,omitempty"`
-	Port               int32        `json:"port,omitempty"`
-	Replicas           *int32       `json:"replicas,omitempty"`
-	CPU                string       `json:"cpu,omitempty"`
-	Memory             string       `json:"memory,omitempty"`
+	Role               string `json:"role"`
+	Repo               string `json:"repo"`
+	Connection         string `json:"connection"`
+	Registry           string `json:"registry"`
+	ProductionBranch   string `json:"productionBranch"`
+	RequirePullRequest bool   `json:"requirePullRequest"`
+	Previews           bool   `json:"previews"`
+	PreviewsProtected  bool   `json:"previewsProtected"`
+	BuildStrategy      string `json:"buildStrategy,omitempty"`
+	DockerfilePath     string `json:"dockerfilePath,omitempty"`
+	// DockerfileTarget is the stage of a multi-stage Dockerfile this project
+	// ships. Absent is the file's last stage.
+	DockerfileTarget string       `json:"dockerfileTarget,omitempty"`
+	RootDirectory    string       `json:"rootDirectory,omitempty"`
+	Env              []envVarView `json:"env,omitempty"`
+	Port             int32        `json:"port,omitempty"`
+	Replicas         *int32       `json:"replicas,omitempty"`
+	CPU              string       `json:"cpu,omitempty"`
+	Memory           string       `json:"memory,omitempty"`
 	// Health is what the platform checks the application with, timings
 	// resolved. It is always present, because every environment is probed:
 	// a project that declared nothing is reported with the default check
@@ -191,6 +194,7 @@ func newProjectView(project *kitchenv1alpha1.Project, role access.ProjectRole) p
 		PreviewsProtected:  project.Spec.Previews.IsProtected(),
 		BuildStrategy:      string(project.Spec.Build.Strategy),
 		DockerfilePath:     project.Spec.Build.DockerfilePath,
+		DockerfileTarget:   project.Spec.Build.DockerfileTarget,
 		RootDirectory:      project.Spec.Build.RootDirectory,
 		Env:                envVarViews(project.Spec.Env),
 		Port:               project.Spec.Runtime.Port,
@@ -391,6 +395,11 @@ type buildView struct {
 	Phase             string       `json:"phase,omitempty"`
 	Git               revisionView `json:"git"`
 	DetectedFramework string       `json:"detectedFramework,omitempty"`
+	// DockerfileTarget is the stage of the Dockerfile this build was told to
+	// produce, absent for the file's last stage. It is what the build was
+	// given rather than what the project says today, so an old build reads
+	// as the artifact it actually shipped.
+	DockerfileTarget string `json:"dockerfileTarget,omitempty"`
 	// Config is the kitchen.json the commit carried, when it carried one:
 	// where it was read from, and every setting it took over from the
 	// project. Absent means the commit had no file, which is the ordinary
@@ -711,6 +720,7 @@ func newBuildView(build *kitchenv1alpha1.Build) buildView {
 		Phase:             string(build.Status.Phase),
 		Git:               newRevisionView(build),
 		DetectedFramework: build.Status.DetectedFramework,
+		DockerfileTarget:  build.Status.DockerfileTarget,
 		Config:            newRepoConfigView(build.Status.Config),
 		Image:             build.Status.Image,
 		Artifact:          newArtifactView(build.Status.Artifact),
