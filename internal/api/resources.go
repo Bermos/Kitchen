@@ -182,9 +182,17 @@ func (s *Server) createProject(w http.ResponseWriter, req *http.Request) {
 	body.Registry = strings.TrimSpace(body.Registry)
 	body.ProductionBranch = strings.TrimSpace(body.ProductionBranch)
 	body.RootDirectory = normalizeRootDirectory(body.RootDirectory)
-	body.DockerfilePath = strings.TrimSpace(body.DockerfilePath)
+	body.DockerfilePath = normalizeDockerfilePath(body.DockerfilePath)
 
 	if err := validateProjectName(body.Name); err != nil {
+		badRequest(w, "%s", err.Error())
+		return
+	}
+	if err := checkBuildPath("rootDirectory", body.RootDirectory, withinRepository); err != nil {
+		badRequest(w, "%s", err.Error())
+		return
+	}
+	if err := checkBuildPath("dockerfilePath", body.DockerfilePath, withinBuildRoot); err != nil {
 		badRequest(w, "%s", err.Error())
 		return
 	}
@@ -669,10 +677,18 @@ func applyProjectBuildAndRuntime(project *kitchenv1alpha1.Project, body patchPro
 		}
 	}
 	if body.DockerfilePath != nil {
-		project.Spec.Build.DockerfilePath = strings.TrimSpace(*body.DockerfilePath)
+		dockerfile := normalizeDockerfilePath(*body.DockerfilePath)
+		if err := checkBuildPath("dockerfilePath", dockerfile, withinBuildRoot); err != nil {
+			return err
+		}
+		project.Spec.Build.DockerfilePath = dockerfile
 	}
 	if body.RootDirectory != nil {
-		project.Spec.Build.RootDirectory = strings.TrimSpace(*body.RootDirectory)
+		root := normalizeRootDirectory(*body.RootDirectory)
+		if err := checkBuildPath("rootDirectory", root, withinRepository); err != nil {
+			return err
+		}
+		project.Spec.Build.RootDirectory = root
 	}
 	if body.Port != nil {
 		// Zero is not "no port": it is the project handing the question back

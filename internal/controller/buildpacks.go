@@ -17,6 +17,8 @@ limitations under the License.
 package controller
 
 import (
+	"path"
+
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/utils/ptr"
 
@@ -126,10 +128,12 @@ func buildpacksPod(
 	cache *kitchenv1alpha1.BuildCacheStatus,
 	credsSecret, gitSecret, tagRef string,
 ) corev1.PodTemplateSpec {
-	appDir := buildpacksSourceDir
-	if root := buildRootDir(project); root != "" {
-		appDir += "/" + root
-	}
+	// The clone lands the whole repository and the lifecycle is pointed
+	// inside it: the build root is what is built, exactly as it is for the
+	// container strategy, which reaches the same meaning by scoping its git
+	// context instead. What is above the build root is on the volume and in
+	// no build — the lifecycle only ever reads `-app`.
+	appDir := path.Join(buildpacksSourceDir, buildRootDir(project))
 
 	workspace := corev1.VolumeMount{Name: volumeWorkspace, MountPath: buildpacksWorkspaceDir}
 	layers := corev1.VolumeMount{Name: volumeLayers, MountPath: buildpacksLayersDir}

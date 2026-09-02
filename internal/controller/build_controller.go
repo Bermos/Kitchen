@@ -22,7 +22,6 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
-	"strings"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -45,6 +44,7 @@ import (
 	"github.com/Bermos/Kitchen/internal/attestation"
 	"github.com/Bermos/Kitchen/internal/audit"
 	"github.com/Bermos/Kitchen/internal/clickhouse"
+	"github.com/Bermos/Kitchen/internal/detect"
 	"github.com/Bermos/Kitchen/internal/framework"
 	"github.com/Bermos/Kitchen/internal/gitprovider"
 	"github.com/Bermos/Kitchen/internal/provider"
@@ -697,14 +697,22 @@ func dockerfilePod(
 	credsSecret, gitSecret, tagRef string,
 	attest kitchenv1alpha1.BuildAttestationSpec,
 ) corev1.PodTemplateSpec {
+	// The build root goes into the git reference, which is what makes it the
+	// project's root directory rather than a directory the build happens to
+	// pass through: BuildKit's git source hands the frontend that
+	// subdirectory as the entire context, so `filename` below is resolved
+	// relative to it — the same relation the lifecycle gets from `-app`, and
+	// the one detection checks against the provider's listing.
+	//
+	// A Dockerfile above the build root is therefore not addressable from
+	// here, deliberately. Nothing above it is part of the build, which is
+	// why a path that leaves it is refused where it is written rather than
+	// resolved into a context that does not contain it.
 	buildContext := repoCloneURL(project) + "#" + build.Spec.Git.SHA
 	if root := buildRootDir(project); root != "" {
 		buildContext += ":" + root
 	}
 	dockerfile := buildDockerfilePath(project, build)
-	if dockerfile == "" {
-		dockerfile = "Dockerfile"
-	}
 
 	output := "type=image,name=" + tagRef + ",push=true"
 	attestations := []string{}
@@ -850,14 +858,13 @@ func repoCloneURL(project *kitchenv1alpha1.Project) string {
 	return fmt.Sprintf("https://github.com/%s.git", project.Spec.Source.Repo)
 }
 
-// buildRootDir is the directory within the repository the build builds, empty
-// when that is the repository itself.
+// buildRootDir is the build root: the directory within the repository the
+// build builds, empty when that is the repository itself. Every path the
+// project declares is relative to it, and nothing above it is part of the
+// build — see internal/detect, which is where that meaning is written down
+// once for the two strategies, detection and the API's preflight alike.
 func buildRootDir(project *kitchenv1alpha1.Project) string {
-	root := project.Spec.Build.RootDirectory
-	if root == "." {
-		return ""
-	}
-	return strings.Trim(root, "/")
+	return detect.NormalizeRoot(project.Spec.Build.RootDirectory)
 }
 
 // dockerConfigVolume mounts the registry credentials the build pushes with.

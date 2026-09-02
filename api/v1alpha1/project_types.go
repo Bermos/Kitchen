@@ -61,12 +61,20 @@ type ProjectBuildSpec struct {
 	// +kubebuilder:default=auto
 	Strategy BuildStrategy `json:"strategy,omitempty"`
 
-	// Path to the Dockerfile, relative to RootDirectory. Used when the
-	// strategy is (or resolves to) dockerfile.
+	// Path to the Dockerfile, relative to RootDirectory, which it may not
+	// leave. Used when the strategy is (or resolves to) dockerfile.
 	// +kubebuilder:default=Dockerfile
 	DockerfilePath string `json:"dockerfilePath,omitempty"`
 
-	// Directory within the repository to build from (monorepo support).
+	// RootDirectory is the build root: the directory within the repository
+	// that is built (monorepo support), and the directory every path this
+	// project declares is relative to — DockerfilePath, and the commit's own
+	// kitchen.json. Nothing above it is part of the build.
+	//
+	// Both strategies mean the same directory by it and reach it
+	// differently: BuildKit takes the commit as a git context and is handed
+	// this directory as the whole of it, while the buildpacks lifecycle is
+	// pointed at it inside a clone of the repository.
 	// +kubebuilder:default=.
 	RootDirectory string `json:"rootDirectory,omitempty"`
 }

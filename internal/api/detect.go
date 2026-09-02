@@ -193,7 +193,7 @@ func (s *Server) detectRepository(w http.ResponseWriter, req *http.Request) {
 		Repo:               body.Repo,
 		Ref:                ref,
 		RootDirectory:      normalizeRootDirectory(body.RootDirectory),
-		DockerfilePath:     strings.TrimSpace(body.DockerfilePath),
+		DockerfilePath:     normalizeDockerfilePath(body.DockerfilePath),
 		ConsiderDockerfile: true,
 	}
 
@@ -245,14 +245,49 @@ func (s *Server) detectRepository(w http.ResponseWriter, req *http.Request) {
 
 // normalizeRootDirectory spells the build root the way a build spells it, so
 // that the preflight is answering about the directory the build would read
-// rather than about a near miss.
+// rather than about a near miss. One implementation, in internal/detect,
+// because the build spelling it differently is the whole failure this exists
+// to avoid.
 func normalizeRootDirectory(root string) string {
-	root = strings.TrimSpace(root)
-	if root == "." {
+	return detect.NormalizeRoot(root)
+}
+
+// normalizeDockerfilePath spells a project's Dockerfile the way a build
+// spells it — cleaned, and relative to the build root.
+//
+// An unset field stays unset rather than becoming "Dockerfile": the CRD's own
+// default says that, and writing it out here would turn "the project has not
+// said" into a setting somebody has to notice they can clear.
+func normalizeDockerfilePath(dockerfile string) string {
+	if strings.TrimSpace(dockerfile) == "" {
 		return ""
 	}
-	return strings.Trim(root, "/")
+	return detect.NormalizeDockerfile(dockerfile)
 }
+
+// checkBuildPath refuses a path that reaches outside the directory it is
+// relative to — an absolute one, or one that climbs out with "..".
+//
+// The root directory is the build root, and everything a project declares is
+// relative to it: BuildKit is handed that directory as its whole context and
+// the buildpacks lifecycle is pointed at it, so there is nothing above it for
+// a path to be resolved against. A repository's own kitchen.json has always
+// been refused one — this is the same rule, at the other place the same paths
+// are written, and a refusal on the form beats a build that cannot say why it
+// failed.
+func checkBuildPath(field, value, within string) error {
+	if detect.LeavesRoot(value) {
+		return fmt.Errorf("%s must stay inside %s (got %q)", field, within, value)
+	}
+	return nil
+}
+
+// The two things a project's build paths are relative to, named once so the
+// refusal reads the same wherever it is written.
+const (
+	withinRepository = "the repository"
+	withinBuildRoot  = "the project's root directory, which is the whole of what a build sees"
+)
 
 // gitProviderFor resolves the git provider behind a connection, using the
 // credential the operator holds and never handing it back.

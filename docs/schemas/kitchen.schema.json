@@ -21,7 +21,7 @@
         },
         "dockerfilePath": {
           "type": "string",
-          "description": "Path to the Dockerfile, relative to the project's root directory. Used when the strategy is, or resolves to, dockerfile.",
+          "description": "Path to the Dockerfile, relative to the project's root directory, which it may not leave. Used when the strategy is, or resolves to, dockerfile.",
           "examples": ["Dockerfile", "docker/Dockerfile"]
         }
       }
