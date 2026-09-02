@@ -89,6 +89,11 @@ type createClaimRequest struct {
 	// cluster's answer, and land on the claim.
 	Volume *kitchenv1alpha1.VolumeConfig `json:"volume,omitempty"`
 
+	// Redis is what the instance has to be: a cache or a queue, how much
+	// memory it may use, and which Valkey. `usage` is the one that matters —
+	// see RedisConfig for why getting it backwards loses work silently.
+	Redis *kitchenv1alpha1.RedisConfig `json:"redis,omitempty"`
+
 	// DataClass classifies the data the resource will hold: public,
 	// internal, confidential or strictlyConfidential. It may not exceed the
 	// project's own class — a classification narrows going down, never
@@ -304,6 +309,7 @@ var claimShapers = map[string]claimShaper{
 	kitchenv1alpha1.ClaimTypeObjectStore: objectStoreClaimShaper{},
 	kitchenv1alpha1.ClaimTypeVolume:      volumeClaimShaper{},
 	kitchenv1alpha1.ClaimTypeInngest:     inngestClaimShaper{},
+	kitchenv1alpha1.ClaimTypeRedis:       redisClaimShaper{},
 }
 
 // claimShaperFor resolves a request's type to the table's row and the API's

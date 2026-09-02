@@ -27,6 +27,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/provider/cache"
 )
 
 // ProviderCNPG is the one provider that is not somewhere else. It provisions
@@ -73,8 +74,9 @@ func (p *CNPGProbe) Probe(ctx context.Context) Result {
 	}
 }
 
-// WithCluster is the probe factory the operator and the API use: cnpg is
-// resolved against this cluster, and everything else goes to Default.
+// WithCluster is the probe factory the operator and the API use: the two
+// providers that are this cluster are resolved against it, and everything else
+// goes to Default.
 //
 // It exists because Factory takes a Connection and a Secret, which is the
 // right shape for every provider that lives somewhere else and no shape at all
@@ -82,19 +84,24 @@ func (p *CNPGProbe) Probe(ctx context.Context) Result {
 // signature five implementations share.
 func WithCluster(reader client.Reader) Factory {
 	return func(conn *kitchenv1alpha1.Connection, creds *corev1.Secret) (Probe, error) {
-		if conn.Spec.Provider == ProviderCNPG {
+		switch conn.Spec.Provider {
+		case ProviderCNPG:
 			return &CNPGProbe{Reader: reader}, nil
+		case cache.ProviderValkey:
+			return &ValkeyProbe{}, nil
 		}
 		return Default(conn, creds)
 	}
 }
 
 // ThirdParty reports whether a provider is somebody else. Every one is except
-// cnpg, which provisions into the cluster the platform is installed in — so a
-// resilience register that listed it among the third parties a function
-// depends on would be naming the platform as its own supplier, which is both
-// wrong and the sort of wrong an auditor notices.
-func ThirdParty(providerName string) bool { return providerName != ProviderCNPG }
+// cnpg and valkey, which provision into the cluster the platform is installed
+// in — so a resilience register that listed either among the third parties a
+// function depends on would be naming the platform as its own supplier, which
+// is both wrong and the sort of wrong an auditor notices.
+func ThirdParty(providerName string) bool {
+	return providerName != ProviderCNPG && providerName != cache.ProviderValkey
+}
 
 // NeedsCredentials reports whether a provider has a credential to store at
 // all. It is what lets the reconciler and the API stop looking for a Secret

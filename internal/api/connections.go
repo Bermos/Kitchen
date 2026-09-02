@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -38,6 +39,7 @@ import (
 	"github.com/Bermos/Kitchen/internal/clickhouse"
 	"github.com/Bermos/Kitchen/internal/gitprovider"
 	"github.com/Bermos/Kitchen/internal/provider"
+	"github.com/Bermos/Kitchen/internal/provider/cache"
 	"github.com/Bermos/Kitchen/internal/provider/objectstore"
 )
 
@@ -74,6 +76,10 @@ type connectionCredential struct {
 	Password        string `json:"password,omitempty"`
 	AccessKeyID     string `json:"accessKeyId,omitempty"`
 	SecretAccessKey string `json:"secretAccessKey,omitempty"`
+	// URL is the whole credential for a server the platform reaches over
+	// one — a redis connection, whose address and password are the same
+	// string.
+	URL string `json:"url,omitempty"`
 }
 
 type createConnectionRequest struct {
@@ -105,11 +111,12 @@ var knownProviders = map[string]bool{
 	"github": true, "gitlab": true, "gitea": true,
 	registryProvider: true, "neon": true, provider.ProviderCNPG: true,
 	objectstore.ProviderS3: true, "inngest": true,
+	cache.ProviderValkey: true, cache.ProviderRedis: true,
 }
 
 var providerNames = []string{
 	"github", "gitlab", "gitea", registryProvider, "neon", provider.ProviderCNPG,
-	objectstore.ProviderS3, "inngest",
+	objectstore.ProviderS3, "inngest", cache.ProviderValkey, cache.ProviderRedis,
 }
 
 const registryProvider = "dockerRegistry"
@@ -150,6 +157,16 @@ func connectionSecretData(providerName string, config map[string]any, credential
 			objectstore.CredentialKeyAccessKeyID:     []byte(credential.AccessKeyID),
 			objectstore.CredentialKeySecretAccessKey: []byte(credential.SecretAccessKey),
 		}, corev1.SecretTypeOpaque, nil
+	case providerName == cache.ProviderRedis:
+		if credential.URL == "" {
+			return nil, "", fmt.Errorf("provider %s is reached over the server's URL, which carries its "+
+				"password: pass {\"credential\": {\"url\": \"rediss://:password@host:6379\"}}",
+				cache.ProviderRedis)
+		}
+		if err := validRedisURL(credential.URL); err != nil {
+			return nil, "", err
+		}
+		return map[string][]byte{cache.CredentialKeyURL: []byte(credential.URL)}, corev1.SecretTypeOpaque, nil
 	default:
 		return nil, "", fmt.Errorf("unknown provider %q: one of %s", providerName, strings.Join(providerNames, ", "))
 	}
@@ -268,8 +285,8 @@ func (s *Server) createConnection(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	if !needsCredential && body.Credential != nil {
-		badRequest(w, "provider %s takes no credential: it provisions Postgres into this cluster with the "+
-			"operator's own account, and there is nothing to store", body.Provider)
+		badRequest(w, "provider %s takes no credential: it provisions into this cluster with the operator's "+
+			"own account, and there is nothing to store", body.Provider)
 		return
 	}
 	var data map[string][]byte
@@ -445,8 +462,9 @@ func (s *Server) testConnection(w http.ResponseWriter, req *http.Request) {
 	creds := &corev1.Secret{}
 	switch {
 	case !provider.NeedsCredentials(providerName):
-		// Nothing to try: the test is whether this cluster runs the database
-		// operator, which the probe asks the cluster and not a credential.
+		// Nothing to try: what there is to ask is of this cluster — whether it
+		// runs the database operator — which the probe asks it and not a
+		// credential.
 	case body.Credential != nil:
 		data, secretType, err := connectionSecretData(providerName, config, body.Credential)
 		if err != nil {
@@ -544,8 +562,8 @@ func (s *Server) patchConnection(w http.ResponseWriter, req *http.Request) {
 	}
 
 	if body.Credential != nil && !provider.NeedsCredentials(connection.Spec.Provider) {
-		badRequest(w, "provider %s takes no credential: it provisions Postgres into this cluster with the "+
-			"operator's own account, and there is nothing to rotate", connection.Spec.Provider)
+		badRequest(w, "provider %s takes no credential: it provisions into this cluster with the operator's "+
+			"own account, and there is nothing to rotate", connection.Spec.Provider)
 		return
 	}
 	if body.Credential != nil {
@@ -784,4 +802,23 @@ func (s *Server) listConnectionRepositories(w http.ResponseWriter, req *http.Req
 		Items:     items,
 		Truncated: listing.Truncated,
 	})
+}
+
+// validRedisURL checks that a redis connection's credential is an address
+// the platform can actually dial. The scheme matters: rediss:// is the
+// encrypted one, and an application handed the wrong one fails to connect at
+// all rather than connecting insecurely.
+func validRedisURL(raw string) error {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return fmt.Errorf("credential.url is not a URL: %w", err)
+	}
+	if parsed.Scheme != "redis" && parsed.Scheme != "rediss" {
+		return fmt.Errorf("credential.url starts with redis:// or rediss:// (got %q); rediss is the encrypted "+
+			"one and the binding tells the application which it got", parsed.Scheme)
+	}
+	if parsed.Hostname() == "" {
+		return fmt.Errorf("credential.url names no host")
+	}
+	return nil
 }

@@ -130,6 +130,7 @@ spec:
                 - objectStore
                 - volume
                 - inngest
+                - redis
                 type: string
                 x-kubernetes-validations:
                 - message: 'type is immutable: delete the claim and ask for the other

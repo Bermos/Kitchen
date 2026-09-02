@@ -381,6 +381,80 @@ event and run history live at Inngest under the account's own retention —
 nothing the platform could destroy, which is why the type refuses a
 `deletionPolicy`.
 
+**`redis`** asks a Connection with the `cache` capability for somewhere to
+put what an application can afford to recompute, or work it cannot afford to
+lose:
+
+```sh
+curl -sS -X POST -H "authorization: Bearer $TOKEN" \
+  -d '{"name": "shop-jobs", "project": "shop", "connection": "valkey", "type": "redis",
+       "redis": {"usage": "queue", "maxMemory": "512Mi"}}' \
+  https://kitchen.apps.example.com/api/v1/claims
+```
+
+The binding carries `url`, `host`, `port`, `password` and `tls`. `url` is the
+single-string form every client library takes; `tls` says whether the
+connection is encrypted, which an application should not have to guess.
+
+**`usage` is the field this type exists for**, and it is the one that is
+expensive to get wrong. A cache and a queue are opposite configurations of
+the same server:
+
+| `usage` | eviction | on disk | what running out of memory looks like |
+|---|---|---|---|
+| `cache` (default) | `allkeys-lru` | nothing | a miss, and nobody notices |
+| `queue` | `noeviction` | every write, appended | the enqueue fails, loudly, where the application can retry |
+
+A Sidekiq or BullMQ queue served by an evicting instance drops jobs under
+memory pressure and reports nothing: the queue is empty, the work is gone,
+and the application is none the wiser. So the usage is applied when the
+instance is created, and a provider that cannot honour what the claim asked
+**refuses the claim** rather than binding something that will lose work.
+`cache` is the default because it is the safe one — a cache that turns out to
+be a queue loses work, where a queue that turns out to be a cache only costs
+a volume.
+
+| Field | Default | What it does |
+|---|---|---|
+| `redis.usage` | `cache` | `cache` or `queue`, as above |
+| `redis.maxMemory` | the platform's own | A Kubernetes quantity the instance may not grow past — `"512Mi"` |
+| `redis.version` | the platform's own | The Valkey major, as a number: `"8"` |
+
+**Two providers, and they differ in what they can promise.**
+
+`valkey` runs **one instance per claim** in this cluster — a StatefulSet, a
+Service and a Secret the platform writes with its own account, no operator
+and no install job. It is the one that can honour everything above, because
+it is the one that configures the server. A logical database number inside a
+shared server was considered and rejected: it is not an isolation boundary —
+one tenant's `FLUSHALL` empties another's, there is no per-tenant memory
+limit, and keyspaces collide — and the requirement that matters here cannot
+be shared at all, because `maxmemory-policy` is server-wide. One instance
+cannot offer `noeviction` to a queue and `allkeys-lru` to a cache.
+
+`redis` reaches a server somebody else runs — Upstash, ElastiCache, Aiven, or
+the Valkey a team already has — over the URL its Connection holds. It
+provisions nothing, so it can promise nothing about the server's
+configuration, and it says so rather than guessing: an operator states on the
+Connection what the server is configured for (`usage` in its config), and a
+claim asking for something else is refused. A connection that does not say
+refuses any claim that names a usage at all. `maxMemory` and `version` are
+the server's own and are refused outright.
+
+A preview gets a fresh, empty instance from `valkey` and a fresh, empty
+**logical database at the same server** from `redis`. Both declare
+`synthetic`, because what the preview gets is empty either way — but they are
+not equally isolated, and the difference is worth knowing: a database number
+keeps the preview from reading production's keys and does not keep a
+`FLUSHALL` on either side from emptying both.
+
+`deletionPolicy: Retain` (the default) keeps the instance and everything in
+it; `Delete` destroys both, and for a queue that is somebody's unfinished
+work, which is exactly why Retain is the default. Preview instances are torn
+down with their previews under either policy. At an external server the
+platform destroys nothing on the way out: the keyspace is the server's, and
+emptying somebody else's database is not the platform's to do.
+
 The CLI reaches all of this through `kitchen api`, as for every claim type;
 no command creates a claim.
 
@@ -438,6 +512,8 @@ with the body above.
 | `objectStore` | `s3` | `fresh` — a new, empty bucket of the preview's own with its own credential, versioned when production's is and torn down with the preview: the branch declares provenance synthetic | unaffected | unaffected |
 | `volume` | `storageClass` | `fresh` — a new, empty volume of the same size and class, never a copy of production's: the preview declares provenance synthetic | unaffected | **recreate, with downtime** — a ReadWriteOnce volume attaches to one pod at a time, so the process mounting it runs one replica and is deployed by stopping the old pod before starting the new one — a rolling update would leave the new pod waiting in Multi-Attach for a volume the old pod never releases. Every deploy of that process has a gap in serving; a StorageClass detected to support ReadWriteMany lifts both |
 | `inngest` | `inngest` | `branch` — an Inngest branch environment of the preview's own — its own event stream, function set and run history, empty rather than a copy of production's, selected by INNGEST_ENV on the account's shared branch keys; archived, not deleted, when the preview goes | **blocked** — a connect worker holds an outbound WebSocket to Inngest's gateway that never crosses the interceptor, so nothing can tell when it is idle — and scale to zero is a project-level policy, so every environment of the project keeps its pods, previews included | unaffected |
+| `redis` | `valkey` | `fresh` — a new, empty instance of the preview's own, configured like production's and torn down with the preview: the branch declares provenance synthetic | unaffected | unaffected |
+| `redis` | `redis` | `fresh` — a new, empty keyspace of the preview's own at the same server, torn down with the preview: the branch declares provenance synthetic | unaffected | unaffected |
 <!-- end generated -->
 
 ### Choosing on the claim

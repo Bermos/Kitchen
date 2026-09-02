@@ -71,6 +71,13 @@ const (
 	// claim binds the keys a worker connects with, read from the Inngest
 	// account behind a backgroundJobs-capable Connection.
 	ClaimTypeInngest = "inngest"
+
+	// ClaimTypeRedis is a Redis-speaking cache or queue from a
+	// cache-capable Connection: the Valkey this cluster runs one of per
+	// claim, or a server somebody else runs. What it is *for* — a cache
+	// that may evict, or a queue that must not — is the claim's own
+	// requirement and the one that decides how it is configured.
+	ClaimTypeRedis = "redis"
 )
 
 // ClaimType is what the platform knows about one kind of claim before any
@@ -124,6 +131,7 @@ var ClaimTypes = []ClaimType{
 	// deleting the claim always takes back only what the platform put into
 	// the world, and deletionPolicy has nothing to say.
 	{Name: ClaimTypeInngest, Capability: CapabilityBackgroundJobs, Resource: "Inngest app"},
+	{Name: ClaimTypeRedis, Capability: CapabilityCache, Resource: "cache", HoldsData: true},
 }
 
 // LookupClaimType finds a claim type by the value of spec.type.
@@ -189,7 +197,7 @@ type ResourceClaimSpec struct {
 	// it on a bound claim would leave a database behind while the
 	// application's environment quietly started reading OAuth credentials
 	// out of the same keys. Ask for the other one and delete this.
-	// +kubebuilder:validation:Enum=postgres;oidcClient;objectStore;volume;inngest
+	// +kubebuilder:validation:Enum=postgres;oidcClient;objectStore;volume;inngest;redis
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="type is immutable: delete the claim and ask for the other kind"
 	Type string `json:"type"`
 
@@ -335,6 +343,43 @@ type ObjectStoreConfig struct {
 	// one, and refuses where it cannot; empty asks for no limit.
 	// +optional
 	Size string `json:"size,omitempty"`
+}
+
+// RedisConfig is the `redis` slice of a redis claim's spec.config: what the
+// instance has to be, beyond its existence.
+//
+// `usage` is the field this contract exists for. A cache and a queue are
+// opposite configurations of the same server — one evicts the least recently
+// used key when it fills up, the other refuses the write — and a queue
+// served by an evicting instance drops jobs under memory pressure and
+// reports nothing. Naming it here means the provisioner applies it when the
+// instance is created, and a provider that cannot honour it refuses the
+// claim rather than binding something that will lose work.
+//
+// Everything here is applied when the instance is *created*. Changing the
+// usage of a live instance would mean reconfiguring a server somebody's
+// application is already reading, so asking for a different instance means
+// asking for a different instance.
+type RedisConfig struct {
+	// Usage is what the application intends to do with it: `cache` for what
+	// it can recompute, `queue` for work it cannot. Empty takes the
+	// provisioner's default, which is `cache` — the safe one, because a
+	// cache that turns out to be a queue loses work where a queue that
+	// turns out to be a cache only costs a volume.
+	// +kubebuilder:validation:Enum=cache;queue
+	// +optional
+	Usage string `json:"usage,omitempty"`
+
+	// MaxMemory is a Kubernetes quantity ("512Mi") the instance may not
+	// grow past. Empty takes the platform's default.
+	// +optional
+	MaxMemory string `json:"maxMemory,omitempty"`
+
+	// Version is the Valkey major, as a number: "8". Empty takes the
+	// platform's default. A version no image the platform can run supplies
+	// is a refusal rather than an instance that is not it.
+	// +optional
+	Version string `json:"version,omitempty"`
 }
 
 // OIDCClientConfig is the oidcClient slice of spec.config: what the operator
@@ -578,6 +623,23 @@ func (c *ResourceClaim) ObjectStore() ObjectStoreConfig {
 		return ObjectStoreConfig{}
 	}
 	return *cfg.ObjectStore
+}
+
+// Redis is what the claim asks of its instance, empty for a claim of
+// another type or one that asked for nothing in particular. Config the
+// platform cannot read counts as asking for nothing — the API validates it
+// before it is written.
+func (c *ResourceClaim) Redis() RedisConfig {
+	if c.Spec.Type != ClaimTypeRedis {
+		return RedisConfig{}
+	}
+	var cfg struct {
+		Redis *RedisConfig `json:"redis,omitempty"`
+	}
+	if !c.DecodeConfig(&cfg) || cfg.Redis == nil {
+		return RedisConfig{}
+	}
+	return *cfg.Redis
 }
 
 // ClaimPhase is the coarse lifecycle summary of a ResourceClaim.

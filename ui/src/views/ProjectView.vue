@@ -488,6 +488,15 @@ function claimRequirements(claim: Claim): string[] {
       ...(volume.accessMode ? [volume.accessMode] : []),
     ];
   }
+  if (claim.redis) {
+    // What it is for leads, because it is the fact that decides whether the
+    // instance may drop what is in it.
+    return [
+      claim.redis.usage ?? "cache",
+      ...(claim.redis.maxMemory ? [claim.redis.maxMemory] : []),
+      ...(claim.redis.version ? [`valkey ${claim.redis.version}`] : []),
+    ];
+  }
   if (claim.inngest) {
     // What the worker connects as and where: the app ID is the thing the
     // application has to match, so it is the badge.
@@ -541,6 +550,11 @@ function claimDeletionOutcome(claim: Claim): string {
     return claim.deletionPolicy === "Delete"
       ? "The bucket, its objects and its credential are being deleted at the store."
       : "The bucket and its objects are kept at the store; only the platform's binding is removed.";
+  }
+  if (claim.type === "redis") {
+    return claim.deletionPolicy === "Delete"
+      ? "The instance and everything in it are being destroyed."
+      : "The instance is kept, with whatever is in it.";
   }
   if (claim.type === "volume") {
     return claim.deletionPolicy === "Delete"
