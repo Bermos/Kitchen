@@ -165,12 +165,13 @@ jobs:
                  --set scaleToZero.interceptor.namespace=keda-system \
                  --set scaleToZero.interceptor.port=9090
           # The platform's own Postgres: the defaults, and an installation that
-          # lets the operator put CloudNativePG in for itself.
+          # lets the operator put CloudNativePG in for itself. Where that
+          # operator *runs* is no longer a chart value — it is the
+          # cloudnative-pg addon's spec.namespace, which the operator seeds.
           render ${CHART_BASE} ${CHART_ACME} \
                  --set databases.install.enabled=true
           render ${CHART_BASE} ${CHART_ACME} \
-                 --set databases.namespace=databases \
-                 --set databases.operatorNamespace=cnpg
+                 --set databases.namespace=databases
           # Plain HTTP: the way a cluster comes up before DNS and certificates.
           render ${CHART_BASE} --set kitchen.tls.mode=none
 
@@ -380,7 +381,7 @@ jobs:
             echo "::error::scaleToZero.install.enabled rendered no install ServiceAccount"
             exit 1
           }
-          grep -q -- '--keda-install-service-account=kitchen-keda-install' <<<"${rendered}" || {
+          grep -q -- '--addon-service-account=keda=kitchen-keda-install' <<<"${rendered}" || {
             echo "::error::the operator was not told which account it may install KEDA with"
             exit 1
           }
@@ -441,7 +442,7 @@ jobs:
             echo "::error::databases.install.enabled rendered no install ServiceAccount"
             exit 1
           }
-          grep -q -- '--cnpg-install-service-account=kitchen-cnpg-install' <<<"${rendered}" || {
+          grep -q -- '--addon-service-account=cloudnative-pg=kitchen-cnpg-install' <<<"${rendered}" || {
             echo "::error::the operator was not told which account it may install CloudNativePG with"
             exit 1
           }

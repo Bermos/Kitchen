@@ -110,15 +110,12 @@ spec:
     secretRef: { name: kitchen-objectstore }   # written by the chart; the store's root access key pair
   scaleToZero:
     enabled: true                       # off by default; needs KEDA + the HTTP add-on
-    install: true                       # the operator installs those two itself, as their own releases
     interceptor:                        # what an idling environment's URL points at
       service: keda-add-ons-http-interceptor-proxy
       namespace: kitchen-system
       port: 8080
   databases:
-    install: true                       # off by default; the operator installs CloudNativePG itself
     namespace: kitchen-databases        # where provisioned databases live — never a project's namespace
-    operatorNamespace: cnpg-system      # where CloudNativePG itself runs
   compliance:
     audit:
       enabled: true                     # append-only, hash-chained record of every state transition
