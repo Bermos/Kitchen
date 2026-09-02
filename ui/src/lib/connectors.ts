@@ -139,6 +139,27 @@ export function providerGuidance(provider: string, apiUrl?: string): ProviderGui
           "Testing the connection lists the buckets it can see; a MinIO whose admin API refuses the credential answers with a warning rather than a failure.",
         ],
       };
+    case "valkey":
+      return {
+        tokenLabel: "No credential",
+        purpose:
+          "Kitchen runs one Valkey per claim here on the platform, with the operator's own identity — so there is no account to open and no credential to store or rotate.",
+        permissions: [
+          "Nothing to grant. A queue claim asks for a volume, so the cluster needs a default StorageClass; a cache claim asks for none.",
+          "Testing this connection asks nothing of a provider, because there is none to ask: what could fail here fails on the claim, where the message can name the claim that asked.",
+        ],
+      };
+    case "redis":
+      return {
+        tokenLabel: "Server URL",
+        purpose:
+          "Kitchen hands a claim a keyspace at a Redis or Valkey somebody else runs — Upstash, ElastiCache, Aiven, or a server a team already has. The whole credential is the URL, because a Redis address carries its own password.",
+        permissions: [
+          "redis:// or rediss:// — rediss is the encrypted one, and the binding tells the application which it got rather than letting it guess.",
+          "Say what the server's maxmemory-policy is configured for in the connection's config.usage: cache for an evicting server, queue for one that refuses writes when full. Left unset, a claim naming a usage is refused — a queue bound to an evicting server loses jobs silently.",
+          "Testing the connection dials the server and authenticates: PING, and the server's own +PONG.",
+        ],
+      };
     default:
       return undefined;
   }
