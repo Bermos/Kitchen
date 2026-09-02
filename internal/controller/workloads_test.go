@@ -230,7 +230,7 @@ var _ = Describe("A unit of several workloads", func() {
 		Expect(get(prodName+"-api", route)).To(BeFalse())
 
 		By("saying where it answers, on the environment rather than only in the cluster")
-		status := environmentStatus(ctx, prodName, namespace).FindProcessStatus("api")
+		status := environmentStatus(ctx, prodName).FindProcessStatus("api")
 		Expect(status).NotTo(BeNil())
 		Expect(status.Address).To(Equal("http://" + prodName + "-api." + appNS + ".svc.cluster.local:8080"))
 		Expect(status.Image).To(Equal(apiImage))
@@ -357,11 +357,18 @@ var _ = Describe("A unit of several workloads", func() {
 	})
 })
 
+// testNamespace is where every suite in this package creates its Kitchen
+// objects. It is the operator's own namespace in these tests, and the helpers
+// below take a name rather than a pair because nothing here uses another.
+const testNamespace = "default"
+
 // environmentStatus reads an Environment back, for the assertions that are
-// about what the reconciler recorded rather than what it created.
-func environmentStatus(ctx context.Context, name, namespace string) *kitchenv1alpha1.Environment {
+// about what the reconciler recorded rather than what it created. Every suite
+// in this package puts its objects in testNamespace, so it is not asked for.
+func environmentStatus(ctx context.Context, name string) *kitchenv1alpha1.Environment {
 	env := &kitchenv1alpha1.Environment{}
-	ExpectWithOffset(1, k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, env)).To(Succeed())
+	ExpectWithOffset(1, k8sClient.Get(ctx,
+		types.NamespacedName{Name: name, Namespace: testNamespace}, env)).To(Succeed())
 	return env
 }
 

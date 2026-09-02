@@ -253,7 +253,7 @@ var _ = Describe("A deploy-time task", func() {
 			"a unit deploys as one, so a worker is as much 'taking traffic' as the web process")
 
 		By("saying so on the environment rather than only in a log")
-		env := environmentStatus(ctx, prodName, namespace)
+		env := environmentStatus(ctx, prodName)
 		Expect(env.Status.Phase).To(Equal(kitchenv1alpha1.EnvironmentDeploying))
 		Expect(condition(env, condDeployTasks).Reason).To(Equal("TaskRunning"))
 		Expect(condition(env, condDeployTasks).Message).To(ContainSubstring(started[0].Name))
@@ -267,7 +267,7 @@ var _ = Describe("A deploy-time task", func() {
 		reconcileOnce(prodName)
 		Expect(get(prodName, &appsv1.Deployment{})).To(BeTrue())
 		Expect(get(prodName+"-worker", &appsv1.Deployment{})).To(BeTrue())
-		env = environmentStatus(ctx, prodName, namespace)
+		env = environmentStatus(ctx, prodName)
 		Expect(condition(env, condDeployTasks).Status).To(Equal(metav1.ConditionTrue))
 		Expect(env.FindProcessStatus(migrate).LastRun.Phase).To(Equal(kitchenv1alpha1.RunSucceeded))
 
@@ -335,7 +335,7 @@ var _ = Describe("A deploy-time task", func() {
 			"a failed migration that still rolled the pods would be the outage this feature exists to prevent")
 
 		By("saying what failed, where, and with the run's own words")
-		env := environmentStatus(ctx, prodName, namespace)
+		env := environmentStatus(ctx, prodName)
 		Expect(env.Status.Phase).To(Equal(kitchenv1alpha1.EnvironmentDegraded))
 		blocked := condition(env, condDeployTasks)
 		Expect(blocked.Status).To(Equal(metav1.ConditionFalse))
@@ -377,7 +377,7 @@ var _ = Describe("A deploy-time task", func() {
 		moveTo(prodName, first)
 		Expect(runs(migrate)).To(HaveLen(3),
 			"the release being rolled back to declared work that has to run for the environment to serve it")
-		env := environmentStatus(ctx, prodName, namespace)
+		env := environmentStatus(ctx, prodName)
 		Expect(env.FindProcessStatus(migrate).Release).To(Equal(first))
 		Expect(env.FindProcessStatus(migrate).LastRun.Name).To(Equal(prodName + "-" + migrate + "-3"))
 
@@ -400,14 +400,14 @@ var _ = Describe("A deploy-time task", func() {
 		moveTo(prodName, release(secondImage, []kitchenv1alpha1.ProcessSpec{task()}))
 		Expect(runs(migrate)).To(HaveLen(1),
 			"two migrations at once is worse than a deploy that waited")
-		env := environmentStatus(ctx, prodName, namespace)
+		env := environmentStatus(ctx, prodName)
 		Expect(condition(env, condDeployTasks).Reason).To(Equal("PreviousRunActive"))
 
 		By("starting the new one once the old one is out of the way")
 		finish(prodName+"-"+migrate+"-1", batchv1.JobComplete)
 		reconcileOnce(prodName)
 		Expect(runs(migrate)).To(HaveLen(2))
-		env = environmentStatus(ctx, prodName, namespace)
+		env = environmentStatus(ctx, prodName)
 		Expect(env.FindProcessStatus(migrate).LastRun.Name).To(Equal(prodName + "-" + migrate + "-2"))
 	})
 
@@ -458,7 +458,7 @@ var _ = Describe("A deploy-time task", func() {
 		Expect(get(previewName, &appsv1.Deployment{})).To(BeTrue(),
 			"a task that does not run here cannot be a task this environment waits for")
 
-		env := environmentStatus(ctx, previewName, namespace)
+		env := environmentStatus(ctx, previewName)
 		Expect(env.FindProcessStatus(migrate).Suspended).To(BeTrue(),
 			"a preview's workload list is the project's with a reason beside each entry")
 		Expect(condition(env, condDeployTasks).Status).To(Equal(metav1.ConditionTrue))
@@ -469,7 +469,7 @@ var _ = Describe("A deploy-time task", func() {
 			release(firstImage, []kitchenv1alpha1.ProcessSpec{
 				{Name: "worker", Type: kitchenv1alpha1.ProcessWorker},
 			}))
-		env := environmentStatus(ctx, prodName, namespace)
+		env := environmentStatus(ctx, prodName)
 		Expect(condition(env, condDeployTasks)).To(BeNil(),
 			"a condition every environment carries and that always says the same thing is noise")
 		Expect(get(prodName, &appsv1.Deployment{})).To(BeTrue())

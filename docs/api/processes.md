@@ -582,7 +582,10 @@ The answer names the run that is about to exist, which is what `202` is for:
 ```
 
 The failed run is left exactly where it is, so its output and its message stay
-readable beside the new attempt.
+readable beside the new attempt. A task whose run is **still going** is refused
+with `400` naming that run: the deploy is already waiting for it, and a second
+migration beside the first is what running this once per deploy exists to
+prevent. The wait is bounded by the task's own `timeout`.
 
 ## Failures are visible without `kubectl`
 

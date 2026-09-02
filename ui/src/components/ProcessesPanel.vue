@@ -121,6 +121,13 @@ function hasRuns(process: Process): boolean {
   return process.type === "cron" || process.type === "task";
 }
 
+// Whether "run it again" is a thing to offer. A task whose run is still going
+// is the run the deploy is waiting for, and the API refuses a second one — so
+// the button is not there to be pressed rather than there to be refused.
+function mayRunNow(process: Process): boolean {
+  return mayRun.value && hasRuns(process) && !process.suspended && process.deploy !== "running";
+}
+
 function tone(process: Process) {
   if (process.suspended) return "neutral" as const;
   return process.healthy ? ("success" as const) : ("error" as const);
@@ -261,7 +268,7 @@ function buildOf(process: Process): string {
             {{ timeAgo(process.lastRun.startedAt) }}
           </span>
           <UButton
-            v-if="mayRun && hasRuns(process) && !process.suspended"
+            v-if="mayRunNow(process)"
             color="neutral"
             variant="ghost"
             size="xs"

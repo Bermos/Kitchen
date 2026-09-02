@@ -546,6 +546,18 @@ func (s *Server) retryDeployTask(
 			process.Name, env.Name)
 		return
 	}
+	// A run that is still going is refused rather than queued behind. Asking
+	// for a second migration while the first one may still hold a transaction
+	// open is the thing this feature exists to prevent, and the run that is
+	// already going is the one the deploy is waiting for — bounded by the
+	// task's own timeout, so this refusal cannot last for ever.
+	if status.LastRun != nil && status.LastRun.Phase == kitchenv1alpha1.RunRunning {
+		badRequest(w, "task %q is already running as %s on environment %q: "+
+			"the deploy is waiting for that run, and a second one beside it is what "+
+			"running this once per deploy exists to prevent",
+			process.Name, status.LastRun.Name, env.Name)
+		return
+	}
 	if !s.recorded(w, req, audit.Transition{
 		Object:    env,
 		Kind:      audit.KindEnvironment,

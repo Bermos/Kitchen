@@ -689,6 +689,34 @@ func TestRunningADeployTaskAgainResumesTheDeploy(t *testing.T) {
 	}
 }
 
+// A run that is still going is the run the deploy is waiting for, so asking
+// for another one is refused rather than queued behind it.
+func TestRefusingToRunADeployTaskThatIsAlreadyRunning(t *testing.T) {
+	running := &kitchenv1alpha1.ProcessRun{
+		Name:  controller.DeployTaskRunName(testEnvironment, migrateTask, 1),
+		Phase: kitchenv1alpha1.RunRunning,
+	}
+	h := newHarness(t, nil, withDeployTask(&kitchenv1alpha1.ProcessStatus{
+		Name: migrateTask, Type: kitchenv1alpha1.ProcessTask,
+		Release: testRelease, Attempt: 1, LastRun: running,
+	})...)
+
+	recorder := h.do(t, http.MethodPost, processesPath+"/"+migrateTask+"/runs", "")
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), running.Name) {
+		t.Fatalf("the refusal does not name the run the deploy is waiting for: %s", recorder.Body.String())
+	}
+	env := &kitchenv1alpha1.Environment{}
+	if err := h.server.get(context.Background(), testEnvironment, env); err != nil {
+		t.Fatal(err)
+	}
+	if status := env.FindProcessStatus(migrateTask); status == nil || status.Release != testRelease {
+		t.Fatalf("a refused retry moved the record it decides from: %+v", status)
+	}
+}
+
 func TestListingADeployTasksRuns(t *testing.T) {
 	started := metav1.NewTime(time.Now().Add(-time.Hour))
 	job := &batchv1.Job{

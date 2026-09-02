@@ -438,7 +438,8 @@ func recordDeployTasks(env *kitchenv1alpha1.Environment, tasks deployTaskOutcome
 		meta.RemoveStatusCondition(&env.Status.Conditions, condDeployTasks)
 		return
 	}
-	var ran, suspended []string
+	ran := make([]string, 0, len(tasks.statuses))
+	suspended := make([]string, 0, len(tasks.statuses))
 	for i := range tasks.statuses {
 		if tasks.statuses[i].Suspended {
 			suspended = append(suspended, tasks.statuses[i].Name)

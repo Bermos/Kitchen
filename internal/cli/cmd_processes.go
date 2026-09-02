@@ -262,7 +262,9 @@ For a deploy task it asks the platform to run that task again for the release
 the environment is on, which is how a deploy a failed migration stopped is
 picked back up once the cause is gone. The run is the deploy's own — the
 environment's variables, its resources, and the same gate in front of the
-release — so if it succeeds the deploy carries on by itself.
+release — so if it succeeds the deploy carries on by itself. A task whose run
+is still going is refused rather than run twice: that run is the one the deploy
+is waiting for.
 
 It answers as soon as the run is asked for, not when it finishes. Follow it
 with:
