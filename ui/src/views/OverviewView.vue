@@ -109,6 +109,7 @@ function eventIcon(event: PlatformEvent): string {
   if (event.type.startsWith("preview.")) return "i-lucide-git-pull-request";
   if (event.type.startsWith("claim.")) return "i-lucide-database";
   if (event.type.startsWith("run.")) return "i-lucide-clock";
+  if (event.type.startsWith("secret.")) return "i-lucide-key-round";
   if (event.type.startsWith("platform.")) return "i-lucide-arrow-up-circle";
   return "i-lucide-sparkles";
 }

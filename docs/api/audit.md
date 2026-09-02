@@ -26,7 +26,13 @@ run's). Types:
 `build.succeeded`, `build.failed`, `release.promoted`, `release.rolledBack`,
 `preview.created`, `preview.removed`, `project.created`, `project.deleted`,
 `claim.created`, `claim.deleted`, `claim.bound`, `claim.failed`,
-`run.started`, `run.succeeded`, `run.failed`.
+`run.started`, `run.succeeded`, `run.failed`, `secret.rotated`.
+
+`secret.rotated` is the one entry here that is not about somebody's write: it
+is the platform restarting a workload because a Secret it reads changed under
+it, and it names which workload and what it was reading. A pod roll at a
+moment nobody deployed anything has no other account of itself. The write that
+caused it is the audit log's, as a credential change.
 
 The three `run.` types are one firing of a
 [scheduled job](processes.md); `process` and `run` name which, and `run` is

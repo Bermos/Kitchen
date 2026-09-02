@@ -740,18 +740,13 @@ func (r *EnvironmentReconciler) applyDeployment(
 	runtimeSpec := release.Spec.ConfigSnapshot.Runtime
 	port := containerPort(runtimeSpec)
 
-	// What the project's own secrets look like to *this* workload, so that
-	// rotating one rolls the pods that read it. Read before the mutation
-	// below rather than inside it, because a conflict retry would otherwise
-	// read the cluster again for an answer that cannot have changed.
-	secretsRevision, err := projectSecretsRevision(ctx, r.Client, appNS, podEnv)
-	if err != nil {
-		return err
-	}
-
 	deploy := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: env.Name, Namespace: appNS}}
 	podLabels := webLabels(labels)
-	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, deploy, func() error {
+	// What the Secrets this workload reads did on this pass. It is filled in
+	// by the mutation and read after it, so that a rotation is announced only
+	// once the roll it caused has actually been written.
+	var rotation secretRotation
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, deploy, func() error {
 		deploy.Labels = podLabels
 		// While the environment idles the replica count is left exactly as it
 		// stands: KEDA is what parks the pods and what brings them back, and
@@ -793,7 +788,6 @@ func (r *EnvironmentReconciler) applyDeployment(
 			MatchLabels: map[string]string{labelEnvironment: env.Name},
 		}
 		deploy.Spec.Template.Labels = podLabels
-		applyProjectSecretsRevision(&deploy.Spec.Template.ObjectMeta, secretsRevision)
 		// A registry that wanted a credential to push wants one to pull. The
 		// build already put that docker config in this namespace, under a
 		// name derived from the same Connection, so the Deployment only has
@@ -827,9 +821,19 @@ func (r *EnvironmentReconciler) applyDeployment(
 		// check with the rest of the snapshot.
 		applyProbes(&app, runtimeSpec.Health, port)
 		deploy.Spec.Template.Spec.Containers = []corev1.Container{app}
-		return nil
+		// Last, over the template this mutation has just finished building: a
+		// Secret reaches a pod as a variable, as an `envFrom` or as a mounted
+		// file, and digesting the finished template covers every one of those
+		// without three lists to keep in step with it.
+		var err error
+		rotation, err = stampSecretsRevision(ctx, r.Client, appNS, &deploy.Spec.Template)
+		return err
 	})
-	return err
+	if err != nil {
+		return err
+	}
+	r.announceRotation(ctx, env, "", rotation, runtimeSpec.Singleton || recreate)
+	return nil
 }
 
 func (r *EnvironmentReconciler) applyService(
@@ -1411,33 +1415,37 @@ func (r *EnvironmentReconciler) mapPlatformToEnvironments(ctx context.Context, _
 	return requests
 }
 
-// mapProjectSecretsToEnvironments enqueues every environment of the project
-// whose secrets have just changed, so a rotated value rolls the workloads that
+// mapSecretToEnvironments enqueues every environment running in the namespace
+// a Secret has just changed in, so a rotated value rolls the workloads that
 // read it instead of waiting for the next unrelated reconcile.
 //
-// It reads the project off the mirrored Secret's own label rather than off its
-// namespace, so the one Secret this cares about is the one it answers for.
-func (r *EnvironmentReconciler) mapProjectSecretsToEnvironments(
+// It matches on the namespace rather than on the Secret's name or labels
+// because a workload reads more than the project's own secrets: a claim's
+// binding is a Secret the claim's provider writes, and a variable may name any
+// Secret in the application namespace. Which of them this environment actually
+// reads is the digest's question, not this one's — a reconcile it did not need
+// costs a comparison.
+func (r *EnvironmentReconciler) mapSecretToEnvironments(
 	ctx context.Context,
 	obj client.Object,
 ) []ctrl.Request {
-	if obj.GetName() != ProjectSecretsName {
-		return nil
-	}
-	project := obj.GetLabels()[labelProject]
-	if project == "" {
+	namespace := obj.GetNamespace()
+	// Nothing an application pod reads lives in the platform namespace: the
+	// project's secrets are mirrored out of it, and the platform's own are
+	// nobody's environment.
+	if namespace == "" || namespace == PlatformNamespace {
 		return nil
 	}
 	environments := &kitchenv1alpha1.EnvironmentList{}
 	if err := r.List(ctx, environments); err != nil {
-		logf.FromContext(ctx).Error(err, "could not list environments after a project secret changed",
-			"project", project)
+		logf.FromContext(ctx).Error(err, "could not list environments after a secret changed",
+			"namespace", namespace)
 		return nil
 	}
 	requests := make([]ctrl.Request, 0, len(environments.Items))
 	for i := range environments.Items {
 		env := &environments.Items[i]
-		if env.Spec.ProjectRef.Name != project {
+		if appNamespace(env.Spec.ProjectRef.Name) != namespace {
 			continue
 		}
 		requests = append(requests, ctrl.Request{NamespacedName: types.NamespacedName{
@@ -1451,11 +1459,12 @@ func (r *EnvironmentReconciler) mapProjectSecretsToEnvironments(
 func (r *EnvironmentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&kitchenv1alpha1.Environment{}).
-		// The project's own secrets. Nothing about the Environment changes
-		// when one is set or rotated, so without this the pods reading it
-		// would keep the value they started with until something else caused
-		// a reconcile.
-		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.mapProjectSecretsToEnvironments)).
+		// The Secrets an application reads — the project's own, a claim's
+		// binding, anything a variable names. Nothing about the Environment
+		// changes when one is set or rotated, so without this the pods
+		// reading it would keep the value they started with until something
+		// else caused a reconcile.
+		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.mapSecretToEnvironments)).
 		Watches(&appsv1.Deployment{}, handler.EnqueueRequestsFromMapFunc(r.mapChildToEnvironment)).
 		// A run finishing is the event this feature is about, and a Job is
 		// where it lands. Both carry the environment label the mapper reads,

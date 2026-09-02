@@ -107,12 +107,47 @@ Two consequences worth knowing:
   is different from an environment variable's own value, which lands in the
   next release. It has to be: the release snapshot holds the *reference*, so
   without the roll a rotated value would reach some pods and not others,
-  whenever each happened to restart next.
+  whenever each happened to restart next. The digest covers every Secret the
+  workload reads, not only these — see [below](#what-rolls-and-what-does-not).
 - **The secrets go with the project.** The application namespace is deleted by
   the project's finalizer and takes the mirrored copy with it; the source in
   the platform namespace is deleted by the same finalizer, by name, because
   nothing owner-references across namespaces and the finalizer is this
   platform's garbage collector.
+
+## What rolls, and what does not
+
+The digest is not about project secrets in particular. Every workload an
+environment materializes — the web process and each worker — is stamped with a
+digest of **the Secrets that workload reads**, whichever they are:
+
+- a variable naming one key of one Secret, which is what `fromSecret` and a
+  [claim's binding](claims.md) both become;
+- an `envFrom` taking every key of one;
+- a file mounted from one.
+
+So a claim's provider replacing a binding's password reaches the pods reading
+that binding, exactly as a project secret does, and a workload reading neither
+is not touched. Only the referenced keys are hashed, so adding a value to a
+Secret several workloads share rolls the ones whose values moved and no
+others.
+
+Two deliberate exceptions:
+
+- **A scheduled job is not stamped.** Its next run is a new pod, which reads
+  whatever the Secret holds when it starts. There is nothing to roll.
+- **`imagePullSecrets` is not in the digest.** The kubelet reads the pull
+  credential at pull time rather than handing it to the process, so a rotated
+  registry password is in use the moment it is written. Rolling on it would be
+  a restart that changes nothing — and on a workload deployed by recreation,
+  an outage that changes nothing.
+
+**The restart says why.** Each roll a rotation causes is an entry in the
+[activity feed](audit.md) typed `secret.rotated`, naming the workload and what
+it reads. A workload that runs one at a time — a `singleton` process, or one
+mounting a volume that attaches once — is deployed by recreation rather than
+rolled, so its old pod stops before the new one starts; the entry says so,
+because that is a brief gap rather than a rollout.
 
 ## What this is not
 

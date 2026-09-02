@@ -252,17 +252,13 @@ func (r *EnvironmentReconciler) applyWorkerDeployment(
 	name := ProcessWorkloadName(env.Name, process.Name)
 	podLabels := processLabels(labels, process.Name)
 
-	// A worker runs continuously, so a rotated project secret reaches it the
-	// same way it reaches the web process: by rolling the pods that read it.
-	// A scheduled job needs none of this — its next run is a new pod, which
+	// A worker runs continuously, so a rotated secret reaches it the same way
+	// it reaches the web process: by rolling the pods that read it. A
+	// scheduled job needs none of this — its next run is a new pod, which
 	// reads whatever the Secret holds when it starts.
-	secretsRevision, err := projectSecretsRevision(ctx, r.Client, appNS, podEnv)
-	if err != nil {
-		return err
-	}
-
+	var rotation secretRotation
 	deploy := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: appNS}}
-	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, deploy, func() error {
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, deploy, func() error {
 		deploy.Labels = podLabels
 		// A worker mounting a volume that attaches to one pod at a time
 		// runs one replica whatever it asked for, and is recreated below —
@@ -297,11 +293,16 @@ func (r *EnvironmentReconciler) applyWorkerDeployment(
 			}}
 		}
 		deploy.Spec.Template.Labels = podLabels
-		applyProjectSecretsRevision(&deploy.Spec.Template.ObjectMeta, secretsRevision)
 		deploy.Spec.Template.Spec = processPodSpec(release, project, podEnv, process, mounts)
-		return nil
+		var err error
+		rotation, err = stampSecretsRevision(ctx, r.Client, appNS, &deploy.Spec.Template)
+		return err
 	})
-	return err
+	if err != nil {
+		return err
+	}
+	r.announceRotation(ctx, env, process.Name, rotation, process.Singleton || attachesOnce(mounts))
+	return nil
 }
 
 // applyCronJob materializes a scheduled process.
