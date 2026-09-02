@@ -923,6 +923,18 @@ var _ = Describe("Rolling an addon up onto the platform", func() {
 			},
 		}
 		Expect(reconciler.ensurePlatformNamespace(ctx)).To(Succeed())
+		// These specs are about what the roll-up says for a given addon
+		// state, so they start from none. Every suite that reconciles the
+		// singleton now seeds them, and ginkgo randomises the order, so an
+		// addon another spec left behind is what this Describe would
+		// otherwise be reading.
+		releaseAddon(ctx, AddonKeda)
+		releaseAddon(ctx, AddonCNPG)
+	})
+
+	AfterEach(func() {
+		releaseAddon(ctx, AddonKeda)
+		releaseAddon(ctx, AddonCNPG)
 	})
 
 	It("carries no condition at all while the platform idles nothing", func() {
@@ -950,8 +962,7 @@ var _ = Describe("Rolling an addon up onto the platform", func() {
 	// one would be wrong about its own capabilities.
 	It("adopts an entry nobody granted an account for", func() {
 		addon := asked(AddonKeda, false)
-		Expect(k8sClient.Create(ctx, addon)).To(Succeed())
-		defer releaseAddon(ctx, addon.Name)
+		ensureAddon(ctx, addon)
 
 		// This envtest cluster serves the add-on's CRD, so it is exactly the
 		// cluster somebody installed KEDA into by hand.
@@ -977,8 +988,7 @@ var _ = Describe("Rolling an addon up onto the platform", func() {
 	// keep in step.
 	It("copies the addon's own verdict rather than restating it", func() {
 		addon := asked(AddonKeda, true)
-		Expect(k8sClient.Create(ctx, addon)).To(Succeed())
-		defer releaseAddon(ctx, addon.Name)
+		ensureAddon(ctx, addon)
 		meta.SetStatusCondition(&addon.Status.Conditions, metav1.Condition{
 			Type: kitchenv1alpha1.AddonReady, Status: metav1.ConditionTrue,
 			Reason: "AlreadyServing", Message: "somebody else installed it",
