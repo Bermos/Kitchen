@@ -53,6 +53,12 @@ func rollbackFixtures(h *harness) {
 		},
 		Processes: []processChange{
 			{Name: "nightly", Change: "changed", Type: "cron", Schedule: "0 2 * * *"},
+			// Unchanged, and still the loudest line in the diff: a rollback
+			// runs the work the older release declared before it serves
+			// anything. The one that will not run is the one only the release
+			// being left behind has.
+			{Name: "migrate", Change: "unchanged", Type: "task"},
+			{Name: "backfill", Change: "removed", Type: "task"},
 		},
 	}
 }
@@ -88,6 +94,8 @@ func TestRollbackShowsWhatChangesBeforeItAsks(t *testing.T) {
 		"3 → 2",
 		"nightly",
 		"0 2 * * *",
+		"migrate runs again before this release serves anything",
+		"nothing runs a down step",
 	} {
 		if !strings.Contains(said, want) {
 			t.Errorf("the diff does not mention %q:\n%s", want, said)
@@ -97,6 +105,10 @@ func TestRollbackShowsWhatChangesBeforeItAsks(t *testing.T) {
 	// where it is one row; here it would be the diff's own noise.
 	if strings.Contains(said, "NODE_ENV") || strings.Contains(said, "port") {
 		t.Errorf("the diff lists what did not change:\n%s", said)
+	}
+	// A task the target release does not declare is not work this move runs.
+	if strings.Contains(said, "backfill runs again") {
+		t.Errorf("a task only the outgoing release declares was promised a run:\n%s", said)
 	}
 }
 

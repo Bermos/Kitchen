@@ -613,8 +613,14 @@ shop-rel-42 → shop-rel-41
   ~ NEXT_PUBLIC_CDN                  the value differs
   − FEATURE_BULK_IMPORT              a value → unset
   ~ replicas                         3 → 2
+  migrate runs again before this release serves anything, and nothing runs a down step
 Move shop-production from shop-rel-42 to shop-rel-41? [y/N]
 ```
+
+The last line is the one entry that is an action rather than a difference: a
+rollback runs the deploy tasks the release it goes back to declared, whether or
+not anything about them changed, and the environment takes no traffic until
+they succeed.
 
 No value appears there, because none is fetched: the API compares the two
 snapshots itself and answers with the verdict alone — see

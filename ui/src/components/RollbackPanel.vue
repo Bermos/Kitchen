@@ -6,6 +6,7 @@ import {
   changeDetail,
   changeSign,
   commitsBetween,
+  deployTasksThatRunAgain,
   gatedByName,
   lastServedStint,
   movedProcesses,
@@ -163,6 +164,11 @@ const moved = computed(() => movedVariables(diff.data.value ?? undefined));
 const unchanged = computed(() => unchangedVariables(diff.data.value ?? undefined));
 const runtimeChanges = computed(() => movedRuntime(diff.data.value ?? undefined));
 const processChanges = computed(() => movedProcesses(diff.data.value ?? undefined));
+// The work the target release declares to run before it takes traffic. A
+// rollback runs it again — the older release's own migration, forward-only —
+// and that is the one consequence of this move nobody can read off a list of
+// what differs, because it happens whether or not anything about it changed.
+const tasksRunningAgain = computed(() => deployTasksThatRunAgain(diff.data.value ?? undefined));
 const commits = computed(() => commitsBetween(rows.value, target.value?.release));
 
 function sourceLabel(variable: VariableChange): string {
@@ -480,6 +486,21 @@ function commitLabel(build: Build): string {
                   </p>
                 </div>
               </div>
+
+              <!-- What runs before the older release serves anything. It is
+                   above "the rest of the snapshot" because it is the only
+                   entry here that is an action rather than a difference. -->
+              <UAlert
+                v-if="tasksRunningAgain.length"
+                class="mb-6"
+                color="warning"
+                variant="soft"
+                icon="i-lucide-database-zap"
+                :title="`${tasksRunningAgain.map((t) => t.name).join(', ')} runs again before this release serves anything`"
+                description="A rollback runs the work the release it goes back to declared, and this environment takes no traffic
+                  until it succeeds — if it fails, nothing moves and what is serving now keeps serving. Undoing a schema change is
+                  the application's: nothing runs a down step."
+              />
 
               <!-- The rest of the snapshot. A rollback that quietly restored
                    yesterday's replica count or last week's cron schedule is

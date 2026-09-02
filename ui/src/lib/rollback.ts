@@ -219,6 +219,21 @@ export function movedProcesses(diff: ConfigDiff | undefined) {
 }
 
 /**
+ * The deploy tasks the release being rolled back to declares, which run again
+ * before it takes traffic.
+ *
+ * They are named here whether or not they *changed*, which is the one place
+ * this panel reports something unchanged: a rollback re-runs the older
+ * release's migration, and "nothing about the migration differs" is not the
+ * same sentence as "the migration does not run". A task marked `removed` is
+ * one the release being left behind declared and the target does not, so it
+ * is exactly the one that will not run.
+ */
+export function deployTasksThatRunAgain(diff: ConfigDiff | undefined) {
+  return (diff?.processes ?? []).filter((p) => p.type === "task" && p.change !== "removed");
+}
+
+/**
  * Whether the confirm is gated on typing the environment's name.
  *
  * The issue asks whether it is worth gating "when the target is more than N

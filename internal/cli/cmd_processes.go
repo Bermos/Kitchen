@@ -355,6 +355,15 @@ func renderProcesses(s tui.Styles, processes []process) string {
 	return s.Table([]string{"NAME", "TYPE", "SCHEDULE", "STATE", "NOTE"}, rows)
 }
 
+// The two workload types with runs, as the API spells them. A deploy task's
+// name is here because three commands ask the same question of a row — is
+// this the workload the deploy waited for — and three spellings of one string
+// is where two of them start disagreeing.
+const (
+	processTypeCron = "cron"
+	processTypeTask = "task"
+)
+
 // The four things a deploy task can be doing to its deploy, as the API says
 // them. They are constants here so that the CLI and the dashboard cannot drift
 // into two spellings of one answer.
@@ -396,7 +405,7 @@ func processState(s tui.Styles, p process) string {
 		return s.Subtle.Render("suspended")
 	case p.Deploy != "":
 		return deployState(s, p.Deploy)
-	case p.Type == "cron":
+	case p.Type == processTypeCron:
 		if !p.Healthy {
 			return s.Bad.Render("failing")
 		}

@@ -6,6 +6,7 @@ import {
   commitsBetween,
   gatedByName,
   lastServedStint,
+  deployTasksThatRunAgain,
   movedProcesses,
   movedRuntime,
   movedVariables,
@@ -213,6 +214,23 @@ describe("the variable diff", () => {
   it("carries the runtime and the processes that move", () => {
     expect(movedRuntime(diff()).map((f) => f.field)).toEqual(["replicas"]);
     expect(movedProcesses(diff()).map((p) => p.name)).toEqual(["nightly"]);
+  });
+
+  // A rollback runs the work the release it goes back to declares, so the
+  // migration runs again whether or not anything about it differs — and the
+  // one that does not run is the one only the release being left behind has.
+  it("names the deploy tasks that run again, changed or not", () => {
+    const withTasks = diff({
+      processes: [
+        { name: "migrate", change: "unchanged", type: "task" },
+        { name: "seed", change: "changed", type: "task" },
+        { name: "backfill", change: "removed", type: "task" },
+        { name: "nightly", change: "changed", type: "cron", schedule: "0 2 * * *" },
+      ],
+    });
+    expect(deployTasksThatRunAgain(withTasks).map((p) => p.name)).toEqual(["migrate", "seed"]);
+    expect(deployTasksThatRunAgain(diff())).toEqual([]);
+    expect(deployTasksThatRunAgain(undefined)).toEqual([]);
   });
 });
 

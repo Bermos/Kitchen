@@ -110,12 +110,21 @@ configuration, and a rollback that restored the image but not the flags would
 have restored the wrong thing, which is exactly what this route exists to say
 first.
 
+A `task` in that list is the one entry that is an *action* rather than a
+difference: the release being moved to runs the work it declared before the
+environment takes traffic again, whether or not anything about that work
+changed — so a rollback re-runs the older release's migration, and only a task
+reading `removed` (one the current release declares and the target does not)
+will not run. Nothing runs a "down" step; see [the workloads
+page](processes.md#work-that-runs-before-a-release-takes-traffic).
+
 Both releases must belong to the same project, and a release cannot be compared
 against itself; either is a `400`.
 
 The dashboard's rollback panel is this endpoint rendered — pick a release,
-review the diff, then watch the swap land — and `kitchen rollback` prints the
-same comparison above its confirmation.
+review the diff, then watch the swap land — and it says above the diff which
+deploy tasks the move will run again. `kitchen rollback` prints the same
+comparison above its confirmation.
 
 ## The bar an environment sets
 
