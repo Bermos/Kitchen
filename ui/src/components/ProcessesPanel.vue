@@ -153,7 +153,11 @@ function buildOf(process: Process): string {
   if (!build) return "the project's own image, started differently";
   const where = build.rootDirectory && build.rootDirectory !== "." ? build.rootDirectory : "the repository root";
   if (build.strategy === "dockerfile") {
-    return `${build.dockerfilePath ?? "Dockerfile"} in ${where}`;
+    // Which stage of that file, when this workload names one. A workload that
+    // names none is built to the project's stage, which the build's own page
+    // reports per image — saying "the last stage" here would be a guess.
+    const stage = build.dockerfileTarget ? `, stage ${build.dockerfileTarget}` : "";
+    return `${build.dockerfilePath ?? "Dockerfile"} in ${where}${stage}`;
   }
   return `buildpacks, from ${where}`;
 }

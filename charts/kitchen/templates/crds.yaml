@@ -1120,6 +1120,30 @@ spec:
                                 DockerfilePath is the Dockerfile, relative to RootDirectory, for a
                                 dockerfile build.
                               type: string
+                            dockerfileTarget:
+                              description: |-
+                                DockerfileTarget is which stage of that Dockerfile produces this
+                                workload's image — BuildKit's `--target`. Empty is not "the last
+                                stage": it is "nothing of its own to say", and the project's answer
+                                stands in — the commit's own kitchen.json where it declared one, and
+                                `ProjectBuildSpec.DockerfileTarget` where it did not. A unit built
+                                from one multi-stage file names the stage once and each workload that
+                                differs says so.
+
+                                It is per workload because that is the shape the feature is for: one
+                                file that yields an API, a worker and a migration runner is ordinary
+                                practice, and without a stage of its own each of them ships whichever
+                                stage was written last — a build that succeeds and produces the wrong
+                                thing.
+
+                                A workload built with buildpacks inherits nothing — the lifecycle has
+                                no stages, so the unit's stage is not a stage of anything that image
+                                builds — but one that names a stage itself keeps it and is refused for
+                                it. A stage this workload's Dockerfile does not declare fails the
+                                build naming this workload.
+                              maxLength: 128
+                              pattern: ^[A-Za-z][A-Za-z0-9_.-]*$
+                              type: string
                             rootDirectory:
                               default: .
                               description: |-
@@ -1992,6 +2016,15 @@ spec:
                     whose fourth workload failed has to be able to say which one and why
                     without anybody going and reading four Jobs.
                   properties:
+                    dockerfileTarget:
+                      description: |-
+                        DockerfileTarget is the stage of this workload's Dockerfile its build
+                        was told to produce, empty for the file's last stage. It is recorded
+                        beside the rest of this workload's outcome, and for the reason the
+                        Build records its own: the setting moves and the image does not, so an
+                        old build reads as the artifacts it actually shipped rather than as
+                        the ones today's settings would produce.
+                      type: string
                     image:
                       description: |-
                         Image is the digest reference the workload was built to, empty until
@@ -5880,6 +5913,30 @@ spec:
                             DockerfilePath is the Dockerfile, relative to RootDirectory, for a
                             dockerfile build.
                           type: string
+                        dockerfileTarget:
+                          description: |-
+                            DockerfileTarget is which stage of that Dockerfile produces this
+                            workload's image — BuildKit's `--target`. Empty is not "the last
+                            stage": it is "nothing of its own to say", and the project's answer
+                            stands in — the commit's own kitchen.json where it declared one, and
+                            `ProjectBuildSpec.DockerfileTarget` where it did not. A unit built
+                            from one multi-stage file names the stage once and each workload that
+                            differs says so.
+
+                            It is per workload because that is the shape the feature is for: one
+                            file that yields an API, a worker and a migration runner is ordinary
+                            practice, and without a stage of its own each of them ships whichever
+                            stage was written last — a build that succeeds and produces the wrong
+                            thing.
+
+                            A workload built with buildpacks inherits nothing — the lifecycle has
+                            no stages, so the unit's stage is not a stage of anything that image
+                            builds — but one that names a stage itself keeps it and is refused for
+                            it. A stage this workload's Dockerfile does not declare fails the
+                            build naming this workload.
+                          maxLength: 128
+                          pattern: ^[A-Za-z][A-Za-z0-9_.-]*$
+                          type: string
                         rootDirectory:
                           default: .
                           description: |-
@@ -7286,6 +7343,30 @@ spec:
                               description: |-
                                 DockerfilePath is the Dockerfile, relative to RootDirectory, for a
                                 dockerfile build.
+                              type: string
+                            dockerfileTarget:
+                              description: |-
+                                DockerfileTarget is which stage of that Dockerfile produces this
+                                workload's image — BuildKit's `--target`. Empty is not "the last
+                                stage": it is "nothing of its own to say", and the project's answer
+                                stands in — the commit's own kitchen.json where it declared one, and
+                                `ProjectBuildSpec.DockerfileTarget` where it did not. A unit built
+                                from one multi-stage file names the stage once and each workload that
+                                differs says so.
+
+                                It is per workload because that is the shape the feature is for: one
+                                file that yields an API, a worker and a migration runner is ordinary
+                                practice, and without a stage of its own each of them ships whichever
+                                stage was written last — a build that succeeds and produces the wrong
+                                thing.
+
+                                A workload built with buildpacks inherits nothing — the lifecycle has
+                                no stages, so the unit's stage is not a stage of anything that image
+                                builds — but one that names a stage itself keeps it and is refused for
+                                it. A stage this workload's Dockerfile does not declare fails the
+                                build naming this workload.
+                              maxLength: 128
+                              pattern: ^[A-Za-z][A-Za-z0-9_.-]*$
                               type: string
                             rootDirectory:
                               default: .

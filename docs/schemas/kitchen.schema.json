@@ -252,6 +252,13 @@
           "type": "string",
           "description": "The Dockerfile, relative to rootDirectory. Default Dockerfile."
         },
+        "dockerfileTarget": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_.-]*$",
+          "maxLength": 128,
+          "description": "Which stage of this workload's multi-stage Dockerfile produces its image. Leave it out to build the stage the project names — its build.dockerfileTarget, or the file's last stage where the project names none either. A stage the file does not declare fails the build naming this workload, and so does naming one on a workload built with buildpacks, which has no stages.",
+          "examples": ["worker", "migrate"]
+        },
         "rootDirectory": {
           "type": "string",
           "description": "The directory of the repository this workload is built from, relative to the repository root — not to the project's own root directory.",

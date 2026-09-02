@@ -361,6 +361,10 @@ export interface BuildWorkload {
   image?: string;
   repository?: string;
   job?: string;
+  /** The stage of this workload's Dockerfile its build was told to produce,
+   * absent for the file's last stage. What it was given, not what the project
+   * says now. */
+  dockerfileTarget?: string;
   message?: string;
 }
 
@@ -1256,6 +1260,10 @@ export interface Process {
 export interface ProcessBuild {
   strategy: string;
   dockerfilePath?: string;
+  /** The stage of that Dockerfile this workload names. Absent means it names
+   * none and the project's own stage stands in; what each image was actually
+   * built to is on the build. */
+  dockerfileTarget?: string;
   rootDirectory?: string;
 }
 

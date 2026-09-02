@@ -423,6 +423,104 @@ func TestABuildPlansOneImagePerWorkloadThatDeclaresABuild(t *testing.T) {
 	}
 }
 
+// Which stage of its Dockerfile each image ships is a per-workload answer
+// with one chain behind it: the workload's own, else the commit's
+// kitchen.json, else the project's. A unit built from one multi-stage file
+// names the stage once; a workload that differs says so.
+func TestEachImageResolvesItsOwnDockerfileStage(t *testing.T) {
+	project := &kitchenv1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: "shop"},
+		Spec: kitchenv1alpha1.ProjectSpec{
+			Build: kitchenv1alpha1.ProjectBuildSpec{DockerfileTarget: "runtime"},
+			Processes: []kitchenv1alpha1.ProcessSpec{
+				{
+					Name: "api", Type: kitchenv1alpha1.ProcessService, Port: 8080,
+					Build: &kitchenv1alpha1.ProcessBuildSpec{DockerfileTarget: " api-runtime "},
+				},
+				{
+					Name: "worker", Type: kitchenv1alpha1.ProcessWorker,
+					Build: &kitchenv1alpha1.ProcessBuildSpec{RootDirectory: "services/worker"},
+				},
+			},
+		},
+	}
+	build := &kitchenv1alpha1.Build{
+		ObjectMeta: metav1.ObjectMeta{Name: "shop-bld-abc123def456"},
+		Spec:       kitchenv1alpha1.BuildSpec{Git: kitchenv1alpha1.GitRevision{SHA: "abc123def456", Branch: "main"}},
+	}
+	registry := provider.RegistryTarget{Prefix: "registry.example.com/kitchen"}
+
+	plans := buildPlansFor(project, build,
+		registry, webPlan(project, build, registry, kitchenv1alpha1.BuildStrategyDockerfile))
+	if len(plans) != 3 {
+		t.Fatalf("want the project's image and two workloads, got %d plans", len(plans))
+	}
+	for _, tc := range []struct {
+		plan buildPlan
+		want string
+	}{
+		{plans[0], "runtime"},
+		// Spelled loosely on purpose: a stage is spelled by the one place
+		// that says what a stage may be called.
+		{plans[1], "api-runtime"},
+		// Named none of its own, so the unit's stands in.
+		{plans[2], "runtime"},
+	} {
+		if tc.plan.DockerfileTarget != tc.want {
+			t.Errorf("%s ships stage %q, want %q", tc.plan.describe(), tc.plan.DockerfileTarget, tc.want)
+		}
+	}
+
+	// The commit's own file wins over the project for every image that named
+	// no stage itself, which is what makes a rebuild of an old commit build
+	// what that commit asked for.
+	build.Status.Config = &kitchenv1alpha1.RepoConfig{
+		Build: &kitchenv1alpha1.RepoBuildConfig{DockerfileTarget: "committed"},
+	}
+	plans = buildPlansFor(project, build,
+		registry, webPlan(project, build, registry, kitchenv1alpha1.BuildStrategyDockerfile))
+	if plans[0].DockerfileTarget != "committed" || plans[2].DockerfileTarget != "committed" {
+		t.Errorf("the commit's own stage did not win: %q and %q",
+			plans[0].DockerfileTarget, plans[2].DockerfileTarget)
+	}
+	if plans[1].DockerfileTarget != "api-runtime" {
+		t.Errorf("a workload that named its own stage lost it to the commit's: %q", plans[1].DockerfileTarget)
+	}
+
+	// A buildpacks workload inherits nothing: a unit that names a stage can
+	// still ship one workload through the lifecycle, which has no stages.
+	// One that named a stage itself keeps it and is refused for it.
+	project.Spec.Processes = append(project.Spec.Processes, kitchenv1alpha1.ProcessSpec{
+		Name: "reports", Type: kitchenv1alpha1.ProcessWorker,
+		Build: &kitchenv1alpha1.ProcessBuildSpec{Strategy: kitchenv1alpha1.BuildStrategyBuildpacks},
+	})
+	plans = buildPlansFor(project, build,
+		registry, webPlan(project, build, registry, kitchenv1alpha1.BuildStrategyDockerfile))
+	if plans[3].DockerfileTarget != "" {
+		t.Errorf("a buildpacks workload inherited a stage it has no file for: %q", plans[3].DockerfileTarget)
+	}
+	project.Spec.Processes[2].Build.DockerfileTarget = "runner"
+	plans = buildPlansFor(project, build,
+		registry, webPlan(project, build, registry, kitchenv1alpha1.BuildStrategyDockerfile))
+	if unbuildableTarget(plans) == nil {
+		t.Error("a stage the workload named itself on a buildpacks build was not refused")
+	}
+	project.Spec.Processes = project.Spec.Processes[:2]
+
+	// What a running build is observed against is what it recorded, so a
+	// stage the project has since changed does not rewrite a build's history.
+	build.Status.DockerfileTarget = "as-built"
+	build.Status.Workloads = []kitchenv1alpha1.WorkloadBuildStatus{{
+		Name: "api", Job: "shop-bld-abc123def456-api", DockerfileTarget: "api-as-built",
+	}}
+	underway := plansUnderway(project, build,
+		registry, webPlan(project, build, registry, kitchenv1alpha1.BuildStrategyDockerfile))
+	if underway[0].DockerfileTarget != "as-built" || underway[1].DockerfileTarget != "api-as-built" {
+		t.Errorf("a running build is observed against settings that have moved: %q and %q",
+			underway[0].DockerfileTarget, underway[1].DockerfileTarget)
+	}
+}
+
 // A running Build waits on what it started, not on what the project says now.
 // A workload added while a build was running would otherwise appear in a
 // recomputed plan with no Job behind it, and a Build waiting on a Job nobody

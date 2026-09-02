@@ -96,6 +96,13 @@ is one build rather than two. The strategy is dockerfile or buildpacks — there
 is no auto for a workload — and a scheduled process is refused a build: give it
 to the worker or service that ships the image and run the schedule on that.
 
+"dockerfileTarget" on that build is which stage of the workload's Dockerfile to
+ship, which is the case one multi-stage file yielding an API, a worker and a
+migration runner is for. A workload that names none is built to the project's
+stage, not to the file's last one; a stage on a buildpacks workload fails the
+build naming that workload. What each image was actually built to is on the
+build: kitchen builds <name> --json reports it per workload.
+
 A workload that must never run twice — a poller, a scheduler, an ingest loop —
 says so with "singleton": true, which deploys it by stopping the old copy
 before starting the new one instead of overlapping the two. It refuses more

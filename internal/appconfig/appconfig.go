@@ -259,6 +259,10 @@ type ProcessBuild struct {
 	Strategy string `json:"strategy,omitempty"`
 	// DockerfilePath is relative to RootDirectory; empty means Dockerfile.
 	DockerfilePath string `json:"dockerfilePath,omitempty"`
+	// DockerfileTarget is the stage of that Dockerfile to ship; empty means
+	// the project's own answer, and the file's last stage where the project
+	// names none either.
+	DockerfileTarget string `json:"dockerfileTarget,omitempty"`
 	// RootDirectory is relative to the repository root; empty means the
 	// repository itself.
 	RootDirectory string `json:"rootDirectory,omitempty"`
@@ -458,6 +462,21 @@ func applyProcessBuild(process *kitchenv1alpha1.ProcessSpec, request Process) er
 			return fmt.Errorf("process %q: %s must stay inside %s (got %q)",
 				process.Name, declared.field, declared.within, strings.TrimSpace(declared.value))
 		}
+	}
+
+	// A stage is refused on the shape of its name, by the one rule the
+	// project's own target is refused by: which stages the file has is not
+	// knowable here — the repository is not read on a write, and the file
+	// changes with every commit — but a name the dockerfile frontend cannot
+	// hold could never match a stage that exists, and refusing it on the
+	// form beats a build that fails several minutes later.
+	if target := detect.NormalizeTarget(request.Build.DockerfileTarget); target != "" {
+		if !detect.ValidTarget(target) {
+			return fmt.Errorf(
+				"process %q: build.dockerfileTarget must name a stage of the Dockerfile — %s (got %q)",
+				process.Name, detect.StageNameRule, request.Build.DockerfileTarget)
+		}
+		build.DockerfileTarget = target
 	}
 
 	// An unset path stays unset, so that the CRD's own default is what says

@@ -503,7 +503,9 @@ spec:
     dockerfileTarget: web               # which stage of a multi-stage Dockerfile to ship.
                                         # Unset ships its last stage; a stage the file does not
                                         # declare fails the build, and so does setting this on a
-                                        # build that resolves to buildpacks, which has no stages
+                                        # build that resolves to buildpacks, which has no stages.
+                                        # It is the web process's, and the stage every workload
+                                        # that names none of its own is built to
     rootDirectory: .                    # the build root: the directory that is built, and what
                                         # every path the project declares is relative to. Both
                                         # strategies mean the same directory by it
@@ -573,6 +575,10 @@ spec:
       build:                            # its own directory of the repository
         strategy: dockerfile            # dockerfile | buildpacks; no auto
         dockerfilePath: Dockerfile      # relative to rootDirectory, which is
+        dockerfileTarget: api           # which stage of that file to ship. Unset
+                                        # takes the project's, not the file's last
+                                        # stage; a stage on a buildpacks workload
+                                        # fails the build naming this workload
         rootDirectory: services/api     # this workload's build root
     - name: nightly-report              # a batch/v1 CronJob; one firing is a run
       type: cron

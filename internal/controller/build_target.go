@@ -24,6 +24,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/detect"
 )
 
 // The two ways of asking for a Dockerfile stage and not getting it, and what
@@ -46,27 +47,62 @@ import (
 //     discovers it, and it says so in its own terms about an option nobody
 //     typed. The failure is recognised here and restated as the stage, the
 //     file, and where the name was declared.
+//
+// Both are asked of every image the commit produces rather than of the
+// project alone (#271): a unit builds several files, each with its own stage
+// and its own strategy, so both refusals name the workload they are about —
+// "the build asked for a stage it has not got" beside four workloads that did
+// not is not an answer.
 
-// refuseUnbuildableTarget fails a build that named a Dockerfile stage and is
-// not being built from a Dockerfile. A non-nil first return is the Build
-// having been failed, and the caller returns it without creating anything.
+// refuseUnbuildableTarget fails a build one of whose images named a Dockerfile
+// stage and is not being built from a Dockerfile. A non-nil first return is
+// the Build having been failed, and the caller returns it without creating
+// anything.
+//
+// The whole unit is refused rather than the one workload, because a release
+// is all of it or none: shipping three workloads and refusing the fourth is
+// the half-started unit the coordinated build exists to make impossible.
 func (r *BuildReconciler) refuseUnbuildableTarget(
 	ctx context.Context,
 	build *kitchenv1alpha1.Build,
 	project *kitchenv1alpha1.Project,
-	strategy kitchenv1alpha1.BuildStrategy,
+	plans []buildPlan,
 ) (*ctrl.Result, error) {
-	target := buildDockerfileTarget(project, build)
-	if target == "" || strategy != kitchenv1alpha1.BuildStrategyBuildpacks {
+	plan := unbuildableTarget(plans)
+	if plan == nil {
 		return nil, nil
 	}
-	res, err := r.fail(ctx, build, project, reasonTargetNotSupported, fmt.Sprintf(
-		"%s names %q as the Dockerfile stage to ship, and this commit is built with buildpacks, "+
+	res, err := r.fail(ctx, build, project, reasonTargetNotSupported,
+		unbuildableTargetMessage(project, build, *plan))
+	return &res, err
+}
+
+// unbuildableTarget is the first image of this commit that named a stage and
+// is not built from a Dockerfile, or nil when every one of them can be built
+// as asked.
+func unbuildableTarget(plans []buildPlan) *buildPlan {
+	for i := range plans {
+		if plans[i].DockerfileTarget != "" && plans[i].Strategy == kitchenv1alpha1.BuildStrategyBuildpacks {
+			return &plans[i]
+		}
+	}
+	return nil
+}
+
+// unbuildableTargetMessage is what such a build says, naming both settings and
+// which image of the commit they are about.
+func unbuildableTargetMessage(
+	project *kitchenv1alpha1.Project,
+	build *kitchenv1alpha1.Build,
+	plan buildPlan,
+) string {
+	return fmt.Sprintf(
+		"%s names %q as the Dockerfile stage to ship, and %s is built with buildpacks, "+
 			"which has no stages. Nothing was built, because a target that cannot be honoured "+
 			"would have pushed a different image and reported success. Either clear the target, "+
-			"or build this commit with the dockerfile strategy",
-		dockerfileTargetSource(build), target))
-	return &res, err
+			"or build %s with the dockerfile strategy",
+		dockerfileTargetSource(project, build, plan), plan.DockerfileTarget,
+		plan.describe(), plan.describe())
 }
 
 // targetNotFound reports whether a failed build is BuildKit refusing the
@@ -76,8 +112,8 @@ func (r *BuildReconciler) refuseUnbuildableTarget(
 // only for a build that actually asked for a stage — the phrases are common
 // enough in a build's own output that recognising them on a build with no
 // target would be a diagnosis invented from somebody else's log line.
-func targetNotFound(build *kitchenv1alpha1.Build, failure *kitchenv1alpha1.BuildFailureStatus) bool {
-	if build.Status.DockerfileTarget == "" || failure == nil {
+func targetNotFound(plan buildPlan, failure *kitchenv1alpha1.BuildFailureStatus) bool {
+	if plan.DockerfileTarget == "" || failure == nil {
 		return false
 	}
 	said := strings.ToLower(failure.Message + "\n" + strings.Join(failure.Log, "\n"))
@@ -90,11 +126,40 @@ func targetNotFound(build *kitchenv1alpha1.Build, failure *kitchenv1alpha1.Build
 //
 // It names the stage, the file it was looked for in and where the name came
 // from, because those are the three things BuildKit's own sentence leaves the
-// reader to work out — and because the two places a target can be declared
-// are not the same place to go and fix it.
-func targetNotFoundMessage(project *kitchenv1alpha1.Project, build *kitchenv1alpha1.Build) string {
+// reader to work out — and because the three places a target can be declared
+// are not the same place to go and fix it. Which workload is in the last of
+// those: one commit builds several files now, and the source clause is what
+// says whose stage this was and whether the workload named it itself.
+func targetNotFoundMessage(
+	project *kitchenv1alpha1.Project,
+	build *kitchenv1alpha1.Build,
+	plan buildPlan,
+) string {
 	return fmt.Sprintf(
 		"%s has no stage named %q, which is the target %s asks for. "+
 			"Name a stage the file declares with `FROM … AS <name>`, or clear the target to ship its last stage",
-		buildDockerfilePath(project, build), build.Status.DockerfileTarget, dockerfileTargetSource(build))
+		targetDockerfile(project, build, plan), plan.DockerfileTarget,
+		dockerfileTargetSource(project, build, plan))
+}
+
+// targetDockerfile is the file a plan's stage was looked for in, spelled the
+// way the build spells it.
+//
+// The web process's is the project's own; a workload's is its own, which the
+// plan a running build observes does not carry — see plansUnderway — so it is
+// read off the workload's declaration, falling back to what the CRD's default
+// says a workload with no path of its own builds.
+func targetDockerfile(
+	project *kitchenv1alpha1.Project,
+	build *kitchenv1alpha1.Build,
+	plan buildPlan,
+) string {
+	switch own := workloadBuild(project, build, plan.Workload); {
+	case plan.isWeb():
+		return buildDockerfilePath(project, build)
+	case own != nil:
+		return detect.NormalizeDockerfile(own.DockerfilePath)
+	default:
+		return detect.NormalizeDockerfile("")
+	}
 }

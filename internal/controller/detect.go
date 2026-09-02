@@ -134,27 +134,57 @@ func buildDockerfilePath(project *kitchenv1alpha1.Project, build *kitchenv1alpha
 		repoconfig.DockerfilePath(build.Status.Config, project.Spec.Build.DockerfilePath))
 }
 
-// buildDockerfileTarget is the stage of that Dockerfile this build ships: the
-// one the commit's own kitchen.json named, and the project's setting where it
-// named none. Empty is the file's last stage.
+// buildDockerfileTarget is the stage of a Dockerfile one image of this build
+// ships. There is one chain, and every image resolves through it:
 //
-// It is resolved here, beside the file it names a stage of, because the same
-// answer is needed three times — the builder's `--target`, the refusal a
-// buildpacks build gets, and the record written onto the Build — and a stage
-// resolved twice is a stage two of them could disagree about.
-func buildDockerfileTarget(project *kitchenv1alpha1.Project, build *kitchenv1alpha1.Build) string {
+//  1. the workload's own `build.dockerfileTarget`, where it declared one;
+//  2. the commit's own kitchen.json, where the file declared one;
+//  3. the project's setting.
+//
+// Empty at the end of it is the file's last stage, which is what every build
+// shipped before any of this existed. The web process passes an empty `own`
+// and so starts at the second step, which is the whole of the project's own
+// answer.
+//
+// A workload that says nothing inherits rather than resetting to the last
+// stage, because the case the feature is for is one multi-stage file that
+// yields several artifacts: the unit names its stage once, and a workload
+// that differs says so. It is resolved here, beside the file it names a
+// stage of, because the same answer is needed three times — the builder's
+// `--target`, the refusal a buildpacks build gets, and the record written
+// onto the Build — and a stage resolved twice is a stage two of them could
+// disagree about.
+func buildDockerfileTarget(project *kitchenv1alpha1.Project, build *kitchenv1alpha1.Build, own string) string {
+	if target := detect.NormalizeTarget(own); target != "" {
+		return target
+	}
 	return detect.NormalizeTarget(
 		repoconfig.DockerfileTarget(build.Status.Config, project.Spec.Build.DockerfileTarget))
 }
 
-// dockerfileTargetSource says where a build's target was declared, so a
-// refusal sends somebody to the place they can change it rather than to the
-// other one.
-func dockerfileTargetSource(build *kitchenv1alpha1.Build) string {
-	if config := build.Status.Config; config != nil && config.Build != nil && config.Build.DockerfileTarget != "" {
-		return "this commit's " + kitchenv1alpha1.RepoConfigFileName
+// dockerfileTargetSource says where one image's target was declared, so a
+// refusal sends somebody to the place they can change it rather than to one
+// of the other two.
+func dockerfileTargetSource(
+	project *kitchenv1alpha1.Project,
+	build *kitchenv1alpha1.Build,
+	plan buildPlan,
+) string {
+	if own := workloadBuild(project, build, plan.Workload); own != nil &&
+		detect.NormalizeTarget(own.DockerfileTarget) != "" {
+		return fmt.Sprintf("workload %q's build settings", plan.Workload)
 	}
-	return "this project's build settings"
+	inherited := ""
+	if !plan.isWeb() {
+		// The workload named no stage of its own, so it is being built to
+		// the unit's — which is a sentence somebody has to read before they
+		// go looking for the setting on the workload.
+		inherited = fmt.Sprintf(", which workload %q inherits", plan.Workload)
+	}
+	if config := build.Status.Config; config != nil && config.Build != nil && config.Build.DockerfileTarget != "" {
+		return "this commit's " + kitchenv1alpha1.RepoConfigFileName + inherited
+	}
+	return "this project's build settings" + inherited
 }
 
 // readConfig reads the commit's kitchen.json and records it on the Build,

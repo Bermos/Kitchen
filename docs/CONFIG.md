@@ -79,7 +79,7 @@ it.
 |---|---|
 | `strategy` | `auto`, `dockerfile` or `buildpacks`. `auto` reads the repository and decides — a Dockerfile wins, and everything else recognised goes to buildpacks. |
 | `dockerfilePath` | The Dockerfile, relative to the project's root directory — which it may not leave, since the root directory is all a build sees. Used when the strategy is, or resolves to, `dockerfile`. |
-| `dockerfileTarget` | Which stage of that Dockerfile produces the image to run — BuildKit's `--target`. Leave it out to ship the file's last stage. A stage the file does not declare fails the build; so does naming one on a commit built with `buildpacks`, which has no stages. |
+| `dockerfileTarget` | Which stage of that Dockerfile produces the image to run — BuildKit's `--target`. Leave it out to ship the file's last stage. A stage the file does not declare fails the build; so does naming one on a commit built with `buildpacks`, which has no stages. It is the project's own — the web process's — and the stage every workload that names none of its own is built to. |
 
 ```json
 {"build": {"strategy": "dockerfile", "dockerfilePath": "docker/prod.Dockerfile", "dockerfileTarget": "web"}}
@@ -90,6 +90,14 @@ often not the runtime — a file that also builds a test image or a toolchain
 ships one of those, with a green build and nothing to notice. `dockerfileTarget`
 is how a commit says which artifact it meant, and it travels with the commit:
 rebuilding an old one builds the stage that commit asked for.
+
+One file yielding several artifacts is the whole point of it, so each of
+[`processes`](#processes) can name its own stage. There is one chain, and every
+image the commit produces resolves through it: the workload's own
+`build.dockerfileTarget`, else this file's, else the project's setting. A
+workload that names none inherits the unit's rather than resetting to the last
+stage — except one built with `buildpacks`, which inherits nothing, since the
+lifecycle has no stages to inherit into.
 
 ### `runtime`
 
@@ -194,7 +202,7 @@ The workloads the project ships besides its web process —
 {
   "processes": [
     {"name": "worker", "type": "worker", "command": ["node", "worker.js"], "replicas": 2},
-    {"name": "api", "type": "service", "port": 8080, "build": {"rootDirectory": "services/api"}},
+    {"name": "api", "type": "service", "port": 8080, "build": {"rootDirectory": "services/api", "dockerfileTarget": "api"}},
     {"name": "nightly", "type": "cron", "schedule": "0 3 * * *", "command": ["node", "nightly.js"]}
   ]
 }
@@ -206,7 +214,7 @@ The workloads the project ships besides its web process —
 | `type` | `worker` (runs continuously, never addressed), `service` (runs continuously, addressed by the rest of the unit and never published) or `cron` (runs on a schedule). |
 | `command`, `args` | Exec form, as above. |
 | `port` | A service's listening port, and the port its siblings reach it on. Required on a service and refused on anything else. |
-| `build` | This workload's own build: `strategy` (`dockerfile` or `buildpacks`), `dockerfilePath`, and `rootDirectory` relative to the repository root. That directory is the workload's build root — `dockerfilePath` is relative to it and nothing above it is part of the build — so a path that leaves it is refused here, exactly as `build.dockerfilePath` is for the project. Absent means it runs the project's image with another command. Refused on a `cron`. |
+| `build` | This workload's own build: `strategy` (`dockerfile` or `buildpacks`), `dockerfilePath`, `dockerfileTarget`, and `rootDirectory` relative to the repository root. That directory is the workload's build root — `dockerfilePath` is relative to it and nothing above it is part of the build — so a path that leaves it is refused here, exactly as `build.dockerfilePath` is for the project. `dockerfileTarget` is which stage of that file to ship, and it falls back to the project's stage rather than to the file's last one; a stage on a `buildpacks` workload is refused naming that workload. Absent means it runs the project's image with another command. Refused on a `cron`. |
 | `replicas` | A worker's or a service's copy count. Zero is a workload that is declared and parked. |
 | `singleton` | Two of this workload must never run at once, so a deploy stops the old copy before starting the new one. Refuses `replicas` above 1, and refused on a `cron` — that question is `concurrencyPolicy`. |
 | `cpu`, `memory` | Kubernetes quantities. |

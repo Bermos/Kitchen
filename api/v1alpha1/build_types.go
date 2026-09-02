@@ -691,6 +691,15 @@ type WorkloadBuildStatus struct {
 	// +optional
 	Repository string `json:"repository,omitempty"`
 
+	// DockerfileTarget is the stage of this workload's Dockerfile its build
+	// was told to produce, empty for the file's last stage. It is recorded
+	// beside the rest of this workload's outcome, and for the reason the
+	// Build records its own: the setting moves and the image does not, so an
+	// old build reads as the artifacts it actually shipped rather than as
+	// the ones today's settings would produce.
+	// +optional
+	DockerfileTarget string `json:"dockerfileTarget,omitempty"`
+
 	// Message explains a workload that did not build. It is empty for one
 	// that did.
 	// +optional

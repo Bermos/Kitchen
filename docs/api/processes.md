@@ -159,14 +159,61 @@ which is what makes a monorepo one project instead of four:
 ```json
 {"name": "api", "type": "service", "port": 8080,
  "build": {"strategy": "dockerfile", "dockerfilePath": "Dockerfile",
-           "rootDirectory": "services/api"}}
+           "dockerfileTarget": "api", "rootDirectory": "services/api"}}
 ```
 
 | Field | What it means |
 | --- | --- |
 | `strategy` | `dockerfile` (the default) or `buildpacks`. There is **no `auto`**: detection's output is a framework, and what the platform does with a framework is fill in the web process's port and tell the buildpacks lifecycle what it is building — a workload has neither question open, since a service names its own port and a workload asking for buildpacks has said which builder to use. |
 | `dockerfilePath` | The Dockerfile, relative to `rootDirectory`. Defaults to `Dockerfile`. |
+| `dockerfileTarget` | Which stage of that Dockerfile produces this workload's image. Left out, the project's stage stands in — see below. |
 | `rootDirectory` | The directory this workload is built from, **relative to the repository root** — not to the project's own root directory, since the whole point is that each workload names where it lives once. |
+
+### Which stage each workload ships
+
+One multi-stage Dockerfile that yields an API, a worker and a migration runner
+is the ordinary shape of a monorepo, and it is the case
+[`dockerfileTarget`](builds.md#which-stage-of-the-dockerfile-it-shipped) exists
+for: without a stage, each of those workloads ships whichever stage the file
+happens to end on — a build that succeeds and produces the wrong thing.
+
+There is **one chain**, and every image the commit produces resolves through
+it:
+
+1. the workload's own `build.dockerfileTarget`, where it declared one;
+2. the commit's own `kitchen.json` (`build.dockerfileTarget`);
+3. the project's `dockerfileTarget`.
+
+Nothing at the end of it is the file's last stage, which is what every build
+shipped before any of this existed. A workload that names no stage therefore
+**inherits the unit's** rather than resetting to the last stage: the unit names
+its stage once, and each workload that differs says so. The project's own
+setting is the web process's.
+
+A workload whose `strategy` is `buildpacks` inherits nothing — the lifecycle has
+no stages, so the unit's stage is not a stage of anything that image builds, and
+a unit that named one would otherwise be unable to ship a single buildpacks
+workload. One that names a stage *itself* keeps it and is refused for it, which
+is the mistake worth reporting.
+
+Both refusals name the workload, because one commit now fails on one of several
+images:
+
+- a stage the workload's Dockerfile does not declare fails the build with
+  `DockerfileTargetNotFound`, naming the workload, its file and the stage;
+- a stage on a workload whose strategy is `buildpacks` — which has no stages —
+  fails the build with `DockerfileTargetNotSupported` **before any Job exists**,
+  naming that workload. The whole unit is refused rather than the one workload:
+  a release is all of it or none.
+
+A name no stage could have — anything but a letter followed by letters, digits,
+dots, dashes and underscores — is a `400` naming the workload and the field, on
+the same rule and in the same words the project's own target is refused by.
+
+`GET /builds/{name}` reports the stage each image was actually built to,
+recorded when its Job was created; `GET /environments/{name}/processes` reports
+what each workload *declared*, which is the release's and does not move when
+the project's settings do.
 
 **A workload's `rootDirectory` is that workload's build root**, on exactly the
 terms [a project's is](projects.md#creating-a-project): it is what is built,
@@ -288,7 +335,7 @@ joined to what the reconciler last saw of each.
       "readyReplicas": 1,
       "address": "http://shop-production-api.kitchen-shop.svc.cluster.local:8080",
       "image": "registry.example.com/kitchen/shop-api@sha256:9f2c…",
-      "build": { "strategy": "dockerfile", "dockerfilePath": "Dockerfile", "rootDirectory": "services/api" },
+      "build": { "strategy": "dockerfile", "dockerfilePath": "Dockerfile", "dockerfileTarget": "api", "rootDirectory": "services/api" },
       "workload": "shop-production-api",
       "healthy": true
     },

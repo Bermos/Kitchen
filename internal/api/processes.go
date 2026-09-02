@@ -137,7 +137,15 @@ type processView struct {
 type processBuildView struct {
 	Strategy       string `json:"strategy"`
 	DockerfilePath string `json:"dockerfilePath,omitempty"`
-	RootDirectory  string `json:"rootDirectory,omitempty"`
+	// DockerfileTarget is the stage of that Dockerfile this workload names,
+	// absent when it names none — in which case the unit's own stage stands
+	// in, and `GET /builds/{name}` says which stage each image was actually
+	// built to. It reads as declared rather than resolved because the
+	// declaration is the release's and the resolution is a build's: a
+	// release that was rolled back to would otherwise read as the stage
+	// today's project settings name.
+	DockerfileTarget string `json:"dockerfileTarget,omitempty"`
+	RootDirectory    string `json:"rootDirectory,omitempty"`
 }
 
 func newProcessBuildView(build *kitchenv1alpha1.ProcessBuildSpec) *processBuildView {
@@ -157,6 +165,7 @@ func newProcessBuildView(build *kitchenv1alpha1.ProcessBuildSpec) *processBuildV
 	// everywhere else.
 	if build.EffectiveStrategy() == kitchenv1alpha1.BuildStrategyDockerfile {
 		view.DockerfilePath = detect.NormalizeDockerfile(build.DockerfilePath)
+		view.DockerfileTarget = detect.NormalizeTarget(build.DockerfileTarget)
 	}
 	return view
 }

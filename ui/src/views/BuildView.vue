@@ -287,6 +287,7 @@ const logStreamer = (query: LogQuery, onLine: (line: LogLine) => void, signal: A
               <tr>
                 <th class="py-1 pr-3 font-normal">Workload</th>
                 <th class="py-1 pr-3 font-normal">Phase</th>
+                <th class="py-1 pr-3 font-normal">Stage</th>
                 <th class="py-1 font-normal">Image</th>
               </tr>
             </thead>
@@ -294,11 +295,17 @@ const logStreamer = (query: LogQuery, onLine: (line: LogLine) => void, signal: A
               <tr>
                 <td class="py-1 pr-3 font-mono text-highlighted">web</td>
                 <td class="py-1 pr-3"><PhaseBadge :phase="build.phase" /></td>
+                <!-- What each image was told to produce. A commit that builds
+                     several images from one multi-stage file is exactly the
+                     case the stage exists for, so which stage each one got is
+                     part of what this commit produced. -->
+                <td class="py-1 pr-3 font-mono text-toned">{{ build.dockerfileTarget || "last" }}</td>
                 <td class="py-1 font-mono text-toned break-all">{{ build.image || "not pushed yet" }}</td>
               </tr>
               <tr v-for="workload in build.workloads" :key="workload.name">
                 <td class="py-1 pr-3 font-mono text-highlighted">{{ workload.name }}</td>
                 <td class="py-1 pr-3"><PhaseBadge :phase="workload.phase" /></td>
+                <td class="py-1 pr-3 font-mono text-toned">{{ workload.dockerfileTarget || "last" }}</td>
                 <td class="py-1 font-mono text-toned break-all">
                   {{ workload.image || workload.message || "not pushed yet" }}
                 </td>

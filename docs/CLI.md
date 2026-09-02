@@ -465,6 +465,13 @@ together — which is what makes a monorepo one project rather than four. Withou
 one it runs the project's image with another command. `kitchen builds` and
 `kitchen api GET /builds/<name>` list what a commit produced under `workloads`.
 
+`build.dockerfileTarget` on such a workload is which stage of its Dockerfile to
+ship — the per-workload counterpart of `--dockerfile-target` on `kitchen
+projects create`, and it goes through `kitchen api` for the same reason the
+rest of the record does. A workload that names none is built to the project's
+stage rather than to the file's last one, and each row under `workloads` says
+which stage that image was built to.
+
 It replaces the whole list, and — like the environment variables and the port —
 it reaches an environment through the next release. What is running keeps its
 own workloads until something builds.

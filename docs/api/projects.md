@@ -55,6 +55,11 @@ file has. Naming a target on a project built with `buildpacks` fails the build
 too: the lifecycle has no stages, so the only thing it could do with a target
 is ignore it, and an ignored target is the same wrong image.
 
+This is the **web process's** stage, and the one every
+[workload](processes.md#which-stage-each-workload-ships) that names none of its
+own is built to. A workload names its own with `build.dockerfileTarget`, on the
+same rule and in the same words.
+
 From a terminal this is [`kitchen projects create`](../CLI.md#creating-a-project),
 which runs the preflight, creates the project and links the directory to it in
 one command — and takes the repository and the name from the checkout it is run

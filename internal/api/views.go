@@ -446,19 +446,26 @@ type buildWorkloadView struct {
 	Image      string `json:"image,omitempty"`
 	Repository string `json:"repository,omitempty"`
 	Job        string `json:"job,omitempty"`
-	Message    string `json:"message,omitempty"`
+	// DockerfileTarget is the stage this workload's build was told to
+	// produce, absent for its file's last stage. It is the row's counterpart
+	// of the build's own `dockerfileTarget`, and it is here for the same
+	// reason: recorded when the Job was created, so an old build reads as
+	// the artifacts it actually shipped.
+	DockerfileTarget string `json:"dockerfileTarget,omitempty"`
+	Message          string `json:"message,omitempty"`
 }
 
 func buildWorkloadViews(workloads []kitchenv1alpha1.WorkloadBuildStatus) []buildWorkloadView {
 	views := make([]buildWorkloadView, 0, len(workloads))
 	for _, workload := range workloads {
 		views = append(views, buildWorkloadView{
-			Name:       workload.Name,
-			Phase:      string(workload.Phase),
-			Image:      workload.Image,
-			Repository: workload.Repository,
-			Job:        workload.Job,
-			Message:    workload.Message,
+			Name:             workload.Name,
+			Phase:            string(workload.Phase),
+			Image:            workload.Image,
+			Repository:       workload.Repository,
+			Job:              workload.Job,
+			DockerfileTarget: workload.DockerfileTarget,
+			Message:          workload.Message,
 		})
 	}
 	return views
