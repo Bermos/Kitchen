@@ -44,6 +44,11 @@ type PlatformRequestsQuery struct {
 	// Limit caps the rows a listing form of the question answers with. The
 	// headline aggregate has one row and ignores it.
 	Limit int
+	// ExcludeHealth drops the named projects' health checks. It is how the
+	// overview's platform-wide totals stay the same kind of number as the
+	// per-project rows beneath them; the edge's own view passes nothing here,
+	// because that screen is about everything that crossed the edge.
+	ExcludeHealth []HealthRoute
 }
 
 // PlatformRequests is the edge's headline: everything that entered the
@@ -72,6 +77,9 @@ func (c *Client) PlatformRequests(ctx context.Context, query PlatformRequestsQue
 	scope, err := platformScope(query.Since, query.Until, requestRollupAuto)
 	if err != nil {
 		return PlatformRequests{}, err
+	}
+	if condition := healthCondition(query.ExcludeHealth, "r.", scope.params); condition != "" {
+		scope.conditions = append(scope.conditions, condition)
 	}
 
 	statement := fmt.Sprintf(`SELECT
@@ -339,7 +347,11 @@ type ProjectTrafficQuery struct {
 	ByEnvironment bool
 	// Sparkline fills RequestsPerHour, at the cost of a second aggregate.
 	Sparkline bool
-	Limit     int
+	// ExcludeHealth drops each named project's health check from its own row.
+	// The pairs are what make that safe across projects: two projects may
+	// spell the check the same way and one of them may mean it.
+	ExcludeHealth []HealthRoute
+	Limit         int
 }
 
 // ProjectTraffic is one project's — or one environment's — edge traffic over
@@ -382,6 +394,9 @@ func (c *Client) ProjectTraffic(ctx context.Context, query ProjectTrafficQuery) 
 	if query.Project != "" {
 		scope.conditions = append(scope.conditions, "r.project = {project:String}")
 		scope.params["project"] = query.Project
+	}
+	if condition := healthCondition(query.ExcludeHealth, "r.", scope.params); condition != "" {
+		scope.conditions = append(scope.conditions, condition)
 	}
 
 	limit := query.Limit

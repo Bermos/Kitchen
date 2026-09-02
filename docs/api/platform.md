@@ -227,6 +227,13 @@ and whether the door itself is in one piece.
                              "message": "Failed to wait for order resource …: DNS problem: NXDOMAIN"}]}}
 ```
 
+This screen counts the platform's own health checks, and that is the one place
+they are counted: a project's traffic numbers leave them out (see
+[telemetry](telemetry.md) and
+[environments](environments.md#the-platforms-own-health-checks-are-not-traffic))
+because a probe is not a visit, while this is the question "what crossed the
+front door", whose honest answer includes every probe and every scanner.
+
 `?since=`/`?until=` bound the traffic window (an hour ending now by default)
 and `?limit=` how many rows each table carries (10 by default). The five
 rankings are five reads rather than one sorted five ways, because the sort

@@ -344,3 +344,21 @@ func orRoot(path string) string {
 	}
 	return path
 }
+
+// RouteTemplate is templatePath under a name the rest of the platform can
+// call.
+//
+// It exists so that "which route does this path belong to" has one answer.
+// The API asks it of a project's declared health-check path, in order to leave
+// the platform's own probes out of that project's traffic numbers, and it has
+// to arrive at the same template the follower charged the request to — a
+// second implementation over there would agree with this one until either
+// changed.
+//
+// It consults no route budget, and that is the difference between this and
+// routeBudgets.route: a budget is per environment and exists to stop new
+// series being minted, and this is a question about one path that is already
+// known.
+func RouteTemplate(path string) string {
+	return templatePath(orRoot(strings.TrimSpace(path)))
+}

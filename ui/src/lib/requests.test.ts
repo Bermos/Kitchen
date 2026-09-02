@@ -11,6 +11,7 @@ import {
   formatPercent,
   formatRate,
   formatSaturation,
+  healthCheckNote,
   isHTTP2,
   MAX_RAW_RETENTION_DAYS,
   rawRetentionDays,
@@ -245,5 +246,31 @@ describe("saturation", () => {
     expect(saturation(512, 0)).toBeNull();
     expect(saturation(512, undefined)).toBeNull();
     expect(formatSaturation(null)).toBe("—");
+  });
+});
+
+describe("healthCheckNote", () => {
+  it("names the check the numbers left out", () => {
+    expect(healthCheckNote({ route: "/api/health", excluded: true }, null)).toEqual({
+      route: "/api/health",
+      excluded: true,
+    });
+  });
+
+  it("still names it once they are counted, because that is what is offered back", () => {
+    expect(healthCheckNote({ route: "/api/health", excluded: false }, null)).toEqual({
+      route: "/api/health",
+      excluded: false,
+    });
+  });
+
+  it("says nothing where the project declared no check", () => {
+    expect(healthCheckNote({ excluded: false }, null)).toBeNull();
+    expect(healthCheckNote(undefined, null)).toBeNull();
+  });
+
+  it("says nothing while a route is selected, which already says what the numbers are of", () => {
+    expect(healthCheckNote({ route: "/api/health", excluded: true }, "/checkout/:id")).toBeNull();
+    expect(healthCheckNote({ route: "/api/health", excluded: false }, "/api/health")).toBeNull();
   });
 });

@@ -22,6 +22,10 @@ const props = defineProps<{
   until?: string;
   /** The route the table selected, or null for all of them. */
   route?: string | null;
+  /** Whether the platform's own health checks are in the listing. The section
+   * decides for the whole panel, so the rows are the traffic the numbers above
+   * them are of. */
+  health?: "include" | "exclude";
 }>();
 
 const emit = defineEmits<{
@@ -57,6 +61,7 @@ function query(): RequestListQuery {
     since: props.since,
     until: props.until,
     route: props.route ?? undefined,
+    health: props.health,
     status: status.value || undefined,
     method: method.value || undefined,
     limit: limit.value,
@@ -122,7 +127,19 @@ function toggleLive() {
   reload();
 }
 
-watch([() => props.environment, () => props.route, () => props.since, () => props.until, status, method, limit], reload);
+watch(
+  [
+    () => props.environment,
+    () => props.route,
+    () => props.health,
+    () => props.since,
+    () => props.until,
+    status,
+    method,
+    limit,
+  ],
+  reload,
+);
 // Polling only carries the fallback: live without a working stream.
 usePoll(() => void refresh(), 5000, () => live.value && !streaming.value);
 

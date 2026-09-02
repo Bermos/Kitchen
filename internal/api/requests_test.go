@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -30,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
+	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/clickhouse"
 	"github.com/Bermos/Kitchen/internal/controller"
 )
@@ -305,5 +307,139 @@ func TestRequestsStreamAsServerSentEvents(t *testing.T) {
 	}
 	if strings.Index(body, "/checkout/1") > strings.Index(body, "/checkout/2") {
 		t.Errorf("the tail sends oldest first, or its boundary drops every row but the newest:\n%s", body)
+	}
+}
+
+// probed is the fixtures with the project declaring an HTTP health check, which
+// is the only thing that makes a route a health check as far as these endpoints
+// are concerned.
+func probed(path string) []runtime.Object {
+	objects := onTheEdge()
+	for _, object := range objects {
+		if project, ok := object.(*kitchenv1alpha1.Project); ok {
+			project.Spec.Runtime.Health = &kitchenv1alpha1.HealthSpec{Path: path}
+		}
+	}
+	return objects
+}
+
+// The platform's own checks are not the application's traffic. Every read on
+// this screen drops them, and every answer says it did — a number that silently
+// left rows out is a number nobody can reconcile against the store.
+func TestAHealthCheckIsNotTraffic(t *testing.T) {
+	h := newHarness(t, nil, probed("/api/health")...)
+
+	res := h.do(t, http.MethodGet, summaryPath, "")
+	if res.Code != http.StatusOK {
+		t.Fatalf("GET %s = %d: %s", summaryPath, res.Code, res.Body.String())
+	}
+	body := decode[requestSummaryBody](t, res)
+	if body.HealthChecks.Route != "/api/health" || !body.HealthChecks.Excluded {
+		t.Errorf("the answer should name the check it left out: %+v", body.HealthChecks)
+	}
+	want := []clickhouse.HealthRoute{{Project: feedProject, Route: "/api/health"}}
+	if !slices.Equal(h.logs.lastRequestSummary.ExcludeHealth, want) {
+		t.Errorf("the summary did not exclude it: %+v", h.logs.lastRequestSummary)
+	}
+
+	if res := h.do(t, http.MethodGet, seriesPath, ""); res.Code != http.StatusOK {
+		t.Fatalf("GET %s = %d: %s", seriesPath, res.Code, res.Body.String())
+	}
+	if !slices.Equal(h.logs.lastRequestSeries.ExcludeHealth, want) {
+		t.Errorf("the series did not exclude it: %+v", h.logs.lastRequestSeries)
+	}
+	if res := h.do(t, http.MethodGet, routesPath, ""); res.Code != http.StatusOK {
+		t.Fatalf("GET %s = %d: %s", routesPath, res.Code, res.Body.String())
+	}
+	if !slices.Equal(h.logs.lastRequestRoutes.ExcludeHealth, want) {
+		t.Errorf("the route table did not exclude it: %+v", h.logs.lastRequestRoutes)
+	}
+	// The rows under the numbers are the traffic those numbers are of.
+	if res := h.do(t, http.MethodGet, requestsPath, ""); res.Code != http.StatusOK {
+		t.Fatalf("GET %s = %d: %s", requestsPath, res.Code, res.Body.String())
+	}
+	if !slices.Equal(h.logs.lastRequests.ExcludeHealth, want) {
+		t.Errorf("the listing did not exclude it: %+v", h.logs.lastRequests)
+	}
+}
+
+// The exclusion is matched against the stored `route`, which is what the
+// follower templated the path to — so a health path carrying an id has to be
+// templated by the same code on the way in and on the way out.
+func TestAHealthCheckIsExcludedAsTheRouteItWasTemplatedTo(t *testing.T) {
+	h := newHarness(t, nil, probed("/api/health/12345")...)
+
+	res := h.do(t, http.MethodGet, summaryPath, "")
+	if res.Code != http.StatusOK {
+		t.Fatalf("GET %s = %d: %s", summaryPath, res.Code, res.Body.String())
+	}
+	if got := decode[requestSummaryBody](t, res).HealthChecks.Route; got != "/api/health/:id" {
+		t.Errorf("health route = %q, want the template the rows carry", got)
+	}
+}
+
+// The older question is still askable, and it is one parameter.
+func TestHealthChecksCanBeCountedBackIn(t *testing.T) {
+	h := newHarness(t, nil, probed("/api/health")...)
+
+	res := h.do(t, http.MethodGet, summaryPath+"?health=include", "")
+	if res.Code != http.StatusOK {
+		t.Fatalf("GET %s = %d: %s", summaryPath, res.Code, res.Body.String())
+	}
+	body := decode[requestSummaryBody](t, res)
+	// The route is still named: it is what the screen offers to exclude again.
+	if body.HealthChecks.Route != "/api/health" || body.HealthChecks.Excluded {
+		t.Errorf("nothing should have been excluded: %+v", body.HealthChecks)
+	}
+	if h.logs.lastRequestSummary.ExcludeHealth != nil {
+		t.Errorf("the store was still asked to exclude: %+v", h.logs.lastRequestSummary)
+	}
+}
+
+// A caller who filtered to the health route asked for it, and answering zero
+// would be the screen arguing with itself.
+func TestFilteringToTheHealthRouteCountsIt(t *testing.T) {
+	h := newHarness(t, nil, probed("/api/health")...)
+
+	res := h.do(t, http.MethodGet, summaryPath+"?route="+url.QueryEscape("/api/health"), "")
+	if res.Code != http.StatusOK {
+		t.Fatalf("GET %s = %d: %s", summaryPath, res.Code, res.Body.String())
+	}
+	body := decode[requestSummaryBody](t, res)
+	if body.HealthChecks.Excluded {
+		t.Errorf("the numbers are of the route that was asked for: %+v", body.HealthChecks)
+	}
+	if h.logs.lastRequestSummary.ExcludeHealth != nil {
+		t.Errorf("a named route should not also be excluded: %+v", h.logs.lastRequestSummary)
+	}
+}
+
+// A project that declared no HTTP check has nothing to exclude, and says so
+// rather than leaving the screen to guess what the empty route means.
+func TestAProjectWithNoHealthCheckExcludesNothing(t *testing.T) {
+	h := newHarness(t, nil, onTheEdge()...)
+
+	res := h.do(t, http.MethodGet, summaryPath, "")
+	if res.Code != http.StatusOK {
+		t.Fatalf("GET %s = %d: %s", summaryPath, res.Code, res.Body.String())
+	}
+	body := decode[requestSummaryBody](t, res)
+	if body.HealthChecks.Route != "" || body.HealthChecks.Excluded {
+		t.Errorf("nothing was declared, so nothing is excluded: %+v", body.HealthChecks)
+	}
+	if h.logs.lastRequestSummary.ExcludeHealth != nil {
+		t.Errorf("the store should have been asked for everything: %+v", h.logs.lastRequestSummary)
+	}
+}
+
+func TestAnUnknownHealthValueNamesTheChoices(t *testing.T) {
+	h := newHarness(t, nil, probed("/api/health")...)
+
+	res := h.do(t, http.MethodGet, summaryPath+"?health=maybe", "")
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d: %s", res.Code, res.Body.String())
+	}
+	if !strings.Contains(res.Body.String(), "include") || !strings.Contains(res.Body.String(), "exclude") {
+		t.Errorf("the answer should name the choices: %s", res.Body.String())
 	}
 }

@@ -21,6 +21,17 @@ one shape:
 - `projects`: per-project 24h traffic (requests, 5xx, p95, hourly series),
   from the same request pipeline
 
+Every traffic number here leaves out the platform's own health checks: a
+project's declared health path (`spec.runtime.health.path`) is a probe rather
+than a visit, and counting it makes a quiet project look visited. The exclusion
+is a (project, route) pair, so one project's health path never subtracts from
+another's traffic, and it applies to the totals, their hourly buckets and the
+`projects` rows alike — the environment page's numbers are the same kind of
+number ([environments](environments.md#the-platforms-own-health-checks-are-not-traffic)
+says what counts as one, and how to ask for them back). The platform's *edge*
+view is the deliberate exception: `/platform/edge` is about everything that
+crossed the edge, probes and scanners included.
+
 Every traffic number here is the edge's request rows — the totals as well as
 the rows, which was not always true. Flows are attributed by the *destination*
 endpoint: a protected preview's traffic is credited to the forward-auth gate
