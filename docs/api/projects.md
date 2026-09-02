@@ -210,8 +210,8 @@ answers it only for somebody who already knows the defaults. Previews inherit
 it with the rest of the runtime, and it is snapshotted into every release.
 
 `security` is the posture every workload of the project runs under — the web
-process, its workers and its scheduled runs, since they are one image and a
-posture describes the image rather than the command it is started with:
+process, its workers, its services and its scheduled runs, since a posture
+describes how a container runs rather than the command it is started with:
 
 ```json
 {"security": {"runAsNonRoot": true, "runAsUser": 1001,
@@ -252,14 +252,17 @@ that release ran under, and it can equally be declared in the repository —
 see [kitchen.json](../CONFIG.md), where the commit that makes an image able to
 run read-only is the commit that says so.
 
-`processes` is what the project runs *besides* its web process — its queue
-workers and its scheduled jobs, which share the release's image and
-environment and are started with another command. It belongs on this route
+`processes` is what the project ships *besides* its web process — its queue
+workers, its scheduled jobs, and the services the rest of the unit talks to
+over the cluster network and the internet does not. It belongs on this route
 rather than one of its own because it is the same decision as the port and the
-replica count above it: what this project runs, and how much of it. The write
-replaces the whole list, and an empty list removes every process. See
-[Workers and scheduled jobs](processes.md) for the fields, for why a preview
-runs none of them unless a process opts in, and for reading what an
+replica count above it: what this project runs, and how much of it. That is
+also why there is no tier above the project: a repository that ships four
+things is one project with four entries here, deployed and rolled back as a
+whole. The write replaces the whole list, and an empty list removes every
+workload. See [Workloads](processes.md) for the fields, for how one workload
+reaches another, for a workload built from its own directory of the
+repository, for which of them a preview runs, and for reading what an
 environment is actually running.
 
 `dataClass` classifies the data the project handles — `public`, `internal`,

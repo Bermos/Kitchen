@@ -280,38 +280,103 @@ spec:
                   people adding two workers do not drop each other's.
                 items:
                   description: |-
-                    ProcessSpec is one process of a Project besides its web process: the same
-                    image, the same environment, started differently.
+                    ProcessSpec is one workload of a Project besides its web process: the
+                    project's environment, started differently — and, since #271, optionally
+                    built differently and addressed on its own.
 
                     The Release is already the right unit — an immutable image plus a config
                     snapshot — so a worker and a scheduled job are not another build. They are
                     the build's image run with another command, which is why this list is
                     snapshotted into the Release along with the environment variables and the
                     runtime: rolling back runs the processes the rollback target declared, not
-                    the ones the Project declares today.
+                    the ones the Project declares today. A workload that declares a [Build] of
+                    its own is the same story with one more frozen field: the Release records
+                    the digest each workload was built to, so a rollback restores the exact set
+                    of images that release declared rather than today's.
 
                     The two rules test `has(self.schedule)` rather than comparing to an empty
                     string, and it is not only shorter: the field is `omitempty`, so an absent
-                    schedule is an absent key and `has` is the exact question.
+                    schedule is an absent key and `has` is the exact question. Only a `cron`
+                    takes one — a worker and a service both run continuously, and a schedule on
+                    either would be a setting that read back and did nothing.
 
-                    The health rules are the same shape of refusal rather than a silent
-                    omission. A process publishes no container port of its own, so a health
-                    check that named none would be a setting that read back and did nothing;
-                    and a scheduled run's verdict is its exit status, not a probe.
+                    The port rules and the health rules are the same shape of refusal rather
+                    than a silent omission. Only a service is addressed, so only a service has
+                    a port; a worker publishes no container port of its own, so a health check
+                    that named none would check nothing; and a scheduled run's verdict is its
+                    exit status, not a probe.
 
-                    The singleton rules are `RuntimeSpec`'s, read for a process. A worker is
+                    The singleton rules are `RuntimeSpec`'s, read for a workload. A worker is
                     exactly the workload that declaration was filed for and the one it did not
                     reach (#250), and it refuses a second replica rather than clamping one for
                     the same reason: a value silently lowered reads back as a setting that did
-                    not take. A scheduled process is refused it outright, because whether two of
-                    its runs may overlap is `concurrencyPolicy` — a second spelling of that
-                    question would be a setting that reads back and does nothing.
+                    not take. A service takes it on the same terms. A scheduled process is
+                    refused it outright, because whether two of its runs may overlap is
+                    `concurrencyPolicy` — a second spelling of that question would be a setting
+                    that reads back and does nothing.
                   properties:
                     args:
                       items:
                         type: string
                       type: array
                       x-kubernetes-list-type: atomic
+                    build:
+                      description: |-
+                        Build says this workload is built from the repository in its own
+                        right, rather than running the project's image with another command.
+
+                        It is what makes a monorepo one project instead of four (#271): four
+                        directories, four images, one commit, one Release, one rollback. The
+                        Release records the digest each workload was built to, so restoring it
+                        restores that exact set — never today's.
+
+                        Absent is the original arrangement and stays the default: the workload
+                        runs the project's own image, which is what a worker sharing the web
+                        process's codebase wants and is one build rather than two.
+
+                        It is refused on a scheduled process. A cron workload is a command run
+                        against an image on a timer; giving it a build of its own would mean
+                        an image built on every commit whose only purpose is to be started
+                        four times a day, which is the worker or service that ships it —
+                        declare the build there and point the schedule at it.
+                      properties:
+                        dockerfilePath:
+                          default: Dockerfile
+                          description: |-
+                            DockerfilePath is the Dockerfile, relative to RootDirectory, for a
+                            dockerfile build.
+                          type: string
+                        rootDirectory:
+                          default: .
+                          description: |-
+                            RootDirectory is the directory of the repository this workload is
+                            built from — this workload's **build root**, on exactly the terms
+                            `ProjectBuildSpec.RootDirectory` is the project's: it is what is
+                            built, DockerfilePath is relative to it, and nothing above it is part
+                            of this workload's build. internal/detect is where that meaning is
+                            written down, and everything that spells or refuses one of these paths
+                            reads it there.
+
+                            It is relative to the repository root, not to the project's own root
+                            directory: the whole point is that the unit is a repository holding
+                            several workloads, so each names where it lives once rather than
+                            relative to whichever of them the project happened to call its own.
+                          type: string
+                        strategy:
+                          allOf:
+                          - enum:
+                            - auto
+                            - dockerfile
+                            - buildpacks
+                          - enum:
+                            - dockerfile
+                            - buildpacks
+                          default: dockerfile
+                          description: |-
+                            Strategy is how the image is produced. It defaults to `dockerfile`,
+                            which is what a monorepo shipping several images almost always has.
+                          type: string
+                      type: object
                     command:
                       description: |-
                         Command replaces the image's entrypoint, and Args its arguments. Both
@@ -422,18 +487,48 @@ spec:
                       x-kubernetes-validations:
                       - message: the web process is spec.runtime, not a named process
                         rule: self != 'web'
-                    previews:
-                      default: false
+                    port:
                       description: |-
-                        Previews says whether this process runs in preview environments too.
+                        Port is the port a service workload listens on, and the port the
+                        Service in front of it is published on — the two are the same number
+                        deliberately, because a workload addressed by the rest of the unit is
+                        addressed over whatever protocol it speaks, and a Service that
+                        renumbered the port would make `KITCHEN_SERVICE_<NAME>_PORT` and the
+                        application's own configuration disagree.
 
-                        **It is off, and that is the decision rather than an omission.** A
-                        preview that emails customers nightly is a bad afternoon, and a
-                        preview worker draining the production queue is a worse one — the
-                        preview shares the project's environment variables, so it is pointed
-                        at whatever the production process is pointed at unless somebody
-                        overrode it. One rule for both types, opted into per process: a
-                        preview that should run its worker says so.
+                        It is required on a service and refused on anything else, at admission
+                        and at the API. A worker publishes nothing, so a port on one would be
+                        a setting that reads back and does nothing — the port a worker's
+                        health listener sits on is `health.port`, which is the question that
+                        field already asks.
+                      format: int32
+                      maximum: 65535
+                      minimum: 1
+                      type: integer
+                    previews:
+                      description: |-
+                        Previews says whether this workload runs in preview environments too.
+
+                        **A worker and a scheduled job are off unless they say otherwise, and
+                        that is the decision rather than an omission.** A preview that emails
+                        customers nightly is a bad afternoon, and a preview worker draining
+                        the production queue is a worse one — the preview shares the project's
+                        environment variables, so it is pointed at whatever the production
+                        process is pointed at unless somebody overrode it.
+
+                        **A service is on unless it says otherwise**, and for the reason the
+                        unit exists: a service workload is addressed by its own environment's
+                        siblings and by nothing else, so leaving it out of a preview protects
+                        nothing and breaks the preview — the web process comes up pointed at a
+                        Service with no pods behind it. #271's whole argument is that a
+                        preview of a multi-workload unit has to be the whole set; a default
+                        that quietly shipped half of it would defeat it.
+
+                        It is a pointer so that an absent value can mean "the default for this
+                        type" and `false` can mean false, which a bool with `omitempty` cannot
+                        say: the field is dropped from the serialized object, and a service
+                        deliberately kept out of previews would be silently put back on every
+                        write. It is [PreviewsSpec.Enabled]'s reasoning, one level down.
                       type: boolean
                     replicas:
                       default: 1
@@ -551,9 +646,17 @@ spec:
                         this list is what a Project has *besides* its web process, which is exactly
                         the gap #78 was filed for: a queue worker and a nightly job that today have
                         to be a second Project with a port nothing talks to.
+
+                        `service` is the third value and the one #271 added. It is the workload a
+                        monorepo has several of: an image of its own, addressed by the rest of the
+                        unit over the cluster network, and **not published**. Publishing stays the
+                        exception the project declares — `spec.runtime`, the one process with the
+                        URL — so a workload that should not be on the internet is not on it by
+                        saying nothing, rather than by remembering to turn something off.
                       enum:
                       - worker
                       - cron
+                      - service
                       type: string
                   required:
                   - name
@@ -562,24 +665,36 @@ spec:
                   x-kubernetes-validations:
                   - message: a cron process needs a schedule
                     rule: self.type != 'cron' || has(self.schedule)
-                  - message: a worker runs continuously and has no schedule; use type
-                      cron
-                    rule: self.type != 'worker' || !has(self.schedule)
+                  - message: a worker and a service run continuously and have no schedule;
+                      use type cron
+                    rule: self.type == 'cron' || !has(self.schedule)
                   - message: 'a process health check must name the port it is made
-                      against: a process publishes no port of its own'
-                    rule: '!has(self.health) || has(self.health.port)'
+                      against: a worker publishes no port of its own'
+                    rule: '!has(self.health) || has(self.health.port) || self.type
+                      == ''service'''
                   - message: a scheduled process is not kept alive by a health check;
                       how a run went is its exit status
                     rule: self.type != 'cron' || !has(self.health)
-                  - message: 'only a worker can be a singleton: whether two runs of
-                      a scheduled process may overlap is concurrencyPolicy, and Forbid
-                      is its default'
-                    rule: '!has(self.singleton) || !self.singleton || self.type ==
-                      ''worker'''
-                  - message: 'a singleton worker cannot run more than one replica:
+                  - message: 'a service process has to say which port it listens on:
+                      it is what the rest of the unit addresses it by'
+                    rule: self.type != 'service' || has(self.port)
+                  - message: only a service process is addressed, so only a service
+                      process has a port; a worker that serves a health listener names
+                      that port on its health check
+                    rule: self.type == 'service' || !has(self.port)
+                  - message: 'a scheduled process cannot be a singleton: whether two
+                      of its runs may overlap is concurrencyPolicy, and Forbid is
+                      its default'
+                    rule: '!has(self.singleton) || !self.singleton || self.type !=
+                      ''cron'''
+                  - message: 'a singleton workload cannot run more than one replica:
                       leave replicas at 1, or turn singleton off'
                     rule: '!has(self.singleton) || !self.singleton || !has(self.replicas)
                       || self.replicas <= 1'
+                  - message: 'a scheduled process runs an image, it is not one: give
+                      the build to the worker or service that ships it, and run this
+                      on that image'
+                    rule: self.type != 'cron' || !has(self.build)
                 type: array
                 x-kubernetes-list-map-keys:
                 - name

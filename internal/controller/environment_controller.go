@@ -287,7 +287,17 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	if !unprotectable {
 		publicURL = fmt.Sprintf("%s://%s", platformScheme(kitchen), host)
 	}
-	podEnv = append(platformEnv(kitchen, project.Name, env, release, publicURL), podEnv...)
+	// The addresses of this environment's own service workloads go in with
+	// the platform's other variables, and for the same reason: a workload
+	// cannot work out where its siblings are. They are the *environment's*
+	// — `<environment>-<workload>` — so a preview's web process reaches the
+	// preview's own API, which is the whole of what makes a preview of a
+	// multi-workload unit a preview of the unit rather than of one quarter
+	// of it pointed at production.
+	podEnv = append(
+		append(platformEnv(kitchen, project.Name, env, release, publicURL),
+			serviceEnv(env, release, appNS)...),
+		podEnv...)
 
 	runtimeSpec := release.Spec.ConfigSnapshot.Runtime
 	// The web process's volumes, and what they do to it. A volume that
@@ -655,6 +665,43 @@ func platformEnv(
 	return append(vars, telemetryEnv(kitchen, projectName, env)...)
 }
 
+// serviceEnv is where every service workload of this environment answers.
+//
+// Three variables per service, and each answers one question: the URL for
+// anything speaking HTTP, and the host and the port separately for anything
+// that is not — a database driver, a gRPC client, a queue. One variable
+// carrying an authority would have made the platform pretend to know a
+// protocol it was never told, and one carrying only a URL would have made
+// every non-HTTP client parse it back apart.
+//
+// The list is the *Release's*, like everything else an environment
+// materializes, and it excludes what this environment does not run: naming
+// the address of a Service that was never created would be worse than
+// naming nothing, since the application would resolve nothing and blame the
+// network. A service is in a preview unless it said otherwise — see
+// [v1alpha1.ProcessSpec.Previews] for why that default turns on the type.
+func serviceEnv(
+	env *kitchenv1alpha1.Environment,
+	release *kitchenv1alpha1.Release,
+	appNS string,
+) []corev1.EnvVar {
+	processes := release.Spec.ConfigSnapshot.Processes
+	vars := make([]corev1.EnvVar, 0, len(processes)*3)
+	for i := range processes {
+		process := processes[i]
+		if !process.Addressed() || !process.RunsIn(env.Spec.Type) {
+			continue
+		}
+		prefix := kitchenv1alpha1.ServiceEnvPrefix(process.Name)
+		vars = append(vars,
+			corev1.EnvVar{Name: prefix, Value: ProcessAddress(env.Name, appNS, process)},
+			corev1.EnvVar{Name: prefix + "_HOST", Value: ProcessServiceHost(env.Name, appNS, process.Name)},
+			corev1.EnvVar{Name: prefix + "_PORT", Value: strconv.Itoa(int(process.Port))},
+		)
+	}
+	return vars
+}
+
 // telemetryEnv is what the platform tells an application about itself: where
 // the trace receiver is, and who is calling.
 //
@@ -802,8 +849,13 @@ func (r *EnvironmentReconciler) applyDeployment(
 		volumes, volumeMounts := podVolumes(mounts)
 		deploy.Spec.Template.Spec.Volumes = volumes
 		app := corev1.Container{
-			Name:  AppContainerName,
-			Image: release.Spec.Image,
+			Name: AppContainerName,
+			// The Release is asked rather than read, so that every workload
+			// of a unit resolves its image the same way. The web process
+			// never has one of its own, so this is `spec.image` — but a
+			// second spelling of "which image does this workload run" is how
+			// the two answers come to differ.
+			Image: release.ImageFor(kitchenv1alpha1.WebProcessName),
 			// The arguments are the release's, and a preview's are the
 			// preview override where the release declared one: same commit,
 			// same artifact, different flags — which is the whole point,

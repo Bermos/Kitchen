@@ -58,6 +58,55 @@ A build recorded before the platform stored the two separately has the whole
 message in its spec, which is immutable, and is answered here split the same
 way — so no client has to know which it is reading.
 
+## What one commit produced
+
+A project is one deployable unit, and a unit can ship more than one image — a
+repository with an API, a front end and a worker, each built from its own
+directory. Those are [workloads of one project](processes.md), and one Build
+produces all of them.
+
+```json
+{
+  "image": "registry.example.com/kitchen/shop@sha256:1f0c…",
+  "workloads": [
+    {
+      "name": "api",
+      "phase": "Succeeded",
+      "repository": "registry.example.com/kitchen/shop-api",
+      "image": "registry.example.com/kitchen/shop-api@sha256:9f2c…",
+      "job": "shop-bld-abc123def456-api"
+    }
+  ]
+}
+```
+
+`image` is the project's own — the web process's — and `workloads` is one row
+per workload that declared a build of its own. A project that ships one image
+has none, and answers exactly as it always did.
+
+Three things hold "one commit, one coordinated release" up:
+
+- **They are created together.** Every workload's Job is created in one pass,
+  so nothing can half-start a unit.
+- **The Build is over when all of them are.** It succeeds only once every
+  workload pushed, and the first one to fail fails the Build naming itself —
+  three of four workloads a commit ahead of the fourth is worse than a deploy
+  that did not happen.
+- **The digests are frozen together.** The Release this Build writes records
+  the image each workload was built to, so restoring that release restores
+  that exact set rather than today's.
+
+Each workload's image is pushed to a repository beside the project's own —
+`<registry>/<project>-<workload>` — so everything a project pushes sorts
+together and is covered by one credential, one retention rule and one quota.
+Each caches separately too, since they share no layers.
+
+**Evidence is the project's own image's.** The attestation the platform
+attaches — provenance, an SBOM, and the quality gates that run over it — is
+made about `image`, not about each workload's. A unit whose every artifact
+carries its own evidence is a larger change than this one, and it is named as
+an open item rather than implied by silence.
+
 ## What the commit configured for itself
 
 A repository can carry its own settings, in a `kitchen.json` at the project's

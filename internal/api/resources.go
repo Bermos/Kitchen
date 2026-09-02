@@ -430,15 +430,21 @@ type patchProjectRequest struct {
 	Criticality *string `json:"criticality,omitempty"`
 	RTO         *string `json:"rto,omitempty"`
 	RPO         *string `json:"rpo,omitempty"`
-	// Processes replaces the project's workers and scheduled jobs wholesale;
-	// an empty list removes them all. It is here, on the settings route,
-	// rather than on a route of its own because what a project runs and how
+	// Processes replaces the project's other workloads wholesale — its
+	// workers, its scheduled jobs and the services the rest of the unit talks
+	// to; an empty list removes them all. It is here, on the settings route,
+	// rather than on a route of its own because what a project ships and how
 	// much of it it runs is one decision — the same admin who sets the
 	// replica count and the resources of the web process sets the workers'.
 	//
+	// It is also why a repository that ships four images is one project with
+	// four entries here rather than four projects, or a tier above the
+	// project: the deployable unit is the project, and a tier above it would
+	// double every route in this table (#271).
+	//
 	// The list is the project's declaration, so it reaches an environment only
 	// through the next Release: an existing environment keeps running the
-	// processes its release declared until something builds. That is the same
+	// workloads its release declared until something builds. That is the same
 	// rule the port and the replica count follow, and it is what makes a
 	// rollback exact.
 	Processes *[]processRequest `json:"processes,omitempty"`

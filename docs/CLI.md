@@ -405,12 +405,13 @@ the platform keeps a handful of finished Jobs and collects the rest, but the
 lines stay for the whole container-log retention, so last month's failed report
 is still readable by name.
 
-### Workers and scheduled jobs
+### Workloads
 
-A project deploys a web process, and it may also declare workers — which run
-continuously and are never addressed — and scheduled jobs, which run on a cron
-expression in UTC. They share the release's image and environment and differ
-only in how they are started.
+A project deploys a web process, and it may also declare other workloads:
+**workers**, which run continuously and are never addressed; **services**,
+which run continuously and are reachable from the rest of the unit and from
+nowhere outside the cluster; and **scheduled jobs**, which run on a cron
+expression in UTC.
 
 ```sh
 kitchen processes                             # what production runs besides the web process
@@ -419,27 +420,46 @@ kitchen processes runs nightly-report         # that job's recent runs, newest f
 kitchen processes run nightly-report          # run it now, off the schedule
 ```
 
-What is listed is the *release's* process list, so an environment that has been
-rolled back lists the processes that release declared. A preview lists the
-project's whole list, with the ones it does not run marked suspended: a process
-runs in previews only if it was opted in, because a preview that emails
-customers nightly is a bad afternoon.
+What is listed is the *release's* workload list, so an environment that has
+been rolled back lists the workloads that release declared — and, for one built
+from its own directory, the image that release built. A preview lists the
+project's whole list, with the ones it does not run marked suspended: a worker
+and a scheduled job run in previews only if they were opted in, because a
+preview that emails customers nightly is a bad afternoon, and a service runs
+unless it was opted out, because a preview missing one of its own services is a
+broken preview.
+
+A service's address is on its row and in `--json` as `address`, which is what
+somebody wiring two workloads together is after — it is the same value the
+environment's other workloads read as `KITCHEN_SERVICE_<NAME>`, with `_HOST`
+and `_PORT` beside it:
+
+```sh
+kitchen processes --json | jq '.items[] | select(.address) | {name, address}'
+```
 
 Declaring the list has no command of its own. It is a list of records with
-commands, schedules and resources in it, and a flag-shaped spelling would be
-worse than the JSON body — so it goes through `kitchen api`, alongside the rest
-of the project's settings:
+commands, schedules, ports, builds and resources in it, and a flag-shaped
+spelling would be worse than the JSON body — so it goes through `kitchen api`,
+alongside the rest of the project's settings:
 
 ```sh
 kitchen api PATCH /projects/shop --data '{"processes":[
   {"name":"worker","type":"worker","command":["node","worker.js"],"replicas":2},
+  {"name":"api","type":"service","port":8080,"build":{"rootDirectory":"services/api"}},
   {"name":"nightly-report","type":"cron","schedule":"0 3 * * *","command":["node","report.js"]}
 ]}'
 ```
 
+A workload with a `build` is built from its own directory of the repository, so
+one commit produces several images that ship as one release and roll back
+together — which is what makes a monorepo one project rather than four. Without
+one it runs the project's image with another command. `kitchen builds` and
+`kitchen api GET /builds/<name>` list what a commit produced under `workloads`.
+
 It replaces the whole list, and — like the environment variables and the port —
 it reaches an environment through the next release. What is running keeps its
-own processes until something builds.
+own workloads until something builds.
 
 A worker's `health` goes on the same record. It has to name the port it is
 checked on, because a worker publishes none of its own:
@@ -452,11 +472,11 @@ kitchen api PATCH /projects/shop --data '{"processes":[
 ```
 
 So does `singleton`, which is the declaration a poller moved out of the web
-process needs: two of this worker must never run at once, so a deploy stops
+process needs: two of this workload must never run at once, so a deploy stops
 the old copy before starting the new one instead of overlapping the two. It
 refuses more than one replica rather than clamping the count, and a scheduled
 job is refused it — whether two of *its* runs may overlap is
-`concurrencyPolicy`. `kitchen processes` prints it on the worker's row.
+`concurrencyPolicy`. `kitchen processes` prints it on the workload's row.
 
 ```sh
 kitchen api PATCH /projects/shop --data '{"processes":[

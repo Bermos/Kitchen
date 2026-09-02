@@ -99,7 +99,7 @@ These aren't nice-to-haves — the first three are the product.
    status, and onto the environment screen. The log pipeline keys on the
    process and the run, so one firing's output is one query for as long as the
    lines are kept — which outlasts the Job. See
-   [Workers and scheduled jobs](api/processes.md).
+   [Workloads](api/processes.md).
 
 ### Nice-to-haves (later)
 

@@ -35,9 +35,10 @@ import (
 	"github.com/Bermos/Kitchen/internal/audit"
 	"github.com/Bermos/Kitchen/internal/clickhouse"
 	"github.com/Bermos/Kitchen/internal/controller"
+	"github.com/Bermos/Kitchen/internal/detect"
 )
 
-// A Project's workers and scheduled jobs, over the API (#78).
+// A Project's workloads besides its web process, over the API (#78, #271).
 //
 // The list itself is a project setting, written through PATCH /projects/{name}
 // beside the port and the replica count it belongs with: what a project runs
@@ -72,6 +73,24 @@ type processView struct {
 	Command  []string `json:"command,omitempty"`
 	Args     []string `json:"args,omitempty"`
 	Schedule string   `json:"schedule,omitempty"`
+	// Port is a service workload's, and Address is where it answers inside
+	// the cluster: `http://<host>:<port>`, the same value its siblings are
+	// handed as KITCHEN_SERVICE_<NAME>. Both are absent on a worker and a
+	// scheduled job, which nothing addresses, and the address is absent for
+	// a service this environment does not run.
+	//
+	// Neither is a URL anyone outside the cluster can reach, and that is the
+	// point of a service: publishing is what a route does, and a service
+	// gets none.
+	Port    int32  `json:"port,omitempty"`
+	Address string `json:"address,omitempty"`
+	// Image is what this workload runs when that is not the release's own
+	// image — a workload with a build of its own. Absent means it runs the
+	// project's image with another command, which is the ordinary case.
+	Image string `json:"image,omitempty"`
+	// Build is this workload's own build, when it has one: which directory
+	// of the repository it is and how the image comes out of it.
+	Build *processBuildView `json:"build,omitempty"`
 	// ConcurrencyPolicy and Timeout are a scheduled process's; Replicas is a
 	// worker's declared count and ReadyReplicas what is actually up.
 	ConcurrencyPolicy string `json:"concurrencyPolicy,omitempty"`
@@ -112,6 +131,34 @@ type processView struct {
 	// is derived at the API rather than in each client so that the dashboard
 	// and the CLI cannot disagree about what a red dot means.
 	Healthy bool `json:"healthy"`
+}
+
+// processBuildView is one workload's own build, as the project declares it.
+type processBuildView struct {
+	Strategy       string `json:"strategy"`
+	DockerfilePath string `json:"dockerfilePath,omitempty"`
+	RootDirectory  string `json:"rootDirectory,omitempty"`
+}
+
+func newProcessBuildView(build *kitchenv1alpha1.ProcessBuildSpec) *processBuildView {
+	if build == nil {
+		return nil
+	}
+	view := &processBuildView{
+		Strategy: string(build.EffectiveStrategy()),
+		// Spelled the way the build spells it, by the one place that says
+		// what a build root is — so the answer names the directory the build
+		// would read rather than a near miss of it.
+		RootDirectory: detect.NormalizeRoot(build.RootDirectory),
+	}
+	// The Dockerfile is a dockerfile build's alone. Reporting it beside a
+	// buildpacks strategy would be a setting that reads back and does
+	// nothing, which is the shape of confusion this repository refuses
+	// everywhere else.
+	if build.EffectiveStrategy() == kitchenv1alpha1.BuildStrategyDockerfile {
+		view.DockerfilePath = detect.NormalizeDockerfile(build.DockerfilePath)
+	}
+	return view
 }
 
 // processRunView is one run of a scheduled process.
@@ -155,6 +202,8 @@ func newProcessView(process kitchenv1alpha1.ProcessSpec, status *kitchenv1alpha1
 		Command:  process.Command,
 		Args:     process.Args,
 		Schedule: process.Schedule,
+		Port:     process.Port,
+		Build:    newProcessBuildView(process.Build),
 		Healthy:  true,
 	}
 	if process.Type == kitchenv1alpha1.ProcessCron {
@@ -181,13 +230,15 @@ func newProcessView(process kitchenv1alpha1.ProcessSpec, status *kitchenv1alpha1
 	}
 
 	view.Workload = status.Workload
+	view.Address = status.Address
+	view.Image = status.Image
 	view.Suspended = status.Suspended
 	view.Active = status.Active
 	view.LastRun = newProcessRunView(status.LastRun)
 	view.LastFailure = newProcessRunView(status.LastFailure)
 	switch {
 	case status.Suspended:
-		view.Reason = "this process does not run in preview environments — set previews on it to opt in"
+		view.Reason = suspendedReason(process)
 	case process.Type == kitchenv1alpha1.ProcessCron:
 		view.Healthy = status.LastRun == nil || status.LastRun.Phase != kitchenv1alpha1.RunFailed
 	default:
@@ -196,6 +247,19 @@ func newProcessView(process kitchenv1alpha1.ProcessSpec, status *kitchenv1alpha1
 		view.Healthy = status.Replicas == 0 || status.ReadyReplicas > 0
 	}
 	return view
+}
+
+// suspendedReason is why a workload the release declares is not running here.
+//
+// A service reads the other way round from a worker: it is in a preview
+// unless it was taken out of one, so the sentence that tells a worker how to
+// opt in would tell a service's reader to do what it already did.
+func suspendedReason(process kitchenv1alpha1.ProcessSpec) string {
+	if process.Addressed() {
+		return "this service was taken out of preview environments — " +
+			"nothing in this preview can reach it, so unset previews on it to put it back"
+	}
+	return "this process does not run in preview environments — set previews on it to opt in"
 }
 
 // environmentProcesses answers what this environment runs besides its web
@@ -370,9 +434,9 @@ func (s *Server) triggerProcessRun(w http.ResponseWriter, req *http.Request) {
 // scheduledProcess resolves the named process of an environment's release and
 // insists it is a scheduled one, writing the refusal itself.
 //
-// A worker is refused rather than quietly accepted: "run it now" has no
-// meaning for a process that is already running, and a 404 would suggest the
-// process does not exist when it plainly does.
+// A worker or a service is refused rather than quietly accepted: "run it now"
+// has no meaning for a workload that is already running, and a 404 would
+// suggest the workload does not exist when it plainly does.
 func (s *Server) scheduledProcess(
 	w http.ResponseWriter,
 	ctx context.Context,
@@ -391,9 +455,9 @@ func (s *Server) scheduledProcess(
 		return kitchenv1alpha1.ProcessSpec{}, false
 	}
 	if process.Type != kitchenv1alpha1.ProcessCron {
-		badRequest(w, "process %q is a worker, not a scheduled job: it has no runs, "+
+		badRequest(w, "process %q is a %s, not a scheduled job: it has no runs, "+
 			"and it is already running — its replicas are on GET /environments/%s/processes",
-			name, env.Name)
+			name, process.Type, env.Name)
 		return kitchenv1alpha1.ProcessSpec{}, false
 	}
 	return *process, true

@@ -574,6 +574,21 @@ type BuildStatus struct {
 	// +optional
 	Artifact *ArtifactStatus `json:"artifact,omitempty"`
 
+	// Workloads is one row per workload of the unit that was built in its
+	// own right — the monorepo case #271 exists for. The web process is not
+	// among them: its image is `status.image` and always has been.
+	//
+	// A Build is one commit, so it is over when every one of its workloads
+	// is: they are created together, they run at once against the platform's
+	// build concurrency, and a Build succeeds only when all of them pushed.
+	// The first one to fail fails the Build, naming itself — a unit that
+	// half-deployed would be worse than one that did not deploy, because
+	// three of its four workloads would be a commit ahead of the fourth.
+	// +optional
+	// +listType=map
+	// +listMapKey=name
+	Workloads []WorkloadBuildStatus `json:"workloads,omitempty"`
+
 	// Cache is what the layer cache did for this build. Absent on a build
 	// that never got as far as being run.
 	// +optional
@@ -631,6 +646,43 @@ type BuildStatus struct {
 
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+// WorkloadBuildStatus is what one workload's own build did.
+//
+// It carries the same three facts the Build carries about its own image —
+// where it was pushed, what came out, and what went wrong — because a unit
+// whose fourth workload failed has to be able to say which one and why
+// without anybody going and reading four Jobs.
+type WorkloadBuildStatus struct {
+	// Name is the workload's, as the project declares it.
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+
+	// Job is the build Job in the application namespace. It is named after
+	// the Build and the workload, so a person reading the namespace can see
+	// which commit each pod belongs to.
+	// +optional
+	Job string `json:"job,omitempty"`
+
+	// Phase is what became of this workload's build. It is the Build's own
+	// vocabulary, read for one workload.
+	// +optional
+	Phase BuildPhase `json:"phase,omitempty"`
+
+	// Image is the digest reference the workload was built to, empty until
+	// it has been. This is what the Release freezes.
+	// +optional
+	Image string `json:"image,omitempty"`
+
+	// Repository is where the image was pushed, without a tag or digest.
+	// +optional
+	Repository string `json:"repository,omitempty"`
+
+	// Message explains a workload that did not build. It is empty for one
+	// that did.
+	// +optional
+	Message string `json:"message,omitempty"`
 }
 
 // +kubebuilder:object:root=true

@@ -524,10 +524,10 @@ function historyBy(entry: { reason: string; by?: string }): string {
         </div>
       </div>
 
-      <!-- What else this environment runs: the workers and the scheduled jobs.
-           Above the domains because a failing nightly job is a thing to trip
-           over, and below the workload because the web process is still what
-           most people came for. -->
+      <!-- What else this environment runs: its workers, its services and its
+           scheduled jobs. Above the domains because a failing nightly job is a
+           thing to trip over, and below the workload because the web process
+           is still what most people came for — it is the one with the URL. -->
       <ProcessesPanel :environment="environment.name" :role="data?.project.role" />
 
       <DomainsPanel :environment="environment.name" :role="data?.project.role" />

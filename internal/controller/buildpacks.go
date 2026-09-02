@@ -124,16 +124,21 @@ git checkout -q FETCH_HEAD`
 func buildpacksPod(
 	project *kitchenv1alpha1.Project,
 	build *kitchenv1alpha1.Build,
+	plan buildPlan,
 	detected framework.Framework,
 	cache *kitchenv1alpha1.BuildCacheStatus,
-	credsSecret, gitSecret, tagRef string,
+	credsSecret, gitSecret string,
 ) corev1.PodTemplateSpec {
 	// The clone lands the whole repository and the lifecycle is pointed
 	// inside it: the build root is what is built, exactly as it is for the
 	// container strategy, which reaches the same meaning by scoping its git
 	// context instead. What is above the build root is on the volume and in
 	// no build — the lifecycle only ever reads `-app`.
-	appDir := path.Join(buildpacksSourceDir, buildRootDir(project))
+	//
+	// Which build root that is comes from the plan: one commit can produce
+	// several images, and which of the repository's directories this one is
+	// comes from the workload that declared it.
+	appDir := path.Join(buildpacksSourceDir, plan.RootDirectory)
 
 	workspace := corev1.VolumeMount{Name: volumeWorkspace, MountPath: buildpacksWorkspaceDir}
 	layers := corev1.VolumeMount{Name: volumeLayers, MountPath: buildpacksLayersDir}
@@ -193,7 +198,7 @@ func buildpacksPod(
 					// The collector ships this log into ClickHouse, where a
 					// colour escape is a character like any other.
 					"-no-color",
-					tagRef,
+					plan.Tag,
 				}...),
 				Env: append([]corev1.EnvVar{
 					{Name: "DOCKER_CONFIG", Value: dockerConfigDir},

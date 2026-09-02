@@ -107,7 +107,7 @@ type fieldChangeView struct {
 	Changed bool   `json:"changed"`
 }
 
-// processChangeView is one worker or scheduled job across the two snapshots.
+// processChangeView is one workload across the two releases.
 // `schedule` is carried for a cron process because "the nightly job goes back
 // to running at 02:00" is the kind of consequence somebody rolling back at
 // 01:55 would want to have been told.
@@ -116,6 +116,13 @@ type processChangeView struct {
 	Change   string `json:"change"`
 	Type     string `json:"type,omitempty"`
 	Schedule string `json:"schedule,omitempty"`
+	// Image is what this workload runs after the move, for one built from its
+	// own directory of the repository. It travels for the reason the schedule
+	// does: a unit ships several images, and "the API goes back two commits
+	// too" is the consequence somebody rolling back is least likely to have
+	// worked out for themselves. Absent for a workload that runs the
+	// release's own image, which is what the release name already says.
+	Image string `json:"image,omitempty"`
 }
 
 // configDiffBody is what GET /releases/{name}/config-diff answers with.
@@ -179,7 +186,7 @@ func (s *Server) releaseConfigDiff(w http.ResponseWriter, req *http.Request) {
 		Project:   release.Spec.ProjectRef.Name,
 		Variables: diffEnv(release.Spec.ConfigSnapshot.Env, against.Spec.ConfigSnapshot.Env),
 		Runtime:   diffRuntime(release.Spec.ConfigSnapshot.Runtime, against.Spec.ConfigSnapshot.Runtime),
-		Processes: diffProcesses(release.Spec.ConfigSnapshot.Processes, against.Spec.ConfigSnapshot.Processes),
+		Processes: diffProcesses(release, against),
 	})
 }
 
@@ -357,11 +364,12 @@ func diffRuntime(release, against kitchenv1alpha1.RuntimeSpec) []fieldChangeView
 	return out
 }
 
-// diffProcesses compares the workers and scheduled jobs by name. A process
-// whose command, schedule, concurrency or capacity moved reads as changed;
-// the schedule travels because when a job next fires is the consequence
-// somebody is most likely to be surprised by.
-func diffProcesses(release, against []kitchenv1alpha1.ProcessSpec) []processChangeView {
+// diffProcesses compares the two releases' workloads by name. One whose
+// command, schedule, port, build, concurrency or capacity moved reads as
+// changed; so does one whose own image moved, since a unit ships several and
+// each is frozen on the release. The schedule travels because when a job next
+// fires is the consequence somebody is most likely to be surprised by.
+func diffProcesses(release, against *kitchenv1alpha1.Release) []processChangeView {
 	byName := func(procs []kitchenv1alpha1.ProcessSpec) map[string]kitchenv1alpha1.ProcessSpec {
 		out := make(map[string]kitchenv1alpha1.ProcessSpec, len(procs))
 		for _, p := range procs {
@@ -369,7 +377,8 @@ func diffProcesses(release, against []kitchenv1alpha1.ProcessSpec) []processChan
 		}
 		return out
 	}
-	head, base := byName(release), byName(against)
+	head := byName(release.Spec.ConfigSnapshot.Processes)
+	base := byName(against.Spec.ConfigSnapshot.Processes)
 
 	names := make([]string, 0, len(head)+len(base))
 	for name := range head {
@@ -391,19 +400,22 @@ func diffProcesses(release, against []kitchenv1alpha1.ProcessSpec) []processChan
 			view.Change = changeAdded
 		case !inHead && inBase:
 			view.Change = changeRemoved
-		case reflect.DeepEqual(to, from):
+		case reflect.DeepEqual(to, from) && release.ImageFor(name) == against.ImageFor(name):
 			view.Change = changeUnchanged
 		default:
 			view.Change = changeChanged
 		}
 		// A removed process is described by what it was; everything else by
 		// what it becomes.
-		described := to
+		described, describing := to, release
 		if !inHead {
-			described = from
+			described, describing = from, against
 		}
 		view.Type = string(described.Type)
 		view.Schedule = described.Schedule
+		if image := describing.ImageFor(name); image != describing.Spec.Image {
+			view.Image = image
+		}
 		out = append(out, view)
 	}
 	sort.Slice(out, func(i, j int) bool {

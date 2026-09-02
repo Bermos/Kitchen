@@ -549,27 +549,35 @@ spec:
       failureThreshold: 3               # a running pod out of service
       startupFailureThreshold: 30       # x period = how long it has to come up
     security:                           # the posture every workload of this
-      runAsNonRoot: true                # project runs under — web, workers and
-      runAsUser: 1001                   # scheduled runs alike, since they are
-      runAsGroup: 1001                  # one image. 0 = the image's own user
+      runAsNonRoot: true                # project runs under — web, workers,
+      runAsUser: 1001                   # services and scheduled runs alike
+      runAsGroup: 1001                  # 0 = the image's own user
       readOnlyRootFilesystem: true      # left alone, not "run as root"
       allowPrivilegeEscalation: false   # the default, and the one the platform
       dropCapabilities: [ALL]           # tightens; there is no list to add one
-  processes:                            # what it runs *besides* the web process
+  processes:                            # what it ships *besides* the web process
     - name: worker                      # a Deployment with no Service, no route
       type: worker
       command: [node, worker.js]
       replicas: 2
-      singleton: false                  # two of this worker must never run at
+      singleton: false                  # two of this workload must never run at
                                         # once: Recreate, and replicas > 1 refused
       health: { port: 9000 }            # opt-in here, and it must name the port
+    - name: api                         # a Deployment and a ClusterIP Service,
+      type: service                     # and still no route: never published
+      port: 8080                        # required here, refused on the others
+      build:                            # its own directory of the repository
+        strategy: dockerfile            # dockerfile | buildpacks; no auto
+        dockerfilePath: Dockerfile      # relative to rootDirectory, which is
+        rootDirectory: services/api     # this workload's build root
     - name: nightly-report              # a batch/v1 CronJob; one firing is a run
       type: cron
       schedule: "0 3 * * *"             # five fields, read in UTC
       command: [node, report.js]
       timeout: 30m                      # becomes activeDeadlineSeconds
       concurrencyPolicy: Forbid         # Allow | Forbid | Replace
-      previews: false                   # the default, and a decision
+      previews: false                   # unset means off for a worker and a
+                                        # cron, and on for a service
 status:
   conditions: [...]                     # Ready, SourceConnected, RegistryConnected,
                                         # WebhookRegistered, InitialBuild
@@ -630,20 +638,38 @@ unverified-email grant is a grant to whoever can get the identity provider to
 let them type that address — it resolves to no role rather than to the one
 written down.
 
-`processes` is what the project runs besides its web process, and there is
+`processes` is what the project ships besides its web process, and there is
 deliberately no `web` entry: the web process is `runtime` above, singular
 because the URL is — an Environment publishes one hostname, one Service and
 one route, and a second process claiming to be the web one would have to be
 told which of those it got. A `worker` runs continuously and is never
-addressed; a `cron` runs on its schedule and each firing is a Job. Both share
-the Release's image and resolved environment and differ only in how they are
-started, which is why this is a field rather than a second build.
+addressed; a `service` runs continuously and *is* addressed, from inside the
+cluster and nowhere else; a `cron` runs on its schedule and each firing is a
+Job. Publishing stays the exception `runtime` declares — nothing in this list
+gets a route, whatever its type.
 
-`previews` is `false` unless a process asks otherwise, for both types alike. A
-preview shares the project's environment variables, so a preview that emails
-customers nightly is a bad afternoon and a preview worker draining the
-production queue is a worse one. The list merges per `name`, so two people
-adding two workers do not drop each other's.
+A workload that declares no `build` runs the Release's image with another
+command, which is why this was a field rather than a second build. One that
+declares a `build` is built from its own directory of the repository: a
+repository shipping four images is **one project with four entries here**
+(#271), deployed and rolled back as a whole, because the deployable unit is
+the project and a tier above it would double every route in the authorization
+table. The Release records which image each workload was built to, beside the
+process list it froze, so restoring it restores that exact set.
+
+A `service` is reached at `<environment>-<name>` in the project's application
+namespace, and every workload of the environment is handed
+`KITCHEN_SERVICE_<NAME>` (plus `_HOST` and `_PORT`) pointing at it — so a
+preview's web process talks to the preview's own API, which is what makes a
+preview of a multi-workload unit a preview of the unit.
+
+`previews` unset means off for a `worker` and a `cron` and on for a `service`,
+which is why the field is a pointer. A preview shares the project's
+environment variables, so a preview that emails customers nightly is a bad
+afternoon and a preview worker draining the production queue is a worse one; a
+service, by contrast, is addressed only by its own environment's siblings, so
+leaving it out protects nothing and breaks the preview. The list merges per
+`name`, so two people adding two workloads do not drop each other's.
 
 `runtime.notRequestDriven` is a workload that does work nobody asked for, and
 it turns idling off for every environment of the Project — previews included,
@@ -968,17 +994,27 @@ metadata:
 spec:                                   # fully immutable (CEL rule on the CRD)
   projectRef: { name: my-shop }
   buildRef: { name: my-shop-bld-8f3a2c1 }
-  image: harbor.example.com/kitchen/my-shop@sha256:ab12...
+  image: harbor.example.com/kitchen/my-shop@sha256:ab12...   # the web process's
+  workloads:                            # what each *other* workload was built
+    - name: api                         # to, for one with a build of its own
+      image: harbor.example.com/kitchen/my-shop-api@sha256:9f2c...
   configSnapshot:                       # frozen copy of Project.spec.env,
     env: [...]                          # runtime and processes
     runtime: { port: 3000, resources: {...} }   # port resolved: a project that
                                                 # named none gets the detected
                                                 # framework's, frozen here
-    processes: [...]                    # the workers and scheduled jobs as they
+    processes: [...]                    # the other workloads as they
                                         # stood at build time
 status:
   environments: [my-shop-production, my-shop-pr-42]   # where it's live (informational)
 ```
+
+`workloads` is the other half of what makes a rollback exact for a project that
+ships more than one image. The snapshot freezes what each workload *is*; this
+freezes what each was *built to*. Restoring a release restores both, so a
+workload added since does not appear and one whose image moved goes back to the
+image it had — never today's. It is empty for the great majority of projects,
+which ship one image and run it everywhere.
 
 Immutability is a CEL transition rule (`self == oldSelf`) on the CRD, not a webhook:
 the platform ships no admission webhook of its own, and the rule is stronger than one
@@ -1092,12 +1128,19 @@ status:
     unmetRules: [max-severity]
     decisionID: 0d9a1f7e-...            # the stored decision, with the whole input
     message: blocked by bundle sha256:...
-  processes:                            # the workers and scheduled jobs, as last seen
+  processes:                            # the other workloads, as last seen
     - name: worker
       type: worker
       workload: my-shop-pr-42-worker    # the Deployment or CronJob it materialized as
       replicas: 2
       readyReplicas: 2
+    - name: api
+      type: service
+      workload: my-shop-pr-42-api
+      address: http://my-shop-pr-42-api.kitchen-my-shop.svc.cluster.local:8080
+      image: harbor.example.com/kitchen/my-shop-api@sha256:9f2c...   # its own build's
+      replicas: 1
+      readyReplicas: 1
     - name: nightly-report
       type: cron
       workload: my-shop-production-nightly-report

@@ -180,13 +180,14 @@ have one.
 
 ### `processes`
 
-The workers and scheduled jobs the project runs besides its web process —
+The workloads the project ships besides its web process —
 [the same declaration the API takes](api/processes.md).
 
 ```json
 {
   "processes": [
     {"name": "worker", "type": "worker", "command": ["node", "worker.js"], "replicas": 2},
+    {"name": "api", "type": "service", "port": 8080, "build": {"rootDirectory": "services/api"}},
     {"name": "nightly", "type": "cron", "schedule": "0 3 * * *", "command": ["node", "nightly.js"]}
   ]
 }
@@ -194,22 +195,28 @@ The workers and scheduled jobs the project runs besides its web process —
 
 | Key | What it does |
 |---|---|
-| `name` | A DNS label, and not `web` — the web process is the project's own runtime, and this list is what it runs besides it. |
-| `type` | `worker` (runs continuously) or `cron` (runs on a schedule). |
+| `name` | A DNS label, and not `web` — the web process is the project's own runtime, and this list is what it ships besides it. |
+| `type` | `worker` (runs continuously, never addressed), `service` (runs continuously, addressed by the rest of the unit and never published) or `cron` (runs on a schedule). |
 | `command`, `args` | Exec form, as above. |
-| `replicas` | A worker's copy count. Zero is a worker that is declared and parked. |
-| `singleton` | Two of this worker must never run at once, so a deploy stops the old copy before starting the new one. Refuses `replicas` above 1, and refused on a `cron` — that question is `concurrencyPolicy`. |
+| `port` | A service's listening port, and the port its siblings reach it on. Required on a service and refused on anything else. |
+| `build` | This workload's own build: `strategy` (`dockerfile` or `buildpacks`), `dockerfilePath`, and `rootDirectory` relative to the repository root. That directory is the workload's build root — `dockerfilePath` is relative to it and nothing above it is part of the build — so a path that leaves it is refused here, exactly as `build.dockerfilePath` is for the project. Absent means it runs the project's image with another command. Refused on a `cron`. |
+| `replicas` | A worker's or a service's copy count. Zero is a workload that is declared and parked. |
+| `singleton` | Two of this workload must never run at once, so a deploy stops the old copy before starting the new one. Refuses `replicas` above 1, and refused on a `cron` — that question is `concurrencyPolicy`. |
 | `cpu`, `memory` | Kubernetes quantities. |
-| `schedule` | A five-field cron expression, read in UTC. Required for `cron`, refused on a `worker`. |
+| `schedule` | A five-field cron expression, read in UTC. Required for `cron`, refused on the other two. |
 | `concurrencyPolicy` | `Allow`, `Forbid` (the default) or `Replace`, when a run is due and the last one has not finished. |
 | `timeout` | A Go duration bounding one run. An hour by default. |
-| `previews` | Run this process in preview environments too. Off unless asked for. |
-| `health` | A worker's health check, which must name its `port` — a process publishes none. Refused on a scheduled process, whose verdict is its run's exit status. |
+| `previews` | Run this workload in preview environments too. A worker and a scheduled job are off unless asked for; a service is on unless it says otherwise, because a preview missing one of its own services is a broken preview. |
+| `health` | A worker's or a service's health check. A worker's must name its `port` — it publishes none — and a service's falls back to its own. Refused on a scheduled process, whose verdict is its run's exit status. |
+
+A `build` here is how a commit that adds a workload builds it: the file is read
+at the commit under build, so the set of images a commit produces is the set
+that commit declared. Every one of them ships in the same release.
 
 Declaring `processes` **replaces the project's whole list** rather than merging
-into it. A worker is defined by the code it runs, so a worker the commit no
-longer names is one whose command may no longer be in the image; merging would
-keep it running until somebody noticed.
+into it. A workload is defined by the code it runs, so one the commit no longer
+names is one whose command may no longer be in the image; merging would keep it
+running until somebody noticed.
 
 ## What it cannot set
 

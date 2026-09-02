@@ -135,6 +135,12 @@ func (r *BuildReconciler) planCache(
 	project *kitchenv1alpha1.Project,
 	spec kitchenv1alpha1.BuildCacheSpec,
 	target buildTarget,
+	// plan is the image this cache is for. A unit builds several, each from
+	// its own directory with its own layers, so each caches into its own
+	// image repository — one shared cache tag would have four builds
+	// overwriting each other's layers every commit and reporting a warm
+	// cache none of them could use.
+	plan buildPlan,
 ) *kitchenv1alpha1.BuildCacheStatus {
 	if spec.Enabled != nil && !*spec.Enabled {
 		return &kitchenv1alpha1.BuildCacheStatus{}
@@ -142,9 +148,9 @@ func (r *BuildReconciler) planCache(
 
 	status := &kitchenv1alpha1.BuildCacheStatus{
 		Enabled: true,
-		Ref:     cacheRef(target.Registry.Prefix, project.Name, build.Spec.Git.Branch, spec.Scope, target.Strategy),
+		Ref:     cacheRef(plan.Repository, build.Spec.Git.Branch, spec.Scope, plan.Strategy),
 	}
-	if target.Strategy != kitchenv1alpha1.BuildStrategyBuildpacks {
+	if plan.Strategy != kitchenv1alpha1.BuildStrategyBuildpacks {
 		status.Mode = cacheMode(spec.Mode)
 	}
 
@@ -252,11 +258,13 @@ func cacheMode(mode kitchenv1alpha1.BuildCacheMode) kitchenv1alpha1.BuildCacheMo
 	return kitchenv1alpha1.BuildCacheModeMax
 }
 
-// cacheRef is where the cache for one build lives: a tag in the project's own
-// image repository, so it is covered by the same credential, the same
-// retention and the same registry quota as the images beside it.
+// cacheRef is where the cache for one image lives: a tag in that image's own
+// repository, so it is covered by the same credential, the same retention and
+// the same registry quota as the images beside it — and so a unit's several
+// workloads cache separately, since they share no layers and would otherwise
+// share a tag.
 func cacheRef(
-	prefix, projectName, branch string,
+	repository, branch string,
 	scope kitchenv1alpha1.BuildCacheScope,
 	strategy kitchenv1alpha1.BuildStrategy,
 ) string {
@@ -267,7 +275,7 @@ func cacheRef(
 	if scope == kitchenv1alpha1.BuildCacheScopeBranch {
 		tag += "-" + cacheSlug(branch)
 	}
-	return fmt.Sprintf("%s/%s:%s", prefix, projectName, tag)
+	return repository + ":" + tag
 }
 
 // cacheSlug turns a branch name into something a registry accepts as part of a

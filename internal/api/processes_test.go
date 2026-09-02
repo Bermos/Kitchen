@@ -129,7 +129,7 @@ func TestDeclaringProcessesWithTheProjectsSettings(t *testing.T) {
 		t.Fatalf("want two processes, got %+v", stored.Spec.Processes)
 	}
 	worker := kitchenv1alpha1.FindProcess(stored.Spec.Processes, "worker")
-	if worker == nil || worker.ReplicaCount() != 2 || worker.Previews {
+	if worker == nil || worker.ReplicaCount() != 2 || worker.PreviewsEnabled() {
 		t.Fatalf("the worker did not stick, or opted itself into previews: %+v", worker)
 	}
 	if quantity, ok := worker.Resources.Limits[corev1.ResourceMemory]; !ok || quantity.String() != "512Mi" {
@@ -137,7 +137,7 @@ func TestDeclaringProcessesWithTheProjectsSettings(t *testing.T) {
 	}
 	nightly := kitchenv1alpha1.FindProcess(stored.Spec.Processes, "nightly")
 	if nightly == nil || nightly.TimeoutSeconds() != 1800 ||
-		nightly.EffectiveConcurrency() != kitchenv1alpha1.ConcurrencyReplace || !nightly.Previews {
+		nightly.EffectiveConcurrency() != kitchenv1alpha1.ConcurrencyReplace || !nightly.PreviewsEnabled() {
 		t.Fatalf("the scheduled job did not stick: %+v", nightly)
 	}
 
@@ -176,8 +176,10 @@ func TestRefusingAnUnworkableProcessList(t *testing.T) {
 	for name, body := range map[string]string{
 		"a cron with no schedule":  `[{"name": "nightly", "type": "cron"}]`,
 		"a worker with a schedule": `[{"name": "w", "type": "worker", "schedule": "0 3 * * *"}]`,
-		"a process called web":     `[{"name": "web", "type": "worker"}]`,
-		"an unknown type":          `[{"name": "w", "type": "sidecar"}]`,
+		"a service with a schedule": `[{"name": "api", "type": "service", "port": 8080, ` +
+			`"schedule": "0 3 * * *"}]`,
+		"a process called web": `[{"name": "web", "type": "worker"}]`,
+		"an unknown type":      `[{"name": "w", "type": "sidecar"}]`,
 		"a name that is not a label": `[{"name": "Nightly Report", "type": "cron", ` +
 			`"schedule": "0 3 * * *"}]`,
 		"two of the same name": `[{"name": "w", "type": "worker"}, {"name": "w", "type": "worker"}]`,
@@ -201,6 +203,31 @@ func TestRefusingAnUnworkableProcessList(t *testing.T) {
 		// a second spelling of it would read back and do nothing.
 		"a singleton schedule": `[{"name": "n", "type": "cron", "schedule": "0 3 * * *", ` +
 			`"singleton": true}]`,
+		// Only a service is addressed, so only a service has a port. A port
+		// on a worker would read back as a setting that took, and nothing
+		// would ever connect to it.
+		"a service with no port":         `[{"name": "api", "type": "service"}]`,
+		"a worker with a port":           `[{"name": "w", "type": "worker", "port": 8080}]`,
+		"a service port that is not one": `[{"name": "api", "type": "service", "port": 70000}]`,
+		// A scheduled process runs an image; it is not one.
+		"a build on a scheduled process": `[{"name": "n", "type": "cron", "schedule": "0 3 * * *", ` +
+			`"build": {"rootDirectory": "services/report"}}]`,
+		// There is no auto for a workload: detection answers a port and a
+		// buildpack, and a workload has neither question open.
+		"a workload build asking for auto": `[{"name": "api", "type": "service", "port": 8080, ` +
+			`"build": {"strategy": "auto"}}]`,
+		// A workload's root directory is its build root, and its Dockerfile
+		// path is relative to that root — the same two relations a project's
+		// own build has, so they are refused the same way. Nothing above a
+		// build root is part of the build, so there is nothing above it for
+		// such a path to be resolved against.
+		"a workload build climbing out of the repository": `[{"name": "api", "type": "service", ` +
+			`"port": 8080, "build": {"rootDirectory": "../elsewhere"}}]`,
+		"a workload Dockerfile above its own build root": `[{"name": "api", "type": "service", ` +
+			`"port": 8080, "build": {"rootDirectory": "services/api", ` +
+			`"dockerfilePath": "../shared/Dockerfile"}}]`,
+		"an absolute workload Dockerfile": `[{"name": "api", "type": "service", "port": 8080, ` +
+			`"build": {"dockerfilePath": "/Dockerfile"}}]`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			recorder := h.do(t, http.MethodPatch, "/api/v1/projects/shop", `{"processes": `+body+`}`)
@@ -208,6 +235,98 @@ func TestRefusingAnUnworkableProcessList(t *testing.T) {
 				t.Fatalf("want 400, got %d: %s", recorder.Code, recorder.Body.String())
 			}
 		})
+	}
+}
+
+// A monorepo's other workloads are declared with the rest of the project's
+// settings, on the route that already carries the worker and the schedule
+// (#271). There is no second tier and no second route: the project stays the
+// unit, and this is one more kind of entry in the list it already had.
+func TestDeclaringAServiceWorkloadWithItsOwnBuild(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+
+	recorder := h.do(t, http.MethodPatch, "/api/v1/projects/shop", `{
+		"processes": [
+			{"name": "api", "type": "service", "port": 8080,
+			 "build": {"rootDirectory": "services/api"}},
+			{"name": "billing", "type": "service", "port": 9000, "previews": false,
+			 "build": {"strategy": "buildpacks", "rootDirectory": "services/billing"}}
+		]
+	}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+
+	stored := &kitchenv1alpha1.Project{}
+	if err := h.server.get(context.Background(), "shop", stored); err != nil {
+		t.Fatal(err)
+	}
+
+	api := kitchenv1alpha1.FindProcess(stored.Spec.Processes, "api")
+	if api == nil || api.Port != 8080 || api.Build == nil {
+		t.Fatalf("the service did not stick: %+v", api)
+	}
+	if api.Build.RootDirectory != "services/api" ||
+		api.Build.EffectiveStrategy() != kitchenv1alpha1.BuildStrategyDockerfile ||
+		api.Build.DockerfilePath != "" {
+		t.Fatalf("a workload build defaults to a Dockerfile in its own directory: %+v", api.Build)
+	}
+	// A service is in a preview unless it says otherwise: a preview missing
+	// one of its own services is a broken preview, not a protected one.
+	if !api.PreviewsEnabled() {
+		t.Fatalf("a service opted itself out of previews: %+v", api)
+	}
+
+	billing := kitchenv1alpha1.FindProcess(stored.Spec.Processes, "billing")
+	if billing == nil || billing.Build == nil ||
+		billing.Build.EffectiveStrategy() != kitchenv1alpha1.BuildStrategyBuildpacks {
+		t.Fatalf("the buildpacks workload did not stick: %+v", billing)
+	}
+	// The pointer is what lets "false" survive a write: a plain bool with
+	// omitempty is dropped, and the default would put the service back.
+	if billing.PreviewsEnabled() {
+		t.Fatalf("a service taken out of previews was put back: %+v", billing)
+	}
+}
+
+// A workload's build paths are spelled once, by the one place that says what
+// a build root is — so `./services/api/` and `services/api` are one directory
+// to the builder, to detection and to whoever reads the project back.
+func TestAWorkloadsBuildPathsAreSpelledTheWayABuildSpellsThem(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+
+	recorder := h.do(t, http.MethodPatch, "/api/v1/projects/shop", `{
+		"processes": [
+			{"name": "api", "type": "service", "port": 8080,
+			 "build": {"rootDirectory": " ./services/api/ ", "dockerfilePath": "./docker/prod.Dockerfile"}},
+			{"name": "worker", "type": "worker", "build": {"rootDirectory": "."}}
+		]
+	}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+
+	stored := &kitchenv1alpha1.Project{}
+	if err := h.server.get(context.Background(), "shop", stored); err != nil {
+		t.Fatal(err)
+	}
+
+	api := kitchenv1alpha1.FindProcess(stored.Spec.Processes, "api")
+	if api == nil || api.Build == nil {
+		t.Fatalf("the workload build did not stick: %+v", api)
+	}
+	if api.Build.RootDirectory != "services/api" {
+		t.Errorf("the build root was not spelled the way a build spells it: %q", api.Build.RootDirectory)
+	}
+	if api.Build.DockerfilePath != "docker/prod.Dockerfile" {
+		t.Errorf("the Dockerfile was not cleaned: %q", api.Build.DockerfilePath)
+	}
+
+	// "." is the repository itself, not a path component — the reading the
+	// project's own root directory already takes.
+	worker := kitchenv1alpha1.FindProcess(stored.Spec.Processes, "worker")
+	if worker == nil || worker.Build == nil || worker.Build.RootDirectory != "" {
+		t.Errorf("a workload built from the repository itself kept a path component: %+v", worker)
 	}
 }
 

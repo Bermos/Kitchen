@@ -381,6 +381,25 @@ spec:
                       description: Active is how many runs are in flight.
                       format: int32
                       type: integer
+                    address:
+                      description: |-
+                        Address is where a service workload answers, inside the cluster and
+                        nowhere else: `http://<host>:<port>`, the same value its siblings read
+                        out of `KITCHEN_SERVICE_<NAME>`. It is written by the reconciler that
+                        created the Service rather than derived by every reader, so that one
+                        place decides what the address is.
+
+                        It is empty for a worker and a scheduled job, which nothing addresses,
+                        and for a service this environment does not run.
+                      type: string
+                    image:
+                      description: |-
+                        Image is what this workload is running, when that is not the
+                        Release's own image — a workload with a build of its own. It is the
+                        digest reference the Release froze, echoed here so that a reader
+                        looking at one environment can see the four images it is running
+                        without opening the Release beside it.
+                      type: string
                     lastFailure:
                       description: |-
                         ProcessRun is one run of a scheduled process: the Job that ran it, when, and
@@ -495,9 +514,17 @@ spec:
                         this list is what a Project has *besides* its web process, which is exactly
                         the gap #78 was filed for: a queue worker and a nightly job that today have
                         to be a second Project with a port nothing talks to.
+
+                        `service` is the third value and the one #271 added. It is the workload a
+                        monorepo has several of: an image of its own, addressed by the rest of the
+                        unit over the cluster network, and **not published**. Publishing stays the
+                        exception the project declares — `spec.runtime`, the one process with the
+                        URL — so a workload that should not be on the internet is not on it by
+                        saying nothing, rather than by remembering to turn something off.
                       enum:
                       - worker
                       - cron
+                      - service
                       type: string
                     workload:
                       description: |-
