@@ -18,6 +18,11 @@ spec:
   builds:
     defaultStrategy: auto
     concurrency: 2
+    # What one build may take, reserved for it and capped at it. Times the
+    # concurrency above, it is the whole of the platform's build footprint.
+    resources:
+      cpu: "2"
+      memory: 4Gi
   observability:
     clickhouse:
       retentionDays: 30

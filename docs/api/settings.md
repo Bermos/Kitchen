@@ -14,8 +14,8 @@ the platform builds and retains telemetry with, and **who the platform's
 operators are**:
 
 ```json
-{"baseDomain": "apps.example.com", "buildConcurrency": 2, "logRetentionDays": 30,
- "operators": [{"subject": "user_01H8X…", "email": "anna@example.com"}]}
+{"baseDomain": "apps.example.com", "buildConcurrency": 2, "buildCPU": "2", "buildMemory": "4Gi",
+ "logRetentionDays": 30, "operators": [{"subject": "user_01H8X…", "email": "anna@example.com"}]}
 ```
 
 `operators` is `spec.access.operators`, the list every `operator` requirement
@@ -33,8 +33,8 @@ The field carries no `omitempty` for exactly that reason.
 `PATCH /settings` changes the fields that are safe to change at runtime:
 
 ```json
-{"buildStrategy": "auto", "buildConcurrency": 2, "logRetentionDays": 30,
- "operators": [{"email": "anna@example.com"}, {"subject": "user_01H8X…"}]}
+{"buildStrategy": "auto", "buildConcurrency": 2, "buildCPU": "2", "buildMemory": "4Gi",
+ "logRetentionDays": 30, "operators": [{"email": "anna@example.com"}, {"subject": "user_01H8X…"}]}
 ```
 
 Fields left out stay as they are, `operators` included — a settings patch that
@@ -69,6 +69,28 @@ again. A patch that does not mention `operators` is not locked: its fields are
 independent scalars, and failing "set the build concurrency to 4" because
 somebody moved the log retention a moment earlier would be a conflict about
 nothing.
+
+**`buildConcurrency`, `buildCPU` and `buildMemory` are one decision.** The two
+quantities are `spec.builds.resources`: the ceiling one build runs under,
+written onto every container of the build pod as its request and its limit at
+once — so the ceiling is reserved before the build starts, and a node with no
+room queues the build rather than starting it on top of the applications the
+platform is there to serve. The concurrency times the ceiling is therefore the
+whole of what the platform's builds can take from the cluster, and either
+number read alone bounds nothing.
+
+They are Kubernetes quantities (`2`, `500m`, `4Gi`); anything else is a `400`
+naming the field. Zero is refused for the same reason — a ceiling of nothing is
+not "no ceiling", it is a build that cannot start. **The empty string is how a
+ceiling is cleared**, which leaves that resource unbounded, the way every
+installation ran before the field existed; both fields are served without
+`omitempty` so that a cleared ceiling and an API too old to have one are
+distinguishable. A build that reaches the memory ceiling is killed and reported
+as [a build failure naming it](./builds.md#a-build-that-ran-out-of-memory).
+
+The ceiling is the operator's and not a project's, which is why it is here and
+not in `kitchen.json`: a project that could raise its own build ceiling would be
+a project that could evict its neighbours.
 
 Everything else on the singleton — the base domain, the issuer, the ingress —
 shapes URLs and credentials the platform has already handed out, so changing

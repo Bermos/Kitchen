@@ -217,6 +217,33 @@ The field is on the build, which means it is readable by anyone who may read
 the project. Reading the pod it was taken from is the operator's, and a build
 that failed is not the operator's problem.
 
+### A build that ran out of memory
+
+One failure says something the exit code alone cannot, and it is the reason the
+platform bounds a build at all:
+
+```json
+{
+  "container": "buildkit",
+  "exitCode": 137,
+  "reason": "OOMKilled",
+  "message": "buildkit ran out of memory: it reached the platform's 4Gi build ceiling and was killed. Either the build holds less at once, or an operator raises builds.resources.memory on the Kitchen object — that ceiling times the build concurrency is what the platform's builds may take from the cluster"
+}
+```
+
+The `Ready` condition's reason is `BuildOutOfMemory` rather than `BuildFailed`,
+and the commit's check is a failure rather than an error — the build ran, and
+what it asked for was more than a build may have. Both shapes of the ending are
+read the same way: the kubelet says `OOMKilled` when the builder itself was
+killed, and gives the generic `Error` with exit `137` when a child of it was,
+which is the common case for a front-end build that runs out of memory inside a
+subprocess.
+
+The ceiling is `spec.builds.resources` on the `Kitchen` object — `buildCPU` and
+`buildMemory` on [`PATCH /settings`](./settings.md#settings) — and it is the
+operator's, not a project's. A project that could raise its own would be a
+project that could evict its neighbours.
+
 ## A build that says Running and is not moving
 
 A build whose Job has never created a pod carries a `Stalled` condition:

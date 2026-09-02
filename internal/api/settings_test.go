@@ -128,15 +128,71 @@ func TestChangingTheSettingsAcceptsUnboundedReleases(t *testing.T) {
 	}
 }
 
+// The ceiling is the other half of the concurrency, and it is set from the
+// same screen through the same route.
+func TestChangingTheBuildCeiling(t *testing.T) {
+	h := newHarness(t, nil)
+
+	recorder := h.do(t, http.MethodPatch, settingsPath,
+		`{"buildConcurrency": 3, "buildCPU": "1500m", "buildMemory": "6Gi"}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	body := decode[settingsView](t, recorder)
+	if body.BuildCPU != "1500m" || body.BuildMemory != "6Gi" {
+		t.Fatalf("the answer does not carry the ceiling: %+v", body)
+	}
+
+	kitchen := &kitchenv1alpha1.Kitchen{}
+	if err := h.server.Client.Get(context.Background(),
+		types.NamespacedName{Name: controller.KitchenSingletonName}, kitchen); err != nil {
+		t.Fatal(err)
+	}
+	if kitchen.Spec.Builds.Resources.CPU != "1500m" || kitchen.Spec.Builds.Resources.Memory != "6Gi" {
+		t.Fatalf("the singleton was not updated: %+v", kitchen.Spec.Builds)
+	}
+}
+
+// The empty string is the one way to end up with no ceiling, and it has to be
+// written rather than fallen into — so it is accepted, and a request that does
+// not name the field cannot do it by accident.
+func TestClearingTheBuildCeilingIsAllowedAndDeliberate(t *testing.T) {
+	h := newHarness(t, nil)
+
+	if recorder := h.do(t, http.MethodPatch, settingsPath,
+		`{"buildCPU": "2", "buildMemory": "4Gi"}`); recorder.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if recorder := h.do(t, http.MethodPatch, settingsPath,
+		`{"buildMemory": ""}`); recorder.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+
+	kitchen := &kitchenv1alpha1.Kitchen{}
+	if err := h.server.Client.Get(context.Background(),
+		types.NamespacedName{Name: controller.KitchenSingletonName}, kitchen); err != nil {
+		t.Fatal(err)
+	}
+	if kitchen.Spec.Builds.Resources.Memory != "" {
+		t.Fatalf("the memory ceiling was not cleared: %+v", kitchen.Spec.Builds.Resources)
+	}
+	if kitchen.Spec.Builds.Resources.CPU != "2" {
+		t.Fatalf("clearing one ceiling disturbed the other: %+v", kitchen.Spec.Builds.Resources)
+	}
+}
+
 func TestChangingTheSettingsRejectsNonsense(t *testing.T) {
 	h := newHarness(t, nil)
 
 	for name, body := range map[string]string{
-		"an unknown strategy":      `{"buildStrategy": "guess"}`,
-		"zero concurrency":         `{"buildConcurrency": 0}`,
-		"no retention at all":      `{"logRetentionDays": 0}`,
-		"a negative release count": `{"releaseRetention": -1}`,
-		"a field it never knew":    `{"baseDomain": "elsewhere.example.com"}`,
+		"an unknown strategy":              `{"buildStrategy": "guess"}`,
+		"zero concurrency":                 `{"buildConcurrency": 0}`,
+		"no retention at all":              `{"logRetentionDays": 0}`,
+		"a negative release count":         `{"releaseRetention": -1}`,
+		"a field it never knew":            `{"baseDomain": "elsewhere.example.com"}`,
+		"a ceiling that is not a quantity": `{"buildMemory": "lots"}`,
+		// Not "no ceiling" — a build that cannot start.
+		"a ceiling of nothing": `{"buildCPU": "0"}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			recorder := h.do(t, http.MethodPatch, settingsPath, body)

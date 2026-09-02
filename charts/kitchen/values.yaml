@@ -260,8 +260,31 @@ kitchen:
   builds:
     # -- Default build strategy: auto | dockerfile | buildpacks.
     defaultStrategy: auto
-    # -- Maximum number of builds running at once.
+    # -- Maximum number of builds running at once. Read together with
+    # `resources` below: the two are what bound the platform's own build
+    # footprint, and either on its own bounds nothing.
     concurrency: 2
+    # The ceiling one build runs under, written onto every container of the
+    # build pod as its request and its limit at once — so the ceiling is
+    # reserved before the build starts, and a node with no room queues the
+    # build instead of starting it on top of the applications the platform is
+    # there to serve.
+    #
+    # It is the operator's and not a project's: a repository says what its
+    # application runs with, and one that could raise its own build ceiling
+    # could evict its neighbours. A build that reaches the memory ceiling is
+    # killed and reported as a build failure naming it.
+    #
+    # Either value may be set empty for no ceiling at all, which is what every
+    # installation had before this existed.
+    resources:
+      # -- CPU one build may take, as a Kubernetes quantity. CPU is
+      # compressible: a build that wants more is throttled, never killed.
+      cpu: "2"
+      # -- Memory one build may take, as a Kubernetes quantity. Past where a
+      # front-end build of any size peaks, and well short of what a
+      # single-node cluster can lose without noticing.
+      memory: 4Gi
     # -- How many releases each project keeps. Every successful build leaves
     # one behind; older ones are pruned, except any an environment still
     # references. `0` keeps every release forever.

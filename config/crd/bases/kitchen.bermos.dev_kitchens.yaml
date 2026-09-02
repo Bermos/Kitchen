@@ -330,7 +330,11 @@ spec:
                     type: object
                   concurrency:
                     default: 2
-                    description: Maximum number of builds running at once.
+                    description: |-
+                      Maximum number of builds running at once.
+
+                      It is half of what the platform's builds can take from the cluster;
+                      Resources is the other half, and the two are read together.
                     format: int32
                     minimum: 1
                     type: integer
@@ -360,6 +364,42 @@ spec:
                     format: int32
                     minimum: 0
                     type: integer
+                  resources:
+                    default: {}
+                    description: |-
+                      Resources is the ceiling one build may take.
+
+                      Concurrency times this is the whole of the platform's build footprint,
+                      which is why the two are one decision rather than two settings that
+                      happen to be near each other.
+
+                      The empty-object default is what gives an installation that predates
+                      the field a ceiling at all: structural defaulting only descends into
+                      objects that are present.
+                    properties:
+                      cpu:
+                        default: "2"
+                        description: |-
+                          CPU one build may take, as a Kubernetes quantity ("2", "500m").
+
+                          CPU is compressible — a build that wants more is throttled, never
+                          killed — so this bounds how much of the node a build can crowd out
+                          rather than whether it finishes.
+                        pattern: ^$|^[0-9]+(\.[0-9]+)?(m|k|M|G|T|P|E|Ki|Mi|Gi|Ti|Pi|Ei)?$
+                        type: string
+                      memory:
+                        default: 4Gi
+                        description: |-
+                          Memory one build may take, as a Kubernetes quantity ("4Gi", "512Mi").
+
+                          Memory is not compressible: a build that asks for more than this is
+                          killed by the kernel, and the platform reports that as a build failure
+                          naming the ceiling rather than as an unexplained non-zero exit. Four
+                          gibibytes is past where a front-end build of any size peaks and well
+                          short of what a single-node cluster can lose without noticing.
+                        pattern: ^$|^[0-9]+(\.[0-9]+)?(m|k|M|G|T|P|E|Ki|Mi|Gi|Ti|Pi|Ei)?$
+                        type: string
+                    type: object
                 type: object
               clusterName:
                 description: |-

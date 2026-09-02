@@ -143,6 +143,17 @@ var _ = Describe("Build Controller", func() {
 		// A buildpacks pod as one looks when the build failed: a clone that
 		// worked, and the builder behind it that did not. Reading it in order
 		// finds the clone, which is the whole reason the reconciler does not.
+		// The platform's build ceiling, as an operator would set it. It is
+		// written here rather than in the fixture so that the specs which do
+		// not care about it keep reading the platform object they always did.
+		setBuildCeiling := func(cpu, memory string) {
+			GinkgoHelper()
+			kitchen := &kitchenv1alpha1.Kitchen{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: KitchenSingletonName}, kitchen)).To(Succeed())
+			kitchen.Spec.Builds.Resources = kitchenv1alpha1.BuildResourcesSpec{CPU: cpu, Memory: memory}
+			Expect(k8sClient.Update(ctx, kitchen)).To(Succeed())
+		}
+
 		createFailedBuildPod := func(exitCode int32, reason string) {
 			pod := &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
@@ -1246,6 +1257,62 @@ var _ = Describe("Build Controller", func() {
 			cond := build.Status.Conditions[0]
 			Expect(cond.Message).To(ContainSubstring("creator exited 51"))
 			Expect(cond.Message).NotTo(ContainSubstring("backoff limit"))
+		})
+
+		// The ceiling is the operator's decision and it reaches the pod, as the
+		// request and the limit at once: the limit alone bounds one build and
+		// tells the scheduler nothing, which is how two builds come to be
+		// placed where only one fits.
+		It("holds the build job to the platform's ceiling", func() {
+			setBuildCeiling("1", "2Gi")
+
+			reconcileOnce()
+
+			job := &batchv1.Job{}
+			Expect(k8sClient.Get(ctx, jobKey, job)).To(Succeed())
+			resources := job.Spec.Template.Spec.Containers[0].Resources
+			Expect(resources.Limits.Cpu().String()).To(Equal("1"))
+			Expect(resources.Limits.Memory().String()).To(Equal("2Gi"))
+			Expect(resources.Requests.Cpu().String()).To(Equal("1"))
+			Expect(resources.Requests.Memory().String()).To(Equal("2Gi"))
+		})
+
+		// The failure this whole ceiling exists to be able to report: not a
+		// non-zero exit like any other, but the build reaching the number an
+		// operator set and being killed for it.
+		It("reports a build killed for its memory as one", func() {
+			setBuildCeiling("1", "2Gi")
+
+			reconcileOnce()
+			createFailedBuildPod(137, "OOMKilled")
+
+			job := &batchv1.Job{}
+			Expect(k8sClient.Get(ctx, jobKey, job)).To(Succeed())
+			now := metav1.Now()
+			job.Status.StartTime = &now
+			job.Status.Failed = 1
+			job.Status.Conditions = []batchv1.JobCondition{
+				{Type: batchv1.JobFailureTarget, Status: corev1.ConditionTrue},
+				{Type: batchv1.JobFailed, Status: corev1.ConditionTrue,
+					Message: "Job has reached the specified backoff limit"},
+			}
+			Expect(k8sClient.Status().Update(ctx, job)).To(Succeed())
+
+			reconcileOnce()
+
+			build := &kitchenv1alpha1.Build{}
+			Expect(k8sClient.Get(ctx, buildKey, build)).To(Succeed())
+			Expect(build.Status.Phase).To(Equal(kitchenv1alpha1.BuildFailed))
+			Expect(build.Status.Failure).NotTo(BeNil())
+			// Kubernetes' own word for the ending is kept; the sentence beside
+			// it is what says the ceiling was the platform's.
+			Expect(build.Status.Failure.Reason).To(Equal(reasonOOMKilled))
+			Expect(build.Status.Failure.Message).To(ContainSubstring("ran out of memory"))
+			Expect(build.Status.Failure.Message).To(ContainSubstring("2Gi"))
+
+			cond := meta.FindStatusCondition(build.Status.Conditions, condReady)
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Reason).To(Equal(reasonBuildOutOfMemory))
 		})
 
 		It("queues the build while the concurrency limit is reached", func() {
