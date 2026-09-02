@@ -7622,6 +7622,23 @@ spec:
                   Secret in the project namespace holding the binding keys
                   (url, host, password, ...), per environment where applicable.
                 type: string
+              tenancy:
+                description: |-
+                  Tenancy is whether what was provisioned is shared with other claims or
+                  the claim's own, as the provisioner actually resolved it, and
+                  TenancyReason is the sentence behind it.
+
+                  It is recorded rather than inferred because it is a fact about the
+                  claim's failure domain and its isolation, and neither is legible from
+                  anywhere else: a tenancy and a server of one's own bind the same keys
+                  and read the same way. A provider that serves only one shape leaves
+                  both empty.
+                enum:
+                - shared
+                - dedicated
+                type: string
+              tenancyReason:
+                type: string
               volume:
                 description: |-
                   Volume is what a volume claim materialized, and empty for every other

@@ -1553,6 +1553,11 @@ export interface ClaimRedis {
   usage?: string;
   maxMemory?: string;
   version?: string;
+  /** "shared" for a keyspace of this claim's own in a server the platform
+   * already runs — its own user and key prefix — or "dedicated" for a server
+   * of the claim's own. Absent asks the platform to resolve one: shared,
+   * unless the claim asked for something a shared server cannot give. */
+  tenancy?: string;
 }
 
 export interface Claim {
@@ -1588,6 +1593,12 @@ export interface Claim {
   previewMode?: string;
   previewReason?: string;
   previewChoice?: string;
+  /** Whether what was provisioned is shared with other claims or the claim's
+   * own, as the provisioner resolved it, and the sentence behind it. Absent
+   * for a type whose provider serves only one shape, and until the claim has
+   * been reconciled. */
+  tenancy?: string;
+  tenancyReason?: string;
   /** The provider's declarations about the workload that reads the claim:
    * no environment reading it idles to zero, and it is deployed by
    * recreation with a gap in serving. Absent means neither. */

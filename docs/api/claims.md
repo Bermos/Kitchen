@@ -389,9 +389,12 @@ curl -sS -X POST -H "authorization: Bearer $TOKEN" \
   https://kitchen.apps.example.com/api/v1/claims
 ```
 
-The binding carries `url`, `host`, `port`, `password` and `tls`. `url` is the
-single-string form every client library takes; `tls` says whether the
-connection is encrypted, which an application should not have to guess.
+The binding carries `url`, `host`, `port`, `username`, `password`, `keyPrefix`
+and `tls`. `url` is the single-string form every client library takes; `tls`
+says whether the connection is encrypted, which an application should not have
+to guess. `username` and `keyPrefix` are how a shared tenancy differs from a
+server of the claim's own, and are read below — they are always written, empty
+where they do not apply, so an application can read them unconditionally.
 
 **`usage` is the field this type exists for**, and it is the one that is
 expensive to get wrong. A cache and a queue are opposite configurations of
@@ -414,20 +417,71 @@ a volume.
 | Field | Default | What it does |
 |---|---|---|
 | `redis.usage` | `cache` | `cache` or `queue`, as above |
-| `redis.maxMemory` | the platform's own | A Kubernetes quantity the instance may not grow past — `"512Mi"` |
+| `redis.maxMemory` | the platform's own | A Kubernetes quantity the instance may not grow past — `"512Mi"`. Naming it asks for a server of the claim's own |
 | `redis.version` | the platform's own | The Valkey major, as a number: `"8"` |
+| `redis.tenancy` | resolved, see below | `shared` for a keyspace in a server the platform already runs, `dedicated` for a server of the claim's own |
+
+#### A tenancy, or a server of its own
+
+**A server per claim per environment does not fit.** Four dependencies and
+five open pull requests is twenty-four Valkeys on a cluster that is frequently
+one node, and an environment per pull request is what this platform is for. So
+the default is a **tenancy**: an ACL user of the claim's own, admitted to keys
+and pub/sub channels under one prefix and to nothing else, in a server other
+projects also use.
+
+```
+ACL SETUSER kitchen-shop-jobs reset on >… ~kitchen-shop-jobs:* &kitchen-shop-jobs:* +@all -@admin -@dangerous +info
+```
+
+That is a real boundary, and a different one from the logical database number
+this contract rejected when it shipped. A tenant cannot read, write or
+subscribe outside its prefix, and `FLUSHALL`, `FLUSHDB`, `KEYS`, `SWAPDB` and
+`CONFIG` are not commands it has — `-@dangerous` is what makes "one tenant's
+`FLUSHALL` empties another's" untrue here. `INFO` is granted back on purpose:
+every queue library in circulation calls it, and what it discloses is the
+server's own statistics rather than another tenant's keys.
+
+**The cost is the prefix, and the binding carries it.** `keyPrefix` is not
+advisory — a tenant that writes outside it is refused on its first command —
+so an application under a shared tenancy sets its client's prefix option from
+that key: `keyPrefix` in ioredis, `prefix` in BullMQ, `namespace` for a
+Sidekiq under redis-namespace, `options.prefix` in Laravel. `username` is the
+other half: a client given host, port and password alone would authenticate as
+the server's default user and be refused.
+
+**The eviction objection is answered by which server, not by giving up.**
+`maxmemory-policy` is server-wide, so the platform runs **one shared server per
+usage** — an evicting one for caches, and one for queues that refuses writes
+when it is full and appends every write to disk — and the claim's `usage`
+picks which it joins. What a shared server genuinely cannot give is a
+**per-tenant memory limit**, and that is what decides the shape:
+
+| The claim | What it gets | Why |
+|---|---|---|
+| asks for nothing in particular | a tenancy | it costs the cluster no pod |
+| names `maxMemory` | a server of its own | a memory limit is the whole server's |
+| names a `version` the shared servers do not run | a server of its own | a version is the server's binary |
+| says `tenancy: dedicated` | a server of its own | it asked |
+| says `tenancy: shared` **and** names `maxMemory` | **refused** | rather than quietly given the other shape |
+
+Which one it got is on the claim — `tenancy` and `tenancyReason` in the API's
+answer and on the screen — because whether a dependency is alone on a server
+is a fact about its failure domain, and it is not legible from anywhere else.
+
+**What sharing gives up, said plainly.** One shared server is one process to
+lose, and on the queue server one tenant filling memory fails every tenant's
+writes rather than only its own. A claim that cannot accept that says
+`tenancy: dedicated` and gets the other shape, unchanged.
 
 **Two providers, and they differ in what they can promise.**
 
-`valkey` runs **one instance per claim** in this cluster — a StatefulSet, a
-Service and a Secret the platform writes with its own account, no operator
-and no install job. It is the one that can honour everything above, because
-it is the one that configures the server. A logical database number inside a
-shared server was considered and rejected: it is not an isolation boundary —
-one tenant's `FLUSHALL` empties another's, there is no per-tenant memory
-limit, and keyspaces collide — and the requirement that matters here cannot
-be shared at all, because `maxmemory-policy` is server-wide. One instance
-cannot offer `noeviction` to a queue and `allkeys-lru` to a cache.
+`valkey` is this cluster's own — a StatefulSet, a Service and a Secret the
+platform writes with its own account, no operator and no install job — and it
+serves both shapes above. Its shared servers keep their ACL users in an ACL
+file on a volume, because a user created with `ACL SETUSER` lives only in the
+running process: a server restarted without one would leave every application
+on it authenticating as a user that no longer exists.
 
 `redis` reaches a server somebody else runs — Upstash, ElastiCache, Aiven, or
 the Valkey a team already has — over the URL its Connection holds. It
@@ -435,22 +489,36 @@ provisions nothing, so it can promise nothing about the server's
 configuration, and it says so rather than guessing: an operator states on the
 Connection what the server is configured for (`usage` in its config), and a
 claim asking for something else is refused. A connection that does not say
-refuses any claim that names a usage at all. `maxMemory` and `version` are
-the server's own and are refused outright.
+refuses any claim that names a usage at all. `maxMemory`, `version` and
+`tenancy: dedicated` are the server's own and are refused outright. What it
+gives each claim is a logical database at that server — the weaker boundary,
+because nobody can ask somebody else's Redis for another process or for an ACL
+user of its own, and the claim's `tenancyReason` says exactly that.
 
-A preview gets a fresh, empty instance from `valkey` and a fresh, empty
-**logical database at the same server** from `redis`. Both declare
-`synthetic`, because what the preview gets is empty either way — but they are
-not equally isolated, and the difference is worth knowing: a database number
-keeps the preview from reading production's keys and does not keep a
-`FLUSHALL` on either side from emptying both.
+A preview gets a **keyspace of its own** from `valkey` — its own ACL user and
+its own prefix in the same shared server, or its own instance where the claim
+asked for one — and a fresh **logical database at the same server** from
+`redis`. All of them declare `synthetic`, because what the preview gets is
+empty. They are not equally isolated, and the difference is worth knowing: a
+tenancy keeps the preview from reading, writing or flushing production's keys;
+a database number keeps it from reading them and does not keep a `FLUSHALL` on
+either side from emptying both.
 
-`deletionPolicy: Retain` (the default) keeps the instance and everything in
-it; `Delete` destroys both, and for a queue that is somebody's unfinished
-work, which is exactly why Retain is the default. Preview instances are torn
-down with their previews under either policy. At an external server the
-platform destroys nothing on the way out: the keyspace is the server's, and
-emptying somebody else's database is not the platform's to do.
+`deletionPolicy: Retain` (the default) keeps what the claim held; `Delete`
+destroys it, and for a queue that is somebody's unfinished work, which is
+exactly why Retain is the default. For a server of its own that is the
+instance and everything in it; for a tenancy it is the keys under the claim's
+prefix, deleted by prefix and touching no other tenant.
+
+**Releasing a claim is not destroying it, and a tenancy makes the difference
+visible.** Under either policy the claim's ACL user is deleted, because a claim
+that no longer exists must not leave a working password into a server other
+projects are reading from. Under `Retain` the keys stay, and a claim of the
+same name created later against the same connection is granted the same user
+over them again. Preview keyspaces are torn down with their previews under
+either policy. At an external server the platform destroys nothing on the way
+out: the keyspace is the server's, and emptying somebody else's database is
+not the platform's to do.
 
 The CLI reaches all of this through `kitchen api`, as for every claim type;
 no command creates a claim.
@@ -509,8 +577,8 @@ with the body above.
 | `objectStore` | `s3` | `fresh` — a new, empty bucket of the preview's own with its own credential, versioned when production's is and torn down with the preview: the branch declares provenance synthetic | unaffected | unaffected |
 | `volume` | `storageClass` | `fresh` — a new, empty volume of the same size and class, never a copy of production's: the preview declares provenance synthetic | unaffected | **recreate, with downtime** — a ReadWriteOnce volume attaches to one pod at a time, so the process mounting it runs one replica and is deployed by stopping the old pod before starting the new one — a rolling update would leave the new pod waiting in Multi-Attach for a volume the old pod never releases. Every deploy of that process has a gap in serving; a StorageClass detected to support ReadWriteMany lifts both |
 | `inngest` | `inngest` | `branch` — an Inngest branch environment of the preview's own — its own event stream, function set and run history, empty rather than a copy of production's, selected by INNGEST_ENV on the account's shared branch keys; archived, not deleted, when the preview goes | **blocked** — a connect worker holds an outbound WebSocket to Inngest's gateway that never crosses the interceptor, so nothing can tell when it is idle — and scale to zero is a project-level policy, so every environment of the project keeps its pods, previews included | unaffected |
-| `redis` | `valkey` | `fresh` — a new, empty instance of the preview's own, configured like production's and torn down with the preview: the branch declares provenance synthetic | unaffected | unaffected |
-| `redis` | `redis` | `fresh` — a new, empty keyspace of the preview's own at the same server, torn down with the preview: the branch declares provenance synthetic | unaffected | unaffected |
+| `redis` | `valkey` | `fresh` — a new, empty keyspace of the preview's own — its own ACL user and key prefix in the platform's shared server, or an instance of its own where the claim asked for one — configured like production's and torn down with the preview: the branch declares provenance synthetic | unaffected | unaffected |
+| `redis` | `redis` | `fresh` — a new, empty logical database of the preview's own at the same server, torn down with the preview: the branch declares provenance synthetic | unaffected | unaffected |
 <!-- end generated -->
 
 ### Choosing on the claim

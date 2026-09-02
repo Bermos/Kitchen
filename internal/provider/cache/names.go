@@ -38,7 +38,7 @@ const (
 // resourceName is the object name for a claim's instance: the claim's own
 // where it fits, and a truncated one with a hash suffix where it does not.
 func resourceName(name string) string {
-	return truncateName(name, maxInstanceName)
+	return truncateName(name)
 }
 
 // branchName is a preview's instance beside the one it branches from. The
@@ -50,19 +50,19 @@ func branchName(instanceID, environment string) string {
 	if err != nil {
 		parent = instanceID
 	}
-	return truncateName(parent+"-"+environment, maxInstanceName)
+	return truncateName(parent + "-" + environment)
 }
 
-// truncateName keeps a name inside a budget without ever mapping two names
+// truncateName keeps a name inside the budget without ever mapping two names
 // onto one.
-func truncateName(name string, max int) string {
+func truncateName(name string) string {
 	name = strings.ToLower(name)
-	if len(name) <= max {
+	if len(name) <= maxInstanceName {
 		return name
 	}
 	sum := sha256.Sum256([]byte(name))
 	suffix := hex.EncodeToString(sum[:])[:hashLength]
-	head := strings.TrimRight(name[:max-hashLength-1], "-")
+	head := strings.TrimRight(name[:maxInstanceName-hashLength-1], "-")
 	return head + "-" + suffix
 }
 

@@ -1126,6 +1126,12 @@ type claimView struct {
 	PreviewMode   string `json:"previewMode,omitempty"`
 	PreviewReason string `json:"previewReason,omitempty"`
 	PreviewChoice string `json:"previewChoice,omitempty"`
+	// Tenancy is whether what was provisioned is shared with other claims or
+	// the claim's own, as the provisioner resolved it, and TenancyReason is
+	// the sentence behind it. Both are absent for a type whose provider
+	// serves only one shape, and until the claim has been reconciled.
+	Tenancy       string `json:"tenancy,omitempty"`
+	TenancyReason string `json:"tenancyReason,omitempty"`
 	// KeepsPodsRunning and ForcesRecreate are the provider's declarations
 	// of what the binding does to the workload that reads it: no
 	// environment reading the claim idles to zero, and the workload is
@@ -1201,6 +1207,8 @@ func newClaimView(claim *kitchenv1alpha1.ResourceClaim) claimView {
 		PreviewMode:      claim.Status.PreviewMode,
 		PreviewReason:    claim.Status.PreviewReason,
 		PreviewChoice:    claim.PreviewChoice(),
+		Tenancy:          claim.Status.Tenancy,
+		TenancyReason:    claim.Status.TenancyReason,
 		KeepsPodsRunning: claim.Status.KeepsPodsRunning,
 		ForcesRecreate:   claim.Status.ForcesRecreate,
 		DataClass:        string(claim.Spec.DataClass),

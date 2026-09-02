@@ -143,9 +143,9 @@ export function providerGuidance(provider: string, apiUrl?: string): ProviderGui
       return {
         tokenLabel: "No credential",
         purpose:
-          "Kitchen runs one Valkey per claim here on the platform, with the operator's own identity — so there is no account to open and no credential to store or rotate.",
+          "Kitchen runs Valkey here on the platform, with the operator's own identity — so there is no account to open and no credential to store or rotate. A claim gets a keyspace of its own in a server the platform already keeps, unless it asks for something a shared server cannot give.",
         permissions: [
-          "Nothing to grant. A queue claim asks for a volume, so the cluster needs a default StorageClass; a cache claim asks for none.",
+          "Nothing to grant. The shared servers keep their users on a volume, so the cluster needs a default StorageClass; so does a queue that a claim asked to have to itself.",
           "Testing this connection asks nothing of a provider, because there is none to ask: what could fail here fails on the claim, where the message can name the claim that asked.",
         ],
       };

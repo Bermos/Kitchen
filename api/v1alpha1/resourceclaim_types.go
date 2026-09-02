@@ -380,6 +380,30 @@ type RedisConfig struct {
 	// is a refusal rather than an instance that is not it.
 	// +optional
 	Version string `json:"version,omitempty"`
+
+	// Tenancy is whether the claim shares a server with other claims or is
+	// given one of its own.
+	//
+	// `shared` is a tenancy in a server the platform already runs: an ACL
+	// user of the claim's own, admitted to keys and pub/sub channels under
+	// one prefix and to nothing else, on a server other projects also use.
+	// The binding carries that prefix as `keyPrefix`, and the application
+	// has to write under it — every client library has a prefix option, and
+	// this is the cost of the shape.
+	//
+	// `dedicated` is a server of the claim's own: its own process, its own
+	// memory, its own failure domain, and nothing to prefix.
+	//
+	// Empty is resolved rather than defaulted: the claim is given a tenancy
+	// unless it asked for something a shared server cannot give — a memory
+	// limit, which is the whole server's, or a version the shared servers do
+	// not run — in which case it is given a server of its own and the status
+	// says so. The default leans shared because a server per claim per
+	// environment does not fit on a single-node cluster, which is what this
+	// platform is frequently installed on.
+	// +kubebuilder:validation:Enum=shared;dedicated
+	// +optional
+	Tenancy string `json:"tenancy,omitempty"`
 }
 
 // OIDCClientConfig is the oidcClient slice of spec.config: what the operator
@@ -806,6 +830,21 @@ type ResourceClaimStatus struct {
 	// about what a preview gets.
 	// +optional
 	PreviewReason string `json:"previewReason,omitempty"`
+
+	// Tenancy is whether what was provisioned is shared with other claims or
+	// the claim's own, as the provisioner actually resolved it, and
+	// TenancyReason is the sentence behind it.
+	//
+	// It is recorded rather than inferred because it is a fact about the
+	// claim's failure domain and its isolation, and neither is legible from
+	// anywhere else: a tenancy and a server of one's own bind the same keys
+	// and read the same way. A provider that serves only one shape leaves
+	// both empty.
+	// +kubebuilder:validation:Enum=shared;dedicated
+	// +optional
+	Tenancy string `json:"tenancy,omitempty"`
+	// +optional
+	TenancyReason string `json:"tenancyReason,omitempty"`
 
 	// KeepsPodsRunning is the provider's declaration that this claim's
 	// binding holds the workload up — a worker holding an outbound

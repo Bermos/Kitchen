@@ -151,14 +151,22 @@ one environment reads nothing in the others, and previews need the branch
 environments. It is validated with `GET /account`, and the connection reports
 the `backgroundJobs` capability.
 
-A `valkey` connection is the in-cluster cache: the operator runs one Valkey per
-claim through it, under its own service account, so it takes no credential.
+A `valkey` connection is the in-cluster cache: the operator runs Valkey under
+its own service account, so it takes no credential. By default a claim through
+it gets a **tenancy** in one of two servers the platform keeps — one evicting
+for caches, one write-refusing for queues — and only a claim that asks for
+something a shared server cannot give is run a server of its own. `docs/api/claims.md`
+is where that resolution is written down.
+
 Its `config` is optional and is the operator's defaults for every claim through
-it: `namespace` (where the instances run, `kitchen-caches` by default),
-`maxMemory`, `storageSize` and `storageClass` (the volume a `queue` gets — a
-`cache` gets none), and `images`, the catalogue of what this installation will
-run a cache from. Testing it asks nothing of a provider, because there is none
-to ask: it is accepted, and the claims through it report what they found.
+it: `namespace` (where the servers run, `kitchen-caches` by default),
+`maxMemory` (the ceiling on a server one claim has to itself),
+`sharedMaxMemory` (the ceiling on each shared server as a whole, `1Gi` by
+default), `storageSize` and `storageClass` (the volume a `queue` gets, and the
+one every shared server keeps its ACL users on), and `images`, the catalogue of
+what this installation will run a cache from. Testing it asks nothing of a
+provider, because there is none to ask: it is accepted, and the claims through
+it report what they found.
 
 A `redis` connection is a server somebody else runs — Upstash, ElastiCache,
 Aiven, or a Valkey a team already has. Its whole credential is the URL, because

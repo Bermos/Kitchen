@@ -27,21 +27,50 @@ limitations under the License.
 //
 // Two implementations ship:
 //
-//   - Valkey, one instance per claim in the cluster Kitchen is installed in,
-//     written directly as a StatefulSet, a Service and a Secret. No operator,
-//     no CRD, no admission webhook and no install job — which is why this
-//     contract was the cheapest place to find out whether the vocabulary
-//     generalises past Postgres.
+//   - Valkey, in the cluster Kitchen is installed in, written directly as a
+//     StatefulSet, a Service and a Secret. No operator, no CRD, no admission
+//     webhook and no install job — which is why this contract was the
+//     cheapest place to find out whether the vocabulary generalises past
+//     Postgres.
 //   - An external server behind a redis Connection: Upstash, ElastiCache,
 //     Aiven, or the Valkey a team already runs.
 //
-// One instance per claim, never a logical database number or a key prefix
-// inside a shared server. A database number is not an isolation boundary —
-// one tenant's FLUSHALL empties another's, there is no per-tenant memory
-// limit, and keyspaces collide — and the requirement that matters here
-// cannot be satisfied in a shared server at all: maxmemory-policy is
-// server-wide, so one instance cannot offer noeviction to a queue and
-// allkeys-lru to a cache.
+// # Two tenancies, chosen by requirement
+//
+// A platform whose selling point is an environment per pull request cannot
+// afford a server per claim per environment on the single-node clusters it
+// supports: four claims and five open pull requests is twenty-four Valkeys.
+// So the in-cluster provider gives a claim a *tenancy* in a server the
+// platform already runs, and only creates a server of its own when the claim
+// asks for something a shared one cannot give.
+//
+// A tenancy is an ACL user restricted to a key prefix, with a password of
+// its own:
+//
+//	ACL SETUSER kitchen-shop-jobs reset on >… ~kitchen-shop-jobs:* &kitchen-shop-jobs:* +@all -@admin -@dangerous +info
+//
+// That is a real boundary and a different one from a logical database
+// number, which is why the number was rejected and this was not: the tenant
+// cannot read, write or subscribe outside its own prefix, and FLUSHALL,
+// FLUSHDB, KEYS, SWAPDB and CONFIG are not commands it has. The binding
+// carries the prefix (BindingKeyKeyPrefix) because the application has to write
+// under it — every client library has a prefix option, and this is the cost
+// of the shape.
+//
+// The eviction policy is what the old objection was really about, and it is
+// answered by *which* server a tenancy goes in rather than by giving up:
+// maxmemory-policy is server-wide, so the platform runs one shared server
+// per usage — an evicting one for caches, a write-refusing one with an
+// append log for queues — and a claim's usage picks the server. What a
+// shared server genuinely cannot give is a per-tenant memory limit, and a
+// claim naming maxMemory is therefore given a server of its own. That is the
+// whole of the resolution: see ResolveTenancy.
+//
+// What is honestly given up by sharing is the failure domain. One shared
+// server is one process to lose, and on a queue server one tenant filling
+// memory fails every tenant's writes rather than only its own. A claim that
+// cannot accept that says tenancy: dedicated and is given the old shape
+// back, unchanged.
 package cache
 
 import (
@@ -103,6 +132,32 @@ func (u Usage) Known() bool { return u == UsageCache || u == UsageQueue }
 // restart — which is what decides whether the instance gets a volume.
 func (u Usage) Durable() bool { return u == UsageQueue }
 
+// Tenancy is which of the two shapes a claim is served by, and the answer
+// #275 settled: shared tenancy is not a second provisioning *interface* —
+// Instance.ID was always opaque, and a tenancy handle is exactly what it can
+// hold — it is a second implementation behind the same one.
+type Tenancy string
+
+const (
+	// TenancyShared is a tenancy in a server the platform already runs: an
+	// ACL user restricted to a key prefix, with a password of its own. The
+	// default, because a server per claim per environment does not fit on
+	// the clusters this platform supports.
+	TenancyShared Tenancy = "shared"
+
+	// TenancyDedicated is a server of the claim's own. What a shared server
+	// cannot give — a memory limit that is this claim's alone, a version
+	// nothing else at the installation runs, a failure domain of one — is
+	// what this is for.
+	TenancyDedicated Tenancy = "dedicated"
+)
+
+// Tenancies is every value, for the refusals that list them.
+var Tenancies = []Tenancy{TenancyShared, TenancyDedicated}
+
+// Known reports whether the value is one of the two.
+func (t Tenancy) Known() bool { return t == TenancyShared || t == TenancyDedicated }
+
 // DataProvenance is the provisioner's declaration of what an instance's data
 // derives from, on the same terms as the other contracts'.
 type DataProvenance string
@@ -125,6 +180,19 @@ type Binding struct {
 	Host     string
 	Port     string
 	Password string
+	// Username is the ACL user the connection authenticates as, and it is
+	// how a tenancy is told apart from a server of one's own: a tenant has
+	// one, a dedicated instance authenticates as the server's default user
+	// and leaves this empty. A client given host, port and password alone
+	// would authenticate as default and be refused, which is why it is a
+	// key of its own rather than only a piece of the URL.
+	Username string
+	// KeyPrefix is what every key this connection may touch has to start
+	// with — empty for a dedicated instance, which owns its whole keyspace.
+	// It is not advisory: the tenant's ACL admits no key outside it, so an
+	// application that ignores it is refused on its first write. Every
+	// client library has a prefix option to set it in one place.
+	KeyPrefix string
 	// TLS says whether the connection is encrypted — "true" or "false" as
 	// the Secret carries it. An application that assumes wrong fails to
 	// connect at all, which is the good failure, but it should not have to
@@ -134,11 +202,13 @@ type Binding struct {
 
 // The keys of the binding Secret, spelled once.
 const (
-	BindingKeyURL      = "url"
-	BindingKeyHost     = "host"
-	BindingKeyPort     = "port"
-	BindingKeyPassword = "password"
-	BindingKeyTLS      = "tls"
+	BindingKeyURL       = "url"
+	BindingKeyHost      = "host"
+	BindingKeyPort      = "port"
+	BindingKeyPassword  = "password"
+	BindingKeyUsername  = "username"
+	BindingKeyKeyPrefix = "keyPrefix"
+	BindingKeyTLS       = "tls"
 )
 
 // Data is the binding as the Secret carries it.
@@ -148,11 +218,13 @@ func (b Binding) Data() map[string][]byte {
 		tls = "true"
 	}
 	return map[string][]byte{
-		BindingKeyURL:      []byte(b.URL),
-		BindingKeyHost:     []byte(b.Host),
-		BindingKeyPort:     []byte(b.Port),
-		BindingKeyPassword: []byte(b.Password),
-		BindingKeyTLS:      []byte(tls),
+		BindingKeyURL:       []byte(b.URL),
+		BindingKeyHost:      []byte(b.Host),
+		BindingKeyPort:      []byte(b.Port),
+		BindingKeyPassword:  []byte(b.Password),
+		BindingKeyUsername:  []byte(b.Username),
+		BindingKeyKeyPrefix: []byte(b.KeyPrefix),
+		BindingKeyTLS:       []byte(tls),
 	}
 }
 
@@ -169,14 +241,23 @@ type Instance struct {
 	// Region is where the provider reports the instance to be; empty when it
 	// reports nothing.
 	Region string
+	// Tenancy is which shape the provisioner actually served the claim
+	// with, and TenancyNote is the sentence behind it. Both are recorded on
+	// the claim: whether a dependency is alone on a server or sharing one is
+	// a fact about its failure domain, and the platform states it rather
+	// than leaving it to be inferred from the shape of the ID.
+	Tenancy     Tenancy
+	TenancyNote string
 }
 
-// Branch is a preview's own instance: empty, configured like the parent,
-// torn down with the preview.
+// Branch is a preview's own instance or tenancy: empty, configured like the
+// parent, torn down with the preview.
 type Branch struct {
-	ID         string
-	Binding    Binding
-	Provenance DataProvenance
+	ID          string
+	Binding     Binding
+	Provenance  DataProvenance
+	Tenancy     Tenancy
+	TenancyNote string
 }
 
 // Provisioner is a cache provider bound to one Connection.
@@ -189,6 +270,18 @@ type Provisioner interface {
 	// Provision creates (or finds) the instance of the given name and
 	// returns its binding.
 	Provision(ctx context.Context, name string) (Instance, error)
+	// Release takes back the access and leaves the data. It runs when the
+	// claim goes, under either deletionPolicy, and is what keeps a tenancy
+	// in a server other projects are reading from outliving the claim that
+	// asked for it: the ACL user is deleted, the keys are not. For a server
+	// of the claim's own there is nothing to take back — the credential
+	// admits nobody to anything the claim did not already own — and it is a
+	// no-op.
+	//
+	// It is deliberately not Deprovision under another name: destroying
+	// data is what deletionPolicy Delete opts into, and releasing a claim
+	// must never imply it.
+	Release(ctx context.Context, instanceID string) error
 	// Deprovision destroys the instance and everything in it.
 	Deprovision(ctx context.Context, instanceID string) error
 	// CreateBranch creates (or finds) a preview's own instance beside the
@@ -211,12 +304,17 @@ type Requirements struct {
 	// Version is the Valkey major, "8". Empty takes the provisioner's own
 	// default, which is what most claims do.
 	Version string
+	// Tenancy is the claim's own choice of shape, and empty is the usual
+	// case: the provisioner resolves one from what else the claim asked
+	// for. Naming it is how a claim insists — on a failure domain of its
+	// own, or on not costing the cluster a server.
+	Tenancy Tenancy
 }
 
 // Empty reports whether the claim asked for nothing in particular, in which
 // case any provisioner can serve it.
 func (r Requirements) Empty() bool {
-	return r.Usage == "" && r.MaxMemory == "" && r.Version == ""
+	return r.Usage == "" && r.MaxMemory == "" && r.Version == "" && r.Tenancy == ""
 }
 
 // CapableProvisioner is a Provisioner that can be asked for requirements —
@@ -233,10 +331,11 @@ type CapableProvisioner interface {
 
 // The provider names the Connection enum admits for a cache.
 const (
-	// ProviderValkey is a cache this cluster runs: one Valkey per claim,
-	// written by the provisioner itself. It is the second Connection
-	// provider with no credential — it provisions with the operator's own
-	// account, into the cluster Kitchen was installed in.
+	// ProviderValkey is a cache this cluster runs, written by the
+	// provisioner itself: a tenancy in a server the platform already keeps,
+	// or a server of the claim's own where it asked for one. It is the
+	// second Connection provider with no credential — it provisions with the
+	// operator's own account, into the cluster Kitchen was installed in.
 	ProviderValkey = "valkey"
 
 	// ProviderRedis is a server somebody else runs, reached over the URL its
@@ -256,13 +355,14 @@ const (
 var Declarations = map[string]contract.Declaration{
 	ProviderValkey: {
 		Preview: contract.PreviewFresh,
-		PreviewNote: "a new, empty instance of the preview's own, configured like production's and torn " +
-			"down with the preview: the branch declares provenance synthetic",
+		PreviewNote: "a new, empty keyspace of the preview's own — its own ACL user and key prefix in the " +
+			"platform's shared server, or an instance of its own where the claim asked for one — configured " +
+			"like production's and torn down with the preview: the branch declares provenance synthetic",
 	},
 	ProviderRedis: {
 		Preview: contract.PreviewFresh,
-		PreviewNote: "a new, empty keyspace of the preview's own at the same server, torn down with the " +
-			"preview: the branch declares provenance synthetic",
+		PreviewNote: "a new, empty logical database of the preview's own at the same server, torn down with " +
+			"the preview: the branch declares provenance synthetic",
 	},
 }
 
@@ -282,6 +382,10 @@ type Options struct {
 	Cluster client.Client
 	// Namespace the in-cluster provisioner puts its instances in.
 	Namespace string
+	// Keyspaces dials a running server to make and unmake tenancies in it.
+	// Nil takes the real client; the tests inject a server that answers
+	// without one running, which is the same seam objectstore's AdminAPI is.
+	Keyspaces KeyspaceFactory
 }
 
 // Factory builds a Provisioner for a Connection.

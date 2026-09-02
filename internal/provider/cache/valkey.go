@@ -49,9 +49,17 @@ const (
 	// cache is worth having; a claim says so when it wants more.
 	DefaultMaxMemory = "256Mi"
 
+	// DefaultSharedMaxMemory is what each shared server may hold in total.
+	// Larger than DefaultMaxMemory because every tenancy at the
+	// installation is inside it, and still small enough to cost nothing on
+	// a single-node cluster — which is the cluster this shape exists for.
+	DefaultSharedMaxMemory = "1Gi"
+
 	// DefaultQueueStorage is the volume behind a queue. A queue's whole
 	// point is that what is in it survives a restart, so it gets a volume
-	// where a cache gets none.
+	// where a cache of its own gets none. A shared server gets one either
+	// way: its ACL users are on it, and a server that forgot them would
+	// leave every application on it unable to authenticate.
 	DefaultQueueStorage = "1Gi"
 
 	// valkeyPort is the port every Valkey serves on. It is not configurable:
@@ -102,15 +110,15 @@ type ValkeyImage struct {
 // DefaultValkeyMajor is what a claim that names no version gets.
 const DefaultValkeyMajor = "8"
 
-// Valkey provisions one instance per claim into the cluster Kitchen is
-// installed in. It holds no credential: it writes through the operator's
-// service account, which is what makes `valkey` a Connection provider with
-// nothing to store.
+// Valkey provisions into the cluster Kitchen is installed in. It holds no
+// credential: it writes through the operator's service account, which is
+// what makes `valkey` a Connection provider with nothing to store.
 //
-// One instance per claim, and never a database number inside a shared
-// server. The package comment says why; the short version is that
-// maxmemory-policy is server-wide, so the one requirement this contract
-// exists for cannot be given to two tenants at once.
+// It serves both tenancies. A claim is given a tenancy in the shared server
+// for its usage unless it asked for something a shared server cannot give,
+// in which case it is given a server of its own — see ResolveTenancy, and
+// the package comment for why that is the resolution rather than one shape
+// or the other.
 type Valkey struct {
 	// Client is the platform's own cluster.
 	Client client.Client
@@ -118,22 +126,32 @@ type Valkey struct {
 	Namespace string
 	// Images is the catalogue this provisioner will run.
 	Images []ValkeyImage
-	// MaxMemory is what a claim naming no limit gets.
+	// MaxMemory is what a claim naming no limit gets, for a server of its
+	// own.
 	MaxMemory string
-	// StorageSize and StorageClass are the volume behind a queue.
+	// SharedMaxMemory is the ceiling on each shared server as a whole. It is
+	// larger than MaxMemory because it is shared: every tenancy at the
+	// installation is inside it.
+	SharedMaxMemory string
+	// StorageSize and StorageClass are the volume behind a queue, and behind
+	// every shared server — which keeps its ACL users on one.
 	StorageSize  string
 	StorageClass string
+	// Keyspaces dials a running shared server to make and unmake tenancies.
+	// Nil takes the real client.
+	Keyspaces KeyspaceFactory
 }
 
 // valkeyConfig is the `valkey` Connection's spec.config: what every claim
 // through this Connection inherits, and the catalogue of images the
 // installation will actually run. Both are the operator's to set.
 type valkeyConfig struct {
-	Namespace    string        `json:"namespace,omitempty"`
-	MaxMemory    string        `json:"maxMemory,omitempty"`
-	StorageSize  string        `json:"storageSize,omitempty"`
-	StorageClass string        `json:"storageClass,omitempty"`
-	Images       []ValkeyImage `json:"images,omitempty"`
+	Namespace       string        `json:"namespace,omitempty"`
+	MaxMemory       string        `json:"maxMemory,omitempty"`
+	SharedMaxMemory string        `json:"sharedMaxMemory,omitempty"`
+	StorageSize     string        `json:"storageSize,omitempty"`
+	StorageClass    string        `json:"storageClass,omitempty"`
+	Images          []ValkeyImage `json:"images,omitempty"`
 }
 
 // NewValkey builds the provisioner from a Connection.
@@ -149,12 +167,14 @@ func NewValkey(opts Options) (*Valkey, error) {
 		}
 	}
 	provisioner := &Valkey{
-		Client:       opts.Cluster,
-		Namespace:    firstNonEmpty(cfg.Namespace, opts.Namespace, DefaultCacheNamespace),
-		Images:       cfg.Images,
-		MaxMemory:    firstNonEmpty(cfg.MaxMemory, DefaultMaxMemory),
-		StorageSize:  firstNonEmpty(cfg.StorageSize, DefaultQueueStorage),
-		StorageClass: cfg.StorageClass,
+		Client:          opts.Cluster,
+		Namespace:       firstNonEmpty(cfg.Namespace, opts.Namespace, DefaultCacheNamespace),
+		Images:          cfg.Images,
+		MaxMemory:       firstNonEmpty(cfg.MaxMemory, DefaultMaxMemory),
+		SharedMaxMemory: firstNonEmpty(cfg.SharedMaxMemory, DefaultSharedMaxMemory),
+		StorageSize:     firstNonEmpty(cfg.StorageSize, DefaultQueueStorage),
+		StorageClass:    cfg.StorageClass,
+		Keyspaces:       opts.Keyspaces,
 	}
 	if len(provisioner.Images) == 0 {
 		provisioner.Images = DefaultValkeyImages
@@ -176,13 +196,21 @@ func (v *Valkey) Provision(ctx context.Context, name string) (Instance, error) {
 	return v.ProvisionWith(ctx, name, Requirements{})
 }
 
-// ProvisionWith creates (or finds) the instance for a claim.
+// ProvisionWith creates (or finds) what serves the claim: a tenancy in the
+// shared server for its usage, or a server of its own.
 //
 // The requirements are resolved *first*, before anything is created: a claim
 // asking for a version nothing publishes, or a memory limit that is not a
 // quantity, is refused as a claim rather than left as a pod that will not
 // start.
 func (v *Valkey) ProvisionWith(ctx context.Context, name string, req Requirements) (Instance, error) {
+	tenancy, why, err := v.ResolveTenancy(req)
+	if err != nil {
+		return Instance{}, err
+	}
+	if tenancy == TenancyShared {
+		return v.provisionTenancy(ctx, resourceName(name), req, why)
+	}
 	settings, err := v.resolve(req)
 	if err != nil {
 		return Instance{}, err
@@ -197,19 +225,25 @@ func (v *Valkey) ProvisionWith(ctx context.Context, name string, req Requirement
 		// An instance the platform provisions for a project holds that
 		// project's own data, and the claim's is production's. Only a
 		// preview's is synthetic, and CreateBranch is where that is said.
-		Provenance: ProvenanceProduction,
+		Provenance:  ProvenanceProduction,
+		Tenancy:     TenancyDedicated,
+		TenancyNote: dedicatedNote(settings.usage, why),
 	}, nil
 }
 
-// CreateBranch gives a preview Environment its own instance, configured like
-// the one it branches from and holding none of its keys.
+// CreateBranch gives a preview Environment a keyspace of its own, in the
+// same shape the claim itself was given: its own tenancy in the shared
+// server, or its own instance beside the claim's.
 //
 // There is no copy here and there is not going to be: a cache's contents are
 // by definition recomputable, and a queue's are somebody's jobs — copying
 // production's queue into a preview would have the preview's workers execute
-// them. A preview gets an empty instance, declared synthetic, which is both
+// them. A preview gets an empty keyspace, declared synthetic, which is both
 // true and the state an auditor wants the platform unable to leave.
 func (v *Valkey) CreateBranch(ctx context.Context, instanceID, name string) (Branch, error) {
+	if _, _, _, ok := parseSharedID(instanceID); ok {
+		return v.createTenancyBranch(ctx, instanceID, name)
+	}
 	settings, err := v.inherit(ctx, instanceID)
 	if err != nil {
 		return Branch{}, err
@@ -220,19 +254,46 @@ func (v *Valkey) CreateBranch(ctx context.Context, instanceID, name string) (Bra
 		return Branch{}, err
 	}
 	return Branch{
-		ID:         v.Namespace + "/" + child,
-		Binding:    binding,
-		Provenance: ProvenanceSynthetic,
+		ID:          v.Namespace + "/" + child,
+		Binding:     binding,
+		Provenance:  ProvenanceSynthetic,
+		Tenancy:     TenancyDedicated,
+		TenancyNote: dedicatedNote(settings.usage, "a preview environment's own instance"),
 	}, nil
 }
 
-// Deprovision destroys the instance and everything in it.
+// Release takes back the access and leaves the data: a tenancy's ACL user is
+// deleted, and a server of the claim's own is left exactly as it is. It runs
+// under either deletionPolicy, which is why it destroys nothing.
+//
+// Leaving a live credential on a server other projects read from would be
+// the one thing this shape has to get right, and a claim that no longer
+// exists should not still have a password into it. A claim of the same name
+// created later mints the same tenancy over the same retained keys, because
+// the tenant's password Secret is retained with them.
+func (v *Valkey) Release(ctx context.Context, instanceID string) error {
+	if _, _, _, ok := parseSharedID(instanceID); !ok {
+		return nil
+	}
+	return v.releaseTenancy(ctx, instanceID)
+}
+
+// Deprovision destroys everything the claim had: the tenancy and the keys
+// under its prefix, or the instance and everything in it.
 func (v *Valkey) Deprovision(ctx context.Context, instanceID string) error {
+	if _, _, _, ok := parseSharedID(instanceID); ok {
+		return v.destroyTenancy(ctx, instanceID)
+	}
 	return v.deleteInstance(ctx, instanceID)
 }
 
-// DeleteBranch removes a preview's instance.
+// DeleteBranch removes a preview's keyspace. A preview's data always goes
+// with the preview, under either policy, which is why this destroys where
+// Release does not.
 func (v *Valkey) DeleteBranch(ctx context.Context, _, branchID string) error {
+	if _, _, _, ok := parseSharedID(branchID); ok {
+		return v.destroyTenancy(ctx, branchID)
+	}
 	return v.deleteInstance(ctx, branchID)
 }
 
@@ -243,6 +304,11 @@ type settings struct {
 	usage     Usage
 	image     string
 	maxMemory resource.Quantity
+	// shared marks a server that holds tenancies rather than one claim's
+	// keyspace. It changes two things about the objects: the server keeps
+	// its users in an ACL file on a volume rather than behind a single
+	// requirepass, and it therefore has a volume whatever its usage.
+	shared bool
 }
 
 // resolve turns a claim's requirements into settings, refusing before
@@ -326,28 +392,39 @@ func (v *Valkey) inherit(ctx context.Context, instanceID string) (settings, erro
 	return settings{usage: usage, image: image, maxMemory: quantity}, nil
 }
 
-// ensureInstance makes the three objects an instance is, in the order that
-// leaves nothing half-made: the password first, because the StatefulSet
-// mounts it, then the Service, then the workload.
+// ensureInstance is a server of one claim's own, and its binding.
 func (v *Valkey) ensureInstance(ctx context.Context, name string, cfg settings) (Binding, error) {
-	if err := v.ensureNamespace(ctx); err != nil {
+	password, err := v.ensureServer(ctx, name, cfg)
+	if err != nil {
 		return Binding{}, err
+	}
+	return v.binding(name, password), nil
+}
+
+// ensureServer makes the three objects a server is, in the order that leaves
+// nothing half-made — the password first, because the StatefulSet mounts it,
+// then the Service, then the workload — and answers its default user's
+// password once it is serving. Both shapes come through here: what differs
+// between a claim's own server and a shared one is the settings.
+func (v *Valkey) ensureServer(ctx context.Context, name string, cfg settings) (string, error) {
+	if err := v.ensureNamespace(ctx); err != nil {
+		return "", err
 	}
 	password, err := v.ensureSecret(ctx, name)
 	if err != nil {
-		return Binding{}, err
+		return "", err
 	}
 	if err := v.ensureService(ctx, name); err != nil {
-		return Binding{}, err
+		return "", err
 	}
 	ready, err := v.ensureStatefulSet(ctx, name, cfg)
 	if err != nil {
-		return Binding{}, err
+		return "", err
 	}
 	if !ready {
-		return Binding{}, fmt.Errorf("%w: %s is starting", ErrNotReady, name)
+		return "", fmt.Errorf("%w: %s is starting", ErrNotReady, name)
 	}
-	return v.binding(name, password), nil
+	return password, nil
 }
 
 // ensureNamespace creates the namespace the instances live in. It is bare —
@@ -502,6 +579,7 @@ func (v *Valkey) desiredStatefulSet(name string, cfg settings) *appsv1.StatefulS
 							Type: corev1.SeccompProfileTypeRuntimeDefault,
 						},
 					},
+					InitContainers: initContainers(name, cfg),
 					Containers: []corev1.Container{{
 						Name:  "valkey",
 						Image: cfg.image,
@@ -514,11 +592,7 @@ func (v *Valkey) desiredStatefulSet(name string, cfg settings) *appsv1.StatefulS
 								Key:                  BindingKeyPassword,
 							}},
 						}},
-						SecurityContext: &corev1.SecurityContext{
-							AllowPrivilegeEscalation: boolPtr(false),
-							ReadOnlyRootFilesystem:   boolPtr(true),
-							Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
-						},
+						SecurityContext: containerSecurityContext(),
 						Resources: corev1.ResourceRequirements{
 							Limits: corev1.ResourceList{
 								// Headroom over maxmemory: Valkey's own
@@ -537,7 +611,7 @@ func (v *Valkey) desiredStatefulSet(name string, cfg settings) *appsv1.StatefulS
 			},
 		},
 	}
-	if cfg.usage.Durable() {
+	if cfg.needsVolume() {
 		set.Spec.VolumeClaimTemplates = []corev1.PersistentVolumeClaim{{
 			ObjectMeta: metav1.ObjectMeta{Name: "data"},
 			Spec: corev1.PersistentVolumeClaimSpec{
@@ -552,13 +626,44 @@ func (v *Valkey) desiredStatefulSet(name string, cfg settings) *appsv1.StatefulS
 	return set
 }
 
+// needsVolume reports whether the server keeps anything across a restart. A
+// queue keeps its jobs; a shared server keeps its ACL users whatever its
+// usage, because tenancies granted with ACL SETUSER live only in the running
+// process until they are saved to a file.
+func (s settings) needsVolume() bool { return s.usage.Durable() || s.shared }
+
+// containerSecurityContext is what both containers run under: no escalation,
+// nothing writable outside the volume, no capabilities.
+func containerSecurityContext() *corev1.SecurityContext {
+	return &corev1.SecurityContext{
+		AllowPrivilegeEscalation: boolPtr(false),
+		ReadOnlyRootFilesystem:   boolPtr(true),
+		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+	}
+}
+
+// initContainers writes a shared server's ACL file before it starts, and is
+// nothing at all for a server of one claim's own.
+func initContainers(name string, cfg settings) []corev1.Container {
+	if !cfg.shared {
+		return nil
+	}
+	return []corev1.Container{sharedInitContainer(name, cfg)}
+}
+
 // valkeyArgs is where the whole contract lands: the difference between a
 // cache and a queue is four arguments, and getting them backwards is the
 // incident this contract exists to prevent.
 func valkeyArgs(cfg settings) []string {
-	args := []string{
-		"--requirepass", "$(VALKEY_PASSWORD)",
-		"--maxmemory", strconv.FormatInt(cfg.maxMemory.Value(), 10),
+	args := []string{"--maxmemory", strconv.FormatInt(cfg.maxMemory.Value(), 10)}
+	if cfg.shared {
+		// A shared server's users are the ACL file's, which is the whole of
+		// its user list: requirepass and an ACL file cannot both be the
+		// source of the default user, so the file is, and the init
+		// container above is what puts the default user in it.
+		args = append(args, "--aclfile", aclFilePath)
+	} else {
+		args = append(args, "--requirepass", "$(VALKEY_PASSWORD)")
 	}
 	if cfg.usage.Durable() {
 		// A queue holds work nobody can recompute. It refuses writes when it
@@ -601,10 +706,11 @@ func volumeMounts() []corev1.VolumeMount {
 	return []corev1.VolumeMount{{Name: "data", MountPath: "/data"}}
 }
 
-// podVolumes is the cache's emptyDir, and nothing for a queue — whose
-// volume comes from the StatefulSet's claim template instead.
+// podVolumes is the emptyDir a cache of its own writes nothing to, and
+// nothing for a server that keeps something — whose volume comes from the
+// StatefulSet's claim template instead.
 func podVolumes(cfg settings) []corev1.Volume {
-	if cfg.usage.Durable() {
+	if cfg.needsVolume() {
 		return nil
 	}
 	return []corev1.Volume{{
@@ -632,6 +738,13 @@ func (v *Valkey) binding(name, password string) Binding {
 		Host:     host,
 		Port:     port,
 		Password: password,
+		// No username and no key prefix: this server is the claim's own, it
+		// authenticates as the default user and it owns its whole keyspace.
+		// The two keys are still written, empty, so that an application can
+		// read them unconditionally and get the right answer under either
+		// tenancy.
+		Username:  "",
+		KeyPrefix: "",
 		// In-cluster and unencrypted: the platform's own network is the
 		// boundary, the way it is for every other in-cluster address the
 		// platform hands out.

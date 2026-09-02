@@ -97,18 +97,32 @@ const redisUsage = ref("cache");
 const redisMaxMemory = ref("");
 const redisVersion = ref("");
 
+// Tenancy is left empty on purpose: the platform resolves it from what else
+// the claim asks for, and a developer who has no opinion should not have to
+// have one. Naming it is how somebody insists on a failure domain of their
+// own, or on not costing the cluster a pod.
+const redisTenancy = ref("");
+
 const redisUsageOptions = [
   { label: "cache — may evict what it holds when it fills up", value: "cache" },
   { label: "queue — must not; the write fails instead", value: "queue" },
 ];
 
+const redisTenancyOptions = [
+  { label: "let the platform decide — shared unless this claim needs otherwise", value: "" },
+  { label: "shared — a keyspace of its own in a server the platform already runs", value: "shared" },
+  { label: "dedicated — a server of this claim's own, and a pod per environment", value: "dedicated" },
+];
+
 /** The redis block as the API takes it. `usage` always goes, because the
- * developer chose it here rather than inheriting a default they never saw. */
+ * developer chose it here rather than inheriting a default they never saw;
+ * tenancy goes only when they chose one, because empty means resolved. */
 function redisRequest() {
   return {
     usage: redisUsage.value,
     ...(redisMaxMemory.value.trim() ? { maxMemory: redisMaxMemory.value.trim() } : {}),
     ...(redisVersion.value.trim() ? { version: redisVersion.value.trim() } : {}),
+    ...(redisTenancy.value ? { tenancy: redisTenancy.value } : {}),
   };
 }
 
@@ -337,6 +351,7 @@ watch(open, (value) => {
   redisUsage.value = "cache";
   redisMaxMemory.value = "";
   redisVersion.value = "";
+  redisTenancy.value = "";
   inngestApp.value = "";
   inngestEnvironment.value = "";
   void loadConnections();
@@ -680,8 +695,25 @@ async function save() {
               title="This instance will refuse writes rather than drop work"
               description="A queue keeps what is in it on disk and stops accepting writes when it is full. That is the point: a queue that evicts loses jobs and reports nothing."
             />
+            <UFormField
+              label="Where it runs"
+              help="A shared keyspace costs the cluster nothing; a server of its own costs a pod in every environment of this project, previews included."
+            >
+              <USelect v-model="redisTenancy" :items="redisTenancyOptions" class="w-full" />
+            </UFormField>
+            <UAlert
+              v-if="redisTenancy !== 'dedicated'"
+              color="neutral"
+              variant="subtle"
+              icon="i-lucide-key-round"
+              title="A shared keyspace means the application prefixes its keys"
+              description="The binding carries keyPrefix and username. Everything this claim writes has to start with that prefix — the server admits nothing else — so set your client's prefix option from it: keyPrefix in ioredis, prefix in BullMQ."
+            />
             <div class="grid gap-4 sm:grid-cols-2">
-              <UFormField label="Max memory" help="A Kubernetes quantity. Empty takes the platform's default.">
+              <UFormField
+                label="Max memory"
+                help="A Kubernetes quantity. Empty takes the platform's default; naming one asks for a server of this claim's own, because a limit is the whole server's."
+              >
                 <UInput v-model="redisMaxMemory" placeholder="512Mi" class="w-full font-mono" />
               </UFormField>
               <UFormField label="Valkey version" help="A major version. Empty takes the platform's default.">
@@ -690,7 +722,8 @@ async function save() {
             </div>
             <p class="text-xs text-muted">
               The secret carries <span class="font-mono">url</span>, <span class="font-mono">host</span>,
-              <span class="font-mono">port</span>, <span class="font-mono">password</span> and
+              <span class="font-mono">port</span>, <span class="font-mono">username</span>,
+              <span class="font-mono">password</span>, <span class="font-mono">keyPrefix</span> and
               <span class="font-mono">tls</span>. A connection to a server the platform does not run cannot be
               asked for any of this and refuses the claim saying so, rather than binding a server that will not
               behave the way the claim assumed.

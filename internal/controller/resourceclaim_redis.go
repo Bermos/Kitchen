@@ -33,11 +33,12 @@ import (
 )
 
 // The redis half of the ResourceClaim reconciler: a cache or a queue from a
-// cache-capable Connection, provisioned through internal/provider/cache —
-// one Valkey per claim in this cluster, or a keyspace at a server somebody
-// else runs — with its binding written into a Secret in the application
-// namespace and, since both providers declare previews get a fresh instance,
-// one instance and one Secret per preview Environment.
+// cache-capable Connection, provisioned through internal/provider/cache — a
+// tenancy in a Valkey this cluster already runs, a Valkey of the claim's own
+// where it asked for something a shared one cannot give, or a keyspace at a
+// server somebody else runs — with its binding written into a Secret in the
+// application namespace and, since both providers declare previews get a
+// fresh keyspace, one of those and one Secret per preview Environment.
 //
 // It is the fifth contract and the shape has not moved since the first: a
 // Connection matched on a capability, a provisioner built from it, typed
@@ -51,10 +52,11 @@ import (
 // fails with the provider's own words rather than binding something that
 // will quietly drop work.
 
-// The in-cluster cache provider: one Valkey per claim is a StatefulSet, a
-// Service and a Secret the platform writes with its own account, plus the
-// volume a queue keeps its jobs on — which a StatefulSet does not collect
-// with itself, so the provisioner deletes it too.
+// The in-cluster cache provider writes each Valkey — the two shared servers
+// and any a claim asked to have to itself — as a StatefulSet, a Service and
+// a Secret with the platform's own account, plus the volume a queue keeps
+// its jobs on and a shared server keeps its ACL users on. A StatefulSet does
+// not collect that volume with itself, so the provisioner deletes it too.
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;delete
@@ -106,6 +108,7 @@ func (redisContract) reconcile(
 		"residency":      claim.Status.Residency,
 		"previewMode":    claim.Status.PreviewMode,
 		"usage":          claim.Redis().Usage,
+		"tenancy":        claim.Status.Tenancy,
 	}); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -116,15 +119,21 @@ func (redisContract) reconcile(
 	return ctrl.Result{}, nil
 }
 
-// finalize tears the preview instances down under either policy, releases
-// the Environments they held, and destroys the claim's own instance under
+// finalize tears the preview keyspaces down under either policy, releases
+// the Environments they held, and destroys the claim's own under
 // deletionPolicy Delete alone.
 //
 // Retain is the default here for the same reason it is everywhere else, and
 // it is not academic for a queue: what is in one is work nobody has done
 // yet, and deleting the claim in front of it must not be able to throw that
 // away. A claim of the same name created later against the same connection
-// finds the instance by name and rebinds to it.
+// finds what it had by name and rebinds to it.
+//
+// Under Retain the access still goes, even though the data does not — a
+// tenancy's ACL user is deleted, because a claim that no longer exists must
+// not leave a working password into a server other projects read from. That
+// is the whole difference between releasing a claim and destroying what it
+// held, and the two are separate calls for exactly that reason.
 func (redisContract) finalize(
 	ctx context.Context,
 	r *ResourceClaimReconciler,
@@ -151,13 +160,17 @@ func (redisContract) finalize(
 		return err
 	}
 
-	if claim.Spec.DeletionPolicy == kitchenv1alpha1.ClaimDelete &&
-		claim.Status.InstanceID != "" && provisioner != nil {
-		if err := provisioner.Deprovision(ctx, claim.Status.InstanceID); err != nil {
-			return err
-		}
+	if claim.Status.InstanceID == "" || provisioner == nil {
+		return nil
 	}
-	return nil
+	if claim.Spec.DeletionPolicy == kitchenv1alpha1.ClaimDelete {
+		return provisioner.Deprovision(ctx, claim.Status.InstanceID)
+	}
+	// Retain keeps the data and still takes back the credential: a claim
+	// that no longer exists must not leave a live password into a server
+	// other projects are reading from. For a server of the claim's own there
+	// is nothing to take back and this does nothing.
+	return provisioner.Release(ctx, claim.Status.InstanceID)
 }
 
 // provisionCache creates the instance and the shared binding Secret when
@@ -202,6 +215,8 @@ func (r *ResourceClaimReconciler) provisionCache(
 	claim.Status.SecretName = secretName
 	claim.Status.DataProvenance = string(instance.Provenance)
 	claim.Status.Residency = instance.Region
+	claim.Status.Tenancy = string(instance.Tenancy)
+	claim.Status.TenancyReason = instance.TenancyNote
 	setClaimCondition(claim, condProvisioned, metav1.ConditionTrue, "Provisioned",
 		fmt.Sprintf("%s provisioned as %s", claim.Spec.Type, instance.ID))
 	return ctrl.Result{}, false, nil
@@ -245,6 +260,7 @@ func cacheRequirements(claim *kitchenv1alpha1.ResourceClaim) cache.Requirements 
 		Usage:     cache.Usage(cfg.Usage),
 		MaxMemory: cfg.MaxMemory,
 		Version:   cfg.Version,
+		Tenancy:   cache.Tenancy(cfg.Tenancy),
 	}
 }
 

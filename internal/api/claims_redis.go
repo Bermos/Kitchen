@@ -41,7 +41,7 @@ func (redisClaimShaper) fields() []claimField {
 	return []claimField{{
 		name:  "redis",
 		set:   func(body *createClaimRequest) bool { return body.Redis != nil },
-		lacks: "no eviction policy, no memory limit and no version",
+		lacks: "no eviction policy, no memory limit, no version and no tenancy",
 	}}
 }
 
@@ -72,9 +72,22 @@ func (redisClaimShaper) view(claim *kitchenv1alpha1.ResourceClaim, view *claimVi
 	view.Redis = redisOf(claim)
 }
 
+// deletionOutcome says what goes and what stays, for the shape this claim
+// was actually served by. They are genuinely different sentences: destroying
+// a server of its own destroys a process, and destroying a tenancy deletes
+// the keys under one prefix in a server other projects keep using.
 func (redisClaimShaper) deletionOutcome(claim *kitchenv1alpha1.ResourceClaim) string {
+	shared := claim.Status.Tenancy == string(cache.TenancyShared)
 	if claim.Spec.DeletionPolicy == kitchenv1alpha1.ClaimDelete {
+		if shared {
+			return "the keys under this claim's prefix are deleted and its user is removed; no other tenant " +
+				"of the server is touched"
+		}
 		return "the instance and everything in it are destroyed"
+	}
+	if shared {
+		return "the keys under this claim's prefix are kept and its user is removed, so nothing can read " +
+			"them until a claim of the same name is created again"
 	}
 	return "the instance is kept, with whatever is in it"
 }
@@ -85,16 +98,22 @@ type claimRedisView struct {
 	Usage     string `json:"usage,omitempty"`
 	MaxMemory string `json:"maxMemory,omitempty"`
 	Version   string `json:"version,omitempty"`
+	Tenancy   string `json:"tenancy,omitempty"`
 }
 
 // redisOf is the claim's cache requirements, and nothing at all for a claim
 // that asked for nothing in particular.
 func redisOf(claim *kitchenv1alpha1.ResourceClaim) *claimRedisView {
 	cfg := claim.Redis()
-	if cfg.Usage == "" && cfg.MaxMemory == "" && cfg.Version == "" {
+	if cfg.Usage == "" && cfg.MaxMemory == "" && cfg.Version == "" && cfg.Tenancy == "" {
 		return nil
 	}
-	return &claimRedisView{Usage: cfg.Usage, MaxMemory: cfg.MaxMemory, Version: cfg.Version}
+	return &claimRedisView{
+		Usage:     cfg.Usage,
+		MaxMemory: cfg.MaxMemory,
+		Version:   cfg.Version,
+		Tenancy:   cfg.Tenancy,
+	}
 }
 
 // validRedisConfig checks the shape of what a redis claim asks of its
@@ -116,6 +135,7 @@ func validRedisConfig(
 		Usage:     strings.TrimSpace(cfg.Usage),
 		MaxMemory: strings.TrimSpace(cfg.MaxMemory),
 		Version:   strings.TrimSpace(cfg.Version),
+		Tenancy:   strings.TrimSpace(cfg.Tenancy),
 	}
 	if out.Usage != "" && !cache.Usage(out.Usage).Known() {
 		badRequest(w, "redis.usage is %s or %s (got %q): a cache may evict what it holds when it fills up and "+
@@ -144,7 +164,14 @@ func validRedisConfig(
 			return nil, false
 		}
 	}
-	if out.Usage == "" && out.MaxMemory == "" && out.Version == "" {
+	if out.Tenancy != "" && !cache.Tenancy(out.Tenancy).Known() {
+		badRequest(w, "redis.tenancy is %s or %s (got %q): %s is a keyspace of this claim's own in a server "+
+			"the platform already runs, reached with a user and a key prefix of its own; %s is a server of "+
+			"this claim's own, which costs the cluster a pod per environment",
+			cache.TenancyShared, cache.TenancyDedicated, cfg.Tenancy, cache.TenancyShared, cache.TenancyDedicated)
+		return nil, false
+	}
+	if out.Usage == "" && out.MaxMemory == "" && out.Version == "" && out.Tenancy == "" {
 		return nil, true
 	}
 	return &out, true

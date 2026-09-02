@@ -123,8 +123,19 @@ func (e *External) CreateBranch(_ context.Context, instanceID, name string) (Bra
 	if err != nil {
 		return Branch{}, err
 	}
-	return Branch{ID: instance.ID, Binding: instance.Binding, Provenance: ProvenanceSynthetic}, nil
+	return Branch{
+		ID:          instance.ID,
+		Binding:     instance.Binding,
+		Provenance:  ProvenanceSynthetic,
+		Tenancy:     TenancyShared,
+		TenancyNote: instance.TenancyNote,
+	}, nil
 }
+
+// Release does nothing: the credential is the server's own, handed over by
+// whoever wrote the Connection, and this provider never minted one to take
+// back.
+func (e *External) Release(context.Context, string) error { return nil }
 
 // Deprovision does nothing at a server the platform does not run: the
 // keyspace is the server's, and emptying somebody else's database on the way
@@ -138,6 +149,14 @@ func (e *External) DeleteBranch(context.Context, string, string) error { return 
 
 // satisfies is the refusal this provider exists for.
 func (e *External) satisfies(req Requirements) error {
+	if req.Tenancy == TenancyDedicated {
+		return fmt.Errorf("%w: this connection reaches a server the platform does not run, so it cannot be "+
+			"given a server of its own. Claim through a %s connection to be given one",
+			ErrUnsatisfiable, ProviderValkey)
+	}
+	if req.Tenancy != "" && !req.Tenancy.Known() {
+		return fmt.Errorf("%w: tenancy %q is not one of %s", ErrUnsatisfiable, req.Tenancy, tenancyList())
+	}
 	if req.Usage != "" {
 		switch {
 		case e.Usage == "":
@@ -190,6 +209,10 @@ func (e *External) instance(name string, database int, _ Requirements) (Instance
 		// The server is somebody's production server as far as the platform
 		// knows, and it declares nothing it cannot vouch for.
 		Provenance: ProvenanceProduction,
+		Tenancy:    TenancyShared,
+		TenancyNote: fmt.Sprintf("logical database %d at a server the platform does not run: a database "+
+			"number keeps this claim from reading the server's other keyspaces and does not keep a FLUSHALL "+
+			"on either side from emptying both", database),
 	}, nil
 }
 

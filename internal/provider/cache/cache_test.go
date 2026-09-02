@@ -153,7 +153,8 @@ func TestProvisionWaitsUntilTheInstanceServes(t *testing.T) {
 	provisioner, c := newValkey(t)
 	ctx := context.Background()
 
-	_, err := provisioner.Provision(ctx, "kitchen-shop-cache")
+	dedicated := Requirements{Tenancy: TenancyDedicated}
+	_, err := provisioner.ProvisionWith(ctx, "kitchen-shop-cache", dedicated)
 	if !errors.Is(err, ErrNotReady) {
 		t.Fatalf("want ErrNotReady while it starts, got %v", err)
 	}
@@ -178,9 +179,15 @@ func TestProvisionWaitsUntilTheInstanceServes(t *testing.T) {
 	if err := c.Status().Update(ctx, set); err != nil {
 		t.Fatal(err)
 	}
-	instance, err := provisioner.Provision(ctx, "kitchen-shop-cache")
+	instance, err := provisioner.ProvisionWith(ctx, "kitchen-shop-cache", dedicated)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if instance.Tenancy != TenancyDedicated {
+		t.Errorf("a claim that asked for a server of its own got %q", instance.Tenancy)
+	}
+	if instance.Binding.KeyPrefix != "" || instance.Binding.Username != "" {
+		t.Error("a server of one's own has a whole keyspace and no user to prefix it with")
 	}
 	if instance.Binding.Password != password {
 		t.Error("the binding must carry the password that was minted, not a second one")
@@ -199,12 +206,12 @@ func TestABranchInheritsTheUsageAndIsEmpty(t *testing.T) {
 	provisioner, c := newValkey(t)
 	ctx := context.Background()
 
-	if _, err := provisioner.ProvisionWith(ctx, "kitchen-jobs", Requirements{Usage: UsageQueue}); !errors.Is(err, ErrNotReady) {
+	if _, err := provisioner.ProvisionWith(ctx, "kitchen-jobs", Requirements{Usage: UsageQueue, Tenancy: TenancyDedicated}); !errors.Is(err, ErrNotReady) {
 		t.Fatalf("want ErrNotReady, got %v", err)
 	}
 	ready(t, c, DefaultCacheNamespace, "kitchen-jobs")
 
-	instance, err := provisioner.ProvisionWith(ctx, "kitchen-jobs", Requirements{Usage: UsageQueue})
+	instance, err := provisioner.ProvisionWith(ctx, "kitchen-jobs", Requirements{Usage: UsageQueue, Tenancy: TenancyDedicated})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,7 +247,7 @@ func TestDeprovisionRemovesTheVolumeToo(t *testing.T) {
 	provisioner, c := newValkey(t)
 	ctx := context.Background()
 
-	if _, err := provisioner.ProvisionWith(ctx, "kitchen-jobs", Requirements{Usage: UsageQueue}); !errors.Is(err, ErrNotReady) {
+	if _, err := provisioner.ProvisionWith(ctx, "kitchen-jobs", Requirements{Usage: UsageQueue, Tenancy: TenancyDedicated}); !errors.Is(err, ErrNotReady) {
 		t.Fatalf("want ErrNotReady, got %v", err)
 	}
 	// The volume a StatefulSet's claim template leaves behind, as the API

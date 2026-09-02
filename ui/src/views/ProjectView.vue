@@ -490,7 +490,8 @@ function claimRequirements(claim: Claim): string[] {
   }
   if (claim.redis) {
     // What it is for leads, because it is the fact that decides whether the
-    // instance may drop what is in it.
+    // instance may drop what is in it. The tenancy the claim *asked* for is
+    // not repeated here — what it was actually given is its own badge.
     return [
       claim.redis.usage ?? "cache",
       ...(claim.redis.maxMemory ? [claim.redis.maxMemory] : []),
@@ -552,6 +553,14 @@ function claimDeletionOutcome(claim: Claim): string {
       : "The bucket and its objects are kept at the store; only the platform's binding is removed.";
   }
   if (claim.type === "redis") {
+    // A tenancy and a server of its own are destroyed differently, and the
+    // sentence has to say which: one is a process, the other is the keys
+    // under one prefix in a server other projects keep using.
+    if (claim.tenancy === "shared") {
+      return claim.deletionPolicy === "Delete"
+        ? "The keys under this claim's prefix are being deleted and its user removed; no other tenant of the server is touched."
+        : "The keys under this claim's prefix are kept and its user removed, so nothing can read them until a claim of the same name is created again.";
+    }
     return claim.deletionPolicy === "Delete"
       ? "The instance and everything in it are being destroyed."
       : "The instance is kept, with whatever is in it.";
@@ -1019,6 +1028,21 @@ function host(url?: string): string {
                     :title="claim.previewReason"
                   >
                     previews: {{ claim.previewMode }}
+                  </UBadge>
+                  <!-- Whether this dependency is alone on a server or shares
+                       one is a fact about its failure domain, and it is
+                       legible from nowhere else: the two bind the same keys
+                       and read the same way. The provider's own sentence is
+                       on hover. -->
+                  <UBadge
+                    v-if="claim.tenancy"
+                    color="neutral"
+                    variant="subtle"
+                    size="sm"
+                    class="ml-1"
+                    :title="claim.tenancyReason"
+                  >
+                    {{ claim.tenancy }}
                   </UBadge>
                   <UBadge v-if="claim.keepsPodsRunning" color="warning" variant="subtle" size="sm" class="ml-1">
                     no scale to zero

@@ -1027,6 +1027,11 @@ cannot write it carries on and exchanges every time.
   is the point of a claim type being a row in a table rather than a surface of
   its own. `kitchen env set --from-claim` already reads any of their bindings
   by name, and it did not have to learn what a bucket or a queue is to do it.
+  Giving a `redis` claim a keyspace in a shared server rather than a server of
+  its own is the decision a seventh time and the smallest yet: one more
+  optional field (`redis.tenancy`) on the same route, two more keys in a
+  binding `--from-claim` already reads whole, and nothing to type that
+  `kitchen api POST /claims` does not already reach.
   Asking for a database with an extension is one line as it is:
 
   ```sh
