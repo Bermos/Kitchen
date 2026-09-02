@@ -1131,10 +1131,15 @@ jobs:
           # was granted here: adoption is a fact about the cluster and must not
           # depend on the grant, which is why the operator seeds an addon for
           # every catalogue entry and only a permitted one asks to be installed.
-          for _ in $(seq 1 30); do
+          # Polled until it *settles*, not until it first says something. The
+          # platform is eventually consistent here by construction: the addon
+          # probes the cluster on its own schedule, and KEDA arrived after the
+          # operator started. Asserting on the first observation is asserting
+          # on a race.
+          for _ in $(seq 1 45); do
             reason=$(kubectl get kitchen default \
               -o jsonpath='{.status.conditions[?(@.type=="ScaleToZeroReady")].reason}')
-            [ -n "${reason}" ] && break
+            [ "${reason}" = AlreadyServing ] && break
             sleep 2
           done
           [ "${reason}" = AlreadyServing ] || {

@@ -72,8 +72,16 @@ const (
 	// or a claim depends on is refused, and one that goes says what went.
 	addonFinalizer = "kitchen.bermos.dev/addon"
 
-	// addonRequeueDelay is how often an Addon with something in flight looks
-	// again — an install running, a dependency not up yet.
+	// addonRequeueDelay is how often an Addon looks again — an install
+	// running, a dependency not up yet, or simply the cluster it is a
+	// statement about.
+	//
+	// A settled Addon requeues too, and that is not belt-and-braces. Every
+	// verdict it reaches rests on a probe of the cluster — is this kind
+	// served — and nothing notifies it when the answer changes. Somebody
+	// installing KEDA by hand five minutes after the platform came up
+	// changes it, and an Addon that stopped looking would go on reporting
+	// "not serving" about a cluster plainly serving it, for good.
 	addonRequeueDelay = 30 * time.Second
 
 	// DefaultAddonInstallTimeout is what each of an entry's helm runs is
@@ -310,10 +318,10 @@ type addonPlan struct {
 	reason  string
 	message string
 
-	// ready is whether this reconcile needs looking at again. A refusal is
-	// *ready*: nothing will change without a spec edit or a chart upgrade,
-	// and both reconcile the object on their own — requeueing forever would
-	// only reprint the message.
+	// ready is whether this reconcile reached a verdict rather than watching
+	// something in flight. Both kinds look again — see addonRequeueDelay —
+	// and what this decides is the logging and, for the singleton's roll-up,
+	// whether the platform is still waiting on it.
 	ready bool
 }
 
@@ -544,9 +552,6 @@ func (r *AddonReconciler) settle(
 		if err := r.Status().Update(ctx, addon); err != nil {
 			return ctrl.Result{}, err
 		}
-	}
-	if plan.ready {
-		return ctrl.Result{}, nil
 	}
 	return ctrl.Result{RequeueAfter: addonRequeueDelay}, nil
 }

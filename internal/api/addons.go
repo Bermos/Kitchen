@@ -37,10 +37,11 @@ import (
 //
 // The list is the *catalogue* rather than the objects, and that is the whole
 // shape of the screen behind it: an operator asking "can this cluster give me
-// a database" wants the entries this operator knows how to install, each
-// annotated with what is actually there. An entry nobody has asked for has no
-// Addon and so would be missing from a list of objects — which is exactly the
-// row somebody came to the page to click.
+// a database" wants every entry this operator knows how to install, annotated
+// with what is actually there. The platform seeds an Addon for each, so the
+// two lists usually agree — but an Addon somebody deleted stays deleted, and
+// listing objects would then drop exactly the row they came to the page to
+// click.
 //
 // Nothing here can name a chart, a repository or a version. The catalogue is
 // compiled into the operator, a request carries an entry ID and a namespace,
@@ -162,7 +163,17 @@ func (s *Server) createAddon(w http.ResponseWriter, req *http.Request) {
 	}
 
 	addon := &kitchenv1alpha1.Addon{
-		ObjectMeta: metav1.ObjectMeta{Name: entry.ID, Namespace: s.Namespace},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      entry.ID,
+			Namespace: s.Namespace,
+			// The same labels the operator's own seed writes, so an addon
+			// somebody re-created here is indistinguishable from one that was
+			// never deleted.
+			Labels: map[string]string{
+				managedByLabelKey:             managedByLabelValue,
+				"app.kubernetes.io/component": entry.ID,
+			},
+		},
 		Spec: kitchenv1alpha1.AddonSpec{
 			Install:   body.Install == nil || *body.Install,
 			Namespace: body.Namespace,

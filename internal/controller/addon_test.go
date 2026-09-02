@@ -457,6 +457,22 @@ var _ = Describe("Running an addon install", func() {
 		}
 	})
 
+	// The bug the kind job found: every verdict an addon reaches rests on a
+	// probe of the cluster, and nothing notifies it when the answer changes.
+	// A settled addon that stopped looking went on reporting "not serving"
+	// about a cluster somebody had since installed KEDA into — for good,
+	// because no watch fires for a CRD appearing.
+	It("looks again after every verdict, because the cluster can change under it", func() {
+		track(asked(AddonKeda, false))
+		result := reconcile(AddonKeda)
+		Expect(result.RequeueAfter).To(Equal(addonRequeueDelay),
+			"a settled addon still re-probes: nothing tells it a dependency arrived")
+
+		track(asked("not-a-real-addon", true))
+		refused := reconcile("not-a-real-addon")
+		Expect(refused.RequeueAfter).To(Equal(addonRequeueDelay))
+	})
+
 	It("refuses an addon naming no catalogue entry, and installs nothing", func() {
 		track(asked("not-a-real-addon", true))
 		reconcile("not-a-real-addon")
