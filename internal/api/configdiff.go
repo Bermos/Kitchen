@@ -328,6 +328,13 @@ func diffRuntime(release, against kitchenv1alpha1.RuntimeSpec) []fieldChangeView
 		{Field: "command", To: wordList(release.Command), From: wordList(against.Command)},
 		{Field: "args", To: wordList(release.Args), From: wordList(against.Args)},
 		{Field: "previewArgs", To: wordList(release.PreviewArgs), From: wordList(against.PreviewArgs)},
+		// The posture in words rather than as six fields: what a reader
+		// about to roll back needs is whether the workload is about to run
+		// under different constraints, and an empty one is the platform's
+		// default on both sides.
+		{Field: "security",
+			To:   strings.Join(release.Security.Declared(), "; "),
+			From: strings.Join(against.Security.Declared(), "; ")},
 		{Field: "cpuRequest",
 			To:   quantityString(release.Resources.Requests, corev1.ResourceCPU),
 			From: quantityString(against.Resources.Requests, corev1.ResourceCPU)},

@@ -139,6 +139,13 @@ type RepoRuntimeConfig struct {
 
 	// +optional
 	Health *HealthSpec `json:"health,omitempty"`
+
+	// Security is the posture the commit's workloads run under. A
+	// repository is where it belongs as much as the settings screen is: an
+	// image knows whether it can survive a read-only root filesystem, and
+	// the commit that makes it able to is the commit that should say so.
+	// +optional
+	Security *SecuritySpec `json:"security,omitempty"`
 }
 
 // RepoResources is a workload's CPU and memory as two Kubernetes quantity
@@ -182,6 +189,7 @@ func (c *RepoConfig) Declares() []string {
 			"runtime.args":             len(r.Args) > 0,
 			"runtime.previewArgs":      len(r.PreviewArgs) > 0,
 			"runtime.health":           r.Health != nil,
+			"runtime.security":         r.Security != nil,
 		} {
 			if declared {
 				fields = append(fields, name)

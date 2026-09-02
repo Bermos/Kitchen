@@ -175,6 +175,14 @@ var _ = Describe("Environment Controller", func() {
 			Expect(container.StartupProbe.FailureThreshold).To(
 				Equal(kitchenv1alpha1.DefaultStartupFailureThreshold), "startup gets the generous threshold")
 			Expect(container.LivenessProbe).To(BeNil(), "a TCP connect cannot tell a wedge from a working pod")
+			// A project that declared no posture still runs under one: the
+			// runtime's own seccomp profile and no privilege escalation, in a
+			// namespace relaxed to privileged for the build tooling's sake.
+			Expect(deploy.Spec.Template.Spec.SecurityContext).NotTo(BeNil())
+			Expect(deploy.Spec.Template.Spec.SecurityContext.SeccompProfile.Type).
+				To(Equal(corev1.SeccompProfileTypeRuntimeDefault))
+			Expect(container.SecurityContext).NotTo(BeNil())
+			Expect(*container.SecurityContext.AllowPrivilegeEscalation).To(BeFalse())
 			// The platform's own variables come first, so that a project
 			// setting one of them wins.
 			Expect(container.Env[0]).To(Equal(corev1.EnvVar{Name: "PORT", Value: "8080"}))

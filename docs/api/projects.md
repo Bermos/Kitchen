@@ -196,6 +196,49 @@ Reading a project back reports the check with every timing resolved, because
 answers it only for somebody who already knows the defaults. Previews inherit
 it with the rest of the runtime, and it is snapshotted into every release.
 
+`security` is the posture every workload of the project runs under — the web
+process, its workers and its scheduled runs, since they are one image and a
+posture describes the image rather than the command it is started with:
+
+```json
+{"security": {"runAsNonRoot": true, "runAsUser": 1001,
+              "readOnlyRootFilesystem": true, "dropCapabilities": ["ALL"]}}
+```
+
+Every field is optional and `0` or `false` on any of them is the platform's
+default, so sending `{}` takes a declared posture back off. `runAsUser` and
+`runAsGroup` at `0` are the image's own ids left alone, which is not the same
+as asking to run as root and does not read like it when the project is read
+back. Capabilities are the kernel's spelling without the `CAP_` prefix, or the
+single entry `ALL`; there is deliberately no list to add one, since the
+platform drops none by default and a project that could add one would grant
+its own container more than its image asked for.
+
+**A project that declares nothing still runs under a posture**, and reading a
+project back reports it resolved — the runtime's own seccomp profile, and no
+privilege escalation, which are the two hardenings a working image does not
+notice. The three the issue behind this named — a read-only root filesystem,
+dropped capabilities, a non-root user — are **not** defaulted: an image that
+writes a cache or a socket into its own filesystem is ordinary and a great
+many run as root, so tightening those by default would break a working
+application on upgrade with nothing said. `allowPrivilegeEscalation` is the
+one that goes the other way — the platform denies it, and setting it puts
+back the setuid binary an image needs.
+
+`declared` on the read is the posture in words, one phrase per constraint
+beyond the default. It is the same list an environment's condition names when
+a workload cannot start under it: a container the kubelet refuses — an image
+that would run as root under `runAsNonRoot` — reports
+`WorkloadAvailable=False` with reason `ContainerRefused` and the kubelet's own
+sentence, and one that starts and exits repeatedly under a declared posture
+reports `RestartingUnderPosture`. Neither is left as a `CrashLoopBackOff` with
+the cause three layers down.
+
+The posture is snapshotted into every release, so a rollback restores the one
+that release ran under, and it can equally be declared in the repository —
+see [kitchen.json](../CONFIG.md), where the commit that makes an image able to
+run read-only is the commit that says so.
+
 `processes` is what the project runs *besides* its web process — its queue
 workers and its scheduled jobs, which share the release's image and
 environment and are started with another command. It belongs on this route

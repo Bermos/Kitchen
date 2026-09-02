@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -392,6 +393,47 @@ func TestRuntimeOverlaysOnlyWhatTheFileNames(t *testing.T) {
 	// And the project's own object was not edited underneath it.
 	if base.Port != 8080 {
 		t.Errorf("the base runtime was mutated: %+v", base)
+	}
+}
+
+// The commit that makes an image able to run read only is the commit that
+// should say so, which is why the posture is a key of the file as well as a
+// field of the settings.
+func TestTheFileDeclaresTheSecurityPosture(t *testing.T) {
+	config, err := Parse([]byte(`{"runtime": {"security": {
+	  "runAsNonRoot": true, "runAsUser": 1001, "readOnlyRootFilesystem": true,
+	  "dropCapabilities": ["all"]
+	}}}`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	security := config.Runtime.Security
+	if security == nil || !security.RunAsNonRoot || security.RunAsUser != 1001 {
+		t.Fatalf("the posture did not survive the file: %+v", config.Runtime)
+	}
+	if !security.DropsAll() {
+		t.Fatalf("the capability list is not the kernel's spelling: %v", security.DropCapabilities)
+	}
+	if !slices.Contains(config.Declares(), "runtime.security") {
+		t.Errorf("the file does not report that it declared the posture: %v", config.Declares())
+	}
+
+	merged, err := Runtime(kitchenv1alpha1.RuntimeSpec{Port: 8080}, config)
+	if err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+	if merged.Security == nil || !merged.Security.ReadOnlyRootFilesystem || merged.Port != 8080 {
+		t.Fatalf("the file's posture did not reach the runtime: %+v", merged)
+	}
+
+	// A posture that asks for nothing is no posture: the platform's default
+	// is what an absent block already means.
+	empty, err := Parse([]byte(`{"runtime": {"security": {}}}`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if empty.Runtime.Security != nil {
+		t.Errorf("an empty posture should be no posture: %+v", empty.Runtime.Security)
 	}
 }
 

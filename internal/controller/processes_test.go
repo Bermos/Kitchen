@@ -596,3 +596,33 @@ func TestProcessPodSpecProbes(t *testing.T) {
 		})
 	}
 }
+
+// A worker and a scheduled run are the project's image started with another
+// command, so they run under the project's posture too — a declaration that
+// reached only the web process would describe a third of what a project
+// ships.
+func TestProcessPodSpecCarriesTheProjectsSecurityPosture(t *testing.T) {
+	release := &kitchenv1alpha1.Release{Spec: kitchenv1alpha1.ReleaseSpec{
+		Image: "registry.example.com/app@sha256:abc",
+		ConfigSnapshot: kitchenv1alpha1.ConfigSnapshot{
+			Runtime: kitchenv1alpha1.RuntimeSpec{Security: &kitchenv1alpha1.SecuritySpec{
+				RunAsNonRoot:           true,
+				ReadOnlyRootFilesystem: true,
+			}},
+		},
+	}}
+	project := &kitchenv1alpha1.Project{Spec: kitchenv1alpha1.ProjectSpec{
+		Registry: kitchenv1alpha1.RegistrySpec{ConnectionRef: kitchenv1alpha1.LocalObjectReference{Name: "harbor"}},
+	}}
+
+	spec := processPodSpec(release, project,
+		nil, kitchenv1alpha1.ProcessSpec{Name: "worker", Type: kitchenv1alpha1.ProcessWorker}, nil)
+
+	if spec.SecurityContext == nil || spec.SecurityContext.RunAsNonRoot == nil || !*spec.SecurityContext.RunAsNonRoot {
+		t.Fatalf("the posture did not reach the worker's pod: %+v", spec.SecurityContext)
+	}
+	container := spec.Containers[0].SecurityContext
+	if container == nil || container.ReadOnlyRootFilesystem == nil || !*container.ReadOnlyRootFilesystem {
+		t.Fatalf("the posture did not reach the worker's container: %+v", container)
+	}
+}

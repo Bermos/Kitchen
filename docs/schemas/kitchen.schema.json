@@ -83,7 +83,8 @@
             }
           }
         },
-        "health": { "$ref": "#/$defs/health" }
+        "health": { "$ref": "#/$defs/health" },
+        "security": { "$ref": "#/$defs/security" }
       }
     },
     "env": {
@@ -106,6 +107,41 @@
     }
   },
   "$defs": {
+    "security": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "The security posture every workload of this project runs under — the web process, its workers and its scheduled runs, since they are one image. An empty object is the platform's default, which every workload gets anyway: the runtime's own seccomp profile, and no privilege escalation. Everything else here is a tightening the application asks for, because an image that writes to its own filesystem or runs as root is ordinary and the platform will not break one silently.",
+      "properties": {
+        "runAsNonRoot": {
+          "type": "boolean",
+          "description": "Refuse to start a container whose image would run as uid 0. The kubelet checks it before the container starts, so the failure names the constraint instead of appearing three layers down."
+        },
+        "runAsUser": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "The uid the containers run as, overriding the image's. 0 is the image's own user left alone, not a request to run as root."
+        },
+        "runAsGroup": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "The gid the containers run as. 0 is the image's own, as for runAsUser."
+        },
+        "readOnlyRootFilesystem": {
+          "type": "boolean",
+          "description": "Mount the container's own filesystem read only. An application that writes to a path it did not declare fails on the write rather than on the next node it lands on."
+        },
+        "allowPrivilegeEscalation": {
+          "type": "boolean",
+          "description": "Put back the one default the platform tightens: left alone, no process in the container can gain more privileges than its parent. Set it for an image that legitimately needs a setuid binary."
+        },
+        "dropCapabilities": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Linux capabilities taken away, in the kernel's spelling without the CAP_ prefix — or the single entry ALL. There is no list to add one back: the platform drops none by default.",
+          "examples": [["ALL"], ["NET_RAW", "SYS_ADMIN"]]
+        }
+      }
+    },
     "health": {
       "type": "object",
       "additionalProperties": false,

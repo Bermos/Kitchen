@@ -93,6 +93,38 @@ export interface HealthSettings {
   startupFailureThreshold?: number;
 }
 
+/** The security posture a project's workloads run under, resolved: what they
+ * actually run with, not only what the project asked for. `declared` is the
+ * posture in words — one phrase per constraint beyond the platform's default,
+ * empty for a project that declared none — and it is the same list an
+ * environment's condition names when a workload cannot start under it. */
+export interface Security {
+  runAsNonRoot: boolean;
+  /** Absent when the image's own ids are used, which is not the same as
+   * running as uid 0 and must not read like it. */
+  runAsUser?: number;
+  runAsGroup?: number;
+  readOnlyRootFilesystem: boolean;
+  allowPrivilegeEscalation: boolean;
+  dropCapabilities?: string[];
+  /** The platform's, and not settable: the container runtime's own profile,
+   * which Kubernetes does not apply unless asked. */
+  seccompProfile: string;
+  declared?: string[];
+}
+
+/** A security posture as a settings PATCH carries it. Every field is optional
+ * and 0 or false is the platform's default, so sending `{}` takes a declared
+ * posture back off. */
+export interface SecuritySettings {
+  runAsNonRoot?: boolean;
+  runAsUser?: number;
+  runAsGroup?: number;
+  readOnlyRootFilesystem?: boolean;
+  allowPrivilegeEscalation?: boolean;
+  dropCapabilities?: string[];
+}
+
 export interface Project {
   name: string;
   /** The calling account's role on this project: "admin", "developer" or
@@ -121,6 +153,10 @@ export interface Project {
   memory?: string;
   /** What the platform checks the application with. Always present. */
   health?: Health;
+  /** The posture the project's workloads run under, resolved. Always
+   * present: every workload runs under one, so a project that declared
+   * nothing is reported with the platform's rather than with nothing. */
+  security?: Security;
   /** What the application is started with, in exec form — a list of words,
    * never a shell line. Absent means the image's own entrypoint. */
   command?: string[];
@@ -226,6 +262,9 @@ export interface ProjectSettings {
   /** Replace the health check the platform probes with. `{}` restores the
    * default one. */
   health?: HealthSettings;
+  /** Replace the security posture every workload of the project runs under.
+   * `{}` takes a declared one back off, restoring the platform's default. */
+  security?: SecuritySettings;
   /** Replace what the application is started with. Each replaces its whole
    * list and `[]` clears it — an application started with no arguments,
    * where leaving the field out keeps whatever it had. */

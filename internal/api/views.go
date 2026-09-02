@@ -132,6 +132,11 @@ type projectView struct {
 	// a project that declared nothing is reported with the default check
 	// rather than with nothing, which would read as "not checked".
 	Health *healthView `json:"health,omitempty"`
+	// Security is the posture the project's workloads run under, resolved,
+	// and always present for the same reason the health check is: every
+	// workload runs under one, so a project that declared nothing is
+	// reported with the platform's rather than with nothing.
+	Security *securityView `json:"security,omitempty"`
 	// Command and Args are what the application is started with, in exec
 	// form; absent means the image's own entrypoint. PreviewArgs is what a
 	// preview runs instead of Args — the sibling of an environment
@@ -193,6 +198,7 @@ func newProjectView(project *kitchenv1alpha1.Project, role access.ProjectRole) p
 		CreatedAt:          project.CreationTimestamp.Time,
 		Conditions:         conditionViews(project.Status.Conditions),
 		Health:             newHealthView(project.Spec.Runtime.Health),
+		Security:           newSecurityView(project.Spec.Runtime.Security),
 		Command:            project.Spec.Runtime.Command,
 		Args:               project.Spec.Runtime.Args,
 		PreviewArgs:        project.Spec.Runtime.PreviewArgs,

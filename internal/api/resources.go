@@ -363,6 +363,12 @@ type patchProjectRequest struct {
 	// sending `{}` restores the default one, which is a TCP connect to the
 	// container's port — every environment is probed either way.
 	Health *healthRequest `json:"health,omitempty"`
+	// Security is the posture every workload of this project runs under —
+	// the web process, its workers and its scheduled runs, since they are
+	// one image. Sending it replaces the whole posture; sending `{}` takes
+	// it back off, restoring the platform's default, which every workload
+	// runs under either way.
+	Security *securityRequest `json:"security,omitempty"`
 	// Command replaces the image's entrypoint and Args its arguments, in
 	// exec form: a list of words, never a shell line. PreviewArgs replaces
 	// Args in preview environments, the way an environment variable's
@@ -715,6 +721,13 @@ func applyProjectBuildAndRuntime(project *kitchenv1alpha1.Project, body patchPro
 			return err
 		}
 		project.Spec.Runtime.Health = health
+	}
+	if body.Security != nil {
+		security, err := securityFromRequest(*body.Security, "security")
+		if err != nil {
+			return err
+		}
+		project.Spec.Runtime.Security = security
 	}
 	// Exec form throughout, so nothing here is split, quoted or handed to a
 	// shell: the words arrive as words and reach the container as words.
