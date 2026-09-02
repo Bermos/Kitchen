@@ -76,6 +76,17 @@ export function providerGuidance(provider: string, apiUrl?: string): ProviderGui
         permissions: ["A personal or organization API key from the Neon console."],
         link: { href: "https://console.neon.tech/app/settings/api-keys", label: "API keys in the Neon console" },
       };
+    case "inngest":
+      return {
+        tokenLabel: "API key",
+        purpose:
+          "Kitchen reads each Inngest environment's signing key and event key into a claim's binding, creates a branch environment per preview and archives it when the pull request closes. It creates no keys — the Inngest API cannot — and never reads them back to anyone.",
+        permissions: [
+          "An Inngest API key (sk-inn-api-…), created by an organization admin. Leave it unscoped, or scoped to the environment claims will bind: a key scoped to one environment reads nothing in the others, and previews need the branch environments.",
+          "The account's connect cap is Inngest's, not the key's: 3 concurrent worker connections on the free plan, 20 on paid, 10 apps per connection. Every environment of a project holding a connect worker is one.",
+        ],
+        link: { href: "https://app.inngest.com/settings/api-keys", label: "API keys in the Inngest dashboard" },
+      };
     case "cnpg":
       return {
         tokenLabel: "No credential",

@@ -6,14 +6,15 @@ import { callerFor } from "../lib/me";
 import { may } from "../lib/policy";
 
 // The create flow for resource claims: ask for something the project needs
-// and let the platform provision it. Three kinds today — a database from a
+// and let the platform provision it. Five kinds today — a database from a
 // database-capable connection, a bucket from an object store, an OAuth client
-// from the platform's own identity provider, and a persistent volume mounted
-// into one of the project's processes. The binding credentials of the first
-// three stay in the cluster: the reconciler writes them into a secret the
-// project's env vars reference, and nothing here ever sees them. The volume
-// produces a mount rather than a credential, and the one thing it has to say
-// up front is what it costs the process that mounts it.
+// from the platform's own identity provider, a persistent volume mounted into
+// one of the project's processes, and durable background work from an Inngest
+// account behind a connection. The binding credentials stay in the cluster in
+// every case: the reconciler writes them into a secret the project's env vars
+// reference, and nothing here ever sees them. The volume is the exception —
+// it produces a mount rather than a credential, and the one thing it has to
+// say up front is what it costs the process that mounts it.
 
 const props = defineProps<{
   project: string;
@@ -47,12 +48,17 @@ const dataClassOptions = [
 // a connection somebody configured; an OAuth client comes from the identity
 // provider the platform already runs; a volume comes from the cluster's own
 // storage — which is why the last two ask for no connection.
+// The four things the platform provisions. A database, a bucket and an
+// Inngest app come from a connection somebody configured; an OAuth client
+// comes from the identity provider the platform already runs, which is why
+// that one asks for no connection.
 const type = ref("postgres");
 const typeOptions = [
   { label: "postgres — a database from a connection", value: "postgres" },
   { label: "objectStore — a bucket from a connection", value: "objectStore" },
   { label: "oidcClient — single sign-on from the platform", value: "oidcClient" },
   { label: "volume — a persistent disk mounted into one process", value: "volume" },
+  { label: "inngest — durable background work from Inngest Cloud", value: "inngest" },
 ];
 const isOIDC = computed(() => type.value === "oidcClient");
 const isPostgres = computed(() => type.value === "postgres");
@@ -78,6 +84,25 @@ function objectStoreRequest() {
   return Object.keys(block).length ? block : undefined;
 }
 const isVolume = computed(() => type.value === "volume");
+
+const isInngest = computed(() => type.value === "inngest");
+
+// The inngest half. The app ID is the one thing the application has to
+// match — its Inngest client is created with it — and the environment is
+// where production's events go; previews get a branch environment each
+// whatever is written here. Connect is the only mode, and it is not asked.
+const inngestApp = ref("");
+const inngestEnvironment = ref("");
+
+/** The inngest block as the API takes it, or nothing when every default is
+ * taken. */
+function inngestRequest() {
+  const inngest = {
+    ...(inngestApp.value.trim() ? { app: inngestApp.value.trim() } : {}),
+    ...(inngestEnvironment.value.trim() ? { environment: inngestEnvironment.value.trim() } : {}),
+  };
+  return Object.keys(inngest).length ? inngest : undefined;
+}
 
 // The oidcClient half. All three are lists typed as free text, because all
 // three are usually left alone: the defaults are what the help text says, and
@@ -242,6 +267,15 @@ async function loadConnections() {
     connectionsLoaded.value = true;
   }
 }
+// The choices are re-read against the capability whenever the type moves —
+// a connection that provisions databases is the wrong one for an Inngest app,
+// and says so — and a connection that has just become the wrong one is let
+// go rather than submitted and refused.
+watch(connections, (choices) => {
+  if (connection.value && choices.find((entry) => entry.value === connection.value)?.disabled) {
+    connection.value = "";
+  }
+});
 
 // A connection chosen for one type is not necessarily able to provision the
 // next, so changing the type clears the choice rather than carrying it over.
@@ -275,6 +309,8 @@ watch(open, (value) => {
   volMountPath.value = "";
   volSize.value = "";
   volStorageClass.value = "";
+  inngestApp.value = "";
+  inngestEnvironment.value = "";
   void loadConnections();
   void loadClaimTypes();
 });
@@ -317,6 +353,16 @@ async function save() {
         deletionPolicy: deletionPolicy.value,
         ...(dataClass.value ? { dataClass: dataClass.value } : {}),
       };
+    } else if (isInngest.value) {
+      claim = {
+        name: name.value,
+        project: props.project,
+        connection: connection.value,
+        type: type.value,
+        ...(previewMode.value ? { previewMode: previewMode.value } : {}),
+        ...(inngestRequest() ? { inngest: inngestRequest() } : {}),
+        ...(dataClass.value ? { dataClass: dataClass.value } : {}),
+      };
     } else {
       claim = {
         name: name.value,
@@ -340,6 +386,8 @@ async function save() {
           ? "i-lucide-folder-archive"
           : isVolume.value
             ? "i-lucide-hard-drive"
+          : isInngest.value
+            ? "i-lucide-workflow"
             : "i-lucide-database",
     });
     open.value = false;
@@ -488,7 +536,15 @@ async function save() {
               class="w-full"
             />
           </UFormField>
-          <p v-if="connectionsLoaded && !available.length && isPostgres" class="text-xs text-muted">
+          <p v-if="connectionsLoaded && !available.length && isInngest" class="text-xs text-muted">
+            No connection can reach an Inngest account —
+            <template v-if="managesConnections">
+              create an Inngest Cloud connection first on the Connections page, with an API key from the Inngest
+              dashboard.
+            </template>
+            <template v-else>ask an operator to add an Inngest Cloud connection.</template>
+          </p>
+          <p v-else-if="connectionsLoaded && !available.length && isPostgres" class="text-xs text-muted">
             No connection can provision databases —
             <template v-if="managesConnections">
               create one first on the Connections page — CloudNativePG for a database the platform runs itself and
@@ -509,6 +565,36 @@ async function save() {
               ask an operator to add an S3-compatible connection, or to switch the bundled store on.
             </template>
           </p>
+
+          <template v-if="isInngest">
+            <p class="text-xs text-muted">
+              The claim's secret holds <span class="font-mono">INNGEST_EVENT_KEY</span>,
+              <span class="font-mono">INNGEST_SIGNING_KEY</span>, <span class="font-mono">INNGEST_ENV</span> and
+              <span class="font-mono">INNGEST_BASE_URL</span>, read from the Inngest account — the platform creates
+              no keys, because Inngest's API cannot. The process holding the worker connects out to Inngest with
+              them; in a preview, <span class="font-mono">INNGEST_ENV</span> names a branch environment of the
+              preview's own. Reference them from the project's environment variables.
+            </p>
+            <div class="grid gap-4 sm:grid-cols-2">
+              <UFormField
+                label="App ID"
+                help="The id the application's Inngest client is created with. Empty takes the claim's name."
+              >
+                <UInput v-model="inngestApp" placeholder="shop-worker" class="w-full font-mono" />
+              </UFormField>
+              <UFormField
+                label="Inngest environment"
+                help="Where production's events go: production, or a custom environment from the Inngest dashboard. Previews get branch environments regardless."
+              >
+                <UInput v-model="inngestEnvironment" placeholder="production" class="w-full font-mono" />
+              </UFormField>
+            </div>
+            <p class="text-xs text-muted">
+              Deleting this claim removes the binding and archives the preview branch environments; the app and
+              the keys stay at Inngest. The environment's event key has to exist already — a claim against an
+              environment without one fails saying where to create it.
+            </p>
+          </template>
 
           <UFormField
             label="Previews get"
@@ -606,6 +692,7 @@ async function save() {
           </p>
 
           <UFormField
+            v-if="isPostgres"
             label="On claim deletion"
             :help="`Retain is the default: deleting a claim must not be able to destroy a production ${resourceNoun}. Preview resources are always cleaned up.`"
           >

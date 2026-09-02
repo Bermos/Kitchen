@@ -65,6 +65,12 @@ const (
 	// anyway — and it shares the claim lifecycle (deletionPolicy, preview
 	// teardown, dataClass) and none of the binding-Secret machinery.
 	ClaimTypeVolume = "volume"
+	// ClaimTypeInngest is an Inngest app: durable background work — retries,
+	// sleeps, fan-out, concurrency limits and cron — run by Inngest, with
+	// the application's worker holding an outbound connection to it. The
+	// claim binds the keys a worker connects with, read from the Inngest
+	// account behind a backgroundJobs-capable Connection.
+	ClaimTypeInngest = "inngest"
 )
 
 // ClaimType is what the platform knows about one kind of claim before any
@@ -111,6 +117,13 @@ var ClaimTypes = []ClaimType{
 	{Name: ClaimTypeOIDCClient, Resource: "OAuth client"},
 	{Name: ClaimTypeObjectStore, Capability: CapabilityObjectStore, Resource: "bucket", HoldsData: true},
 	{Name: ClaimTypeVolume, Resource: "volume", HoldsData: true},
+	// An Inngest app holds no data the platform could destroy: event history
+	// and function runs live at Inngest under the account's own retention,
+	// the keys are the account's, and a preview's branch environment is
+	// archived rather than deleted — archiving deletes nothing there. So
+	// deleting the claim always takes back only what the platform put into
+	// the world, and deletionPolicy has nothing to say.
+	{Name: ClaimTypeInngest, Capability: CapabilityBackgroundJobs, Resource: "Inngest app"},
 }
 
 // LookupClaimType finds a claim type by the value of spec.type.
@@ -176,7 +189,7 @@ type ResourceClaimSpec struct {
 	// it on a bound claim would leave a database behind while the
 	// application's environment quietly started reading OAuth credentials
 	// out of the same keys. Ask for the other one and delete this.
-	// +kubebuilder:validation:Enum=postgres;oidcClient;objectStore;volume
+	// +kubebuilder:validation:Enum=postgres;oidcClient;objectStore;volume;inngest
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="type is immutable: delete the claim and ask for the other kind"
 	Type string `json:"type"`
 
@@ -439,6 +452,75 @@ func (c *ResourceClaim) OIDCClient() OIDCClientConfig {
 	return cfg
 }
 
+// InngestConfig is the `inngest` slice of an inngest claim's spec.config:
+// which app the worker connects as, which Inngest environment production
+// binds to, and how the worker reaches Inngest.
+//
+// Everything Inngest needs to know about the functions themselves is in the
+// application: a connect worker syncs its functions when it connects, and
+// the app comes into existence at Inngest the first time one does. So this
+// block names things rather than creating them, and the platform's part is
+// the keys — read from the account the Connection holds, for the named
+// environment and, per preview, for a branch environment of the preview's
+// own.
+type InngestConfig struct {
+	// App is the Inngest app ID the application's client is created with
+	// (`new Inngest({ id })`). It is what the claim's status reports on —
+	// whether that app has connected yet — and it is not something the
+	// platform can set on the application's behalf. Empty takes the claim's
+	// own name.
+	// +optional
+	App string `json:"app,omitempty"`
+
+	// Environment is the Inngest environment production binds to: an
+	// account's `production`, or a custom environment created in the
+	// Inngest dashboard. Preview environments never bind to it — they get
+	// a branch environment each. Empty means production.
+	// +optional
+	Environment string `json:"environment,omitempty"`
+
+	// Mode is how the worker reaches Inngest. `connect` — the only mode the
+	// platform provisions — has the worker hold an outbound WebSocket to
+	// Inngest's gateway, which is what makes a protected preview work and
+	// what stops the project idling. `serve`, where Inngest calls the
+	// application over HTTP, is refused: the call would meet the preview
+	// gate and get a login page, and the sync it needs would have the
+	// platform hand Inngest a URL per deploy. Empty means connect.
+	// +optional
+	Mode string `json:"mode,omitempty"`
+}
+
+// InngestModeConnect is the one mode an inngest claim is provisioned in.
+const InngestModeConnect = "connect"
+
+// InngestDefaultEnvironment is the Inngest environment production binds to
+// when the claim names none.
+const InngestDefaultEnvironment = "production"
+
+// Inngest is the claim's Inngest configuration with the defaults filled in:
+// the claim's own name for the app, production for the environment, connect
+// for the mode. Config the platform cannot read gets the defaults whole,
+// for the same reason OIDCClient does.
+func (c *ResourceClaim) Inngest() InngestConfig {
+	var cfg struct {
+		Inngest *InngestConfig `json:"inngest,omitempty"`
+	}
+	out := InngestConfig{}
+	if c.DecodeConfig(&cfg) && cfg.Inngest != nil {
+		out = *cfg.Inngest
+	}
+	if out.App == "" {
+		out.App = c.Name
+	}
+	if out.Environment == "" {
+		out.Environment = InngestDefaultEnvironment
+	}
+	if out.Mode == "" {
+		out.Mode = InngestModeConnect
+	}
+	return out
+}
+
 // Connection is the Connection the claim provisions through, empty for a
 // claim type that has none.
 func (c *ResourceClaim) Connection() string {
@@ -511,6 +593,9 @@ const (
 // ClaimBranch records one provider-side resource the claim created for a
 // preview Environment — a database branch, a preview's own bucket — and the
 // Secret its binding was written into.
+// ClaimBranch records one provider-side branch the claim created for a
+// preview Environment — a database branch, an Inngest branch environment —
+// and the Secret its binding was written into.
 type ClaimBranch struct {
 	// Environment is the preview Environment the branch belongs to.
 	Environment string `json:"environment"`

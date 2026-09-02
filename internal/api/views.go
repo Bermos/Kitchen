@@ -1172,6 +1172,12 @@ type claimView struct {
 	// answers "unset" to a question it does have an answer to.
 	CallbackPaths []string `json:"callbackPaths,omitempty"`
 	Scopes        []string `json:"scopes,omitempty"`
+
+	// Inngest is what an inngest claim binds — the app the worker connects
+	// as, the Inngest environment production reads, the mode — with the
+	// defaults filled in. Whether a worker has connected yet is the
+	// AppConnected condition.
+	Inngest *claimInngestView `json:"inngest,omitempty"`
 }
 
 // newClaimView is the claim as the API answers it. The fields every type

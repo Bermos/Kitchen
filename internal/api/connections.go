@@ -91,10 +91,11 @@ type patchConnectionRequest struct {
 // tokenProviders take a bare token; the registry is the one provider whose
 // credential is a username and password baked into a dockerconfigjson.
 var tokenProviders = map[string]bool{
-	"github": true,
-	"gitlab": true,
-	"gitea":  true,
-	"neon":   true,
+	"github":  true,
+	"gitlab":  true,
+	"gitea":   true,
+	"neon":    true,
+	"inngest": true,
 }
 
 // knownProviders is every provider the API accepts, credential or not, and
@@ -102,11 +103,13 @@ var tokenProviders = map[string]bool{
 // map above because it stores nothing; s3 takes an access key pair.
 var knownProviders = map[string]bool{
 	"github": true, "gitlab": true, "gitea": true,
-	registryProvider: true, "neon": true, provider.ProviderCNPG: true, objectstore.ProviderS3: true,
+	registryProvider: true, "neon": true, provider.ProviderCNPG: true,
+	objectstore.ProviderS3: true, "inngest": true,
 }
 
 var providerNames = []string{
-	"github", "gitlab", "gitea", registryProvider, "neon", provider.ProviderCNPG, objectstore.ProviderS3,
+	"github", "gitlab", "gitea", registryProvider, "neon", provider.ProviderCNPG,
+	objectstore.ProviderS3, "inngest",
 }
 
 const registryProvider = "dockerRegistry"

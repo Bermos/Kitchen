@@ -408,7 +408,7 @@ kind: Connection
 metadata:
   name: github-main
 spec:
-  provider: github                      # github | gitlab | gitea | dockerRegistry | neon | cnpg | s3
+  provider: github                      # github | gitlab | gitea | dockerRegistry | neon | cnpg | s3 | inngest
   credentialsSecretRef: { name: github-app-creds }   # synced from Infisical
   config:
     appId: "12345"
@@ -440,6 +440,8 @@ the MinIO admin API (the default) or hands every claim the connection's own
 key pair (S3 and R2, which have no such API). The seeded one for the bundled
 store additionally carries `inCluster: true`, which is what refuses a
 publicly readable bucket: there is no public to read it.
+`inngest` (capability `backgroundJobs`) is an Inngest Cloud account an
+`inngest` claim reads its keys from.
 
 **`cnpg` is the one provider with no credential**, and so the one whose
 `credentialsSecretRef` may be left out: it provisions with the operator's own
@@ -1210,6 +1212,12 @@ A project's request for something the platform provisions: a database from a
 OAuth client from the platform's own identity provider, or a persistent volume
 from the cluster's StorageClass. Generic on purpose — this is the plugin
 abstraction.
+OAuth client from the platform's own identity provider, or durable background
+work from a `backgroundJobs`-capable one. Generic on purpose — this is the
+plugin abstraction.
+`database`-capable Connection, an OAuth client from the platform's own
+identity provider, or the keys a worker connects to Inngest with from a
+`backgroundJobs`-capable one. Generic on purpose — this is the plugin abstraction.
 
 ```yaml
 apiVersion: kitchen.bermos.dev/v1alpha1
@@ -1277,6 +1285,28 @@ never needs the right to create them itself. Everything in the block is applied
 when the database is created and is not reapplied to a running one: a major
 version is not something to change under a live Postgres, and asking for a
 different database means asking for a different database.
+
+**`config.inngest` names an Inngest app rather than creating one.** An
+`inngest` claim, through a `backgroundJobs`-capable Connection holding an
+Inngest Cloud API key, binds the keys a connect worker dials Inngest with:
+`INNGEST_EVENT_KEY`, `INNGEST_SIGNING_KEY`, `INNGEST_ENV` and
+`INNGEST_BASE_URL`, read from the account on every reconcile (Inngest's API
+lists keys and mints none, so an environment with no event key is phase
+`Failed` saying where to create one). `app` is the ID the application's
+Inngest client is created with — the app registers itself when the worker
+first connects, and the `AppConnected` condition reports whether one has —
+`environment` is the Inngest environment production binds to (`production`
+by default), and `mode` is `connect`, the only one provisioned: serve mode
+would have Inngest call the application and meet the preview gate. Previews
+each get an Inngest branch environment, found or created by name, bound
+through the account's shared branch keys plus `INNGEST_ENV`, and archived
+(never deleted) with the preview. The type refuses a `deletionPolicy` — an
+app holds no data the platform could destroy — and declares
+`keepsPodsRunning`: the worker's outbound WebSocket never crosses the
+interceptor, so every environment of the project keeps its pods, and the
+`ConnectWorkers` condition counts them against Inngest's per-account cap (3
+worker connections on the free plan, 20 on paid), which the API does not
+expose.
 
 A provider that cannot be asked any of this — a hosted one — refuses the claim
 rather than provisioning it as though the block had not been written down.

@@ -32,6 +32,7 @@ const providers = [
   { label: "Neon", value: "neon" },
   { label: "CloudNativePG — Postgres the platform runs itself", value: "cnpg" },
   { label: "S3-compatible object store — MinIO, AWS S3, Cloudflare R2", value: "s3" },
+  { label: "Inngest Cloud — durable background work", value: "inngest" },
 ];
 
 const name = ref("");

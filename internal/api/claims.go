@@ -38,7 +38,8 @@ import (
 
 // The resource claim write surface: asking a database-capable Connection to
 // provision something for a project, asking the platform's own identity
-// provider for an OAuth client, and taking either request away again. The
+// provider for an OAuth client, asking an Inngest account for the keys a
+// worker connects with, and taking any of those requests away again. The
 // binding credentials the reconciler writes stay in the cluster — the API
 // hands out the claim's status, never the secret's contents.
 
@@ -50,6 +51,10 @@ import (
 // each type's shaper (claims_postgres.go, claims_objectstore.go,
 // claims_oidc.go) says which. Sending a field of another type's is refused
 // rather than ignored.
+// postgres, the three lists to oidcClient, inngest to inngest — and each
+// type's shaper (claims_postgres.go, claims_oidc.go, claims_inngest.go)
+// says which. Sending a field of another type's is refused rather than
+// ignored.
 type createClaimRequest struct {
 	Name       string `json:"name"`
 	Project    string `json:"project"`
@@ -102,6 +107,14 @@ type createClaimRequest struct {
 
 	// Scopes the client may ask for; empty takes the platform's defaults.
 	Scopes []string `json:"scopes,omitempty"`
+
+	// Inngest is what an inngest claim binds: the app ID the worker
+	// connects as (empty takes the claim's name), the Inngest environment
+	// production reads (empty means production), and the mode — connect,
+	// the only one provisioned. Only the shape is checked here; whether the
+	// environment has an event key to read is the provider's answer, and it
+	// lands on the claim as a failure saying where to create one.
+	Inngest *kitchenv1alpha1.InngestConfig `json:"inngest,omitempty"`
 }
 
 func (s *Server) createClaim(w http.ResponseWriter, req *http.Request) {
@@ -290,6 +303,7 @@ var claimShapers = map[string]claimShaper{
 	kitchenv1alpha1.ClaimTypeOIDCClient:  oidcClaimShaper{},
 	kitchenv1alpha1.ClaimTypeObjectStore: objectStoreClaimShaper{},
 	kitchenv1alpha1.ClaimTypeVolume:      volumeClaimShaper{},
+	kitchenv1alpha1.ClaimTypeInngest:     inngestClaimShaper{},
 }
 
 // claimShaperFor resolves a request's type to the table's row and the API's

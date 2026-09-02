@@ -91,6 +91,8 @@ func sampleField(name string) string {
 		return `"objectStore": {"versioning": true}`
 	case kitchenv1alpha1.ClaimTypeVolume:
 		return `"volume": {"process": "web", "size": "1Gi", "mountPath": "/data"}`
+	case kitchenv1alpha1.ClaimTypeInngest:
+		return `"inngest": {"app": "shop-worker"}`
 	case "callbackPaths":
 		return `"callbackPaths": ["/auth/callback"]`
 	case "redirectURIs":

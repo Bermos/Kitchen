@@ -1647,6 +1647,7 @@ spec:
                 - neon
                 - cnpg
                 - s3
+                - inngest
                 type: string
             required:
             - provider
@@ -1689,6 +1690,7 @@ spec:
                   - imageStore
                   - database
                   - objectStore
+                  - backgroundJobs
                   type: string
                 type: array
               conditions:
@@ -7276,6 +7278,7 @@ spec:
                 - oidcClient
                 - objectStore
                 - volume
+                - inngest
                 type: string
                 x-kubernetes-validations:
                 - message: 'type is immutable: delete the claim and ask for the other
@@ -7312,6 +7315,9 @@ spec:
                     ClaimBranch records one provider-side resource the claim created for a
                     preview Environment — a database branch, a preview's own bucket — and the
                     Secret its binding was written into.
+                    ClaimBranch records one provider-side branch the claim created for a
+                    preview Environment — a database branch, an Inngest branch environment —
+                    and the Secret its binding was written into.
                   properties:
                     environment:
                       description: Environment is the preview Environment the branch
