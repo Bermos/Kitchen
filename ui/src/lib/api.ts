@@ -2785,6 +2785,50 @@ export interface BackupAccounts {
 }
 
 /** What an export would carry, and what it deliberately would not. */
+// One platform dependency the operator can install, as the catalogue lists it
+// and the cluster answers for it.
+//
+// `permitted` and `requested` are two different questions and the screen keeps
+// them apart: the chart grants the install account, and the addon asks for the
+// install. An entry that is not permitted is still shown, with the one value
+// that would permit it — knowing what the platform *could* run is what the
+// screen is open for.
+export interface Addon {
+  id: string;
+  title: string;
+  summary: string;
+  charts: { name: string; version: string }[];
+  defaultNamespace: string;
+  dependsOn?: string[];
+  blastRadius: string;
+  permitted: boolean;
+  chartValue: string;
+  clusterAdmin: boolean;
+  grantBecause: string;
+  requested?: boolean;
+  serving: boolean;
+  managed: boolean;
+  namespace?: string;
+  installed?: { name: string; version: string }[];
+  conditions?: Condition[];
+}
+
+// What a request may say about an addon, which is an entry and a namespace and
+// nothing else: the catalogue is compiled into the operator, because the
+// install job can apply CRDs and ClusterRoles.
+export interface AddonWrite {
+  id?: string;
+  install?: boolean;
+  namespace?: string;
+}
+
+export interface AddonDeletion {
+  name: string;
+  managed: boolean;
+  blastRadius: string;
+  message: string;
+}
+
 export interface Backup {
   platformVersion: string;
   clusterName?: string;
@@ -3441,6 +3485,15 @@ export const api = {
   // What an export would carry. Taking one is downloadBackup, which answers a
   // gzip stream rather than JSON and so cannot live in this table.
   backup: () => request<Backup>("GET", "/platform/backup"),
+
+  // The platform's own dependencies. The list is the catalogue rather than
+  // the objects: an entry nobody has asked for has no addon, and that is the
+  // row somebody came to the screen to click.
+  addons: () => request<{ items: Addon[] }>("GET", "/addons"),
+  createAddon: (body: AddonWrite) => request<Addon>("POST", "/addons", body),
+  updateAddon: (id: string, body: AddonWrite) => request<Addon>("PATCH", `/addons/${encodeURIComponent(id)}`, body),
+  deleteAddon: (id: string) =>
+    request<AddonDeletion>("DELETE", `/addons/${encodeURIComponent(id)}`),
 
   compliance: () => request<Compliance>("GET", "/compliance"),
   complianceInventory: () => request<ComplianceInventory>("GET", "/compliance/inventory"),

@@ -117,13 +117,13 @@ var _ = Describe("Release Controller", func() {
 			ObjectMeta: metav1.ObjectMeta{Name: PlatformNamespace},
 		}))).To(Succeed())
 
-		Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, &kitchenv1alpha1.Kitchen{
+		ensureSingleton(ctx, &kitchenv1alpha1.Kitchen{
 			ObjectMeta: metav1.ObjectMeta{Name: KitchenSingletonName},
 			Spec: kitchenv1alpha1.KitchenSpec{
 				BaseDomain: "apps.example.com",
 				TLS:        acmeTLS(),
 			},
-		}))).To(Succeed())
+		})
 		// Every spec sets the count it needs, so a leftover from the previous
 		// one is never inherited.
 		setRetention(0)

@@ -95,33 +95,31 @@ spec:
             - --self-update-allow-minor={{ .Values.selfUpdate.allowMinor }}
             {{- end }}
             {{- if .Values.scaleToZero.install.enabled }}
-            # Whether the operator *may* install KEDA is the chart's to say,
-            # because the account is the chart's to create — and it is a flag
-            # for the same reason self-update's are. Whether it *does* is
-            # spec.scaleToZero.install on the singleton.
-            - --keda-install-service-account={{ include "kitchen.kedaInstallServiceAccountName" . }}
-            - --keda-install-image={{ .Values.scaleToZero.install.image.repository }}:{{ .Values.scaleToZero.install.image.tag }}
-            - --keda-chart-repository={{ .Values.scaleToZero.install.chartRepository }}
+            # Whether the operator *may* install an addon is the chart's to
+            # say, because the account is the chart's to create — and it is a
+            # flag for the same reason self-update's are. Whether it *does* is
+            # spec.install on the Addon of that name, which the operator seeds
+            # rather than this chart rendering: a chart cannot apply a custom
+            # resource whose CRD arrives in the same release.
+            - --addon-service-account=keda={{ include "kitchen.kedaInstallServiceAccountName" . }}
+            - --addon-chart-repository=keda={{ .Values.scaleToZero.install.chartRepository }}
             {{- with .Values.scaleToZero.install.version }}
-            - --keda-chart-version={{ . }}
+            - --addon-chart-version=keda/keda={{ . }}
             {{- end }}
             {{- with .Values.scaleToZero.install.addOnVersion }}
-            - --keda-http-chart-version={{ . }}
+            - --addon-chart-version=keda/keda-add-ons-http={{ . }}
             {{- end }}
-            - --keda-install-timeout={{ .Values.scaleToZero.install.timeout }}
+            - --addon-install-image=keda={{ .Values.scaleToZero.install.image.repository }}:{{ .Values.scaleToZero.install.image.tag }}
+            - --addon-install-timeout=keda={{ .Values.scaleToZero.install.timeout }}
             {{- end }}
             {{- if .Values.databases.install.enabled }}
-            # Whether the operator *may* install CloudNativePG is the chart's
-            # to say, because the account is the chart's to create — and it is
-            # a flag for the same reason self-update's are. Whether it *does*
-            # is spec.databases.install on the singleton.
-            - --cnpg-install-service-account={{ include "kitchen.cnpgInstallServiceAccountName" . }}
-            - --cnpg-install-image={{ .Values.databases.install.image.repository }}:{{ .Values.databases.install.image.tag }}
-            - --cnpg-chart-repository={{ .Values.databases.install.chartRepository }}
+            - --addon-service-account=cloudnative-pg={{ include "kitchen.cnpgInstallServiceAccountName" . }}
+            - --addon-chart-repository=cloudnative-pg={{ .Values.databases.install.chartRepository }}
             {{- with .Values.databases.install.version }}
-            - --cnpg-chart-version={{ . }}
+            - --addon-chart-version=cloudnative-pg/cloudnative-pg={{ . }}
             {{- end }}
-            - --cnpg-install-timeout={{ .Values.databases.install.timeout }}
+            - --addon-install-image=cloudnative-pg={{ .Values.databases.install.image.repository }}:{{ .Values.databases.install.image.tag }}
+            - --addon-install-timeout=cloudnative-pg={{ .Values.databases.install.timeout }}
             {{- end }}
             {{- with .Values.extraArgs }}
             {{- toYaml . | nindent 12 }}

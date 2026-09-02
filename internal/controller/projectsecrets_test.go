@@ -98,7 +98,7 @@ var _ = Describe("Project secrets", func() {
 			ObjectMeta: metav1.ObjectMeta{Name: KitchenSingletonName},
 			Spec:       kitchenv1alpha1.KitchenSpec{BaseDomain: "apps.example.com", TLS: acmeTLS()},
 		}
-		Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, kitchen))).To(Succeed())
+		ensureSingleton(ctx, kitchen)
 
 		project := &kitchenv1alpha1.Project{
 			ObjectMeta: metav1.ObjectMeta{Name: projectName, Namespace: namespace},

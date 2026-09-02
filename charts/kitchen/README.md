@@ -968,7 +968,10 @@ cannot express inside one release but a controller can simply do. The versions
 are pinned by the operator, not floated, so the pair that goes in is the pair
 that release was tested with; `scaleToZero.install.version` and
 `.addOnVersion` override them, and `.chartRepository` points at a mirror for a
-cluster that cannot reach `kedacore.github.io`.
+cluster that cannot reach `kedacore.github.io`. Which entries the operator can
+install at all is a catalogue compiled into it: an addon names an entry and a
+namespace, never a chart, because its install job can apply CRDs and
+ClusterRoles.
 
 It is off by default because the job is bound to **cluster-admin** — installing
 KEDA applies CRDs, ClusterRoles and a namespace — so `install.enabled` creates
@@ -977,18 +980,21 @@ does. The grant is one object, revocable by turning the value off, and gone
 when the release is. Nothing from an API request ever reaches that job's
 command line: the operator builds it from its own configuration.
 
-Progress and outcome are on the singleton:
+The value is the *grant* — "the operator may hold an account that can install
+this" — and the operator then seeds a `keda` **Addon**, which is the *request*.
+Both are required, and either can be withdrawn on its own; an Addon somebody
+deletes stays deleted.
+
+Progress and outcome are on that Addon, and read on **Platform → Addons**:
 
 ```sh
-kubectl get kitchen default \
-  -o jsonpath='{.status.conditions[?(@.type=="ScaleToZeroReady")].message}'
-kubectl get kitchen default -o jsonpath='{.status.scaleToZero}'
+kitchen api GET /addons/keda
 ```
 
-`status.scaleToZero.managed` is the important half: `true` where the platform
-installed KEDA and may upgrade it, absent or `false` where it found KEDA
-already there and will never write to it. See [On a cluster that already runs
-KEDA](#on-a-cluster-that-already-runs-keda).
+`managed` is the important half: `true` where the platform installed KEDA and
+may upgrade it, `false` where it found KEDA already there and will never write
+to it. The singleton keeps a `ScaleToZeroReady` roll-up of the same verdict.
+See [On a cluster that already runs KEDA](#on-a-cluster-that-already-runs-keda).
 
 ### Installing them yourself
 
@@ -1173,35 +1179,37 @@ same grant, as `scaleToZero.install`:
 --set databases.install.enabled=true
 ```
 
-That creates a ServiceAccount bound to **cluster-admin** and sets
-`spec.databases.install` on the Kitchen object. The account is separate from
-the manager's so the grant is one visible object, revocable by setting the
-value back to false and removed with the release; the operator can only ever
-use it to run the one `helm upgrade --install` that
-`internal/controller/cnpg.go` builds, whose argv nothing from a request reaches.
-The chart version is pinned in the operator rather than floated, next to the
+That creates a ServiceAccount bound to **cluster-admin**, and the operator
+seeds a `cloudnative-pg` **Addon** asking for the install. The value is the
+*grant* — "the operator may hold an account that can install this" — and the
+Addon is the *request*; both are required, and either can be withdrawn on its
+own. The account is separate from the manager's so the grant is one visible
+object, revocable by setting the value back to false and removed with the
+release; the operator can only ever use it to run the one
+`helm upgrade --install` that `internal/controller/addon_controller.go` builds
+from the compiled catalogue, whose argv nothing from a request reaches. The
+chart version is pinned in the operator rather than floated, next to the
 catalogue of Postgres images a claim's extensions are promised from — the two
 move together.
 
 **On a cluster that already runs CloudNativePG this does nothing at all.** The
-operator records `status.databases.managed: false` and never writes to a
+Addon records `status.managed: false` and the operator never writes to a
 release it does not own — which is the same rule KEDA gets, with one difference
 worth knowing: what the record decides is who may *upgrade* CloudNativePG, not
 who may use it. Claims provision into it just the same.
 
-```sh
-kubectl get kitchen default -o jsonpath='{.status.databases}'
-```
+The addons screen under **Platform → Addons** is where all of this is read and
+changed; `GET /api/v1/addons` is the same answer for a terminal.
 
 ### Where the databases live, and what deleting one means
 
 `databases.namespace` (default `kitchen-databases`) is where the provisioned
 databases go. It is deliberately not a project's own namespace: deleting a
 project deletes that one, and a claim under `deletionPolicy: Retain` has to
-survive exactly that. `databases.operatorNamespace` (default `cnpg-system`) is
-where CloudNativePG itself runs — upstream's own default, so an installation
-that later takes it over by hand finds it where the CloudNativePG documentation
-says it will be.
+survive exactly that. Where CloudNativePG itself runs is the Addon's
+`spec.namespace`, defaulting to upstream's own `cnpg-system`, so an
+installation that later takes it over by hand finds it where the CloudNativePG
+documentation says it will be.
 
 Deleting a claim under `Delete` deletes the database and CloudNativePG collects
 its volume with it. Under `Retain` — the default — the database stays where it
@@ -1770,7 +1778,6 @@ kubectl delete namespace kitchen-system
 | `scaleToZero.interceptor.namespace` | `keda` | Namespace the HTTP add-on was installed into. |
 | `scaleToZero.interceptor.port` | `8080` | Port the interceptor accepts traffic on. |
 | `databases.namespace` | `kitchen-databases` | Namespace provisioned databases live in. Not a project's own, so a `Retain`ed database survives the project's deletion. |
-| `databases.operatorNamespace` | `cnpg-system` | Namespace CloudNativePG itself runs in — where the install goes, and where an existing one is expected. |
 | `databases.install.enabled` | `false` | Let the operator install CloudNativePG itself. Creates a ServiceAccount bound to cluster-admin; does nothing on a cluster that already runs it. |
 | `databases.install.chartRepository` | `https://cloudnative-pg.github.io/charts` | Helm repository the chart is pulled from. |
 | `databases.install.version` | `""` | CloudNativePG chart version to install. Empty takes the operator's own pin. |

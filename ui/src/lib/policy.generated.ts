@@ -160,6 +160,11 @@ export type Route =
   | "POST /api/v1/updates"
   | "GET /api/v1/updates/{name}"
   | "GET /api/v1/updates/{name}/logs"
+  | "GET /api/v1/addons"
+  | "POST /api/v1/addons"
+  | "GET /api/v1/addons/{name}"
+  | "PATCH /api/v1/addons/{name}"
+  | "DELETE /api/v1/addons/{name}"
   | "GET /api/v1/connections"
   | "GET /api/v1/connections/{name}/repositories"
   | "POST /api/v1/connections/{name}/detect"
@@ -290,6 +295,11 @@ export const POLICY: Readonly<Record<Route, Requirement>> = {
   "POST /api/v1/updates": { kind: "operator", doing: "upgrading the platform" },
   "GET /api/v1/updates/{name}": { kind: "operator", doing: "reading a platform update" },
   "GET /api/v1/updates/{name}/logs": { kind: "operator", doing: "reading a platform update's logs" },
+  "GET /api/v1/addons": { kind: "operator", doing: "reading the platform's addons" },
+  "POST /api/v1/addons": { kind: "operator", doing: "asking the platform for an addon" },
+  "GET /api/v1/addons/{name}": { kind: "operator", doing: "reading an addon" },
+  "PATCH /api/v1/addons/{name}": { kind: "operator", doing: "changing an addon" },
+  "DELETE /api/v1/addons/{name}": { kind: "operator", doing: "removing an addon" },
   "GET /api/v1/connections": { kind: "roleShapedBody", doing: "choosing a connection" },
   "GET /api/v1/connections/{name}/repositories": { kind: "authenticated" },
   "POST /api/v1/connections/{name}/detect": { kind: "authenticated" },

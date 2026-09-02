@@ -50,6 +50,7 @@ const STANDALONE = new Set(["LoginView.vue", "AuthCallbackView.vue", "NotFoundVi
  */
 const OPERATOR_VIEWS = new Set([
   "PlatformView.vue",
+  "PlatformAddonsView.vue",
   "PlatformNodesView.vue",
   "PlatformWorkloadsView.vue",
   "PlatformEdgeView.vue",

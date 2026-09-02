@@ -152,12 +152,12 @@ spec:
   scaleToZero:
     enabled: {{ .Values.scaleToZero.enabled }}
     {{- if .Values.scaleToZero.enabled }}
-    # Whether the operator puts KEDA and the add-on in the cluster itself. The
-    # chart cannot: Helm validates a release's whole manifest before applying
-    # any of it, so the add-on's ScaledObject never resolves against a CRD
-    # arriving in the same release. The operator installs one release, waits,
-    # then installs the other — and adopts an existing KEDA untouched.
-    install: {{ .Values.scaleToZero.install.enabled }}
+    # Whether the operator puts KEDA and the add-on in the cluster itself is
+    # not here: it is spec.install on the `keda` Addon, which the operator
+    # seeds from what this chart granted. A chart cannot apply a custom
+    # resource whose CRD arrives in the same release, and this document is a
+    # post-install hook for exactly that reason — rendering the Addon here
+    # would inherit the trap whole.
     # An idling environment has no pods to route to, so its URL points at the
     # add-on's interceptor instead: it holds the first request, asks KEDA to
     # scale the workload back up, and forwards it once a pod answers. The
@@ -168,15 +168,11 @@ spec:
       port: {{ int .Values.scaleToZero.interceptor.port }}
     {{- end }}
   databases:
-    # Where a provisioned database lives, and whether the operator installs
-    # CloudNativePG when this cluster runs none. The chart cannot install it —
-    # it ships CRDs and a webhook of its own, and Helm will not adopt a release
-    # another one owns — and the operator is under no such constraint. Where
-    # CloudNativePG is already serving, the platform records that it installed
-    # nothing and provisions into it just the same.
-    install: {{ .Values.databases.install.enabled }}
+    # Where a provisioned database lives. Whether the operator installs
+    # CloudNativePG, and where that operator runs, is the `cloudnative-pg`
+    # Addon — seeded by the operator rather than rendered here, for the reason
+    # above.
     namespace: {{ .Values.databases.namespace | quote }}
-    operatorNamespace: {{ .Values.databases.operatorNamespace | quote }}
   compliance:
     # The audit log and the artifact attestations. Both are the operator's own
     # word about what it did, which is why they are configured here and not

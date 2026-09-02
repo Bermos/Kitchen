@@ -134,17 +134,10 @@ type KitchenReconciler struct {
 	// explanatory half of its message.
 	APIReader client.Reader
 
-	// KedaInstall is what the chart said about installing the platform's own
-	// scale-to-zero dependencies. A zero value means the installation granted
-	// no account to install with, and spec.scaleToZero.install says so on the
-	// singleton rather than failing quietly.
-	KedaInstall KedaInstallConfig
-
-	// CNPGInstall is what the chart said about installing the platform's own
-	// database operator. A zero value means the installation granted no
-	// account to install with, and spec.databases.install says so on the
-	// singleton rather than failing quietly.
-	CNPGInstall CNPGInstallConfig
+	// Addons is what the chart permitted the operator to install, by
+	// catalogue entry. It is read here only to decide which entries to seed
+	// an Addon for; installing them is AddonReconciler's.
+	Addons AddonInstalls
 
 	// Audit is the platform's audit recorder, read here for the sequence
 	// number the platform publishes as the chain's external anchor. This
@@ -217,6 +210,10 @@ func (r *KitchenReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	registryReady := r.reconcileRegistry(ctx, kitchen, setCond)
 	objectStoreReady := r.reconcileObjectStore(ctx, kitchen, setCond)
 	accessReady := r.reconcileAccess(ctx, kitchen, setCond)
+	seeded, err := r.seedAddons(ctx, kitchen)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
 	idlingReady := r.reconcileKeda(ctx, kitchen, setCond)
 	databasesReady := r.reconcileDatabases(ctx, kitchen, setCond)
 	programmed := r.observeGateway(ctx, kitchen, setCond)
@@ -227,6 +224,7 @@ func (r *KitchenReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, err
 	}
 	log.Info("reconciled kitchen",
+		"addonsSeeded", seeded,
 		"gatewayProgrammed", programmed,
 		"telemetrySchemaReady", schemaReady,
 		"previewGateReady", gateReady,

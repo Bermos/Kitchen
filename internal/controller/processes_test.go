@@ -154,10 +154,10 @@ var _ = Describe("Workers and scheduled jobs", func() {
 		Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, &corev1.Namespace{
 			ObjectMeta: metav1.ObjectMeta{Name: PlatformNamespace},
 		}))).To(Succeed())
-		Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, &kitchenv1alpha1.Kitchen{
+		ensureSingleton(ctx, &kitchenv1alpha1.Kitchen{
 			ObjectMeta: metav1.ObjectMeta{Name: KitchenSingletonName},
 			Spec:       kitchenv1alpha1.KitchenSpec{BaseDomain: "apps.example.com", TLS: acmeTLS()},
-		}))).To(Succeed())
+		})
 		Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, &kitchenv1alpha1.Project{
 			ObjectMeta: metav1.ObjectMeta{Name: projectName, Namespace: namespace},
 			Spec: kitchenv1alpha1.ProjectSpec{

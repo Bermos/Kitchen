@@ -104,7 +104,7 @@ var _ = Describe("An environment with a volume claim", func() {
 			ObjectMeta: metav1.ObjectMeta{Name: KitchenSingletonName},
 			Spec:       kitchenv1alpha1.KitchenSpec{BaseDomain: "apps.example.com", TLS: acmeTLS()},
 		}
-		Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, kitchen))).To(Succeed())
+		ensureSingleton(ctx, kitchen)
 
 		worker := kitchenv1alpha1.ProcessSpec{
 			Name:     "worker",

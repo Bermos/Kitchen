@@ -289,7 +289,7 @@ var _ = Describe("An inngest claim", func() {
 				},
 			},
 		}
-		Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, kitchen))).To(Succeed())
+		ensureSingleton(ctx, kitchen)
 		release := &kitchenv1alpha1.Release{
 			ObjectMeta: metav1.ObjectMeta{Name: projectName + "-rel-1", Namespace: namespace},
 			Spec: kitchenv1alpha1.ReleaseSpec{

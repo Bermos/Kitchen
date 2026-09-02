@@ -1408,7 +1408,7 @@ scaleToZero:
   install:
     # -- Let the operator install KEDA and its HTTP add-on itself, as two Helm
     # releases of their own. Creates a ServiceAccount bound to cluster-admin,
-    # and sets `spec.scaleToZero.install` on the Kitchen object.
+    # and has the operator seed a `keda` Addon asking for the install.
     enabled: false
     # -- Helm repository the two charts are pulled from. Point it at a mirror
     # for a cluster that cannot reach kedacore.github.io.
@@ -1462,11 +1462,6 @@ databases:
   # project's own namespace: that one is deleted with its project, and a claim
   # under `deletionPolicy: Retain` has to survive exactly that.
   namespace: kitchen-databases
-  # -- Namespace CloudNativePG itself runs in — where the install goes, and
-  # where an existing installation is expected. Upstream's own default, so an
-  # installation that later takes it over by hand finds it where the
-  # CloudNativePG documentation says.
-  operatorNamespace: cnpg-system
   # The platform installing its own database operator. Off by default because
   # the job that runs helm is bound to cluster-admin — installing
   # CloudNativePG applies CRDs, ClusterRoles and a webhook configuration — so
@@ -1477,8 +1472,8 @@ databases:
   # it does not own, and provisions into it just the same.
   install:
     # -- Let the operator install CloudNativePG itself, as a Helm release of
-    # its own. Creates a ServiceAccount bound to cluster-admin, and sets
-    # `spec.databases.install` on the Kitchen object.
+    # its own. Creates a ServiceAccount bound to cluster-admin, and has the
+    # operator seed a `cloudnative-pg` Addon asking for the install.
     enabled: false
     # -- Helm repository the chart is pulled from. Point it at a mirror for a
     # cluster that cannot reach cloudnative-pg.github.io.

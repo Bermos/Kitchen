@@ -84,7 +84,7 @@ var _ = Describe("Environment Controller", func() {
 					},
 				},
 			}
-			Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, kitchen))).To(Succeed())
+			ensureSingleton(ctx, kitchen)
 
 			project := &kitchenv1alpha1.Project{
 				ObjectMeta: metav1.ObjectMeta{Name: projectName, Namespace: namespace},

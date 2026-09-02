@@ -169,6 +169,7 @@ rules:
   - kitchen.bermos.dev
   resources:
   - accessreviews
+  - addons
   - builds
   - connections
   - domains
@@ -193,6 +194,7 @@ rules:
   - kitchen.bermos.dev
   resources:
   - accessreviews/status
+  - addons/status
   - builds/status
   - connections/status
   - domains/status
@@ -211,6 +213,7 @@ rules:
 - apiGroups:
   - kitchen.bermos.dev
   resources:
+  - addons/finalizers
   - builds/finalizers
   - connections/finalizers
   - domains/finalizers

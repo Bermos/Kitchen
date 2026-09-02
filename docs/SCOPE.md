@@ -150,7 +150,7 @@ These aren't nice-to-haves — the first three are the product.
     versions are pinned as a pair rather than floated, and an operator upgrade carries
     the dependency forward with it.
     - **It never writes to a release it did not create.** A cluster already serving the
-      add-on's API is recorded (`status.scaleToZero.managed: false`) and left alone for
+      add-on's API is recorded (the `keda` Addon's `status.managed: false`) and left alone for
       good; KEDA present without its add-on is refused with a message rather than
       installed over. An installation that would rather run its own KEDA has to be able
       to, and the seed-not-a-fixture rule that governs the seeded registry Connection

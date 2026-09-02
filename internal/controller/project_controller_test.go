@@ -94,7 +94,7 @@ var _ = Describe("Project Controller", func() {
 					TLS:        acmeTLS(),
 				},
 			}
-			Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, kitchen))).To(Succeed())
+			ensureSingleton(ctx, kitchen)
 
 			ghCreds := &corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{Name: "gh-creds", Namespace: namespace},

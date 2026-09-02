@@ -566,6 +566,17 @@ func (s *Server) routes() []route {
 		{"GET /api/v1/updates/{name}", s.getUpdate, operatorOnly("reading a platform update")},
 		{"GET /api/v1/updates/{name}/logs", s.updateLogs, operatorOnly("reading a platform update's logs")},
 
+		// Addons are the platform's own dependencies — what it installs into
+		// the cluster it owns. Every one of these is the operator's, and
+		// there is no developer half to carve out: a developer never chooses
+		// whether the cluster runs CloudNativePG, they claim a database and
+		// the claim says whether it could be met.
+		{"GET /api/v1/addons", s.listAddons, operatorOnly("reading the platform's addons")},
+		{"POST /api/v1/addons", s.createAddon, operatorOnly("asking the platform for an addon")},
+		{"GET /api/v1/addons/{name}", s.getAddon, operatorOnly("reading an addon")},
+		{"PATCH /api/v1/addons/{name}", s.patchAddon, operatorOnly("changing an addon")},
+		{"DELETE /api/v1/addons/{name}", s.deleteAddon, operatorOnly("removing an addon")},
+
 		// Connections hold the platform's credentials to everything else, so
 		// every one of these is the operator's — except the two the
 		// create-a-project form is filled in from. The list is the picker: it
