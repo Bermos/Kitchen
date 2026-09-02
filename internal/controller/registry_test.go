@@ -104,7 +104,7 @@ var _ = Describe("The bundled registry", func() {
 				Registry:   registrySpec(),
 			},
 		}
-		Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, kitchen))).To(Succeed())
+		ensureSingleton(ctx, kitchen)
 	})
 
 	AfterEach(func() {

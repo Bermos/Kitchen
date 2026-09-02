@@ -118,7 +118,7 @@ var _ = Describe("Project first build", func() {
 				TLS:        acmeTLS(),
 			},
 		}
-		Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, kitchen))).To(Succeed())
+		ensureSingleton(ctx, kitchen)
 
 		creds := &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{Name: "seed-creds", Namespace: namespace},

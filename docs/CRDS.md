@@ -110,15 +110,12 @@ spec:
     secretRef: { name: kitchen-objectstore }   # written by the chart; the store's root access key pair
   scaleToZero:
     enabled: true                       # off by default; needs KEDA + the HTTP add-on
-    install: true                       # the operator installs those two itself, as their own releases
     interceptor:                        # what an idling environment's URL points at
       service: keda-add-ons-http-interceptor-proxy
       namespace: kitchen-system
       port: 8080
   databases:
-    install: true                       # off by default; the operator installs CloudNativePG itself
     namespace: kitchen-databases        # where provisioned databases live — never a project's namespace
-    operatorNamespace: cnpg-system      # where CloudNativePG itself runs
   compliance:
     audit:
       enabled: true                     # append-only, hash-chained record of every state transition
@@ -230,32 +227,33 @@ status:
     worstDriftMillis: 42
 ```
 
-`scaleToZero.install` is the second thing the operator installs that the chart
-cannot, and for a reason that is Helm's rather than Kubernetes': the HTTP
-add-on ships a `ScaledObject` of KEDA's own CRD, and Helm validates a release's
-whole manifest before applying any of it. The operator installs one release,
-waits, and installs the next. `status.scaleToZero.managed` is what keeps that
-honest — it is written only when the operator's own install job succeeded, and
-a cluster that already served the add-on's API is recorded with it false and
-never written to again. The install runs as a job under an account the chart
-creates only when asked (`scaleToZero.install.enabled`), because it is bound to
-cluster-admin.
+The dependencies the operator installs that the chart cannot are **Addons**,
+one object each, and neither is a field here any more. KEDA's HTTP add-on ships
+a `ScaledObject` of KEDA's own CRD, and Helm validates a release's whole
+manifest before applying any of it; CloudNativePG ships CRDs and an admission
+webhook of its own and is a popular thing for a cluster to already run, and
+Helm will not adopt a release another one owns. A platform that owns its
+cluster should not answer "install this yourself first" to "give me a
+database", and an operator is under none of Helm's constraints — so it installs
+one release, waits, and installs the next, as a job under an account the chart
+creates only when asked (`scaleToZero.install.enabled`,
+`databases.install.enabled`), because it is bound to cluster-admin.
 
-`databases.install` is the third, and the reasoning is the same one applied to
-a different dependency. CloudNativePG ships CRDs and an admission webhook of
-its own and is a popular thing for a cluster to already run, so a chart cannot
-bundle it: Helm will not adopt a release another one owns. But a platform that
-owns its cluster should not answer "install this yourself first" to "give me a
-database", and the operator is under none of Helm's constraints — so it
-installs it, as a job under the same kind of cluster-admin account the chart
-only creates when asked (`databases.install.enabled`).
+What is left on the singleton is `scaleToZero.enabled` — whether environments
+idle at all, which stays meaningful in a cluster somebody else installed KEDA
+into — and `databases.namespace`, where provisioned databases go. The two
+`Ready` conditions stay too, as roll-ups of the Addons' own, because "can this
+cluster idle an environment" and "can it provision a database" are facts about
+the cluster everything downstream already asks.
 
-`status.databases.managed` keeps it a seed rather than a takeover, exactly as
-`status.scaleToZero.managed` does. What it decides, though, is narrower here:
-who may *upgrade* CloudNativePG, not who may use it. A `cnpg` connection
-provisions into whichever CloudNativePG the cluster runs, whoever installed it.
+`status.managed` on an Addon is what keeps an install a seed rather than a
+takeover: it is written only when the operator's own install job succeeded, and
+a cluster already serving the entry's API is recorded with it false and never
+written to again. What it decides for CloudNativePG is narrower than for KEDA:
+who may *upgrade* it, not who may use it. A `cnpg` connection provisions into
+whichever CloudNativePG the cluster runs, whoever installed it.
 
-Both `managed` flags are *re-derived* on every reconcile rather than remembered
+The `managed` flag is *re-derived* on every reconcile rather than remembered
 from the one that installed. The install job is what says the platform
 installed a dependency — it is the operator's own, it carries the chart
 versions and namespace it installed as labels, and it outlives the reconcile

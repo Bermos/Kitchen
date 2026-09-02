@@ -80,6 +80,13 @@ type Server struct {
 
 	// Namespace is where the Kitchen custom resources live.
 	Namespace string
+
+	// AddonsPermitted is the set of addon catalogue entries this
+	// installation granted the operator an account to install, by entry ID.
+	// It is the chart's word rather than the cluster's, so the addons screen
+	// can say "this needs one line in your values file" instead of leaving
+	// somebody to find out from a Refused condition.
+	AddonsPermitted map[string]bool
 	// BindAddr for the HTTP server, e.g. ":8082".
 	BindAddr string
 	// ExtraAudiences are token audiences accepted on top of the issuer and

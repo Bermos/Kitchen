@@ -60,6 +60,7 @@ const sections = [
   { label: "Nodes", to: "/platform/nodes", icon: "i-lucide-server", hint: "conditions, saturation, and who stopped reporting" },
   { label: "Workloads", to: "/platform/workloads", icon: "i-lucide-boxes", hint: "every pod — and the workloads with none" },
   { label: "Edge", to: "/platform/edge", icon: "i-lucide-globe", hint: "traffic, the Gateway, the tunnel, certificates" },
+  { label: "Addons", to: "/platform/addons", icon: "i-lucide-puzzle", hint: "what this platform installs into its own cluster" },
   { label: "Storage", to: "/platform/storage", icon: "i-lucide-hard-drive", hint: "volumes, and the store's own health" },
   { label: "Events", to: "/platform/events", icon: "i-lucide-list", hint: "the cluster's warning history" },
   { label: "Audit", to: "/platform/audit", icon: "i-lucide-shield-check", hint: "what the platform did, and whether the record holds" },

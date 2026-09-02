@@ -173,6 +173,7 @@ export function evidenceLabel(evidence: string | undefined): string {
     "/platform/nodes": "Nodes",
     "/platform/workloads": "Workloads",
     "/platform/edge": "Edge",
+    "/platform/addons": "Addons",
     "/platform/storage": "Storage",
     "/platform/events": "Events",
     "/builds": "Builds",

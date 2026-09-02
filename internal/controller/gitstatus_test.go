@@ -205,7 +205,7 @@ var _ = Describe("Deploy status on the commit", func() {
 				},
 			},
 		}
-		Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, kitchen))).To(Succeed())
+		ensureSingleton(ctx, kitchen)
 
 		for _, secret := range []*corev1.Secret{
 			{

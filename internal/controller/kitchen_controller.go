@@ -134,17 +134,10 @@ type KitchenReconciler struct {
 	// explanatory half of its message.
 	APIReader client.Reader
 
-	// KedaInstall is what the chart said about installing the platform's own
-	// scale-to-zero dependencies. A zero value means the installation granted
-	// no account to install with, and spec.scaleToZero.install says so on the
-	// singleton rather than failing quietly.
-	KedaInstall KedaInstallConfig
-
-	// CNPGInstall is what the chart said about installing the platform's own
-	// database operator. A zero value means the installation granted no
-	// account to install with, and spec.databases.install says so on the
-	// singleton rather than failing quietly.
-	CNPGInstall CNPGInstallConfig
+	// Addons is what the chart permitted the operator to install, by
+	// catalogue entry. It is read here only to decide which entries to seed
+	// an Addon for; installing them is AddonReconciler's.
+	Addons AddonInstalls
 
 	// Audit is the platform's audit recorder, read here for the sequence
 	// number the platform publishes as the chain's external anchor. This
@@ -217,6 +210,10 @@ func (r *KitchenReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	registryReady := r.reconcileRegistry(ctx, kitchen, setCond)
 	objectStoreReady := r.reconcileObjectStore(ctx, kitchen, setCond)
 	accessReady := r.reconcileAccess(ctx, kitchen, setCond)
+	seeded, err := r.seedAddons(ctx, kitchen)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
 	idlingReady := r.reconcileKeda(ctx, kitchen, setCond)
 	databasesReady := r.reconcileDatabases(ctx, kitchen, setCond)
 	programmed := r.observeGateway(ctx, kitchen, setCond)
@@ -227,6 +224,7 @@ func (r *KitchenReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, err
 	}
 	log.Info("reconciled kitchen",
+		"addonsSeeded", seeded,
 		"gatewayProgrammed", programmed,
 		"telemetrySchemaReady", schemaReady,
 		"previewGateReady", gateReady,
@@ -833,6 +831,20 @@ func (r *KitchenReconciler) observeGateway(
 }
 
 // mapToSingleton enqueues the Kitchen singleton for owned infrastructure.
+// mapAddonToSingleton wakes the singleton for any Addon in the platform
+// namespace.
+//
+// It does not filter on the managed-by label the way mapToSingleton does:
+// every Addon is the platform's own kind, and one somebody created by hand —
+// or through the API, after deleting the seeded one — rolls up exactly like a
+// seeded one.
+func (r *KitchenReconciler) mapAddonToSingleton(_ context.Context, obj client.Object) []ctrl.Request {
+	if obj.GetNamespace() != PlatformNamespace {
+		return nil
+	}
+	return []ctrl.Request{{NamespacedName: types.NamespacedName{Name: KitchenSingletonName}}}
+}
+
 func (r *KitchenReconciler) mapToSingleton(_ context.Context, obj client.Object) []ctrl.Request {
 	if obj.GetNamespace() != PlatformNamespace {
 		return nil
@@ -892,6 +904,12 @@ func (r *KitchenReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		// managed-by kitchen (through the Certificate's secretTemplate), so
 		// mapToSingleton picks the secret up the moment it is issued.
 		Watches(&kitchenv1alpha1.Domain{}, handler.EnqueueRequestsFromMapFunc(r.mapDomainToSingleton)).
+		// The two roll-up conditions are copies of an Addon's own verdict,
+		// and an Addon reaches its verdict on its own schedule: it probes the
+		// cluster, and the answer changes when somebody installs the
+		// dependency by hand. Without this the singleton would hold the first
+		// answer it happened to read.
+		Watches(&kitchenv1alpha1.Addon{}, handler.EnqueueRequestsFromMapFunc(r.mapAddonToSingleton)).
 		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.mapToSingleton)).
 		Named("kitchen").
 		Complete(r)

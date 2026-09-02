@@ -67,7 +67,7 @@ func (p *CNPGProbe) Probe(ctx context.Context) Result {
 			"operator's own account, and this connection holds no credential")
 	case meta.IsNoMatchError(err), apierrors.IsNotFound(err):
 		return unreachableBecause("this cluster does not serve postgresql.cnpg.io/v1, so CloudNativePG is not " +
-			"installed. Set spec.databases.install on the Kitchen object to have the platform install it, or " +
+			"installed. Set spec.install on the cloudnative-pg addon to have the platform install it, or " +
 			"install the Helm release yourself")
 	default:
 		return unreachableBecause("could not tell whether CloudNativePG is installed: " + err.Error())

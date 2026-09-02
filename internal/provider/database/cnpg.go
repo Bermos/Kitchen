@@ -555,7 +555,7 @@ func (c *CNPG) deleteCluster(ctx context.Context, id string) error {
 // act on.
 func notInstalled(err error) error {
 	return fmt.Errorf("%w: this cluster does not serve postgresql.cnpg.io/v1, so CloudNativePG is not installed. "+
-		"Set spec.databases.install on the Kitchen object to have the platform install it, or install it yourself "+
+		"Set spec.install on the cloudnative-pg addon to have the platform install it, or install it yourself "+
 		"(%s)", ErrUnsatisfiable, err)
 }
 

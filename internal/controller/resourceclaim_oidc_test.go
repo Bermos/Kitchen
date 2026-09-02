@@ -178,10 +178,10 @@ var _ = Describe("ResourceClaim of type oidcClient", func() {
 				idp.SecretKeyServiceKey: "the-service-key",
 			},
 		}))).To(Succeed())
-		Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, &kitchenv1alpha1.Kitchen{
+		ensureSingleton(ctx, &kitchenv1alpha1.Kitchen{
 			ObjectMeta: metav1.ObjectMeta{Name: KitchenSingletonName},
 			Spec:       kitchenv1alpha1.KitchenSpec{BaseDomain: baseDomain, TLS: acmeTLS()},
-		}))).To(Succeed())
+		})
 
 		// Written rather than assumed: the singleton is one object for the
 		// whole suite, and a spec that inherited another's platform would be

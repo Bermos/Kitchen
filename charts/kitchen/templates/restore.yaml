@@ -73,8 +73,16 @@ metadata:
     {{- include "kitchen.labels" . | nindent 4 }}
     app.kubernetes.io/component: restore
 rules:
+  # Every namespaced kind internal/backup carries. The list is enumerated
+  # rather than a wildcard because it is enumerable — that is the whole
+  # argument for this account being narrow where self-update's is not — and
+  # TestRestoreRoleCoversTheArchive holds it to backup.Kinds, because a kind
+  # added to the archive and forgotten here is a restore that fails half-way
+  # through, on somebody's worst day.
   - apiGroups: ["kitchen.bermos.dev"]
     resources:
+      - addons
+      - addons/status
       - connections
       - connections/status
       - projects
@@ -91,6 +99,10 @@ rules:
       - resourceclaims/status
       - savedqueries
       - savedqueries/status
+      - exceptions
+      - exceptions/status
+      - accessreviews
+      - accessreviews/status
     verbs: ["get", "list", "create", "update", "patch"]
   # The credentials the archive carries, and the one it reads: the connection
   # to the accounts database, which is the freshly installed Postgres and not

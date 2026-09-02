@@ -121,6 +121,11 @@ type Kind struct {
 // not depend on the object surviving.
 var Kinds = []Kind{
 	{Kind: "Kitchen", Plural: "kitchens", ClusterScoped: true},
+	// The platform's own dependencies, which is the configuration and not the
+	// releases: a restore brings back which entries this installation asked
+	// for and where, and the operator installs them into the new cluster
+	// exactly as it did the first time.
+	{Kind: "Addon", Plural: "addons"},
 	{Kind: "Connection", Plural: "connections"},
 	{Kind: "Project", Plural: "projects"},
 	{Kind: "Build", Plural: "builds"},

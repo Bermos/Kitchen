@@ -131,7 +131,7 @@ var _ = Describe("The platform's operator list", func() {
 					idp.SecretKeyServiceKey: "the-service-key",
 				},
 			}))).To(Succeed())
-			Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, &kitchenv1alpha1.Kitchen{
+			ensureSingleton(ctx, &kitchenv1alpha1.Kitchen{
 				ObjectMeta: metav1.ObjectMeta{Name: KitchenSingletonName},
 				Spec: kitchenv1alpha1.KitchenSpec{
 					BaseDomain: "apps.example.com",
@@ -141,7 +141,7 @@ var _ = Describe("The platform's operator list", func() {
 						SecretRef: &kitchenv1alpha1.LocalObjectReference{Name: directorySecretName},
 					},
 				},
-			}))).To(Succeed())
+			})
 		}
 
 		BeforeEach(func() {

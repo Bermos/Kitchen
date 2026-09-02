@@ -72,7 +72,7 @@ var _ = Describe("Kitchen Controller", func() {
 					TLS:        acmeTLS(),
 				},
 			}
-			Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, kitchen))).To(Succeed())
+			ensureSingleton(ctx, kitchen)
 		})
 
 		AfterEach(func() {

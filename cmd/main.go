@@ -91,8 +91,13 @@ func main() {
 	var apiAudiences string
 	var uiClientID string
 	var selfUpdate controller.SelfUpdateConfig
-	var kedaInstall controller.KedaInstallConfig
-	var cnpgInstall controller.CNPGInstallConfig
+	addonFlags := controller.AddonFlags{
+		ServiceAccounts: controller.EntryValues{},
+		Repositories:    controller.EntryValues{},
+		Versions:        controller.EntryValues{},
+		Images:          controller.EntryValues{},
+		Timeouts:        controller.EntryValues{},
+	}
 	var secureMetrics bool
 	var enableHTTP2 bool
 	var tlsOpts []func(*tls.Config)
@@ -145,44 +150,30 @@ func main() {
 	flag.BoolVar(&selfUpdate.AllowMinor, "self-update-allow-minor", false,
 		"Allow a self-update that crosses a minor version. While Kitchen is pre-1.0 the minor is where breaking "+
 			"changes land, so those upgrades are opted into separately.")
-	// Installing the platform's own scale-to-zero dependencies. Flags for the
-	// same reason self-update's are: the account is the chart's to create, so
-	// the chart is what says whether the operator may use one. Whether it
-	// does is spec.scaleToZero.install on the singleton.
-	flag.StringVar(&kedaInstall.ServiceAccount, "keda-install-service-account", "",
-		"ServiceAccount the KEDA install job runs as. It is separate from the manager's, and bound to "+
-			"cluster-admin, because installing KEDA applies CRDs, ClusterRoles and a namespace. Empty means "+
-			"this installation cannot install KEDA for itself, which is the default.")
-	flag.StringVar(&kedaInstall.HelmImage, "keda-install-image", controller.DefaultHelmImage,
-		"Image the KEDA install job runs helm from.")
-	flag.StringVar(&kedaInstall.Repository, "keda-chart-repository", controller.DefaultKedaChartRepository,
-		"Helm repository the KEDA charts are pulled from. Point it at a mirror for a cluster that cannot "+
-			"reach kedacore.github.io.")
-	flag.StringVar(&kedaInstall.ChartVersion, "keda-chart-version", controller.DefaultKedaChartVersion,
-		"Version of the KEDA chart the platform installs. Pinned with the add-on's, not floated.")
-	flag.StringVar(&kedaInstall.AddOnChartVersion, "keda-http-chart-version", controller.DefaultKedaHTTPChartVersion,
-		"Version of the KEDA HTTP add-on chart the platform installs. It decides the interceptor's Service "+
-			"name and port, which spec.scaleToZero.interceptor defaults to.")
-	flag.DurationVar(&kedaInstall.Timeout, "keda-install-timeout", controller.DefaultKedaInstallTimeout,
-		"How long helm is given for each of the two installs. Both wait for their workloads to be ready.")
-	// Installing the platform's own database operator. Flags for the same
-	// reason KEDA's are, and the same grant: whether the operator *may*
-	// install CloudNativePG is the chart's to say, because the account is the
-	// chart's to create. Whether it does is spec.databases.install.
-	flag.StringVar(&cnpgInstall.ServiceAccount, "cnpg-install-service-account", "",
-		"ServiceAccount the CloudNativePG install job runs as. It is separate from the manager's, and bound to "+
-			"cluster-admin, because installing CloudNativePG applies CRDs, ClusterRoles and a webhook "+
-			"configuration. Empty means this installation cannot install it for itself, which is the default.")
-	flag.StringVar(&cnpgInstall.HelmImage, "cnpg-install-image", controller.DefaultHelmImage,
-		"Image the CloudNativePG install job runs helm from.")
-	flag.StringVar(&cnpgInstall.Repository, "cnpg-chart-repository", controller.DefaultCNPGChartRepository,
-		"Helm repository the CloudNativePG chart is pulled from. Point it at a mirror for a cluster that "+
-			"cannot reach cloudnative-pg.github.io.")
-	flag.StringVar(&cnpgInstall.ChartVersion, "cnpg-chart-version", controller.DefaultCNPGChartVersion,
-		"Version of the CloudNativePG chart the platform installs. Pinned rather than floated: it decides "+
-			"which Postgres images the platform can promise a claim's extensions from.")
-	flag.DurationVar(&cnpgInstall.Timeout, "cnpg-install-timeout", controller.DefaultCNPGInstallTimeout,
-		"How long helm is given for the install. It waits for the operator's workloads to be ready.")
+	// Installing the platform's own dependencies. Flags for the same reason
+	// self-update's are: the account is the chart's to create, so the chart
+	// is what says whether the operator may use one. Whether it does is
+	// spec.install on the Addon of that name.
+	//
+	// They take a catalogue entry rather than being written once per
+	// dependency, so that adding an entry adds a file and no flags.
+	flag.Var(addonFlags.ServiceAccounts, "addon-service-account",
+		"ServiceAccount an addon's install job runs as, as <entry>=<name>; repeatable. It is separate from "+
+			"the manager's, and bound to cluster-admin where the entry's install applies CRDs and "+
+			"ClusterRoles. An entry with no account here cannot be installed by this installation, which is "+
+			"the default for every entry.")
+	flag.Var(addonFlags.Repositories, "addon-chart-repository",
+		"Helm repository an addon's charts are pulled from, as <entry>=<url>; repeatable. Point it at a "+
+			"mirror for a cluster that cannot reach the upstream index.")
+	flag.Var(addonFlags.Versions, "addon-chart-version",
+		"Version of one of an addon's charts, as <entry>/<chart>=<version>; repeatable. Each entry pins its "+
+			"own, and the pins are chosen together where an entry installs several.")
+	flag.Var(addonFlags.Images, "addon-install-image",
+		"Image an addon's install job runs helm from, as <entry>=<image>; repeatable. Empty takes the "+
+			"operator's own default.")
+	flag.Var(addonFlags.Timeouts, "addon-install-timeout",
+		"How long helm is given for each of an addon's installs, as <entry>=<duration>; repeatable. Every "+
+			"one waits for its workloads to be ready, not merely for manifests to be accepted.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
@@ -205,6 +196,16 @@ func main() {
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+
+	// An addon flag naming an entry this binary has no catalogue entry for is
+	// a misconfiguration worth failing on: the chart granted a cluster-admin
+	// account for something that will never be installed, and a silent
+	// no-op would leave it granted and unexplained.
+	addonInstalls, err := addonFlags.Installs()
+	if err != nil {
+		setupLog.Error(err, "invalid addon configuration")
+		os.Exit(1)
+	}
 
 	// First line in the log, so a bug report says which release it came from.
 	setupLog.Info("starting kitchen", "version", version.Version)
@@ -377,11 +378,19 @@ func main() {
 		Scheme:                    mgr.GetScheme(),
 		PreviewGateImage:          previewGateImage,
 		PreviewGateServiceAccount: previewGateServiceAccount,
-		KedaInstall:               kedaInstall,
-		CNPGInstall:               cnpgInstall,
+		Addons:                    addonInstalls,
 		Audit:                     auditor,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Kitchen")
+		os.Exit(1)
+	}
+	if err = (&controller.AddonReconciler{
+		Client:    mgr.GetClient(),
+		Scheme:    mgr.GetScheme(),
+		APIReader: mgr.GetAPIReader(),
+		Installs:  addonInstalls,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "Addon")
 		os.Exit(1)
 	}
 	if err = (&controller.ConnectionReconciler{
@@ -484,8 +493,7 @@ func main() {
 	}
 	setupLog.Info("self-update", "enabled", selfUpdate.Enabled(),
 		"chart", selfUpdate.Chart, "allowMinor", selfUpdate.AllowMinor)
-	setupLog.Info("keda-install", "permitted", kedaInstall.Enabled(),
-		"keda", kedaInstall.ChartVersion, "httpAddOn", kedaInstall.AddOnChartVersion)
+	setupLog.Info("addons", "permitted", addonInstalls.Permitted())
 	// +kubebuilder:scaffold:builder
 
 	if err := mgr.Add(&receiver.GitWebhookReceiver{
@@ -536,15 +544,20 @@ func main() {
 		// Pods and nodes are read through the uncached reader: the
 		// introspection endpoints are the only thing that asks for them, and
 		// caching them would mean watching every pod in the cluster.
-		APIReader:      mgr.GetAPIReader(),
-		Namespace:      operatorNamespace,
-		BindAddr:       apiAddr,
-		ExtraAudiences: splitList(apiAudiences),
-		UI:             ui.Handler(api.UIConfig(mgr.GetClient(), uiClientID)),
-		Activity:       recorder,
-		Audit:          auditor,
-		Version:        version.Version,
-		SelfUpdate:     selfUpdate,
+		APIReader: mgr.GetAPIReader(),
+		Namespace: operatorNamespace,
+		BindAddr:  apiAddr,
+		// What the chart permitted the operator to install. The addons
+		// screen shows an entry that is not permitted alongside the one
+		// value that would permit it, rather than hiding what the platform
+		// could run.
+		AddonsPermitted: addonPermitted(addonInstalls),
+		ExtraAudiences:  splitList(apiAudiences),
+		UI:              ui.Handler(api.UIConfig(mgr.GetClient(), uiClientID)),
+		Activity:        recorder,
+		Audit:           auditor,
+		Version:         version.Version,
+		SelfUpdate:      selfUpdate,
 		// The follower's own accounting of what Hubble told it it lost, which
 		// is what the ingest signal and the ingest screen are made of. Note
 		// that the counts are the *local* replica's: the follower runs on the
@@ -672,4 +685,15 @@ func splitList(value string) []string {
 		}
 	}
 	return out
+}
+
+// addonPermitted is the permitted set as the API takes it: a lookup by entry,
+// so a screen can answer "could this platform install that" without holding
+// the installer's configuration.
+func addonPermitted(installs controller.AddonInstalls) map[string]bool {
+	permitted := map[string]bool{}
+	for _, id := range installs.Permitted() {
+		permitted[id] = true
+	}
+	return permitted
 }

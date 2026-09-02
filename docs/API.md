@@ -261,6 +261,11 @@ name against `internal/api/policy.go`, so a route that moves fails them too.
 | POST | `/updates` | Upgrade the platform | `operator` |
 | GET | `/updates/{name}` | One upgrade | `operator` |
 | GET | `/updates/{name}/logs` | One upgrade's helm output. Streams with `Accept: text/event-stream` | `operator` |
+| GET | `/addons` | The catalogue of platform dependencies this operator can install, each with what the cluster has | `operator` |
+| POST | `/addons` | Ask for a catalogue entry the platform has no addon for | `operator` |
+| GET | `/addons/{name}` | One entry | `operator` |
+| PATCH | `/addons/{name}` | Turn its install on or off, or say where it goes | `operator` |
+| DELETE | `/addons/{name}` | Remove it. `202` — the operator finishes it, and refuses while anything provisions through it | `operator` |
 | GET | `/connections` | An operator: every connection (never their credentials). Anybody else: the picker — name, capabilities, readiness | any account — body varies |
 | GET | `/connections/{name}/repositories` | What this connection's credential can see, for the repository field of the create-a-project form | any account |
 | POST | `/connections/{name}/detect` | What the platform makes of a repository, read the way a build would, before the project exists | any account |
@@ -297,6 +302,7 @@ such changes two changes to two different files.
 - [Builds](api/builds.md) — starting and cancelling one, what it reused, and the evidence it left
 - [Environments and releases](api/environments.md) — rolling back, what is running, what is wrong with it, and the bar an environment sets
 - [Workers and scheduled jobs](api/processes.md) — the processes a project runs besides its web one, their runs, and running one now
+- [Addons](api/addons.md) — the dependencies the platform installs into the cluster it owns
 - [Connections](api/connections.md) — the credentials the platform holds
 - [Claims](api/claims.md) — asking for a resource, and what every provider declares about previews, idling and deploys
 - [Custom domains](api/domains.md) — putting an environment on an address of its own

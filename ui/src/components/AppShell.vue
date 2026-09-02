@@ -143,6 +143,7 @@ const platformNav = [
   { label: "Nodes", icon: "i-lucide-server", to: "/platform/nodes", name: "platform-nodes" },
   { label: "Workloads", icon: "i-lucide-boxes", to: "/platform/workloads", name: "platform-workloads" },
   { label: "Edge", icon: "i-lucide-globe", to: "/platform/edge", name: "platform-edge" },
+  { label: "Addons", icon: "i-lucide-puzzle", to: "/platform/addons", name: "platform-addons" },
   { label: "Storage", icon: "i-lucide-hard-drive", to: "/platform/storage", name: "platform-storage" },
   { label: "Events", icon: "i-lucide-list", to: "/platform/events", name: "platform-events" },
   // The audit log had a screen, a route and a tile on the platform overview,

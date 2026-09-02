@@ -148,7 +148,8 @@ type InterceptorSpec struct {
 // pods at all. It is off by default: it needs KEDA and its HTTP add-on running
 // in the cluster, and those are the one platform dependency Kitchen's *chart*
 // cannot install — which is not the same as the platform not installing them.
-// See Install.
+// Whether the platform installs them is the `keda` Addon's spec.install; this
+// is whether environments idle once something has.
 //
 // With it on, each Project decides for itself which of its environments idle,
 // through its own `spec.scaleToZero`.
@@ -156,27 +157,6 @@ type ScaleToZeroSpec struct {
 	// +kubebuilder:default=false
 	// +optional
 	Enabled bool `json:"enabled,omitempty"`
-
-	// Install lets the operator put KEDA and its HTTP add-on in the cluster
-	// itself, as two Helm releases of their own, instead of expecting somebody
-	// to have run those two installs first.
-	//
-	// The chart cannot do this and the operator can, for one reason: Helm
-	// builds and validates a release's whole manifest before it applies any of
-	// it, so the add-on's `ScaledObject` — a custom resource of KEDA's CRD —
-	// never resolves in a release that also contains that CRD. The operator is
-	// under no such constraint. It installs KEDA, waits for it, and only then
-	// installs the add-on, which is the same ordering the two documented
-	// `helm install` commands have always had.
-	//
-	// It is off by default and it needs a grant the chart only creates when
-	// asked (`scaleToZero.install.enabled`), because the job that runs helm is
-	// bound to cluster-admin. Where the add-on is already serving, this does
-	// nothing at all: the operator adopts what it finds and never takes over a
-	// release it does not own.
-	// +kubebuilder:default=false
-	// +optional
-	Install bool `json:"install,omitempty"`
 
 	// +kubebuilder:default={}
 	// +optional
@@ -191,27 +171,11 @@ type ScaleToZeroSpec struct {
 // was installed into, so that an installation with no SaaS account, or one
 // that will not put application data at a third party, has a database at all.
 // The provisioner needs nothing from here: it works against any CloudNativePG
-// in the cluster, whoever installed it. What this configures is the two
-// things the platform itself decides — whether to install one, and which
-// namespace the databases go in.
+// in the cluster, whoever installed it. What this configures is the one thing
+// the platform itself decides: which namespace the databases go in. Whether
+// the platform installs CloudNativePG, and where that operator runs, is the
+// `cloudnative-pg` Addon.
 type DatabasesSpec struct {
-	// Install lets the operator put CloudNativePG in the cluster itself, as a
-	// Helm release of its own, instead of expecting somebody to have run that
-	// install first. It is the same shape as spec.scaleToZero.install and it
-	// is off for the same reason: the job that runs helm is bound to
-	// cluster-admin, because installing an operator applies CRDs, ClusterRoles
-	// and a namespace, so the chart only creates that account when asked
-	// (`databases.install.enabled`).
-	//
-	// Where CloudNativePG is already serving, this does nothing at all. The
-	// platform records that it installed nothing and never writes to a release
-	// it does not own — cnpg is a popular thing to already have, and a
-	// platform that upgraded somebody's existing one would be a worse
-	// neighbour than one that never offered.
-	// +kubebuilder:default=false
-	// +optional
-	Install bool `json:"install,omitempty"`
-
 	// Namespace is where the provisioned database Clusters are created. It is
 	// deliberately not a project's application namespace: deleting a project
 	// deletes that namespace, and a claim under `deletionPolicy: Retain` has
@@ -219,14 +183,6 @@ type DatabasesSpec struct {
 	// +kubebuilder:default=kitchen-databases
 	// +optional
 	Namespace string `json:"namespace,omitempty"`
-
-	// OperatorNamespace is where CloudNativePG itself runs — the namespace
-	// the install goes into, and the one an existing installation is expected
-	// in. It is upstream's own default, so that an installation which later
-	// takes cnpg over by hand finds it where its documentation says.
-	// +kubebuilder:default=cnpg-system
-	// +optional
-	OperatorNamespace string `json:"operatorNamespace,omitempty"`
 }
 
 // ImageRegistrySpec configures the registry the platform runs for itself: the
@@ -894,71 +850,22 @@ type ObjectStoreStatus struct {
 	Connection string `json:"connection,omitempty"`
 }
 
-// ScaleToZeroStatus records where KEDA came from, so that "the platform
-// installed this" and "the platform found this" stay distinguishable for as
-// long as the installation lives.
+// AddonsStatus records which catalogue entries the operator has seeded an
+// Addon for, on the same seed-once terms as the registry Connection: written
+// when the operator creates one, read forever after as "this has been
+// seeded". An Addon somebody deletes stays deleted — an installation that
+// would rather run its own KEDA, or no CloudNativePG at all, has to be able
+// to end up with the object gone rather than reinstated on the next
+// reconcile.
 //
-// The distinction is the whole of the adoption rule: Managed is what the
-// operator reads as permission to upgrade those two releases. A cluster that
-// already ran KEDA when scale-to-zero was switched on is recorded with Managed
-// false, and nothing the operator does afterwards writes to a release it did
-// not create.
-//
-// It is a copy rather than the fact itself. The operator's own install job is
-// the fact — it says what it installed and where, and outlives the reconcile
-// that read it — and this record is re-derived from it on every pass, so that
-// a status write that never lands costs a pass and not the releases.
-type ScaleToZeroStatus struct {
-	// Managed is true when the operator installed KEDA and the HTTP add-on,
-	// and false when it found them already serving.
+// What each entry then *is* — installed by the platform or found already
+// serving, at which versions, in which namespace — is the Addon's own status.
+// It used to be two blocks here, and they were read by nothing outside the
+// two files that wrote them.
+type AddonsStatus struct {
+	// Seeded names every catalogue entry an Addon has been created for.
 	// +optional
-	Managed bool `json:"managed,omitempty"`
-
-	// Namespace the two releases live in, which is the interceptor's.
-	// +optional
-	Namespace string `json:"namespace,omitempty"`
-
-	// Version of the KEDA chart the operator installed. Empty when it
-	// installed nothing.
-	// +optional
-	Version string `json:"version,omitempty"`
-
-	// AddOnVersion of the HTTP add-on chart the operator installed. Empty
-	// when it installed nothing.
-	// +optional
-	AddOnVersion string `json:"addOnVersion,omitempty"`
-}
-
-// DatabasesStatus records where CloudNativePG came from, so that "the
-// platform installed this" and "the platform found this" stay
-// distinguishable for as long as the installation lives — the same
-// distinction, for the same reason, as ScaleToZeroStatus.
-//
-// Managed is what the operator reads as permission to upgrade that release. A
-// cluster that already ran CloudNativePG is recorded with Managed false, and
-// nothing the operator does afterwards writes to a release it did not create.
-// Either way databases are provisioned through it: what the record decides is
-// who may upgrade it, not who may use it.
-//
-// It is a copy rather than the fact itself. The operator's own install job is
-// the fact — it says what it installed and where, and outlives the reconcile
-// that read it — and this record is re-derived from it on every pass, so that
-// a status write that never lands costs a pass and not the release.
-type DatabasesStatus struct {
-	// Managed is true when the operator installed CloudNativePG, and false
-	// when it found it already serving.
-	// +optional
-	Managed bool `json:"managed,omitempty"`
-
-	// Namespace CloudNativePG itself runs in, as the platform installed it or
-	// expected to find it.
-	// +optional
-	Namespace string `json:"namespace,omitempty"`
-
-	// Version of the CloudNativePG chart the operator installed. Empty when
-	// it installed nothing.
-	// +optional
-	Version string `json:"version,omitempty"`
+	Seeded []string `json:"seeded,omitempty"`
 }
 
 // KitchenStatus defines the observed state of the platform.
@@ -995,16 +902,11 @@ type KitchenStatus struct {
 	// +optional
 	Compliance *ComplianceStatus `json:"compliance,omitempty"`
 
-	// ScaleToZero reports what the platform did about KEDA: installed it,
-	// or found it. Absent while nothing idles.
+	// Addons reports which catalogue entries the operator has seeded an Addon
+	// for. Each Addon carries its own state; this is only the record that
+	// stops a deleted one coming back.
 	// +optional
-	ScaleToZero *ScaleToZeroStatus `json:"scaleToZero,omitempty"`
-
-	// Databases reports what the platform did about CloudNativePG: installed
-	// it, found it, or neither. Absent while nothing has asked for a
-	// database and the operator has not been told to install one.
-	// +optional
-	Databases *DatabasesStatus `json:"databases,omitempty"`
+	Addons *AddonsStatus `json:"addons,omitempty"`
 
 	// Retention reports the retention model as it is actually in force, per
 	// class, with what each class currently holds and how far back it goes.

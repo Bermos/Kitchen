@@ -29,6 +29,7 @@ package audit
 // translation table.
 const (
 	KindAccessReview   = "AccessReview"
+	KindAddon          = "Addon"
 	KindBuild          = "Build"
 	KindConnection     = "Connection"
 	KindDomain         = "Domain"

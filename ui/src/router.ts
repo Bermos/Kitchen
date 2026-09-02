@@ -85,6 +85,12 @@ export const router = createRouter({
       meta: { requires: "GET /api/v1/platform/edge" },
     },
     {
+      path: "/platform/addons",
+      name: "platform-addons",
+      component: () => import("./views/PlatformAddonsView.vue"),
+      meta: { requires: "GET /api/v1/addons" },
+    },
+    {
       path: "/platform/storage",
       name: "platform-storage",
       component: () => import("./views/PlatformStorageView.vue"),

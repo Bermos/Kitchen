@@ -249,7 +249,7 @@ var _ = Describe("ResourceClaim Controller", func() {
 				},
 			},
 		}
-		Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, kitchen))).To(Succeed())
+		ensureSingleton(ctx, kitchen)
 		// The platform's own pieces live in the platform namespace: the store
 		// secret and the signing key are read from there, not from wherever
 		// the claim happens to be.
@@ -517,7 +517,7 @@ var _ = Describe("ResourceClaim Controller", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: KitchenSingletonName},
 				Spec:       kitchenv1alpha1.KitchenSpec{BaseDomain: "apps.example.com", TLS: acmeTLS()},
 			}
-			Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, kitchen))).To(Succeed())
+			ensureSingleton(ctx, kitchen)
 			release := &kitchenv1alpha1.Release{
 				ObjectMeta: metav1.ObjectMeta{Name: projectName + "-rel-1", Namespace: namespace},
 				Spec: kitchenv1alpha1.ReleaseSpec{
@@ -572,7 +572,7 @@ var _ = Describe("ResourceClaim Controller", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: KitchenSingletonName},
 				Spec:       kitchenv1alpha1.KitchenSpec{BaseDomain: "apps.example.com", TLS: acmeTLS()},
 			}
-			Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, kitchen))).To(Succeed())
+			ensureSingleton(ctx, kitchen)
 			release := &kitchenv1alpha1.Release{
 				ObjectMeta: metav1.ObjectMeta{Name: projectName + "-rel-1", Namespace: namespace},
 				Spec: kitchenv1alpha1.ReleaseSpec{
@@ -621,7 +621,7 @@ var _ = Describe("ResourceClaim Controller", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: KitchenSingletonName},
 				Spec:       kitchenv1alpha1.KitchenSpec{BaseDomain: "apps.example.com", TLS: acmeTLS()},
 			}
-			Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, kitchen))).To(Succeed())
+			ensureSingleton(ctx, kitchen)
 			release := &kitchenv1alpha1.Release{
 				ObjectMeta: metav1.ObjectMeta{Name: projectName + "-rel-1", Namespace: namespace},
 				Spec: kitchenv1alpha1.ReleaseSpec{

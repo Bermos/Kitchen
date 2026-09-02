@@ -94,7 +94,7 @@ var _ = Describe("The bundled object store", func() {
 				},
 			},
 		}
-		Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, kitchen))).To(Succeed())
+		ensureSingleton(ctx, kitchen)
 	})
 
 	AfterEach(func() {

@@ -122,7 +122,10 @@ var _ = Describe("Preview gate", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: PlatformNamespace},
 			}))).To(Succeed())
 
-			Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, &kitchenv1alpha1.Kitchen{
+			// Created *or* brought to this suite's shape: a Kitchen another
+			// suite left behind with the gate switched off would have the
+			// operator deploy nothing, for a reason this suite never chose.
+			kitchen := &kitchenv1alpha1.Kitchen{
 				ObjectMeta: metav1.ObjectMeta{Name: KitchenSingletonName},
 				Spec: kitchenv1alpha1.KitchenSpec{
 					BaseDomain: "apps.example.com",
@@ -132,7 +135,8 @@ var _ = Describe("Preview gate", func() {
 						PreviewGate: kitchenv1alpha1.PreviewGateSpec{Enabled: true},
 					},
 				},
-			}))).To(Succeed())
+			}
+			ensureSingleton(ctx, kitchen)
 
 			// The identity provider's details, as the chart writes them.
 			Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, &corev1.Secret{
@@ -143,10 +147,10 @@ var _ = Describe("Preview gate", func() {
 				},
 			}))).To(Succeed())
 
-			kitchen := &kitchenv1alpha1.Kitchen{}
-			Expect(k8sClient.Get(ctx, singletonKey, kitchen)).To(Succeed())
-			kitchen.Spec.Auth.SecretRef = &kitchenv1alpha1.LocalObjectReference{Name: authSecretName}
-			Expect(k8sClient.Update(ctx, kitchen)).To(Succeed())
+			current := &kitchenv1alpha1.Kitchen{}
+			Expect(k8sClient.Get(ctx, singletonKey, current)).To(Succeed())
+			current.Spec.Auth.SecretRef = &kitchenv1alpha1.LocalObjectReference{Name: authSecretName}
+			Expect(k8sClient.Update(ctx, current)).To(Succeed())
 		})
 
 		AfterEach(func() {

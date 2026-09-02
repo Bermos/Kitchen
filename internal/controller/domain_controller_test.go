@@ -144,7 +144,7 @@ var _ = Describe("Domain Controller", func() {
 				TLS:        acmeTLS(),
 			},
 		}
-		Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, kitchen))).To(Succeed())
+		ensureSingleton(ctx, kitchen)
 
 		env := &kitchenv1alpha1.Environment{
 			ObjectMeta: metav1.ObjectMeta{Name: envName, Namespace: PlatformNamespace},

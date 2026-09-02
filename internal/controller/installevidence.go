@@ -28,10 +28,9 @@ import (
 // Who installed a platform dependency is a fact about the cluster, not a
 // memory.
 //
-// The operator installs two dependencies for installations that ask it to —
-// KEDA with its HTTP add-on, and CloudNativePG — and records which of them it
-// installed, because that record is what decides whether it may ever upgrade
-// them. It used to be minted exactly once, in the reconcile that read the
+// The operator installs the dependencies an installation asks it to, one
+// Addon at a time, and records which of them it installed, because that
+// record is what decides whether it may ever upgrade them. It used to be minted exactly once, in the reconcile that read the
 // install job's completion, and read as gospel forever after: a fact
 // derivable at one instant only, carried by a single status write. A write
 // that does not land is then not "unknown" but the confident opposite — the
@@ -84,14 +83,15 @@ func installLabels(labels map[string]string, namespace string, versions map[stri
 // Newest by completion, because a version bump is a new job rather than a
 // rerun of a finished one: what is installed now is what the last job that
 // finished installed. A failed job is not evidence — a helm run that died
-// half-way may have applied nothing — and is left for runCNPGInstall and
-// runKedaInstall to report.
-func (r *KitchenReconciler) latestCompletedInstall(
+// half-way may have applied nothing — and is left for the Addon's own install
+// path to report.
+func latestCompletedInstall(
 	ctx context.Context,
+	reader client.Reader,
 	component string,
 ) (*batchv1.Job, error) {
 	jobs := &batchv1.JobList{}
-	if err := r.List(ctx, jobs,
+	if err := reader.List(ctx, jobs,
 		client.InNamespace(PlatformNamespace),
 		client.MatchingLabels{labelManagedByKey: labelManagedByValue, labelComponentKind: component},
 	); err != nil {
