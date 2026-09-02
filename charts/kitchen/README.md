@@ -1625,7 +1625,9 @@ kubectl delete namespace kitchen-system
 | `cert-manager.config.gatewayAPI.enabled` | `true` | Solve HTTP-01 challenges as HTTPRoutes on the shared Gateway — what issues custom-domain certificates. A cluster that runs its own cert-manager needs the same switch on it. |
 | `kitchen.auth` | from `auth.*` / `previewGate.*` | The singleton's `auth` block mirrors `auth.enabled`, the resolved host, the secret the operator registers clients with, and the preview gate. |
 | `kitchen.builds.defaultStrategy` | `auto` | `auto`, `dockerfile` or `buildpacks`. |
-| `kitchen.builds.concurrency` | `2` | Builds running at once. |
+| `kitchen.builds.concurrency` | `2` | Builds running at once. Read with `builds.resources` below: the two together are what bound the platform's own build footprint. |
+| `kitchen.builds.resources.cpu` | `"2"` | CPU one build may take, as a Kubernetes quantity, written onto every container of the build pod as its request and its limit at once. CPU is compressible: a build that wants more is throttled, never killed. Empty for no ceiling. |
+| `kitchen.builds.resources.memory` | `4Gi` | Memory one build may take, reserved for the build and capped at it — so a node with no room queues the build rather than starting it on top of what is already running. A build that reaches it is killed and reported as a build failure naming the ceiling. Empty for no ceiling. |
 | `kitchen.builds.releaseRetention` | `10` | Releases each project keeps. Older ones are pruned, except any an environment still points at — a rollback target never disappears. `0` keeps every release forever. |
 | `kitchen.builds.cache.enabled` | `true` | Reuse layers between builds. The cache is a manifest in the registry the project already pushes to, under the same credential — nothing extra to install. Off means every build starts from nothing. |
 | `kitchen.builds.cache.mode` | `max` | How much of a BuildKit build is cached: `max` keeps intermediate layers, so a source change still reuses the dependency install above it, at the cost of registry storage; `min` keeps only the layers of the image that came out. Buildpacks builds ignore it. |

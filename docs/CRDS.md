@@ -83,7 +83,15 @@ spec:
         email: anna@example.com         # informational, so the YAML reads
   builds:
     defaultStrategy: auto               # dockerfile | buildpacks | auto (what a project on "auto" takes)
-    concurrency: 2
+    concurrency: 2                      # builds running at once; read with resources below — the two
+                                        # together are what bound the platform's own build footprint
+    resources:                          # the ceiling one build runs under, written onto every container
+      cpu: "2"                          # of the build pod as its request and its limit at once, so a node
+      memory: 4Gi                       # with no room queues the build instead of starting it on top of
+                                        # what is already running. A build that reaches the memory ceiling
+                                        # is killed and fails saying so. Either may be empty for no
+                                        # ceiling. It is the operator's, not a project's: one that could
+                                        # raise its own could evict its neighbours.
     cache:
       enabled: true                     # reuse layers between builds, in the registry the project pushes to
       mode: max                         # max | min — how much of a BuildKit build is kept

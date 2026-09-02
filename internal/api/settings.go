@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"strings"
 
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -44,6 +45,18 @@ type settingsView struct {
 	AuthHost         string `json:"authHost,omitempty"`
 	BuildStrategy    string `json:"buildStrategy,omitempty"`
 	BuildConcurrency int32  `json:"buildConcurrency,omitempty"`
+	// BuildCPU and BuildMemory are `spec.builds.resources`: the ceiling one
+	// build runs under, reserved for it and capped at it. They are beside the
+	// concurrency because the two are one decision — the concurrency times
+	// the ceiling is the whole of what the platform's builds can take from
+	// the cluster — and reading either on its own answers nothing.
+	//
+	// Empty is a ceiling the installation has cleared, which is the unbounded
+	// build everything ran before the field existed. It is why these carry no
+	// omitempty: a dashboard has to be able to tell "no ceiling" from "an API
+	// too old to have one".
+	BuildCPU    string `json:"buildCPU"`
+	BuildMemory string `json:"buildMemory"`
 	// No omitempty: 0 is a setting here — keep every release — not an absent
 	// one, and the dashboard has to be able to tell the two apart.
 	ReleaseRetention int32  `json:"releaseRetention"`
@@ -105,6 +118,8 @@ func newSettingsView(kitchen *kitchenv1alpha1.Kitchen) settingsView {
 		AuthEnabled:      kitchen.Spec.Auth.Enabled,
 		BuildStrategy:    string(kitchen.Spec.Builds.DefaultStrategy),
 		BuildConcurrency: kitchen.Spec.Builds.Concurrency,
+		BuildCPU:         kitchen.Spec.Builds.Resources.CPU,
+		BuildMemory:      kitchen.Spec.Builds.Resources.Memory,
 		ReleaseRetention: kitchen.Spec.Builds.ReleaseRetention,
 		LogRetentionDays: kitchen.Spec.Observability.ClickHouse.RetentionDays,
 		GatewayAddress:   kitchen.Status.GatewayAddress,
@@ -140,6 +155,13 @@ func (s *Server) getSettings(w http.ResponseWriter, req *http.Request) {
 type patchSettingsRequest struct {
 	BuildStrategy    *string `json:"buildStrategy"`
 	BuildConcurrency *int32  `json:"buildConcurrency"`
+	// BuildCPU and BuildMemory are the per-build ceiling, as Kubernetes
+	// quantities. They are pointers for the reason `operators` is one: the
+	// empty string is a setting here — the installation that has decided its
+	// builds are unbounded — and a request that does not mention the field
+	// must not be able to clear it.
+	BuildCPU         *string `json:"buildCPU"`
+	BuildMemory      *string `json:"buildMemory"`
 	ReleaseRetention *int32  `json:"releaseRetention"`
 	LogRetentionDays *int32  `json:"logRetentionDays"`
 	// Operators replaces the whole platform access list, and is a pointer so
@@ -189,6 +211,20 @@ func (s *Server) patchSettings(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 		kitchen.Spec.Builds.Concurrency = *body.BuildConcurrency
+	}
+	if body.BuildCPU != nil {
+		ceiling, ok := buildCeiling(w, "buildCPU", *body.BuildCPU)
+		if !ok {
+			return
+		}
+		kitchen.Spec.Builds.Resources.CPU = ceiling
+	}
+	if body.BuildMemory != nil {
+		ceiling, ok := buildCeiling(w, "buildMemory", *body.BuildMemory)
+		if !ok {
+			return
+		}
+		kitchen.Spec.Builds.Resources.Memory = ceiling
 	}
 	if body.ReleaseRetention != nil {
 		// Zero is the one setting here that means "no bound": every release a
@@ -278,8 +314,8 @@ func (s *Server) patchSettings(w http.ResponseWriter, req *http.Request) {
 // run against a list that no longer exists. A conflict answers 409, which is
 // the client's cue to re-read and try again.
 //
-// A request that does not name it gets a plain merge patch. The other four
-// fields are independent scalars, each written from the caller's own body and
+// A request that does not name it gets a plain merge patch. The other fields
+// are independent scalars, each written from the caller's own body and
 // decided against nothing that was read: failing "set the build concurrency to
 // 4" because somebody else changed the log retention a moment earlier would be
 // a conflict about nothing, on the platform's busiest object.
@@ -289,6 +325,33 @@ func settingsPatch(kitchen *kitchenv1alpha1.Kitchen, body patchSettingsRequest) 
 		return client.MergeFrom(base)
 	}
 	return client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})
+}
+
+// buildCeiling is one half of what a build may take, as the caller wrote it:
+// a Kubernetes quantity, or the empty string for no ceiling at all.
+//
+// Clearing it is allowed and is not a mistake to be talked out of — an
+// installation with dedicated build capacity is exactly the one that should be
+// able to say so — but it is the only way to end up unbounded, and it has to
+// be written rather than fallen into. Zero is refused for that reason: a
+// ceiling of nothing is not "no ceiling", it is a build that cannot start.
+func buildCeiling(w http.ResponseWriter, field, value string) (string, bool) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return "", true
+	}
+	quantity, err := resource.ParseQuantity(trimmed)
+	if err != nil {
+		badRequest(w, "%s must be a Kubernetes quantity like 2, 500m or 4Gi (got %q), "+
+			"or empty for no ceiling at all", field, value)
+		return "", false
+	}
+	if quantity.Sign() <= 0 {
+		badRequest(w, "%s must be more than zero (got %q); empty is how a build is left unbounded",
+			field, value)
+		return "", false
+	}
+	return trimmed, true
 }
 
 // lastOperatorRefusal is what a write that would leave the platform with no
@@ -430,6 +493,8 @@ func changedSettingsFields(body patchSettingsRequest) []string {
 	}{
 		{"buildStrategy", body.BuildStrategy != nil},
 		{"buildConcurrency", body.BuildConcurrency != nil},
+		{"buildCPU", body.BuildCPU != nil},
+		{"buildMemory", body.BuildMemory != nil},
 		{"releaseRetention", body.ReleaseRetention != nil},
 		{"logRetentionDays", body.LogRetentionDays != nil},
 		{"operators", body.Operators != nil},

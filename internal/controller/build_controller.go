@@ -175,6 +175,14 @@ const (
 	// the commit.
 	reasonBuildFailed = "BuildFailed"
 
+	// reasonBuildOutOfMemory is the build that reached the platform's memory
+	// ceiling and was killed for it. It is the commit's own failure like
+	// reasonBuildFailed — the build ran and no image came out — and it is
+	// separate from it because the fix is a different one: the ceiling is the
+	// operator's setting, and an exit code alone says nothing about which of
+	// the two moved too far.
+	reasonBuildOutOfMemory = "BuildOutOfMemory"
+
 	// reasonSourceUnreviewed is a build refused because the commit cannot be
 	// shown to have arrived through a reviewed pull request. It is a distinct
 	// reason from a build that failed, because nothing was built: the change
@@ -392,7 +400,8 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		// Planned before the Job exists, because the plan is part of the pod
 		// spec and a Job's template cannot be edited afterwards.
 		cache := r.planCache(ctx, build, project, builds.Cache, target)
-		if err := r.createJob(ctx, build, project, strategy, detected, cache, appNS, credsSecret, gitCreds.Secret, tagRef); err != nil {
+		if err := r.createJob(ctx, build, project, strategy, detected, cache, builds.Resources,
+			appNS, credsSecret, gitCreds.Secret, tagRef); err != nil {
 			return ctrl.Result{}, err
 		}
 		log.Info("build job created",
@@ -446,7 +455,16 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		// thing it printed. It is written onto the Build because the pod is
 		// deleted with the job and the Build is not.
 		build.Status.Failure = r.diagnoseJobFailure(ctx, job, message)
-		return r.fail(ctx, build, project, reasonBuildFailed,
+		// A build killed for its memory is a build failure with a cause, not
+		// a non-zero exit like any other: the ceiling it hit is the platform's
+		// own setting, and the sentence that says so is the difference between
+		// a fix and "the build died and I do not know why".
+		reason := reasonBuildFailed
+		if outOfMemory(build.Status.Failure) {
+			reason = reasonBuildOutOfMemory
+			build.Status.Failure.Message = outOfMemoryMessage(build.Status.Failure, builds.Resources.Memory)
+		}
+		return r.fail(ctx, build, project, reason,
 			gitCreds.explain(failureMessage(build.Status.Failure, message)))
 	default:
 		return r.observeRunning(ctx, build, project, job)
@@ -454,8 +472,10 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 }
 
 // platformBuilds is the Kitchen singleton's build configuration, or its zero
-// value when the singleton cannot be read. Both fields have a defined meaning
-// when unset, so a build never waits on the platform object to answer.
+// value when the singleton cannot be read. Every field has a defined meaning
+// when unset — an unset ceiling is the unbounded build every installation ran
+// before there was one — so a build never waits on the platform object to
+// answer.
 func (r *BuildReconciler) platformBuilds(ctx context.Context) kitchenv1alpha1.BuildsSpec {
 	kitchen := &kitchenv1alpha1.Kitchen{}
 	if err := r.Get(ctx, types.NamespacedName{Name: KitchenSingletonName}, kitchen); err != nil {
@@ -621,12 +641,17 @@ func (r *BuildReconciler) createJob(
 	strategy kitchenv1alpha1.BuildStrategy,
 	detected framework.Framework,
 	cache *kitchenv1alpha1.BuildCacheStatus,
+	resources kitchenv1alpha1.BuildResourcesSpec,
 	appNS, credsSecret, gitSecret, tagRef string,
 ) error {
 	template := dockerfilePod(project, build, cache, credsSecret, gitSecret, tagRef, r.platformAttestation(ctx))
 	if strategy == kitchenv1alpha1.BuildStrategyBuildpacks {
 		template = buildpacksPod(project, build, detected, cache, credsSecret, gitSecret, tagRef)
 	}
+	// What a build may take, from the platform object rather than from
+	// anything the commit or the project can say. It is applied here rather
+	// than in either pod shape because it is the same decision for both.
+	applyBuildResources(ctx, &template.Spec, resources)
 
 	labels := map[string]string{
 		labelProject:      project.Name,
@@ -1561,9 +1586,11 @@ func (r *BuildReconciler) fail(
 	})
 	// A build the platform could not run at all is an error rather than a
 	// failure: the distinction is the provider's, and it separates "your
-	// Dockerfile is broken" from "the platform is".
+	// Dockerfile is broken" from "the platform is". A build that ran out of
+	// memory is on the first side of that line — it ran, and what it asked
+	// for was more than a build may take.
 	state := gitprovider.CommitFailure
-	if reason != reasonBuildFailed {
+	if reason != reasonBuildFailed && reason != reasonBuildOutOfMemory {
 		state = gitprovider.CommitError
 	}
 	r.git().reportBuild(ctx, project, build, state, message)

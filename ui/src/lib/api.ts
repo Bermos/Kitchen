@@ -1693,6 +1693,14 @@ export interface Settings {
   authHost?: string;
   buildStrategy?: string;
   buildConcurrency?: number;
+  /** `spec.builds.resources`: the ceiling one build runs under, reserved for it
+   * and capped at it. Read with `buildConcurrency` — the two together are what
+   * bound the platform's own build footprint, and either alone bounds nothing.
+   * Empty is a ceiling the installation has cleared, which is the unbounded
+   * build everything ran before the field existed; `undefined` is an API too
+   * old to carry one, which is a different thing. */
+  buildCPU?: string;
+  buildMemory?: string;
   /** Releases a project keeps; 0 keeps every one. Always sent, since 0 is a
    * setting rather than an absent value. */
   releaseRetention: number;
@@ -3584,7 +3592,10 @@ export const api = {
   // be in it.
   updateSettings: (
     changes: Partial<
-      Pick<Settings, "buildStrategy" | "buildConcurrency" | "releaseRetention" | "logRetentionDays">
+      Pick<
+        Settings,
+        "buildStrategy" | "buildConcurrency" | "buildCPU" | "buildMemory" | "releaseRetention" | "logRetentionDays"
+      >
     > & { operators?: OperatorWrite[] },
   ) =>
     request<Settings>("PATCH", "/settings", changes),

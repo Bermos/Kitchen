@@ -34,6 +34,11 @@ const version = computed(() => versionLabel(platformVersion.value));
 
 const strategy = ref<string>("auto");
 const concurrency = ref<number>(2);
+// The ceiling one build runs under, kept as the quantity strings the API
+// carries ("2", "500m", "4Gi"). An empty one is the installation that has
+// decided its builds are unbounded, not a box nobody has filled in yet.
+const buildCPU = ref<string>("");
+const buildMemory = ref<string>("");
 const releaseRetention = ref<number>(10);
 const retention = ref<number>(30);
 
@@ -41,6 +46,8 @@ watch(settings, (value) => {
   if (!value) return;
   strategy.value = value.buildStrategy || "auto";
   concurrency.value = value.buildConcurrency ?? 2;
+  buildCPU.value = value.buildCPU ?? "";
+  buildMemory.value = value.buildMemory ?? "";
   releaseRetention.value = value.releaseRetention ?? 10;
   retention.value = value.logRetentionDays ?? 30;
 });
@@ -51,9 +58,22 @@ const dirty = computed(() => {
   return (
     strategy.value !== (s.buildStrategy || "auto") ||
     concurrency.value !== (s.buildConcurrency ?? 2) ||
+    buildCPU.value !== (s.buildCPU ?? "") ||
+    buildMemory.value !== (s.buildMemory ?? "") ||
     releaseRetention.value !== (s.releaseRetention ?? 10) ||
     retention.value !== (s.logRetentionDays ?? 30)
   );
+});
+
+/** What the platform's builds can take from the cluster: the ceiling times the
+ *  concurrency. It is the sentence the two settings only mean together, which
+ *  is why it is on the screen rather than left to be worked out. */
+const buildFootprint = computed(() => {
+  const ceiling = [buildCPU.value.trim(), buildMemory.value.trim()].filter(Boolean).join(" + ");
+  if (!ceiling) {
+    return "No ceiling: builds reserve nothing, and one of them can take the node from what is already running.";
+  }
+  return `At most ${concurrency.value} × ${ceiling} — reserved for builds while they run, and the most they can take.`;
 });
 
 const saving = ref(false);
@@ -63,6 +83,8 @@ async function save() {
     await api.updateSettings({
       buildStrategy: strategy.value,
       buildConcurrency: concurrency.value,
+      buildCPU: buildCPU.value.trim(),
+      buildMemory: buildMemory.value.trim(),
       releaseRetention: releaseRetention.value,
       logRetentionDays: retention.value,
     });
@@ -150,6 +172,21 @@ const strategies = [
               <UFormField label="Build concurrency" help="How many builds run at once, platform-wide.">
                 <UInputNumber v-model="concurrency" :min="1" :max="32" class="w-40" />
               </UFormField>
+              <!-- The ceiling sits beside the concurrency because neither bounds
+                   anything alone: what the platform's builds can take is one
+                   times the other, which the line under the fields says. -->
+              <UFormField
+                label="CPU per build"
+                help="A Kubernetes quantity — 2, 500m. Reserved for the build and capped at it. Empty for no ceiling."
+              >
+                <UInput v-model="buildCPU" placeholder="2" class="w-40" />
+              </UFormField>
+              <UFormField
+                label="Memory per build"
+                help="A Kubernetes quantity — 4Gi, 512Mi. A build that reaches it is killed and fails saying so. Empty for no ceiling."
+              >
+                <UInput v-model="buildMemory" placeholder="4Gi" class="w-40" />
+              </UFormField>
               <UFormField
                 label="Releases kept per project"
                 help="Older releases are pruned. One an environment still runs is always kept, so a rollback target never disappears. 0 keeps every release."
@@ -163,6 +200,7 @@ const strategies = [
                 <UInputNumber v-model="retention" :min="1" :max="365" class="w-40" />
               </UFormField>
             </div>
+            <p class="text-xs text-muted">{{ buildFootprint }}</p>
             <div class="flex justify-end">
               <UButton :disabled="!dirty" :loading="saving" icon="i-lucide-save" @click="save">Save changes</UButton>
             </div>

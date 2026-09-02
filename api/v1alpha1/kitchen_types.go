@@ -346,9 +346,25 @@ type BuildsSpec struct {
 	DefaultStrategy BuildStrategy `json:"defaultStrategy,omitempty"`
 
 	// Maximum number of builds running at once.
+	//
+	// It is half of what the platform's builds can take from the cluster;
+	// Resources is the other half, and the two are read together.
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:default=2
 	Concurrency int32 `json:"concurrency,omitempty"`
+
+	// Resources is the ceiling one build may take.
+	//
+	// Concurrency times this is the whole of the platform's build footprint,
+	// which is why the two are one decision rather than two settings that
+	// happen to be near each other.
+	//
+	// The empty-object default is what gives an installation that predates
+	// the field a ceiling at all: structural defaulting only descends into
+	// objects that are present.
+	// +kubebuilder:default={}
+	// +optional
+	Resources BuildResourcesSpec `json:"resources,omitempty"`
 
 	// ReleaseRetention is how many Releases each Project keeps. Every
 	// successful build leaves one behind, so without a bound a busy project
@@ -373,6 +389,53 @@ type BuildsSpec struct {
 	// +kubebuilder:default={}
 	// +optional
 	Cache BuildCacheSpec `json:"cache,omitempty"`
+}
+
+// BuildResourcesSpec is what one build is allowed to take: two Kubernetes
+// quantities, written onto every container of the build pod as its request
+// and as its limit at once.
+//
+// It is the operator's and not a project's. A repository declares what its
+// application runs with (RepoResources) because that is a fact about the
+// application; how much of the cluster a *build* may take is a fact about the
+// platform, and a project that could raise its own ceiling would be a project
+// that could evict its neighbours.
+//
+// Request and limit are the same number deliberately. The limit alone would
+// bound one build and tell the scheduler nothing, so two builds would still be
+// placed where only one fits and the node would meet them both at once — which
+// is the situation this exists to end. Equal to the request, the ceiling is
+// reserved before the build starts: a node with no room queues the build
+// instead of starting it on top of the applications the platform is there to
+// serve, and the arithmetic in Concurrency's comment is true rather than
+// hopeful.
+//
+// An empty string is no ceiling for that resource, which is what every
+// installation had before this field existed. It is a deliberate setting, not
+// the default: the default is the ceiling below, and clearing it is how an
+// installation with a build machine's worth of headroom says so.
+type BuildResourcesSpec struct {
+	// CPU one build may take, as a Kubernetes quantity ("2", "500m").
+	//
+	// CPU is compressible — a build that wants more is throttled, never
+	// killed — so this bounds how much of the node a build can crowd out
+	// rather than whether it finishes.
+	// +kubebuilder:validation:Pattern=`^$|^[0-9]+(\.[0-9]+)?(m|k|M|G|T|P|E|Ki|Mi|Gi|Ti|Pi|Ei)?$`
+	// +kubebuilder:default="2"
+	// +optional
+	CPU string `json:"cpu,omitempty"`
+
+	// Memory one build may take, as a Kubernetes quantity ("4Gi", "512Mi").
+	//
+	// Memory is not compressible: a build that asks for more than this is
+	// killed by the kernel, and the platform reports that as a build failure
+	// naming the ceiling rather than as an unexplained non-zero exit. Four
+	// gibibytes is past where a front-end build of any size peaks and well
+	// short of what a single-node cluster can lose without noticing.
+	// +kubebuilder:validation:Pattern=`^$|^[0-9]+(\.[0-9]+)?(m|k|M|G|T|P|E|Ki|Mi|Gi|Ti|Pi|Ei)?$`
+	// +kubebuilder:default="4Gi"
+	// +optional
+	Memory string `json:"memory,omitempty"`
 }
 
 // BuildCacheMode is how much of a build BuildKit writes to the cache.
