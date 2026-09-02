@@ -168,6 +168,7 @@ func (r *EnvironmentReconciler) git() gitReporting {
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;create
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=batch,resources=cronjobs,verbs=get;list;watch;create;update;patch;delete
 // `deletecollection` is what DeleteAllOf asks for, and it is not implied by
@@ -820,6 +821,11 @@ func (r *EnvironmentReconciler) applyDeployment(
 		// the readiness nothing used to establish. Previews inherit the
 		// check with the rest of the snapshot.
 		applyProbes(&app, runtimeSpec.Health, port)
+		// The posture the Release was snapshotted with, written whole every
+		// time: a project that has withdrawn a constraint has to lose it
+		// here, and a project that declared none still gets the platform's
+		// default rather than whatever the image happens to be.
+		applySecurityContext(&deploy.Spec.Template.Spec, &app, runtimeSpec.Security)
 		deploy.Spec.Template.Spec.Containers = []corev1.Container{app}
 		// Last, over the template this mutation has just finished building: a
 		// Secret reaches a pod as a variable, as an `envFrom` or as a mounted
@@ -1128,10 +1134,23 @@ func (r *EnvironmentReconciler) updateStatus(
 		// would only ever be noise on them.
 		meta.RemoveStatusCondition(&env.Status.Conditions, condPreviewProtected)
 	}
-	if available {
+	// A workload that cannot start under the posture it asked for says so
+	// here, in the kubelet's own words plus the constraints it was started
+	// with. Without it the only account of a container the kubelet refused
+	// is on a pod nobody looks at, and of one that starts and dies, nothing
+	// at all beyond CrashLoopBackOff.
+	reason, refusal := "", ""
+	if !available {
+		reason, refusal = r.startFailure(ctx, env, appNS, release.Spec.ConfigSnapshot.Runtime.Security)
+	}
+	switch {
+	case available:
 		setCond(condWorkloadAvailable, metav1.ConditionTrue, "DeploymentAvailable", "workload is available")
 		setCond(condReady, metav1.ConditionTrue, "Reconciled", "environment is live")
-	} else {
+	case refusal != "":
+		setCond(condWorkloadAvailable, metav1.ConditionFalse, reason, refusal)
+		setCond(condReady, metav1.ConditionFalse, reason, refusal)
+	default:
 		setCond(condWorkloadAvailable, metav1.ConditionFalse, "DeploymentUnavailable", "workload is not available yet")
 		setCond(condReady, metav1.ConditionFalse, "WorkloadPending", "waiting for workload to become available")
 	}

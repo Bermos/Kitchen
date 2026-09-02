@@ -220,7 +220,7 @@ func processPodSpec(
 	if process.Type == kitchenv1alpha1.ProcessWorker {
 		applyProbes(&container, process.Health, 0)
 	}
-	return corev1.PodSpec{
+	pod := corev1.PodSpec{
 		// The same credential the web process pulls with. Without it the pods
 		// sit in ImagePullBackOff while everything else reads as healthy.
 		ImagePullSecrets: []corev1.LocalObjectReference{
@@ -232,6 +232,12 @@ func processPodSpec(
 		// Multi-Attach failure the claim names a process to avoid.
 		Volumes: volumes,
 	}
+	// The same posture the web process runs under, and from the same
+	// snapshot: a worker and a scheduled run are the project's image started
+	// with another command, so a posture that described only the web process
+	// would describe a third of the workloads the project ships.
+	applySecurityContext(&pod, &pod.Containers[0], release.Spec.ConfigSnapshot.Runtime.Security)
+	return pod
 }
 
 // applyWorkerDeployment materializes a worker: a Deployment, and nothing else.

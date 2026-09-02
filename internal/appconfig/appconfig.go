@@ -32,6 +32,7 @@ package appconfig
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -120,6 +121,82 @@ func HealthSpec(request Health, subject string, needsPort bool) (*kitchenv1alpha
 		}
 	}
 	return health, nil
+}
+
+// Security is the security posture as a client sends one. Sending `{}` is how
+// a declared posture is taken back off: an empty posture is exactly the
+// platform's default, which every workload gets either way.
+//
+// Every field is zero-means-the-default, the reading the health check's
+// timings already have, so nothing here needs a pointer to tell an absent key
+// from a cleared one.
+type Security struct {
+	// RunAsNonRoot refuses to start a container whose image would run as
+	// uid 0.
+	RunAsNonRoot bool `json:"runAsNonRoot,omitempty"`
+	// RunAsUser and RunAsGroup override the image's own ids. Zero is the
+	// image's user left alone, not a request to run as root.
+	RunAsUser  int64 `json:"runAsUser,omitempty"`
+	RunAsGroup int64 `json:"runAsGroup,omitempty"`
+	// ReadOnlyRootFilesystem mounts the container's own filesystem read
+	// only.
+	ReadOnlyRootFilesystem bool `json:"readOnlyRootFilesystem,omitempty"`
+	// AllowPrivilegeEscalation puts back the one thing the platform tightens
+	// by default, for an image that needs a setuid binary.
+	AllowPrivilegeEscalation bool `json:"allowPrivilegeEscalation,omitempty"`
+	// DropCapabilities are the Linux capabilities taken away, in the
+	// kernel's spelling without the CAP_ prefix — or the single entry ALL.
+	DropCapabilities []string `json:"dropCapabilities,omitempty"`
+}
+
+// capabilityName is the shape of a Linux capability without its CAP_ prefix,
+// which is how corev1 spells one and so how this takes one.
+var capabilityName = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
+
+// SecuritySpec validates one posture. subject names what it belongs to in a
+// refusal, and it answers nil for a posture that declares nothing — an empty
+// block and no block are the same posture, so a project that clears the form
+// stores no field rather than an object full of zeroes.
+func SecuritySpec(request Security, subject string) (*kitchenv1alpha1.SecuritySpec, error) {
+	security := &kitchenv1alpha1.SecuritySpec{
+		RunAsNonRoot:             request.RunAsNonRoot,
+		RunAsUser:                request.RunAsUser,
+		RunAsGroup:               request.RunAsGroup,
+		ReadOnlyRootFilesystem:   request.ReadOnlyRootFilesystem,
+		AllowPrivilegeEscalation: request.AllowPrivilegeEscalation,
+	}
+	for _, id := range []struct {
+		name  string
+		value int64
+	}{{"runAsUser", security.RunAsUser}, {"runAsGroup", security.RunAsGroup}} {
+		if id.value < 0 {
+			return nil, fmt.Errorf(
+				"%s: %s cannot be negative, and 0 leaves the image's own user alone (got %d)",
+				subject, id.name, id.value)
+		}
+	}
+	for _, capability := range request.DropCapabilities {
+		dropped := strings.ToUpper(strings.TrimSpace(capability))
+		if !capabilityName.MatchString(dropped) {
+			return nil, fmt.Errorf(
+				"%s: %q is not a Linux capability — write them the way the kernel does without the CAP_ prefix "+
+					"(NET_RAW, SYS_ADMIN), or ALL for every one of them",
+				subject, capability)
+		}
+		if dropped == kitchenv1alpha1.CapabilityDropAll && len(request.DropCapabilities) > 1 {
+			return nil, fmt.Errorf(
+				"%s: dropping ALL already drops every capability, so it cannot be listed beside another one",
+				subject)
+		}
+		security.DropCapabilities = append(security.DropCapabilities, dropped)
+	}
+	// A posture that asks for nothing is no posture. The platform's default
+	// is what an absent block already means, so storing an object of zeroes
+	// would be a declaration that reads back as one and says nothing.
+	if len(security.Declared()) == 0 {
+		return nil, nil
+	}
+	return security, nil
 }
 
 // Process is one entry of the list a settings PATCH — or a kitchen.json —

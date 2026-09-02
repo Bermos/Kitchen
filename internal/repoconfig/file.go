@@ -60,15 +60,16 @@ type FileBuild struct {
 
 // FileRuntime is the `runtime` object.
 type FileRuntime struct {
-	Port             *int32            `json:"port,omitempty"`
-	Replicas         *int32            `json:"replicas,omitempty"`
-	Singleton        *bool             `json:"singleton,omitempty"`
-	NotRequestDriven *bool             `json:"notRequestDriven,omitempty"`
-	Command          []string          `json:"command,omitempty"`
-	Args             []string          `json:"args,omitempty"`
-	PreviewArgs      []string          `json:"previewArgs,omitempty"`
-	Resources        *FileResources    `json:"resources,omitempty"`
-	Health           *appconfig.Health `json:"health,omitempty"`
+	Port             *int32              `json:"port,omitempty"`
+	Replicas         *int32              `json:"replicas,omitempty"`
+	Singleton        *bool               `json:"singleton,omitempty"`
+	NotRequestDriven *bool               `json:"notRequestDriven,omitempty"`
+	Command          []string            `json:"command,omitempty"`
+	Args             []string            `json:"args,omitempty"`
+	PreviewArgs      []string            `json:"previewArgs,omitempty"`
+	Resources        *FileResources      `json:"resources,omitempty"`
+	Health           *appconfig.Health   `json:"health,omitempty"`
+	Security         *appconfig.Security `json:"security,omitempty"`
 }
 
 // FileResources is `runtime.resources`.
@@ -259,6 +260,13 @@ func (f File) runtimeConfig() (*kitchenv1alpha1.RepoRuntimeConfig, error) {
 			return nil, fmt.Errorf("%w: %w", ErrInvalid, err)
 		}
 		runtime.Health = health
+	}
+	if source.Security != nil {
+		security, err := appconfig.SecuritySpec(*source.Security, "runtime.security")
+		if err != nil {
+			return nil, fmt.Errorf("%w: %w", ErrInvalid, err)
+		}
+		runtime.Security = security
 	}
 	return runtime, nil
 }

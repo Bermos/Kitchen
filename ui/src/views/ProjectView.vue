@@ -280,6 +280,18 @@ const settings = reactive({
   // Empty is no override, the same reading an empty preview value gets, so
   // an empty box is how one is taken away and no switch is needed to say so.
   previewArgs: "",
+  // The security posture every workload of the project runs under. Every
+  // field is off or 0 for "the platform's default", so an untouched form
+  // sends the posture the project already has — which is what makes clearing
+  // the switches the way one is taken back off.
+  runAsNonRoot: false,
+  runAsUser: 0,
+  runAsGroup: 0,
+  readOnlyRootFilesystem: false,
+  allowPrivilegeEscalation: false,
+  // One capability per line, the same shape the argument fields take: a list
+  // of words is a list of lines, never a string split on spaces.
+  dropCapabilities: "",
   // Two of this workload must never run at once. It is next to the replica
   // count because it is the same decision from the other side, and the form
   // keeps the two consistent rather than letting the API refuse the pair.
@@ -376,6 +388,12 @@ function loadSettings(from: Project) {
   settings.command = wordLines(from.command);
   settings.args = wordLines(from.args);
   settings.previewArgs = wordLines(from.previewArgs);
+  settings.runAsNonRoot = from.security?.runAsNonRoot ?? false;
+  settings.runAsUser = from.security?.runAsUser ?? 0;
+  settings.runAsGroup = from.security?.runAsGroup ?? 0;
+  settings.readOnlyRootFilesystem = from.security?.readOnlyRootFilesystem ?? false;
+  settings.allowPrivilegeEscalation = from.security?.allowPrivilegeEscalation ?? false;
+  settings.dropCapabilities = wordLines(from.security?.dropCapabilities);
   settings.singleton = from.singleton ?? false;
   settings.notRequestDriven = from.notRequestDriven ?? false;
   settings.dataClass = from.dataClass ?? "";
@@ -421,6 +439,17 @@ async function saveSettings() {
       // keep the override already there, and clearing the box has to be able
       // to take it away.
       previewArgs: wordsOf(settings.previewArgs),
+      // The whole posture every time, so a switch turned off is a constraint
+      // taken away: the route replaces it, and a posture of nothing but
+      // defaults is stored as no posture at all.
+      security: {
+        runAsNonRoot: settings.runAsNonRoot,
+        runAsUser: settings.runAsUser,
+        runAsGroup: settings.runAsGroup,
+        readOnlyRootFilesystem: settings.readOnlyRootFilesystem,
+        allowPrivilegeEscalation: settings.allowPrivilegeEscalation,
+        dropCapabilities: wordsOf(settings.dropCapabilities),
+      },
       singleton: settings.singleton,
       notRequestDriven: settings.notRequestDriven,
       dataClass: settings.dataClass,
@@ -1311,6 +1340,73 @@ function host(url?: string): string {
               icon="i-lucide-triangle-alert"
               title="This project is not offered scale to zero"
               :description="`${pinningClaims.map((claim) => claim.name).join(', ')} ${pinningClaims.length === 1 ? 'holds' : 'hold'} a worker whose outbound connection never crosses the interceptor, so nothing can tell when an environment is idle. Every environment of this project keeps its pods, previews included — release the claim to idle them.`"
+            />
+          </div>
+
+          <!-- The posture the containers run under. It applies to every
+               workload of the project — the web process, its workers and its
+               scheduled runs — because they are one image, and a posture
+               describes the image rather than the command it is started
+               with. -->
+          <div class="rounded-md border border-default bg-muted p-5 space-y-4">
+            <div>
+              <h2 class="text-sm font-medium text-highlighted">Security</h2>
+              <p class="text-xs text-muted mt-1 max-w-3xl">
+                What the containers are allowed to be, for every workload this project ships. Everything here off is
+                the platform's default, which is deliberately not the tightest one available: the container runtime's
+                own seccomp profile, and no privilege escalation. The rest is a tightening an application asks for,
+                because an image that writes into its own filesystem or runs as root is ordinary and would break
+                under a default that assumed otherwise. A workload that cannot start under what it asked for says so
+                on its environment, naming the constraint.
+              </p>
+            </div>
+            <USwitch
+              v-model="settings.readOnlyRootFilesystem"
+              label="Read-only root filesystem"
+              description="The container cannot write to its own filesystem. An application that writes a cache, a
+                socket or a temporary file into it needs a volume for that path first."
+            />
+            <USwitch
+              v-model="settings.runAsNonRoot"
+              label="Never run as root"
+              description="A container whose image would run as uid 0 is refused before it starts, rather than
+                running with the privilege and being noticed later."
+            />
+            <div class="grid gap-4 sm:grid-cols-2">
+              <UFormField
+                label="User ID"
+                help="The uid the containers run as, overriding the image's. 0 is the image's own user left alone — which is not the same as asking to run as root."
+              >
+                <UInput
+                  v-model.number="settings.runAsUser"
+                  type="number"
+                  min="0"
+                  placeholder="the image's"
+                  class="w-full font-mono"
+                />
+              </UFormField>
+              <UFormField label="Group ID" help="The gid, on the same reading.">
+                <UInput
+                  v-model.number="settings.runAsGroup"
+                  type="number"
+                  min="0"
+                  placeholder="the image's"
+                  class="w-full font-mono"
+                />
+              </UFormField>
+            </div>
+            <UFormField
+              label="Drop capabilities"
+              help="One per line, the way the kernel spells them and without the CAP_ prefix — NET_RAW, SYS_ADMIN — or the single entry ALL. There is no list to add one back: the platform drops none by default."
+            >
+              <UTextarea v-model="settings.dropCapabilities" :rows="2" placeholder="ALL" class="w-full font-mono" />
+            </UFormField>
+            <USwitch
+              v-model="settings.allowPrivilegeEscalation"
+              label="Allow privilege escalation"
+              description="The one default the platform tightens: left alone, nothing in the container can gain more
+                privileges than the process that started it. Turn it on only for an image that genuinely needs a
+                setuid binary."
             />
           </div>
 

@@ -97,6 +97,9 @@ func Runtime(
 	if declared.Health != nil {
 		merged.Health = declared.Health.DeepCopy()
 	}
+	if declared.Security != nil {
+		merged.Security = declared.Security.DeepCopy()
+	}
 	if resources := declared.Resources; resources != nil {
 		for name, value := range map[corev1.ResourceName]string{
 			corev1.ResourceCPU:    resources.CPU,

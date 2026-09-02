@@ -545,6 +545,13 @@ spec:
       timeoutSeconds: 2
       failureThreshold: 3               # a running pod out of service
       startupFailureThreshold: 30       # x period = how long it has to come up
+    security:                           # the posture every workload of this
+      runAsNonRoot: true                # project runs under — web, workers and
+      runAsUser: 1001                   # scheduled runs alike, since they are
+      runAsGroup: 1001                  # one image. 0 = the image's own user
+      readOnlyRootFilesystem: true      # left alone, not "run as root"
+      allowPrivilegeEscalation: false   # the default, and the one the platform
+      dropCapabilities: [ALL]           # tightens; there is no list to add one
   processes:                            # what it runs *besides* the web process
     - name: worker                      # a Deployment with no Service, no route
       type: worker
@@ -696,6 +703,30 @@ A process's `health` is opt-in and has to name its `port`, both refused at
 admission rather than ignored: a worker publishes no port to fall back on, and
 a scheduled run's verdict is its exit status, so the field is refused on a
 `cron` process outright.
+
+`runtime.security` is the posture the application's containers run under, and
+until it existed nothing was applied to them at all: they ran as whatever the
+image happened to be, in a namespace deliberately relaxed to `privileged` for
+the build tooling's sake. That relaxation is rootless BuildKit's requirement,
+not the application's, which is exactly why the lever is here, per workload,
+rather than at the namespace level — and why nothing in it reaches a build
+job.
+
+A project that declares nothing gets the platform's default rather than
+nothing: the runtime's own seccomp profile, and no privilege escalation.
+Those two cost a working image nothing. The three that would — a read-only
+root filesystem, dropped capabilities, a non-root user — are what a project
+asks for here, because an image that writes into its own filesystem is
+ordinary and a default that broke it would break it on upgrade with nothing
+said. Every field is zero-means-the-default, the reading `health`'s timings
+have, so a posture is taken back off by clearing it.
+
+It is snapshotted into the Release with the rest of the runtime, so a
+rollback restores the posture that release ran under, and a workload that
+cannot start under it says so on its Environment — `WorkloadAvailable=False`
+with reason `ContainerRefused` for a container the kubelet would not create,
+`RestartingUnderPosture` for one that starts and exits under a declared
+posture — with the constraints in force named in the message.
 
 Reconcile: ensure per-project namespace, register the git webhook via the Connection
 (signing secret generated per project), validate that the referenced Connections carry

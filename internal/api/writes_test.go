@@ -102,6 +102,68 @@ func TestPatchingAProjectsSettings(t *testing.T) {
 	}
 }
 
+// The posture a project's workloads run under: written, read back resolved,
+// and taken away again — the three things the dashboard's form does, since it
+// sends the whole posture every time and an emptied form is how one is
+// withdrawn.
+func TestPatchingAProjectsSecurityPosture(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+
+	recorder := h.do(t, http.MethodPatch, "/api/v1/projects/shop", `{
+		"security": {"runAsNonRoot": true, "runAsUser": 1001,
+		             "readOnlyRootFilesystem": true, "dropCapabilities": ["net_raw"]}
+	}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	view := decode[projectView](t, recorder)
+	if view.Security == nil || !view.Security.RunAsNonRoot || view.Security.RunAsUser != 1001 {
+		t.Fatalf("the posture did not echo: %+v", view.Security)
+	}
+	if view.Security.AllowPrivilegeEscalation || view.Security.SeccompProfile != "RuntimeDefault" {
+		t.Fatalf("the platform's own half of the posture is not reported: %+v", view.Security)
+	}
+	if len(view.Security.Declared) != 4 {
+		t.Fatalf("want every constraint named for the failure message, got %v", view.Security.Declared)
+	}
+
+	stored := &kitchenv1alpha1.Project{}
+	if err := h.server.get(context.Background(), "shop", stored); err != nil {
+		t.Fatal(err)
+	}
+	security := stored.Spec.Runtime.Security
+	if security == nil || !security.ReadOnlyRootFilesystem {
+		t.Fatalf("the posture did not stick: %+v", stored.Spec.Runtime)
+	}
+	// Capabilities are stored the way the kernel spells them, whatever case
+	// they arrived in, so the container's own list is not two spellings of
+	// one capability.
+	if len(security.DropCapabilities) != 1 || security.DropCapabilities[0] != "NET_RAW" {
+		t.Fatalf("want the capability normalized, got %v", security.DropCapabilities)
+	}
+
+	// An empty posture is no posture: the platform's default is what an
+	// absent block already means, so clearing the form clears the field.
+	recorder = h.do(t, http.MethodPatch, "/api/v1/projects/shop", `{"security": {}}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if err := h.server.get(context.Background(), "shop", stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored.Spec.Runtime.Security != nil {
+		t.Fatalf("an empty posture should be no posture, got %+v", stored.Spec.Runtime.Security)
+	}
+
+	// A capability the kernel has never heard of is refused with a sentence
+	// rather than reaching a container that would not start.
+	recorder = h.do(t, http.MethodPatch, "/api/v1/projects/shop",
+		`{"security": {"dropCapabilities": ["CAP_NET_RAW!"]}}`)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("want 400 for a capability that is not one, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestPatchingAProjectsEnvVars(t *testing.T) {
 	h := newHarness(t, nil, fixtures()...)
 

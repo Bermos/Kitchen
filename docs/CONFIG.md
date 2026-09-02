@@ -96,6 +96,7 @@ it.
 | `previewArgs` | Replace `args` in preview environments — same commit, same artifact, different flags. |
 | `resources` | `{"cpu": "500m", "memory": "512Mi"}`, applied as request and limit alike. |
 | `health` | What the platform asks before it sends anyone to the application. `{}` is the default: a TCP connect to the port. |
+| `security` | The posture every workload of this project runs under. `{}` is the platform's default, which they run under anyway. |
 
 ```json
 {
@@ -115,6 +116,43 @@ it.
 check, where a 2xx or 3xx is the application saying it is working; without one
 the check is a TCP connect, which is a weaker claim and much better than
 asserting a readiness nothing established. It is deliberately not `GET /`.
+
+`security` is where an application asks to run more tightly than the platform
+makes it. A repository is the right place to say it: an image knows whether it
+can survive a read-only root filesystem, and the commit that makes it able to
+is the commit that should declare it.
+
+```json
+{
+  "runtime": {
+    "security": {
+      "runAsNonRoot": true,
+      "runAsUser": 1001,
+      "readOnlyRootFilesystem": true,
+      "dropCapabilities": ["ALL"]
+    }
+  }
+}
+```
+
+It applies to the web process, the workers and the scheduled runs alike —
+they are one image, and a posture describes the image rather than the command
+it is started with.
+
+**A project that says nothing still gets a posture**, and it is the
+platform's: the container runtime's own seccomp profile, and no privilege
+escalation. It is deliberately not the tightest one available. An image that
+writes a cache, a socket or a temporary file into its own filesystem is
+ordinary and a great many run as root, so a default that tightened those
+would break a working application on upgrade with nothing said anywhere — the
+three that would, `readOnlyRootFilesystem`, `runAsNonRoot` and
+`dropCapabilities`, are asked for here instead. `allowPrivilegeEscalation`
+goes the other way: it is the one thing the platform tightens, and setting it
+puts back the setuid binary an image needs.
+
+A workload that cannot start under what it asked for says so on its
+environment, naming the constraints in force, rather than sitting in
+`CrashLoopBackOff` with the reason three layers down.
 
 ### `env` and `previewEnv`
 

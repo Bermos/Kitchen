@@ -17,6 +17,9 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"fmt"
+	"strings"
+
 	corev1 "k8s.io/api/core/v1"
 )
 
@@ -327,6 +330,170 @@ type RuntimeSpec struct {
 	// inherit it from production.
 	// +optional
 	Health *HealthSpec `json:"health,omitempty"`
+
+	// Security is the posture every workload of this project runs under —
+	// the web process, its workers and its scheduled runs alike, because
+	// they are one image and a posture is a property of the image rather
+	// than of the command it is started with.
+	//
+	// A project that declares nothing still gets [SecuritySpec]'s default,
+	// which is the platform's and not the image's. Like the rest of
+	// RuntimeSpec it is snapshotted into the Release, so a rollback restores
+	// the posture that release ran under.
+	// +optional
+	Security *SecuritySpec `json:"security,omitempty"`
+}
+
+// SecuritySpec is the security posture an application's containers run under.
+//
+// Until it existed nothing was applied to an application's workloads at all:
+// they ran as whatever the image happened to be, in a namespace deliberately
+// relaxed to `privileged` for the build tooling's sake — rootless BuildKit
+// needs an unconfined seccomp and AppArmor profile, which Pod Security admits
+// at that level alone. That is the *build's* requirement, not the
+// application's, which is what makes a per-workload security context the
+// right lever rather than the namespace level. An application arriving from
+// somewhere that pinned a read-only root filesystem, dropped capabilities and
+// a non-root user lost all three on the way in, and lost them silently.
+//
+// **Every field is zero-means-the-default**, the reading HealthSpec's timings
+// already have, so an absent block and an empty one are the same posture and
+// a field can be taken back off through an API that never distinguishes an
+// absent key from a cleared one.
+//
+// The platform's default is deliberately not the tightest thing available.
+// Two hardenings cost a working image nothing and are applied to every
+// workload: the runtime's own seccomp profile, and no privilege escalation.
+// The three that would — a read-only root filesystem, dropped capabilities,
+// a non-root user — are **not** defaulted, because an image that quietly
+// writes to its own filesystem is a large and real population and a default
+// that broke it would break it on upgrade with nothing said anywhere. Those
+// three are what a project asks for here, and what the platform then applies
+// and reports.
+type SecuritySpec struct {
+	// RunAsNonRoot refuses to start a container whose image would run as
+	// uid 0. The kubelet checks it before the container starts, so an image
+	// that would have run as root fails at the pod rather than three layers
+	// into whatever it did with the privilege.
+	// +optional
+	RunAsNonRoot bool `json:"runAsNonRoot,omitempty"`
+
+	// RunAsUser and RunAsGroup are the uid and gid the containers run as,
+	// overriding the image's own. Zero is not "run as root": it is the
+	// image's own user, left alone — an image that must run as root already
+	// does, and saying so again here would be a setting that changed
+	// nothing.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	RunAsUser int64 `json:"runAsUser,omitempty"`
+
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	RunAsGroup int64 `json:"runAsGroup,omitempty"`
+
+	// ReadOnlyRootFilesystem mounts the container's own filesystem read
+	// only. An application that writes to a path it did not declare fails
+	// on the write rather than on the next node it lands on.
+	//
+	// It is off by default and that is the decision: an image that writes a
+	// temporary file, a cache or a socket into its own filesystem is
+	// ordinary, and a default that broke it would break it on upgrade with
+	// no warning anywhere.
+	// +optional
+	ReadOnlyRootFilesystem bool `json:"readOnlyRootFilesystem,omitempty"`
+
+	// AllowPrivilegeEscalation puts back the one default the platform
+	// tightens on the container. Left alone, no process in the container can
+	// gain more privileges than its parent — `no_new_privs`, which is what
+	// stops a setuid binary being a way out of the user the container runs
+	// as. An image that legitimately needs one (`sudo`, a setuid helper) says
+	// so here rather than losing it silently.
+	// +optional
+	AllowPrivilegeEscalation bool `json:"allowPrivilegeEscalation,omitempty"`
+
+	// DropCapabilities are the Linux capabilities taken away from the
+	// containers, in the kernel's own spelling without the `CAP_` prefix —
+	// `NET_RAW`, `SYS_ADMIN` — or the single entry `ALL`.
+	//
+	// There is deliberately no list of capabilities to *add*. The platform
+	// drops none by default, so nothing has to be given back, and a project
+	// that could add one would be able to grant its own container more than
+	// its image asked for.
+	//
+	// The spelling is checked here as well as at the API, since not
+	// everything writes through the API: a capability the kernel has never
+	// heard of reaches a container that then does not start.
+	// +optional
+	// +listType=atomic
+	// +kubebuilder:validation:items:Pattern=`^[A-Z][A-Z0-9_]*$`
+	DropCapabilities []string `json:"dropCapabilities,omitempty"`
+}
+
+// CapabilityDropAll is the entry that means every capability, spelled the way
+// corev1 spells it.
+const CapabilityDropAll = "ALL"
+
+// SeccompProfileRuntimeDefault is the seccomp profile every workload of every
+// project runs under. It is the platform's rather than the project's and
+// there is no field for it: it is the container runtime's own profile, which
+// Kubernetes does not apply unless it is asked to, so applying it costs a
+// working image nothing and leaves nothing to decide.
+const SeccompProfileRuntimeDefault = corev1.SeccompProfileTypeRuntimeDefault
+
+// DropsAll reports whether the declaration drops every capability, which is
+// the one entry that is not a capability's name.
+func (s *SecuritySpec) DropsAll() bool {
+	if s == nil {
+		return false
+	}
+	for _, capability := range s.DropCapabilities {
+		if strings.EqualFold(capability, CapabilityDropAll) {
+			return true
+		}
+	}
+	return false
+}
+
+// Declared is the posture in words: what this project asked for beyond the
+// platform's default, one phrase per constraint, in the order they are worth
+// reading. It is empty for a project that declared nothing.
+//
+// It exists so that a workload that cannot start under the posture it asked
+// for can be told which constraints are in force, rather than leaving a
+// CrashLoopBackOff whose cause is three layers down. The API reads it back
+// too, so the dashboard and a failure message describe one posture in one
+// vocabulary.
+func (s *SecuritySpec) Declared() []string {
+	if s == nil {
+		return nil
+	}
+	declared := make([]string, 0, 5)
+	if s.RunAsNonRoot {
+		declared = append(declared, "it must not run as root")
+	}
+	if s.RunAsUser > 0 {
+		declared = append(declared, fmt.Sprintf("it runs as uid %d", s.RunAsUser))
+	}
+	if s.RunAsGroup > 0 {
+		declared = append(declared, fmt.Sprintf("it runs as gid %d", s.RunAsGroup))
+	}
+	if s.ReadOnlyRootFilesystem {
+		declared = append(declared, "its root filesystem is read only")
+	}
+	if len(s.DropCapabilities) > 0 {
+		declared = append(declared, "it drops "+strings.Join(s.DropCapabilities, ", "))
+	}
+	if s.AllowPrivilegeEscalation {
+		declared = append(declared, "privilege escalation is allowed, which the platform otherwise denies")
+	}
+	return declared
+}
+
+// EscalationAllowed is whether a process in the container may gain
+// privileges. A project that said nothing gets the platform's answer, which
+// is no.
+func (s *SecuritySpec) EscalationAllowed() bool {
+	return s != nil && s.AllowPrivilegeEscalation
 }
 
 // ArgsFor is the argument list an environment of this type starts the
