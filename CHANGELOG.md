@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.22.0](https://github.com/Bermos/Kitchen/compare/v0.21.0...v0.22.0) (2026-09-02)
+
+
+### ⚠ BREAKING CHANGES
+
+* **operator:** spec.scaleToZero.install, spec.databases.install and spec.databases.operatorNamespace are removed from the Kitchen object, along with status.scaleToZero and status.databases. The chart values scaleToZero.install.enabled and databases.install.enabled keep their names and their meaning — they grant the install account — and the operator seeds an Addon asking for the install, so an installation that had both set keeps installing. An installation that granted the account without setting the singleton field will now install; set spec.install false on the seeded Addon to keep it from doing so. The two roll-up conditions, ScaleToZeroReady and DatabasesReady, stay on the singleton.
+* **claims:** a claim that never said what its previews get used to give them production's binding; its previews now get what the provider declares — a branch from Neon, a fresh database from CloudNativePG. previewMode: shared on the claim restores what it had. previewBranching: true still reads as the provider's own mode.
+
+### Features
+
+* **claims:** a workload can claim a volume and say which process mounts it ([#282](https://github.com/Bermos/Kitchen/issues/282)) ([ece6242](https://github.com/Bermos/Kitchen/commit/ece6242e7edc9af0b34bf4afbb0db04378098ce9)), closes [#267](https://github.com/Bermos/Kitchen/issues/267)
+* **claims:** an application can ask the platform for a cache or a queue ([#284](https://github.com/Bermos/Kitchen/issues/284)) ([fc9677e](https://github.com/Bermos/Kitchen/commit/fc9677ee0d1d545b10f3f18a39fcbf6a8cb47b82)), closes [#265](https://github.com/Bermos/Kitchen/issues/265)
+* **claims:** an application can claim a bucket to put files in ([#281](https://github.com/Bermos/Kitchen/issues/281)) ([89990be](https://github.com/Bermos/Kitchen/commit/89990be5ddc3afd04daad57131dc8885b10f1928)), closes [#266](https://github.com/Bermos/Kitchen/issues/266)
+* **claims:** declare what a provider does about previews, idling and deploys ([#280](https://github.com/Bermos/Kitchen/issues/280)) ([3e9f404](https://github.com/Bermos/Kitchen/commit/3e9f404f154282e1cfdfc271d42b2891ad0fb81d))
+* **claims:** durable background work has a home the platform can provide ([#283](https://github.com/Bermos/Kitchen/issues/283)) ([a18cbff](https://github.com/Bermos/Kitchen/commit/a18cbfffb2d1d57f27edb99b8685e2e330fe48ab)), closes [#268](https://github.com/Bermos/Kitchen/issues/268)
+* **operator:** one engine installs the platform's dependencies, one Addon each ([#285](https://github.com/Bermos/Kitchen/issues/285)) ([c563995](https://github.com/Bermos/Kitchen/commit/c563995b693fbfdc04440c669cbb62d3eb0c9863))
+
+
+### Bug fixes
+
+* **ui:** a valkey or redis connection can be created from the dashboard ([#286](https://github.com/Bermos/Kitchen/issues/286)) ([59c445b](https://github.com/Bermos/Kitchen/commit/59c445b7dee92c32aa237e60a10f45f5f8c9af75))
+
+
+### Refactoring
+
+* **claims:** register claim types instead of branching on them ([#279](https://github.com/Bermos/Kitchen/issues/279)) ([52171b5](https://github.com/Bermos/Kitchen/commit/52171b514ed845e796db7a9d7a13b08c3ca87d44))
+
 ## [0.21.0](https://github.com/Bermos/Kitchen/compare/v0.20.0...v0.21.0) (2026-08-31)
 
 
