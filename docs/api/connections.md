@@ -21,8 +21,8 @@ way they are: **the API never reads credentials back.** Writing one means the
 operator stores it in a Secret it manages, and every response is the same
 credential-free view `GET` answers.
 
-The providers are `github`, `gitlab`, `gitea`, `dockerRegistry`, `neon` and
-`cnpg`. **`cnpg` is the one with no credential at all** — it provisions
+The providers are `github`, `gitlab`, `gitea`, `dockerRegistry`, `neon`,
+`cnpg` and `s3`. **`cnpg` is the one with no credential at all** — it provisions
 Postgres into this cluster with the operator's own service account, so there
 is nothing to store, nothing to rotate, and a `credential` sent for it is
 refused rather than kept and never read:
@@ -114,6 +114,32 @@ neither enumerates repositories, so the repository is typed as `owner/name`
 rather than picked from a list.
 
 A `neon` credential is an API key that can create projects.
+
+An `s3` connection is any S3-compatible object store — the MinIO the chart
+runs when `objectStore.enabled` is set (the operator seeds this one, as
+`kitchen-objectstore`), a MinIO a team already runs, AWS S3, Cloudflare R2.
+It takes `credential.accessKeyId` and `credential.secretAccessKey`, and a
+`config` naming where the store is and how it is talked to:
+
+```json
+{"name": "r2", "provider": "s3",
+ "config": {"endpoint": "https://<account>.r2.cloudflarestorage.com", "region": "auto",
+            "forcePathStyle": false, "scopedCredentials": false},
+ "credential": {"accessKeyId": "…", "secretAccessKey": "…"}}
+```
+
+| Field | Default | What it does |
+|---|---|---|
+| `endpoint` | required | The store's URL, with its scheme |
+| `region` | `us-east-1` | What buckets are created in and what every binding carries — a formality S3 clients insist on |
+| `forcePathStyle` | `false` | Address a bucket as a path rather than a host name. MinIO needs it; AWS does not. It travels in every binding, so the application never guesses |
+| `scopedCredentials` | `true` | Mint a user and a policy per bucket through the MinIO admin API, so no application is handed this key pair. Set it `false` for a store without that API — S3, R2 — and every claim is handed the connection's own credential; a `size` on a claim is then refused, since a quota is set through the same API |
+
+A store that is kept at `scopedCredentials: true` and does not answer the
+admin API is not a failed connection — the credential works — but every claim
+through it will fail until the flag is set or the credential is given admin
+rights, and the test below says so as a warning rather than a verdict.
+Testing an `s3` connection lists the buckets the credential can see.
 
 `POST /connections/test` runs that credential past the provider **without
 storing anything**: no Secret is written and no connection is created, so a

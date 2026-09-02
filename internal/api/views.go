@@ -1153,6 +1153,10 @@ type claimView struct {
 	// condition's message.
 	Postgres *claimPostgresView `json:"postgres,omitempty"`
 
+	// ObjectStore is what the claim asked its bucket to be — versioned,
+	// publicly readable, held to a size. Absent when it asked for nothing.
+	ObjectStore *claimObjectStoreView `json:"objectStore,omitempty"`
+
 	// RedirectURIs is what an oidcClient claim's client currently accepts as
 	// a callback — the list the operator keeps in step with the project's
 	// environments. It is the one part of that automation anybody can check,

@@ -38,6 +38,7 @@ import (
 	"github.com/Bermos/Kitchen/internal/clickhouse"
 	"github.com/Bermos/Kitchen/internal/gitprovider"
 	"github.com/Bermos/Kitchen/internal/provider"
+	"github.com/Bermos/Kitchen/internal/provider/objectstore"
 )
 
 // The connection write surface. The interesting part is the credential: the
@@ -63,13 +64,16 @@ const (
 	gitTokenKey = "token"
 )
 
-// connectionCredential is a credential as the API accepts one — a token, or a
-// username and password, depending on the provider. It is write-only: nothing
-// in this package ever serializes it back out.
+// connectionCredential is a credential as the API accepts one — a token, a
+// username and password, or an S3 access key pair, depending on the
+// provider. It is write-only: nothing in this package ever serializes it
+// back out.
 type connectionCredential struct {
-	Token    string `json:"token,omitempty"`
-	Username string `json:"username,omitempty"`
-	Password string `json:"password,omitempty"`
+	Token           string `json:"token,omitempty"`
+	Username        string `json:"username,omitempty"`
+	Password        string `json:"password,omitempty"`
+	AccessKeyID     string `json:"accessKeyId,omitempty"`
+	SecretAccessKey string `json:"secretAccessKey,omitempty"`
 }
 
 type createConnectionRequest struct {
@@ -95,19 +99,22 @@ var tokenProviders = map[string]bool{
 
 // knownProviders is every provider the API accepts, credential or not, and
 // providerNames is the same list for the refusal message. cnpg is in neither
-// map above because it stores nothing.
+// map above because it stores nothing; s3 takes an access key pair.
 var knownProviders = map[string]bool{
 	"github": true, "gitlab": true, "gitea": true,
-	registryProvider: true, "neon": true, provider.ProviderCNPG: true,
+	registryProvider: true, "neon": true, provider.ProviderCNPG: true, objectstore.ProviderS3: true,
 }
 
-var providerNames = []string{"github", "gitlab", "gitea", registryProvider, "neon", provider.ProviderCNPG}
+var providerNames = []string{
+	"github", "gitlab", "gitea", registryProvider, "neon", provider.ProviderCNPG, objectstore.ProviderS3,
+}
 
 const registryProvider = "dockerRegistry"
 
 // connectionSecretData turns a credential into the secret the reconcilers
-// expect for the provider: a `token` key, or a `.dockerconfigjson` for the
-// registry host named in the config.
+// expect for the provider: a `token` key, a `.dockerconfigjson` for the
+// registry host named in the config, or an S3 access key pair beside the
+// endpoint the config names.
 func connectionSecretData(providerName string, config map[string]any, credential *connectionCredential) (map[string][]byte, corev1.SecretType, error) {
 	switch {
 	case tokenProviders[providerName]:
@@ -128,9 +135,42 @@ func connectionSecretData(providerName string, config map[string]any, credential
 			return nil, "", err
 		}
 		return map[string][]byte{corev1.DockerConfigJsonKey: dockerConfig}, corev1.SecretTypeDockerConfigJson, nil
+	case providerName == objectstore.ProviderS3:
+		if credential.AccessKeyID == "" || credential.SecretAccessKey == "" {
+			return nil, "", fmt.Errorf("provider %s authenticates with an access key pair: pass {\"credential\": "+
+				"{\"accessKeyId\": \"...\", \"secretAccessKey\": \"...\"}}", objectstore.ProviderS3)
+		}
+		if err := validS3Config(config); err != nil {
+			return nil, "", err
+		}
+		return map[string][]byte{
+			objectstore.CredentialKeyAccessKeyID:     []byte(credential.AccessKeyID),
+			objectstore.CredentialKeySecretAccessKey: []byte(credential.SecretAccessKey),
+		}, corev1.SecretTypeOpaque, nil
 	default:
 		return nil, "", fmt.Errorf("unknown provider %q: one of %s", providerName, strings.Join(providerNames, ", "))
 	}
+}
+
+// validS3Config checks an s3 connection's config the way the provisioner
+// will read it — the one reader, so a refusal here is the refusal there. The
+// two booleans are checked for shape as well, because a config that says
+// "forcePathStyle": "yes" would otherwise be read as false and every request
+// against a MinIO would fail.
+func validS3Config(config map[string]any) error {
+	for _, key := range []string{"forcePathStyle", "scopedCredentials", "inCluster"} {
+		if value, ok := config[key]; ok {
+			if _, isBool := value.(bool); !isBool {
+				return fmt.Errorf("config.%s is true or false (got %v)", key, value)
+			}
+		}
+	}
+	raw, err := json.Marshal(config)
+	if err != nil {
+		return err
+	}
+	_, err = objectstore.ParseConfig(raw)
+	return err
 }
 
 // registryServer is the host builds authenticate against, off the registry

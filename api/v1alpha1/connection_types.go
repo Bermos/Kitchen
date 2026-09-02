@@ -60,7 +60,7 @@ func ProviderNeedsCredential(provider string) bool {
 // +kubebuilder:validation:XValidation:rule="!(self.provider in ['cnpg']) || !has(self.credentialsSecretRef) || !has(self.credentialsSecretRef.name) || size(self.credentialsSecretRef.name) == 0",message="this provider takes no credentialsSecretRef: it provisions into this cluster with the operator's own account, and a Secret here would name a credential nothing reads.",messageExpression="'a ' + self.provider + ' connection takes no credentialsSecretRef: it provisions into this cluster with the account the operator itself holds, and a Secret here would name a credential nothing reads.'"
 type ConnectionSpec struct {
 	// Provider selects the plugin implementation.
-	// +kubebuilder:validation:Enum=github;gitlab;gitea;dockerRegistry;neon;cnpg
+	// +kubebuilder:validation:Enum=github;gitlab;gitea;dockerRegistry;neon;cnpg;s3
 	Provider string `json:"provider"`
 
 	// Secret holding the provider credentials (typically synced from

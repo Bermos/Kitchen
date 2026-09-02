@@ -38,6 +38,7 @@ import (
 	"github.com/Bermos/Kitchen/internal/audit"
 	"github.com/Bermos/Kitchen/internal/clickhouse"
 	"github.com/Bermos/Kitchen/internal/provider/database"
+	"github.com/Bermos/Kitchen/internal/provider/objectstore"
 )
 
 const (
@@ -70,6 +71,10 @@ type ResourceClaimReconciler struct {
 	// postgres contract. Defaults to database.Default; tests inject
 	// providers pointed at httptest.
 	Databases database.Factory
+	// Buckets resolves an object store Provisioner for a Connection, for
+	// the objectStore contract. Defaults to objectstore.Default; tests
+	// inject provisioners over an in-memory store.
+	Buckets objectstore.Factory
 	// Audit appends this reconciler's state transitions to the tamper-evident
 	// log. Unlike Activity it is waited on: a transition it refuses is a
 	// transition this reconciler does not make. May be nil.

@@ -1,0 +1,149 @@
+{{- include "kitchen.validate" . -}}
+{{- if .Values.objectStore.enabled }}
+# The bundled object store: one MinIO, one volume. A StatefulSet rather than
+# a Deployment because the object store is a directory on a ReadWriteOnce
+# volume, and two replicas rolling over each other would both want it. A
+# single node is where this starts; a distributed MinIO is the operator's
+# business and is not what a platform's first bucket needs.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "kitchen.objectStoreFullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kitchen.labels" . | nindent 4 }}
+    app.kubernetes.io/component: objectstore
+spec:
+  replicas: 1
+  serviceName: {{ include "kitchen.objectStoreFullname" . }}-headless
+  selector:
+    matchLabels:
+      {{- include "kitchen.objectStoreSelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "kitchen.objectStoreSelectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: objectstore
+      {{- with .Values.objectStore.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.objectStore.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.objectStore.podSecurityContext | nindent 8 }}
+      containers:
+        - name: minio
+          image: {{ include "kitchen.objectStoreImage" . }}
+          imagePullPolicy: {{ .Values.objectStore.image.pullPolicy }}
+          args:
+            - server
+            - /data
+            - --address
+            - {{ printf ":%d" (int .Values.objectStore.service.port) | quote }}
+          env:
+            # The root credential: what the operator copies into the
+            # Connection it seeds, and what mints every bucket's own scoped
+            # user. No application is ever handed it.
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "kitchen.objectStoreSecretName" . }}
+                  key: accessKeyId
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "kitchen.objectStoreSecretName" . }}
+                  key: secretAccessKey
+            # The region every bucket reports. A formality S3 clients
+            # insist on; the seeded Connection is told the same value.
+            - name: MINIO_REGION
+              value: {{ .Values.objectStore.region | quote }}
+            # No console and no update check: the store is reached by
+            # applications at a Service address, and nothing else.
+            - name: MINIO_BROWSER
+              value: "off"
+            - name: MINIO_UPDATE
+              value: "off"
+            {{- with .Values.objectStore.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: s3
+              containerPort: {{ int .Values.objectStore.service.port }}
+              protocol: TCP
+          # MinIO answers these two without authentication.
+          startupProbe:
+            httpGet:
+              path: /minio/health/live
+              port: s3
+            periodSeconds: 5
+            failureThreshold: 60
+          livenessProbe:
+            httpGet:
+              path: /minio/health/live
+              port: s3
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /minio/health/ready
+              port: s3
+            periodSeconds: 10
+          securityContext:
+            {{- toYaml .Values.objectStore.securityContext | nindent 12 }}
+          resources:
+            {{- toYaml .Values.objectStore.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            # The root filesystem is read-only; MinIO keeps its own
+            # scratch here.
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        {{- if not .Values.objectStore.persistence.enabled }}
+        - name: data
+          emptyDir: {}
+        {{- end }}
+      {{- with .Values.objectStore.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.objectStore.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.objectStore.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  {{- if .Values.objectStore.persistence.enabled }}
+  volumeClaimTemplates:
+    # Stable labels only: volumeClaimTemplates is immutable, so anything that
+    # moves with the chart version would make every upgrade an attempt to
+    # mutate an immutable field. Same reasoning as the registry.
+    - metadata:
+        name: data
+        labels:
+          {{- include "kitchen.objectStoreSelectorLabels" . | nindent 10 }}
+          app.kubernetes.io/component: objectstore
+          app.kubernetes.io/part-of: kitchen
+      spec:
+        accessModes:
+          {{- toYaml .Values.objectStore.persistence.accessModes | nindent 10 }}
+        resources:
+          requests:
+            storage: {{ .Values.objectStore.persistence.size | quote }}
+        {{- with .Values.objectStore.persistence.storageClass }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+  {{- end }}
+{{- end }}

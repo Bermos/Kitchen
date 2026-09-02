@@ -117,6 +117,17 @@ export function providerGuidance(provider: string, apiUrl?: string): ProviderGui
         purpose: "Builds log in with this to push images — a robot account with push access to the registry is enough.",
         permissions: [],
       };
+    case "s3":
+      return {
+        tokenLabel: "Access key pair",
+        purpose:
+          "Kitchen creates one bucket per claim with this credential and, at a MinIO, a user and a policy scoped to that bucket — so the application is never handed this key pair.",
+        permissions: [
+          "At a MinIO: a credential with admin rights, so the platform can mint a user per bucket. The bundled store's root credential is one.",
+          "At AWS S3, Cloudflare R2 or another store without the MinIO admin API: a credential that can create and delete buckets — and set \"mint a credential per bucket\" off, because there is no API to mint one through. Every claim is then handed this key pair, and the bucket is the isolation.",
+          "Testing the connection lists the buckets it can see; a MinIO whose admin API refuses the credential answers with a warning rather than a failure.",
+        ],
+      };
     default:
       return undefined;
   }

@@ -31,6 +31,7 @@ const providers = [
   { label: "Container registry", value: "dockerRegistry" },
   { label: "Neon", value: "neon" },
   { label: "CloudNativePG — Postgres the platform runs itself", value: "cnpg" },
+  { label: "S3-compatible object store — MinIO, AWS S3, Cloudflare R2", value: "s3" },
 ];
 
 const name = ref("");
@@ -38,16 +39,27 @@ const provider = ref("github");
 const token = ref("");
 const username = ref("");
 const password = ref("");
-// The one config field each provider understands today: the registry prefix,
-// or a self-hosted GitHub's API URL.
+// The config each provider understands: the registry prefix, a self-hosted
+// GitHub's API URL, or where an object store is and how it is addressed.
 const registryURL = ref("");
 const apiURL = ref("");
+const s3Endpoint = ref("");
+const s3Region = ref("");
+// Path style is what MinIO needs and AWS does not, and an application that
+// guesses wrong fails on every request — so it is asked here, once, and
+// travels in every binding. Scoped credentials is whether the platform mints
+// a user per bucket through the MinIO admin API, which S3 and R2 lack.
+const s3ForcePathStyle = ref(false);
+const s3ScopedCredentials = ref(true);
+const accessKeyId = ref("");
+const secretAccessKey = ref("");
 
 // The one provider with nothing to store: CloudNativePG provisions with the
 // operator's own account, so there is no credential, no field for one, and a
 // credential sent anyway is refused rather than kept and never read.
 const needsCredential = computed(() => provider.value !== "cnpg");
-const usesToken = computed(() => needsCredential.value && provider.value !== "dockerRegistry");
+const isS3 = computed(() => provider.value === "s3");
+const usesToken = computed(() => needsCredential.value && provider.value !== "dockerRegistry" && !isS3.value);
 
 const guidance = computed(() => providerGuidance(provider.value, apiURL.value));
 
@@ -62,18 +74,26 @@ watch(open, (value) => {
   provider.value = props.connection?.provider ?? "github";
   registryURL.value = "";
   apiURL.value = "";
+  s3Endpoint.value = "";
+  s3Region.value = "";
+  s3ForcePathStyle.value = false;
+  s3ScopedCredentials.value = true;
+  accessKeyId.value = "";
+  secretAccessKey.value = "";
   testResult.value = null;
   testError.value = "";
 });
 
 const credentialGiven = computed(() => {
   if (!needsCredential.value) return false;
+  if (isS3.value) return Boolean(accessKeyId.value && secretAccessKey.value);
   return usesToken.value ? Boolean(token.value) : Boolean(username.value && password.value);
 });
 
 const ready = computed(() => {
   if (!editing.value && (!name.value || !provider.value)) return false;
   if (!editing.value && provider.value === "dockerRegistry" && !registryURL.value) return false;
+  if (!editing.value && isS3.value && !s3Endpoint.value) return false;
   // Creating needs the credential; editing without one only changes config.
   if (!editing.value && needsCredential.value && !credentialGiven.value) return false;
   if (editing.value && !credentialGiven.value && !config.value) return false;
@@ -83,12 +103,21 @@ const ready = computed(() => {
 const config = computed(() => {
   if (provider.value === "dockerRegistry" && registryURL.value) return { url: registryURL.value };
   if (provider.value === "github" && apiURL.value) return { apiUrl: apiURL.value };
+  if (isS3.value && s3Endpoint.value) {
+    return {
+      endpoint: s3Endpoint.value.trim(),
+      ...(s3Region.value.trim() ? { region: s3Region.value.trim() } : {}),
+      forcePathStyle: s3ForcePathStyle.value,
+      scopedCredentials: s3ScopedCredentials.value,
+    };
+  }
   return undefined;
 });
 
-const credential = computed(() =>
-  usesToken.value ? { token: token.value } : { username: username.value, password: password.value },
-);
+const credential = computed(() => {
+  if (isS3.value) return { accessKeyId: accessKeyId.value, secretAccessKey: secretAccessKey.value };
+  return usesToken.value ? { token: token.value } : { username: username.value, password: password.value };
+});
 
 // The verdict of the last test, and the test's own failure — a 400 from the
 // API is a badly formed request, not a provider's ruling, and reads as one.
@@ -103,10 +132,13 @@ const testing = ref(false);
 const testable = computed(() => credentialGiven.value || editing.value || !needsCredential.value);
 
 // Any change to what would be tested makes the old verdict stale.
-watch([provider, token, username, password, registryURL, apiURL], () => {
-  testResult.value = null;
-  testError.value = "";
-});
+watch(
+  [provider, token, username, password, registryURL, apiURL, s3Endpoint, s3Region, s3ForcePathStyle, s3ScopedCredentials, accessKeyId, secretAccessKey],
+  () => {
+    testResult.value = null;
+    testError.value = "";
+  },
+);
 
 async function test() {
   if (!testable.value || testing.value) return;
@@ -180,7 +212,7 @@ async function save() {
     :description="
       editing
         ? 'Rotate the credential or change the configuration. The stored credential is never shown; blank fields keep it.'
-        : 'Link a git provider, registry or database. The credential is stored by the operator and never read back.'
+        : 'Link a git provider, registry, database or object store. The credential is stored by the operator and never read back.'
     "
   >
     <slot>
@@ -214,6 +246,29 @@ async function save() {
           <UInput v-model="apiURL" placeholder="https://github.internal/api/v3" class="w-full font-mono" />
         </UFormField>
 
+        <template v-if="isS3">
+          <div class="grid gap-4 sm:grid-cols-2">
+            <UFormField label="Endpoint" help="The store's URL, with its scheme." :required="!editing">
+              <UInput v-model="s3Endpoint" placeholder="https://s3.eu-central-1.amazonaws.com" class="w-full font-mono" />
+            </UFormField>
+            <UFormField label="Region" help="Empty asks for us-east-1, which every store accepts.">
+              <UInput v-model="s3Region" placeholder="eu-central-1" class="w-full font-mono" />
+            </UFormField>
+          </div>
+          <UFormField
+            label="Address buckets by path"
+            help="On for MinIO and most self-hosted stores; off for AWS S3. It travels in every binding, so the application never has to guess."
+          >
+            <USwitch v-model="s3ForcePathStyle" />
+          </UFormField>
+          <UFormField
+            label="Mint a credential per bucket"
+            help="Through the MinIO admin API: a user and a policy scoped to each claim's bucket. Off for AWS S3, R2 and other stores without it — every claim is then handed this connection's own key pair."
+          >
+            <USwitch v-model="s3ScopedCredentials" />
+          </UFormField>
+        </template>
+
         <UFormField
           v-if="usesToken"
           :label="guidance?.tokenLabel ?? 'Token'"
@@ -223,7 +278,20 @@ async function save() {
           <UInput v-model="token" type="password" class="w-full font-mono" autocomplete="off" />
         </UFormField>
 
-        <div v-if="!usesToken" class="grid gap-4 sm:grid-cols-2">
+        <div v-if="isS3" class="grid gap-4 sm:grid-cols-2">
+          <UFormField label="Access key ID" :required="!editing">
+            <UInput v-model="accessKeyId" class="w-full font-mono" autocomplete="off" />
+          </UFormField>
+          <UFormField
+            label="Secret access key"
+            :help="editing ? 'Leave both empty to keep the stored credential.' : undefined"
+            :required="!editing"
+          >
+            <UInput v-model="secretAccessKey" type="password" class="w-full font-mono" autocomplete="off" />
+          </UFormField>
+        </div>
+
+        <div v-if="!usesToken && !isS3" class="grid gap-4 sm:grid-cols-2">
           <UFormField label="Username" :required="!editing">
             <UInput v-model="username" class="w-full font-mono" autocomplete="off" />
           </UFormField>

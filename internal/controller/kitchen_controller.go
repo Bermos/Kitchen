@@ -215,6 +215,7 @@ func (r *KitchenReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	complianceReady := r.reconcileCompliance(ctx, kitchen, setCond)
 	gateReady := r.reconcilePreviewGate(ctx, kitchen, setCond)
 	registryReady := r.reconcileRegistry(ctx, kitchen, setCond)
+	objectStoreReady := r.reconcileObjectStore(ctx, kitchen, setCond)
 	accessReady := r.reconcileAccess(ctx, kitchen, setCond)
 	idlingReady := r.reconcileKeda(ctx, kitchen, setCond)
 	databasesReady := r.reconcileDatabases(ctx, kitchen, setCond)
@@ -230,13 +231,14 @@ func (r *KitchenReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		"telemetrySchemaReady", schemaReady,
 		"previewGateReady", gateReady,
 		"registryReady", registryReady,
+		"objectStoreReady", objectStoreReady,
 		"certificateReady", certReady,
 		"complianceReady", complianceReady,
 		"operatorsConfigured", accessReady,
 		"scaleToZeroReady", idlingReady,
 		"databasesReady", databasesReady,
 		"componentsHealthy", componentsHealthy)
-	if !programmed || !schemaReady || !gateReady || !registryReady || !certReady ||
+	if !programmed || !schemaReady || !gateReady || !registryReady || !objectStoreReady || !certReady ||
 		!complianceReady || !accessReady || !idlingReady || !databasesReady || !componentsHealthy {
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}

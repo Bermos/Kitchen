@@ -284,6 +284,54 @@ type ImageRegistrySpec struct {
 	SecretRef *LocalObjectReference `json:"secretRef,omitempty"`
 }
 
+// ObjectStoreSpec configures the object store the platform runs for itself:
+// a single MinIO an application's objectStore claim becomes a bucket in, so
+// that a file an application did not build into its image has somewhere to
+// go without anyone opening an account at a cloud.
+//
+// Unlike the registry it is not published on the Gateway. An application
+// runs in the cluster, and a Service address is all it needs; the node's
+// container runtime is not in the path, so nothing here has to be trusted by
+// anything outside. It follows that a bucket in it cannot be publicly
+// readable — there is no public to read it — and a claim asking for that is
+// refused rather than granted a policy that publishes nothing.
+type ObjectStoreSpec struct {
+	// Enabled seeds the Connection that points at the bundled store. Off —
+	// the default — means an installation brings its own S3-compatible
+	// store, which is an s3 Connection someone creates. The chart renders
+	// the store itself only when its own objectStore.enabled is set.
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// Service in the platform namespace the store answers on. The chart
+	// writes it as <release>-objectstore.
+	// +optional
+	Service string `json:"service,omitempty"`
+
+	// Port the store's Service publishes.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=65535
+	// +kubebuilder:default=9000
+	// +optional
+	Port int32 `json:"port,omitempty"`
+
+	// Region the store reports for its buckets. It is a formality an S3
+	// client insists on; the bundled store is told the same value.
+	// +kubebuilder:default=us-east-1
+	// +optional
+	Region string `json:"region,omitempty"`
+
+	// SecretRef names the Secret in the platform namespace holding the
+	// store's root credential: the keys accessKeyId and secretAccessKey. The
+	// chart writes it as <release>-objectstore, generating the secret once
+	// and keeping it across upgrades. It is what the operator copies into the
+	// seeded Connection's credential, and what mints every claim's own.
+	//
+	// Left unset it is the conventional release name's, kitchen-objectstore.
+	// +optional
+	SecretRef *LocalObjectReference `json:"secretRef,omitempty"`
+}
+
 // PodSecurityLevel is one of the three Pod Security Standards levels a
 // namespace can be labelled with.
 // +kubebuilder:validation:Enum=privileged;baseline;restricted
@@ -720,6 +768,12 @@ type KitchenSpec struct {
 	// +optional
 	Registry ImageRegistrySpec `json:"registry,omitempty"`
 
+	// ObjectStore configures the platform's own S3-compatible store, and
+	// the Connection the operator seeds to point at it. Off by default.
+	// +kubebuilder:default={}
+	// +optional
+	ObjectStore ObjectStoreSpec `json:"objectStore,omitempty"`
+
 	// +kubebuilder:default={}
 	// +optional
 	ScaleToZero ScaleToZeroSpec `json:"scaleToZero,omitempty"`
@@ -825,6 +879,21 @@ type ImageRegistryStatus struct {
 	Connection string `json:"connection,omitempty"`
 }
 
+// ObjectStoreStatus records what the operator did about the bundled object
+// store, on the same seed-once terms as ImageRegistryStatus: Connection is
+// written when the operator seeds it and read forever after as "this has
+// been seeded", so a Connection someone deletes stays deleted.
+type ObjectStoreStatus struct {
+	// Endpoint the store is reached at inside the cluster.
+	// +optional
+	Endpoint string `json:"endpoint,omitempty"`
+
+	// Connection the operator seeded, by name. Set once and never cleared
+	// while the store stays enabled.
+	// +optional
+	Connection string `json:"connection,omitempty"`
+}
+
 // ScaleToZeroStatus records where KEDA came from, so that "the platform
 // installed this" and "the platform found this" stay distinguishable for as
 // long as the installation lives.
@@ -905,6 +974,11 @@ type KitchenStatus struct {
 	// and the Connection the operator seeded to point at it.
 	// +optional
 	Registry *ImageRegistryStatus `json:"registry,omitempty"`
+
+	// ObjectStore reports the bundled object store: where it is reached, and
+	// the Connection the operator seeded to point at it.
+	// +optional
+	ObjectStore *ObjectStoreStatus `json:"objectStore,omitempty"`
 
 	// Components reports every platform workload the operator can see, in
 	// name order, whether or not it is healthy. Something missing from this

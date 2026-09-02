@@ -855,6 +855,65 @@ connection naming a registry nothing serves is a picker entry that fails every
 build chosen with it. Add your own registry on the connections page; nothing
 downstream treats the bundled one as a special case.
 
+## The bundled object store
+
+An application has to have somewhere to put a file it did not build into its
+image — user uploads, generated exports — and the container filesystem loses
+it on the next deploy. Kitchen can run the somewhere: a single
+[MinIO](https://min.io/) with a PVC, and an `s3` Connection the operator
+seeds to point at it. It is **off by default** — it is a workload with a
+volume, and an installation that already has S3 or R2 brings it as a
+Connection of its own:
+
+```sh
+--set objectStore.enabled=true
+```
+
+An `objectStore` claim then becomes a bucket in it, with a user and a policy
+scoped to that bucket minted from the store's root credential — a bucket per
+claim, never a prefix in a shared one, and no application is ever handed the
+root. Each preview environment gets an empty bucket of its own, torn down
+with the preview.
+
+### Why it is not published on the Gateway
+
+The registry has to be, because the node's container runtime pulls images
+and trusts nothing the cluster says about a certificate. Nothing like that is
+in the path here: an application runs in the cluster and reaches the store at
+`kitchen-objectstore.kitchen-system.svc.cluster.local:9000`, over plain HTTP
+on a Service address nothing outside can reach. So there is no hostname, no
+TLS requirement, and it works in `kitchen.tls.mode=none`.
+
+The corollary is stated rather than hidden: **a bucket in the bundled store
+cannot be publicly readable**, because there is no public to read it. A claim
+that asks for `publicRead` is refused with that reason rather than granted a
+policy that publishes nothing; serve the objects through the application, or
+claim through an `s3` connection to a store that is on the internet.
+
+### The seeded connection
+
+The operator creates the Connection **once**, remembers in
+`status.objectStore.connection` that it did, and leaves a deleted one deleted
+— the same terms as the registry's. While it is there and still labelled
+`app.kubernetes.io/managed-by: kitchen`, its endpoint and credential are kept
+in step. The root secret key is generated on install and read back on
+upgrade, so it stays stable; rotating it would invalidate the seeded
+connection and stop every new bucket from being provisioned. `helm template`
+cannot read it back, so set `objectStore.auth.secretAccessKey` when rendering
+offline.
+
+```sh
+kubectl get kitchen default -o jsonpath='{.status.conditions[?(@.type=="ObjectStoreReady")].message}'
+kubectl -n kitchen-system rollout status statefulset/kitchen-objectstore
+```
+
+### Not in the backup
+
+The store's volume is not in the platform's backup archive, any more than the
+registry's is — see [BACKUP.md](../../docs/BACKUP.md). An installation that
+keeps production uploads here backs the volume up itself, or claims through a
+store that is backed up already.
+
 ## Scale to zero
 
 An environment nobody is using can drop to no pods at all, and the next request
@@ -1689,6 +1748,15 @@ kubectl delete namespace kitchen-system
 | `registry.retention.gcInterval` / `.gcDelay` | `24h` / `2h` | How often the collector runs, and how long a fresh blob is left alone. |
 | `registry.resources` | 50m/128Mi → 1Gi | |
 | `registry.logLevel` | `info` | |
+| `objectStore.enabled` | `false` | Run the bundled object store and seed the `s3` Connection pointing at it. See [The bundled object store](#the-bundled-object-store). |
+| `objectStore.image.repository` / `.tag` | `quay.io/minio/minio` / `RELEASE.2025-04-22T22-12-26Z` | A single MinIO server on one volume. |
+| `objectStore.auth.accessKeyId` | `kitchen` | The root user; mints every bucket's own credential and is never handed to an application. |
+| `objectStore.auth.secretAccessKey` | `""` | Generated on install, preserved on upgrade. |
+| `objectStore.region` | `us-east-1` | What every bucket reports, and what the seeded Connection is told. |
+| `objectStore.service.port` | `9000` | |
+| `objectStore.persistence.enabled` | `true` | PVC for the store. Every object dies with the pod without it. |
+| `objectStore.persistence.size` / `.storageClass` / `.accessModes` | `50Gi` / cluster default / `[ReadWriteOnce]` | |
+| `objectStore.resources` | 100m/256Mi → 2Gi | |
 | `scaleToZero.enabled` | `false` | Idle environments down to no pods. An idle environment stops doing *everything*, not only serving — a background loop stops with it, so a project whose workload is not request-driven sets `spec.runtime.notRequestDriven` and keeps its pods. Needs KEDA and the HTTP add-on in the cluster — installed by the operator, or by you; see [Scale to zero](#scale-to-zero). |
 | `scaleToZero.install.enabled` | `false` | Let the operator install KEDA and its HTTP add-on itself. Creates a ServiceAccount bound to cluster-admin; does nothing on a cluster that already runs KEDA. |
 | `scaleToZero.install.chartRepository` | `https://kedacore.github.io/charts` | Helm repository the two charts are pulled from. |

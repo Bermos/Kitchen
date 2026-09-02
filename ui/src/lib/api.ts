@@ -1338,12 +1338,15 @@ export interface NewKey {
   role?: string;
 }
 
-/** A credential as the API accepts one — a token, or a username and password,
- * depending on the provider. Write-only: the API never reads it back. */
+/** A credential as the API accepts one — a token, a username and password,
+ * or an S3 access key pair, depending on the provider. Write-only: the API
+ * never reads it back. */
 export interface ConnectionCredential {
   token?: string;
   username?: string;
   password?: string;
+  accessKeyId?: string;
+  secretAccessKey?: string;
 }
 
 export interface NewConnection {
@@ -1502,6 +1505,16 @@ export interface ClaimPostgres {
   storageClass?: string;
 }
 
+/** The bucket an objectStore claim asked for: versioned, publicly readable,
+ * held to a size. All three are applied when the bucket is created; a store
+ * that cannot honour one refuses the claim, with the reason on its Ready
+ * condition. */
+export interface ClaimObjectStore {
+  versioning?: boolean;
+  publicRead?: boolean;
+  size?: string;
+}
+
 export interface Claim {
   name: string;
   project: string;
@@ -1545,6 +1558,9 @@ export interface Claim {
    * granted is the phase and the conditions: a claim asking for an extension
    * no image can supply is Failed, with the refusal as the message. */
   postgres?: ClaimPostgres;
+  /** What an objectStore claim asked its bucket to be. Absent when it asked
+   * for nothing in particular. */
+  objectStore?: ClaimObjectStore;
   createdAt: string;
   conditions?: Condition[];
   /** What an oidcClient claim's client currently accepts as a callback. The
@@ -1595,6 +1611,8 @@ export interface NewClaim {
   /** postgres only: the major version, the extensions the application needs,
    * and the volume behind the database. */
   postgres?: ClaimPostgres;
+  /** objectStore only: versioning, public reads and a size for the bucket. */
+  objectStore?: ClaimObjectStore;
   /** Classify the data the resource will hold. May not exceed the project's
    * class; refused in an unclassified project (classify the project first). */
   dataClass?: string;

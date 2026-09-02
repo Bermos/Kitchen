@@ -20,7 +20,8 @@ limitations under the License.
 // generator and the tests all read the same rows.
 //
 // Each contract package keeps its own declarations next to its
-// implementations — database.Declarations, oidcclient.Declaration — and this
+// implementations — database.Declarations, oidcclient.Declaration,
+// objectstore.Declarations — and this
 // package only lists them. The matrix in docs/api/claims.md is rendered from
 // here by hack/gen-claim-matrix, and the test in this package fails when the
 // checked-in matrix and a fresh render differ, which is what keeps prose
@@ -34,6 +35,7 @@ import (
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/provider/contract"
 	"github.com/Bermos/Kitchen/internal/provider/database"
+	"github.com/Bermos/Kitchen/internal/provider/objectstore"
 	"github.com/Bermos/Kitchen/internal/provider/oidcclient"
 )
 
@@ -72,6 +74,9 @@ func Lookup(claimType, provider string) (contract.Declaration, bool) {
 		if provider == oidcclient.ProviderName {
 			return oidcclient.Declaration, true
 		}
+	case kitchenv1alpha1.ClaimTypeObjectStore:
+		declaration, ok := objectstore.Declarations[provider]
+		return declaration, ok
 	}
 	return contract.Declaration{}, false
 }
@@ -85,6 +90,8 @@ func providersOf(claimType string) []string {
 		return []string{database.ProviderNeon, database.ProviderCNPG}
 	case kitchenv1alpha1.ClaimTypeOIDCClient:
 		return []string{oidcclient.ProviderName}
+	case kitchenv1alpha1.ClaimTypeObjectStore:
+		return []string{objectstore.ProviderS3}
 	}
 	return nil
 }

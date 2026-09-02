@@ -136,6 +136,19 @@ spec:
     secretRef:
       name: {{ include "kitchen.registrySecretName" . }}
     {{- end }}
+  objectStore:
+    # The object store the chart runs, seeded by the operator: the Connection
+    # is the operator's because a credential the API never reads back has to
+    # be written by something inside the cluster. No route — the store is
+    # reached at its Service address, inside the cluster.
+    enabled: {{ .Values.objectStore.enabled }}
+    {{- if .Values.objectStore.enabled }}
+    service: {{ include "kitchen.objectStoreFullname" . | quote }}
+    port: {{ int .Values.objectStore.service.port }}
+    region: {{ .Values.objectStore.region | quote }}
+    secretRef:
+      name: {{ include "kitchen.objectStoreSecretName" . }}
+    {{- end }}
   scaleToZero:
     enabled: {{ .Values.scaleToZero.enabled }}
     {{- if .Values.scaleToZero.enabled }}

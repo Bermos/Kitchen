@@ -1,8 +1,8 @@
 # Kitchen — Claims
 
 A claim asks the platform for something the project needs and does not want
-to install itself — a database, single sign-on — and binds it into the
-project's environments. The credentials it produces stay in the cluster:
+to install itself — a database, a bucket, single sign-on — and binds it into
+the project's environments. The credentials it produces stay in the cluster:
 the API hands out the claim's status, never the secret's contents.
 
 Part of the [REST API](../API.md), which carries the authentication, the
@@ -74,7 +74,7 @@ the same name created later against the same connection finds it and rebinds to
 it. That namespace is deliberately not the project's own: deleting a project
 deletes that one, and a retained database has to survive exactly that.
 
-Either type takes an optional `dataClass` — `public`, `internal`,
+Every type takes an optional `dataClass` — `public`, `internal`,
 `confidential` or `strictlyConfidential` — classifying the data the resource
 will hold. It may not exceed the [project](projects.md)'s own class
 (classification narrows going down, never widens), and a classified claim in
@@ -101,6 +101,56 @@ themselves. Reported, not declared. Both are visible on the environment screen, 
 running on production-derived data is marked rather than implied, and both
 are enforced at promotion by the default bundle's `data-provenance-preview`
 rule.
+
+**`objectStore`** asks a Connection with the `objectStore` capability for a
+bucket: somewhere an application can put a file it did not build into its
+image — user uploads, generated exports, anything it writes and expects to
+read back — instead of the container filesystem, which loses it on the next
+deploy. The one provider is `s3`, and it is the most substitutable contract
+the platform has: the bundled MinIO, a MinIO a team already runs, AWS S3 and
+Cloudflare R2 all speak the same API, so an application written against the
+binding moves between them without changing.
+
+```sh
+curl -sS -X POST -H "authorization: Bearer $TOKEN" \
+  -d '{"name": "shop-uploads", "project": "shop", "connection": "kitchen-objectstore", "type": "objectStore",
+       "objectStore": {"versioning": true, "size": "50Gi"}}' \
+  https://kitchen.apps.example.com/api/v1/claims
+```
+
+The binding secret carries `endpoint`, `bucket`, `region`, `accessKeyId`,
+`secretAccessKey` and `forcePathStyle`. The last is not decoration: MinIO
+addresses a bucket in the path and AWS in the host name, and an application
+that guesses wrong fails on every request — so the Connection says which,
+once, and every binding carries the answer.
+
+**A bucket per claim, with a credential scoped to it.** Never a prefix in a
+shared bucket, because a prefix is not an isolation boundary. At a MinIO —
+the bundled store, or one a team runs — the platform mints a user and a
+policy per bucket through the admin API, and the application is never handed
+the connection's own key pair. At a store without that API (AWS S3, R2) the
+connection says so with `scopedCredentials: false`, every claim is handed the
+connection's own credential, and the bucket is the isolation.
+
+| Field | Default | What it does |
+|---|---|---|
+| `objectStore.versioning` | off | Keep every version of an object, so an overwrite or a delete can be undone at the store |
+| `objectStore.publicRead` | off | Anyone may read the bucket's objects without a credential. Only a store on the internet can honour it — the bundled store is reached at a Service address inside the cluster alone, and refuses it saying so |
+| `objectStore.size` | no limit | A Kubernetes quantity the bucket may not grow past — a hard quota at a MinIO, refused at a store without the admin API to set one |
+
+As with `postgres`, this endpoint checks the shape and the provisioner
+answers whether it can be supplied: a claim asking the bundled store for a
+publicly readable bucket, or an R2 connection for a size, is `Failed` with
+the reason on its `Ready` condition, and nothing was created. Everything in
+the block is applied when the bucket is created.
+
+**What `deletionPolicy` means for a bucket.** `Retain`, the default, leaves
+the bucket, its objects and — at a MinIO — its user at the store; a claim of
+the same name created later against the same connection finds the bucket by
+name and re-issues its credential. `Delete` removes the credential, every
+version of every object, and the bucket. **A preview's bucket goes with the
+preview under either policy**, like a database branch: it is the platform's
+bookkeeping, not the data the policy exists to protect.
 
 **`oidcClient`** asks the platform's own identity provider for an OAuth
 client, so that the application signs its users in with the same accounts as
@@ -131,8 +181,9 @@ part of that automation anybody can check.
 
 ## What a preview gets, and what a claim costs the workload
 
-A preview environment gets a copy of production's database from Neon and an
-empty one from CloudNativePG. Both are correct, and the difference between
+A preview environment gets a copy of production's database from Neon, an
+empty one from CloudNativePG, and an empty bucket of its own from an object
+store. Both are correct, and the difference between
 them is the difference between a preview that can read production data and
 one that cannot — so it is not decided inside each provisioner. Every
 provider **declares** it, in code next to the implementation, and the
@@ -166,7 +217,8 @@ them so the screen can say so before the claim is made.
 
 `GET /claim-types` answers this table for the dashboard, with the same rows.
 The CLI reaches it with `kitchen api GET /claim-types`; nothing else in the
-CLI needs it, because no command creates a claim.
+CLI needs it, because no command creates a claim — an `objectStore` claim is
+made the way every other is, `kitchen api POST /claims` with the body above.
 
 <!-- generated by hack/gen-claim-matrix from internal/provider/declarations; do not edit -->
 | Type | Provider | Previews get | Scale to zero | Deploys |
@@ -174,6 +226,7 @@ CLI needs it, because no command creates a claim.
 | `postgres` | `neon` | `branch` — a copy-on-write branch of production's data under its own address — cheap, and production-derived: the branch declares provenance production | unaffected | unaffected |
 | `postgres` | `cnpg` | `fresh` — a new, empty database with the same version, extensions and storage, never a copy of production: the branch declares provenance synthetic | unaffected | unaffected |
 | `oidcClient` | `kitchen` | `shared` — every environment signs in through the project's one client; the operator keeps its redirect list in step as previews come and go, and a client holds no data | unaffected | unaffected |
+| `objectStore` | `s3` | `fresh` — a new, empty bucket of the preview's own with its own credential, versioned when production's is and torn down with the preview: the branch declares provenance synthetic | unaffected | unaffected |
 <!-- end generated -->
 
 ### Choosing on the claim
@@ -206,6 +259,6 @@ previews production — after upgrading, its previews get the provider's
 declared mode instead, and `previewMode: shared` restores what it had.
 
 Deleting a claim answers `202`: the operator's finalizer still has branches,
-binding secrets, the registered client and — under `Delete` — the database
-itself to remove.
+preview buckets, binding secrets, the registered client and — under `Delete`
+— the database or the bucket itself to remove.
 

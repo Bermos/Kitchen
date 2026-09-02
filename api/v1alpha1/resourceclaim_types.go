@@ -49,6 +49,13 @@ const (
 	// configured with, and the operator registers the client with the
 	// service credential it holds for it.
 	ClaimTypeOIDCClient = "oidcClient"
+
+	// ClaimTypeObjectStore is a bucket from an objectStore-capable
+	// Connection: somewhere an application can put a file it did not build
+	// into its image — user uploads, generated exports, anything it writes
+	// and expects to read back. The bundled MinIO, or any S3-compatible
+	// store somebody else runs.
+	ClaimTypeObjectStore = "objectStore"
 )
 
 // ClaimType is what the platform knows about one kind of claim before any
@@ -93,6 +100,7 @@ func (t ClaimType) TakesConnection() bool { return t.Capability != "" }
 var ClaimTypes = []ClaimType{
 	{Name: ClaimTypePostgres, Capability: CapabilityDatabase, Resource: "database", HoldsData: true},
 	{Name: ClaimTypeOIDCClient, Resource: "OAuth client"},
+	{Name: ClaimTypeObjectStore, Capability: CapabilityObjectStore, Resource: "bucket", HoldsData: true},
 }
 
 // LookupClaimType finds a claim type by the value of spec.type.
@@ -158,7 +166,7 @@ type ResourceClaimSpec struct {
 	// it on a bound claim would leave a database behind while the
 	// application's environment quietly started reading OAuth credentials
 	// out of the same keys. Ask for the other one and delete this.
-	// +kubebuilder:validation:Enum=postgres;oidcClient
+	// +kubebuilder:validation:Enum=postgres;oidcClient;objectStore
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="type is immutable: delete the claim and ask for the other kind"
 	Type string `json:"type"`
 
@@ -277,6 +285,35 @@ type PostgresStorage struct {
 	StorageClass string `json:"storageClass,omitempty"`
 }
 
+// ObjectStoreConfig is the `objectStore` slice of an objectStore claim's
+// spec.config: what the application needs of its bucket beyond its
+// existence.
+//
+// Every field is applied when the bucket is *created*, and a provider that
+// cannot honour one refuses the claim before it creates anything — the
+// refusal names what could not be supplied, which is the whole point of
+// asking here rather than finding out from an application that assumed its
+// uploads were versioned.
+type ObjectStoreConfig struct {
+	// Versioning keeps every version of an object rather than the latest
+	// alone, so an overwrite or a delete can be undone at the store.
+	// +optional
+	Versioning bool `json:"versioning,omitempty"`
+
+	// PublicRead lets anyone read the bucket's objects without a credential
+	// — a bucket that serves images straight to browsers. Only a store that
+	// is actually on the internet can honour it; the bundled one is reached
+	// inside the cluster alone and refuses it, saying so.
+	// +optional
+	PublicRead bool `json:"publicRead,omitempty"`
+
+	// Size is how much the bucket may hold, as a Kubernetes quantity:
+	// "50Gi". It is a hint the provider turns into a quota where it can set
+	// one, and refuses where it cannot; empty asks for no limit.
+	// +optional
+	Size string `json:"size,omitempty"`
+}
+
 // OIDCClientConfig is the oidcClient slice of spec.config: what the operator
 // registers the client with, and what it keeps its redirect list made of.
 type OIDCClientConfig struct {
@@ -377,6 +414,22 @@ func (c *ResourceClaim) Postgres() PostgresConfig {
 	return *cfg.Postgres
 }
 
+// ObjectStore is what the claim asks of its bucket, empty for a claim of
+// another type or one that asked for nothing in particular — read through
+// the same door as the postgres slice, for the same reasons.
+func (c *ResourceClaim) ObjectStore() ObjectStoreConfig {
+	if c.Spec.Type != ClaimTypeObjectStore {
+		return ObjectStoreConfig{}
+	}
+	var cfg struct {
+		ObjectStore *ObjectStoreConfig `json:"objectStore,omitempty"`
+	}
+	if !c.DecodeConfig(&cfg) || cfg.ObjectStore == nil {
+		return ObjectStoreConfig{}
+	}
+	return *cfg.ObjectStore
+}
+
 // ClaimPhase is the coarse lifecycle summary of a ResourceClaim.
 // +kubebuilder:validation:Enum=Pending;Bound;Failed
 type ClaimPhase string
@@ -387,8 +440,9 @@ const (
 	ClaimFailed  ClaimPhase = "Failed"
 )
 
-// ClaimBranch records one provider-side database branch the claim created for
-// a preview Environment, and the Secret its binding was written into.
+// ClaimBranch records one provider-side resource the claim created for a
+// preview Environment — a database branch, a preview's own bucket — and the
+// Secret its binding was written into.
 type ClaimBranch struct {
 	// Environment is the preview Environment the branch belongs to.
 	Environment string `json:"environment"`
