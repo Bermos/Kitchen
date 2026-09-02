@@ -1127,21 +1127,33 @@ jobs:
 
           # KEDA was installed above, by hand, so the platform must adopt it and
           # record that it manages nothing — the alternative is an operator that
-          # writes to a release it does not own.
+          # writes to a release it does not own. Note that no install account
+          # was granted here: adoption is a fact about the cluster and must not
+          # depend on the grant, which is why the operator seeds an addon for
+          # every catalogue entry and only a permitted one asks to be installed.
           for _ in $(seq 1 30); do
             reason=$(kubectl get kitchen default \
               -o jsonpath='{.status.conditions[?(@.type=="ScaleToZeroReady")].reason}')
             [ -n "${reason}" ] && break
             sleep 2
           done
-          [ "${reason}" = AddOnPresent ] || {
+          [ "${reason}" = AlreadyServing ] || {
             echo "::error::the platform reported '${reason}' about a KEDA it did not install"
             kubectl get kitchen default -o jsonpath='{.status.conditions}' | tr ',' '\n'
+            kubectl -n kitchen-system get addon keda -o yaml || true
             exit 1
           }
-          managed=$(kubectl get kitchen default -o jsonpath='{.status.scaleToZero.managed}')
+          # What it installed is the addon's own record now, not a block on the
+          # singleton: the two installers that carried one each became one
+          # engine and one object per dependency.
+          managed=$(kubectl -n kitchen-system get addon keda -o jsonpath='{.status.managed}')
           [ -z "${managed}" ] || [ "${managed}" = false ] || {
             echo "::error::the platform claims to manage a KEDA it found (managed=${managed})"
+            exit 1
+          }
+          asks=$(kubectl -n kitchen-system get addon keda -o jsonpath='{.spec.install}')
+          [ -z "${asks}" ] || [ "${asks}" = false ] || {
+            echo "::error::the addon asks for an install this chart granted no account for (install=${asks})"
             exit 1
           }
 

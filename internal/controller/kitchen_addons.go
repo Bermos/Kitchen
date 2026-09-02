@@ -95,11 +95,13 @@ func (r *KitchenReconciler) reconcileDatabases(
 	addon := &kitchenv1alpha1.Addon{}
 	key := types.NamespacedName{Namespace: PlatformNamespace, Name: AddonCNPG}
 	err := r.Get(ctx, key, addon)
-	if apierrors.IsNotFound(err) {
-		// Not asked for and not installed: the guidance is not lost by
-		// staying quiet, because a cnpg Connection in a cluster without the
-		// operator says exactly this, on the connection, where somebody is
-		// looking.
+	if apierrors.IsNotFound(err) || addonAskedNothing(addon) {
+		// Nobody asked for a database and this cluster runs no operator to
+		// give one. The guidance is not lost by staying quiet, because a cnpg
+		// Connection in a cluster without the operator says exactly this, on
+		// the connection, where somebody is looking — and a permanent False
+		// here about something nobody wants is the kind of red that teaches
+		// people to stop reading conditions.
 		meta.RemoveStatusCondition(&kitchen.Status.Conditions, condDatabasesReady)
 		return true
 	}
@@ -149,6 +151,12 @@ func (r *KitchenReconciler) rollUpAddon(
 	return ready.Status == metav1.ConditionTrue ||
 		ready.Reason == kitchenv1alpha1.AddonRefused ||
 		ready.Reason == "NotInstalled"
+}
+
+// addonAskedNothing reports an Addon that neither asks for its entry nor
+// finds it serving — the state the platform has nothing to say about.
+func addonAskedNothing(addon *kitchenv1alpha1.Addon) bool {
+	return !addon.Spec.Install && !addon.Status.Serving
 }
 
 // dnsLabel is what a namespace name has to look like. The name reaches helm

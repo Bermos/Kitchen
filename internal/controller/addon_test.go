@@ -25,6 +25,7 @@ import (
 	. "github.com/onsi/gomega"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -42,6 +43,45 @@ import (
 // scenarios. Where the two entries genuinely differ — KEDA installs a pair
 // and refuses to install over half of one, CloudNativePG is used whoever
 // installed it — the spec says which entry it is about and why.
+
+// ensureAddon creates the Addon, or brings one an earlier spec left behind to
+// this spec's shape — spec *and* status.
+//
+// Every suite that reconciles the platform singleton now seeds these, so an
+// addon suite cannot assume a clean namespace any more than it can assume a
+// clean cluster-scoped Kitchen. Adopting rather than failing is what keeps a
+// spec's result its own.
+func ensureAddon(ctx context.Context, addon *kitchenv1alpha1.Addon) {
+	GinkgoHelper()
+	err := k8sClient.Create(ctx, addon)
+	if !apierrors.IsAlreadyExists(err) {
+		Expect(err).NotTo(HaveOccurred())
+		return
+	}
+	existing := &kitchenv1alpha1.Addon{}
+	Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(addon), existing)).To(Succeed())
+	existing.Spec = addon.Spec
+	Expect(k8sClient.Update(ctx, existing)).To(Succeed())
+	existing.Status = kitchenv1alpha1.AddonStatus{}
+	Expect(k8sClient.Status().Update(ctx, existing)).To(Succeed())
+	*addon = *existing
+}
+
+// releaseAddon drops an Addon's finalizer and deletes it, re-reading first:
+// a reconcile has usually moved the object on since the spec created it, and
+// writing a stale copy back is a conflict rather than a cleanup.
+func releaseAddon(ctx context.Context, name string) {
+	GinkgoHelper()
+	addon := &kitchenv1alpha1.Addon{}
+	key := types.NamespacedName{Namespace: PlatformNamespace, Name: name}
+	if err := k8sClient.Get(ctx, key, addon); err != nil {
+		Expect(client.IgnoreNotFound(err)).To(Succeed())
+		return
+	}
+	addon.Finalizers = nil
+	Expect(client.IgnoreNotFound(k8sClient.Update(ctx, addon))).To(Succeed())
+	Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, addon))).To(Succeed())
+}
 
 // asked builds an Addon that has (or has not) asked for its entry.
 func asked(id string, install bool) *kitchenv1alpha1.Addon {
@@ -350,7 +390,12 @@ var _ = Describe("Running an addon install", func() {
 	entry := entryOf(AddonKeda)
 
 	track := func(obj client.Object) {
-		ExpectWithOffset(1, k8sClient.Create(ctx, obj)).To(Succeed())
+		GinkgoHelper()
+		if addon, ok := obj.(*kitchenv1alpha1.Addon); ok {
+			ensureAddon(ctx, addon)
+		} else {
+			Expect(k8sClient.Create(ctx, obj)).To(Succeed())
+		}
 		created = append(created, obj)
 	}
 
@@ -640,7 +685,12 @@ var _ = Describe("Removing an addon", func() {
 	var created []client.Object
 
 	track := func(obj client.Object) {
-		ExpectWithOffset(1, k8sClient.Create(ctx, obj)).To(Succeed())
+		GinkgoHelper()
+		if addon, ok := obj.(*kitchenv1alpha1.Addon); ok {
+			ensureAddon(ctx, addon)
+		} else {
+			Expect(k8sClient.Create(ctx, obj)).To(Succeed())
+		}
 		created = append(created, obj)
 	}
 
@@ -796,29 +846,38 @@ var _ = Describe("Seeding the addons", func() {
 		kitchen = &kitchenv1alpha1.Kitchen{ObjectMeta: metav1.ObjectMeta{Name: KitchenSingletonName}}
 		Expect(reconciler.ensurePlatformNamespace(ctx)).To(Succeed())
 		cleanUp(AddonCNPG)
+		cleanUp(AddonKeda)
 	})
 
-	AfterEach(func() { cleanUp(AddonCNPG) })
+	AfterEach(func() {
+		cleanUp(AddonCNPG)
+		cleanUp(AddonKeda)
+	})
 
-	// Granting the install account is an explicit act — a chart value
-	// somebody set, creating a ServiceAccount bound to cluster-admin — so the
-	// seeded object asks for the install rather than waiting to be asked
-	// twice.
-	It("seeds an addon for every entry the chart permitted, and no others", func() {
+	// The grant decides what the object asks for, not whether it exists.
+	// Granting the account is an explicit act — a chart value somebody set,
+	// creating a ServiceAccount bound to cluster-admin — and nobody performs
+	// it without wanting the dependency, so a permitted entry is seeded
+	// asking for the install rather than waiting to be asked twice.
+	It("seeds every entry, and only a permitted one asks to be installed", func() {
 		changed, err := reconciler.seedAddons(ctx, kitchen)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(changed).To(BeTrue())
-		Expect(kitchen.Status.Addons.Seeded).To(ConsistOf(AddonCNPG))
+		Expect(kitchen.Status.Addons.Seeded).To(ConsistOf(AddonCNPG, AddonKeda))
 
-		seeded := &kitchenv1alpha1.Addon{}
+		granted := &kitchenv1alpha1.Addon{}
 		Expect(k8sClient.Get(ctx,
-			types.NamespacedName{Namespace: PlatformNamespace, Name: AddonCNPG}, seeded)).To(Succeed())
-		Expect(seeded.Spec.Install).To(BeTrue())
+			types.NamespacedName{Namespace: PlatformNamespace, Name: AddonCNPG}, granted)).To(Succeed())
+		Expect(granted.Spec.Install).To(BeTrue())
 
+		// The entry with no account still gets an object, because "is this
+		// serving in this cluster" is a fact about the cluster and the
+		// platform has to answer it for a KEDA somebody installed by hand.
+		// It just asks for nothing.
 		ungranted := &kitchenv1alpha1.Addon{}
-		err = k8sClient.Get(ctx,
-			types.NamespacedName{Namespace: PlatformNamespace, Name: AddonKeda}, ungranted)
-		Expect(err).To(HaveOccurred(), "an entry with no account granted is not seeded")
+		Expect(k8sClient.Get(ctx,
+			types.NamespacedName{Namespace: PlatformNamespace, Name: AddonKeda}, ungranted)).To(Succeed())
+		Expect(ungranted.Spec.Install).To(BeFalse())
 	})
 
 	// The seed is a good default, not a fixture the platform keeps
@@ -828,6 +887,7 @@ var _ = Describe("Seeding the addons", func() {
 		_, err := reconciler.seedAddons(ctx, kitchen)
 		Expect(err).NotTo(HaveOccurred())
 		cleanUp(AddonCNPG)
+		cleanUp(AddonKeda)
 
 		changed, err := reconciler.seedAddons(ctx, kitchen)
 		Expect(err).NotTo(HaveOccurred())
@@ -883,6 +943,29 @@ var _ = Describe("Rolling an addon up onto the platform", func() {
 		Expect(condition(condDatabasesReady)).To(BeNil())
 	})
 
+	// The failure this suite exists for. Adoption must not depend on the
+	// grant: "is the add-on serving" is a fact about the cluster, and the
+	// documented path is that somebody installs KEDA themselves. A platform
+	// that answered "no addon, so nothing idles" in a cluster plainly running
+	// one would be wrong about its own capabilities.
+	It("adopts an entry nobody granted an account for", func() {
+		addon := asked(AddonKeda, false)
+		Expect(k8sClient.Create(ctx, addon)).To(Succeed())
+		defer releaseAddon(ctx, addon.Name)
+
+		// This envtest cluster serves the add-on's CRD, so it is exactly the
+		// cluster somebody installed KEDA into by hand.
+		installer := &AddonReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), APIReader: k8sClient}
+		_, err := installer.Reconcile(ctx, ctrl.Request{
+			NamespacedName: types.NamespacedName{Namespace: PlatformNamespace, Name: AddonKeda},
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(reconciler.reconcileKeda(ctx, kitchen, setCond)).To(BeTrue())
+		Expect(condition(condScaleToZeroReady).Status).To(Equal(metav1.ConditionTrue))
+		Expect(condition(condScaleToZeroReady).Reason).To(Equal("AlreadyServing"))
+	})
+
 	It("says which addon is missing where scale-to-zero is on and none was seeded", func() {
 		Expect(reconciler.reconcileKeda(ctx, kitchen, setCond)).To(BeTrue())
 		Expect(condition(condScaleToZeroReady).Reason).To(Equal("AddonMissing"))
@@ -895,11 +978,7 @@ var _ = Describe("Rolling an addon up onto the platform", func() {
 	It("copies the addon's own verdict rather than restating it", func() {
 		addon := asked(AddonKeda, true)
 		Expect(k8sClient.Create(ctx, addon)).To(Succeed())
-		defer func() {
-			addon.Finalizers = nil
-			Expect(client.IgnoreNotFound(k8sClient.Update(ctx, addon))).To(Succeed())
-			Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, addon))).To(Succeed())
-		}()
+		defer releaseAddon(ctx, addon.Name)
 		meta.SetStatusCondition(&addon.Status.Conditions, metav1.Condition{
 			Type: kitchenv1alpha1.AddonReady, Status: metav1.ConditionTrue,
 			Reason: "AlreadyServing", Message: "somebody else installed it",

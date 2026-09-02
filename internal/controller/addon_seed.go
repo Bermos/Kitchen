@@ -42,14 +42,27 @@ import (
 // rather run its own KEDA — a shared one, a pinned one, one its GitOps owns —
 // has to be able to end up with no object at all.
 //
-// Only the entries this installation permitted are seeded. Granting the
-// install account is an explicit act — a chart value somebody set, creating a
-// ServiceAccount bound to cluster-admin — and it is not an act anyone
-// performs without wanting the dependency, so the seeded Addon asks for the
-// install. Turning it off afterwards is one field, and it stays off.
+// **Every** catalogue entry is seeded, not only the ones this installation
+// permitted, and the grant decides what the object *asks for* rather than
+// whether it exists. That distinction is the whole point: "is this dependency
+// serving in this cluster" is a fact about the cluster, true whoever
+// installed it, and the platform has to be able to answer it for a KEDA
+// somebody put there by hand — which is the documented "install them
+// yourself" path and the common case. An Addon that exists reports what it
+// finds; one that was never created reports nothing at all, and the roll-up
+// would say the platform cannot idle an environment in a cluster that plainly
+// can.
+//
+// So a permitted entry is seeded asking for the install — granting the
+// account is an explicit act, a chart value somebody set creating a
+// ServiceAccount bound to cluster-admin, and nobody performs it without
+// wanting the dependency — and an unpermitted one is seeded asking for
+// nothing. Turning either around afterwards is one field. Asking for an
+// install with no grant is what `Refused` is for, and it names the chart
+// value that would permit it.
 
-// seedAddons creates an Addon for every catalogue entry the chart permitted
-// and the platform has not seeded yet.
+// seedAddons creates an Addon for every catalogue entry the platform has not
+// seeded yet.
 //
 // It returns whether the singleton's status changed, so the caller writes the
 // record in its own status update rather than this taking a second one.
@@ -63,7 +76,7 @@ func (r *KitchenReconciler) seedAddons(ctx context.Context, kitchen *kitchenv1al
 
 	changed := false
 	for _, entry := range addonEntries() {
-		if !r.Addons.permits(entry.ID) || slices.Contains(seeded, entry.ID) {
+		if slices.Contains(seeded, entry.ID) {
 			continue
 		}
 
@@ -74,7 +87,8 @@ func (r *KitchenReconciler) seedAddons(ctx context.Context, kitchen *kitchenv1al
 				Labels:    platformLabels(entry.ID, entry.ID),
 			},
 			Spec: kitchenv1alpha1.AddonSpec{
-				Install:   true,
+				// The grant decides what it asks for, not whether it exists.
+				Install:   r.Addons.permits(entry.ID),
 				Namespace: r.seedNamespace(kitchen, entry),
 			},
 		}
@@ -112,8 +126,14 @@ func (r *KitchenReconciler) seedNamespace(kitchen *kitchenv1alpha1.Kitchen, entr
 	if entry.ID != AddonKeda {
 		return ""
 	}
-	if namespace := interceptorBackend(kitchen).Namespace; namespace != entry.DefaultNamespace {
-		return namespace
+	// Nil where the platform idles nothing, which is the default — there is
+	// no interceptor to agree with, so the entry's own default stands. The
+	// Addon is still seeded: whether KEDA is *serving* is a fact about the
+	// cluster, and a platform that idles nothing today may be pointed at a
+	// KEDA that is already there tomorrow.
+	backend := interceptorBackend(kitchen)
+	if backend == nil || backend.Namespace == entry.DefaultNamespace {
+		return ""
 	}
-	return ""
+	return backend.Namespace
 }

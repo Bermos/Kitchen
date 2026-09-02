@@ -44,12 +44,23 @@ account for is `Refused`, and the message names the one value that would permit
 it. An entry the operator has no catalogue entry for is `Refused` too, with the
 catalogue listed.
 
-The operator **seeds** an Addon for every entry the chart permitted — created
-once, the fact recorded on the platform singleton, and never recreated. Granting
-the account is an explicit act nobody performs without wanting the dependency,
-so the seeded Addon asks for the install. Turning it off afterwards is one
-field, and **an Addon somebody deletes stays deleted**: an installation that
-would rather run its own KEDA has to be able to end up with no object at all.
+The operator **seeds** an Addon for **every** catalogue entry — created once,
+the fact recorded on the platform singleton, and never recreated. The grant
+decides what the object *asks for*, not whether it exists: a permitted entry is
+seeded asking for the install (granting the account is an explicit act nobody
+performs without wanting the dependency), and an unpermitted one is seeded
+asking for nothing.
+
+That distinction matters more than it looks. "Is this dependency serving in
+this cluster" is a fact about the cluster, true whoever installed it, and the
+platform has to answer it for a KEDA somebody put there by hand — the
+documented "install them yourself" path, and the common case. An entry with no
+object would report nothing, and the roll-up would claim the platform cannot
+idle an environment in a cluster that plainly can.
+
+Turning either around afterwards is one field, and **an Addon somebody deletes
+stays deleted**: an installation that would rather run its own KEDA has to be
+able to end up with no object at all.
 
 The chart does not render these objects, and must not. `templates/kitchen.yaml`
 is a `post-install` hook precisely because a chart cannot apply a custom
