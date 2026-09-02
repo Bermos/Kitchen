@@ -457,6 +457,56 @@ var _ = Describe("Environment Controller", func() {
 			Expect(deploy.Spec.Strategy.Type).To(Equal(appsv1.RollingUpdateDeploymentStrategyType))
 		})
 
+		// The defect this closes (#277): rotating a secret succeeded, was
+		// recorded as a credential change, and the running pods went on using
+		// the old value indefinitely — a container reads its environment once,
+		// at exec, and nothing re-reads it. The digest on the pod template is
+		// what turns a replaced value into a roll of the pods that read it.
+		It("rolls the pods that read a rotated secret, and leaves the rest alone", func() {
+			deployKey := types.NamespacedName{Name: envName, Namespace: appNS}
+			deploy := &appsv1.Deployment{}
+
+			By("reconciling once so the application namespace is there to hold the secret")
+			reconcileOnce()
+
+			// The Secret this release's SESSION_SECRET reads, which is not the
+			// project's own secrets object: any Secret in the application
+			// namespace can be named by a variable, and a claim's binding is
+			// one the platform writes itself.
+			rotate := func(session, unread string) {
+				secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "shop-secrets", Namespace: appNS}}
+				data := map[string][]byte{"session": []byte(session), "unread": []byte(unread)}
+				existing := &corev1.Secret{}
+				if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(secret), existing); err == nil {
+					existing.Data = data
+					Expect(k8sClient.Update(ctx, existing)).To(Succeed())
+					return
+				}
+				secret.Data = data
+				Expect(k8sClient.Create(ctx, secret)).To(Succeed())
+			}
+
+			rotate("first", "a")
+			reconcileOnce()
+			Expect(k8sClient.Get(ctx, deployKey, deploy)).To(Succeed())
+			stamped := deploy.Spec.Template.Annotations[SecretsRevisionAnnotation]
+			Expect(stamped).NotTo(BeEmpty(), "a workload that reads a secret carries a digest of it")
+
+			By("changing a key the workload does not read")
+			rotate("first", "b")
+			reconcileOnce()
+			Expect(k8sClient.Get(ctx, deployKey, deploy)).To(Succeed())
+			Expect(deploy.Spec.Template.Annotations[SecretsRevisionAnnotation]).To(Equal(stamped),
+				"a value nothing reads is not a reason to restart anything")
+
+			By("rotating the one it does read")
+			rotate("rotated", "b")
+			reconcileOnce()
+			Expect(k8sClient.Get(ctx, deployKey, deploy)).To(Succeed())
+			Expect(deploy.Spec.Template.Annotations[SecretsRevisionAnnotation]).NotTo(Equal(stamped),
+				"the pod template moved, which is what rolls the pods onto the new value")
+		})
+
 		// Refused at admission, not clamped: a replica count quietly lowered
 		// reads back as a setting that did not take.
 		It("refuses a project that declares a singleton and asks for three of it", func() {

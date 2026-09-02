@@ -266,7 +266,8 @@ Two things this does not do. It is not backed up: a volume's data belongs to
 whoever backs up the cluster's storage, and [BACKUP.md](../BACKUP.md) says so
 beside the databases the platform runs. And a process pinned to one replica
 under `Recreate` cannot be restarted for a secret rotation without a brief
-outage — the rotation restart (#277) meets the same gap every deploy does.
+outage — the [rotation restart](secrets.md#what-rolls-and-what-does-not) meets
+the same gap every deploy does, and says so in the entry it leaves.
 **`inngest`** asks a Connection with the `backgroundJobs` capability — an
 Inngest Cloud API key — for the keys a worker connects to Inngest with, so
 that the application gets retries, sleeps, fan-out, concurrency limits and

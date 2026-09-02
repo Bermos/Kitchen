@@ -18,15 +18,11 @@ package controller
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"sort"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
@@ -53,6 +49,10 @@ import (
 // variable names a Secret *and* a key, so one object with a key per secret is
 // one name to know instead of one per credential, and one write to keep in
 // step.
+//
+// What makes a rotated value reach a pod that is already running is not here:
+// it is the digest in secretrevision.go, which covers every Secret a workload
+// reads rather than only these.
 const (
 	// ProjectSecretsName is the Secret an application's namespace holds its
 	// project's own credentials in, one key per secret. It is compiled in
@@ -64,17 +64,6 @@ const (
 	// projectSecretsSourcePrefix names the platform-namespace copy the API
 	// writes and the reconciler mirrors from.
 	projectSecretsSourcePrefix = "kitchen-project-secrets-"
-
-	// ProjectSecretsRevisionAnnotation carries a digest of the project
-	// secrets one workload actually reads. It is on the pod template, so
-	// rotating a value rolls the pods that use it and leaves every other
-	// workload alone.
-	//
-	// Without it a rotation reaches an application whenever a pod happens to
-	// restart — some pods on the old value and some on the new, for as long
-	// as nothing redeploys. That is a worse answer than "on the next deploy",
-	// because it is not an answer at all.
-	ProjectSecretsRevisionAnnotation = "kitchen.bermos.dev/project-secrets-revision"
 )
 
 // ProjectSecretsSourceName is the Secret in the platform namespace holding one
@@ -140,63 +129,4 @@ func (r *ProjectReconciler) deleteProjectSecrets(ctx context.Context, project *k
 		return err
 	}
 	return nil
-}
-
-// projectSecretsRevision digests the project secrets a set of container
-// variables actually reads, and answers "" for a workload that reads none.
-//
-// Only the referenced keys are hashed, so adding an unrelated secret to a
-// project does not roll every environment it has — the digest changes for the
-// workloads whose values changed and for no others.
-func projectSecretsRevision(ctx context.Context, c client.Client, appNS string, podEnv []corev1.EnvVar) (string, error) {
-	wanted := map[string]bool{}
-	for _, variable := range podEnv {
-		ref := variable.ValueFrom
-		if ref == nil || ref.SecretKeyRef == nil || ref.SecretKeyRef.Name != ProjectSecretsName {
-			continue
-		}
-		wanted[ref.SecretKeyRef.Key] = true
-	}
-	if len(wanted) == 0 {
-		return "", nil
-	}
-
-	secret := &corev1.Secret{}
-	switch err := c.Get(ctx, types.NamespacedName{Namespace: appNS, Name: ProjectSecretsName}, secret); {
-	case apierrors.IsNotFound(err):
-		// A variable naming a secret that is not there yet. The container
-		// will not start until it is, and the reconcile that mirrors it is
-		// what brings this back with a digest.
-		return "", nil
-	case err != nil:
-		return "", err
-	}
-
-	keys := make([]string, 0, len(wanted))
-	for key := range wanted {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-
-	digest := sha256.New()
-	for _, key := range keys {
-		digest.Write([]byte(key))
-		digest.Write([]byte{0})
-		digest.Write(secret.Data[key])
-		digest.Write([]byte{0})
-	}
-	return hex.EncodeToString(digest.Sum(nil))[:16], nil
-}
-
-// applyProjectSecretsRevision stamps a pod template with the digest, or takes
-// the stamp off a template that no longer reads any project secret.
-func applyProjectSecretsRevision(template *metav1.ObjectMeta, revision string) {
-	if revision == "" {
-		delete(template.Annotations, ProjectSecretsRevisionAnnotation)
-		return
-	}
-	if template.Annotations == nil {
-		template.Annotations = map[string]string{}
-	}
-	template.Annotations[ProjectSecretsRevisionAnnotation] = revision
 }

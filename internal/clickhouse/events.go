@@ -56,6 +56,14 @@ const (
 	// press landed.
 	EventRunStarted = "run.started"
 
+	// A rotated credential reaching what is already running. The rotation
+	// itself is a write, and lands in the audit log; this is its consequence
+	// — the workloads that read the value restarting to pick it up — which
+	// nothing else would account for. A pod roll nobody asked for, at a
+	// moment nobody deployed anything, is exactly the entry a person watching
+	// an application needs to be able to explain.
+	EventSecretRotated = "secret.rotated"
+
 	// Break-glass exceptions. Granting one is exactly the kind of thing a
 	// person scanning "what happened recently" should trip over.
 	EventExceptionGranted  = "exception.granted"
