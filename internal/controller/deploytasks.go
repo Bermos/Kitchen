@@ -172,10 +172,18 @@ func (r *EnvironmentReconciler) reconcileDeployTasks(
 		case !process.RunsIn(env.Spec.Type):
 			// Declared, deliberately not run here — a task somebody took out
 			// of previews. Reported rather than omitted, like every other
-			// suspended workload, and it holds nothing up.
+			// suspended workload, and it holds nothing up. The history goes
+			// with it, the way a suspended worker's row carries none.
+			//
+			// Attempt is the one field that stays, and it has to: it is what
+			// the next run's name is made of, so resetting it would have a
+			// task put back into previews compute the name of a run that
+			// already finished — and adopt that finished Job as this
+			// deploy's, which is a migration reported as run and never run.
 			status.Suspended = true
 			status.Release = ""
 			status.LastRun = nil
+			status.LastFailure = nil
 		case out.blocked:
 			// A task behind one that has not finished. Its row is whatever it
 			// was; it has not started, and saying so is the point of running

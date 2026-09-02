@@ -156,11 +156,13 @@ translation lives in the operator rather than in `ALIAS` columns, which keeps
 the table the standard shape any OTel-aware tool expects. It only shows through
 in `where` below.
 
-`process` and `run` are a project's workers and scheduled jobs (see
-[Workers and scheduled jobs](processes.md)). `run` is the Job one firing of a
-schedule produced, which is what makes "show me what last night's report job
-printed" one query rather than a hunt through an environment's whole output —
-and it stays answerable long after the platform has collected the Job itself.
+`process` and `run` are a project's workloads besides its web one (see
+[Workloads](processes.md)). `run` is the Job a run produced — one firing of a
+schedule, or the one run a deploy task makes for a deploy — which is what makes
+"show me what last night's report job printed", or "show me why the migration
+that stopped this deploy failed", one query rather than a hunt through an
+environment's whole output, and it stays answerable long after the platform has
+collected the Job itself.
 The web process writes neither, so an environment's logs mean what they always
 meant.
 
