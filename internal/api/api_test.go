@@ -1065,6 +1065,40 @@ func TestCreatingAProjectKeepsTheBuildContext(t *testing.T) {
 	}
 }
 
+// The root directory is the build root, and the Dockerfile path is relative
+// to it: BuildKit is handed that directory as its whole context and the
+// buildpacks lifecycle is pointed at it, so there is nothing above it for a
+// path to be resolved against. A repository's own kitchen.json has always
+// been refused one — this is the same rule at the other place it is written,
+// and refusing it on the form beats a build that cannot say why it failed.
+func TestABuildPathThatLeavesTheRootDirectoryIsRefused(t *testing.T) {
+	for _, tc := range []struct{ body, names string }{
+		{`{"name":"blog","repo":"acme/blog","connection":"gh","registry":"registry",` +
+			`"rootDirectory":"apps/blog","dockerfilePath":"../../Dockerfile"}`, "dockerfilePath"},
+		{`{"name":"blog","repo":"acme/blog","connection":"gh","registry":"registry",` +
+			`"rootDirectory":"../elsewhere"}`, "rootDirectory"},
+	} {
+		h := newHarness(t, nil, fixtures()...)
+		recorder := h.do(t, http.MethodPost, "/api/v1/projects", tc.body)
+		if recorder.Code != http.StatusBadRequest {
+			t.Fatalf("want 400 for %s, got %d: %s", tc.body, recorder.Code, recorder.Body.String())
+		}
+		// The refusal names the field to correct, which is the whole of what
+		// a form can do with it.
+		if !strings.Contains(recorder.Body.String(), tc.names) {
+			t.Errorf("the refusal does not name %s: %s", tc.names, recorder.Body.String())
+		}
+	}
+
+	// And on the settings PATCH, which is the other way in.
+	h := newHarness(t, nil, fixtures()...)
+	recorder := h.do(t, http.MethodPatch, "/api/v1/projects/shop",
+		`{"dockerfilePath":"/etc/Dockerfile"}`)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestCreatingAProjectAppliesTheDefaults(t *testing.T) {
 	h := newHarness(t, nil, fixtures()...)
 

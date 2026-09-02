@@ -39,7 +39,6 @@ import (
 	"fmt"
 	"path"
 	"slices"
-	"strings"
 
 	"github.com/Bermos/Kitchen/internal/framework"
 	"github.com/Bermos/Kitchen/internal/gitprovider"
@@ -84,13 +83,14 @@ type Target struct {
 	// Ref is what to read the repository at: a commit, a branch, a tag.
 	Ref string
 
-	// RootDirectory is the directory within the repository that is built,
-	// empty for the repository itself. It is already normalised — callers
-	// pass what buildRootDir or the API's trimming produced.
+	// RootDirectory is the build root: the directory within the repository
+	// that is built, empty for the repository itself. It is already
+	// normalised — callers pass what NormalizeRoot produced.
 	RootDirectory string
 
 	// DockerfilePath is where the project says its Dockerfile is, relative
-	// to RootDirectory, empty for the conventional "Dockerfile".
+	// to RootDirectory, empty for the conventional "Dockerfile". A path that
+	// leaves the build root is not this project's file — see LeavesRoot.
 	DockerfilePath string
 
 	// ConsiderDockerfile is false when the strategy is already decided. A
@@ -228,20 +228,24 @@ func UnreadableRepository(ctx context.Context, provider any, repo string) bool {
 }
 
 // dockerfilePresent reports whether the project's Dockerfile is where the
-// project says it is. The usual case costs nothing — the file is in the
-// listing already read — and only a path pointing into a subdirectory needs
-// a second listing.
+// project says it is — which is somewhere at or under the build root, since
+// that is the whole of what a build sees. The usual case costs nothing — the
+// file is in the listing already read — and only a path pointing into a
+// subdirectory needs a second listing.
 func dockerfilePresent(
 	ctx context.Context,
 	reader gitprovider.SourceReader,
 	target Target,
 	rootEntries []gitprovider.DirEntry,
 ) (bool, error) {
-	dockerfile := target.DockerfilePath
-	if dockerfile == "" {
-		dockerfile = "Dockerfile"
+	dockerfile := NormalizeDockerfile(target.DockerfilePath)
+	if LeavesRoot(dockerfile) {
+		// A path out of the build root names a file no build can read: the
+		// builder is handed the build root and nothing above it. Answering
+		// "present" here would be detection promising a build the container
+		// strategy cannot run.
+		return false, nil
 	}
-	dockerfile = strings.TrimPrefix(path.Clean(dockerfile), "./")
 
 	dir, name := path.Split(dockerfile)
 	entries := rootEntries

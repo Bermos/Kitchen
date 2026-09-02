@@ -72,6 +72,11 @@ var _ = Describe("Build Controller", func() {
 			sha         = "8f3a2c1d0abc456789ab"
 			namespace   = "default"
 			registryURL = "harbor.example.com/kitchen"
+			// The monorepo pair: the directory a project is in, and the
+			// build file inside it. They are spelled once because what the
+			// two settings mean together is what several of these assert.
+			monorepoRoot       = "apps/shop"
+			monorepoDockerfile = "docker/prod.Dockerfile"
 		)
 
 		ctx := context.Background()
@@ -457,7 +462,7 @@ var _ = Describe("Build Controller", func() {
 			project := &kitchenv1alpha1.Project{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: projectName, Namespace: namespace}, project)).To(Succeed())
 			project.Spec.Build.Strategy = kitchenv1alpha1.BuildStrategyBuildpacks
-			project.Spec.Build.RootDirectory = "apps/shop"
+			project.Spec.Build.RootDirectory = monorepoRoot
 			Expect(k8sClient.Update(ctx, project)).To(Succeed())
 
 			reconcileOnce()
@@ -570,7 +575,7 @@ var _ = Describe("Build Controller", func() {
 		It("detects from the project's root directory in a monorepo", func() {
 			project := &kitchenv1alpha1.Project{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: projectName, Namespace: namespace}, project)).To(Succeed())
-			project.Spec.Build.RootDirectory = "apps/shop"
+			project.Spec.Build.RootDirectory = monorepoRoot
 			Expect(k8sClient.Update(ctx, project)).To(Succeed())
 
 			source = &fakeSource{files: map[string]string{
@@ -585,6 +590,76 @@ var _ = Describe("Build Controller", func() {
 			build := &kitchenv1alpha1.Build{}
 			Expect(k8sClient.Get(ctx, buildKey, build)).To(Succeed())
 			Expect(build.Status.DetectedFramework).To(Equal(framework.Nuxt))
+		})
+
+		// A monorepo is the shape that sets a root directory and a Dockerfile
+		// path at once, and it is where the two strategies had nothing saying
+		// they meant the same thing by the first of them. They do: the root
+		// directory is the build root, everything the project declares is
+		// relative to it, and the two reach that by different routes.
+		It("builds the Dockerfile the root directory contains, not the repository's own", func() {
+			project := &kitchenv1alpha1.Project{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: projectName, Namespace: namespace}, project)).To(Succeed())
+			project.Spec.Build.RootDirectory = monorepoRoot
+			project.Spec.Build.DockerfilePath = monorepoDockerfile
+			Expect(k8sClient.Update(ctx, project)).To(Succeed())
+
+			source = &fakeSource{files: map[string]string{
+				// The repository has a Dockerfile of its own at the top. It
+				// is not this project's, and nothing about this build may
+				// reach it.
+				"Dockerfile":                       "FROM scratch\n",
+				"apps/shop/docker/prod.Dockerfile": "FROM scratch\n",
+			}}
+
+			reconcileOnce()
+
+			job := &batchv1.Job{}
+			Expect(k8sClient.Get(ctx, jobKey, job)).To(Succeed())
+			container := job.Spec.Template.Spec.Containers[0]
+			Expect(container.Image).To(Equal(BuildkitImage))
+			joined := strings.Join(container.Args, " ")
+			// The build root goes into the git reference, which is what makes
+			// BuildKit's context that directory rather than the repository.
+			Expect(joined).To(ContainSubstring("context=https://github.com/acme/shop.git#" + sha + ":apps/shop"))
+			// And the Dockerfile is named relative to it — never joined onto
+			// it a second time, which would ask for apps/shop/apps/shop.
+			Expect(joined).To(ContainSubstring("filename=docker/prod.Dockerfile"))
+			Expect(joined).NotTo(ContainSubstring("filename=apps/shop"))
+		})
+
+		It("points the lifecycle at the same directory the container build gets", func() {
+			project := &kitchenv1alpha1.Project{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: projectName, Namespace: namespace}, project)).To(Succeed())
+			project.Spec.Build.Strategy = kitchenv1alpha1.BuildStrategyBuildpacks
+			project.Spec.Build.RootDirectory = monorepoRoot
+			// Set, and beside the point: this strategy has no build file. It
+			// is here because a project that moves between the two keeps both
+			// settings, and the root directory has to mean the same thing on
+			// either side of that move.
+			project.Spec.Build.DockerfilePath = monorepoDockerfile
+			Expect(k8sClient.Update(ctx, project)).To(Succeed())
+
+			source = &fakeSource{files: map[string]string{
+				"Dockerfile":             "FROM scratch\n",
+				"apps/shop/package.json": `{"dependencies":{"nuxt":"3.14.0"}}`,
+			}}
+
+			reconcileOnce()
+
+			job := &batchv1.Job{}
+			Expect(k8sClient.Get(ctx, jobKey, job)).To(Succeed())
+			pod := job.Spec.Template.Spec
+			// The clone fetches the commit, whole — the lifecycle only ever
+			// builds a directory that is already on disk — and the build root
+			// is which directory that is.
+			Expect(pod.InitContainers[0].Env).To(ContainElement(corev1.EnvVar{
+				Name: "KITCHEN_SOURCE_DIR", Value: "/workspace/source",
+			}))
+			creator := pod.Containers[0]
+			Expect(creator.Image).To(Equal(BuildpacksBuilderImage))
+			Expect(creator.Args).To(ContainElement("-app=/workspace/source/apps/shop"))
+			Expect(strings.Join(creator.Args, " ")).NotTo(ContainSubstring("prod.Dockerfile"))
 		})
 
 		It("fails with a sentence of its own when there is nothing to detect", func() {

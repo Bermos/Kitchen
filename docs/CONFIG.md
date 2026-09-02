@@ -78,7 +78,7 @@ it.
 | Key | What it does |
 |---|---|
 | `strategy` | `auto`, `dockerfile` or `buildpacks`. `auto` reads the repository and decides — a Dockerfile wins, and everything else recognised goes to buildpacks. |
-| `dockerfilePath` | The Dockerfile, relative to the project's root directory. Used when the strategy is, or resolves to, `dockerfile`. |
+| `dockerfilePath` | The Dockerfile, relative to the project's root directory — which it may not leave, since the root directory is all a build sees. Used when the strategy is, or resolves to, `dockerfile`. |
 
 ```json
 {"build": {"strategy": "dockerfile", "dockerfilePath": "docker/prod.Dockerfile"}}

@@ -29,6 +29,17 @@ their defaults:
 repository the way a build would, and a build context it showed to be wrong is
 corrected on the form rather than after the first build has failed.
 
+**The root directory is the build root**, and `dockerfilePath` is relative to
+it — so a project whose application is in `apps/shop` and whose build file is
+`apps/shop/docker/prod.Dockerfile` sends `"rootDirectory": "apps/shop"` and
+`"dockerfilePath": "docker/prod.Dockerfile"`. The commit's own
+[`kitchen.json`](../CONFIG.md) is read there too, and both build strategies
+mean the same directory by it: the container build is handed it as its entire
+context, and the buildpacks lifecycle is pointed at it. Nothing above it is
+part of the build, so a path that leaves it — `../shared/Dockerfile`,
+`/Dockerfile` — is a `400` here and on the settings PATCH rather than a build
+that fails without being able to say why.
+
 From a terminal this is [`kitchen projects create`](../CLI.md#creating-a-project),
 which runs the preflight, creates the project and links the directory to it in
 one command — and takes the repository and the name from the checkout it is run
@@ -85,9 +96,11 @@ optional and absent ones keep their value:
 ```
 
 `cpu` and `memory` are Kubernetes quantities and set request and limit alike;
-an empty string clears one. The repository and the two connections are
-deliberately not editable: rebinding a project to another repository is a
-different project.
+an empty string clears one. `rootDirectory` and `dockerfilePath` mean here
+exactly what they mean on the create above — the build root, and a path
+relative to it — and are refused with a `400` for the same reason. The
+repository and the two connections are deliberately not editable: rebinding a
+project to another repository is a different project.
 
 `notRequestDriven` declares that this workload does work nobody asked for, and
 turns idling off for every one of the project's environments — previews

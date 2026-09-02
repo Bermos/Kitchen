@@ -490,8 +490,11 @@ spec:
                                         # identities on the platform's allowlist are exempt
   build:
     strategy: auto                      # auto takes the Kitchen default; dockerfile | buildpacks decide here
-    dockerfilePath: ./Dockerfile        # when strategy: dockerfile
-    rootDirectory: ./                   # monorepo support; what buildpacks are pointed at too
+    dockerfilePath: Dockerfile          # when strategy: dockerfile; relative to rootDirectory,
+                                        # which it may not leave
+    rootDirectory: .                    # the build root: the directory that is built, and what
+                                        # every path the project declares is relative to. Both
+                                        # strategies mean the same directory by it
   registry:
     connectionRef: { name: harbor }
   previews:

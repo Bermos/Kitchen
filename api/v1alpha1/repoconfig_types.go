@@ -92,7 +92,9 @@ type RepoBuildConfig struct {
 	// +optional
 	Strategy BuildStrategy `json:"strategy,omitempty"`
 
-	// DockerfilePath, relative to the build root.
+	// DockerfilePath, relative to the build root — which it may not leave,
+	// for the same reason the project's own setting may not: the build root
+	// is the whole of what a build sees.
 	// +optional
 	DockerfilePath string `json:"dockerfilePath,omitempty"`
 }

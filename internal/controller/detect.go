@@ -124,8 +124,14 @@ func (r *BuildReconciler) sourceReaderFor(
 // buildDockerfilePath is the Dockerfile this build uses, relative to the
 // project's root directory: the one the commit's own kitchen.json named, and
 // the project's setting where it named none.
+//
+// It is normalised here rather than at each use, so that detection and the
+// builder are given the same string — `./Dockerfile`, `Dockerfile` and an
+// absent setting are one file, and the preflight cannot report a file the
+// build then fails to find.
 func buildDockerfilePath(project *kitchenv1alpha1.Project, build *kitchenv1alpha1.Build) string {
-	return repoconfig.DockerfilePath(build.Status.Config, project.Spec.Build.DockerfilePath)
+	return detect.NormalizeDockerfile(
+		repoconfig.DockerfilePath(build.Status.Config, project.Spec.Build.DockerfilePath))
 }
 
 // readConfig reads the commit's kitchen.json and records it on the Build,

@@ -63,6 +63,13 @@ until you edit it), the git connection and the registry, the production
 branch, and — for a monorepo — the root directory and Dockerfile path. Preview
 environments are on by default, with a switch to turn them off.
 
+The **root directory is the build root**: the directory that is built, and the
+directory everything else the project declares is relative to — the Dockerfile
+path, and the commit's own [`kitchen.json`](CONFIG.md). An application in
+`apps/shop` whose build file is `apps/shop/docker/prod.Dockerfile` sets the two
+fields to `apps/shop` and `docker/prod.Dockerfile`. Nothing above it is part of
+the build, whichever strategy runs it.
+
 As you fill it in, it runs a preflight against the actual repository and tells
 you what it found: the framework it detected, the port that framework listens
 on, and the files it matched. A root directory that is wrong is a message in
