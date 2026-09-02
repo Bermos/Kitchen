@@ -392,6 +392,10 @@ spec:
                         It is empty for a worker and a scheduled job, which nothing addresses,
                         and for a service this environment does not run.
                       type: string
+                    attempt:
+                      format: int32
+                      minimum: 0
+                      type: integer
                     image:
                       description: |-
                         Image is what this workload is running, when that is not the
@@ -402,8 +406,11 @@ spec:
                       type: string
                     lastFailure:
                       description: |-
-                        ProcessRun is one run of a scheduled process: the Job that ran it, when, and
-                        what came of it.
+                        ProcessRun is one run of a scheduled process or of a deploy task: the Job
+                        that ran it, when, and what came of it. One shape for both, because a
+                        person asking how a run went asks the same question either way — and it is
+                        what lets a task's output and outcome be read exactly the way every other
+                        run's already are.
                       properties:
                         finishedAt:
                           format: date-time
@@ -438,7 +445,8 @@ spec:
                     lastRun:
                       description: |-
                         LastRun is the most recent run that started, whatever it did next, and
-                        LastFailure the most recent one that failed. Both are kept because the
+                        LastFailure the most recent one that failed — a schedule's firings, or
+                        a deploy task's one run per deploy. Both are kept because the
                         question a person asks is "is it working" and the question they ask
                         next is "when did it stop" — and a job that has been failing for a week
                         answers the first with a green tick if only the last run is recorded.
@@ -484,6 +492,23 @@ spec:
                     readyReplicas:
                       format: int32
                       type: integer
+                    release:
+                      description: |-
+                        Release is the Release a deploy task's LastRun was started for, and
+                        Attempt how many runs of it this environment has ever started.
+
+                        Together they are what makes "once per deploy" a fact rather than a
+                        hope, and they are on the object because the reconciler is stateless
+                        between passes: a run is started when the release recorded here is not
+                        the one being deployed, and skipped when it is — so a hundred
+                        reconciles of one release run one migration, and a rollback to a
+                        release this environment ran before is a *new* deploy and runs it
+                        again. Attempt is what keeps each of those runs its own Job rather
+                        than a name that collides with a finished one, and asking for a retry
+                        is exactly clearing Release.
+
+                        Both are empty for every other type of workload.
+                      type: string
                     replicas:
                       description: |-
                         Replicas and ReadyReplicas are a worker's, and are left at zero for a
@@ -521,15 +546,27 @@ spec:
                         exception the project declares — `spec.runtime`, the one process with the
                         URL — so a workload that should not be on the internet is not on it by
                         saying nothing, rather than by remembering to turn something off.
+
+                        `task` is the fourth and the one #272 added, and it is the only one of them
+                        that is not a thing that keeps running: it is work that happens once per
+                        deploy and finishes before any of that release serves a request. The
+                        schema migration is the universal case and had nowhere to go — a readiness
+                        probe stops traffic reaching a pod that is not ready, and does nothing
+                        about the previous release's pods being retired while a migration is half
+                        applied, which is why applications end up running it from their entrypoint
+                        once per replica instead.
                       enum:
                       - worker
                       - cron
                       - service
+                      - task
                       type: string
                     workload:
                       description: |-
                         Workload is the Deployment or CronJob the process materialized as, in
-                        the project's application namespace.
+                        the project's application namespace. A deploy task materializes no
+                        standing object at all — its runs are Jobs, and LastRun names the one
+                        this deploy made — so it carries none.
                       type: string
                   required:
                   - name

@@ -233,6 +233,13 @@ func TestRefusingAnUnworkableProcessList(t *testing.T) {
 		// cannot hold could never match a stage that exists.
 		"a workload stage no Dockerfile stage could be called": `[{"name": "api", "type": "service", ` +
 			`"port": 8080, "build": {"dockerfileTarget": "1st stage"}}]`,
+		// A task is one run per deploy: it has no schedule, nothing to keep
+		// alive, and no second copy of itself to overlap.
+		"a task with a schedule": `[{"name": "migrate", "type": "task", ` +
+			`"schedule": "0 3 * * *"}]`,
+		"a health check on a task": `[{"name": "migrate", "type": "task", "health": {"port": 9000}}]`,
+		"a singleton task":         `[{"name": "migrate", "type": "task", "singleton": true}]`,
+		"a task with a port":       `[{"name": "migrate", "type": "task", "port": 8080}]`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			recorder := h.do(t, http.MethodPatch, "/api/v1/projects/shop", `{"processes": `+body+`}`)
@@ -553,5 +560,193 @@ func TestRunningAScheduledJobNothingHasMaterialized(t *testing.T) {
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("want 400 explaining that nothing is scheduled yet, got %d: %s",
 			recorder.Code, recorder.Body.String())
+	}
+}
+
+// Deploy-time work over the API (#272). The reads are the run machinery that
+// was already there — a task's runs are runs — and the one write is "run it
+// again", which is what picks a deploy back up after a migration failed.
+
+const migrateTask = "migrate"
+
+// withDeployTask is the fixture release plus a task, and the environment's
+// record of what that task last did.
+func withDeployTask(status *kitchenv1alpha1.ProcessStatus, extra ...runtime.Object) []runtime.Object {
+	objs := fixtures()
+	for _, obj := range objs {
+		if release, ok := obj.(*kitchenv1alpha1.Release); ok && release.Name == testRelease {
+			release.Spec.ConfigSnapshot.Processes = []kitchenv1alpha1.ProcessSpec{{
+				Name:    migrateTask,
+				Type:    kitchenv1alpha1.ProcessTask,
+				Command: []string{"npm", "run", "migrate"},
+			}}
+		}
+		if env, ok := obj.(*kitchenv1alpha1.Environment); ok && env.Name == testEnvironment && status != nil {
+			env.Status.Processes = []kitchenv1alpha1.ProcessStatus{*status}
+		}
+	}
+	return append(objs, extra...)
+}
+
+func taskView(t *testing.T, h *harness) processView {
+	t.Helper()
+	recorder := h.do(t, http.MethodGet, processesPath, "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	body := decode[struct {
+		Items []processView `json:"items"`
+	}](t, recorder)
+	for i := range body.Items {
+		if body.Items[i].Name == migrateTask {
+			return body.Items[i]
+		}
+	}
+	t.Fatalf("the task is missing: %+v", body.Items)
+	return processView{}
+}
+
+func TestADeployTaskSaysWhatItDidToTheDeploy(t *testing.T) {
+	failed := &kitchenv1alpha1.ProcessRun{
+		Name:    controller.DeployTaskRunName(testEnvironment, migrateTask, 1),
+		Phase:   kitchenv1alpha1.RunFailed,
+		Message: "BackoffLimitExceeded: relation \"orders\" already exists",
+	}
+
+	t.Run("a failed run is a release that did not land", func(t *testing.T) {
+		h := newHarness(t, nil, withDeployTask(&kitchenv1alpha1.ProcessStatus{
+			Name: migrateTask, Type: kitchenv1alpha1.ProcessTask,
+			Release: testRelease, Attempt: 1, LastRun: failed, LastFailure: failed,
+		})...)
+		view := taskView(t, h)
+		if view.Deploy != deployFailed || view.Healthy {
+			t.Fatalf("a failed deploy task reads as well: %+v", view)
+		}
+		if view.LastFailure == nil || !strings.Contains(view.LastRun.Message, "already exists") {
+			t.Fatalf("the run's own words did not come out of the cluster: %+v", view)
+		}
+	})
+
+	t.Run("a run recorded against another release has not happened for this deploy", func(t *testing.T) {
+		h := newHarness(t, nil, withDeployTask(&kitchenv1alpha1.ProcessStatus{
+			Name: migrateTask, Type: kitchenv1alpha1.ProcessTask,
+			Release: "shop-rel-older", Attempt: 1,
+			LastRun: &kitchenv1alpha1.ProcessRun{Name: "old", Phase: kitchenv1alpha1.RunSucceeded},
+		})...)
+		if view := taskView(t, h); view.Deploy != deployPending || !view.Healthy {
+			t.Fatalf("a rollback's task read as already done: %+v", view)
+		}
+	})
+
+	t.Run("nothing is known until the reconciler has been round", func(t *testing.T) {
+		h := newHarness(t, nil, withDeployTask(nil)...)
+		if view := taskView(t, h); view.Deploy != "" || !view.Healthy {
+			t.Fatalf("an unreconciled task claimed to know something: %+v", view)
+		}
+	})
+}
+
+func TestRunningADeployTaskAgainResumesTheDeploy(t *testing.T) {
+	failed := &kitchenv1alpha1.ProcessRun{
+		Name:  controller.DeployTaskRunName(testEnvironment, migrateTask, 2),
+		Phase: kitchenv1alpha1.RunFailed,
+	}
+	h := newHarness(t, nil, withDeployTask(&kitchenv1alpha1.ProcessStatus{
+		Name: migrateTask, Type: kitchenv1alpha1.ProcessTask,
+		Release: testRelease, Attempt: 2, LastRun: failed, LastFailure: failed,
+	})...)
+
+	recorder := h.do(t, http.MethodPost, processesPath+"/"+migrateTask+"/runs", "")
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("want 202, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	// The name is derived rather than generated, so the answer can name the
+	// run before the reconciler has made it.
+	started := decode[processRunView](t, recorder)
+	if want := controller.DeployTaskRunName(testEnvironment, migrateTask, 3); started.Name != want {
+		t.Fatalf("want the next attempt %q, got %q", want, started.Name)
+	}
+
+	// Nothing is created here: the run is the deploy's, and the deploy is the
+	// reconciler's. What the API writes is the one fact it decides from.
+	jobs := &batchv1.JobList{}
+	if err := h.server.Client.List(context.Background(), jobs); err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs.Items) != 0 {
+		t.Fatalf("the API composed a run beside the deploy instead of asking for one: %+v", jobs.Items)
+	}
+	env := &kitchenv1alpha1.Environment{}
+	if err := h.server.get(context.Background(), testEnvironment, env); err != nil {
+		t.Fatal(err)
+	}
+	status := env.FindProcessStatus(migrateTask)
+	if status == nil || status.Release != "" {
+		t.Fatalf("the release the failed run was for was not cleared: %+v", status)
+	}
+	if status.LastFailure == nil {
+		t.Fatal("the failure was forgotten, so there is nothing left to read about it")
+	}
+}
+
+// A run that is still going is the run the deploy is waiting for, so asking
+// for another one is refused rather than queued behind it.
+func TestRefusingToRunADeployTaskThatIsAlreadyRunning(t *testing.T) {
+	running := &kitchenv1alpha1.ProcessRun{
+		Name:  controller.DeployTaskRunName(testEnvironment, migrateTask, 1),
+		Phase: kitchenv1alpha1.RunRunning,
+	}
+	h := newHarness(t, nil, withDeployTask(&kitchenv1alpha1.ProcessStatus{
+		Name: migrateTask, Type: kitchenv1alpha1.ProcessTask,
+		Release: testRelease, Attempt: 1, LastRun: running,
+	})...)
+
+	recorder := h.do(t, http.MethodPost, processesPath+"/"+migrateTask+"/runs", "")
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), running.Name) {
+		t.Fatalf("the refusal does not name the run the deploy is waiting for: %s", recorder.Body.String())
+	}
+	env := &kitchenv1alpha1.Environment{}
+	if err := h.server.get(context.Background(), testEnvironment, env); err != nil {
+		t.Fatal(err)
+	}
+	if status := env.FindProcessStatus(migrateTask); status == nil || status.Release != testRelease {
+		t.Fatalf("a refused retry moved the record it decides from: %+v", status)
+	}
+}
+
+func TestListingADeployTasksRuns(t *testing.T) {
+	started := metav1.NewTime(time.Now().Add(-time.Hour))
+	job := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      controller.DeployTaskRunName(testEnvironment, migrateTask, 1),
+			Namespace: controller.AppNamespace("shop"),
+			Labels: map[string]string{
+				controller.LabelEnvironment: testEnvironment,
+				controller.LabelProcess:     migrateTask,
+			},
+		},
+		Status: batchv1.JobStatus{
+			StartTime: &started,
+			Conditions: []batchv1.JobCondition{{
+				Type:               batchv1.JobComplete,
+				Status:             corev1.ConditionTrue,
+				LastTransitionTime: metav1.NewTime(started.Add(time.Minute)),
+			}},
+		},
+	}
+	h := newHarness(t, nil, withDeployTask(nil, job)...)
+
+	recorder := h.do(t, http.MethodGet, processesPath+"/"+migrateTask+"/runs", "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	body := decode[struct {
+		Items []processRunView `json:"items"`
+	}](t, recorder)
+	if len(body.Items) != 1 || body.Items[0].Phase != string(kitchenv1alpha1.RunSucceeded) {
+		t.Fatalf("a task's runs are read the way every other run is: %+v", body.Items)
 	}
 }

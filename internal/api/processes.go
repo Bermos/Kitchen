@@ -120,6 +120,16 @@ type processView struct {
 	Reason    string `json:"reason,omitempty"`
 	// Active is how many runs of a schedule are in flight.
 	Active int32 `json:"active,omitempty"`
+	// Deploy is what a deploy task is doing to the deploy it belongs to, and
+	// is absent on every other type of workload: `pending` (this release's
+	// run has not started), `running` (nothing of this release takes traffic
+	// until it finishes), `complete`, or `failed` (the release did not land
+	// and whatever was serving is still serving).
+	//
+	// It is derived here rather than in each client for the reason `healthy`
+	// is: it is the answer to "did my deploy land", and the dashboard and the
+	// CLI must not be able to disagree about it.
+	Deploy string `json:"deploy,omitempty"`
 	// LastRun and LastFailure are the two a person actually asks for. The
 	// failure is kept until a later failure replaces it, never until a
 	// success does: a job that fails four nights in five must not read as
@@ -204,7 +214,17 @@ func newProcessRunView(run *kitchenv1alpha1.ProcessRun) *processRunView {
 // reason the reconciler works from it: an environment on an older release runs
 // that release's processes, and reporting today's would describe something
 // that is not there.
-func newProcessView(process kitchenv1alpha1.ProcessSpec, status *kitchenv1alpha1.ProcessStatus) processView {
+//
+// `release` is the release the environment is being deployed to, and is empty
+// where the question is not about an environment at all — a project's own
+// declaration. It is what turns a deploy task's recorded run into an answer
+// about *this* deploy: a run recorded against another release is a run that
+// has not happened for this one.
+func newProcessView(
+	process kitchenv1alpha1.ProcessSpec,
+	status *kitchenv1alpha1.ProcessStatus,
+	release string,
+) processView {
 	view := processView{
 		Name:     process.Name,
 		Type:     string(process.Type),
@@ -215,10 +235,16 @@ func newProcessView(process kitchenv1alpha1.ProcessSpec, status *kitchenv1alpha1
 		Build:    newProcessBuildView(process.Build),
 		Healthy:  true,
 	}
-	if process.Type == kitchenv1alpha1.ProcessCron {
+	switch {
+	case process.Type == kitchenv1alpha1.ProcessCron:
 		view.ConcurrencyPolicy = string(process.EffectiveConcurrency())
 		view.Timeout = (time.Duration(process.TimeoutSeconds()) * time.Second).String()
-	} else {
+	case process.RunsOnce():
+		// A task has no replicas to report and no concurrency to choose. What
+		// it has is the bound on how long the deploy waits for it, which is
+		// the one number somebody watching a stuck deploy wants.
+		view.Timeout = (time.Duration(process.TimeoutSeconds()) * time.Second).String()
+	default:
 		view.Replicas = process.ReplicaCount()
 		view.Singleton = process.Singleton
 	}
@@ -248,6 +274,9 @@ func newProcessView(process kitchenv1alpha1.ProcessSpec, status *kitchenv1alpha1
 	switch {
 	case status.Suspended:
 		view.Reason = suspendedReason(process)
+	case process.RunsOnce():
+		view.Deploy = deployStateOf(status, release)
+		view.Healthy = view.Deploy != deployFailed
 	case process.Type == kitchenv1alpha1.ProcessCron:
 		view.Healthy = status.LastRun == nil || status.LastRun.Phase != kitchenv1alpha1.RunFailed
 	default:
@@ -258,15 +287,49 @@ func newProcessView(process kitchenv1alpha1.ProcessSpec, status *kitchenv1alpha1
 	return view
 }
 
+// The four things a deploy task can be doing to the deploy it belongs to.
+// They are the API's own vocabulary, not the run phases: a run that succeeded
+// for another release is a task that is `pending` for this one.
+const (
+	deployPending  = "pending"
+	deployRunning  = "running"
+	deployComplete = "complete"
+	deployFailed   = "failed"
+)
+
+// deployStateOf reads a task's record against the release being deployed.
+//
+// The release comparison is the whole of it. A task carries the release its
+// last run was made for, so a run recorded against an older one — a rollback,
+// or a fresh build — has not happened for this deploy however well it went,
+// and the environment is about to make it happen.
+func deployStateOf(status *kitchenv1alpha1.ProcessStatus, release string) string {
+	if status.LastRun == nil || (release != "" && status.Release != release) {
+		return deployPending
+	}
+	switch status.LastRun.Phase {
+	case kitchenv1alpha1.RunSucceeded:
+		return deployComplete
+	case kitchenv1alpha1.RunFailed:
+		return deployFailed
+	default:
+		return deployRunning
+	}
+}
+
 // suspendedReason is why a workload the release declares is not running here.
 //
-// A service reads the other way round from a worker: it is in a preview
-// unless it was taken out of one, so the sentence that tells a worker how to
-// opt in would tell a service's reader to do what it already did.
+// A service and a task read the other way round from a worker: both are in a
+// preview unless they were taken out of one, so the sentence that tells a
+// worker how to opt in would tell their reader to do what they already did.
 func suspendedReason(process kitchenv1alpha1.ProcessSpec) string {
 	if process.Addressed() {
 		return "this service was taken out of preview environments — " +
 			"nothing in this preview can reach it, so unset previews on it to put it back"
+	}
+	if process.RunsOnce() {
+		return "this task was taken out of preview environments — nothing prepares this preview's own " +
+			"resources before it deploys, so unset previews on it to put it back"
 	}
 	return "this process does not run in preview environments — set previews on it to opt in"
 }
@@ -288,7 +351,7 @@ func (s *Server) environmentProcesses(w http.ResponseWriter, req *http.Request) 
 	}
 	views := make([]processView, 0, len(declared))
 	for _, process := range declared {
-		views = append(views, newProcessView(process, env.FindProcessStatus(process.Name)))
+		views = append(views, newProcessView(process, env.FindProcessStatus(process.Name), env.Spec.ReleaseRef.Name))
 	}
 	writeList(w, views)
 }
@@ -312,12 +375,16 @@ func (s *Server) declaredProcesses(
 	return release.Spec.ConfigSnapshot.Processes, nil
 }
 
-// processRuns lists a scheduled process's recent runs, newest first.
+// processRuns lists a process's recent runs, newest first — a schedule's
+// firings, or a deploy task's one run per deploy.
 //
 // What is listed is what the cluster still holds — the CronJob keeps a few
-// finished Jobs and collects the rest — which is why a run's *output* is
-// asked for separately, from the log store, where it outlives the Job by the
-// whole container-log retention.
+// finished Jobs and collects the rest, and a task's runs are bounded the same
+// way by the reconciler — which is why a run's *output* is asked for
+// separately, from the log store, where it outlives the Job by the whole
+// container-log retention. One endpoint for both because a run is a run: the
+// question "what did it print and how did it end" does not change with what
+// started it.
 func (s *Server) processRuns(w http.ResponseWriter, req *http.Request) {
 	ctx := req.Context()
 
@@ -326,7 +393,7 @@ func (s *Server) processRuns(w http.ResponseWriter, req *http.Request) {
 		s.writeError(w, err)
 		return
 	}
-	process, ok := s.scheduledProcess(w, ctx, env, req.PathValue("process"))
+	process, ok := s.runnableProcess(w, ctx, env, req.PathValue("process"))
 	if !ok {
 		return
 	}
@@ -361,15 +428,19 @@ func (s *Server) processRuns(w http.ResponseWriter, req *http.Request) {
 	writeList(w, views)
 }
 
-// triggerProcessRun starts one run of a scheduled process now, off its
-// schedule.
+// triggerProcessRun starts one run now: a scheduled process off its schedule,
+// or a deploy task whose failure is holding a release back.
 //
-// It is a copy of the CronJob's own job template rather than anything this
-// handler composes, so a manual run is the same run the schedule would have
-// made — same image, same command, same timeout. Nothing from the request
-// reaches it: the body is empty and the only caller-supplied values are the
-// two names in the path, both of which resolve to objects before anything is
-// created.
+// The two are one route because they are one request — "run that again" — and
+// they are carried out differently because a run means something different in
+// each. A schedule's run is a copy of the CronJob's own job template, so a
+// manual run is the run the schedule would have made. A task's is the
+// *deploy's*, so this hands it back to the reconciler that owns the deploy
+// rather than composing a second one beside it; see retryDeployTask.
+//
+// Nothing from the request reaches either: the body is empty and the only
+// caller-supplied values are the two names in the path, both of which resolve
+// to objects before anything is created.
 func (s *Server) triggerProcessRun(w http.ResponseWriter, req *http.Request) {
 	ctx := req.Context()
 
@@ -378,8 +449,12 @@ func (s *Server) triggerProcessRun(w http.ResponseWriter, req *http.Request) {
 		s.writeError(w, err)
 		return
 	}
-	process, ok := s.scheduledProcess(w, ctx, env, req.PathValue("process"))
+	process, ok := s.runnableProcess(w, ctx, env, req.PathValue("process"))
 	if !ok {
+		return
+	}
+	if process.RunsOnce() {
+		s.retryDeployTask(w, req, env, process)
 		return
 	}
 
@@ -440,13 +515,92 @@ func (s *Server) triggerProcessRun(w http.ResponseWriter, req *http.Request) {
 	writeJSON(w, http.StatusAccepted, newProcessRunView(&run))
 }
 
-// scheduledProcess resolves the named process of an environment's release and
-// insists it is a scheduled one, writing the refusal itself.
+// retryDeployTask asks for a deploy task to be run again for the release this
+// environment is on.
 //
-// A worker or a service is refused rather than quietly accepted: "run it now"
-// has no meaning for a workload that is already running, and a 404 would
-// suggest the workload does not exist when it plainly does.
-func (s *Server) scheduledProcess(
+// It creates nothing. The run is the *deploy's* — the environment's own
+// variables, its claim bindings, its volumes, and the ordering that keeps the
+// release off the network until the task succeeds — and all of that is the
+// reconciler's. Composing a second Job here would be a run that looked like
+// the deploy's and was not gating it, which is the worst of both.
+//
+// So what it writes is the one fact the reconciler decides from: which
+// release the recorded run was for. Clearing it makes the next pass see a
+// deploy this task has not run for, and start one — a fresh Job, under the
+// next attempt's name, with the failed one left where it is to be read.
+//
+// It answers with the run that is about to exist rather than one that does,
+// which is what 202 is for: the reconciler is what creates it, and the name is
+// derived rather than generated exactly so that it can be said in advance.
+func (s *Server) retryDeployTask(
+	w http.ResponseWriter,
+	req *http.Request,
+	env *kitchenv1alpha1.Environment,
+	process kitchenv1alpha1.ProcessSpec,
+) {
+	ctx := req.Context()
+	status := env.FindProcessStatus(process.Name)
+	if status == nil || status.Suspended {
+		badRequest(w, "task %q does not run on environment %q: "+
+			"the platform has not materialized it — the environment's conditions say why",
+			process.Name, env.Name)
+		return
+	}
+	// A run that is still going is refused rather than queued behind. Asking
+	// for a second migration while the first one may still hold a transaction
+	// open is the thing this feature exists to prevent, and the run that is
+	// already going is the one the deploy is waiting for — bounded by the
+	// task's own timeout, so this refusal cannot last for ever.
+	if status.LastRun != nil && status.LastRun.Phase == kitchenv1alpha1.RunRunning {
+		badRequest(w, "task %q is already running as %s on environment %q: "+
+			"the deploy is waiting for that run, and a second one beside it is what "+
+			"running this once per deploy exists to prevent",
+			process.Name, status.LastRun.Name, env.Name)
+		return
+	}
+	if !s.recorded(w, req, audit.Transition{
+		Object:    env,
+		Kind:      audit.KindEnvironment,
+		Operation: clickhouse.AuditCreate,
+		Project:   env.Spec.ProjectRef.Name,
+		Reason: fmt.Sprintf("deploy task %s was asked to run again on %s",
+			process.Name, env.Name),
+		Details: map[string]any{"process": process.Name, "environment": env.Name,
+			"release": env.Spec.ReleaseRef.Name},
+	}) {
+		return
+	}
+
+	next := controller.DeployTaskRunName(env.Name, process.Name, status.Attempt+1)
+	status.Release = ""
+	if err := s.Client.Status().Update(ctx, env); err != nil {
+		s.writeError(w, err)
+		return
+	}
+
+	caller, _ := CallerFrom(ctx)
+	s.log().Info("deploy task retried through the api",
+		"environment", env.Name, "process", process.Name, "run", next, "caller", callerName(caller))
+	s.Activity.Record(ctx, clickhouse.Event{
+		Type:        clickhouse.EventRunStarted,
+		Project:     env.Spec.ProjectRef.Name,
+		Environment: env.Name,
+		Process:     process.Name,
+		Run:         next,
+		Actor:       callerName(caller),
+		Message:     fmt.Sprintf("deploy task %s was asked to run again", process.Name),
+	})
+	writeJSON(w, http.StatusAccepted, &processRunView{Name: next, Phase: string(kitchenv1alpha1.RunRunning)})
+}
+
+// runnableProcess resolves the named process of an environment's release and
+// insists it is one with runs, writing the refusal itself.
+//
+// A scheduled job and a deploy task both have them; a worker or a service is
+// refused rather than quietly accepted, because "run it now" has no meaning
+// for a workload that is already running and a 404 would suggest the workload
+// does not exist when it plainly does.
+func (s *Server) runnableProcess(
 	w http.ResponseWriter,
 	ctx context.Context,
 	env *kitchenv1alpha1.Environment,
@@ -463,8 +617,8 @@ func (s *Server) scheduledProcess(
 			kitchenv1alpha1.GroupVersion.WithResource("processes").GroupResource(), name))
 		return kitchenv1alpha1.ProcessSpec{}, false
 	}
-	if process.Type != kitchenv1alpha1.ProcessCron {
-		badRequest(w, "process %q is a %s, not a scheduled job: it has no runs, "+
+	if process.Type != kitchenv1alpha1.ProcessCron && !process.RunsOnce() {
+		badRequest(w, "process %q is a %s, not a scheduled job or a deploy task: it has no runs, "+
 			"and it is already running — its replicas are on GET /environments/%s/processes",
 			name, process.Type, env.Name)
 		return kitchenv1alpha1.ProcessSpec{}, false

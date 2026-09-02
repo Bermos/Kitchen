@@ -40,7 +40,16 @@ import (
 // exception the project declares — `spec.runtime`, the one process with the
 // URL — so a workload that should not be on the internet is not on it by
 // saying nothing, rather than by remembering to turn something off.
-// +kubebuilder:validation:Enum=worker;cron;service
+//
+// `task` is the fourth and the one #272 added, and it is the only one of them
+// that is not a thing that keeps running: it is work that happens once per
+// deploy and finishes before any of that release serves a request. The
+// schema migration is the universal case and had nowhere to go — a readiness
+// probe stops traffic reaching a pod that is not ready, and does nothing
+// about the previous release's pods being retired while a migration is half
+// applied, which is why applications end up running it from their entrypoint
+// once per replica instead.
+// +kubebuilder:validation:Enum=worker;cron;service;task
 type ProcessType string
 
 const (
@@ -57,6 +66,24 @@ const (
 	// so a preview's web process talks to the preview's own API and never
 	// to production's.
 	ProcessService ProcessType = "service"
+	// ProcessTask runs once per deploy and has to finish before anything of
+	// that release takes traffic: a batch/v1 Job, one run, no replicas and
+	// no schedule. It is the schema migration, and the deploy waits for it —
+	// a run that fails stops the deploy where it stands, so whatever was
+	// serving keeps serving.
+	//
+	// It is scoped to the environment being deployed and to nothing else: it
+	// is the same image, the same variables, the same claim bindings and the
+	// same volumes the environment's other workloads get, which is what
+	// makes a preview's run touch the preview's own database branch rather
+	// than production's.
+	//
+	// **Reversing a schema change is out of scope**, deliberately and
+	// permanently. Forward-only, idempotent work is the contract; a rollback
+	// runs the task the release being rolled back to declared, which is the
+	// most the platform can honestly do, and an application whose old schema
+	// cannot read the new data has a problem no deploy-time hook can solve.
+	ProcessTask ProcessType = "task"
 )
 
 // ConcurrencyPolicy is what a scheduled process does when its next run comes
@@ -105,8 +132,16 @@ const DefaultRunTimeout = time.Hour
 // The port rules and the health rules are the same shape of refusal rather
 // than a silent omission. Only a service is addressed, so only a service has
 // a port; a worker publishes no container port of its own, so a health check
-// that named none would check nothing; and a scheduled run's verdict is its
-// exit status, not a probe.
+// that named none would check nothing; and a run's verdict — a scheduled
+// one's or a deploy task's — is its exit status, not a probe.
+//
+// A task is refused a health check and a singleton declaration for the same
+// reason a scheduled process is: it is one run, so there is nothing to keep
+// alive and nothing a second copy could overlap with. It takes a `timeout`,
+// which is the one bound a deploy waiting on it needs, and it is the one
+// workload whose `replicas` is meaningless in both directions — ignored
+// rather than refused, so that changing a process's type does not require
+// deleting a field first.
 //
 // The singleton rules are `RuntimeSpec`'s, read for a workload. A worker is
 // exactly the workload that declaration was filed for and the one it did not
@@ -118,9 +153,11 @@ const DefaultRunTimeout = time.Hour
 // that reads back and does nothing.
 //
 // +kubebuilder:validation:XValidation:rule="self.type != 'cron' || has(self.schedule)",message="a cron process needs a schedule"
-// +kubebuilder:validation:XValidation:rule="self.type == 'cron' || !has(self.schedule)",message="a worker and a service run continuously and have no schedule; use type cron"
+// +kubebuilder:validation:XValidation:rule="self.type == 'cron' || !has(self.schedule)",message="only a cron process has a schedule; a worker and a service run continuously, and a task runs once per deploy"
 // +kubebuilder:validation:XValidation:rule="!has(self.health) || has(self.health.port) || self.type == 'service'",message="a process health check must name the port it is made against: a worker publishes no port of its own"
 // +kubebuilder:validation:XValidation:rule="self.type != 'cron' || !has(self.health)",message="a scheduled process is not kept alive by a health check; how a run went is its exit status"
+// +kubebuilder:validation:XValidation:rule="self.type != 'task' || !has(self.health)",message="a deploy task is not kept alive by a health check; how its run went is its exit status"
+// +kubebuilder:validation:XValidation:rule="!has(self.singleton) || !self.singleton || self.type != 'task'",message="a deploy task is one run per deploy, so there is never a second copy of it to overlap: singleton says nothing here"
 // +kubebuilder:validation:XValidation:rule="self.type != 'service' || has(self.port)",message="a service process has to say which port it listens on: it is what the rest of the unit addresses it by"
 // +kubebuilder:validation:XValidation:rule="self.type == 'service' || !has(self.port)",message="only a service process is addressed, so only a service process has a port; a worker that serves a health listener names that port on its health check"
 // +kubebuilder:validation:XValidation:rule="!has(self.singleton) || !self.singleton || self.type != 'cron'",message="a scheduled process cannot be a singleton: whether two of its runs may overlap is concurrencyPolicy, and Forbid is its default"
@@ -255,7 +292,9 @@ type ProcessSpec struct {
 	// +optional
 	ConcurrencyPolicy ConcurrencyPolicy `json:"concurrencyPolicy,omitempty"`
 
-	// Timeout is how long one run may take before the platform stops it.
+	// Timeout is how long one run may take before the platform stops it —
+	// a scheduled run, or a deploy task's, which is the bound on how long a
+	// deploy will wait for its migration before calling it failed.
 	// Defaults to an hour; see DefaultRunTimeout.
 	// +optional
 	Timeout *metav1.Duration `json:"timeout,omitempty"`
@@ -268,6 +307,14 @@ type ProcessSpec struct {
 	// the production queue is a worse one — the preview shares the project's
 	// environment variables, so it is pointed at whatever the production
 	// process is pointed at unless somebody overrode it.
+	//
+	// **A deploy task is on unless it says otherwise**, and for the reason a
+	// preview exists: a preview gets its own database branch, or an empty
+	// one, and a branch nothing has migrated is a preview that comes up
+	// broken. It runs against the preview's own resources — the same
+	// bindings the preview's other workloads read — so the capability that
+	// would be dangerous, running against another environment's data, is not
+	// one it has.
 	//
 	// **A service is on unless it says otherwise**, and for the reason the
 	// unit exists: a service workload is addressed by its own environment's
@@ -418,7 +465,7 @@ func (p ProcessSpec) PreviewsEnabled() bool {
 	if p.Previews != nil {
 		return *p.Previews
 	}
-	return p.Type == ProcessService
+	return p.Type == ProcessService || p.Type == ProcessTask
 }
 
 // Addressed reports whether anything can reach this workload. Only a service
@@ -432,6 +479,18 @@ func (p ProcessSpec) Addressed() bool {
 // only in whether anything addresses them.
 func (p ProcessSpec) LongRunning() bool {
 	return p.Type == ProcessWorker || p.Type == ProcessService
+}
+
+// RunsOnce reports whether this workload is one run bound to a deploy rather
+// than anything that keeps running or fires again — which is the whole of
+// what a task is, and the reason the deploy waits for it.
+//
+// It is a method rather than a comparison spelled out at each site because
+// every one of those sites is a place where a fourth type must not fall into
+// the branch built for a worker: the reconciler's switch, the environment's
+// materializing pass, the pruning.
+func (p ProcessSpec) RunsOnce() bool {
+	return p.Type == ProcessTask
 }
 
 // ServiceEnvPrefix is the variable name a workload's siblings find it under,
@@ -477,9 +536,31 @@ type ProcessStatus struct {
 	Type ProcessType `json:"type"`
 
 	// Workload is the Deployment or CronJob the process materialized as, in
-	// the project's application namespace.
+	// the project's application namespace. A deploy task materializes no
+	// standing object at all — its runs are Jobs, and LastRun names the one
+	// this deploy made — so it carries none.
 	// +optional
 	Workload string `json:"workload,omitempty"`
+
+	// Release is the Release a deploy task's LastRun was started for, and
+	// Attempt how many runs of it this environment has ever started.
+	//
+	// Together they are what makes "once per deploy" a fact rather than a
+	// hope, and they are on the object because the reconciler is stateless
+	// between passes: a run is started when the release recorded here is not
+	// the one being deployed, and skipped when it is — so a hundred
+	// reconciles of one release run one migration, and a rollback to a
+	// release this environment ran before is a *new* deploy and runs it
+	// again. Attempt is what keeps each of those runs its own Job rather
+	// than a name that collides with a finished one, and asking for a retry
+	// is exactly clearing Release.
+	//
+	// Both are empty for every other type of workload.
+	// +optional
+	Release string `json:"release,omitempty"`
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	Attempt int32 `json:"attempt,omitempty"`
 
 	// Address is where a service workload answers, inside the cluster and
 	// nowhere else: `http://<host>:<port>`, the same value its siblings read
@@ -524,7 +605,8 @@ type ProcessStatus struct {
 	Active int32 `json:"active,omitempty"`
 
 	// LastRun is the most recent run that started, whatever it did next, and
-	// LastFailure the most recent one that failed. Both are kept because the
+	// LastFailure the most recent one that failed — a schedule's firings, or
+	// a deploy task's one run per deploy. Both are kept because the
 	// question a person asks is "is it working" and the question they ask
 	// next is "when did it stop" — and a job that has been failing for a week
 	// answers the first with a green tick if only the last run is recorded.
@@ -539,8 +621,11 @@ type ProcessStatus struct {
 	LastFailure *ProcessRun `json:"lastFailure,omitempty"`
 }
 
-// ProcessRun is one run of a scheduled process: the Job that ran it, when, and
-// what came of it.
+// ProcessRun is one run of a scheduled process or of a deploy task: the Job
+// that ran it, when, and what came of it. One shape for both, because a
+// person asking how a run went asks the same question either way — and it is
+// what lets a task's output and outcome be read exactly the way every other
+// run's already are.
 type ProcessRun struct {
 	// Name is the Job in the application namespace. It is also the value the
 	// log pipeline keys on as `run:<name>`, which is what makes a run's

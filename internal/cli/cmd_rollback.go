@@ -228,6 +228,22 @@ func printConfigDiff(ctx context.Context, r *Runtime, client *client, to, from s
 	if moved == 0 {
 		fmt.Fprint(&out, "  the configuration is identical; only the image changes")
 	}
+	// The work the release being moved to declares to run before it takes
+	// traffic is the one entry here that *happens* rather than differs: a
+	// rollback runs that release's own migration whether or not anything
+	// about it changed, so it is said even when nothing else moved. A task
+	// only the release being left behind declares is exactly the one that
+	// will not run.
+	tasks := make([]string, 0, len(diff.Processes))
+	for _, p := range diff.Processes {
+		if p.Type == processTypeTask && p.Change != changeRemoved {
+			tasks = append(tasks, p.Name)
+		}
+	}
+	if len(tasks) > 0 {
+		fmt.Fprintf(&out, "\n  %s runs again before this release serves anything, "+
+			"and nothing runs a down step", strings.Join(tasks, ", "))
+	}
 	r.printer().note("%s", strings.TrimRight(out.String(), "\n"))
 }
 

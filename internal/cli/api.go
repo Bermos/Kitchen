@@ -862,17 +862,24 @@ type process struct {
 	Suspended bool   `json:"suspended,omitempty"`
 	Reason    string `json:"reason,omitempty"`
 	Active    int32  `json:"active,omitempty"`
-	// LastRun and LastFailure are a scheduled job's. The failure is kept until
-	// a later failure replaces it, never until a success does.
+	// LastRun and LastFailure are a scheduled job's or a deploy task's. The
+	// failure is kept until a later failure replaces it, never until a
+	// success does.
 	LastRun     *processRun `json:"lastRun,omitempty"`
 	LastFailure *processRun `json:"lastFailure,omitempty"`
+	// Deploy is what a deploy task is doing to the deploy it belongs to:
+	// pending, running, complete or failed. Absent on every other type of
+	// workload. `failed` is a release that did not land — what was serving
+	// before it still is.
+	Deploy string `json:"deploy,omitempty"`
 	// Healthy is the platform's own verdict — a worker with no ready replica,
-	// a schedule whose last run failed — so that this CLI and the dashboard
-	// cannot disagree about what red means.
+	// a schedule whose last run failed, a deploy task that failed — so that
+	// this CLI and the dashboard cannot disagree about what red means.
 	Healthy bool `json:"healthy"`
 }
 
-// processRun is one firing of a scheduled job.
+// processRun is one firing of a scheduled job, or a deploy task's one run per
+// deploy.
 type processRun struct {
 	Name            string     `json:"name"`
 	Phase           string     `json:"phase"`

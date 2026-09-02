@@ -98,7 +98,11 @@ These aren't nice-to-haves — the first three are the product.
    left in `kubectl get jobs`: into the activity feed, onto the environment's
    status, and onto the environment screen. The log pipeline keys on the
    process and the run, so one firing's output is one query for as long as the
-   lines are kept — which outlasts the Job. See
+   lines are kept — which outlasts the Job. A fourth type joined them for the
+   work that has to happen *before* a release serves anything: a `task` is one
+   Job per deploy that the environment waits for, which is where a schema
+   migration goes — nothing of the release takes traffic until it succeeds, and
+   a failure leaves whatever was serving serving. See
    [Workloads](api/processes.md).
 
 ### Nice-to-haves (later)

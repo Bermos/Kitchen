@@ -203,8 +203,12 @@ do to make that go well, in order of how often it is the problem:
    nothing matches **fails the build** saying so.
 3. **Give it a health path** and declare it in `runtime.health.path`. Without
    one the platform can only make a TCP connect, which says the process
-   started and not that it works — so a deploy takes traffic while a migration
-   is still running. Return 2xx when the application is genuinely ready.
+   started and not that it works. Return 2xx when the application is genuinely
+   ready. **Put a schema migration in a `task` process**, not in the
+   entrypoint: a task runs once per deploy and the release takes no traffic
+   until it succeeds, where an entrypoint migration runs once per replica, at
+   once, on every rollout. Write it forward-only and idempotent — nothing runs
+   a "down" step, on a rollback or otherwise.
 4. **Read configuration from the environment**, never from a file baked into
    the image. A release is one image deployed to production and to every
    preview, and the environment is the only thing that differs.

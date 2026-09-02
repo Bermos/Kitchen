@@ -231,7 +231,7 @@ func newProjectView(project *kitchenv1alpha1.Project, role access.ProjectRole) p
 		}
 	}
 	for _, process := range project.Spec.Processes {
-		view.Processes = append(view.Processes, newProcessView(process, nil))
+		view.Processes = append(view.Processes, newProcessView(process, nil, ""))
 	}
 	view.DataClass = string(project.Spec.DataClass)
 	view.Criticality = string(project.Spec.Criticality)

@@ -233,9 +233,28 @@ decide.
 
 **Give it a health path.** Without one the platform can only make a TCP
 connect to your port, which says the process started rather than that it
-works — so a deploy takes traffic while a migration is still running, on
-every deploy and on every rollback, which is the one deploy that must not add
-a second outage to the one it is fixing.
+works — so a deploy takes traffic before the application is ready to serve it,
+on every deploy and on every rollback, which is the one deploy that must not
+add a second outage to the one it is fixing.
+
+**And put a migration in a `task`, not in your entrypoint.** A readiness check
+stops traffic reaching a pod that is not ready; it does nothing about the
+previous release's pods being retired while a migration is half applied, and a
+migration run from the entrypoint runs once per replica, at once, on every
+rollout. A task is one run per deploy that the platform waits for:
+
+```json
+{"processes": [
+  {"name": "migrate", "type": "task", "command": ["npm", "run", "migrate"], "timeout": "10m"}
+]}
+```
+
+Nothing of that release takes traffic until it succeeds, and if it fails the
+deploy stops there with the run's output on the environment — whatever was
+serving keeps serving. It runs in previews too, against the preview's own
+database branch. **Undoing a schema change is yours, not the platform's**:
+write forward-only, idempotent migrations, because a rollback runs the task the
+older release declared and nothing runs a "down" step.
 
 ## 6. Previews
 

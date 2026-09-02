@@ -152,8 +152,16 @@ spec:
                         The port rules and the health rules are the same shape of refusal rather
                         than a silent omission. Only a service is addressed, so only a service has
                         a port; a worker publishes no container port of its own, so a health check
-                        that named none would check nothing; and a scheduled run's verdict is its
-                        exit status, not a probe.
+                        that named none would check nothing; and a run's verdict — a scheduled
+                        one's or a deploy task's — is its exit status, not a probe.
+
+                        A task is refused a health check and a singleton declaration for the same
+                        reason a scheduled process is: it is one run, so there is nothing to keep
+                        alive and nothing a second copy could overlap with. It takes a `timeout`,
+                        which is the one bound a deploy waiting on it needs, and it is the one
+                        workload whose `replicas` is meaningless in both directions — ignored
+                        rather than refused, so that changing a process's type does not require
+                        deleting a field first.
 
                         The singleton rules are `RuntimeSpec`'s, read for a workload. A worker is
                         exactly the workload that declaration was filed for and the one it did not
@@ -390,6 +398,14 @@ spec:
                             environment variables, so it is pointed at whatever the production
                             process is pointed at unless somebody overrode it.
 
+                            **A deploy task is on unless it says otherwise**, and for the reason a
+                            preview exists: a preview gets its own database branch, or an empty
+                            one, and a branch nothing has migrated is a preview that comes up
+                            broken. It runs against the preview's own resources — the same
+                            bindings the preview's other workloads read — so the capability that
+                            would be dangerous, running against another environment's data, is not
+                            one it has.
+
                             **A service is on unless it says otherwise**, and for the reason the
                             unit exists: a service workload is addressed by its own environment's
                             siblings and by nothing else, so leaving it out of a preview protects
@@ -506,7 +522,9 @@ spec:
                           type: boolean
                         timeout:
                           description: |-
-                            Timeout is how long one run may take before the platform stops it.
+                            Timeout is how long one run may take before the platform stops it —
+                            a scheduled run, or a deploy task's, which is the bound on how long a
+                            deploy will wait for its migration before calling it failed.
                             Defaults to an hour; see DefaultRunTimeout.
                           type: string
                         type:
@@ -528,10 +546,20 @@ spec:
                             exception the project declares — `spec.runtime`, the one process with the
                             URL — so a workload that should not be on the internet is not on it by
                             saying nothing, rather than by remembering to turn something off.
+
+                            `task` is the fourth and the one #272 added, and it is the only one of them
+                            that is not a thing that keeps running: it is work that happens once per
+                            deploy and finishes before any of that release serves a request. The
+                            schema migration is the universal case and had nowhere to go — a readiness
+                            probe stops traffic reaching a pod that is not ready, and does nothing
+                            about the previous release's pods being retired while a migration is half
+                            applied, which is why applications end up running it from their entrypoint
+                            once per replica instead.
                           enum:
                           - worker
                           - cron
                           - service
+                          - task
                           type: string
                       required:
                       - name
@@ -540,8 +568,8 @@ spec:
                       x-kubernetes-validations:
                       - message: a cron process needs a schedule
                         rule: self.type != 'cron' || has(self.schedule)
-                      - message: a worker and a service run continuously and have
-                          no schedule; use type cron
+                      - message: only a cron process has a schedule; a worker and
+                          a service run continuously, and a task runs once per deploy
                         rule: self.type == 'cron' || !has(self.schedule)
                       - message: 'a process health check must name the port it is
                           made against: a worker publishes no port of its own'
@@ -550,6 +578,14 @@ spec:
                       - message: a scheduled process is not kept alive by a health
                           check; how a run went is its exit status
                         rule: self.type != 'cron' || !has(self.health)
+                      - message: a deploy task is not kept alive by a health check;
+                          how its run went is its exit status
+                        rule: self.type != 'task' || !has(self.health)
+                      - message: 'a deploy task is one run per deploy, so there is
+                          never a second copy of it to overlap: singleton says nothing
+                          here'
+                        rule: '!has(self.singleton) || !self.singleton || self.type
+                          != ''task'''
                       - message: 'a service process has to say which port it listens
                           on: it is what the rest of the unit addresses it by'
                         rule: self.type != 'service' || has(self.port)
