@@ -33,6 +33,7 @@ import (
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/provider/database"
+	"github.com/Bermos/Kitchen/internal/provider/inngest"
 	"github.com/Bermos/Kitchen/internal/provider/objectstore"
 )
 
@@ -496,7 +497,8 @@ func (r *ResourceClaimReconciler) deleteBranch(
 // condition that read "failed" for every one of them would teach everybody to
 // ignore the word — the same distinction the claim's own phase makes.
 func branchReason(err error) string {
-	if errors.Is(err, database.ErrNotReady) || errors.Is(err, objectstore.ErrNotReady) {
+	if errors.Is(err, database.ErrNotReady) || errors.Is(err, objectstore.ErrNotReady) ||
+		errors.Is(err, inngest.ErrNotReady) {
 		return "BranchProvisioning"
 	}
 	return "BranchFailed"

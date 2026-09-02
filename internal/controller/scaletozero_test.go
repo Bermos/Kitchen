@@ -24,6 +24,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -125,7 +126,20 @@ var _ = Describe("Scale to zero", func() {
 				},
 			},
 		}
-		Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, kitchen))).To(Succeed())
+		// Created *or* brought to this spec's shape. The singleton is
+		// cluster-scoped and a dozen suites create one, so tolerating
+		// whichever got there first makes this suite's result depend on the
+		// spec order: a Kitchen left behind with idling switched off, and
+		// the environment reconciles without an HTTPScaledObject for a
+		// reason this suite never chose.
+		if err := k8sClient.Create(ctx, kitchen); apierrors.IsAlreadyExists(err) {
+			existing := &kitchenv1alpha1.Kitchen{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: KitchenSingletonName}, existing)).To(Succeed())
+			existing.Spec = kitchen.Spec
+			Expect(k8sClient.Update(ctx, existing)).To(Succeed())
+		} else {
+			Expect(err).NotTo(HaveOccurred())
+		}
 
 		project := &kitchenv1alpha1.Project{
 			ObjectMeta: metav1.ObjectMeta{Name: projectName, Namespace: namespace},

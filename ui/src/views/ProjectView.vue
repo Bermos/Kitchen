@@ -488,6 +488,11 @@ function claimRequirements(claim: Claim): string[] {
       ...(volume.accessMode ? [volume.accessMode] : []),
     ];
   }
+  if (claim.inngest) {
+    // What the worker connects as and where: the app ID is the thing the
+    // application has to match, so it is the badge.
+    return [`app ${claim.inngest.app}`, claim.inngest.environment];
+  }
   const postgres = claim.postgres;
   if (postgres) {
     return [
@@ -507,6 +512,12 @@ function claimRequirements(claim: Claim): string[] {
   }
   return [];
 }
+
+/** The claims whose provider holds the workload up — a connect worker's
+ * outbound connection, say. Scale to zero is a project-level policy, so one
+ * such claim keeps every environment of this project on its pods, and the
+ * settings say so next to the switch that would otherwise decide it. */
+const pinningClaims = computed(() => (data.value?.claims ?? []).filter((claim) => claim.keepsPodsRunning));
 
 // The refusal a failed claim carries, which is the whole point of failing as a
 // claim rather than as an application: the Ready condition's message names
@@ -970,6 +981,11 @@ function host(url?: string): string {
                   connection, single sign-on from the platform's own identity provider, or a persistent volume for
                   one process) and binds it into the project's environments — through a secret its env vars
                   reference, or as a mount.
+                  connection, or single sign-on from the platform's own identity provider) and binds it into the
+                  project's environment through a secret its env vars reference.
+                  No resource claims — a claim asks for something the project needs (a database from a connection,
+                  single sign-on from the platform's own identity provider, or durable background work from
+                  Inngest) and binds it into the project's environment through a secret its env vars reference.
                 </td>
               </tr>
               <tr v-for="claim in data?.claims" :key="claim.name" class="border-b border-muted last:border-0">
@@ -1268,6 +1284,19 @@ function host(url?: string): string {
                 background loop, a poller or an ingest job goes quiet with a gap in its data that looks exactly like
                 the upstream having been down. Turning this on keeps every environment of this project awake,
                 previews included."
+            />
+            <!-- A claim's provider can say the same thing about its binding,
+                 and then the switch above is not what decides: scale to zero
+                 is a project-level policy, so the one claim costs idling for
+                 every environment of the project. Said here, where somebody
+                 would otherwise look for the setting that turns it back on. -->
+            <UAlert
+              v-if="pinningClaims.length"
+              color="warning"
+              variant="subtle"
+              icon="i-lucide-triangle-alert"
+              title="This project is not offered scale to zero"
+              :description="`${pinningClaims.map((claim) => claim.name).join(', ')} ${pinningClaims.length === 1 ? 'holds' : 'hold'} a worker whose outbound connection never crosses the interceptor, so nothing can tell when an environment is idle. Every environment of this project keeps its pods, previews included — release the claim to idle them.`"
             />
           </div>
 

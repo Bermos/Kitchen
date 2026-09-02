@@ -22,7 +22,7 @@ operator stores it in a Secret it manages, and every response is the same
 credential-free view `GET` answers.
 
 The providers are `github`, `gitlab`, `gitea`, `dockerRegistry`, `neon`,
-`cnpg` and `s3`. **`cnpg` is the one with no credential at all** — it provisions
+`cnpg`, `s3` and `inngest`. **`cnpg` is the one with no credential at all** — it provisions
 Postgres into this cluster with the operator's own service account, so there
 is nothing to store, nothing to rotate, and a `credential` sent for it is
 refused rather than kept and never read:
@@ -72,7 +72,8 @@ curl -sS -X POST -H "authorization: Bearer $TOKEN" \
   https://kitchen.apps.example.com/api/v1/connections
 ```
 
-`github`, `gitlab`, `gitea` and `neon` authenticate with `credential.token`.
+`github`, `gitlab`, `gitea`, `neon` and `inngest` authenticate with
+`credential.token`.
 A `dockerRegistry` takes `credential.username` and `credential.password`, plus
 the registry in `config.url` — the prefix images are pushed under, whose host
 is what builds authenticate against:
@@ -140,6 +141,15 @@ admin API is not a failed connection — the credential works — but every clai
 through it will fail until the flag is set or the credential is given admin
 rights, and the test below says so as a warning rather than a verdict.
 Testing an `s3` connection lists the buckets the credential can see.
+An `inngest` credential is an [Inngest Cloud API key](https://www.inngest.com/docs/platform/api-keys)
+(`sk-inn-api-…`), which only an organization admin can create. The platform
+reads each environment's signing key and event key into a claim's binding
+through it, creates a branch environment per preview and archives it when the
+pull request closes; it creates no keys, because the Inngest API cannot. Leave
+the key unscoped, or scoped to the environment claims bind — a key scoped to
+one environment reads nothing in the others, and previews need the branch
+environments. It is validated with `GET /account`, and the connection reports
+the `backgroundJobs` capability.
 
 `POST /connections/test` runs that credential past the provider **without
 storing anything**: no Secret is written and no connection is created, so a
@@ -219,7 +229,7 @@ who still has a repository to name:
 
 | Answer | What it means |
 |---|---|
-| `"supported": false` | The provider has no listing behind it — today, that means `dockerRegistry`, `neon`, `gitlab`, or `gitea`. `message` says which |
+| `"supported": false` | The provider has no listing behind it — today, that means `dockerRegistry`, `neon`, `inngest`, `gitlab`, or `gitea`. `message` says which |
 | `"truncated": true` | The credential can see more than the listing carries. It stops at 500, most recently pushed first |
 | `502` | The provider refused or could not be reached; the body carries its own words — a token that has expired says so here |
 

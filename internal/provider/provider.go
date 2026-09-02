@@ -127,6 +127,16 @@ func Default(conn *kitchenv1alpha1.Connection, creds *corev1.Secret) (Probe, err
 			return nil, err
 		}
 		return &NeonProbe{APIURL: apiURL, Token: token}, nil
+	case "inngest":
+		token, err := tokenFrom(creds)
+		if err != nil {
+			return nil, err
+		}
+		apiURL, err := configuredAPIURL(conn, "https://api.inngest.com/v2")
+		if err != nil {
+			return nil, err
+		}
+		return &InngestProbe{APIURL: apiURL, Token: token}, nil
 	case "dockerRegistry":
 		return newRegistryProbe(conn, creds)
 	case objectstore.ProviderS3:
@@ -156,6 +166,8 @@ func Capabilities(providerName string) []kitchenv1alpha1.Capability {
 		return []kitchenv1alpha1.Capability{kitchenv1alpha1.CapabilityDatabase}
 	case objectstore.ProviderS3:
 		return []kitchenv1alpha1.Capability{kitchenv1alpha1.CapabilityObjectStore}
+	case "inngest":
+		return []kitchenv1alpha1.Capability{kitchenv1alpha1.CapabilityBackgroundJobs}
 	default:
 		return nil
 	}

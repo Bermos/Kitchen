@@ -1535,6 +1535,16 @@ export interface ClaimObjectStore {
   size?: string;
 }
 
+/** What an inngest claim binds, as GET /claims answers it with the
+ * defaults filled in: the Inngest app ID the worker connects as, the Inngest
+ * environment production reads, and the mode — connect, the only one the
+ * platform provisions. */
+export interface ClaimInngest {
+  app: string;
+  environment: string;
+  mode: string;
+}
+
 export interface Claim {
   name: string;
   project: string;
@@ -1583,6 +1593,10 @@ export interface Claim {
   objectStore?: ClaimObjectStore;
   /** What a volume claim asked for, and what the platform made of it. */
   volume?: ClaimVolume;
+  /** What an inngest claim binds — app, environment, mode — with the
+   * defaults filled in. Whether a worker has connected yet is the claim's
+   * AppConnected condition. */
+  inngest?: ClaimInngest;
   createdAt: string;
   conditions?: Condition[];
   /** What an oidcClient claim's client currently accepts as a callback. The
@@ -1639,6 +1653,10 @@ export interface NewClaim {
    * one of the project's processes), its size, the mount path, and
    * optionally the storage class. */
   volume?: { process: string; size: string; mountPath: string; storageClass?: string };
+  /** inngest only: the app ID the worker connects as (empty takes the
+   * claim's name), the Inngest environment production reads (empty means
+   * production), and the mode — connect is the only one provisioned. */
+  inngest?: Partial<ClaimInngest>;
   /** Classify the data the resource will hold. May not exceed the project's
    * class; refused in an unclassified project (classify the project first). */
   dataClass?: string;

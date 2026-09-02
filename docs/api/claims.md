@@ -5,6 +5,10 @@ to install itself — a database, a bucket, single sign-on, a disk — and binds
 it into the project's environments. The credentials it produces stay in the
 cluster: the API hands out the claim's status, never the secret's contents. A
 volume produces no credential at all, only a mount.
+to install itself — a database, a bucket, single sign-on, durable background
+work — and binds it into the project's environments. The credentials it
+produces stay in the cluster:
+the API hands out the claim's status, never the secret's contents.
 
 Part of the [REST API](../API.md), which carries the authentication, the
 authorization model and the full route table these sections belong to. The
@@ -266,6 +270,119 @@ whoever backs up the cluster's storage, and [BACKUP.md](../BACKUP.md) says so
 beside the databases the platform runs. And a process pinned to one replica
 under `Recreate` cannot be restarted for a secret rotation without a brief
 outage — the rotation restart (#277) meets the same gap every deploy does.
+**`inngest`** asks a Connection with the `backgroundJobs` capability — an
+Inngest Cloud API key — for the keys a worker connects to Inngest with, so
+that the application gets retries, sleeps, fan-out, concurrency limits and
+cron without supervising any of it:
+
+```sh
+curl -sS -X POST -H "authorization: Bearer $TOKEN" \
+  -d '{"name": "shop-jobs", "project": "shop", "connection": "inngest", "type": "inngest",
+       "inngest": {"app": "shop-worker", "environment": "production"}}' \
+  https://kitchen.apps.example.com/api/v1/claims
+```
+
+| Field | Default | What it does |
+|---|---|---|
+| `inngest.app` | the claim's name | The app ID the application's Inngest client is created with (`new Inngest({ id })`). The claim reports on it; it cannot set it |
+| `inngest.environment` | `production` | The Inngest environment production binds to — `production`, or a custom environment created in the Inngest dashboard. Previews never bind to it |
+| `inngest.mode` | `connect` | How the worker reaches Inngest. `connect` is the only value; `serve` is refused, saying why |
+
+The binding is four keys, spelled as the variables the Inngest SDKs read so
+that `fromResourceClaim` names the key and the application reads a variable
+of the same name: `INNGEST_EVENT_KEY`, `INNGEST_SIGNING_KEY`, `INNGEST_ENV`
+and `INNGEST_BASE_URL`. `INNGEST_ENV` is empty for production and names the
+preview's branch environment in a preview; `INNGEST_BASE_URL` is empty on
+Inngest Cloud on purpose — the SDKs use it for the event API and the REST API
+alike, and Cloud serves those from two hosts (`inn.gs` and
+`api.inngest.com`), so setting it to either would misroute the other. A
+self-hosted Inngest, which is not this provider, is what would set it. Bind
+all four through `Project.spec.env`, and today that reaches every process of
+the project — there is no per-process environment yet (#271), so the web
+process carries the keys as well as the worker that uses them. It takes no
+`deletionPolicy`: an Inngest app holds no data the platform could destroy
+(see below).
+
+*What the provider does, and what it cannot.* This type is shaped by five
+facts about Inngest Cloud, established against its documentation and its
+[v2 OpenAPI specification](https://api-docs.inngest.com/api-specs/v2.json)
+before it was built:
+
+1. **There is a management REST API**, v2 at `https://api.inngest.com/v2`,
+   authenticated with a bearer [API key](https://www.inngest.com/docs/platform/api-keys)
+   (`sk-inn-api-…`, created by an organization admin, optionally scoped to
+   one environment) — [authentication](https://api-docs.inngest.com/authentication).
+   That key is the `inngest` Connection's credential, and the platform
+   validates it with `GET /account`.
+2. **Apps are not created; they register on connect.** The API has
+   `GET /apps` and `GET /apps/{appId}` and no create. A connect worker
+   "automatically sync[s] your functions with Inngest when a worker
+   connects" ([connect](https://www.inngest.com/docs/setup/connect)), so the
+   app exists once the process holding the worker has started with the
+   binding. The claim binds before that and reports it on an `AppConnected`
+   condition: `NotConnected` until a worker has, `Connected` with the
+   function count and SDK afterwards, `SyncFailed` with Inngest's words if
+   the last sync failed.
+3. **Keys are read, never minted.** `GET /keys/signing` and
+   `GET /keys/events` answer the full key values for the environment named
+   in the `X-Inngest-Env` header, as often as asked; there is no endpoint
+   that creates or revokes either. So the platform reads the environment's
+   signing key and its first event key (one named after the app is preferred)
+   into the binding on every reconcile — a key rotated in the dashboard
+   reaches the binding by itself — and a claim against an environment with no
+   event key is `Failed` with `RequirementsUnsatisfiable`, saying to
+   [create one in the dashboard](https://www.inngest.com/docs/events/creating-an-event-key);
+   it binds on the next reconcile after that.
+4. **Branch environments are the preview story.** They are "created
+   on-demand", "share Event Keys and Signing Keys", and are selected by
+   `INNGEST_ENV` ([environments](https://www.inngest.com/docs/platform/environments),
+   [signing keys](https://www.inngest.com/docs/platform/signing-keys#signing-keys-and-branch-environments));
+   the API lists them (`GET /envs`), creates them (`POST /envs`, `409` when
+   the name exists) and archives or unarchives them (`PATCH /envs/{id}` with
+   `isArchived`) — there is no delete, and "archiving a branch environment
+   doesn't delete anything; it only prevents the environment's functions
+   from triggering". Inngest archives a branch environment itself three days
+   after its last deploy; a preview that is still open gets it unarchived on
+   the claim's next reconcile. So a preview gets an environment of its own,
+   found or created by name, its binding is the shared branch keys plus
+   `INNGEST_ENV`, and closing the pull request archives it. The branch
+   declares provenance `synthetic`: an empty event stream of the preview's
+   own, never a copy of production's.
+5. **A connect worker dials out**, first to the Inngest API for connection
+   information and then to the WebSocket gateway the answer names
+   ([connect](https://www.inngest.com/docs/setup/connect#connection-lifecycle));
+   nothing dials in. That is why connect works behind a protected preview's
+   gate and why serve mode is refused — in serve mode Inngest calls the
+   application over HTTP and meets a login page — and it is why the
+   declaration below says what it says about scale to zero.
+
+**Scale to zero, and the connection cap.** The worker's WebSocket never
+crosses the interceptor, so nothing can tell when the environment is idle;
+the provider declares `keepsPodsRunning`, every environment reading the
+claim reports `ScaleToZero: False` with reason `ClaimKeepsPodsRunning`
+naming the claim, and — because idling is a project-level policy — the
+project's settings say the project is not offered scale to zero and why.
+Inngest caps concurrent worker connections per **account**, by plan: 3 on
+the free plan, 20 on paid plans, at most 10 apps per connection
+([connect](https://www.inngest.com/docs/setup/connect), and the
+[pricing page](https://www.inngest.com/pricing) lists "Workers: 3 / 20 then
+$10 per 10 workers"). Every running pod of the process holding the worker,
+in every environment of the project, is one of them — a project with two
+replicas and three open pull requests is eight. The API exposes no plan or
+cap (`GET /account` answers an id, a name and an email), so the platform
+counts rather than checks: the claim's `ConnectWorkers` condition carries
+the number of environments reading the binding and the numbers above, and
+the account's billing page is where the cap is.
+
+**What deleting the claim does.** The binding secrets go and the preview
+branch environments are archived. The app record stays at Inngest until
+somebody archives it in the dashboard, the keys are the account's, and
+event and run history live at Inngest under the account's own retention —
+nothing the platform could destroy, which is why the type refuses a
+`deletionPolicy`.
+
+The CLI reaches all of this through `kitchen api`, as for every claim type;
+no command creates a claim.
 
 ## What a preview gets, and what a claim costs the workload
 
@@ -299,7 +416,10 @@ still scale to zero (`keepsPodsRunning`), and whether it forces a recreate
 on every deploy, giving up zero-downtime deploys (`forcesRecreate`). The
 environment reconciler acts on both — the `ScaleToZero` condition names the
 claim, and the Deployment's strategy is set — and the claim's answer carries
-them so the screen can say so before the claim is made.
+them so the screen can say so before the claim is made. The `inngest` type
+is the first to declare `keepsPodsRunning`, and since scale to zero is a
+project-level policy the cost is the whole project's: the project settings
+say so, next to the switch that would otherwise decide it.
 
 ### What can be claimed
 
@@ -317,6 +437,7 @@ with the body above.
 | `oidcClient` | `kitchen` | `shared` — every environment signs in through the project's one client; the operator keeps its redirect list in step as previews come and go, and a client holds no data | unaffected | unaffected |
 | `objectStore` | `s3` | `fresh` — a new, empty bucket of the preview's own with its own credential, versioned when production's is and torn down with the preview: the branch declares provenance synthetic | unaffected | unaffected |
 | `volume` | `storageClass` | `fresh` — a new, empty volume of the same size and class, never a copy of production's: the preview declares provenance synthetic | unaffected | **recreate, with downtime** — a ReadWriteOnce volume attaches to one pod at a time, so the process mounting it runs one replica and is deployed by stopping the old pod before starting the new one — a rolling update would leave the new pod waiting in Multi-Attach for a volume the old pod never releases. Every deploy of that process has a gap in serving; a StorageClass detected to support ReadWriteMany lifts both |
+| `inngest` | `inngest` | `branch` — an Inngest branch environment of the preview's own — its own event stream, function set and run history, empty rather than a copy of production's, selected by INNGEST_ENV on the account's shared branch keys; archived, not deleted, when the preview goes | **blocked** — a connect worker holds an outbound WebSocket to Inngest's gateway that never crosses the interceptor, so nothing can tell when it is idle — and scale to zero is a project-level policy, so every environment of the project keeps its pods, previews included | unaffected |
 <!-- end generated -->
 
 ### Choosing on the claim
@@ -336,6 +457,10 @@ provider's declarations about the workload. All of it is on the claim's
 status too, which is what a preview's workload, the policy engine and the
 screen act on.
 
+A preview of an `inngest` claim binds the account's shared branch keys with
+`INNGEST_ENV` naming its own branch environment, which is what routes its
+events and functions apart from every other preview's.
+
 A preview of a claim whose mode is `none` deploys **without the variables
 read from it**, and its `ClaimsBound` condition says which claim and why,
 rather than the environment failing. A preview of a `shared` claim reads the
@@ -349,6 +474,7 @@ previews production — after upgrading, its previews get the provider's
 declared mode instead, and `previewMode: shared` restores what it had.
 
 Deleting a claim answers `202`: the operator's finalizer still has branches,
-preview buckets, binding secrets, the registered client and — under `Delete`
-— the database or the bucket itself to remove.
+preview buckets, binding secrets, the registered client, the branch
+environments to archive and — under `Delete` — the database or the bucket
+itself to remove.
 

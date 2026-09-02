@@ -88,6 +88,15 @@ func TestDefaultResolvesImplementedProviders(t *testing.T) {
 	if !ok || neon.APIURL != "https://console.neon.tech/api/v2" || neon.Token != "key" {
 		t.Errorf("unexpected neon probe %#v", probe)
 	}
+
+	probe, err = Default(connection("inngest", ""), tokenSecret("key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	inngest, ok := probe.(*InngestProbe)
+	if !ok || inngest.APIURL != "https://api.inngest.com/v2" || inngest.Token != "key" {
+		t.Errorf("unexpected inngest probe %#v", probe)
+	}
 }
 
 func TestDefaultRefusesUnimplementedProviders(t *testing.T) {
@@ -213,6 +222,9 @@ func TestCapabilitiesMatchWhatThePlatformImplements(t *testing.T) {
 	}
 	if got := Capabilities("neon"); len(got) != 1 || got[0] != kitchenv1alpha1.CapabilityDatabase {
 		t.Errorf("unexpected neon capabilities %v", got)
+	}
+	if got := Capabilities("inngest"); len(got) != 1 || got[0] != kitchenv1alpha1.CapabilityBackgroundJobs {
+		t.Errorf("unexpected inngest capabilities %v", got)
 	}
 	// Every forge is both halves. What differs between them is the
 	// deployment record, which is not a capability — it is a narrower

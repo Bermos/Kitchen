@@ -276,8 +276,9 @@ name against `internal/api/policy.go`, so a route that moves fails them too.
 | GET | `/claim-types` | What can be claimed: every claim type, and what each provider that fulfils it declares about previews, idling and deploys | any account |
 | GET | `/claims` | Every resource claim. `?project=` filters | any account — filtered |
 | POST | `/claims` | Ask for a provisioned resource: a database from a connection — optionally naming the Postgres version, extensions and storage it needs, and what previews get — an OAuth client from the platform's identity provider, or a persistent volume mounted into one of the project's processes | `developer` |
+| POST | `/claims` | Ask for a provisioned resource: a database from a connection — optionally naming the Postgres version, extensions and storage it needs, and what previews get — an OAuth client from the platform's identity provider, or the keys a worker connects to Inngest with | `developer` |
 | GET | `/claims/{name}` | One claim | `viewer` |
-| DELETE | `/claims/{name}` | Delete it — what happens to the data is its `deletionPolicy`'s call; an OAuth client is always deregistered | `developer` |
+| DELETE | `/claims/{name}` | Delete it — what happens to the data is its `deletionPolicy`'s call; an OAuth client is always deregistered, and an Inngest app's preview environments are archived | `developer` |
 
 ## Endpoint reference
 
