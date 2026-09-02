@@ -946,6 +946,54 @@ spec:
                       type: string
                     type: array
                 type: object
+              objectStore:
+                default: {}
+                description: |-
+                  ObjectStore configures the platform's own S3-compatible store, and
+                  the Connection the operator seeds to point at it. Off by default.
+                properties:
+                  enabled:
+                    description: |-
+                      Enabled seeds the Connection that points at the bundled store. Off —
+                      the default — means an installation brings its own S3-compatible
+                      store, which is an s3 Connection someone creates. The chart renders
+                      the store itself only when its own objectStore.enabled is set.
+                    type: boolean
+                  port:
+                    default: 9000
+                    description: Port the store's Service publishes.
+                    format: int32
+                    maximum: 65535
+                    minimum: 1
+                    type: integer
+                  region:
+                    default: us-east-1
+                    description: |-
+                      Region the store reports for its buckets. It is a formality an S3
+                      client insists on; the bundled store is told the same value.
+                    type: string
+                  secretRef:
+                    description: |-
+                      SecretRef names the Secret in the platform namespace holding the
+                      store's root credential: the keys accessKeyId and secretAccessKey. The
+                      chart writes it as <release>-objectstore, generating the secret once
+                      and keeping it across upgrades. It is what the operator copies into the
+                      seeded Connection's credential, and what mints every claim's own.
+
+                      Left unset it is the conventional release name's, kitchen-objectstore.
+                    properties:
+                      name:
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  service:
+                    description: |-
+                      Service in the platform namespace the store answers on. The chart
+                      writes it as <release>-objectstore.
+                    type: string
+                type: object
               observability:
                 description: ObservabilitySpec configures the telemetry pipeline.
                 properties:
@@ -1830,6 +1878,20 @@ spec:
                 description: Externally reachable address of the shared Gateway, once
                   programmed.
                 type: string
+              objectStore:
+                description: |-
+                  ObjectStore reports the bundled object store: where it is reached, and
+                  the Connection the operator seeded to point at it.
+                properties:
+                  connection:
+                    description: |-
+                      Connection the operator seeded, by name. Set once and never cleared
+                      while the store stays enabled.
+                    type: string
+                  endpoint:
+                    description: Endpoint the store is reached at inside the cluster.
+                    type: string
+                type: object
               registry:
                 description: |-
                   Registry reports the bundled image registry: where it is published,

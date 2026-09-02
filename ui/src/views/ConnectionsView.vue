@@ -43,7 +43,7 @@ async function deleteConnection() {
   <div class="space-y-6">
     <PageHeader title="Connections">
       <template #description>
-        Git providers, registries and databases the platform talks to. Credentials never leave the operator.
+        Git providers, registries, databases and object stores the platform talks to. Credentials never leave the operator.
       </template>
       <template #actions>
         <UButton

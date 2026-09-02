@@ -1272,6 +1272,87 @@ registry:
   affinity: {}
   priorityClassName: ""
 
+# The object store the platform can run for itself: a single MinIO an
+# application's objectStore claim becomes a bucket in, so that user uploads
+# and generated exports have somewhere to go without anyone opening an
+# account at a cloud. Off by default — it is a workload with a volume, and an
+# installation that has R2 or S3 already brings it as an `s3` Connection.
+#
+# Unlike the registry it is not published on the Gateway. An application runs
+# in the cluster and reaches the store at its Service address; the node's
+# container runtime, which is what forces the registry onto a publicly
+# trusted certificate, is not in the path. So there is no hostname, no TLS
+# requirement, and no way for a bucket in it to be publicly readable — a claim
+# asking for that is refused with the reason rather than granted a policy
+# that publishes nothing.
+#
+# The operator seeds an `s3` Connection pointing at it, with the root
+# credential below, and mints a user and a policy per bucket from it: a
+# bucket per claim with a credential scoped to that bucket, never a prefix in
+# a shared one. That Connection is an ordinary one: delete it and it stays
+# deleted.
+objectStore:
+  # -- Run the bundled object store and seed the Connection that points at
+  # it. Off means bringing your own — an `s3` Connection created on the
+  # connections page.
+  enabled: false
+  image:
+    # -- MinIO, as a single server on one volume. The operator is not needed
+    # for that shape, and a distributed deployment is not where this starts.
+    repository: quay.io/minio/minio
+    tag: RELEASE.2025-04-22T22-12-26Z
+    pullPolicy: IfNotPresent
+  auth:
+    # -- The root user. It mints every bucket's own scoped credential and is
+    # never handed to an application.
+    accessKeyId: kitchen
+    # -- The root secret key. Generated on install and preserved across
+    # upgrades when empty. Set it explicitly if you render manifests with
+    # `helm template`, which cannot read the existing secret back.
+    secretAccessKey: ""
+  # -- The region every bucket reports. A formality every S3 client insists
+  # on; the seeded Connection is told the same value.
+  region: us-east-1
+  service:
+    # -- Service port fronting the store, and the port MinIO binds.
+    port: 9000
+    annotations: {}
+  persistence:
+    # -- Back the store with a PVC. Without it every object dies with the
+    # pod.
+    enabled: true
+    size: 50Gi
+    # -- StorageClass for the store. Empty uses the cluster default.
+    storageClass: ""
+    accessModes:
+      - ReadWriteOnce
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 2Gi
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop:
+        - ALL
+  # -- Extra environment variables for the MinIO container.
+  extraEnv: []
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  priorityClassName: ""
+
 # The forward-auth gate: what makes a preview URL useless to anyone who has
 # not signed in to the platform. Protected previews route through it, it sends
 # anonymous visitors to the identity provider and proxies the ones that come

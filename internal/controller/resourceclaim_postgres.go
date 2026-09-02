@@ -33,6 +33,7 @@ import (
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/provider/database"
+	"github.com/Bermos/Kitchen/internal/provider/objectstore"
 )
 
 // The postgres half of the ResourceClaim reconciler: a database from a
@@ -110,7 +111,8 @@ func (postgresContract) reconcile(
 
 	claimType, _ := claim.Type()
 	mode := declare(claim, claimType, conn.Spec.Provider)
-	branchErr := r.reconcileBranches(ctx, claim, project.Name, provisioner, appNS, conn.Spec.Provider, mode.Isolated())
+	branchErr := r.reconcileBranches(ctx, claim, project.Name, databaseBrancher{provisioner}, appNS,
+		conn.Spec.Provider, mode.Isolated())
 
 	// The declaration travels in the bind's audit record: what the data
 	// derives from and where the provider put it are the two facts the
@@ -157,9 +159,13 @@ func (postgresContract) finalize(
 	if err != nil {
 		log.Info("finalizing claim without its provider", "claim", claim.Name, "reason", err.Error())
 	}
+	var brancher claimBrancher
+	if provisioner != nil {
+		brancher = databaseBrancher{provisioner}
+	}
 
 	for _, branch := range claim.Status.Branches {
-		if err := r.deleteBranch(ctx, claim, provisioner, appNS, branch); err != nil {
+		if err := r.deleteBranch(ctx, claim, brancher, appNS, branch); err != nil {
 			return err
 		}
 	}
@@ -219,7 +225,7 @@ func (r *ResourceClaimReconciler) provision(
 		result, err := r.failed(ctx, claim, "ProvisionFailed", err)
 		return result, true, err
 	}
-	if err := r.writeBindingSecret(ctx, claim, appNS, secretName, instance.Binding); err != nil {
+	if err := r.writeBindingSecret(ctx, claim, appNS, secretName, databaseBindingData(instance.Binding)); err != nil {
 		return ctrl.Result{}, true, err
 	}
 	claim.Status.InstanceID = instance.ID
@@ -278,6 +284,58 @@ func claimRequirements(claim *kitchenv1alpha1.ResourceClaim) database.Requiremen
 	}
 }
 
+// claimBrancher is the preview half of a contract's provisioner as the
+// branch machinery below sees it: a resource of the preview's own, created
+// and torn down by name, whose binding becomes the data of the preview's
+// Secret. A database branch and a preview's bucket are the same thing here,
+// which is why the machinery is written once and each contract adapts its
+// provisioner to it.
+type claimBrancher interface {
+	createBranch(ctx context.Context, instanceID, name string) (claimBranchResult, error)
+	deleteBranch(ctx context.Context, instanceID, branchID string) error
+}
+
+// claimBranchResult is what a contract answers for a preview's resource:
+// the provider-side identifier, the provenance it declares, and the Secret
+// data of its binding.
+type claimBranchResult struct {
+	ID         string
+	Provenance string
+	Data       map[string][]byte
+}
+
+// databaseBrancher is a database provisioner as reconcileBranches sees it.
+type databaseBrancher struct{ provisioner database.Provisioner }
+
+func (b databaseBrancher) createBranch(ctx context.Context, instanceID, name string) (claimBranchResult, error) {
+	branch, err := b.provisioner.CreateBranch(ctx, instanceID, name)
+	if err != nil {
+		return claimBranchResult{}, err
+	}
+	return claimBranchResult{
+		ID:         branch.ID,
+		Provenance: string(branch.Provenance),
+		Data:       databaseBindingData(branch.Binding),
+	}, nil
+}
+
+func (b databaseBrancher) deleteBranch(ctx context.Context, instanceID, branchID string) error {
+	return b.provisioner.DeleteBranch(ctx, instanceID, branchID)
+}
+
+// databaseBindingData is a database binding as its Secret carries it. The
+// keys are the vocabulary Project.spec.env's fromResourceClaim selects on.
+func databaseBindingData(binding database.Binding) map[string][]byte {
+	return map[string][]byte{
+		"url":      []byte(binding.URL),
+		"host":     []byte(binding.Host),
+		"port":     []byte(binding.Port),
+		"user":     []byte(binding.User),
+		"password": []byte(binding.Password),
+		"database": []byte(binding.Database),
+	}
+}
+
 // reconcileBranches keeps the provider-side branches in step with the
 // project's preview Environments: one branch and one binding Secret per live
 // preview while the claim's preview mode gives previews a resource of their
@@ -289,7 +347,7 @@ func (r *ResourceClaimReconciler) reconcileBranches(
 	ctx context.Context,
 	claim *kitchenv1alpha1.ResourceClaim,
 	projectName string,
-	provisioner database.Provisioner,
+	brancher claimBrancher,
 	appNS string,
 	provider string,
 	branching bool,
@@ -315,7 +373,7 @@ func (r *ResourceClaimReconciler) reconcileBranches(
 			// A preview on its way out, or branching switched off: the branch
 			// and its Secret go, then the finalizer.
 			if branch, ok := previous[env.Name]; ok {
-				if err := r.deleteBranch(ctx, claim, provisioner, appNS, branch); err != nil {
+				if err := r.deleteBranch(ctx, claim, brancher, appNS, branch); err != nil {
 					kept = append(kept, branch)
 					claim.Status.Branches = kept
 					return r.branchesNotReady(claim, "BranchTeardownFailed", err)
@@ -338,7 +396,7 @@ func (r *ResourceClaimReconciler) reconcileBranches(
 			}
 		}
 		_, existed := previous[env.Name]
-		branch, err := r.ensureBranch(ctx, claim, provisioner, appNS, env.Name, previous)
+		branch, err := r.ensureBranch(ctx, claim, brancher, appNS, env.Name, previous)
 		if err != nil {
 			claim.Status.Branches = kept
 			return r.branchesNotReady(claim, branchReason(err), err)
@@ -356,7 +414,7 @@ func (r *ResourceClaimReconciler) reconcileBranches(
 
 	// Whatever is left over belongs to Environments that no longer exist.
 	for _, branch := range previous {
-		if err := r.deleteBranch(ctx, claim, provisioner, appNS, branch); err != nil {
+		if err := r.deleteBranch(ctx, claim, brancher, appNS, branch); err != nil {
 			kept = append(kept, branch)
 			claim.Status.Branches = kept
 			return r.branchesNotReady(claim, "BranchTeardownFailed", err)
@@ -378,7 +436,7 @@ func (r *ResourceClaimReconciler) reconcileBranches(
 func (r *ResourceClaimReconciler) ensureBranch(
 	ctx context.Context,
 	claim *kitchenv1alpha1.ResourceClaim,
-	provisioner database.Provisioner,
+	brancher claimBrancher,
 	appNS string,
 	envName string,
 	previous map[string]kitchenv1alpha1.ClaimBranch,
@@ -396,33 +454,33 @@ func (r *ResourceClaimReconciler) ensureBranch(
 		// recovers the binding.
 	}
 
-	branch, err := provisioner.CreateBranch(ctx, claim.Status.InstanceID, envName)
+	branch, err := brancher.createBranch(ctx, claim.Status.InstanceID, envName)
 	if err != nil {
 		return kitchenv1alpha1.ClaimBranch{}, err
 	}
-	if err := r.writeBindingSecret(ctx, claim, appNS, secretName, branch.Binding); err != nil {
+	if err := r.writeBindingSecret(ctx, claim, appNS, secretName, branch.Data); err != nil {
 		return kitchenv1alpha1.ClaimBranch{}, err
 	}
 	return kitchenv1alpha1.ClaimBranch{
 		Environment: envName,
 		ID:          branch.ID,
 		SecretName:  secretName,
-		Provenance:  string(branch.Provenance),
+		Provenance:  branch.Provenance,
 	}, nil
 }
 
 // deleteBranch removes one branch at the provider and its binding Secret. A
-// nil provisioner (only during finalization with the Connection gone) skips
+// nil brancher (only during finalization with the Connection gone) skips
 // the provider call rather than wedging deletion forever.
 func (r *ResourceClaimReconciler) deleteBranch(
 	ctx context.Context,
 	claim *kitchenv1alpha1.ResourceClaim,
-	provisioner database.Provisioner,
+	brancher claimBrancher,
 	appNS string,
 	branch kitchenv1alpha1.ClaimBranch,
 ) error {
-	if provisioner != nil {
-		if err := provisioner.DeleteBranch(ctx, claim.Status.InstanceID, branch.ID); err != nil {
+	if brancher != nil {
+		if err := brancher.deleteBranch(ctx, claim.Status.InstanceID, branch.ID); err != nil {
 			return err
 		}
 	}
@@ -433,12 +491,12 @@ func (r *ResourceClaimReconciler) deleteBranch(
 	return nil
 }
 
-// branchReason tells a preview database that is still coming up apart from one
-// that failed. A database the platform runs itself takes minutes, and a
+// branchReason tells a preview resource that is still coming up apart from
+// one that failed. A database the platform runs itself takes minutes, and a
 // condition that read "failed" for every one of them would teach everybody to
 // ignore the word — the same distinction the claim's own phase makes.
 func branchReason(err error) string {
-	if errors.Is(err, database.ErrNotReady) {
+	if errors.Is(err, database.ErrNotReady) || errors.Is(err, objectstore.ErrNotReady) {
 		return "BranchProvisioning"
 	}
 	return "BranchFailed"
@@ -536,13 +594,14 @@ func (r *ResourceClaimReconciler) provisionerForClaim(ctx context.Context, claim
 	return r.provisionerFor(ctx, conn)
 }
 
-// writeBindingSecret writes one binding into the project namespace. The keys
-// are the vocabulary Project.spec.env's fromResourceClaim selects on.
+// writeBindingSecret writes one binding into the project namespace, whose
+// keys are the vocabulary Project.spec.env's fromResourceClaim selects on —
+// each contract's own, spelled by the contract.
 func (r *ResourceClaimReconciler) writeBindingSecret(
 	ctx context.Context,
 	claim *kitchenv1alpha1.ResourceClaim,
 	appNS, name string,
-	binding database.Binding,
+	data map[string][]byte,
 ) error {
 	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: appNS}}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, secret, func() error {
@@ -551,14 +610,7 @@ func (r *ResourceClaimReconciler) writeBindingSecret(
 			labelClaim:        claim.Name,
 			labelManagedByKey: labelManagedByValue,
 		}
-		secret.Data = map[string][]byte{
-			"url":      []byte(binding.URL),
-			"host":     []byte(binding.Host),
-			"port":     []byte(binding.Port),
-			"user":     []byte(binding.User),
-			"password": []byte(binding.Password),
-			"database": []byte(binding.Database),
-		}
+		secret.Data = data
 		return nil
 	})
 	return err

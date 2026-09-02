@@ -87,6 +87,8 @@ func sampleField(name string) string {
 	switch name {
 	case kitchenv1alpha1.ClaimTypePostgres:
 		return `"postgres": {"version": "17"}`
+	case kitchenv1alpha1.ClaimTypeObjectStore:
+		return `"objectStore": {"versioning": true}`
 	case "callbackPaths":
 		return `"callbackPaths": ["/auth/callback"]`
 	case "redirectURIs":

@@ -1,0 +1,49 @@
+{{- include "kitchen.validate" . -}}
+{{- if .Values.objectStore.enabled }}
+# The address every bucket is reached at, inside the cluster and nowhere
+# else. The store is deliberately not published on the Gateway: an
+# application runs in the cluster, and the node's container runtime — the
+# reason the registry needs a publicly trusted certificate — is not in the
+# path of an application's own requests.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "kitchen.objectStoreFullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kitchen.labels" . | nindent 4 }}
+    app.kubernetes.io/component: objectstore
+  {{- with .Values.objectStore.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "kitchen.objectStoreSelectorLabels" . | nindent 4 }}
+  ports:
+    - name: s3
+      port: {{ int .Values.objectStore.service.port }}
+      targetPort: s3
+      protocol: TCP
+---
+# Governing service for the StatefulSet: stable per-pod DNS.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "kitchen.objectStoreFullname" . }}-headless
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kitchen.labels" . | nindent 4 }}
+    app.kubernetes.io/component: objectstore
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    {{- include "kitchen.objectStoreSelectorLabels" . | nindent 4 }}
+  ports:
+    - name: s3
+      port: {{ int .Values.objectStore.service.port }}
+      targetPort: s3
+      protocol: TCP
+{{- end }}

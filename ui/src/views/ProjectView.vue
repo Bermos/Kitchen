@@ -473,18 +473,28 @@ async function deleteProject() {
   }
 }
 
-// What a postgres claim asked the database itself to be, as short badges —
-// the major version, the extensions, the volume. Most claims ask for none of
-// it and get nothing here.
+// What a claim asked its resource to be, as short badges — a database's
+// major version, extensions and volume; a bucket's versioning, public reads
+// and size. Most claims ask for none of it and get nothing here.
 function claimRequirements(claim: Claim): string[] {
   const postgres = claim.postgres;
-  if (!postgres) return [];
-  return [
-    ...(postgres.version ? [`pg ${postgres.version}`] : []),
-    ...(postgres.extensions ?? []),
-    ...(postgres.storageSize ? [postgres.storageSize] : []),
-    ...(postgres.storageClass ? [postgres.storageClass] : []),
-  ];
+  if (postgres) {
+    return [
+      ...(postgres.version ? [`pg ${postgres.version}`] : []),
+      ...(postgres.extensions ?? []),
+      ...(postgres.storageSize ? [postgres.storageSize] : []),
+      ...(postgres.storageClass ? [postgres.storageClass] : []),
+    ];
+  }
+  const bucket = claim.objectStore;
+  if (bucket) {
+    return [
+      ...(bucket.versioning ? ["versioned"] : []),
+      ...(bucket.publicRead ? ["public read"] : []),
+      ...(bucket.size ? [bucket.size] : []),
+    ];
+  }
+  return [];
 }
 
 // The refusal a failed claim carries, which is the whole point of failing as a
@@ -504,6 +514,11 @@ const refusedClaims = computed(() => (data.value?.claims ?? []).filter((claim) =
 function claimDeletionOutcome(claim: Claim): string {
   if (claim.type === "oidcClient") {
     return "The OAuth client is deregistered: nothing can be signed in with it again.";
+  }
+  if (claim.type === "objectStore") {
+    return claim.deletionPolicy === "Delete"
+      ? "The bucket, its objects and its credential are being deleted at the store."
+      : "The bucket and its objects are kept at the store; only the platform's binding is removed.";
   }
   return claim.deletionPolicy === "Delete"
     ? "The database and its data are being deprovisioned."
@@ -922,9 +937,9 @@ function host(url?: string): string {
             <tbody>
               <tr v-if="!data?.claims.length">
                 <td class="px-3 py-8 text-center text-muted">
-                  No resource claims — a claim asks for something the project needs (a database from a connection,
-                  or single sign-on from the platform's own identity provider) and binds it into the project's
-                  environment through a secret its env vars reference.
+                  No resource claims — a claim asks for something the project needs (a database or a bucket from a
+                  connection, or single sign-on from the platform's own identity provider) and binds it into the
+                  project's environment through a secret its env vars reference.
                 </td>
               </tr>
               <tr v-for="claim in data?.claims" :key="claim.name" class="border-b border-muted last:border-0">

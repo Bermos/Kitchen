@@ -386,7 +386,7 @@ func (m TLSMode) Scheme() string {
 
 // Capability is an abstract feature a Connection provider implements. The
 // operator matches on capabilities, never on provider names.
-// +kubebuilder:validation:Enum=gitSource;statusChecks;imageStore;database
+// +kubebuilder:validation:Enum=gitSource;statusChecks;imageStore;database;objectStore
 type Capability string
 
 const (
@@ -394,4 +394,7 @@ const (
 	CapabilityStatusChecks Capability = "statusChecks"
 	CapabilityImageStore   Capability = "imageStore"
 	CapabilityDatabase     Capability = "database"
+	// CapabilityObjectStore is an S3-compatible store a bucket can be
+	// provisioned in — the bundled MinIO, or a store somebody else runs.
+	CapabilityObjectStore Capability = "objectStore"
 )

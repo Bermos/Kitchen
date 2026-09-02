@@ -127,6 +127,7 @@ spec:
                 enum:
                 - postgres
                 - oidcClient
+                - objectStore
                 type: string
                 x-kubernetes-validations:
                 - message: 'type is immutable: delete the claim and ask for the other
@@ -160,8 +161,9 @@ spec:
                   Environments, torn down with them.
                 items:
                   description: |-
-                    ClaimBranch records one provider-side database branch the claim created for
-                    a preview Environment, and the Secret its binding was written into.
+                    ClaimBranch records one provider-side resource the claim created for a
+                    preview Environment — a database branch, a preview's own bucket — and the
+                    Secret its binding was written into.
                   properties:
                     environment:
                       description: Environment is the preview Environment the branch

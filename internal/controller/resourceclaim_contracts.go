@@ -67,8 +67,9 @@ type claimContract interface {
 // claimContracts is the registry: one contract per row of
 // kitchenv1alpha1.ClaimTypes.
 var claimContracts = map[string]claimContract{
-	kitchenv1alpha1.ClaimTypePostgres:   postgresContract{},
-	kitchenv1alpha1.ClaimTypeOIDCClient: oidcContract{},
+	kitchenv1alpha1.ClaimTypePostgres:    postgresContract{},
+	kitchenv1alpha1.ClaimTypeOIDCClient:  oidcContract{},
+	kitchenv1alpha1.ClaimTypeObjectStore: objectStoreContract{},
 }
 
 // claimContractFor resolves a claim's type and its contract. ok is false

@@ -34,6 +34,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/provider/objectstore"
 )
 
 // ErrNotImplemented marks a provider the CRD enum admits but the platform has
@@ -128,6 +129,8 @@ func Default(conn *kitchenv1alpha1.Connection, creds *corev1.Secret) (Probe, err
 		return &NeonProbe{APIURL: apiURL, Token: token}, nil
 	case "dockerRegistry":
 		return newRegistryProbe(conn, creds)
+	case objectstore.ProviderS3:
+		return newS3Probe(conn, creds)
 	default:
 		return nil, fmt.Errorf("%w: %s", ErrNotImplemented, conn.Spec.Provider)
 	}
@@ -151,6 +154,8 @@ func Capabilities(providerName string) []kitchenv1alpha1.Capability {
 		return []kitchenv1alpha1.Capability{kitchenv1alpha1.CapabilityImageStore}
 	case "neon", ProviderCNPG:
 		return []kitchenv1alpha1.Capability{kitchenv1alpha1.CapabilityDatabase}
+	case objectstore.ProviderS3:
+		return []kitchenv1alpha1.Capability{kitchenv1alpha1.CapabilityObjectStore}
 	default:
 		return nil
 	}

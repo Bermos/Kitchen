@@ -385,6 +385,9 @@ the provider's declaration — `previewMode` on the claim chooses otherwise)
 with create/delete in the dashboard, and custom domains
 attach from the environment screen — the dashboard shows the DNS record to
 create and tracks verification, certificate and routing live. A claim of type
+`objectStore` gives the application a bucket — at the MinIO the chart can
+run, or at any S3-compatible store — with a credential scoped to that bucket
+and an empty bucket per preview. A claim of type
 `oidcClient` needs no connection at all: it registers an OAuth client at the
 platform's own identity provider, hands the application `OIDC_ISSUER`,
 `CLIENT_ID` and `CLIENT_SECRET`, and keeps its redirect list in step with

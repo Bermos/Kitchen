@@ -47,9 +47,10 @@ import (
 // defaults to Retain, mirroring the CRD: destroying data is opted into.
 //
 // The fields after dataClass each belong to one type — postgres to
-// postgres, the last three to oidcClient — and each type's shaper
-// (claims_postgres.go, claims_oidc.go) says which. Sending a field of
-// another type's is refused rather than ignored.
+// postgres, objectStore to objectStore, the last three to oidcClient — and
+// each type's shaper (claims_postgres.go, claims_objectstore.go,
+// claims_oidc.go) says which. Sending a field of another type's is refused
+// rather than ignored.
 type createClaimRequest struct {
 	Name       string `json:"name"`
 	Project    string `json:"project"`
@@ -72,6 +73,12 @@ type createClaimRequest struct {
 	// failure with the provider's own words, because the API cannot know
 	// which images the connection was configured with.
 	Postgres *kitchenv1alpha1.PostgresConfig `json:"postgres,omitempty"`
+
+	// ObjectStore is what the bucket has to be: versioned, publicly
+	// readable, or held to a size. Shape alone is checked here; whether the
+	// store can honour each is the provisioner's answer, landing on the
+	// claim as a refusal naming what it could not supply.
+	ObjectStore *kitchenv1alpha1.ObjectStoreConfig `json:"objectStore,omitempty"`
 
 	// DataClass classifies the data the resource will hold: public,
 	// internal, confidential or strictlyConfidential. It may not exceed the
@@ -270,8 +277,9 @@ type claimField struct {
 // claimShapers is the registry: one shaper per row of
 // kitchenv1alpha1.ClaimTypes.
 var claimShapers = map[string]claimShaper{
-	kitchenv1alpha1.ClaimTypePostgres:   postgresClaimShaper{},
-	kitchenv1alpha1.ClaimTypeOIDCClient: oidcClaimShaper{},
+	kitchenv1alpha1.ClaimTypePostgres:    postgresClaimShaper{},
+	kitchenv1alpha1.ClaimTypeOIDCClient:  oidcClaimShaper{},
+	kitchenv1alpha1.ClaimTypeObjectStore: objectStoreClaimShaper{},
 }
 
 // claimShaperFor resolves a request's type to the table's row and the API's

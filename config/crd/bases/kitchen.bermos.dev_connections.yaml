@@ -73,6 +73,7 @@ spec:
                 - dockerRegistry
                 - neon
                 - cnpg
+                - s3
                 type: string
             required:
             - provider
@@ -114,6 +115,7 @@ spec:
                   - statusChecks
                   - imageStore
                   - database
+                  - objectStore
                   type: string
                 type: array
               conditions:

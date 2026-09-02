@@ -6,9 +6,9 @@ import { callerFor } from "../lib/me";
 import { may } from "../lib/policy";
 
 // The create flow for resource claims: ask for something the project needs
-// and let the platform provision it. Two kinds today — a database from a
-// database-capable connection, and an OAuth client from the platform's own
-// identity provider. The binding credentials stay in the cluster either way:
+// and let the platform provision it. Three kinds today — a database from a
+// database-capable connection, a bucket from an object store, and an OAuth
+// client from the platform's own identity provider. The binding credentials stay in the cluster either way:
 // the reconciler writes them into a secret the project's env vars reference,
 // and nothing here ever sees them.
 
@@ -35,15 +35,39 @@ const dataClassOptions = [
   ...DATA_CLASSES.map((value) => ({ label: value, value: value as string })),
 ];
 
-// The two things the platform provisions. A database comes from a connection
-// somebody configured; an OAuth client comes from the identity provider the
-// platform already runs, which is why the second one asks for no connection.
+// The three things the platform provisions. A database and a bucket come
+// from a connection somebody configured; an OAuth client comes from the
+// identity provider the platform already runs, which is why it asks for no
+// connection.
 const type = ref("postgres");
 const typeOptions = [
   { label: "postgres — a database from a connection", value: "postgres" },
+  { label: "objectStore — a bucket from a connection", value: "objectStore" },
   { label: "oidcClient — single sign-on from the platform", value: "oidcClient" },
 ];
 const isOIDC = computed(() => type.value === "oidcClient");
+const isPostgres = computed(() => type.value === "postgres");
+const isObjectStore = computed(() => type.value === "objectStore");
+
+// The objectStore half: what the bucket has to be. All three are applied
+// when the bucket is created, and a store that cannot honour one — public
+// reads at the bundled store, which nothing outside the cluster reaches —
+// fails the claim with the reason rather than granting a policy that
+// publishes nothing.
+const bucketVersioning = ref(false);
+const bucketPublicRead = ref(false);
+const bucketSize = ref("");
+
+/** The objectStore block as the API takes it, or nothing when nothing was
+ * asked for. */
+function objectStoreRequest() {
+  const block = {
+    ...(bucketVersioning.value ? { versioning: true } : {}),
+    ...(bucketPublicRead.value ? { publicRead: true } : {}),
+    ...(bucketSize.value.trim() ? { size: bucketSize.value.trim() } : {}),
+  };
+  return Object.keys(block).length ? block : undefined;
+}
 
 // The oidcClient half. All three are lists typed as free text, because all
 // three are usually left alone: the defaults are what the help text says, and
@@ -95,12 +119,15 @@ function postgresRequest() {
   return Object.keys(postgres).length ? postgres : undefined;
 }
 
-const policyOptions = [
-  { label: "Retain — keep the database when the claim is deleted", value: "Retain" },
-  { label: "Delete — destroy the database and its data with the claim", value: "Delete" },
-];
+/** The resource noun the claim provisions — from the catalogue, so the
+ * policy picker and the empty states name the right thing for every type. */
+const resourceNoun = computed(() => claimTypes.value.find((entry) => entry.type === type.value)?.resource ?? "resource");
 
-const connections = ref<ConnectionChoice[]>([]);
+const policyOptions = computed(() => [
+  { label: `Retain — keep the ${resourceNoun.value} when the claim is deleted`, value: "Retain" },
+  { label: `Delete — destroy the ${resourceNoun.value} and its data with the claim`, value: "Delete" },
+]);
+
 const connectionsLoaded = ref(false);
 // The catalogue of what can be claimed and what each provider declares,
 // and the provider behind each connection, so the declaration for the one
@@ -156,26 +183,39 @@ watch(declaration, (declared) => {
   if (!declared.previewChoices.includes(previewMode.value)) previewMode.value = defaultMode;
 });
 
-// Every connection is listed and the ones that cannot provision a database
-// say so, on the same terms as the project's own two pickers — and read out
-// of the same shape, which is the thinned one for anybody who is not an
+// Every connection is listed and the ones that cannot provision the chosen
+// type say so, on the same terms as the project's own two pickers — and read
+// out of the same shape, which is the thinned one for anybody who is not an
 // operator: a name, what it can back, and whether the platform has it
 // working. A connection nothing has assessed yet is offered with the caveat
 // rather than hidden; the reconciler holds the claim Pending until validation
-// either way.
+// either way. The capability the type needs comes from the catalogue, so a
+// new type never has to be spelled here.
+const allConnections = ref<Connection[]>([]);
+const capability = computed(
+  () => claimTypes.value.find((entry) => entry.type === type.value)?.capability ?? (isObjectStore.value ? "objectStore" : "database"),
+);
+const connections = computed<ConnectionChoice[]>(() => connectionChoices(allConnections.value, capability.value));
+
 async function loadConnections() {
   connectionsLoaded.value = false;
   try {
     const all: Connection[] = await api.connections();
-    connections.value = connectionChoices(all, "database");
+    allConnections.value = all;
     providerOf.value = Object.fromEntries(all.map((entry) => [entry.name, entry.provider ?? ""]));
   } catch {
-    connections.value = [];
+    allConnections.value = [];
     providerOf.value = {};
   } finally {
     connectionsLoaded.value = true;
   }
 }
+
+// A connection chosen for one type is not necessarily able to provision the
+// next, so changing the type clears the choice rather than carrying it over.
+watch(type, () => {
+  connection.value = "";
+});
 
 const connectionNote = computed(() => noteFor(connections.value, connection.value));
 const available = computed(() => selectableChoices(connections.value));
@@ -196,6 +236,9 @@ watch(open, (value) => {
   pgExtensions.value = "";
   pgStorageSize.value = "";
   pgStorageClass.value = "";
+  bucketVersioning.value = false;
+  bucketPublicRead.value = false;
+  bucketSize.value = "";
   void loadConnections();
   void loadClaimTypes();
 });
@@ -228,14 +271,15 @@ async function save() {
           type: type.value,
           ...(previewMode.value ? { previewMode: previewMode.value } : {}),
           deletionPolicy: deletionPolicy.value,
-          ...(postgresRequest() ? { postgres: postgresRequest() } : {}),
+          ...(isPostgres.value && postgresRequest() ? { postgres: postgresRequest() } : {}),
+          ...(isObjectStore.value && objectStoreRequest() ? { objectStore: objectStoreRequest() } : {}),
           ...(dataClass.value ? { dataClass: dataClass.value } : {}),
         };
     const created = await api.createClaim(claim);
     toast.add({
       title: `Claim ${created.name} created`,
       color: "success",
-      icon: isOIDC.value ? "i-lucide-key-round" : "i-lucide-database",
+      icon: isOIDC.value ? "i-lucide-key-round" : isObjectStore.value ? "i-lucide-folder-archive" : "i-lucide-database",
     });
     open.value = false;
     emit("saved");
@@ -311,18 +355,18 @@ async function save() {
         <template v-else>
           <UFormField
             label="Connection"
-            :help="connectionNote || 'A connection with the database capability provisions and owns the instance.'"
+            :help="connectionNote || `A connection with the ${capability} capability provisions and owns the ${resourceNoun}.`"
             required
           >
             <USelect
               v-model="connection"
               :items="connections"
-              :placeholder="connectionsLoaded && !available.length ? 'No database-capable connections' : 'Select a connection'"
+              :placeholder="connectionsLoaded && !available.length ? `No ${capability}-capable connections` : 'Select a connection'"
               :disabled="connectionsLoaded && !available.length"
               class="w-full"
             />
           </UFormField>
-          <p v-if="connectionsLoaded && !available.length" class="text-xs text-muted">
+          <p v-if="connectionsLoaded && !available.length && isPostgres" class="text-xs text-muted">
             No connection can provision databases —
             <template v-if="managesConnections">
               create one first on the Connections page — CloudNativePG for a database the platform runs itself and
@@ -331,6 +375,16 @@ async function save() {
             <template v-else>
               ask an operator to add one — CloudNativePG for a database the platform runs itself, or Neon for a
               hosted one.
+            </template>
+          </p>
+          <p v-if="connectionsLoaded && !available.length && isObjectStore" class="text-xs text-muted">
+            No connection can provision buckets —
+            <template v-if="managesConnections">
+              create an S3-compatible connection first on the Connections page, or switch the bundled store on in
+              the chart (objectStore.enabled), which seeds one.
+            </template>
+            <template v-else>
+              ask an operator to add an S3-compatible connection, or to switch the bundled store on.
             </template>
           </p>
 
@@ -371,7 +425,34 @@ async function save() {
             :description="declaration?.workloadNote"
           />
 
-          <div class="grid gap-4 sm:grid-cols-2">
+          <template v-if="isObjectStore">
+            <div class="grid gap-4 sm:grid-cols-2">
+              <UFormField
+                label="Versioning"
+                help="Keep every version of an object, so an overwrite or a delete can be undone at the store."
+              >
+                <USwitch v-model="bucketVersioning" />
+              </UFormField>
+              <UFormField
+                label="Public read"
+                help="Anyone can read the bucket's objects without a credential. Only a store on the internet can honour it; the bundled store refuses it, saying so."
+              >
+                <USwitch v-model="bucketPublicRead" />
+              </UFormField>
+            </div>
+            <UFormField label="Size" help="A Kubernetes quantity the bucket may not grow past. Empty asks for no limit.">
+              <UInput v-model="bucketSize" placeholder="50Gi" class="w-full font-mono" />
+            </UFormField>
+            <p class="text-xs text-muted">
+              The secret carries <span class="font-mono">endpoint</span>, <span class="font-mono">bucket</span>,
+              <span class="font-mono">region</span>, <span class="font-mono">accessKeyId</span>,
+              <span class="font-mono">secretAccessKey</span> and <span class="font-mono">forcePathStyle</span> — a
+              credential scoped to this one bucket, never the store's own. A requirement the store cannot honour
+              fails the claim with the reason rather than provisioning something else.
+            </p>
+          </template>
+
+          <div v-if="isPostgres" class="grid gap-4 sm:grid-cols-2">
             <UFormField label="Postgres version" help="Empty takes the platform's default.">
               <USelect v-model="pgVersion" :items="versionOptions" class="w-full" />
             </UFormField>
@@ -382,14 +463,14 @@ async function save() {
               <UInput v-model="pgExtensions" placeholder="postgis vector" class="w-full font-mono" />
             </UFormField>
           </div>
-          <p class="text-xs text-muted">
+          <p v-if="isPostgres" class="text-xs text-muted">
             A version or an extension the connection cannot supply fails the claim with a message saying what is
             available — rather than binding and letting the application die on a
             <span class="font-mono">CREATE EXTENSION</span> later. A connection to a hosted Postgres cannot be asked
             for either, and says so.
           </p>
 
-          <div class="grid gap-4 sm:grid-cols-2">
+          <div v-if="isPostgres" class="grid gap-4 sm:grid-cols-2">
             <UFormField label="Storage" help="A Kubernetes quantity. Empty takes the platform's default.">
               <UInput v-model="pgStorageSize" placeholder="10Gi" class="w-full font-mono" />
             </UFormField>
@@ -397,14 +478,14 @@ async function save() {
               <UInput v-model="pgStorageClass" placeholder="fast-ssd" class="w-full font-mono" />
             </UFormField>
           </div>
-          <p class="text-xs text-muted">
+          <p v-if="isPostgres" class="text-xs text-muted">
             All four are applied when the database is created. Changing them afterwards asks for a different
             database rather than reshaping this one.
           </p>
 
           <UFormField
             label="On claim deletion"
-            help="Retain is the default: deleting a claim must not be able to destroy a production database. Preview branches are always cleaned up."
+            :help="`Retain is the default: deleting a claim must not be able to destroy a production ${resourceNoun}. Preview resources are always cleaned up.`"
           >
             <USelect v-model="deletionPolicy" :items="policyOptions" class="w-full" />
           </UFormField>

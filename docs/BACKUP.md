@@ -38,6 +38,11 @@ Also not in the archive, and named in its own manifest so nobody has to guess:
 
 - **Container images.** Builds push them to a registry, which is backed up — or
   not — wherever that registry runs. The bundled registry's volume is not here.
+- **Objects in buckets.** An `objectStore` claim's bucket belongs to the store
+  running it, and the bundled store's volume is not here any more than the
+  registry's. The claim is restored and rebinds to a bucket that survived — a
+  `Retain`ed bucket is found again by name — but the objects survive only if
+  the volume did, or if something else is backing the store up.
 - **Application data.** A database a `ResourceClaim` provisioned belongs to the
   provider running it. The claim is restored; what it points at is Neon's, or
   whoever else's, to keep. **That includes the databases this platform runs

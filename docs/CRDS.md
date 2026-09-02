@@ -102,6 +102,12 @@ spec:
     service: kitchen-registry           # what the route points at, written by the chart
     port: 5000
     secretRef: { name: kitchen-registry }   # written by the chart; the registry's own username and password
+  objectStore:
+    enabled: false                      # the MinIO the platform can run for itself; off by default
+    service: kitchen-objectstore        # the Service every bucket is reached at, written by the chart
+    port: 9000
+    region: us-east-1                   # what every bucket reports; a formality S3 clients insist on
+    secretRef: { name: kitchen-objectstore }   # written by the chart; the store's root access key pair
   scaleToZero:
     enabled: true                       # off by default; needs KEDA + the HTTP add-on
     install: true                       # the operator installs those two itself, as their own releases
@@ -172,11 +178,15 @@ spec:
 status:
   conditions: [...]                     # Ready, GatewayProgrammed, TunnelConnected,
                                         # TelemetrySchemaReady, PreviewGateReady, RegistryReady,
-                                        # ScaleToZeroReady, DatabasesReady, ComplianceReady
+                                        # ObjectStoreReady, ScaleToZeroReady, DatabasesReady,
+                                        # ComplianceReady
   gatewayAddress: 203.0.113.7
   registry:
     host: registry.apps.example.com
     connection: kitchen-registry        # the Connection the operator seeded, once
+  objectStore:
+    endpoint: http://kitchen-objectstore.kitchen-system.svc.cluster.local:9000
+    connection: kitchen-objectstore     # the Connection the operator seeded, once
   scaleToZero:
     managed: true                       # false or absent: KEDA was already there and is nobody's to touch
     namespace: keda
@@ -278,6 +288,22 @@ has been seeded". A Connection someone deletes stays deleted: the seed is a
 good default, not a fixture the platform keeps reinstating. While it is still
 there and still labelled `app.kubernetes.io/managed-by: kitchen`, its URL and
 credential are kept in step with the registry.
+
+`objectStore` is the same shape with the route left out. The chart runs a
+single MinIO with a volume when its `objectStore.enabled` is set, and the
+operator seeds an `s3` Connection (`kitchen-objectstore`) pointing at its
+Service, with the root credential the chart generated once. There is no
+route because nothing outside the cluster needs one: an application runs in
+the cluster and reaches the store at its Service address, and the node's
+container runtime — the reason the registry needs a publicly trusted
+certificate — is not in the path. The corollary is that a bucket in it cannot
+be publicly readable, and a claim asking for that is refused with the reason.
+The seeded Connection is written with `forcePathStyle: true` (MinIO needs
+it), `inCluster: true` (what refuses the public bucket), and the default
+`scopedCredentials`, so every claim's bucket gets a user and a policy of its
+own minted from the root credential; no application is ever handed the root.
+`status.objectStore.connection` is a seed on the registry's terms: deleted,
+it stays deleted.
 
 `access.operators` is the platform role, and the only one there is: an account
 on the list is an operator — everything, everywhere, and project `admin` on
@@ -382,7 +408,7 @@ kind: Connection
 metadata:
   name: github-main
 spec:
-  provider: github                      # github | gitlab | gitea | dockerRegistry | neon | cnpg
+  provider: github                      # github | gitlab | gitea | dockerRegistry | neon | cnpg | s3
   credentialsSecretRef: { name: github-app-creds }   # synced from Infisical
   config:
     appId: "12345"
@@ -399,10 +425,21 @@ it as a special case — it is deletable, replaceable, and pickable exactly like
 one someone created on the connections page.
 
 First-party providers: `github`, `gitlab` and `gitea` (capabilities `gitSource` and
-`statusChecks`), `dockerRegistry` (capability `imageStore`), and two that
+`statusChecks`), `dockerRegistry` (capability `imageStore`), two that
 implement `database` — `neon` for a hosted Postgres and `cnpg` for one this
-cluster runs itself. The operator matches on **capabilities**, not provider
-names, which is why the second database provider cost the claim nothing.
+cluster runs itself — and `s3` (capability `objectStore`) for any
+S3-compatible store: the bundled MinIO, one a team runs, AWS S3, Cloudflare
+R2. The operator matches on **capabilities**, not provider names, which is
+why the second database provider cost the claim nothing.
+
+An `s3` connection's `credentialsSecretRef` names a Secret with `accessKeyId`
+and `secretAccessKey`; its `config` says where the store is and how it is
+talked to — `endpoint`, `region`, `forcePathStyle`, and `scopedCredentials`,
+which is whether the platform mints a user and a policy per bucket through
+the MinIO admin API (the default) or hands every claim the connection's own
+key pair (S3 and R2, which have no such API). The seeded one for the bundled
+store additionally carries `inCluster: true`, which is what refuses a
+publicly readable bucket: there is no public to read it.
 
 **`cnpg` is the one provider with no credential**, and so the one whose
 `credentialsSecretRef` may be left out: it provisions with the operator's own
@@ -1169,8 +1206,9 @@ only ever include live, verified Domains.
 ## `ResourceClaim` (namespaced: kitchen-system)
 
 A project's request for something the platform provisions: a database from a
-`database`-capable (or future capability) Connection, or an OAuth client from the
-platform's own identity provider. Generic on purpose — this is the plugin abstraction.
+`database`-capable Connection, a bucket from an `objectStore`-capable one, or
+an OAuth client from the platform's own identity provider. Generic on purpose
+— this is the plugin abstraction.
 
 ```yaml
 apiVersion: kitchen.bermos.dev/v1alpha1
@@ -1266,6 +1304,64 @@ volume costs; a claim of the same name created later against the same
 connection finds it by name and rebinds to it. That namespace is deliberately
 *not* the project's application namespace: deleting a project deletes that one,
 and a retained database has to survive exactly that.
+
+### `type: objectStore` — a bucket for what the application writes
+
+The third type: somewhere to put a file the application did not build into
+its image — user uploads, generated exports — instead of the container
+filesystem, which loses it on the next deploy. It provisions through an
+`objectStore`-capable Connection (`s3`), and the binding is the six things an
+S3 client needs:
+
+```yaml
+apiVersion: kitchen.bermos.dev/v1alpha1
+kind: ResourceClaim
+metadata:
+  name: shop-uploads
+spec:
+  projectRef: { name: my-shop }
+  connectionRef: { name: kitchen-objectstore }
+  type: objectStore
+  deletionPolicy: Retain                # Retain (default) | Delete — the bucket and its objects
+  config:
+    objectStore:                        # all of it optional; applied when the bucket is created
+      versioning: true                  # keep every version of an object
+      publicRead: false                 # anyone may read — refused by the bundled store, which nothing outside reaches
+      size: 50Gi                        # a hard quota at a MinIO; refused at a store with no admin API
+status:
+  phase: Bound
+  secretName: shop-uploads-binding      # binding keys: endpoint, bucket, region, accessKeyId, secretAccessKey, forcePathStyle
+  instanceID: kitchen-shop-uploads      # the bucket's name at the store, which is what it is found again by
+  dataProvenance: production
+  previewMode: fresh                    # every preview gets an empty bucket of its own
+  branches:
+    - environment: my-shop-pr-41
+      id: kitchen-shop-uploads-my-shop-pr-41
+      secretName: shop-uploads-binding-my-shop-pr-41
+      provenance: synthetic             # an empty bucket never held production objects
+```
+
+**A bucket per claim with a credential scoped to it**, never a prefix in a
+shared bucket — a prefix is not an isolation boundary. Where the store speaks
+the MinIO admin API the provisioner mints a user and a policy per bucket, the
+policy reaching the one bucket's objects and nothing about the bucket itself;
+the store's own credential is what mints them and is never in a binding. A
+preview's bucket is its own — shaped like the parent (versioned when it is),
+empty, with its own user — and goes with the preview under either deletion
+policy, exactly as a database branch does. `Retain` leaves the claim's own
+bucket, its objects and its user at the store; `Delete` removes all three.
+
+`forcePathStyle` is the one binding key worth a sentence: MinIO addresses a
+bucket in the path and AWS in the host name, and an application that guesses
+wrong fails on every request. It is set on the Connection once and carried in
+every binding.
+
+The requirements are typed for the same reason `config.postgres` is: a
+provider reads each one and either honours it or refuses the claim *before*
+creating anything, with the reason on the `Ready` condition. The bundled
+store refuses `publicRead` because it is reached inside the cluster alone; a
+store without the admin API refuses `size` because a quota is set through it;
+a store that does not implement versioning refuses `versioning`.
 
 ### The provider contract: declaring what the data is
 

@@ -24,6 +24,7 @@ import (
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/provider/contract"
 	"github.com/Bermos/Kitchen/internal/provider/database"
+	"github.com/Bermos/Kitchen/internal/provider/objectstore"
 	"github.com/Bermos/Kitchen/internal/provider/oidcclient"
 )
 
@@ -62,6 +63,11 @@ func TestEveryProviderDeclares(t *testing.T) {
 			t.Errorf("database provider %q declares and is not listed", provider)
 		}
 	}
+	for provider := range objectstore.Declarations {
+		if _, ok := Lookup(kitchenv1alpha1.ClaimTypeObjectStore, provider); !ok {
+			t.Errorf("object store provider %q declares and is not listed", provider)
+		}
+	}
 }
 
 func TestTheTwoShippedProvidersDeclareWhatTheIssueSays(t *testing.T) {
@@ -76,6 +82,10 @@ func TestTheTwoShippedProvidersDeclareWhatTheIssueSays(t *testing.T) {
 	oidc, ok := Lookup(kitchenv1alpha1.ClaimTypeOIDCClient, oidcclient.ProviderName)
 	if !ok || oidc.Preview != contract.PreviewShared {
 		t.Errorf("every environment signs in through the one client; it declares %q", oidc.Preview)
+	}
+	s3, ok := Lookup(kitchenv1alpha1.ClaimTypeObjectStore, objectstore.ProviderS3)
+	if !ok || s3.Preview != contract.PreviewFresh {
+		t.Errorf("a preview gets its own empty bucket; s3 declares %q", s3.Preview)
 	}
 	if _, ok := Lookup(kitchenv1alpha1.ClaimTypePostgres, "mainframe"); ok {
 		t.Error("a provider nothing declares for must not be found")

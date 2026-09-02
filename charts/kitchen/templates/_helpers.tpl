@@ -440,6 +440,48 @@ resolve and a certificate the node already trusts.
 {{- end }}
 
 {{/*
+The bundled object store: a name, and the root credential the operator seeds
+its Connection with. The chart runs the store, its Service and its volume;
+the operator seeds the Connection, because its credential is a Secret the
+API never reads back. There is no route: the store is reached at its
+Service address, inside the cluster.
+*/}}
+{{- define "kitchen.objectStoreFullname" -}}
+{{- printf "%s-objectstore" (include "kitchen.fullname" .) }}
+{{- end }}
+
+{{- define "kitchen.objectStoreSecretName" -}}
+{{- printf "%s-objectstore" (include "kitchen.fullname" .) }}
+{{- end }}
+
+{{- define "kitchen.objectStoreSelectorLabels" -}}
+app.kubernetes.io/name: {{ include "kitchen.name" . }}-objectstore
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end }}
+
+{{- define "kitchen.objectStoreImage" -}}
+{{- printf "%s:%s" .Values.objectStore.image.repository .Values.objectStore.image.tag }}
+{{- end }}
+
+{{/*
+The store's root secret key. Evaluate this ONCE per render: with no explicit
+value and nothing to look up it ends in `randAlphaNum`, so a second call
+returns a different key than the first.
+*/}}
+{{- define "kitchen.objectStoreSecretAccessKey" -}}
+{{- if .Values.objectStore.auth.secretAccessKey }}
+{{- .Values.objectStore.auth.secretAccessKey }}
+{{- else }}
+{{- $existing := lookup "v1" "Secret" .Release.Namespace (include "kitchen.objectStoreSecretName" .) }}
+{{- if and $existing $existing.data (index (default dict $existing.data) "secretAccessKey") }}
+{{- index $existing.data "secretAccessKey" | b64dec }}
+{{- else }}
+{{- randAlphaNum 40 }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{/*
 The registry's password. Evaluate this ONCE per render and pass the result
 around: with no explicit value and nothing to look up it ends in
 `randAlphaNum`, so a second call returns a different password than the first.
@@ -916,6 +958,12 @@ does not run in.
 {{- if lt (int .Values.registry.retention.keepTags) 1 }}
 {{- fail "registry.retention.keepTags must be at least 1: keeping no tags at all would delete the image every environment is currently running." }}
 {{- end }}
+{{- end }}
+{{- if and .Values.objectStore.enabled (lt (len .Values.objectStore.auth.accessKeyId) 3) }}
+{{- fail "objectStore.auth.accessKeyId must be at least 3 characters: MinIO refuses a shorter root user, and the store would never start." }}
+{{- end }}
+{{- if and .Values.objectStore.enabled .Values.objectStore.auth.secretAccessKey (lt (len .Values.objectStore.auth.secretAccessKey) 8) }}
+{{- fail "objectStore.auth.secretAccessKey must be at least 8 characters: MinIO refuses a shorter root password, and the store would never start. Leave it empty to have one generated." }}
 {{- end }}
 {{- if .Values.scaleToZero.enabled }}
 {{- if not .Values.scaleToZero.interceptor.service }}
