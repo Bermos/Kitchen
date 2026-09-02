@@ -261,6 +261,49 @@ const logStreamer = (query: LogQuery, onLine: (line: LogLine) => void, signal: A
         </div>
       </div>
 
+      <!-- One commit, several images. Only for a project whose unit is more
+           than one workload; the great majority ship one image and it is in
+           the summary above. It sits directly under that summary because the
+           question it answers — what did this commit actually produce — is the
+           same question, and a build that failed on its third workload is a
+           build whose first line should say which. -->
+      <div v-if="build.workloads?.length" class="rounded-md border border-default px-5 py-4 space-y-3">
+        <div>
+          <p class="text-sm font-medium text-highlighted">
+            This commit built {{ build.workloads.length + 1 }} images
+          </p>
+          <p class="text-xs text-muted mt-0.5">
+            They ship as one thing: one release, deployed and rolled back together. The build is over when all of
+            them are.
+          </p>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-left text-sm">
+            <thead class="text-xs text-dimmed">
+              <tr>
+                <th class="py-1 pr-3 font-normal">Workload</th>
+                <th class="py-1 pr-3 font-normal">Phase</th>
+                <th class="py-1 font-normal">Image</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-default">
+              <tr>
+                <td class="py-1 pr-3 font-mono text-highlighted">web</td>
+                <td class="py-1 pr-3"><PhaseBadge :phase="build.phase" /></td>
+                <td class="py-1 font-mono text-toned break-all">{{ build.image || "not pushed yet" }}</td>
+              </tr>
+              <tr v-for="workload in build.workloads" :key="workload.name">
+                <td class="py-1 pr-3 font-mono text-highlighted">{{ workload.name }}</td>
+                <td class="py-1 pr-3"><PhaseBadge :phase="workload.phase" /></td>
+                <td class="py-1 font-mono text-toned break-all">
+                  {{ workload.image || workload.message || "not pushed yet" }}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
       <!-- What the commit said about itself, under the subject in the header.
            Most commits have no body and this is not rendered at all; where
            there is one it is the page's own subject matter, so it is shown

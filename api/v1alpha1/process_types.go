@@ -33,7 +33,14 @@ import (
 // this list is what a Project has *besides* its web process, which is exactly
 // the gap #78 was filed for: a queue worker and a nightly job that today have
 // to be a second Project with a port nothing talks to.
-// +kubebuilder:validation:Enum=worker;cron
+//
+// `service` is the third value and the one #271 added. It is the workload a
+// monorepo has several of: an image of its own, addressed by the rest of the
+// unit over the cluster network, and **not published**. Publishing stays the
+// exception the project declares — `spec.runtime`, the one process with the
+// URL — so a workload that should not be on the internet is not on it by
+// saying nothing, rather than by remembering to turn something off.
+// +kubebuilder:validation:Enum=worker;cron;service
 type ProcessType string
 
 const (
@@ -42,6 +49,14 @@ const (
 	ProcessWorker ProcessType = "worker"
 	// ProcessCron runs on a schedule: a batch/v1 CronJob. The nightly job.
 	ProcessCron ProcessType = "cron"
+	// ProcessService runs continuously and *is* addressed, from inside the
+	// cluster and from nowhere else: a Deployment and a ClusterIP Service,
+	// and no HTTPRoute. It is how one workload of a unit reaches another —
+	// the environment's own siblings find it under
+	// `KITCHEN_SERVICE_<NAME>`, which resolves to that environment's copy,
+	// so a preview's web process talks to the preview's own API and never
+	// to production's.
+	ProcessService ProcessType = "service"
 )
 
 // ConcurrencyPolicy is what a scheduled process does when its next run comes
@@ -67,39 +82,50 @@ const (
 // somebody notices, so there is a default rather than an absent value.
 const DefaultRunTimeout = time.Hour
 
-// ProcessSpec is one process of a Project besides its web process: the same
-// image, the same environment, started differently.
+// ProcessSpec is one workload of a Project besides its web process: the
+// project's environment, started differently — and, since #271, optionally
+// built differently and addressed on its own.
 //
 // The Release is already the right unit — an immutable image plus a config
 // snapshot — so a worker and a scheduled job are not another build. They are
 // the build's image run with another command, which is why this list is
 // snapshotted into the Release along with the environment variables and the
 // runtime: rolling back runs the processes the rollback target declared, not
-// the ones the Project declares today.
+// the ones the Project declares today. A workload that declares a [Build] of
+// its own is the same story with one more frozen field: the Release records
+// the digest each workload was built to, so a rollback restores the exact set
+// of images that release declared rather than today's.
 //
 // The two rules test `has(self.schedule)` rather than comparing to an empty
 // string, and it is not only shorter: the field is `omitempty`, so an absent
-// schedule is an absent key and `has` is the exact question.
+// schedule is an absent key and `has` is the exact question. Only a `cron`
+// takes one — a worker and a service both run continuously, and a schedule on
+// either would be a setting that read back and did nothing.
 //
-// The health rules are the same shape of refusal rather than a silent
-// omission. A process publishes no container port of its own, so a health
-// check that named none would be a setting that read back and did nothing;
-// and a scheduled run's verdict is its exit status, not a probe.
+// The port rules and the health rules are the same shape of refusal rather
+// than a silent omission. Only a service is addressed, so only a service has
+// a port; a worker publishes no container port of its own, so a health check
+// that named none would check nothing; and a scheduled run's verdict is its
+// exit status, not a probe.
 //
-// The singleton rules are `RuntimeSpec`'s, read for a process. A worker is
+// The singleton rules are `RuntimeSpec`'s, read for a workload. A worker is
 // exactly the workload that declaration was filed for and the one it did not
 // reach (#250), and it refuses a second replica rather than clamping one for
 // the same reason: a value silently lowered reads back as a setting that did
-// not take. A scheduled process is refused it outright, because whether two of
-// its runs may overlap is `concurrencyPolicy` — a second spelling of that
-// question would be a setting that reads back and does nothing.
+// not take. A service takes it on the same terms. A scheduled process is
+// refused it outright, because whether two of its runs may overlap is
+// `concurrencyPolicy` — a second spelling of that question would be a setting
+// that reads back and does nothing.
 //
 // +kubebuilder:validation:XValidation:rule="self.type != 'cron' || has(self.schedule)",message="a cron process needs a schedule"
-// +kubebuilder:validation:XValidation:rule="self.type != 'worker' || !has(self.schedule)",message="a worker runs continuously and has no schedule; use type cron"
-// +kubebuilder:validation:XValidation:rule="!has(self.health) || has(self.health.port)",message="a process health check must name the port it is made against: a process publishes no port of its own"
+// +kubebuilder:validation:XValidation:rule="self.type == 'cron' || !has(self.schedule)",message="a worker and a service run continuously and have no schedule; use type cron"
+// +kubebuilder:validation:XValidation:rule="!has(self.health) || has(self.health.port) || self.type == 'service'",message="a process health check must name the port it is made against: a worker publishes no port of its own"
 // +kubebuilder:validation:XValidation:rule="self.type != 'cron' || !has(self.health)",message="a scheduled process is not kept alive by a health check; how a run went is its exit status"
-// +kubebuilder:validation:XValidation:rule="!has(self.singleton) || !self.singleton || self.type == 'worker'",message="only a worker can be a singleton: whether two runs of a scheduled process may overlap is concurrencyPolicy, and Forbid is its default"
-// +kubebuilder:validation:XValidation:rule="!has(self.singleton) || !self.singleton || !has(self.replicas) || self.replicas <= 1",message="a singleton worker cannot run more than one replica: leave replicas at 1, or turn singleton off"
+// +kubebuilder:validation:XValidation:rule="self.type != 'service' || has(self.port)",message="a service process has to say which port it listens on: it is what the rest of the unit addresses it by"
+// +kubebuilder:validation:XValidation:rule="self.type == 'service' || !has(self.port)",message="only a service process is addressed, so only a service process has a port; a worker that serves a health listener names that port on its health check"
+// +kubebuilder:validation:XValidation:rule="!has(self.singleton) || !self.singleton || self.type != 'cron'",message="a scheduled process cannot be a singleton: whether two of its runs may overlap is concurrencyPolicy, and Forbid is its default"
+// +kubebuilder:validation:XValidation:rule="!has(self.singleton) || !self.singleton || !has(self.replicas) || self.replicas <= 1",message="a singleton workload cannot run more than one replica: leave replicas at 1, or turn singleton off"
+// +kubebuilder:validation:XValidation:rule="self.type != 'cron' || !has(self.build)",message="a scheduled process runs an image, it is not one: give the build to the worker or service that ships it, and run this on that image"
 type ProcessSpec struct {
 	// Name identifies the process within the project. It is a DNS label
 	// because it appears in the name of everything the process
@@ -133,6 +159,43 @@ type ProcessSpec struct {
 	// +optional
 	// +listType=atomic
 	Args []string `json:"args,omitempty"`
+
+	// Port is the port a service workload listens on, and the port the
+	// Service in front of it is published on — the two are the same number
+	// deliberately, because a workload addressed by the rest of the unit is
+	// addressed over whatever protocol it speaks, and a Service that
+	// renumbered the port would make `KITCHEN_SERVICE_<NAME>_PORT` and the
+	// application's own configuration disagree.
+	//
+	// It is required on a service and refused on anything else, at admission
+	// and at the API. A worker publishes nothing, so a port on one would be
+	// a setting that reads back and does nothing — the port a worker's
+	// health listener sits on is `health.port`, which is the question that
+	// field already asks.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=65535
+	// +optional
+	Port int32 `json:"port,omitempty"`
+
+	// Build says this workload is built from the repository in its own
+	// right, rather than running the project's image with another command.
+	//
+	// It is what makes a monorepo one project instead of four (#271): four
+	// directories, four images, one commit, one Release, one rollback. The
+	// Release records the digest each workload was built to, so restoring it
+	// restores that exact set — never today's.
+	//
+	// Absent is the original arrangement and stays the default: the workload
+	// runs the project's own image, which is what a worker sharing the web
+	// process's codebase wants and is one build rather than two.
+	//
+	// It is refused on a scheduled process. A cron workload is a command run
+	// against an image on a timer; giving it a build of its own would mean
+	// an image built on every commit whose only purpose is to be started
+	// four times a day, which is the worker or service that ships it —
+	// declare the build there and point the schedule at it.
+	// +optional
+	Build *ProcessBuildSpec `json:"build,omitempty"`
 
 	// Replicas is how many copies of a worker run. It is meaningless for a
 	// scheduled process — how many run at once is ConcurrencyPolicy's
@@ -197,18 +260,90 @@ type ProcessSpec struct {
 	// +optional
 	Timeout *metav1.Duration `json:"timeout,omitempty"`
 
-	// Previews says whether this process runs in preview environments too.
+	// Previews says whether this workload runs in preview environments too.
 	//
-	// **It is off, and that is the decision rather than an omission.** A
-	// preview that emails customers nightly is a bad afternoon, and a
-	// preview worker draining the production queue is a worse one — the
-	// preview shares the project's environment variables, so it is pointed
-	// at whatever the production process is pointed at unless somebody
-	// overrode it. One rule for both types, opted into per process: a
-	// preview that should run its worker says so.
-	// +kubebuilder:default=false
+	// **A worker and a scheduled job are off unless they say otherwise, and
+	// that is the decision rather than an omission.** A preview that emails
+	// customers nightly is a bad afternoon, and a preview worker draining
+	// the production queue is a worse one — the preview shares the project's
+	// environment variables, so it is pointed at whatever the production
+	// process is pointed at unless somebody overrode it.
+	//
+	// **A service is on unless it says otherwise**, and for the reason the
+	// unit exists: a service workload is addressed by its own environment's
+	// siblings and by nothing else, so leaving it out of a preview protects
+	// nothing and breaks the preview — the web process comes up pointed at a
+	// Service with no pods behind it. #271's whole argument is that a
+	// preview of a multi-workload unit has to be the whole set; a default
+	// that quietly shipped half of it would defeat it.
+	//
+	// It is a pointer so that an absent value can mean "the default for this
+	// type" and `false` can mean false, which a bool with `omitempty` cannot
+	// say: the field is dropped from the serialized object, and a service
+	// deliberately kept out of previews would be silently put back on every
+	// write. It is [PreviewsSpec.Enabled]'s reasoning, one level down.
 	// +optional
-	Previews bool `json:"previews,omitempty"`
+	Previews *bool `json:"previews,omitempty"`
+}
+
+// ProcessBuildSpec is one workload's own build: which directory of the
+// repository it is, and how the image comes out of it.
+//
+// It is [ProjectBuildSpec] for a workload, minus one value. `auto` is not
+// among the strategies here, and that is deliberate rather than unfinished:
+// detection's output is a framework, and what the platform does with a
+// framework is fill in the web process's port and tell the buildpacks
+// lifecycle what it is building. A workload has neither question open — a
+// service names its own port, and a workload asking for buildpacks has said
+// which of the two builders to use. What detection would add is a repository
+// read per workload per build to answer a question already answered.
+type ProcessBuildSpec struct {
+	// Strategy is how the image is produced. It defaults to `dockerfile`,
+	// which is what a monorepo shipping several images almost always has.
+	// +kubebuilder:validation:Enum=dockerfile;buildpacks
+	// +kubebuilder:default=dockerfile
+	// +optional
+	Strategy BuildStrategy `json:"strategy,omitempty"`
+
+	// DockerfilePath is the Dockerfile, relative to RootDirectory, for a
+	// dockerfile build.
+	// +kubebuilder:default=Dockerfile
+	// +optional
+	DockerfilePath string `json:"dockerfilePath,omitempty"`
+
+	// RootDirectory is the directory of the repository this workload is
+	// built from — this workload's **build root**, on exactly the terms
+	// `ProjectBuildSpec.RootDirectory` is the project's: it is what is
+	// built, DockerfilePath is relative to it, and nothing above it is part
+	// of this workload's build. internal/detect is where that meaning is
+	// written down, and everything that spells or refuses one of these paths
+	// reads it there.
+	//
+	// It is relative to the repository root, not to the project's own root
+	// directory: the whole point is that the unit is a repository holding
+	// several workloads, so each names where it lives once rather than
+	// relative to whichever of them the project happened to call its own.
+	// +kubebuilder:default=.
+	// +optional
+	RootDirectory string `json:"rootDirectory,omitempty"`
+}
+
+// EffectiveStrategy is how this workload is built, defaulted the way the CRD
+// defaults it — the same shape as EffectiveConcurrency below, and for the
+// same reason: a spec written before the field had a default has to read the
+// same as one written after.
+//
+// There is deliberately no sibling for the two paths. What a root directory
+// and a Dockerfile path *mean* — how they are spelled, and that neither may
+// reach above what the build sees — is written once in internal/detect, which
+// this package cannot import and must not restate: a workload's paths are a
+// build's paths, and a second spelling of them here is how a workload's build
+// would come to disagree with a project's.
+func (b ProcessBuildSpec) EffectiveStrategy() BuildStrategy {
+	if b.Strategy == "" {
+		return BuildStrategyDockerfile
+	}
+	return b.Strategy
 }
 
 // TimeoutSeconds is how long one run may take, as `activeDeadlineSeconds`
@@ -243,13 +378,56 @@ func (p ProcessSpec) EffectiveConcurrency() ConcurrencyPolicy {
 	return p.ConcurrencyPolicy
 }
 
-// RunsIn reports whether this process is materialized in an environment of the
-// given type. Production runs everything; a preview runs what opted in.
+// RunsIn reports whether this workload is materialized in an environment of
+// the given type. Production runs everything; a preview runs what opted in,
+// and a service is opted in unless it said otherwise — see
+// [ProcessSpec.Previews] for why the default turns on the type.
 func (p ProcessSpec) RunsIn(envType EnvironmentType) bool {
 	if envType != EnvironmentPreview {
 		return true
 	}
-	return p.Previews
+	return p.PreviewsEnabled()
+}
+
+// PreviewsEnabled is the declaration read with its per-type default applied.
+func (p ProcessSpec) PreviewsEnabled() bool {
+	if p.Previews != nil {
+		return *p.Previews
+	}
+	return p.Type == ProcessService
+}
+
+// Addressed reports whether anything can reach this workload. Only a service
+// is: a worker and a scheduled run have no Service in front of them at all.
+func (p ProcessSpec) Addressed() bool {
+	return p.Type == ProcessService
+}
+
+// LongRunning reports whether this workload is a Deployment rather than a
+// CronJob — a worker or a service, both of which run continuously and differ
+// only in whether anything addresses them.
+func (p ProcessSpec) LongRunning() bool {
+	return p.Type == ProcessWorker || p.Type == ProcessService
+}
+
+// ServiceEnvPrefix is the variable name a workload's siblings find it under,
+// without the suffix: `KITCHEN_SERVICE_API_GATEWAY` for a service named
+// `api-gateway`. A process name is a DNS label, so upper-casing it and
+// turning its dashes into underscores is the whole conversion — and it is
+// injective over DNS labels, since a label cannot contain an underscore.
+func ServiceEnvPrefix(processName string) string {
+	name := make([]rune, 0, len(processName))
+	for _, r := range processName {
+		switch {
+		case r >= 'a' && r <= 'z':
+			name = append(name, r-('a'-'A'))
+		case r == '-':
+			name = append(name, '_')
+		default:
+			name = append(name, r)
+		}
+	}
+	return "KITCHEN_SERVICE_" + string(name)
 }
 
 // RunPhase is how one run of a scheduled process ended, or that it has not.
@@ -278,6 +456,25 @@ type ProcessStatus struct {
 	// the project's application namespace.
 	// +optional
 	Workload string `json:"workload,omitempty"`
+
+	// Address is where a service workload answers, inside the cluster and
+	// nowhere else: `http://<host>:<port>`, the same value its siblings read
+	// out of `KITCHEN_SERVICE_<NAME>`. It is written by the reconciler that
+	// created the Service rather than derived by every reader, so that one
+	// place decides what the address is.
+	//
+	// It is empty for a worker and a scheduled job, which nothing addresses,
+	// and for a service this environment does not run.
+	// +optional
+	Address string `json:"address,omitempty"`
+
+	// Image is what this workload is running, when that is not the
+	// Release's own image — a workload with a build of its own. It is the
+	// digest reference the Release froze, echoed here so that a reader
+	// looking at one environment can see the four images it is running
+	// without opening the Release beside it.
+	// +optional
+	Image string `json:"image,omitempty"`
 
 	// Replicas and ReadyReplicas are a worker's, and are left at zero for a
 	// scheduled process.
@@ -350,7 +547,7 @@ func FindProcess(processes []ProcessSpec, name string) *ProcessSpec {
 	return nil
 }
 
-// ProcessNames is every process an environment of the project can
+// ProcessNames is every workload an environment of the project can
 // materialize, the implicit web process first under the name a declared
 // process cannot take. It is what a volume claim's process is checked
 // against, in the API and in the reconciler alike.

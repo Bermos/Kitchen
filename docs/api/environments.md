@@ -259,10 +259,10 @@ one the reconciler has not reached — answers `200` with no `deployment` and a
 conditions carry why.
 
 This route is the **web process** alone: the Deployment behind the URL. The
-workers and scheduled jobs an environment also runs are
-`GET /environments/{name}/processes` — see
-[Workers and scheduled jobs](processes.md), which also covers a scheduled job's
-runs and running one now.
+workers, services and scheduled jobs an environment also runs are
+`GET /environments/{name}/processes` — see [Workloads](processes.md), which
+also covers where one workload reaches another, a scheduled job's runs, and
+running one now.
 
 ## What an environment has been running
 

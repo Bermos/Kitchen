@@ -331,10 +331,24 @@ export interface Build {
   source?: SourceProvenance;
   /** Why the build failed, when it did. Absent on every build that did not. */
   failure?: BuildFailure;
+  /** The other images this one commit produced, for a project whose unit is
+   * more than one workload. Empty for the great majority, which ship one
+   * image — the `image` above. The build is over when all of them are. */
+  workloads?: BuildWorkload[];
   startedAt?: string;
   completedAt?: string;
   createdAt: string;
   conditions?: Condition[];
+}
+
+/** One workload's own build within one commit's. */
+export interface BuildWorkload {
+  name: string;
+  phase?: string;
+  image?: string;
+  repository?: string;
+  job?: string;
+  message?: string;
 }
 
 /** The commit's own kitchen.json: where it was read from, and which settings
@@ -986,6 +1000,11 @@ export interface Release {
   project: string;
   build: string;
   image: string;
+  /** The image each of the unit's other workloads was built to. It is what
+   * makes rolling this release back exact for a project that is more than one
+   * workload: restoring it restores this set, never the set the project
+   * declares today. */
+  workloads?: { name: string; image: string }[];
   environments?: string[];
   createdAt: string;
 }
@@ -1036,6 +1055,12 @@ export interface ProcessChange {
   change: ConfigChange;
   type?: string;
   schedule?: string;
+  /** What this workload runs after the move, for one built from its own
+   * directory of the repository. A unit ships several images, and "the API
+   * goes back two commits too" is the consequence somebody rolling back is
+   * least likely to have worked out. Absent for a workload that runs the
+   * release's own image. */
+  image?: string;
 }
 
 /** GET /releases/{name}/config-diff?against= — what a move to `release` would
@@ -1159,14 +1184,16 @@ export interface ProcessRun {
   message?: string;
 }
 
-/** One of a project's processes besides its web process, as one environment
- * runs it: a worker (continuous, never addressed) or a scheduled job.
+/** One of a project's workloads besides its web process, as one environment
+ * runs it: a worker (continuous, never addressed), a service (continuous,
+ * addressed by the rest of the unit and by nothing outside the cluster), or a
+ * scheduled job.
  *
  * `healthy` is the platform's own verdict rather than something the dashboard
  * derives, so that this screen and the CLI cannot disagree about what a red
- * dot means. `suspended` is a process the environment declares and does not
- * run — a preview whose process was not opted in — which is listed with its
- * reason rather than left out. */
+ * dot means. `suspended` is a workload the environment declares and does not
+ * run — a preview whose worker was not opted in, or whose service was opted
+ * out — which is listed with its reason rather than left out. */
 export interface Process {
   name: string;
   type: string;
@@ -1177,13 +1204,27 @@ export interface Process {
   timeout?: string;
   replicas?: number;
   readyReplicas?: number;
-  /** A worker two of which must never run at once: deploying it stops the old
-   * pod before starting the new one, where a rolling update would overlap
+  /** A workload two of which must never run at once: deploying it stops the
+   * old pod before starting the new one, where a rolling update would overlap
    * them. Never set on a scheduled job, whose answer to the same question is
    * its concurrency policy. */
   singleton?: boolean;
   cpu?: string;
   memory?: string;
+  /** The port a service listens on, and where it answers inside the cluster.
+   * Both are absent on a worker and a scheduled job, which nothing addresses;
+   * the address is absent for a service this environment does not run.
+   *
+   * The address is reachable from the unit's other workloads and from nothing
+   * outside the cluster. Publishing is what a route does, and a service gets
+   * none. */
+  port?: number;
+  address?: string;
+  /** What this workload runs when that is not the release's own image — a
+   * workload built from its own directory of the repository. */
+  image?: string;
+  /** This workload's own build, when it has one. */
+  build?: ProcessBuild;
   /** The worker's health check, timings resolved. Absent for a worker that
    * declared none: unlike the web process, a worker is probed only where it
    * asked to be. */
@@ -1195,6 +1236,14 @@ export interface Process {
   lastRun?: ProcessRun;
   lastFailure?: ProcessRun;
   healthy: boolean;
+}
+
+/** One workload's own build: which directory of the repository it is, and how
+ * the image comes out of it. */
+export interface ProcessBuild {
+  strategy: string;
+  dockerfilePath?: string;
+  rootDirectory?: string;
 }
 
 /** What an environment is actually running, as opposed to what it was asked

@@ -51,12 +51,62 @@ type ReleaseSpec struct {
 
 	BuildRef LocalObjectReference `json:"buildRef"`
 
-	// Image reference by digest, never by tag.
+	// Image reference by digest, never by tag. It is the *web* process's
+	// image, and the image every workload that declared no build of its own
+	// runs — which for a project with one workload is all of them, and is
+	// why the field is spelled as it always was.
 	// +kubebuilder:validation:MinLength=1
 	Image string `json:"image"`
 
+	// Workloads are the images the other workloads of this unit were built
+	// to, one entry per workload that declared a build of its own (#271).
+	//
+	// It is the half of "one commit, one coordinated release" that the
+	// config snapshot cannot carry: the snapshot freezes what each workload
+	// *is*, and this freezes what each workload *was built to*. Both are
+	// needed for a rollback to be one — restoring a release has to bring
+	// back the exact set of images that release declared, not the set the
+	// project declares today, and a workload added since must not appear at
+	// all.
+	//
+	// A workload named here and absent from the snapshot's process list is
+	// nothing: the process list is what is materialized, and this only says
+	// which image each entry of it runs.
+	// +optional
+	// +listType=map
+	// +listMapKey=name
+	Workloads []WorkloadImage `json:"workloads,omitempty"`
+
 	// +optional
 	ConfigSnapshot ConfigSnapshot `json:"configSnapshot,omitempty"`
+}
+
+// WorkloadImage is one workload's own image within a Release: which workload,
+// and the digest reference it was built to.
+type WorkloadImage struct {
+	// Name is the process's, as the config snapshot spells it.
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+
+	// Image reference by digest, never by tag — the same rule the Release's
+	// own image follows, for the same reason.
+	// +kubebuilder:validation:MinLength=1
+	Image string `json:"image"`
+}
+
+// ImageFor is the image one workload of this Release runs: its own where it
+// was built with one, and the Release's otherwise.
+//
+// Everything that materializes a workload asks this rather than reading
+// `spec.image` — the web process included, which passes [WebProcessName] and
+// gets the Release's image because a web process never has one of its own.
+func (r *Release) ImageFor(workload string) string {
+	for i := range r.Spec.Workloads {
+		if r.Spec.Workloads[i].Name == workload {
+			return r.Spec.Workloads[i].Image
+		}
+	}
+	return r.Spec.Image
 }
 
 // ReleaseStatus defines the observed state of a Release.

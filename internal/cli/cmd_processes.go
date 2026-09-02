@@ -27,7 +27,7 @@ import (
 	"github.com/Bermos/Kitchen/internal/cli/tui"
 )
 
-// `kitchen processes` — the project's workers and scheduled jobs.
+// `kitchen processes` — the project's workloads besides its web process.
 //
 // A process is read per *environment*, never per project, and that is not an
 // accident of which endpoint was available: what an environment runs is its
@@ -53,39 +53,57 @@ func newProcessesCommand(r *Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "processes",
 		Aliases: []string{"process", "ps"},
-		Short:   "The workers and scheduled jobs an environment runs",
+		Short:   "The workloads an environment runs besides its web process",
 		Long: strings.TrimSpace(`
 List what an environment runs besides its web process.
 
-A worker runs continuously and is never addressed — no URL, no route. A
-scheduled job runs on a cron expression, in UTC, and each firing is a run with
-its own logs.
+A worker runs continuously and is never addressed — no URL, no route. A service
+runs continuously and *is* addressed, by the rest of this environment and by
+nothing outside the cluster: its siblings read its address as
+KITCHEN_SERVICE_<NAME>, with _HOST and _PORT beside it. A scheduled job runs on
+a cron expression, in UTC, and each firing is a run with its own logs.
 
-What is listed is the *release's* process list, so an environment that has been
-rolled back lists the processes that release declared. A preview lists the
-project's whole list, with the ones it does not run marked suspended: a process
-runs in previews only if it was opted in.
+Publishing stays the exception the project declares. The web process is the one
+workload with a URL; nothing here gets a route, and a service that should be on
+the internet is the web process.
+
+What is listed is the *release's* workload list, so an environment that has been
+rolled back lists the workloads that release declared — and, for one built from
+its own directory, the image that release built. A preview lists the project's
+whole list, with the ones it does not run marked suspended: a worker and a
+scheduled job run in previews only if they were opted in, and a service runs
+unless it was opted out. That default is what makes a preview of a several-
+workload unit the whole unit rather than a quarter of it.
 
 Changing the list is a project setting, written with the rest of them:
 
   kitchen api PATCH /projects/shop --data '{"processes":[
     {"name":"worker","type":"worker","command":["node","worker.js"],"replicas":2,
      "health":{"path":"/healthz","port":9000}},
+    {"name":"api","type":"service","port":8080,
+     "build":{"rootDirectory":"services/api"}},
     {"name":"nightly-report","type":"cron","schedule":"0 3 * * *","command":["node","report.js"]}
   ]}'
 
 A worker's health check must name the port it is made against, because a worker
-publishes none of its own; a scheduled process takes none at all, since how a
-run went is its exit status.
+publishes none of its own; a service falls back to its own port; a scheduled
+process takes no health check at all, since how a run went is its exit status.
 
-A worker that must never run twice — a poller, a scheduler, an ingest loop —
+A workload with a "build" is built from its own directory of the repository, so
+one commit produces several images that ship as one release and roll back
+together. Without one it runs the project's image with another command, which
+is one build rather than two. The strategy is dockerfile or buildpacks — there
+is no auto for a workload — and a scheduled process is refused a build: give it
+to the worker or service that ships the image and run the schedule on that.
+
+A workload that must never run twice — a poller, a scheduler, an ingest loop —
 says so with "singleton": true, which deploys it by stopping the old copy
 before starting the new one instead of overlapping the two. It refuses more
 than one replica, and a scheduled process is refused it: whether two of its
 runs may overlap is concurrencyPolicy.
 
 It replaces the whole list, and it reaches an environment through the next
-release — what is running keeps its own processes until something builds.`),
+release — what is running keeps its own workloads until something builds.`),
 		Args: cobra.NoArgs,
 		RunE: run(func(cmd *cobra.Command, _ []string) error {
 			client, err := r.client()
@@ -123,6 +141,8 @@ release — what is running keeps its own processes until something builds.`),
 		Examples: []example{
 			{"What production runs besides the web process", "kitchen processes --json"},
 			{"A preview's, including what it will not run", "kitchen processes --environment shop-pr-42 --json"},
+			{"Where one workload's siblings reach it",
+				"kitchen processes --json | jq '.items[] | select(.address) | {name, address}'"},
 		},
 	})
 }
@@ -146,8 +166,8 @@ still be read:
 
   kitchen logs --run <name>
 
-A worker has no runs — it is already running, and its replicas are on
-"kitchen processes".`),
+A worker and a service have no runs — they are already running, and their
+replicas are on "kitchen processes".`),
 		Args: cobra.ExactArgs(1),
 		RunE: run(func(cmd *cobra.Command, args []string) error {
 			client, err := r.client()
@@ -287,7 +307,7 @@ func environmentFor(ctx context.Context, r *Runtime, c *client, named string) (s
 // run — folded into one STATE column so the two kinds sit in one table.
 func renderProcesses(s tui.Styles, processes []process) string {
 	if len(processes) == 0 {
-		return "No workers or scheduled jobs.\n" +
+		return "No workloads besides the web process.\n" +
 			s.Subtle.Render("`kitchen processes --help` says how to declare one.") + "\n"
 	}
 	rows := make([][]string, 0, len(processes))
@@ -330,14 +350,20 @@ func processState(s tui.Styles, p process) string {
 }
 
 // processNote is the last thing that happened to a scheduled process, the
-// reason a suspended one is not running, and — for a worker, which has neither
-// — the one thing about it a replica count does not say: that two of it must
-// never run at once, so a deploy stops the old copy first.
+// reason a suspended one is not running, where a service answers, and — for a
+// worker, which has none of those — the one thing about it a replica count
+// does not say: that two of it must never run at once, so a deploy stops the
+// old copy first.
 func processNote(p process) string {
 	if p.Suspended {
 		return p.Reason
 	}
 	if p.LastRun == nil {
+		// A service's address is what somebody wiring two workloads together
+		// came here for, and no other column carries it.
+		if p.Address != "" {
+			return p.Address
+		}
 		if p.Singleton {
 			return "never two at once: deploys stop the old copy first"
 		}

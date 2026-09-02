@@ -86,7 +86,7 @@ func TestTheCommitsFileDecidesWhichDockerfileIsBuilt(t *testing.T) {
 	// And it reaches the pod, which is the only place it matters: BuildKit is
 	// told a filename, and a build that recorded the file and then built the
 	// project's Dockerfile would be worse than not reading it at all.
-	pod := dockerfilePod(project, build, nil, "creds", "", "registry.example.com/shop:abc123",
+	pod := dockerfilePod(project, build, testWebPlan(project, build), nil, "creds", "",
 		kitchenv1alpha1.BuildAttestationSpec{})
 	if args := strings.Join(pod.Spec.Containers[0].Args, " "); !strings.Contains(args, "filename=docker/prod.Dockerfile") {
 		t.Errorf("the builder was not told which Dockerfile to use: %s", args)

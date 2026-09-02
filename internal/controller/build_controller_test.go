@@ -1443,9 +1443,24 @@ func buildFixtures() (*kitchenv1alpha1.Project, *kitchenv1alpha1.Build) {
 	return project, build
 }
 
+// testWebPlan is the plan the reconciler makes for the project's own image,
+// at the tag the assertions below are written against. The pod shapes are a
+// function of the plan now that one commit can produce several images, so the
+// tests that exercise a builder's arguments hand it one.
+func testWebPlan(project *kitchenv1alpha1.Project, build *kitchenv1alpha1.Build) buildPlan {
+	return buildPlan{
+		Strategy:       kitchenv1alpha1.BuildStrategyDockerfile,
+		RootDirectory:  buildRootDir(project),
+		DockerfilePath: buildDockerfilePath(project, build),
+		Job:            build.Name,
+		Repository:     "registry.example.com/shop",
+		Tag:            "registry.example.com/shop:abc123",
+	}
+}
+
 func TestDockerfilePodAsksTheBuilderForProvenanceAndAnSBOM(t *testing.T) {
 	project, build := buildFixtures()
-	pod := dockerfilePod(project, build, nil, "creds", "", "registry.example.com/shop:abc123",
+	pod := dockerfilePod(project, build, testWebPlan(project, build), nil, "creds", "",
 		kitchenv1alpha1.BuildAttestationSpec{Provenance: true, SBOM: true})
 	args := strings.Join(pod.Spec.Containers[0].Args, " ")
 
@@ -1470,7 +1485,7 @@ func TestDockerfilePodAsksTheBuilderForProvenanceAndAnSBOM(t *testing.T) {
 
 func TestDockerfilePodAsksForNothingWhenNothingIsConfigured(t *testing.T) {
 	project, build := buildFixtures()
-	pod := dockerfilePod(project, build, nil, "creds", "", "registry.example.com/shop:abc123",
+	pod := dockerfilePod(project, build, testWebPlan(project, build), nil, "creds", "",
 		kitchenv1alpha1.BuildAttestationSpec{})
 	args := strings.Join(pod.Spec.Containers[0].Args, " ")
 
@@ -1489,7 +1504,7 @@ func TestDockerfilePodTakesTheGeneratorAnInstallationNames(t *testing.T) {
 	// The format follows the generator, which is how CycloneDX is asked for:
 	// the platform records what came out rather than converting it.
 	project, build := buildFixtures()
-	pod := dockerfilePod(project, build, nil, "creds", "", "registry.example.com/shop:abc123",
+	pod := dockerfilePod(project, build, testWebPlan(project, build), nil, "creds", "",
 		kitchenv1alpha1.BuildAttestationSpec{SBOM: true, SBOMGenerator: "example.com/cyclonedx-scanner:1"})
 	args := strings.Join(pod.Spec.Containers[0].Args, " ")
 
@@ -1522,7 +1537,7 @@ func outputArg(t *testing.T, pod corev1.PodTemplateSpec) string {
 
 func TestDockerfilePodTakesTheGitTokenAsABuildSecret(t *testing.T) {
 	project, build := buildFixtures()
-	pod := dockerfilePod(project, build, nil, "creds", "kitchen-git-gh", "registry.example.com/shop:abc123",
+	pod := dockerfilePod(project, build, testWebPlan(project, build), nil, "creds", "kitchen-git-gh",
 		kitchenv1alpha1.BuildAttestationSpec{})
 	args := strings.Join(pod.Spec.Containers[0].Args, " ")
 
@@ -1546,7 +1561,7 @@ func TestDockerfilePodTakesTheGitTokenAsABuildSecret(t *testing.T) {
 
 func TestDockerfilePodAsksForNoGitSecretWithoutOne(t *testing.T) {
 	project, build := buildFixtures()
-	pod := dockerfilePod(project, build, nil, "creds", "", "registry.example.com/shop:abc123",
+	pod := dockerfilePod(project, build, testWebPlan(project, build), nil, "creds", "",
 		kitchenv1alpha1.BuildAttestationSpec{})
 
 	if args := strings.Join(pod.Spec.Containers[0].Args, " "); strings.Contains(args, "--secret") {
@@ -1562,8 +1577,8 @@ func TestDockerfilePodAsksForNoGitSecretWithoutOne(t *testing.T) {
 
 func TestBuildpacksPodGivesTheCloneTheTokenToAskWith(t *testing.T) {
 	project, build := buildFixtures()
-	pod := buildpacksPod(project, build, framework.Framework{}, nil, "creds", "kitchen-git-gh",
-		"registry.example.com/shop:abc123")
+	pod := buildpacksPod(project, build, testWebPlan(project, build), framework.Framework{}, nil,
+		"creds", "kitchen-git-gh")
 	clone := pod.Spec.InitContainers[0]
 
 	// The clone reads the token out of the mounted file through an askpass
@@ -1592,8 +1607,8 @@ func TestBuildpacksPodGivesTheCloneTheTokenToAskWith(t *testing.T) {
 
 func TestBuildpacksPodClonesAnonymouslyWithoutAToken(t *testing.T) {
 	project, build := buildFixtures()
-	pod := buildpacksPod(project, build, framework.Framework{}, nil, "creds", "",
-		"registry.example.com/shop:abc123")
+	pod := buildpacksPod(project, build, testWebPlan(project, build), framework.Framework{}, nil,
+		"creds", "")
 	clone := pod.Spec.InitContainers[0]
 
 	if envValue(clone.Env, "KITCHEN_GIT_TOKEN_FILE") != "" {
@@ -1667,7 +1682,7 @@ func hasGitCredentialVolume(volumes []corev1.Volume, secret string) bool {
 
 func TestDockerfilePodKeepsBuildKitsMetadataOutOfDev(t *testing.T) {
 	project, build := buildFixtures()
-	pod := dockerfilePod(project, build, nil, "creds", "", "registry.example.com/shop:abc123",
+	pod := dockerfilePod(project, build, testWebPlan(project, build), nil, "creds", "",
 		kitchenv1alpha1.BuildAttestationSpec{})
 	container := pod.Spec.Containers[0]
 
@@ -1799,7 +1814,7 @@ func runEntrypoint(t *testing.T, dir, metadataPath, terminationPath string, args
 // from admission, so both are asserted rather than assumed.
 func TestDockerfilePodKeepsTheRootlessExemptions(t *testing.T) {
 	project, build := buildFixtures()
-	pod := dockerfilePod(project, build, nil, "creds", "", "registry.example.com/shop:abc123",
+	pod := dockerfilePod(project, build, testWebPlan(project, build), nil, "creds", "",
 		kitchenv1alpha1.BuildAttestationSpec{})
 
 	const apparmor = "container.apparmor.security.beta.kubernetes.io/buildkit"

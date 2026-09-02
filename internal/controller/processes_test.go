@@ -358,7 +358,7 @@ var _ = Describe("Workers and scheduled jobs", func() {
 
 	It("runs none of them in a preview unless the process opted in", func() {
 		processes := baseProcesses()
-		processes[0].Previews = true
+		processes[0].Previews = ptr.To(true)
 		declare(processes)
 
 		env := environment(previewName, kitchenv1alpha1.EnvironmentPreview)

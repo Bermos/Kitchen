@@ -507,7 +507,8 @@ function commitLabel(build: Build): string {
                     <span class="font-mono w-4 shrink-0 text-center text-toned">{{ changeSign(process.change) }}</span>
                     <span class="font-mono text-highlighted flex-1">{{ process.name }}</span>
                     <span class="text-xs text-muted flex-1 truncate">
-                      {{ process.change }}{{ process.schedule ? ` · ${process.schedule}` : "" }}
+                      {{ process.change }}{{ process.schedule ? ` · ${process.schedule}` : ""
+                      }}{{ process.image ? ` · ${process.image}` : "" }}
                     </span>
                     <span class="text-xs text-dimmed shrink-0">{{ process.type || "Process" }}</span>
                   </div>

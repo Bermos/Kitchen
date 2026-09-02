@@ -348,17 +348,17 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	// anonymously and says, if it fails, what it did not have.
 	gitCreds := r.resolveGitCredential(ctx, project, build.Namespace, appNS)
 
-	tagRef := fmt.Sprintf("%s/%s:%s", registry.Prefix, project.Name, shortSHA(build.Spec.Git.SHA))
+	web := webPlan(project, build, registry, strategy)
 	target := buildTarget{
 		Connection: registryConn,
 		Registry:   registry,
 		Strategy:   strategy,
-		Tag:        tagRef,
+		Tag:        web.Tag,
 		Namespace:  appNS,
 	}
 
 	job := &batchv1.Job{}
-	err = r.Get(ctx, types.NamespacedName{Namespace: appNS, Name: build.Name}, job)
+	err = r.Get(ctx, types.NamespacedName{Namespace: appNS, Name: web.Job}, job)
 	switch {
 	case apierrors.IsNotFound(err):
 		// How the commit reached the branch is established here, before the
@@ -397,17 +397,45 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 			strategy = detected.Strategy
 			target.Strategy = strategy
 		}
+		// Every image this commit produces, the project's own first. A
+		// project whose workloads declare no build of their own plans one,
+		// which is the build that was always here.
+		web = webPlan(project, build, registry, strategy)
+		plans := buildPlansFor(project, build, registry, web)
 		// Planned before the Job exists, because the plan is part of the pod
-		// spec and a Job's template cannot be edited afterwards.
-		cache := r.planCache(ctx, build, project, builds.Cache, target)
-		if err := r.createJob(ctx, build, project, strategy, detected, cache, builds.Resources,
-			appNS, credsSecret, gitCreds.Secret, tagRef); err != nil {
-			return ctrl.Result{}, err
+		// spec and a Job's template cannot be edited afterwards. The web
+		// process's cache is the one recorded on the Build: it is the one
+		// every project has, and a per-workload cache report would be four
+		// numbers where the screen shows one.
+		cache := r.planCache(ctx, build, project, builds.Cache, target, web)
+		workloads := make([]kitchenv1alpha1.WorkloadBuildStatus, 0, len(plans)-1)
+		for _, plan := range plans {
+			planCacheStatus := cache
+			if !plan.isWeb() {
+				planCacheStatus = r.planCache(ctx, build, project, builds.Cache, target, plan)
+				workloads = append(workloads, kitchenv1alpha1.WorkloadBuildStatus{
+					Name:       plan.Workload,
+					Job:        plan.Job,
+					Repository: plan.Repository,
+					Phase:      kitchenv1alpha1.BuildRunning,
+				})
+			}
+			// A workload names its strategy outright, so detection has
+			// nothing to say about it — the framework below is the web
+			// process's and reaches only the plan that asked for it.
+			planDetected := detected
+			if !plan.isWeb() {
+				planDetected = framework.Framework{}
+			}
+			if err := r.createJob(ctx, build, project, plan, planDetected, planCacheStatus,
+				builds.Resources, appNS, credsSecret, gitCreds.Secret); err != nil {
+				return ctrl.Result{}, err
+			}
+			log.Info("build job created",
+				"namespace", appNS, "job", plan.Job, "image", plan.Tag, "workload", plan.Workload,
+				"strategy", plan.Strategy, "framework", planDetected.Name,
+				"cache", planCacheStatus.Ref, "cacheWarm", planCacheStatus.Warm)
 		}
-		log.Info("build job created",
-			"namespace", appNS, "job", build.Name, "image", tagRef,
-			"strategy", strategy, "framework", detected.Name,
-			"cache", cache.Ref, "cacheWarm", cache.Warm)
 		if err := r.Audit.Record(ctx, audit.Transition{
 			Object:      build,
 			Kind:        audit.KindBuild,
@@ -422,8 +450,9 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 				"branch":    build.Spec.Git.Branch,
 				"strategy":  string(strategy),
 				"framework": detected.Name,
-				"image":     tagRef,
+				"image":     web.Tag,
 				"cacheWarm": cache.Warm,
+				"workloads": workloadNames(plans),
 			},
 		}); err != nil {
 			return ctrl.Result{}, err
@@ -431,6 +460,7 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		build.Status.Phase = kitchenv1alpha1.BuildRunning
 		build.Status.DetectedFramework = detected.Name
 		build.Status.Cache = cache
+		build.Status.Workloads = workloads
 		build.Status.StartedAt = ptr.To(metav1.Now())
 		meta.SetStatusCondition(&build.Status.Conditions, metav1.Condition{
 			Type: condReady, Status: metav1.ConditionFalse, Reason: "BuildRunning",
@@ -445,16 +475,22 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		return ctrl.Result{}, err
 	}
 
-	complete, failed, message := jobOutcome(job)
-	switch {
-	case complete:
-		return r.succeed(ctx, build, project, job, target)
-	case failed:
+	// Every image this commit produces, observed together. A unit is over
+	// when all of it is over: the first workload to fail fails the Build
+	// naming itself, and nothing succeeds until every one of them pushed —
+	// three of four workloads a commit ahead of the fourth is worse than a
+	// deploy that did not happen.
+	outcomes, err := r.observePlans(ctx, build, project, registry, web, appNS)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if failure := firstFailure(outcomes); failure != nil {
 		// The Job's own message names no container and no exit code, so the
 		// pod is asked before it is collected: what failed, how, and the last
 		// thing it printed. It is written onto the Build because the pod is
 		// deleted with the job and the Build is not.
-		build.Status.Failure = r.diagnoseJobFailure(ctx, job, message)
+		build.Status.Failure = r.diagnoseJobFailure(ctx, failure.Job, failure.Message)
+		build.Status.Workloads = workloadStatuses(outcomes, nil)
 		// A build killed for its memory is a build failure with a cause, not
 		// a non-zero exit like any other: the ceiling it hit is the platform's
 		// own setting, and the sentence that says so is the difference between
@@ -464,11 +500,113 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 			reason = reasonBuildOutOfMemory
 			build.Status.Failure.Message = outOfMemoryMessage(build.Status.Failure, builds.Resources.Memory)
 		}
-		return r.fail(ctx, build, project, reason,
-			gitCreds.explain(failureMessage(build.Status.Failure, message)))
-	default:
-		return r.observeRunning(ctx, build, project, job)
+		// Which workload died is the first thing a unit's owner needs, and
+		// the message the diagnosis produced says everything but that.
+		message := failureMessage(build.Status.Failure, failure.Message)
+		if !failure.Plan.isWeb() {
+			message = failure.Plan.describe() + ": " + message
+		}
+		return r.fail(ctx, build, project, reason, gitCreds.explain(message))
 	}
+	if !allComplete(outcomes) {
+		// Whichever of them is still going is what the Build is waiting on,
+		// and the stall diagnosis is made against the first that has not
+		// finished — a unit whose second workload cannot be scheduled says
+		// so rather than reporting the first one's healthy progress.
+		return r.observeRunning(ctx, build, project, pendingJob(outcomes, job))
+	}
+	return r.succeed(ctx, build, project, job, target, outcomes)
+}
+
+// observePlans reads back the Job behind every image this Build produces.
+//
+// What it observes is what the Build recorded starting — see plansUnderway,
+// and the stall that reading the project again would produce. A Job that is
+// missing is a plan whose creation pass has not reached it, which the caller
+// waits for rather than treating as an absence.
+func (r *BuildReconciler) observePlans(
+	ctx context.Context,
+	build *kitchenv1alpha1.Build,
+	project *kitchenv1alpha1.Project,
+	registry provider.RegistryTarget,
+	web buildPlan,
+	appNS string,
+) ([]planOutcome, error) {
+	plans := plansUnderway(project, build, registry, web)
+	outcomes := make([]planOutcome, 0, len(plans))
+	for _, plan := range plans {
+		outcome := planOutcome{Plan: plan}
+		job := &batchv1.Job{}
+		switch err := r.Get(ctx, types.NamespacedName{Namespace: appNS, Name: plan.Job}, job); {
+		case apierrors.IsNotFound(err):
+			// Not created yet, or created and collected. Either way there is
+			// nothing to conclude from it.
+		case err != nil:
+			return nil, err
+		default:
+			outcome.Job = job
+			outcome.Complete, outcome.Failed, outcome.Message = jobOutcome(job)
+		}
+		outcomes = append(outcomes, outcome)
+	}
+	return outcomes, nil
+}
+
+// firstFailure is the plan that failed, in plan order, or nil.
+func firstFailure(outcomes []planOutcome) *planOutcome {
+	for i := range outcomes {
+		if outcomes[i].Failed {
+			return &outcomes[i]
+		}
+	}
+	return nil
+}
+
+// allComplete reports whether every image this Build produces has been
+// pushed.
+func allComplete(outcomes []planOutcome) bool {
+	for i := range outcomes {
+		if !outcomes[i].Complete {
+			return false
+		}
+	}
+	return len(outcomes) > 0
+}
+
+// pendingJob is the Job the Build is waiting on: the first that has not
+// finished, falling back to the web process's when every Job is missing.
+func pendingJob(outcomes []planOutcome, fallback *batchv1.Job) *batchv1.Job {
+	for i := range outcomes {
+		if !outcomes[i].Complete && outcomes[i].Job != nil {
+			return outcomes[i].Job
+		}
+	}
+	return fallback
+}
+
+// workloadNames is what the audit record says a build produced besides the
+// project's own image.
+func workloadNames(plans []buildPlan) []string {
+	names := make([]string, 0, len(plans))
+	for _, plan := range plans {
+		if !plan.isWeb() {
+			names = append(names, plan.Workload)
+		}
+	}
+	return names
+}
+
+// workloadStatuses is the row per workload the Build carries, with the
+// resolved image where one is known.
+func workloadStatuses(outcomes []planOutcome, images map[string]string) []kitchenv1alpha1.WorkloadBuildStatus {
+	statuses := make([]kitchenv1alpha1.WorkloadBuildStatus, 0, len(outcomes))
+	for _, outcome := range outcomes {
+		if outcome.Plan.isWeb() {
+			continue
+		}
+		statuses = append(statuses, workloadStatusFor(outcome, images[outcome.Plan.Workload]))
+	}
+	return statuses
 }
 
 // platformBuilds is the Kitchen singleton's build configuration, or its zero
@@ -638,15 +776,15 @@ func (r *BuildReconciler) createJob(
 	ctx context.Context,
 	build *kitchenv1alpha1.Build,
 	project *kitchenv1alpha1.Project,
-	strategy kitchenv1alpha1.BuildStrategy,
+	plan buildPlan,
 	detected framework.Framework,
 	cache *kitchenv1alpha1.BuildCacheStatus,
 	resources kitchenv1alpha1.BuildResourcesSpec,
-	appNS, credsSecret, gitSecret, tagRef string,
+	appNS, credsSecret, gitSecret string,
 ) error {
-	template := dockerfilePod(project, build, cache, credsSecret, gitSecret, tagRef, r.platformAttestation(ctx))
-	if strategy == kitchenv1alpha1.BuildStrategyBuildpacks {
-		template = buildpacksPod(project, build, detected, cache, credsSecret, gitSecret, tagRef)
+	template := dockerfilePod(project, build, plan, cache, credsSecret, gitSecret, r.platformAttestation(ctx))
+	if plan.Strategy == kitchenv1alpha1.BuildStrategyBuildpacks {
+		template = buildpacksPod(project, build, plan, detected, cache, credsSecret, gitSecret)
 	}
 	// What a build may take, from the platform object rather than from
 	// anything the commit or the project can say. It is applied here rather
@@ -659,12 +797,20 @@ func (r *BuildReconciler) createJob(
 		labelBuildNS:      build.Namespace,
 		labelManagedByKey: labelManagedByValue,
 	}
+	// Which workload of the unit this is, on the Jobs that are not the web
+	// process's. The log collector reads the build label to file a unit's
+	// whole output under its build; this is what tells the four apart
+	// afterwards, and what finds a unit's extra builds without finding the
+	// one build every project has.
+	if !plan.isWeb() {
+		labels[labelWorkload] = plan.Workload
+	}
 	// The pod carries the same labels as the Job: they are what the log
 	// collector reads to file the build's output under its build.
 	template.Labels = labels
 
 	job := &batchv1.Job{
-		ObjectMeta: metav1.ObjectMeta{Name: build.Name, Namespace: appNS, Labels: labels},
+		ObjectMeta: metav1.ObjectMeta{Name: plan.Job, Namespace: appNS, Labels: labels},
 		Spec: batchv1.JobSpec{
 			// A rebuild is a new Build object, never a pod retry.
 			BackoffLimit: ptr.To(int32(0)),
@@ -693,12 +839,13 @@ func (r *BuildReconciler) createJob(
 func dockerfilePod(
 	project *kitchenv1alpha1.Project,
 	build *kitchenv1alpha1.Build,
+	plan buildPlan,
 	cache *kitchenv1alpha1.BuildCacheStatus,
-	credsSecret, gitSecret, tagRef string,
+	credsSecret, gitSecret string,
 	attest kitchenv1alpha1.BuildAttestationSpec,
 ) corev1.PodTemplateSpec {
 	// The build root goes into the git reference, which is what makes it the
-	// project's root directory rather than a directory the build happens to
+	// build's root directory rather than a directory the build happens to
 	// pass through: BuildKit's git source hands the frontend that
 	// subdirectory as the entire context, so `filename` below is resolved
 	// relative to it — the same relation the lifecycle gets from `-app`, and
@@ -708,13 +855,20 @@ func dockerfilePod(
 	// here, deliberately. Nothing above it is part of the build, which is
 	// why a path that leaves it is refused where it is written rather than
 	// resolved into a context that does not contain it.
+	//
+	// Which build root that is comes from the plan rather than from the
+	// project: one commit can produce several images, each built from its own
+	// directory with its own Dockerfile relative to that directory, and the
+	// project's own root directory is one of them. Both are spelled by
+	// internal/detect before they get here, so a workload's paths mean what a
+	// project's paths mean.
 	buildContext := repoCloneURL(project) + "#" + build.Spec.Git.SHA
-	if root := buildRootDir(project); root != "" {
+	if root := plan.RootDirectory; root != "" {
 		buildContext += ":" + root
 	}
-	dockerfile := buildDockerfilePath(project, build)
+	dockerfile := plan.DockerfilePath
 
-	output := "type=image,name=" + tagRef + ",push=true"
+	output := "type=image,name=" + plan.Tag + ",push=true"
 	attestations := []string{}
 	if attest.Provenance {
 		// mode=max records the base images it resolved and the parameters it
@@ -913,6 +1067,9 @@ func (r *BuildReconciler) succeed(
 	project *kitchenv1alpha1.Project,
 	job *batchv1.Job,
 	target buildTarget,
+	// outcomes is every image this commit produced, the project's own
+	// first. A unit only reaches here once all of them pushed.
+	outcomes []planOutcome,
 ) (ctrl.Result, error) {
 	image, digestFound := r.imageWithDigest(ctx, target.Namespace, build.Name, target.Tag)
 
@@ -969,6 +1126,14 @@ func (r *BuildReconciler) succeed(
 		return r.fail(ctx, build, project, reasonConfigInvalid, err.Error())
 	}
 
+	// What each workload of the unit was built to, read out of its own Job's
+	// pod. Frozen onto the Release beside the snapshot, because the two
+	// answer different halves of one question: the snapshot says what each
+	// workload *is*, and this says what it *was built to* — and a rollback
+	// is only a rollback if it restores both.
+	workloadImages := r.workloadImages(ctx, target.Namespace, outcomes)
+	build.Status.Workloads = workloadStatuses(outcomes, imagesByName(workloadImages))
+
 	release := &kitchenv1alpha1.Release{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      releaseName(project.Name, build.Spec.Git.SHA),
@@ -979,6 +1144,7 @@ func (r *BuildReconciler) succeed(
 			ProjectRef:     kitchenv1alpha1.LocalObjectReference{Name: project.Name},
 			BuildRef:       kitchenv1alpha1.LocalObjectReference{Name: build.Name},
 			Image:          image,
+			Workloads:      workloadImages,
 			ConfigSnapshot: snapshot,
 		},
 	}
@@ -1054,6 +1220,40 @@ func (r *BuildReconciler) succeed(
 	})
 	r.git().reportBuild(ctx, project, build, gitprovider.CommitSuccess, succeededDescription(build))
 	return ctrl.Result{}, r.Status().Update(ctx, build)
+}
+
+// workloadImages is the digest reference each workload of the unit was built
+// to, in plan order and with the web process left out — its image is the
+// Release's own.
+//
+// A workload whose digest could not be read records the tag it was pushed
+// under, which is the same degradation the project's own image already takes:
+// an image that exists and cannot be named by content is still an image, and
+// recording nothing would leave the workload running the Release's image
+// instead of its own — which is the one outcome that would be silently wrong.
+func (r *BuildReconciler) workloadImages(
+	ctx context.Context,
+	appNS string,
+	outcomes []planOutcome,
+) []kitchenv1alpha1.WorkloadImage {
+	images := make([]kitchenv1alpha1.WorkloadImage, 0, len(outcomes))
+	for _, outcome := range outcomes {
+		if outcome.Plan.isWeb() {
+			continue
+		}
+		image, _ := r.imageWithDigest(ctx, appNS, outcome.Plan.Job, outcome.Plan.Tag)
+		images = append(images, kitchenv1alpha1.WorkloadImage{Name: outcome.Plan.Workload, Image: image})
+	}
+	return images
+}
+
+// imagesByName indexes what workloadImages resolved, for the status rows.
+func imagesByName(images []kitchenv1alpha1.WorkloadImage) map[string]string {
+	byName := make(map[string]string, len(images))
+	for _, image := range images {
+		byName[image.Name] = image.Image
+	}
+	return byName
 }
 
 // runtimeFor is the runtime the Release freezes: the project's own, with the

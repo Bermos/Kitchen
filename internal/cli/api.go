@@ -811,6 +811,14 @@ type environment struct {
 
 // process is one of a project's workers or scheduled jobs, as one environment
 // is running it.
+// processBuild is one workload's own build: which directory of the repository
+// it is, and how the image comes out of it.
+type processBuild struct {
+	Strategy       string `json:"strategy"`
+	DockerfilePath string `json:"dockerfilePath,omitempty"`
+	RootDirectory  string `json:"rootDirectory,omitempty"`
+}
+
 type process struct {
 	Name     string   `json:"name"`
 	Type     string   `json:"type"`
@@ -830,6 +838,18 @@ type process struct {
 	CPU       string `json:"cpu,omitempty"`
 	Memory    string `json:"memory,omitempty"`
 	Workload  string `json:"workload,omitempty"`
+	// Port is a service's listening port and Address is where it answers
+	// inside the cluster — `http://<host>:<port>`, the same value its
+	// siblings read as KITCHEN_SERVICE_<NAME>. Both are absent on a worker
+	// and a scheduled job, which nothing addresses. Neither is a public URL:
+	// a service is never published.
+	Port    int32  `json:"port,omitempty"`
+	Address string `json:"address,omitempty"`
+	// Image is what this workload runs when that is not the release's own
+	// image, and Build is the build it has of its own. Both are absent for a
+	// workload that runs the project's image with another command.
+	Image string        `json:"image,omitempty"`
+	Build *processBuild `json:"build,omitempty"`
 	// Suspended is a process this environment declares and does not run: a
 	// preview whose process was not opted in. Reason says so in a sentence.
 	Suspended bool   `json:"suspended,omitempty"`

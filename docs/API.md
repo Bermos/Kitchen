@@ -301,7 +301,7 @@ such changes two changes to two different files.
 - [A project's own secrets](api/secrets.md) — the credentials Kitchen did not mint, written once and never read back
 - [Builds](api/builds.md) — starting and cancelling one, what it reused, and the evidence it left
 - [Environments and releases](api/environments.md) — rolling back, what is running, what is wrong with it, and the bar an environment sets
-- [Workers and scheduled jobs](api/processes.md) — the processes a project runs besides its web one, their runs, and running one now
+- [Workloads](api/processes.md) — the workloads a project ships besides its web one, how they reach each other, their runs, and running one now
 - [Addons](api/addons.md) — the dependencies the platform installs into the cluster it owns
 - [Connections](api/connections.md) — the credentials the platform holds
 - [Claims](api/claims.md) — asking for a resource, and what every provider declares about previews, idling and deploys

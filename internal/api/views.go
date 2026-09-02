@@ -160,7 +160,7 @@ type projectView struct {
 	// PromotionStages is the project's staged pipeline, in promotion order.
 	// Absent for the default build-straight-to-production flow.
 	PromotionStages []promotionStageView `json:"promotionStages,omitempty"`
-	// Processes are the project's workers and scheduled jobs as it declares
+	// Processes are the project's workloads besides its web process as it declares
 	// them *now* — what an environment is actually running is its release's
 	// list, on GET /environments/{name}/processes, and the two differ for as
 	// long as it takes something to build.
@@ -419,6 +419,40 @@ type buildView struct {
 	// stopped it, how it exited, and the last of what it printed. Absent on
 	// every build that did not fail.
 	Failure *buildFailureView `json:"failure,omitempty"`
+
+	// Workloads is the other images this one commit produced, for a project
+	// whose unit is more than one workload. Empty for the great majority of
+	// projects, which ship one image and whose image is `image` above.
+	//
+	// The build is over when all of them are, so a row still Running is what
+	// the build as a whole is waiting on, and a row that Failed is why the
+	// build did.
+	Workloads []buildWorkloadView `json:"workloads,omitempty"`
+}
+
+// buildWorkloadView is one workload's own build within one commit's.
+type buildWorkloadView struct {
+	Name       string `json:"name"`
+	Phase      string `json:"phase,omitempty"`
+	Image      string `json:"image,omitempty"`
+	Repository string `json:"repository,omitempty"`
+	Job        string `json:"job,omitempty"`
+	Message    string `json:"message,omitempty"`
+}
+
+func buildWorkloadViews(workloads []kitchenv1alpha1.WorkloadBuildStatus) []buildWorkloadView {
+	views := make([]buildWorkloadView, 0, len(workloads))
+	for _, workload := range workloads {
+		views = append(views, buildWorkloadView{
+			Name:       workload.Name,
+			Phase:      string(workload.Phase),
+			Image:      workload.Image,
+			Repository: workload.Repository,
+			Job:        workload.Job,
+			Message:    workload.Message,
+		})
+	}
+	return views
 }
 
 // buildFailureView is a failed build's own account of itself.
@@ -684,6 +718,7 @@ func newBuildView(build *kitchenv1alpha1.Build) buildView {
 		Gates:             gateViews(build.Status.Gates),
 		Source:            newSourceView(build.Status.Source),
 		Failure:           newBuildFailureView(build.Status.Failure),
+		Workloads:         buildWorkloadViews(build.Status.Workloads),
 		CreatedAt:         build.CreationTimestamp.Time,
 		Conditions:        conditionViews(build.Status.Conditions),
 	}
@@ -697,20 +732,36 @@ func newBuildView(build *kitchenv1alpha1.Build) buildView {
 }
 
 type releaseView struct {
-	Name         string    `json:"name"`
-	Project      string    `json:"project"`
-	Build        string    `json:"build"`
-	Image        string    `json:"image"`
-	Environments []string  `json:"environments,omitempty"`
-	CreatedAt    time.Time `json:"createdAt"`
+	Name    string `json:"name"`
+	Project string `json:"project"`
+	Build   string `json:"build"`
+	Image   string `json:"image"`
+	// Workloads is the image each of the unit's other workloads was built
+	// to. It is what makes rolling this release back exact for a project
+	// that is more than one workload: restoring it restores this set, never
+	// the set the project declares today.
+	Workloads    []workloadImageView `json:"workloads,omitempty"`
+	Environments []string            `json:"environments,omitempty"`
+	CreatedAt    time.Time           `json:"createdAt"`
+}
+
+// workloadImageView is one workload's frozen image within a release.
+type workloadImageView struct {
+	Name  string `json:"name"`
+	Image string `json:"image"`
 }
 
 func newReleaseView(release *kitchenv1alpha1.Release) releaseView {
+	workloads := make([]workloadImageView, 0, len(release.Spec.Workloads))
+	for _, workload := range release.Spec.Workloads {
+		workloads = append(workloads, workloadImageView{Name: workload.Name, Image: workload.Image})
+	}
 	return releaseView{
 		Name:         release.Name,
 		Project:      release.Spec.ProjectRef.Name,
 		Build:        release.Spec.BuildRef.Name,
 		Image:        release.Spec.Image,
+		Workloads:    workloads,
 		Environments: release.Status.Environments,
 		CreatedAt:    release.CreationTimestamp.Time,
 	}

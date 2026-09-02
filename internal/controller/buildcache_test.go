@@ -61,7 +61,7 @@ func TestCacheRef(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := cacheRef(cachePrefix, "shop", tc.branch, tc.scope, tc.strategy)
+			got := cacheRef(cachePrefix+"/shop", tc.branch, tc.scope, tc.strategy)
 			if got != tc.want {
 				t.Fatalf("cacheRef = %q, want %q", got, tc.want)
 			}
