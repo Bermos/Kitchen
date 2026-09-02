@@ -21,6 +21,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -464,5 +465,46 @@ func TestTheMetricsOverviewAnswersTheOperatorAboutThePlatform(t *testing.T) {
 	}
 	if h.logs.lastMetrics.Project != "" || len(h.logs.platformQueries) == 0 {
 		t.Errorf("the operator's read is the platform-wide one: %+v / %+v", h.logs.lastMetrics, h.logs.platformQueries)
+	}
+}
+
+// The overview's numbers are the same kind of number the environment page's
+// are: what people asked of an application, not what the platform asked of it.
+// One resolution feeds every read, so the totals, the hourly buckets and the
+// per-project rows all leave the same rows out.
+func TestTheMetricsOverviewLeavesOutTheHealthChecks(t *testing.T) {
+	objects := fixtures()
+	for _, object := range objects {
+		if project, ok := object.(*kitchenv1alpha1.Project); ok {
+			project.Spec.Runtime.Health = &kitchenv1alpha1.HealthSpec{Path: "/api/health"}
+		}
+	}
+	h := newHarness(t, nil, objects...)
+
+	if res := h.do(t, http.MethodGet, "/api/v1/metrics/overview", ""); res.Code != http.StatusOK {
+		t.Fatalf("GET /metrics/overview = %d: %s", res.Code, res.Body.String())
+	}
+
+	want := []clickhouse.HealthRoute{{Project: feedProject, Route: "/api/health"}}
+	if !slices.Equal(h.logs.lastProjectTraffic.ExcludeHealth, want) {
+		t.Errorf("the per-project rows did not exclude the checks: %+v", h.logs.lastProjectTraffic)
+	}
+	if len(h.logs.platformQueries) == 0 {
+		t.Fatal("the platform totals were never read")
+	}
+	for _, query := range h.logs.platformQueries {
+		if !slices.Equal(query.ExcludeHealth, want) {
+			t.Fatalf("a platform read counted them: %+v", query)
+		}
+	}
+
+	// Scoped to the project, the same exclusion reaches the reads that answer
+	// it — the summary and the series behind the sparkline.
+	if res := h.do(t, http.MethodGet, "/api/v1/metrics/overview?project="+feedProject, ""); res.Code != http.StatusOK {
+		t.Fatalf("GET /metrics/overview?project= = %d: %s", res.Code, res.Body.String())
+	}
+	if !slices.Equal(h.logs.lastRequestSummary.ExcludeHealth, want) ||
+		!slices.Equal(h.logs.lastRequestSeries.ExcludeHealth, want) {
+		t.Errorf("the project's own numbers counted them: %+v", h.logs.lastRequestSummary)
 	}
 }

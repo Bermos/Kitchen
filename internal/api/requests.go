@@ -18,6 +18,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -55,23 +56,65 @@ import (
 // the raw rows, which is why a year-wide summary is as cheap as an hour's and
 // why the listing's window is the shorter one: raw rows are kept for seven days.
 
-// requestQueryFrom reads the window and the route filter the request reads
-// share. An absent window is the store's own default — the hour ending now.
-func requestQueryFrom(req *http.Request, env *kitchenv1alpha1.Environment) (clickhouse.RequestQuery, error) {
+// requestQueryFrom reads the window, the route filter and the health-check
+// decision the request reads share. An absent window is the store's own
+// default — the hour ending now.
+//
+// The health check the platform makes of this application is not its traffic
+// (see healthchecks.go), so it is left out unless `?health=include` asks for
+// it. The view that comes back with the query is what the answer says about
+// that, and every one of these endpoints carries it: a number that silently
+// dropped rows is a number nobody can reconcile.
+func (s *Server) requestQueryFrom(
+	req *http.Request, env *kitchenv1alpha1.Environment,
+) (clickhouse.RequestQuery, healthChecksView, error) {
 	since, until, err := windowFrom(req)
 	if err != nil {
-		return clickhouse.RequestQuery{}, err
+		return clickhouse.RequestQuery{}, healthChecksView{}, err
 	}
-	return clickhouse.RequestQuery{
-		// Every request read is project-scoped, and the project is the
-		// environment's own — the caller names an environment and the API
-		// resolves what it belongs to, the way the log and metric endpoints do.
-		Project:     env.Spec.ProjectRef.Name,
+	include, err := includeHealth(req)
+	if err != nil {
+		return clickhouse.RequestQuery{}, healthChecksView{}, err
+	}
+
+	// Every request read is project-scoped, and the project is the
+	// environment's own — the caller names an environment and the API
+	// resolves what it belongs to, the way the log and metric endpoints do.
+	project := &kitchenv1alpha1.Project{}
+	if err := s.get(req.Context(), env.Spec.ProjectRef.Name, project); err != nil {
+		return clickhouse.RequestQuery{}, healthChecksView{}, err
+	}
+
+	query := clickhouse.RequestQuery{
+		Project:     project.Name,
 		Environment: env.Name,
 		Since:       since,
 		Until:       until,
 		Route:       strings.TrimSpace(req.URL.Query().Get("route")),
-	}, nil
+	}
+	health := healthChecksView{Route: healthRouteOf(project).Route}
+	// A caller filtering to one route has named what they want counted, and
+	// the store ignores the exclusion in that case; saying `excluded` here
+	// would be the screen claiming something the numbers do not do.
+	if !include && health.Route != "" && query.Route == "" {
+		query.ExcludeHealth = []clickhouse.HealthRoute{{Project: project.Name, Route: health.Route}}
+		health.Excluded = true
+	}
+	return query, health, nil
+}
+
+// writeRequestQueryError answers the two ways resolving one of these reads can
+// fail. A parameter somebody wrote badly is a 400 naming it; an object that
+// could not be read is whatever that read's own failure was — the 404 of a
+// project deleted between the environment's read and its own, rather than a
+// 400 blaming the caller for it.
+func (s *Server) writeRequestQueryError(w http.ResponseWriter, err error) {
+	var status apierrors.APIStatus
+	if errors.As(err, &status) {
+		s.writeError(w, err)
+		return
+	}
+	badRequest(w, "%s", err.Error())
 }
 
 // edgeView is the honest degrade for a workload the golden signals do not fit.
@@ -148,8 +191,9 @@ func (s *Server) environmentOf(w http.ResponseWriter, req *http.Request) *kitche
 // than the one that was asked for, and flattening it would lose that.
 type requestSummaryBody struct {
 	clickhouse.RequestSummary
-	Environment string   `json:"environment"`
-	Edge        edgeView `json:"edge"`
+	Environment  string           `json:"environment"`
+	Edge         edgeView         `json:"edge"`
+	HealthChecks healthChecksView `json:"healthChecks"`
 }
 
 // environmentRequestSummary answers the four tiles the environment page leads
@@ -159,9 +203,9 @@ func (s *Server) environmentRequestSummary(w http.ResponseWriter, req *http.Requ
 	if env == nil {
 		return
 	}
-	query, err := requestQueryFrom(req, env)
+	query, health, err := s.requestQueryFrom(req, env)
 	if err != nil {
-		badRequest(w, "%s", err.Error())
+		s.writeRequestQueryError(w, err)
 		return
 	}
 
@@ -178,6 +222,7 @@ func (s *Server) environmentRequestSummary(w http.ResponseWriter, req *http.Requ
 		RequestSummary: summary,
 		Environment:    env.Name,
 		Edge:           s.edgeOf(req.Context(), env),
+		HealthChecks:   health,
 	})
 }
 
@@ -186,8 +231,9 @@ func (s *Server) environmentRequestSummary(w http.ResponseWriter, req *http.Requ
 // answered it.
 type requestSeriesBody struct {
 	clickhouse.RequestSeries
-	Environment string   `json:"environment"`
-	Edge        edgeView `json:"edge"`
+	Environment  string           `json:"environment"`
+	Edge         edgeView         `json:"edge"`
+	HealthChecks healthChecksView `json:"healthChecks"`
 }
 
 // environmentRequestSeries answers traffic, error rate and the latency
@@ -197,9 +243,9 @@ func (s *Server) environmentRequestSeries(w http.ResponseWriter, req *http.Reque
 	if env == nil {
 		return
 	}
-	query, err := requestQueryFrom(req, env)
+	query, health, err := s.requestQueryFrom(req, env)
 	if err != nil {
-		badRequest(w, "%s", err.Error())
+		s.writeRequestQueryError(w, err)
 		return
 	}
 	buckets, err := intParam(req, "buckets", clickhouse.DefaultRequestBuckets)
@@ -222,6 +268,7 @@ func (s *Server) environmentRequestSeries(w http.ResponseWriter, req *http.Reque
 		RequestSeries: series,
 		Environment:   env.Name,
 		Edge:          s.edgeOf(req.Context(), env),
+		HealthChecks:  health,
 	})
 }
 
@@ -239,9 +286,10 @@ var routeSorts = []string{
 // rows are aggregates over the same snapped window the summary reports, and
 // echoing a second copy of it invites the two to disagree.
 type requestRoutesBody struct {
-	Items       []clickhouse.RequestRoute `json:"items"`
-	Environment string                    `json:"environment"`
-	Edge        edgeView                  `json:"edge"`
+	Items        []clickhouse.RequestRoute `json:"items"`
+	Environment  string                    `json:"environment"`
+	Edge         edgeView                  `json:"edge"`
+	HealthChecks healthChecksView          `json:"healthChecks"`
 }
 
 // environmentRequestRoutes answers one row per route template.
@@ -254,9 +302,9 @@ func (s *Server) environmentRequestRoutes(w http.ResponseWriter, req *http.Reque
 	if env == nil {
 		return
 	}
-	query, err := requestQueryFrom(req, env)
+	query, health, err := s.requestQueryFrom(req, env)
 	if err != nil {
-		badRequest(w, "%s", err.Error())
+		s.writeRequestQueryError(w, err)
 		return
 	}
 	limit, err := intParam(req, "limit", clickhouse.DefaultRequestGroupLimit)
@@ -281,9 +329,10 @@ func (s *Server) environmentRequestRoutes(w http.ResponseWriter, req *http.Reque
 		return
 	}
 	writeJSON(w, http.StatusOK, requestRoutesBody{
-		Items:       itemsOf(routes),
-		Environment: env.Name,
-		Edge:        s.edgeOf(req.Context(), env),
+		Items:        itemsOf(routes),
+		Environment:  env.Name,
+		Edge:         s.edgeOf(req.Context(), env),
+		HealthChecks: health,
 	})
 }
 
@@ -292,9 +341,10 @@ func (s *Server) environmentRequestRoutes(w http.ResponseWriter, req *http.Reque
 // the edge's answer belongs beside the rows: an empty list means one thing for
 // an environment on the edge and another for one that is not.
 type requestListBody struct {
-	Items       []clickhouse.Request `json:"items"`
-	Environment string               `json:"environment"`
-	Edge        edgeView             `json:"edge"`
+	Items        []clickhouse.Request `json:"items"`
+	Environment  string               `json:"environment"`
+	Edge         edgeView             `json:"edge"`
+	HealthChecks healthChecksView     `json:"healthChecks"`
 }
 
 // environmentRequests answers the raw rows, newest first, and follows them live
@@ -305,9 +355,9 @@ func (s *Server) environmentRequests(w http.ResponseWriter, req *http.Request) {
 	if env == nil {
 		return
 	}
-	query, err := requestListFrom(req, env)
+	query, health, err := s.requestListFrom(req, env)
 	if err != nil {
-		badRequest(w, "%s", err.Error())
+		s.writeRequestQueryError(w, err)
 		return
 	}
 
@@ -346,26 +396,29 @@ func (s *Server) environmentRequests(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, requestListBody{
-		Items:       itemsOf(rows),
-		Environment: env.Name,
-		Edge:        s.edgeOf(req.Context(), env),
+		Items:        itemsOf(rows),
+		Environment:  env.Name,
+		Edge:         s.edgeOf(req.Context(), env),
+		HealthChecks: health,
 	})
 }
 
 // requestListFrom reads what the raw listing is filtered by on top of the
 // window: a route template, a verb, a class of answer, and the failures alone.
-func requestListFrom(req *http.Request, env *kitchenv1alpha1.Environment) (clickhouse.RequestListQuery, error) {
-	query, err := requestQueryFrom(req, env)
+func (s *Server) requestListFrom(
+	req *http.Request, env *kitchenv1alpha1.Environment,
+) (clickhouse.RequestListQuery, healthChecksView, error) {
+	query, health, err := s.requestQueryFrom(req, env)
 	if err != nil {
-		return clickhouse.RequestListQuery{}, err
+		return clickhouse.RequestListQuery{}, healthChecksView{}, err
 	}
 	limit, err := intParam(req, "limit", clickhouse.DefaultRequestLimit)
 	if err != nil {
-		return clickhouse.RequestListQuery{}, err
+		return clickhouse.RequestListQuery{}, healthChecksView{}, err
 	}
 	statusClass, err := statusClassParam(req)
 	if err != nil {
-		return clickhouse.RequestListQuery{}, err
+		return clickhouse.RequestListQuery{}, healthChecksView{}, err
 	}
 	return clickhouse.RequestListQuery{
 		Project:     query.Project,
@@ -373,13 +426,16 @@ func requestListFrom(req *http.Request, env *kitchenv1alpha1.Environment) (click
 		Since:       query.Since,
 		Until:       query.Until,
 		Route:       query.Route,
+		// The rows under a set of numbers are the traffic those numbers are
+		// of, so the listing drops what the aggregates dropped.
+		ExcludeHealth: query.ExcludeHealth,
 		// The follower canonicalises the verb before it stores it, so the
 		// filter matches the stored spelling rather than the typed one.
 		Method:      strings.ToUpper(strings.TrimSpace(req.URL.Query().Get("method"))),
 		StatusClass: statusClass,
 		OnlyErrors:  req.URL.Query().Get("errors") == "1",
 		Limit:       limit,
-	}, nil
+	}, health, nil
 }
 
 // statusClassParam reads `?status=`, which selects a class of answer rather

@@ -572,6 +572,14 @@ a new header):
     requests, error %, p50/p95/p99, sortable, window-scoped. Clicking a route
     filters the charts and the request list to it. This is the per-path
     breakdown the goals ask for, and it works because §3.3 made routes finite.
+  - **Health checks are not traffic**: every read in this section drops the
+    rows whose route is the health check the project declared
+    (`spec.runtime.health.path`), and says so beside the numbers — a probe
+    every ten seconds is thousands of requests a day the application never had,
+    and on the route table it is usually the busiest row an idle environment
+    has. It is a predicate on the read rather than a filter at ingest, so
+    `?health=include` puts them back and a listing filtered to the health route
+    still answers.
   - **Request list** (`…/requests`, filterable by route/status class/method,
     SSE live tail exactly like logs): recent requests with time, method,
     path (raw), status, duration. A failing request expands to the

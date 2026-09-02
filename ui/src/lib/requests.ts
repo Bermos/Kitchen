@@ -9,7 +9,7 @@
  * rate, and two of them rounding differently is two of them disagreeing.
  */
 
-import type { EdgeStatus, PlatformEvent, RequestRow } from "./api";
+import type { EdgeStatus, HealthChecks, PlatformEvent, RequestRow } from "./api";
 import { renderClause } from "./logquery";
 import type { Tone } from "./status";
 
@@ -54,6 +54,36 @@ export function edgeState(edge: EdgeStatus | undefined, requests: number | undef
     message: "",
     caveat: edge?.message ?? "",
   };
+}
+
+/**
+ * What the requests section says about the platform's own health checks.
+ *
+ * The API decides which route is one — the path the project declared as its
+ * health check — and answers every read with the route and whether that read
+ * left it out. Two rules turn that into a line on the screen:
+ *
+ *   - **Nothing is said where nothing is declared.** A project with no HTTP
+ *     health check has no probes to discount, and a note explaining an
+ *     exclusion that is not happening is worse than no note.
+ *   - **Nothing is said while a route is selected.** The filter chip above
+ *     already says exactly what the numbers are of, and the API counts the
+ *     health route when it is the route that was asked for — so the offer to
+ *     count them would be an offer to change nothing.
+ */
+export interface HealthCheckNote {
+  /** The route the platform's own check asks for, as the rows spell it. */
+  route: string;
+  /** Whether the numbers beside the note left it out. */
+  excluded: boolean;
+}
+
+export function healthCheckNote(
+  health: HealthChecks | undefined,
+  selectedRoute: string | null | undefined,
+): HealthCheckNote | null {
+  if (!health?.route || selectedRoute) return null;
+  return { route: health.route, excluded: health.excluded };
 }
 
 /** What the screen says when the platform is sure nothing publishes an

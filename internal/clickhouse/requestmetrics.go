@@ -131,6 +131,14 @@ type RequestQuery struct {
 	// Route narrows every number to one route template, which is what
 	// clicking a row of the route table does to the charts beside it.
 	Route string
+	// ExcludeHealth drops the platform's own health checks — see
+	// healthchecks.go for why a project's traffic should not count them, and
+	// why the caller names them rather than the store guessing.
+	//
+	// A read that names a Route ignores it: a caller who asked for the health
+	// route by name and was answered zero would be a screen arguing with
+	// itself.
+	ExcludeHealth []HealthRoute
 }
 
 // requestScope is a resolved read: the window it covers, the rollup answering
@@ -200,6 +208,8 @@ func (q RequestQuery) scope(rollup string) (requestScope, error) {
 	if q.Route != "" {
 		scope.conditions = append(scope.conditions, "r.route = {route:String}")
 		scope.params["route"] = q.Route
+	} else if condition := healthCondition(q.ExcludeHealth, "r.", scope.params); condition != "" {
+		scope.conditions = append(scope.conditions, condition)
 	}
 	return scope, nil
 }
@@ -361,11 +371,12 @@ func (c *Client) RequestSeries(ctx context.Context, query RequestSeriesQuery) (R
 	width := requestBucketSeconds(until.Sub(since), buckets)
 
 	scope, err := RequestQuery{
-		Project:     query.Project,
-		Environment: query.Environment,
-		Since:       since,
-		Until:       until,
-		Route:       query.Route,
+		Project:       query.Project,
+		Environment:   query.Environment,
+		Since:         since,
+		Until:         until,
+		Route:         query.Route,
+		ExcludeHealth: query.ExcludeHealth,
 	}.scope(rollupForWidth(width))
 	if err != nil {
 		return RequestSeries{}, err

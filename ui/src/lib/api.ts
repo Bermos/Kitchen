@@ -1939,6 +1939,7 @@ export interface RequestSummary {
   rollup: string;
   environment: string;
   edge: EdgeStatus;
+  healthChecks: HealthChecks;
 }
 
 /** One bucket of the request charts. Every bucket in the window is present,
@@ -1963,6 +1964,7 @@ export interface RequestSeries {
   rollup: string;
   environment: string;
   edge: EdgeStatus;
+  healthChecks: HealthChecks;
 }
 
 /** One row of the route table: a route template's share of the window. The
@@ -2013,6 +2015,22 @@ export interface RequestWindow {
   /** One route template, spelled as the route table spells it — what clicking
    * a row filters the rest by. */
   route?: string;
+  /** Whether the platform's own health checks count. They do not by default —
+   * a probe every thirty seconds is not traffic, and left in it makes a quiet
+   * project look visited. `include` asks for the whole picture back. */
+  health?: "include" | "exclude";
+}
+
+/**
+ * What an answer says about the checks it left out. `route` is the path the
+ * platform asks this project's application for, templated the way the rows
+ * are, and is present whether or not this read excluded it — it is what the
+ * screen offers to put back. `excluded` is whether these numbers left it out,
+ * which a read filtered to that very route does not.
+ */
+export interface HealthChecks {
+  route?: string;
+  excluded: boolean;
 }
 
 /** What the raw listing is filtered by on top of the window. */
@@ -3073,6 +3091,7 @@ function requestParams(window: RequestWindow): URLSearchParams {
   if (window.since) params.set("since", window.since);
   if (window.until) params.set("until", window.until);
   if (window.route) params.set("route", window.route);
+  if (window.health) params.set("health", window.health);
   return params;
 }
 
@@ -3328,7 +3347,7 @@ export const api = {
     const params = requestParams(window);
     if (window.sort) params.set("sort", window.sort);
     if (window.limit) params.set("limit", String(window.limit));
-    return request<{ items: RequestRoute[]; environment: string; edge: EdgeStatus }>(
+    return request<{ items: RequestRoute[]; environment: string; edge: EdgeStatus; healthChecks: HealthChecks }>(
       "GET",
       `/environments/${name}/requests/routes?${params}`,
     );
@@ -3338,7 +3357,7 @@ export const api = {
   // list means one thing for an environment on the edge and another for one
   // that is not.
   requests: (name: string, query: RequestListQuery = {}) =>
-    request<{ items: RequestRow[]; environment: string; edge: EdgeStatus }>(
+    request<{ items: RequestRow[]; environment: string; edge: EdgeStatus; healthChecks: HealthChecks }>(
       "GET",
       `/environments/${name}/requests?${requestListParams(query)}`,
     ),

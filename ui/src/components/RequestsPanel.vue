@@ -11,6 +11,7 @@ import {
   formatPercent,
   formatRate,
   formatSaturation,
+  healthCheckNote,
   rawRetentionStart,
   saturation,
   type SignalTile,
@@ -75,14 +76,33 @@ const sort = ref<RouteSort>("requests");
  */
 const windowStart = ref(new Date(Date.now() - rangeMinutes.value * 60_000).toISOString());
 
-const scope = () => ({ since: windowStart.value, route: selectedRoute.value ?? undefined });
+/**
+ * Whether the platform's own health checks are counted. They are not, by
+ * default: a probe every ten seconds is not somebody visiting, and left in the
+ * numbers it makes a quiet environment look busy — on the route table it is
+ * usually the busiest row an idle environment has. The API decides what counts
+ * as one (the path the project declared as its health check) and says so in
+ * every answer; this is only the question being asked differently.
+ */
+const countHealthChecks = ref(false);
+
+const scope = () => ({
+  since: windowStart.value,
+  route: selectedRoute.value ?? undefined,
+  health: countHealthChecks.value ? ("include" as const) : undefined,
+});
 
 const summary = useAsync(() => api.requestSummary(props.environment, scope()));
 const series = useAsync(() => api.requestSeries(props.environment, { ...scope(), buckets: 60 }));
 // Deliberately unfiltered: the table is the picker, and a table narrowed to the
 // row that was clicked has one row.
 const routes = useAsync(() =>
-  api.requestRoutes(props.environment, { since: windowStart.value, sort: sort.value, limit: 100 }),
+  api.requestRoutes(props.environment, {
+    since: windowStart.value,
+    sort: sort.value,
+    limit: 100,
+    health: countHealthChecks.value ? "include" : undefined,
+  }),
 );
 // Saturation is the fourth golden signal, and it is the one the request
 // pipeline cannot answer: it comes off the same metrics endpoint the history
@@ -95,7 +115,10 @@ const events = useAsync(() => api.events({ project: props.project, limit: 200 })
 // Whether this environment serves HTTP/2 at all — read separately from
 // everything above, and deliberately so. See `http2` below.
 const protocols = useAsync(() =>
-  api.requests(props.environment, { since: rawRetentionStart(), limit: PROTOCOL_SAMPLE }),
+  // Health checks and all: this is a question about what the environment
+  // *serves*, not about who visited it, and a probe negotiating HTTP/2 is as
+  // good an answer as anyone else's.
+  api.requests(props.environment, { since: rawRetentionStart(), limit: PROTOCOL_SAMPLE, health: "include" }),
 );
 // Only for an environment the edge does not reach: what it wrote, since that is
 // what is real for a worker.
@@ -147,6 +170,13 @@ watch(selectedRoute, () => {
   void series.refresh();
 });
 watch(sort, () => void routes.refresh());
+// The question changed, not the window: everything that answers it is re-read,
+// the route table included — it is where the check shows up largest.
+watch(countHealthChecks, () => {
+  void summary.refresh();
+  void series.refresh();
+  void routes.refresh();
+});
 // Never faster than a bucket, and only while something is moving.
 usePoll(reload, 30_000, () => props.live === true);
 
@@ -274,6 +304,13 @@ const latency = computed(() =>
 const listingSawHTTP2 = ref(false);
 const http2 = computed(() => listingSawHTTP2.value || anyHTTP2(protocols.data.value?.items));
 
+/** What the answer says about the checks it left out, and whether that is
+ * worth a line on this screen. The route is named whether or not this read
+ * excluded it — it is what the offer to count them is about. */
+const healthNote = computed(() =>
+  healthCheckNote(summary.data.value?.healthChecks ?? series.data.value?.healthChecks, selectedRoute.value),
+);
+
 const resolution = computed(() => bucketLabel(series.data.value?.bucketSeconds));
 
 /** An installation that runs without telemetry has no requests to show, and a
@@ -361,6 +398,32 @@ function clock(iso: string | undefined): string {
           <span class="text-dimmed">— the header, the charts and the list below; the table stays whole.</span>
         </div>
 
+        <!-- What the platform asks the application is not what anyone asked of
+             it. The screen never leaves that unsaid: the checks are named, and
+             counting them is one click. -->
+        <p v-if="healthNote" class="flex items-center gap-2 text-[11px] text-dimmed flex-wrap">
+          <template v-if="healthNote.excluded">
+            <span>
+              Health checks are not counted here —
+              <span class="font-mono text-muted">{{ healthNote.route }}</span
+              >, the check this project declared and the platform makes of it.
+            </span>
+            <button class="underline underline-offset-2 hover:text-toned" @click="countHealthChecks = true">
+              Count them
+            </button>
+          </template>
+          <template v-else>
+            <span>
+              Counting the platform's own health checks —
+              <span class="font-mono text-muted">{{ healthNote.route }}</span
+              >, which is a probe rather than a visit.
+            </span>
+            <button class="underline underline-offset-2 hover:text-toned" @click="countHealthChecks = false">
+              Leave them out
+            </button>
+          </template>
+        </p>
+
         <p v-if="state.kind === 'quiet'" class="text-xs text-muted">
           No traffic in this window. This environment is published on the shared Gateway — nothing was asked of it
           between {{ clock(summary.data.value?.since) }} and {{ clock(summary.data.value?.until) }}.
@@ -412,6 +475,7 @@ function clock(iso: string | undefined): string {
           :environment="environment"
           :since="windowStart"
           :route="selectedRoute"
+          :health="countHealthChecks ? 'include' : undefined"
           @http2="listingSawHTTP2 = true"
         />
       </template>

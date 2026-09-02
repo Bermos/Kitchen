@@ -181,7 +181,11 @@ type RequestListQuery struct {
 	// OnlyErrors keeps what the golden signals count as an error, which is
 	// status >= 500. It composes with StatusClass rather than replacing it.
 	OnlyErrors bool
-	Limit      int
+	// ExcludeHealth drops the platform's own health checks, so that the list
+	// under a set of numbers is the same traffic those numbers are of. It is
+	// ignored where Route names one, for the reason RequestQuery gives.
+	ExcludeHealth []HealthRoute
+	Limit         int
 }
 
 // QueryRequests reads the raw rows a listing matches, newest first — which is
@@ -220,6 +224,11 @@ func (c *Client) QueryRequests(ctx context.Context, query RequestListQuery) ([]R
 	filter("environment = {environment:String}", "environment", query.Environment)
 	filter("route = {route:String}", "route", query.Route)
 	filter("method = {method:String}", "method", query.Method)
+	if query.Route == "" {
+		if condition := healthCondition(query.ExcludeHealth, "", params); condition != "" {
+			conditions = append(conditions, condition)
+		}
+	}
 	if query.StatusClass > 0 {
 		conditions = append(conditions, "intDiv(status, 100) = {statusClass:UInt8}")
 		params["statusClass"] = strconv.Itoa(query.StatusClass)

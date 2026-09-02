@@ -155,6 +155,17 @@ func (s *Server) metricsOverview(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// What the platform asks each application for is not that application's
+	// traffic, and every number below leaves it out — see healthchecks.go.
+	// The whole set is resolved once and passed to every read: the exclusion
+	// is a (project, route) pair, so pairs for projects a read is not about
+	// simply never match.
+	health, err := s.healthRoutes(ctx)
+	if err != nil {
+		s.writeError(w, err)
+		return
+	}
+
 	// The window is the current hour and the 23 before it, which is what makes
 	// every sparkline on this screen 24 entries long and its last one the hour
 	// in progress.
@@ -163,12 +174,11 @@ func (s *Server) metricsOverview(w http.ResponseWriter, req *http.Request) {
 	var (
 		overview clickhouse.MetricsOverview
 		what     string
-		err      error
 	)
 	if query.Project != "" || scope.all {
-		overview, what, err = overviewOf(ctx, store, query.Project, hourStart)
+		overview, what, err = overviewOf(ctx, store, query.Project, hourStart, health)
 	} else {
-		overview, what, err = mergedOverview(ctx, store, scope.names(), hourStart)
+		overview, what, err = mergedOverview(ctx, store, scope.names(), hourStart, health)
 	}
 	if err != nil {
 		s.writeStoreError(w, err, what)
@@ -178,8 +188,9 @@ func (s *Server) metricsOverview(w http.ResponseWriter, req *http.Request) {
 	body := metricsOverviewBody{MetricsOverview: overview}
 	if query.Project == "" {
 		traffic, err := store.ProjectTraffic(ctx, clickhouse.ProjectTrafficQuery{
-			Since:     hourStart,
-			Sparkline: true,
+			Since:         hourStart,
+			Sparkline:     true,
+			ExcludeHealth: health,
 		})
 		if err != nil {
 			s.writeStoreError(w, err, "the per-project traffic query")
@@ -215,12 +226,13 @@ func overviewOf(
 	store logReader,
 	project string,
 	hourStart time.Time,
+	health []clickhouse.HealthRoute,
 ) (clickhouse.MetricsOverview, string, error) {
 	overview, err := store.MetricsOverview(ctx, clickhouse.MetricsQuery{Project: project})
 	if err != nil {
 		return clickhouse.MetricsOverview{}, "the metrics query", err
 	}
-	if what, err := fillOverviewTraffic(ctx, store, &overview, project, hourStart); err != nil {
+	if what, err := fillOverviewTraffic(ctx, store, &overview, project, hourStart, health); err != nil {
 		return clickhouse.MetricsOverview{}, what, err
 	}
 	return overview, "", nil
@@ -259,11 +271,12 @@ func mergedOverview(
 	store logReader,
 	projects []string,
 	hourStart time.Time,
+	health []clickhouse.HealthRoute,
 ) (clickhouse.MetricsOverview, string, error) {
 	each := make([]clickhouse.MetricsOverview, len(projects))
 	failed := make([]string, len(projects))
 	if err := inParallel(len(projects), overviewConcurrency, func(i int) error {
-		overview, what, err := overviewOf(ctx, store, projects[i], hourStart)
+		overview, what, err := overviewOf(ctx, store, projects[i], hourStart, health)
 		if err != nil {
 			failed[i] = what
 			return err
@@ -338,6 +351,7 @@ func fillOverviewTraffic(
 	body *clickhouse.MetricsOverview,
 	project string,
 	hourStart time.Time,
+	health []clickhouse.HealthRoute,
 ) (string, error) {
 	// The three series are replaced whole rather than written into, so that no
 	// bucket of the flow pipeline's answer survives in one the request
@@ -347,10 +361,17 @@ func fillOverviewTraffic(
 	body.P95MsPerHour = make([]float64, overviewHours)
 
 	if project != "" {
-		return fillProjectOverviewTraffic(ctx, store, body, project, hourStart)
+		return fillProjectOverviewTraffic(ctx, store, body, project, hourStart, health)
 	}
 
-	total, err := store.PlatformRequests(ctx, clickhouse.PlatformRequestsQuery{Since: hourStart})
+	// The platform's own totals exclude the same rows the per-project numbers
+	// below them do, so that the two are the same kind of number. The edge
+	// view, which is about everything that crossed the edge rather than about
+	// what any application served, passes no exclusion and counts them.
+	total, err := store.PlatformRequests(ctx, clickhouse.PlatformRequestsQuery{
+		Since:         hourStart,
+		ExcludeHealth: health,
+	})
 	if err != nil {
 		return whatPlatformTraffic, err
 	}
@@ -367,8 +388,9 @@ func fillOverviewTraffic(
 	if err := inParallel(overviewHours, overviewConcurrency, func(hour int) error {
 		start := hourStart.Add(time.Duration(hour) * time.Hour)
 		bucket, err := store.PlatformRequests(ctx, clickhouse.PlatformRequestsQuery{
-			Since: start,
-			Until: start.Add(time.Hour),
+			Since:         start,
+			Until:         start.Add(time.Hour),
+			ExcludeHealth: health,
 		})
 		if err != nil {
 			return err
@@ -395,8 +417,9 @@ func fillProjectOverviewTraffic(
 	body *clickhouse.MetricsOverview,
 	project string,
 	hourStart time.Time,
+	health []clickhouse.HealthRoute,
 ) (string, error) {
-	scope := clickhouse.RequestQuery{Project: project, Since: hourStart}
+	scope := clickhouse.RequestQuery{Project: project, Since: hourStart, ExcludeHealth: health}
 	summary, err := store.RequestSummary(ctx, scope)
 	if err != nil {
 		return "the project traffic query", err

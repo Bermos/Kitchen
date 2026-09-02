@@ -147,3 +147,28 @@ func TestTruncatePathKeepsValidUTF8(t *testing.T) {
 		t.Errorf("truncatePath produced invalid UTF-8: %q", got)
 	}
 }
+
+// The API asks this of a project's declared health path in order to leave the
+// platform's own probes out of that project's traffic, and the answer has to be
+// the template the follower charged the request to — the two are compared as
+// strings in a WHERE clause, so "close enough" is a filter that matches nothing.
+func TestRouteTemplateIsWhatTheFollowerWouldHaveStored(t *testing.T) {
+	budgets := newRouteBudgets()
+	for _, path := range []string{"/api/health", "/health/12345", "/", "/healthz/"} {
+		if want, got := budgets.route("shop", "shop-production", path), RouteTemplate(path); got != want {
+			t.Errorf("RouteTemplate(%q) = %q, but the follower stored %q", path, got, want)
+		}
+	}
+}
+
+// A path declared with stray whitespace, or not declared at all, must not
+// become a template that matches the root route: every request would then be a
+// health check.
+func TestRouteTemplateTrimsWhatItIsGiven(t *testing.T) {
+	if got := RouteTemplate("  /api/health  "); got != "/api/health" {
+		t.Errorf("RouteTemplate did not trim: %q", got)
+	}
+	if got := RouteTemplate(""); got != "/" {
+		t.Errorf("RouteTemplate(\"\") = %q, want the root", got)
+	}
+}

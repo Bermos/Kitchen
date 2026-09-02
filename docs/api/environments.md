@@ -323,11 +323,51 @@ All four take the same scope:
 |---|---|
 | `since` / `until` | RFC 3339 bounds on the window. An hour ending now by default |
 | `route` | One route template, spelled as the route table spells it — what clicking a row filters the rest by |
+| `health` | `exclude` (the default) or `include` — whether the platform's own health checks count as traffic |
+
+### The platform's own health checks are not traffic
+
+A probe every ten seconds is 8,640 requests a day the application never had,
+and a project answering nothing else reads as one with steady traffic — on the
+route table the health path is usually the busiest row an idle environment has.
+So all four reads drop the rows whose route is the health check *this project
+declared*, and every answer says what it did:
+
+```json
+{"healthChecks": {"route": "/api/health", "excluded": true}}
+```
+
+`route` is the check the platform makes, templated the way the stored rows are,
+and is present whether or not the read excluded it — it is what `?health=` is
+about. `excluded` is whether these particular numbers left it out. A project
+that declared no HTTP health check has neither: `{"excluded": false}`, and
+there is nothing to exclude.
+
+Three things this deliberately is not:
+
+- **It is not a list of paths that look like health checks.** An application is
+  entitled to serve anything at `/health`, and a platform quietly deciding which
+  of somebody's routes were not real would be wrong in a way nobody could see.
+  What it may discount is the check it was told to make —
+  `spec.runtime.health.path` on the project, which is also what the probes ask
+  for.
+- **It is not a filter at ingest.** The rows are stored and stay readable:
+  `?health=include` puts them back into every number here, and `?route=` naming
+  the health route counts it — asking for a route by name and being answered
+  zero would be the screen arguing with itself, so a named route wins and
+  `excluded` comes back `false`.
+- **It does not see backwards.** The exclusion is what the project declares
+  *now*, so a health path changed inside the window leaves the old one counted.
+
+A worker's own health check (`spec.processes[].health`) never appears: nothing
+publishes a worker on the shared Gateway, so its probes are not request rows in
+the first place.
 
 `GET /environments/{name}/requests/summary` is the header:
 
 ```json
 {"environment": "shop-production", "edge": {"routed": true},
+ "healthChecks": {"route": "/api/health", "excluded": true},
  "since": "2026-08-16T09:00:00Z", "until": "2026-08-16T10:00:00Z", "rollup": "1m",
  "requests": 3600, "requestsPerSecond": 1, "errors": 36, "errorRate": 0.01,
  "p50Ms": 12, "p95Ms": 240, "p99Ms": 900}
@@ -497,7 +537,9 @@ matter. The events run past it, because a crash loop keeps announcing itself
 and the `BackOff` is the cluster naming the loop. The requests are the ±30
 seconds around it, the same width the correlated-logs view uses: a 502 there is
 the edge noticing the pod go, and a slow 200 just before it is the load that
-preceded it. `resources` carries the memory series read against the limit the
+preceded it. Those rows include the platform's own health checks, which the
+traffic numbers above leave out: the probe that started failing at the moment a
+container died is evidence, not traffic. `resources` carries the memory series read against the limit the
 release set, and per bucket the restart trajectory — where in the window the
 restarts happened, rather than how many there have ever been.
 
