@@ -1020,7 +1020,10 @@ cannot write it carries on and exchanges every time.
   other way round. The self-hosted Postgres provider did not change it either,
   for the same reason: `POST /claims` gained one optional nested object and
   `POST /connections` made `credential` optional, and neither is a route.
-  Asking for a database with an extension is one line as it is:
+  The `volume` claim type is the same decision a third time: one required
+  nested object on `POST /claims`, no new route, and `kitchen api POST
+  /claims` carries it. Asking for a database with an extension is one line
+  as it is:
 
   ```sh
   kitchen api POST /claims --data '{"name":"maps-db","project":"maps",

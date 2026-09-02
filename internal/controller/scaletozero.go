@@ -134,6 +134,11 @@ func (r *EnvironmentReconciler) reconcileScaleToZero(
 	// policy's ceiling is never allowed below it, so turning idling on cannot
 	// shrink an environment.
 	running int32,
+	// ceilingCap, when above zero, is the most pods the environment may ever
+	// be scaled to, whatever the policy says: a volume that attaches to one
+	// pod at a time caps it at one, and the autoscaler is the other writer
+	// of the replica count.
+	ceilingCap int32,
 	// routed is false for an environment the platform is withholding a URL
 	// from. Nothing could deliver the request that cold-starts it, so it stays
 	// on its pods.
@@ -201,6 +206,9 @@ func (r *EnvironmentReconciler) reconcileScaleToZero(
 	ceiling := policy.MaxReplicasOrDefault()
 	if ceiling < running {
 		ceiling = running
+	}
+	if ceilingCap > 0 && ceiling > ceilingCap {
+		ceiling = ceilingCap
 	}
 	idleAfter := policy.IdleAfterOrDefault()
 

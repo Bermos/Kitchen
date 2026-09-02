@@ -1156,6 +1156,10 @@ type claimView struct {
 	// ObjectStore is what the claim asked its bucket to be — versioned,
 	// publicly readable, held to a size. Absent when it asked for nothing.
 	ObjectStore *claimObjectStoreView `json:"objectStore,omitempty"`
+	// Volume is what a volume claim asked for — the process, the size, the
+	// class, the mount path — and, once the reconciler has looked, the
+	// access mode the class was detected to support and the PVC behind it.
+	Volume *claimVolumeView `json:"volume,omitempty"`
 
 	// RedirectURIs is what an oidcClient claim's client currently accepts as
 	// a callback — the list the operator keeps in step with the project's

@@ -7275,6 +7275,7 @@ spec:
                 - postgres
                 - oidcClient
                 - objectStore
+                - volume
                 type: string
                 x-kubernetes-validations:
                 - message: 'type is immutable: delete the claim and ask for the other
@@ -7290,15 +7291,15 @@ spec:
                 one.'
               messageExpression: '''connectionRef is required: it names the Connection
                 that provisions a '' + self.type + '' claim. Only a claim of a type
-                the platform provisions itself (oidcClient) goes without one.'''
-              rule: self.type in ['oidcClient'] || has(self.connectionRef)
+                the platform provisions itself (oidcClient, volume) goes without one.'''
+              rule: self.type in ['oidcClient', 'volume'] || has(self.connectionRef)
             - message: 'this claim type takes no connectionRef: the platform provisions
                 it itself, and a Connection here would name a provider nothing would
                 ask.'
               messageExpression: '''a '' + self.type + '' claim takes no connectionRef:
                 the platform provisions it itself, and a Connection here would name
                 a provider nothing would ask.'''
-              rule: '!(self.type in [''oidcClient'']) || !has(self.connectionRef)'
+              rule: '!(self.type in [''oidcClient'', ''volume'']) || !has(self.connectionRef)'
           status:
             description: ResourceClaimStatus defines the observed state of a ResourceClaim.
             properties:
@@ -7488,6 +7489,91 @@ spec:
                   Secret in the project namespace holding the binding keys
                   (url, host, password, ...), per environment where applicable.
                 type: string
+              volume:
+                description: |-
+                  Volume is what a volume claim materialized, and empty for every other
+                  type: a volume claim binds to a mount rather than to a Secret, so
+                  SecretName stays empty on it and this is where the environment
+                  reconciler reads what to mount.
+                properties:
+                  accessMode:
+                    description: |-
+                      AccessMode is what the StorageClass was detected to support:
+                      ReadWriteOnce, which caps the process at one replica and forces a
+                      recreate on every deploy, or ReadWriteMany, which lifts both. It is
+                      detected from the class's provisioner and its annotations, never
+                      assumed; AccessModeReason says what decided it.
+                    enum:
+                    - ReadWriteOnce
+                    - ReadWriteMany
+                    type: string
+                  accessModeReason:
+                    type: string
+                  claimName:
+                    description: |-
+                      ClaimName is the production PersistentVolumeClaim, in the project's
+                      application namespace.
+                    type: string
+                  mountPath:
+                    type: string
+                  persistentVolume:
+                    description: |-
+                      PersistentVolume is the PersistentVolume the production claim is
+                      bound to, once it is. Under deletionPolicy Retain the reconciler
+                      patches that volume's reclaim policy to Retain and labels it with the
+                      claim, which is what lets it outlive the application namespace — and
+                      what a later claim of the same name re-binds to.
+                    type: string
+                  previews:
+                    description: |-
+                      Previews are the per-preview PersistentVolumeClaims, one per live
+                      preview Environment, each fresh and empty, torn down with the
+                      preview.
+                    items:
+                      description: ClaimPreviewVolume is one preview Environment's
+                        own volume.
+                      properties:
+                        claimName:
+                          description: ClaimName is the PersistentVolumeClaim in the
+                            application namespace.
+                          type: string
+                        environment:
+                          description: Environment is the preview Environment the
+                            volume belongs to.
+                          type: string
+                        provenance:
+                          description: |-
+                            Provenance is what the volume's data derives from: synthetic, always,
+                            because a preview's volume is created empty and never copied from
+                            production.
+                          enum:
+                          - production
+                          - masked
+                          - synthetic
+                          type: string
+                      required:
+                      - claimName
+                      - environment
+                      type: object
+                    type: array
+                  process:
+                    description: |-
+                      Process is the project's process that mounts the volume ("web" for
+                      the web process), and MountPath where it appears in its container.
+                      Both echo the claim's config, so a reader of the status does not have
+                      to decode spec.config to know what the environment reconciler does.
+                    type: string
+                  storageClass:
+                    description: |-
+                      StorageClass is the class the volume was actually cut from: the one
+                      the claim named, or the cluster's default at the time.
+                    type: string
+                required:
+                - accessMode
+                - claimName
+                - mountPath
+                - process
+                type: object
             type: object
         type: object
     served: true

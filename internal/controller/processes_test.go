@@ -569,7 +569,7 @@ func TestProcessPodSpecProbes(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			spec := processPodSpec(release, project, nil, tc.process)
+			spec := processPodSpec(release, project, nil, tc.process, nil)
 			container := spec.Containers[0]
 			if !tc.wantProbes {
 				if container.StartupProbe != nil || container.ReadinessProbe != nil || container.LivenessProbe != nil {

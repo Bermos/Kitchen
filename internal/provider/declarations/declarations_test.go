@@ -26,6 +26,7 @@ import (
 	"github.com/Bermos/Kitchen/internal/provider/database"
 	"github.com/Bermos/Kitchen/internal/provider/objectstore"
 	"github.com/Bermos/Kitchen/internal/provider/oidcclient"
+	"github.com/Bermos/Kitchen/internal/provider/volume"
 )
 
 // docsPage is where the matrix is published, relative to this package.
@@ -86,6 +87,10 @@ func TestTheTwoShippedProvidersDeclareWhatTheIssueSays(t *testing.T) {
 	s3, ok := Lookup(kitchenv1alpha1.ClaimTypeObjectStore, objectstore.ProviderS3)
 	if !ok || s3.Preview != contract.PreviewFresh {
 		t.Errorf("a preview gets its own empty bucket; s3 declares %q", s3.Preview)
+	}
+	vol, ok := Lookup(kitchenv1alpha1.ClaimTypeVolume, volume.ProviderName)
+	if !ok || vol.Preview != contract.PreviewFresh || !vol.ForcesRecreate {
+		t.Errorf("a volume gives a preview a fresh, empty volume and forces a recreate; it declares %+v", vol)
 	}
 	if _, ok := Lookup(kitchenv1alpha1.ClaimTypePostgres, "mainframe"); ok {
 		t.Error("a provider nothing declares for must not be found")

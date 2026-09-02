@@ -37,6 +37,7 @@ import (
 	"github.com/Bermos/Kitchen/internal/provider/database"
 	"github.com/Bermos/Kitchen/internal/provider/objectstore"
 	"github.com/Bermos/Kitchen/internal/provider/oidcclient"
+	"github.com/Bermos/Kitchen/internal/provider/volume"
 )
 
 // Declared is one provider's declaration for one claim type.
@@ -77,6 +78,10 @@ func Lookup(claimType, provider string) (contract.Declaration, bool) {
 	case kitchenv1alpha1.ClaimTypeObjectStore:
 		declaration, ok := objectstore.Declarations[provider]
 		return declaration, ok
+	case kitchenv1alpha1.ClaimTypeVolume:
+		if provider == volume.ProviderName {
+			return volume.Declaration, true
+		}
 	}
 	return contract.Declaration{}, false
 }
@@ -92,6 +97,8 @@ func providersOf(claimType string) []string {
 		return []string{oidcclient.ProviderName}
 	case kitchenv1alpha1.ClaimTypeObjectStore:
 		return []string{objectstore.ProviderS3}
+	case kitchenv1alpha1.ClaimTypeVolume:
+		return []string{volume.ProviderName}
 	}
 	return nil
 }

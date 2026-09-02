@@ -256,6 +256,21 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return r.notReady(ctx, env, "ClaimNotBound",
 			fmt.Errorf("a referenced ResourceClaim is not bound yet"))
 	}
+	// The project's volume claims are not variables and reach the pod
+	// another way: each is mounted into the one process it names. An
+	// environment whose volume is not there yet waits for it, the way an
+	// unbound claim is waited for — deploying without the mount would have
+	// the application write into a filesystem that goes with the pod.
+	mounts, waitingOn, unmounted, err := r.volumeMountsFor(ctx, env)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if waitingOn != "" {
+		return r.notReady(ctx, env, "VolumeNotBound",
+			fmt.Errorf("volume claim %q has no volume for this environment yet: the claim's status says why",
+				waitingOn))
+	}
+	effects.unmountedInPreview = unmounted
 	recordClaimsBound(env, effects)
 	// The platform's own variables go first, so that a project setting one of
 	// them wins: the kubelet takes the last value of a repeated name, and an
@@ -274,14 +289,26 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	podEnv = append(platformEnv(kitchen, project.Name, env, release, publicURL), podEnv...)
 
 	runtimeSpec := release.Spec.ConfigSnapshot.Runtime
+	// The web process's volumes, and what they do to it. A volume that
+	// attaches to one pod at a time caps the process at one replica — the
+	// count written here, and the autoscaler's ceiling where the count is
+	// KEDA's to write — and deploys it by recreation. A class detected to
+	// support ReadWriteMany lifts both, which is why the cap is read off
+	// the claim's status rather than assumed of every volume.
+	webMounts := mountsFor(mounts, kitchenv1alpha1.WebProcessName)
+	replicas := capReplicas(desiredReplicas(env, runtimeSpec), webMounts)
+	ceiling := int32(0)
+	if attachesOnce(webMounts) {
+		ceiling = 1
+	}
 	idle, idleCond, err := r.reconcileScaleToZero(ctx, env, project, kitchen, appNS, host, labels,
-		servicePort, desiredReplicas(env, runtimeSpec), !unprotectable, effects.keepsPodsRunning)
+		servicePort, replicas, ceiling, !unprotectable, effects.keepsPodsRunning)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 
-	if err := r.applyDeployment(ctx, env, release, project, appNS, labels, podEnv, idle != nil,
-		len(effects.forcesRecreate) > 0); err != nil {
+	if err := r.applyDeployment(ctx, env, release, project, appNS, labels, podEnv, replicas, idle != nil,
+		len(effects.forcesRecreate) > 0 || attachesOnce(webMounts), webMounts); err != nil {
 		return ctrl.Result{}, err
 	}
 	if err := r.applyService(ctx, env, release, appNS, labels); err != nil {
@@ -293,7 +320,7 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	// route: a worker is not addressed and a scheduled job is not either. A
 	// preview the platform will not publish still runs whatever its project
 	// asked it to run.
-	processes, err := r.reconcileProcesses(ctx, env, project, release, appNS, labels, podEnv)
+	processes, err := r.reconcileProcesses(ctx, env, project, release, appNS, labels, podEnv, mounts)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -489,6 +516,10 @@ type claimEffects struct {
 	keepsPodsRunning []string
 	// forcesRecreate names each claim whose resource can be attached once.
 	forcesRecreate []string
+	// unmountedInPreview names each volume claim that mounts nothing in
+	// this preview and the claim's own reason — the volume's counterpart
+	// to unboundInPreview.
+	unmountedInPreview []string
 }
 
 // resolveEnv turns the Release's frozen env into container env vars, resolving
@@ -690,14 +721,21 @@ func (r *EnvironmentReconciler) applyDeployment(
 	appNS string,
 	labels map[string]string,
 	podEnv []corev1.EnvVar,
+	// replicas is how many pods the environment runs when it is not idling
+	// — the Release's count, or one where a volume it mounts attaches to
+	// one pod at a time.
+	replicas int32,
 	// idles says KEDA owns the replica count on this Deployment, because the
 	// environment is allowed to park at zero.
 	idles bool,
 	// recreate says a claim this environment reads provisions something that
 	// can be attached to one pod at a time, so the old pod has to stop
 	// before the new one starts — the claim's status.forcesRecreate, which
-	// its provider declared.
+	// its provider declared, or a volume the web process mounts.
 	recreate bool,
+	// mounts are the web process's volume claims, mounted into its
+	// container.
+	mounts []mountedVolume,
 ) error {
 	runtimeSpec := release.Spec.ConfigSnapshot.Runtime
 	port := containerPort(runtimeSpec)
@@ -722,7 +760,7 @@ func (r *EnvironmentReconciler) applyDeployment(
 		// Deployment created in that state starts at the API server's default
 		// of one and is scaled down as soon as it goes quiet.
 		if !idles {
-			deploy.Spec.Replicas = ptr.To(desiredReplicas(env, runtimeSpec))
+			deploy.Spec.Replicas = ptr.To(replicas)
 		}
 		// A workload that must not run twice does not get a rolling update:
 		// the old pod stops before the new one starts. The cost is a gap in
@@ -764,6 +802,10 @@ func (r *EnvironmentReconciler) applyDeployment(
 		deploy.Spec.Template.Spec.ImagePullSecrets = []corev1.LocalObjectReference{
 			{Name: registrySecretName(project.Spec.Registry.ConnectionRef.Name)},
 		}
+		// The volume claims this process mounts, written every time so
+		// that a claim taken away takes its mount with it.
+		volumes, volumeMounts := podVolumes(mounts)
+		deploy.Spec.Template.Spec.Volumes = volumes
 		app := corev1.Container{
 			Name:  AppContainerName,
 			Image: release.Spec.Image,
@@ -771,11 +813,12 @@ func (r *EnvironmentReconciler) applyDeployment(
 			// preview override where the release declared one: same commit,
 			// same artifact, different flags — which is the whole point,
 			// since the artifact is built once and never rebuilt.
-			Command:   runtimeSpec.Command,
-			Args:      runtimeSpec.ArgsFor(env.Spec.Type),
-			Ports:     []corev1.ContainerPort{{Name: "http", ContainerPort: port}},
-			Env:       podEnv,
-			Resources: runtimeSpec.Resources,
+			Command:      runtimeSpec.Command,
+			Args:         runtimeSpec.ArgsFor(env.Spec.Type),
+			Ports:        []corev1.ContainerPort{{Name: "http", ContainerPort: port}},
+			Env:          podEnv,
+			Resources:    runtimeSpec.Resources,
+			VolumeMounts: volumeMounts,
 		}
 		// Every environment is probed, whether or not the project declared a
 		// health check: absent one it is a TCP connect to the container port,
@@ -1192,15 +1235,22 @@ func (r *EnvironmentReconciler) unprotectable(
 // for which every claim binds carries no condition, because that is the
 // ordinary case and not worth a line on every object.
 func recordClaimsBound(env *kitchenv1alpha1.Environment, effects claimEffects) {
-	if len(effects.unboundInPreview) == 0 {
+	if len(effects.unboundInPreview) == 0 && len(effects.unmountedInPreview) == 0 {
 		meta.RemoveStatusCondition(&env.Status.Conditions, condClaimsBound)
 		return
+	}
+	var parts []string
+	if len(effects.unboundInPreview) > 0 {
+		parts = append(parts, "deployed without the variables read from "+strings.Join(effects.unboundInPreview, "; "))
+	}
+	if len(effects.unmountedInPreview) > 0 {
+		parts = append(parts, "deployed without the volume of "+strings.Join(effects.unmountedInPreview, "; "))
 	}
 	meta.SetStatusCondition(&env.Status.Conditions, metav1.Condition{
 		Type:   condClaimsBound,
 		Status: metav1.ConditionFalse,
 		Reason: "NothingForPreviews",
-		Message: "deployed without the variables read from " + strings.Join(effects.unboundInPreview, "; ") +
+		Message: strings.Join(parts, "; ") +
 			". The claim binds nothing in a preview environment, by its provider's declaration and the claim's " +
 			"own choice",
 		ObservedGeneration: env.Generation,

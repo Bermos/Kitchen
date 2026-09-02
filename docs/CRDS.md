@@ -1206,9 +1206,10 @@ only ever include live, verified Domains.
 ## `ResourceClaim` (namespaced: kitchen-system)
 
 A project's request for something the platform provisions: a database from a
-`database`-capable Connection, a bucket from an `objectStore`-capable one, or
-an OAuth client from the platform's own identity provider. Generic on purpose
-— this is the plugin abstraction.
+`database`-capable Connection, a bucket from an `objectStore`-capable one, an
+OAuth client from the platform's own identity provider, or a persistent volume
+from the cluster's StorageClass. Generic on purpose — this is the plugin
+abstraction.
 
 ```yaml
 apiVersion: kitchen.bermos.dev/v1alpha1
@@ -1448,6 +1449,80 @@ that agrees with `status.redirectURIs` sends the issuer nothing.
 The policy protects *data* from a deletion nobody meant, and an OAuth client holds
 none — what it holds is permission to sign people in, which is the thing that must
 not outlive the claim. See [AUTH.md](AUTH.md#app-auth-a-claim-for-single-sign-on).
+
+### `type: volume` — a disk for one process
+
+The third type, and the odd one: every other claim produces credentials, this
+one produces a mount. It is for the workload that must write to a filesystem
+— a legacy application, SQLite — and it takes no Connection either: the
+provider is the cluster's StorageClass, which is a prerequisite of every
+Kitchen cluster anyway.
+
+```yaml
+apiVersion: kitchen.bermos.dev/v1alpha1
+kind: ResourceClaim
+metadata:
+  name: shop-data
+spec:
+  projectRef: { name: my-shop }
+  type: volume                          # immutable; connectionRef is refused
+  deletionPolicy: Retain                # Retain (default) | Delete
+  config:
+    previewMode: fresh                  # fresh (the default) or none; shared is refused
+    volume:
+      process: web                      # the ONE process that mounts it: web, or a spec.processes name
+      size: 10Gi                        # required; set at creation, never shrunk
+      mountPath: /data                  # absolute, inside that process's container
+      storageClass: fast-ssd            # empty takes the cluster's default
+status:
+  phase: Bound
+  # secretName stays empty: the binding is a mount, not a Secret
+  dataProvenance: production
+  previewMode: fresh
+  forcesRecreate: true                  # false where the class was detected ReadWriteMany
+  volume:
+    process: web
+    mountPath: /data
+    storageClass: fast-ssd
+    accessMode: ReadWriteOnce           # detected from the class, never assumed
+    accessModeReason: StorageClass fast-ssd is provisioned by ebs.csi.aws.com, which is not known…
+    claimName: shop-data-volume         # the PVC, in the application namespace
+    persistentVolume: pvc-3f…           # once bound; under Retain, made to outlive the namespace
+    previews:                           # one fresh, empty PVC per preview, gone with it
+      - environment: my-shop-pr-41
+        claimName: shop-data-volume-my-shop-pr-41
+        provenance: synthetic
+  conditions: [...]                     # Ready, Provisioned, PreviewVolumesReady
+```
+
+Reconcile: refuse (`Failed`, with the list) a claim naming no process or one the
+project does not have — the web process is `web`, the one name a declared
+process cannot take — or a StorageClass the cluster does not have; read the
+class's access mode off its provisioner and its
+`kitchen.bermos.dev/read-write-many` annotation; create the PVC in the
+application namespace and one more per preview Environment; and bind. The
+Environment reconciler finds the project's volume claims itself — they are
+not variables — and mounts each into exactly the process it names, waiting
+(`Ready=False`, `VolumeNotBound`) while one has no volume for that
+environment yet.
+
+**What it costs, enforced.** A `ReadWriteOnce` volume attaches to one pod at a
+time, so the process mounting it is written with `replicas: 1` — and where
+KEDA owns the count, the `HTTPScaledObject`'s ceiling is capped at one — and
+`strategy: Recreate`: a rolling update's new pod would wait in `Multi-Attach`
+for a volume the old pod never releases, which is a deadlock rather than a
+delay. That is downtime on every deploy of that process, and the dashboard
+says so where the claim is made. A class detected `ReadWriteMany` lifts both.
+
+**Retention across project deletion.** The PVC lives with the pods, in the
+application namespace, and that namespace dies with the project. So under
+`Retain` the reconciler patches the bound PersistentVolume's reclaim policy to
+`Retain` and labels it with the project and the claim the moment the PVC
+binds; the namespace can go and the volume stays, `Released`. A later claim of
+the same name in the same project finds it by its labels, pre-binds a new PVC
+to it by name, and carries on with the data. `Delete` puts the reclaim policy
+back and deletes the PVC, and the volume follows. Preview volumes always go
+with their preview.
 
 ---
 

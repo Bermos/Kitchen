@@ -70,6 +70,7 @@ var claimContracts = map[string]claimContract{
 	kitchenv1alpha1.ClaimTypePostgres:    postgresContract{},
 	kitchenv1alpha1.ClaimTypeOIDCClient:  oidcContract{},
 	kitchenv1alpha1.ClaimTypeObjectStore: objectStoreContract{},
+	kitchenv1alpha1.ClaimTypeVolume:      volumeContract{},
 }
 
 // claimContractFor resolves a claim's type and its contract. ok is false
@@ -138,6 +139,15 @@ func resolvePreviewMode(
 		}
 		return declaration.Preview, declaration.PreviewNote
 	case contract.PreviewShared:
+		if declaration.ForcesRecreate {
+			// A resource that attaches to one pod at a time cannot be
+			// shared between production and a preview without taking it
+			// from production. The API refuses the choice at the door;
+			// this is the same answer for a claim written another way.
+			return contract.PreviewNone, fmt.Sprintf("the claim asks previews to share production's %s, and %s "+
+				"declares that it attaches to one pod at a time: a preview mounting it would take it from "+
+				"production, so previews get nothing", claimType.Resource, provider)
+		}
 		return contract.PreviewShared, fmt.Sprintf("the claim asks previews to bind production's %s itself: a "+
 			"preview environment reads and writes the same %s production does", claimType.Resource,
 			claimType.Resource)

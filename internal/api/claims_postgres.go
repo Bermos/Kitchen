@@ -49,7 +49,11 @@ func (postgresClaimShaper) fields() []claimField {
 // config is spec.config as this API writes it for a postgres claim: the
 // postgres block the provisioner reads. The platform's own previewMode is
 // written beside it by createClaim, for every type alike.
-func (postgresClaimShaper) config(w http.ResponseWriter, body *createClaimRequest) (*runtime.RawExtension, bool) {
+func (postgresClaimShaper) config(
+	w http.ResponseWriter,
+	body *createClaimRequest,
+	_ *kitchenv1alpha1.Project,
+) (*runtime.RawExtension, bool) {
 	postgres, ok := validPostgresConfig(w, body.Postgres)
 	if !ok {
 		return nil, false
@@ -82,6 +86,7 @@ func (postgresClaimShaper) deletionOutcome(claim *kitchenv1alpha1.ResourceClaim)
 // callers, and it should have to change on purpose.
 type claimConfigBody struct {
 	Postgres *kitchenv1alpha1.PostgresConfig `json:"postgres,omitempty"`
+	Volume   *kitchenv1alpha1.VolumeConfig   `json:"volume,omitempty"`
 }
 
 // claimPostgresView is the claim's database requirements as it answered

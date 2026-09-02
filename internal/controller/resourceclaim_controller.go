@@ -83,6 +83,18 @@ type ResourceClaimReconciler struct {
 	// envelope is kept in. Nil resolves the real ClickHouse from the
 	// singleton's secret; tests inject.
 	Records SignedRecordStoreFactory
+	// Reader reads straight from the API server, for the volume contract's
+	// look at the cluster's StorageClasses. Nil falls back to the cached
+	// client, which tests run against directly.
+	Reader client.Reader
+}
+
+// reader is where the uncached reads go; see Reader.
+func (r *ResourceClaimReconciler) reader() client.Reader {
+	if r.Reader != nil {
+		return r.Reader
+	}
+	return r.Client
 }
 
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=resourceclaims,verbs=get;list;watch;create;update;patch;delete
@@ -181,8 +193,13 @@ func (r *ResourceClaimReconciler) bind(
 		}
 	}
 	claim.Status.Phase = kitchenv1alpha1.ClaimBound
-	setClaimCondition(claim, condReady, metav1.ConditionTrue, "Bound",
-		fmt.Sprintf("binding written to secret %s", claim.Status.SecretName))
+	// A claim that binds to a mount rather than to a Secret has no secret
+	// to name; the contract's own sentence stands in for it.
+	bound := reason
+	if claim.Status.SecretName != "" {
+		bound = fmt.Sprintf("binding written to secret %s", claim.Status.SecretName)
+	}
+	setClaimCondition(claim, condReady, metav1.ConditionTrue, "Bound", bound)
 	if err := r.Status().Update(ctx, claim); err != nil {
 		return err
 	}
@@ -414,6 +431,10 @@ func (r *ResourceClaimReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&kitchenv1alpha1.Environment{}, handler.EnqueueRequestsFromMapFunc(r.mapEnvironmentToClaims)).
 		Watches(&kitchenv1alpha1.Connection{}, handler.EnqueueRequestsFromMapFunc(r.mapConnectionToClaims)).
 		Watches(&kitchenv1alpha1.Domain{}, handler.EnqueueRequestsFromMapFunc(r.mapDomainToClaims)).
+		// A volume claim's PVC binding is what records the PersistentVolume
+		// on its status — and, under Retain, what makes that volume outlive
+		// the namespace.
+		Watches(&corev1.PersistentVolumeClaim{}, handler.EnqueueRequestsFromMapFunc(r.mapVolumeToClaim)).
 		Named("resourceclaim").
 		Complete(r)
 }

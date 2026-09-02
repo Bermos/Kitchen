@@ -56,6 +56,15 @@ const (
 	// and expects to read back. The bundled MinIO, or any S3-compatible
 	// store somebody else runs.
 	ClaimTypeObjectStore = "objectStore"
+	// ClaimTypeVolume is a persistent volume mounted into one of the
+	// project's processes, for the workload that writes where it was told
+	// to write rather than where a cloud-native rewrite would put it. It is
+	// the odd contract: every other one produces credentials, this one
+	// produces a mount. It takes no Connection — the provider is the
+	// cluster's StorageClass, which Kitchen requires of every cluster
+	// anyway — and it shares the claim lifecycle (deletionPolicy, preview
+	// teardown, dataClass) and none of the binding-Secret machinery.
+	ClaimTypeVolume = "volume"
 )
 
 // ClaimType is what the platform knows about one kind of claim before any
@@ -101,6 +110,7 @@ var ClaimTypes = []ClaimType{
 	{Name: ClaimTypePostgres, Capability: CapabilityDatabase, Resource: "database", HoldsData: true},
 	{Name: ClaimTypeOIDCClient, Resource: "OAuth client"},
 	{Name: ClaimTypeObjectStore, Capability: CapabilityObjectStore, Resource: "bucket", HoldsData: true},
+	{Name: ClaimTypeVolume, Resource: "volume", HoldsData: true},
 }
 
 // LookupClaimType finds a claim type by the value of spec.type.
@@ -150,8 +160,8 @@ func (c *ResourceClaim) Type() (ClaimType, bool) {
 // Connection — ClaimTypesWithoutConnection — rather than against a named
 // exception, and the refusal names the type it refused. The set in the
 // markers is held to the table by a test, since a marker cannot read one.
-// +kubebuilder:validation:XValidation:rule="self.type in ['oidcClient'] || has(self.connectionRef)",message="connectionRef is required: it names the Connection that provisions the resource. Only a claim the platform provisions itself goes without one.",messageExpression="'connectionRef is required: it names the Connection that provisions a ' + self.type + ' claim. Only a claim of a type the platform provisions itself (oidcClient) goes without one.'"
-// +kubebuilder:validation:XValidation:rule="!(self.type in ['oidcClient']) || !has(self.connectionRef)",message="this claim type takes no connectionRef: the platform provisions it itself, and a Connection here would name a provider nothing would ask.",messageExpression="'a ' + self.type + ' claim takes no connectionRef: the platform provisions it itself, and a Connection here would name a provider nothing would ask.'"
+// +kubebuilder:validation:XValidation:rule="self.type in ['oidcClient', 'volume'] || has(self.connectionRef)",message="connectionRef is required: it names the Connection that provisions the resource. Only a claim the platform provisions itself goes without one.",messageExpression="'connectionRef is required: it names the Connection that provisions a ' + self.type + ' claim. Only a claim of a type the platform provisions itself (oidcClient, volume) goes without one.'"
+// +kubebuilder:validation:XValidation:rule="!(self.type in ['oidcClient', 'volume']) || !has(self.connectionRef)",message="this claim type takes no connectionRef: the platform provisions it itself, and a Connection here would name a provider nothing would ask.",messageExpression="'a ' + self.type + ' claim takes no connectionRef: the platform provisions it itself, and a Connection here would name a provider nothing would ask.'"
 type ResourceClaimSpec struct {
 	ProjectRef LocalObjectReference `json:"projectRef"`
 
@@ -166,7 +176,7 @@ type ResourceClaimSpec struct {
 	// it on a bound claim would leave a database behind while the
 	// application's environment quietly started reading OAuth credentials
 	// out of the same keys. Ask for the other one and delete this.
-	// +kubebuilder:validation:Enum=postgres;oidcClient;objectStore
+	// +kubebuilder:validation:Enum=postgres;oidcClient;objectStore;volume
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="type is immutable: delete the claim and ask for the other kind"
 	Type string `json:"type"`
 
@@ -352,6 +362,64 @@ var DefaultOIDCCallbackPaths = []string{"/auth/callback", "/api/auth/callback/ki
 // refresh a token signs its users out every hour.
 var DefaultOIDCScopes = []string{"openid", "profile", "email", "offline_access"}
 
+// VolumeConfig is the `volume` slice of a volume claim's spec.config: which
+// process mounts the volume, where, and what the volume has to be.
+//
+// The process is the one thing a volume claim cannot go without. Every pod an
+// Environment materializes — the web process, its workers, its scheduled runs
+// — carries the environment label, and a ReadWriteOnce volume can be attached
+// to one of them at a time; two mounting it is a Multi-Attach failure that
+// looks like a rollout that never finishes. So the claim names one process,
+// and only that process gets the mount. The web process is named "web" —
+// the one name ProcessSpec refuses, for exactly this reason.
+//
+// Everything in here is applied when the volume is *created*, like a
+// database's storage: a volume is not something to shrink, and a mount path
+// that moves under a running process is a process that has lost its data.
+type VolumeConfig struct {
+	// Process is the project's process that mounts the volume: "web" for
+	// the web process (Project.spec.runtime), or the name of one of
+	// Project.spec.processes. Required; a claim naming none, or naming a
+	// process the project does not have, is refused.
+	Process string `json:"process"`
+
+	// Size is a Kubernetes quantity: "10Gi". Required — a volume has no
+	// sensible default size, and one that was defaulted is the one that
+	// fills up first.
+	Size string `json:"size"`
+
+	// StorageClass the volume is cut from. Empty takes the cluster's
+	// default StorageClass, which Kitchen requires of every cluster anyway.
+	// +optional
+	StorageClass string `json:"storageClass,omitempty"`
+
+	// MountPath is the absolute path inside the process's container the
+	// volume appears at: "/data".
+	MountPath string `json:"mountPath"`
+}
+
+// WebProcessName is what a volume claim calls the web process — the one
+// process a Project has that is not in spec.processes, and the one name
+// ProcessSpec refuses, so that the two can never collide.
+const WebProcessName = "web"
+
+// Volume is what the claim asks of its volume, empty for a claim of another
+// type or one that reached the cluster without a readable config — the API
+// validates a config before it is written, and the reconciler refuses an
+// empty one rather than guessing at a mount path.
+func (c *ResourceClaim) Volume() VolumeConfig {
+	if c.Spec.Type != ClaimTypeVolume {
+		return VolumeConfig{}
+	}
+	var cfg struct {
+		Volume *VolumeConfig `json:"volume,omitempty"`
+	}
+	if !c.DecodeConfig(&cfg) || cfg.Volume == nil {
+		return VolumeConfig{}
+	}
+	return *cfg.Volume
+}
+
 // OIDCClient is the claim's OAuth client configuration with the defaults
 // filled in. Config the platform cannot read gets the defaults whole — a
 // malformed config is refused by the API before it is written, and a claim
@@ -465,6 +533,73 @@ type ClaimBranch struct {
 	Provenance string `json:"provenance,omitempty"`
 }
 
+// ClaimVolumeStatus is what a volume claim materialized: the
+// PersistentVolumeClaim in the application namespace the named process
+// mounts, and one more per preview Environment under preview mode fresh.
+//
+// It is a list of its own rather than a reuse of Branches, because a branch
+// is a provider-side identifier with a binding Secret — required, and read
+// by the environment reconciler as the preview's credentials — and a volume
+// has neither: what a preview gets is a PersistentVolumeClaim with a name,
+// mounted by the pod spec rather than read out of a Secret.
+type ClaimVolumeStatus struct {
+	// Process is the project's process that mounts the volume ("web" for
+	// the web process), and MountPath where it appears in its container.
+	// Both echo the claim's config, so a reader of the status does not have
+	// to decode spec.config to know what the environment reconciler does.
+	Process   string `json:"process"`
+	MountPath string `json:"mountPath"`
+
+	// StorageClass is the class the volume was actually cut from: the one
+	// the claim named, or the cluster's default at the time.
+	// +optional
+	StorageClass string `json:"storageClass,omitempty"`
+
+	// AccessMode is what the StorageClass was detected to support:
+	// ReadWriteOnce, which caps the process at one replica and forces a
+	// recreate on every deploy, or ReadWriteMany, which lifts both. It is
+	// detected from the class's provisioner and its annotations, never
+	// assumed; AccessModeReason says what decided it.
+	// +kubebuilder:validation:Enum=ReadWriteOnce;ReadWriteMany
+	AccessMode string `json:"accessMode"`
+	// +optional
+	AccessModeReason string `json:"accessModeReason,omitempty"`
+
+	// ClaimName is the production PersistentVolumeClaim, in the project's
+	// application namespace.
+	ClaimName string `json:"claimName"`
+
+	// PersistentVolume is the PersistentVolume the production claim is
+	// bound to, once it is. Under deletionPolicy Retain the reconciler
+	// patches that volume's reclaim policy to Retain and labels it with the
+	// claim, which is what lets it outlive the application namespace — and
+	// what a later claim of the same name re-binds to.
+	// +optional
+	PersistentVolume string `json:"persistentVolume,omitempty"`
+
+	// Previews are the per-preview PersistentVolumeClaims, one per live
+	// preview Environment, each fresh and empty, torn down with the
+	// preview.
+	// +optional
+	Previews []ClaimPreviewVolume `json:"previews,omitempty"`
+}
+
+// ClaimPreviewVolume is one preview Environment's own volume.
+type ClaimPreviewVolume struct {
+	// Environment is the preview Environment the volume belongs to.
+	Environment string `json:"environment"`
+
+	// ClaimName is the PersistentVolumeClaim in the application namespace.
+	ClaimName string `json:"claimName"`
+
+	// Provenance is what the volume's data derives from: synthetic, always,
+	// because a preview's volume is created empty and never copied from
+	// production.
+	// +kubebuilder:validation:Enum=production;masked;synthetic
+	// +optional
+	Provenance string `json:"provenance,omitempty"`
+}
+
 // ResourceClaimStatus defines the observed state of a ResourceClaim.
 type ResourceClaimStatus struct {
 	// +optional
@@ -539,6 +674,13 @@ type ResourceClaimStatus struct {
 	// strategy.
 	// +optional
 	ForcesRecreate bool `json:"forcesRecreate,omitempty"`
+
+	// Volume is what a volume claim materialized, and empty for every other
+	// type: a volume claim binds to a mount rather than to a Secret, so
+	// SecretName stays empty on it and this is where the environment
+	// reconciler reads what to mount.
+	// +optional
+	Volume *ClaimVolumeStatus `json:"volume,omitempty"`
 
 	// RedirectURIs is the redirect list an oidcClient claim's client is
 	// registered with, as the operator last wrote it. It is what a reconcile

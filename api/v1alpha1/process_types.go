@@ -349,3 +349,16 @@ func FindProcess(processes []ProcessSpec, name string) *ProcessSpec {
 	}
 	return nil
 }
+
+// ProcessNames is every process an environment of the project can
+// materialize, the implicit web process first under the name a declared
+// process cannot take. It is what a volume claim's process is checked
+// against, in the API and in the reconciler alike.
+func (p *Project) ProcessNames() []string {
+	names := make([]string, 0, len(p.Spec.Processes)+1)
+	names = append(names, WebProcessName)
+	for _, process := range p.Spec.Processes {
+		names = append(names, process.Name)
+	}
+	return names
+}

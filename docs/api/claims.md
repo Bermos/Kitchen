@@ -1,9 +1,10 @@
 # Kitchen — Claims
 
 A claim asks the platform for something the project needs and does not want
-to install itself — a database, a bucket, single sign-on — and binds it into
-the project's environments. The credentials it produces stay in the cluster:
-the API hands out the claim's status, never the secret's contents.
+to install itself — a database, a bucket, single sign-on, a disk — and binds
+it into the project's environments. The credentials it produces stay in the
+cluster: the API hands out the claim's status, never the secret's contents. A
+volume produces no credential at all, only a mount.
 
 Part of the [REST API](../API.md), which carries the authentication, the
 authorization model and the full route table these sections belong to. The
@@ -179,6 +180,93 @@ request: it is what the client currently accepts, which the operator keeps in
 step with the project's environments as previews come and go. It is the one
 part of that automation anybody can check.
 
+**`volume`** asks the platform for a persistent volume mounted into **one** of
+the project's processes — for the workload that must write to a filesystem:
+a legacy application, SQLite, anything that writes where it was told to
+write rather than where a cloud-native rewrite would put it. It is the odd
+claim: every other one produces credentials, and this one produces a mount.
+
+**Two consequences, stated here because they are not fine if discovered
+later.** A volume is `ReadWriteOnce` unless the cluster genuinely has a class
+for more, and `ReadWriteOnce` caps the process that mounts it at **one
+replica** and deploys it by **recreation — a gap in serving on every
+deploy**. A rolling update would create the new pod before the old one stops,
+both would want the same volume, and the new one would wait in `Multi-Attach`
+for a volume the old one never releases: a deadlock, not a delay. The claim's
+answer carries `forcesRecreate: true`, and the environment reconciler sets
+`strategy: Recreate` on that process's workload, writes `replicas: 1`, and
+caps the autoscaler's ceiling at one where the environment idles. Where the
+StorageClass is detected to support `ReadWriteMany`, both are lifted:
+`volume.accessMode` in the answer says which, and `volume.accessModeReason`
+why. The dashboard says all of this where the claim is made.
+
+```sh
+curl -sS -X POST -H "authorization: Bearer $TOKEN" \
+  -d '{"name": "shop-data", "project": "shop", "type": "volume",
+       "volume": {"process": "web", "size": "10Gi", "mountPath": "/data"}}' \
+  https://kitchen.apps.example.com/api/v1/claims
+```
+
+It takes **no `connection`** — the provider is the cluster's StorageClass,
+which Kitchen requires of every cluster anyway — and a required `volume`
+block:
+
+| Field | Default | What it does |
+|---|---|---|
+| `volume.process` | required | The one process that mounts it: `web` for the web process, or the name of one of the project's processes. A claim naming none, or a process the project does not have, is refused here with the list |
+| `volume.size` | required | A Kubernetes quantity — `"10Gi"`. Set when the volume is created; it is not shrunk |
+| `volume.mountPath` | required | The absolute path inside that process's container the volume appears at |
+| `volume.storageClass` | the cluster's default | The class the volume is cut from; one the cluster does not have fails the claim, naming the ones it has |
+
+**Detecting `ReadWriteMany`.** Kubernetes records nothing about access modes
+on a StorageClass, so the platform reads the evidence it has and never
+assumes: a class whose provisioner is a shared filesystem driver
+(`nfs.csi.k8s.io`, `smb.csi.k8s.io`, `efs.csi.aws.com`, `file.csi.azure.com`,
+`filestore.csi.storage.gke.io`, CephFS) is `ReadWriteMany`; anything else is
+`ReadWriteOnce`. An operator overrides either answer by annotating the class
+`kitchen.bermos.dev/read-write-many: "true"` or `"false"` — the way to declare
+a block driver that serves NFS-backed volumes from one of its classes.
+
+**Which process, and why only one.** Every pod an environment runs carries the
+environment label — the web process, its workers, its scheduled runs — and
+two of them mounting one `ReadWriteOnce` volume is the same `Multi-Attach`
+failure, so the claim names one and only that one gets the mount. A worker
+gets it the way the web process does, replica cap and recreate included. A
+scheduled process may mount it too; with `ReadWriteOnce` a run that overlaps
+the last one on another node waits for it to finish — bounded by the run's
+timeout, and avoided by the default `concurrencyPolicy: Forbid`.
+
+**Previews get a fresh, empty volume** of the same size and class, created with
+the preview and deleted with it — `synthetic`, like a CloudNativePG preview
+database — and `previewMode: shared` is refused: a preview mounting
+production's volume would take it from production. `none` is the other
+choice.
+
+**`deletionPolicy`** is `Retain` by default, and it means what it means for a
+database: deleting the claim keeps the volume. The volume lives in the
+project's application namespace, where its pods are, and that namespace goes
+with the project — so the moment the production claim binds, the platform
+sets its PersistentVolume's reclaim policy to `Retain` and labels the volume
+with the project and the claim. The namespace can go; the volume stays, and a
+claim of the same name in the same project finds it and binds to it again
+(ask for the size it has, or less). `Delete` deletes the volume and its data
+with the claim. Preview volumes are always removed with their preview. The
+answer's `volume.claimName` is the PersistentVolumeClaim and
+`volume.persistentVolume` the volume behind it, once bound.
+
+A volume claim binds to a mount rather than to a secret, so `secret` is empty
+in the answer and nothing in `Project.spec.env` refers to it: the environment
+reconciler finds the project's volume claims itself, and waits — `Ready=False`
+with reason `VolumeNotBound` — while one has no volume for that environment
+yet. Deleting the claim answers `202` like every other, and the process that
+mounted it is redeployed without the mount.
+
+Two things this does not do. It is not backed up: a volume's data belongs to
+whoever backs up the cluster's storage, and [BACKUP.md](../BACKUP.md) says so
+beside the databases the platform runs. And a process pinned to one replica
+under `Recreate` cannot be restarted for a secret rotation without a brief
+outage — the rotation restart (#277) meets the same gap every deploy does.
+
 ## What a preview gets, and what a claim costs the workload
 
 A preview environment gets a copy of production's database from Neon, an
@@ -217,8 +305,9 @@ them so the screen can say so before the claim is made.
 
 `GET /claim-types` answers this table for the dashboard, with the same rows.
 The CLI reaches it with `kitchen api GET /claim-types`; nothing else in the
-CLI needs it, because no command creates a claim — an `objectStore` claim is
-made the way every other is, `kitchen api POST /claims` with the body above.
+CLI needs it, because no command creates a claim — an `objectStore` or
+`volume` claim is made the way every other is, `kitchen api POST /claims`
+with the body above.
 
 <!-- generated by hack/gen-claim-matrix from internal/provider/declarations; do not edit -->
 | Type | Provider | Previews get | Scale to zero | Deploys |
@@ -227,6 +316,7 @@ made the way every other is, `kitchen api POST /claims` with the body above.
 | `postgres` | `cnpg` | `fresh` — a new, empty database with the same version, extensions and storage, never a copy of production: the branch declares provenance synthetic | unaffected | unaffected |
 | `oidcClient` | `kitchen` | `shared` — every environment signs in through the project's one client; the operator keeps its redirect list in step as previews come and go, and a client holds no data | unaffected | unaffected |
 | `objectStore` | `s3` | `fresh` — a new, empty bucket of the preview's own with its own credential, versioned when production's is and torn down with the preview: the branch declares provenance synthetic | unaffected | unaffected |
+| `volume` | `storageClass` | `fresh` — a new, empty volume of the same size and class, never a copy of production's: the preview declares provenance synthetic | unaffected | **recreate, with downtime** — a ReadWriteOnce volume attaches to one pod at a time, so the process mounting it runs one replica and is deployed by stopping the old pod before starting the new one — a rolling update would leave the new pod waiting in Multi-Attach for a volume the old pod never releases. Every deploy of that process has a gap in serving; a StorageClass detected to support ReadWriteMany lifts both |
 <!-- end generated -->
 
 ### Choosing on the claim
