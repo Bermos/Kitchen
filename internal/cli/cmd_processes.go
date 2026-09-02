@@ -61,7 +61,10 @@ A worker runs continuously and is never addressed — no URL, no route. A servic
 runs continuously and *is* addressed, by the rest of this environment and by
 nothing outside the cluster: its siblings read its address as
 KITCHEN_SERVICE_<NAME>, with _HOST and _PORT beside it. A scheduled job runs on
-a cron expression, in UTC, and each firing is a run with its own logs.
+a cron expression, in UTC, and each firing is a run with its own logs. A task
+runs once per deploy and has to finish before any of that release takes
+traffic, which is where a schema migration goes: a run that fails stops the
+deploy where it stands, and what was serving keeps serving.
 
 Publishing stays the exception the project declares. The web process is the one
 workload with a URL; nothing here gets a route, and a service that should be on
@@ -78,12 +81,19 @@ workload unit the whole unit rather than a quarter of it.
 Changing the list is a project setting, written with the rest of them:
 
   kitchen api PATCH /projects/shop --data '{"processes":[
+    {"name":"migrate","type":"task","command":["npm","run","migrate"],"timeout":"10m"},
     {"name":"worker","type":"worker","command":["node","worker.js"],"replicas":2,
      "health":{"path":"/healthz","port":9000}},
     {"name":"api","type":"service","port":8080,
      "build":{"rootDirectory":"services/api"}},
     {"name":"nightly-report","type":"cron","schedule":"0 3 * * *","command":["node","report.js"]}
   ]}'
+
+Tasks run in the order they are declared, one at a time, before anything else
+of the release starts. Each takes a "timeout" — an hour by default — which is
+how long the deploy waits before calling it failed. Reversing a schema change
+is deliberately out of scope: forward-only, idempotent work is the contract,
+and a rollback runs the task the release it goes back to declared.
 
 A worker's health check must name the port it is made against, because a worker
 publishes none of its own; a service falls back to its own port; a scheduled
@@ -106,8 +116,9 @@ build: kitchen builds <name> --json reports it per workload.
 A workload that must never run twice — a poller, a scheduler, an ingest loop —
 says so with "singleton": true, which deploys it by stopping the old copy
 before starting the new one instead of overlapping the two. It refuses more
-than one replica, and a scheduled process is refused it: whether two of its
-runs may overlap is concurrencyPolicy.
+than one replica, and a scheduled process and a task are both refused it: for
+the first, whether two of its runs may overlap is concurrencyPolicy; the second
+is one run per deploy and has no second copy to overlap.
 
 It replaces the whole list, and it reaches an environment through the next
 release — what is running keeps its own workloads until something builds.`),
@@ -162,16 +173,20 @@ func newProcessRunsCommand(r *Runtime) *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "runs PROCESS",
-		Short: "A scheduled job's recent runs, newest first",
+		Short: "A scheduled job's or a deploy task's recent runs, newest first",
 		Long: strings.TrimSpace(`
-List the recent runs of one scheduled job.
+List the recent runs of one scheduled job, or of one deploy task.
 
 What is listed is what the cluster still holds: the platform keeps the last few
-finished runs of a schedule and collects the rest. A run's *output* outlives it
-by the whole container-log retention, so a run that has been collected can
-still be read:
+finished runs of each and collects the rest. A run's *output* outlives it by
+the whole container-log retention, so a run that has been collected can still
+be read:
 
   kitchen logs --run <name>
+
+A deploy task has one run per deploy, so its list reads as the history of this
+environment's deploys — including the one that failed and stopped a release
+landing.
 
 A worker and a service have no runs — they are already running, and their
 replicas are on "kitchen processes".`),
@@ -223,6 +238,7 @@ replicas are on "kitchen processes".`),
 		Needs:  needs{Auth: true, Project: true},
 		Examples: []example{
 			{"The nightly report's last runs", "kitchen processes runs nightly-report --json"},
+			{"What the migration did on the last few deploys", "kitchen processes runs migrate --json"},
 		},
 	})
 }
@@ -232,17 +248,24 @@ func newProcessRunCommand(r *Runtime) *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "run PROCESS",
-		Short: "Run a scheduled job now, off its schedule",
+		Short: "Run a scheduled job now, or a deploy task again",
 		Long: strings.TrimSpace(`
-Start one run of a scheduled job immediately.
+Start one run immediately.
 
-It is a copy of what the schedule would have run — the same image, command,
-resources and timeout — so this is the schedule firing early, not a different
-thing that happens to look like it. The run's concurrency policy still applies:
-a job set to Forbid that is already running gets a second run that the
-scheduler drops.
+For a scheduled job it is a copy of what the schedule would have run — the same
+image, command, resources and timeout — so this is the schedule firing early,
+not a different thing that happens to look like it. The run's concurrency
+policy still applies: a job set to Forbid that is already running gets a second
+run that the scheduler drops.
 
-It answers as soon as the run is created, not when it finishes. Follow it with:
+For a deploy task it asks the platform to run that task again for the release
+the environment is on, which is how a deploy a failed migration stopped is
+picked back up once the cause is gone. The run is the deploy's own — the
+environment's variables, its resources, and the same gate in front of the
+release — so if it succeeds the deploy carries on by itself.
+
+It answers as soon as the run is asked for, not when it finishes. Follow it
+with:
 
   kitchen logs --run <name> --follow`),
 		Args: cobra.ExactArgs(1),
@@ -281,6 +304,8 @@ It answers as soon as the run is created, not when it finishes. Follow it with:
 		Needs:  needs{Auth: true, Project: true},
 		Examples: []example{
 			{"Run the nightly report now", "kitchen processes run nightly-report --json"},
+			{"Try a failed migration again, which resumes the deploy",
+				"kitchen processes run migrate --json"},
 		},
 	})
 }
@@ -323,8 +348,34 @@ func renderProcesses(s tui.Styles, processes []process) string {
 	}
 	// The last column is headed NOTE rather than LAST RUN because a worker
 	// has no runs and still has something to say there — that it must never
-	// run twice — and a suspended process has only ever put its reason in it.
+	// run twice — a suspended process has only ever put its reason in it, and
+	// a deploy task's line is about the deploy rather than about the run.
 	return s.Table([]string{"NAME", "TYPE", "SCHEDULE", "STATE", "NOTE"}, rows)
+}
+
+// The four things a deploy task can be doing to its deploy, as the API says
+// them. They are constants here so that the CLI and the dashboard cannot drift
+// into two spellings of one answer.
+const (
+	deployFailed   = "failed"
+	deployRunning  = "running"
+	deployComplete = "complete"
+)
+
+// deployState is a task's word for the STATE column. A deploy task is the one
+// row where the state is about the release rather than about the workload:
+// "failed" here means nothing of this release is serving.
+func deployState(s tui.Styles, state string) string {
+	switch state {
+	case deployFailed:
+		return s.Bad.Render("failed")
+	case deployRunning:
+		return s.Warn.Render(deployRunning)
+	case deployComplete:
+		return s.OK.Render("ran")
+	default:
+		return s.Warn.Render("pending")
+	}
 }
 
 func processSchedule(p process) string {
@@ -341,6 +392,8 @@ func processState(s tui.Styles, p process) string {
 	switch {
 	case p.Suspended:
 		return s.Subtle.Render("suspended")
+	case p.Deploy != "":
+		return deployState(s, p.Deploy)
 	case p.Type == "cron":
 		if !p.Healthy {
 			return s.Bad.Render("failing")
@@ -364,6 +417,19 @@ func processState(s tui.Styles, p process) string {
 func processNote(p process) string {
 	if p.Suspended {
 		return p.Reason
+	}
+	// A deploy task's note is about the *deploy*, not about the task: a failed
+	// one means the release never landed, which is the thing somebody reading
+	// this needs to be told rather than left to infer from a phase.
+	if p.Deploy == deployFailed {
+		note := "this release was not deployed — what was serving still is"
+		if p.LastFailure != nil && p.LastFailure.Message != "" {
+			note += ": " + p.LastFailure.Message
+		}
+		return note
+	}
+	if p.Deploy != "" && p.Deploy != deployComplete {
+		return "the deploy is waiting for it"
 	}
 	if p.LastRun == nil {
 		// A service's address is what somebody wiring two workloads together

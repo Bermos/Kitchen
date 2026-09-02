@@ -201,9 +201,9 @@ name against `internal/api/policy.go`, so a route that moves fails them too.
 | DELETE | `/environments/{name}` | Tear down a stuck preview. Previews only | `developer` |
 | GET | `/environments/{name}/logs` | That environment's runtime logs | `viewer` |
 | GET | `/environments/{name}/workload` | What it is running: replicas, restarts, uptime, resources, pods | `viewer` |
-| GET | `/environments/{name}/processes` | Its workers and scheduled jobs, and how each is getting on | `viewer` |
-| GET | `/environments/{name}/processes/{process}/runs` | One scheduled job's recent runs, newest first | `viewer` |
-| POST | `/environments/{name}/processes/{process}/runs` | Run a scheduled job now, off its schedule | `developer` |
+| GET | `/environments/{name}/processes` | Its workers, services, scheduled jobs and deploy tasks, and how each is getting on | `viewer` |
+| GET | `/environments/{name}/processes/{process}/runs` | One scheduled job's or deploy task's recent runs, newest first | `viewer` |
+| POST | `/environments/{name}/processes/{process}/runs` | Run a scheduled job now, off its schedule — or run a deploy task again, which resumes a deploy its failure stopped | `developer` |
 | GET | `/environments/{name}/metrics` | What it *has been* running: CPU, memory, replicas and restarts over a window | `viewer` |
 | GET | `/environments/{name}/requests/summary` | The golden-signal header: traffic, error rate and latency over a window | `viewer` |
 | GET | `/environments/{name}/requests/series` | The same signals over time — the charts | `viewer` |
@@ -301,7 +301,7 @@ such changes two changes to two different files.
 - [A project's own secrets](api/secrets.md) — the credentials Kitchen did not mint, written once and never read back
 - [Builds](api/builds.md) — starting and cancelling one, what it reused, and the evidence it left
 - [Environments and releases](api/environments.md) — rolling back, what is running, what is wrong with it, and the bar an environment sets
-- [Workloads](api/processes.md) — the workloads a project ships besides its web one, how they reach each other, their runs, and running one now
+- [Workloads](api/processes.md) — the workloads a project ships besides its web one, how they reach each other, the work that runs before a release takes traffic, their runs, and running one now
 - [Addons](api/addons.md) — the dependencies the platform installs into the cluster it owns
 - [Connections](api/connections.md) — the credentials the platform holds
 - [Claims](api/claims.md) — asking for a resource, and what every provider declares about previews, idling and deploys

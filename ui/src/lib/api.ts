@@ -1189,9 +1189,10 @@ export interface WorkloadPod {
   message?: string;
 }
 
-/** One firing of a scheduled job. `name` is the Job that was the run, and it
- * is also what the log store keys the run's output by — which is why a run
- * that the cluster has long since collected still has readable logs. */
+/** One run: a firing of a scheduled job, or a deploy task's one run per
+ * deploy. `name` is the Job that was the run, and it is also what the log
+ * store keys the run's output by — which is why a run that the cluster has
+ * long since collected still has readable logs. */
 export interface ProcessRun {
   name: string;
   phase: string;
@@ -1203,8 +1204,9 @@ export interface ProcessRun {
 
 /** One of a project's workloads besides its web process, as one environment
  * runs it: a worker (continuous, never addressed), a service (continuous,
- * addressed by the rest of the unit and by nothing outside the cluster), or a
- * scheduled job.
+ * addressed by the rest of the unit and by nothing outside the cluster), a
+ * scheduled job, or a task that runs once per deploy and has to finish before
+ * the release takes traffic.
  *
  * `healthy` is the platform's own verdict rather than something the dashboard
  * derives, so that this screen and the CLI cannot disagree about what a red
@@ -1252,6 +1254,11 @@ export interface Process {
   active?: number;
   lastRun?: ProcessRun;
   lastFailure?: ProcessRun;
+  /** What a deploy task is doing to the deploy it belongs to — "pending",
+   * "running", "complete" or "failed" — and absent on every other type of
+   * workload. "failed" is a release that did not land: whatever was serving
+   * before it is still serving. */
+  deploy?: string;
   healthy: boolean;
 }
 
@@ -3368,8 +3375,11 @@ export const api = {
       "GET",
       `/environments/${environment}/processes/${encodeURIComponent(process)}/runs`,
     ).then((body) => body.items),
-  // No body: nothing about a manual run is the caller's to choose. It is a
-  // copy of what the schedule would have run.
+  // No body: nothing about a run started by hand is the caller's to choose.
+  // For a schedule it is a copy of what the schedule would have run; for a
+  // deploy task it asks the platform to run that task again for the release
+  // the environment is on, which is what unblocks a deploy a failed migration
+  // stopped.
   startProcessRun: (environment: string, process: string) =>
     request<ProcessRun>("POST", `/environments/${environment}/processes/${encodeURIComponent(process)}/runs`),
   // What the workload endpoint cannot be: the same environment over time.

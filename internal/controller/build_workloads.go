@@ -225,7 +225,19 @@ func workloadRepository(prefix, projectName, workload string) string {
 // together will not fit a label value, the same trick cacheSlug uses, so that
 // two workloads whose names share a prefix can never land on one Job.
 func workloadJobName(buildName, workload string) string {
-	name := buildName + "-" + workload
+	return fitJobName(buildName + "-" + workload)
+}
+
+// fitJobName cuts a derived Job name down to what a Job name has to fit in,
+// keeping it unique: the whole name is hashed and the digest replaces the tail
+// that was cut, so two names sharing a prefix can never land on one Job.
+//
+// It is shared because both places that derive one have the same 63-character
+// ceiling for the same reason — the name becomes the value of the
+// `batch.kubernetes.io/job-name` label on every pod the Job makes — and two
+// implementations of one truncation is a collision waiting for the first long
+// project name.
+func fitJobName(name string) string {
 	if len(name) <= maxJobNameLength {
 		return name
 	}

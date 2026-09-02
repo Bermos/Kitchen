@@ -209,7 +209,10 @@ func SecuritySpec(request Security, subject string) (*kitchenv1alpha1.SecuritySp
 // written that way and a process asking for its capacity in a second
 // vocabulary would be the incoherence, not the saving.
 type Process struct {
-	Name    string   `json:"name"`
+	Name string `json:"name"`
+	// Type is worker, cron, service or task. The first three keep running or
+	// fire again; a task runs once per deploy and the deploy waits for it,
+	// which is where a schema migration goes.
 	Type    string   `json:"type"`
 	Command []string `json:"command,omitempty"`
 	Args    []string `json:"args,omitempty"`
@@ -235,17 +238,19 @@ type Process struct {
 	Schedule string `json:"schedule,omitempty"`
 	// ConcurrencyPolicy is Allow, Forbid or Replace; empty means Forbid.
 	ConcurrencyPolicy string `json:"concurrencyPolicy,omitempty"`
-	// Timeout is a Go duration ("30m") bounding one run. Empty means an hour.
+	// Timeout is a Go duration ("30m") bounding one run — a scheduled one, or
+	// a task's, which is how long a deploy waits for it. Empty means an hour.
 	Timeout string `json:"timeout,omitempty"`
 	// Previews opts this workload into preview environments, or out of them.
 	// Absent takes the default for its type — off for a worker and a
-	// scheduled job, on for a service; see ProcessSpec.Previews for why the
-	// default turns on the type and why this is a pointer.
+	// scheduled job, on for a service and a task; see ProcessSpec.Previews
+	// for why the default turns on the type and why this is a pointer.
 	Previews *bool `json:"previews,omitempty"`
 	// Health is a worker's or a service's health check. A worker's has to
 	// name the port it is made against, because a worker publishes none of
 	// its own; a service's falls back to its declared port. It is refused on
-	// a scheduled process, whose verdict is its run's exit status.
+	// a scheduled process and on a task, whose verdict is the run's exit
+	// status.
 	Health *Health `json:"health,omitempty"`
 }
 
@@ -305,9 +310,10 @@ func ProcessSpec(request Process) (kitchenv1alpha1.ProcessSpec, error) {
 		return process, err
 	}
 	switch process.Type {
-	case kitchenv1alpha1.ProcessWorker, kitchenv1alpha1.ProcessCron, kitchenv1alpha1.ProcessService:
+	case kitchenv1alpha1.ProcessWorker, kitchenv1alpha1.ProcessCron,
+		kitchenv1alpha1.ProcessService, kitchenv1alpha1.ProcessTask:
 	default:
-		return process, fmt.Errorf("process %q: type must be worker, cron or service (got %q)",
+		return process, fmt.Errorf("process %q: type must be worker, cron, service or task (got %q)",
 			process.Name, request.Type)
 	}
 
@@ -322,6 +328,10 @@ func ProcessSpec(request Process) (kitchenv1alpha1.ProcessSpec, error) {
 	switch {
 	case process.Type == kitchenv1alpha1.ProcessCron && schedule == "":
 		return process, fmt.Errorf("process %q: a cron process needs a schedule", process.Name)
+	case process.Type == kitchenv1alpha1.ProcessTask && schedule != "":
+		return process, fmt.Errorf(
+			"process %q: a task runs once per deploy and has no schedule — give it type cron to run it on one",
+			process.Name)
 	case process.Type != kitchenv1alpha1.ProcessCron && schedule != "":
 		return process, fmt.Errorf(
 			"process %q: a %s runs continuously and has no schedule — give it type cron to run it on one",
@@ -359,6 +369,12 @@ func ProcessSpec(request Process) (kitchenv1alpha1.ProcessSpec, error) {
 					"overlap is concurrencyPolicy, and Forbid (the default) is what says they may not",
 				process.Name)
 		}
+		if process.Type == kitchenv1alpha1.ProcessTask {
+			return process, fmt.Errorf(
+				"process %q: a task is one run per deploy, so there is never a second copy of it to "+
+					"overlap — singleton says nothing here",
+				process.Name)
+		}
 		// Refused rather than clamped, the same way the project's own
 		// runtime refuses it: a replica count quietly lowered reads back as
 		// a setting that did not take.
@@ -374,6 +390,12 @@ func ProcessSpec(request Process) (kitchenv1alpha1.ProcessSpec, error) {
 		if process.Type == kitchenv1alpha1.ProcessCron {
 			return process, fmt.Errorf(
 				"process %q: a scheduled process is not kept alive by a health check — how a run went is its exit status",
+				process.Name)
+		}
+		if process.Type == kitchenv1alpha1.ProcessTask {
+			return process, fmt.Errorf(
+				"process %q: a task is not kept alive by a health check — how its run went is its exit status, "+
+					"and the deploy waits for that",
 				process.Name)
 		}
 		// A service publishes a port, so its check falls back to that one the

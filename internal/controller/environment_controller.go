@@ -129,7 +129,12 @@ const (
 	// given it a binding. It is False on a preview for which a claim binds
 	// nothing — by the claim's own declaration, with its reason — and the
 	// environment deploys without the variable rather than failing.
-	condClaimsBound       = "ClaimsBound"
+	condClaimsBound = "ClaimsBound"
+	// condDeployTasks says whether the work this release declared to run
+	// before it takes traffic has finished. It is absent on a release that
+	// declares none, which is most of them — a condition every environment
+	// carries and that always says the same thing is noise.
+	condDeployTasks       = "DeployTasksComplete"
 	condWorkloadAvailable = "WorkloadAvailable"
 	condRouteProgrammed   = "RouteProgrammed"
 	condPreviewProtected  = "PreviewProtected"
@@ -299,6 +304,27 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			serviceEnv(env, release, appNS)...),
 		podEnv...)
 
+	// Deploy-time work happens here, and everything below it is what "takes
+	// traffic" means (#272). A task that has not succeeded stops the pass
+	// where it stands: no Deployment is written, no Service, no CronJob and
+	// no route — so the release that was serving carries on serving, because
+	// nothing has asked it to stop. It is deliberately after the variables
+	// and the volumes are resolved, since the run is the environment's own
+	// pod and needs all of it, and deliberately before the first thing that
+	// would move a pod.
+	tasks, err := r.reconcileDeployTasks(ctx, env, project, release, appNS, labels, podEnv, mounts)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if tasks.blocked {
+		return r.awaitingDeployTasks(ctx, env, project, release, tasks)
+	}
+	// Past this line every task of this release has succeeded for it, which
+	// the environment says out loud rather than only by the absence of a
+	// complaint. It is set here and written by updateStatus at the end of the
+	// pass, with everything else the pass decided.
+	recordDeployTasks(env, tasks)
+
 	runtimeSpec := release.Spec.ConfigSnapshot.Runtime
 	// The web process's volumes, and what they do to it. A volume that
 	// attaches to one pod at a time caps the process at one replica — the
@@ -331,7 +357,7 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	// route: a worker is not addressed and a scheduled job is not either. A
 	// preview the platform will not publish still runs whatever its project
 	// asked it to run.
-	processes, err := r.reconcileProcesses(ctx, env, project, release, appNS, labels, podEnv, mounts)
+	processes, err := r.reconcileProcesses(ctx, env, project, release, appNS, labels, podEnv, mounts, tasks)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -1330,6 +1356,60 @@ func recordClaimsBound(env *kitchenv1alpha1.Environment, effects claimEffects) {
 			"own choice",
 		ObservedGeneration: env.Generation,
 	})
+}
+
+// awaitingDeployTasks is the whole of what a blocked deploy does: it says so,
+// on the Environment, and comes back later.
+//
+// Nothing was applied on the way here, which is the point — the previous
+// release's Deployment, Service, workers and route are exactly as they were,
+// so it keeps serving. What moves is the account of it: the task rows, the
+// two conditions, the phase, and the deployment status on the commit.
+//
+// A failed task is Degraded rather than Deploying, and that is the one place
+// this feature is legible without opening anything: Degraded is what the git
+// deployment status reports as a failure and what the dashboard paints red.
+// A deploy that is merely waiting is Deploying, because it is.
+func (r *EnvironmentReconciler) awaitingDeployTasks(
+	ctx context.Context,
+	env *kitchenv1alpha1.Environment,
+	project *kitchenv1alpha1.Project,
+	release *kitchenv1alpha1.Release,
+	tasks deployTaskOutcome,
+) (ctrl.Result, error) {
+	// Recorded before the status is overwritten, because the de-duplication
+	// is what the status still holds from the previous pass.
+	r.recordRuns(ctx, env, tasks.statuses)
+	env.Status.Processes = mergeProcessStatuses(env.Status.Processes, tasks.statuses)
+
+	env.Status.Phase = kitchenv1alpha1.EnvironmentDeploying
+	if tasks.failed {
+		env.Status.Phase = kitchenv1alpha1.EnvironmentDegraded
+	}
+	for _, condition := range []metav1.Condition{
+		{Type: condDeployTasks, Status: metav1.ConditionFalse, Reason: tasks.reason, Message: tasks.message},
+		{Type: condReady, Status: metav1.ConditionFalse, Reason: tasks.reason, Message: tasks.message},
+	} {
+		condition.ObservedGeneration = env.Generation
+		meta.SetStatusCondition(&env.Status.Conditions, condition)
+	}
+	// The pull request hears about it too, and hears "failure" for a failed
+	// task: a preview whose migration did not run is exactly the deploy
+	// somebody is waiting on a green tick for.
+	r.reportDeployStatus(ctx, env, project, release,
+		env.Spec.Type == kitchenv1alpha1.EnvironmentPreview && project.Spec.Previews.IsProtected())
+
+	if err := r.Status().Update(ctx, env); err != nil {
+		return ctrl.Result{}, err
+	}
+	if tasks.failed {
+		// Nothing about a failed run changes on its own. The next move is a
+		// build, a rollback or a retry, and each of those wakes this
+		// reconciler; the interval is only so that a Job somebody repaired by
+		// hand is noticed.
+		return ctrl.Result{RequeueAfter: time.Minute}, nil
+	}
+	return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 }
 
 // notReady records a Ready=False condition with the given reason and retries.

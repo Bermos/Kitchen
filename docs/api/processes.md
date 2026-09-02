@@ -30,6 +30,10 @@ with four entries in this list.
   own API and production's talks to production's.
 - A **scheduled job** runs on a cron expression: a `batch/v1` CronJob, and one
   firing is a *run*.
+- A **task** runs **once per deploy** and has to finish before any of that
+  release takes traffic: a `batch/v1` Job, one run, no replicas and no
+  schedule. It is where a schema migration goes — see
+  [Work that runs before a release takes traffic](#work-that-runs-before-a-release-takes-traffic).
 
 There is no `web` in the list, and it is not an omission. The web process is
 the project's own `runtime` — its port, replicas and resources — and it is
@@ -59,6 +63,12 @@ much of it.
 {
   "processes": [
     {
+      "name": "migrate",
+      "type": "task",
+      "command": ["npm", "run", "migrate"],
+      "timeout": "10m"
+    },
+    {
       "name": "worker",
       "type": "worker",
       "command": ["node", "worker.js"],
@@ -86,18 +96,18 @@ much of it.
 | Field | Applies to | What it means |
 | --- | --- | --- |
 | `name` | all | A DNS label, unique within the project. It names the workload (`<environment>-<name>`) and is the log store's `process:`. `web` is refused. |
-| `type` | all | `worker`, `service` or `cron`. |
+| `type` | all | `worker`, `service`, `cron` or `task`. |
 | `command`, `args` | all | Exec form — a list of words, never a shell line. Absent runs the image's own entrypoint, which is what a workload with its own image wants and never what a buildpacks-built one does. |
 | `port` | service | The port it listens on, and the port its siblings reach it on — the same number, deliberately. **Required on a service and refused on anything else**: only a service is addressed, and a port on a worker would read back as a setting that took while nothing ever connected to it. |
-| `build` | worker, service | This workload's own build — see [Several workloads, one commit](#several-workloads-one-commit). Absent means it runs the project's image with another command. Refused on a cron process. |
+| `build` | worker, service, task | This workload's own build — see [Several workloads, one commit](#several-workloads-one-commit). Absent means it runs the project's image with another command. Refused on a cron process. |
 | `replicas` | worker, service | How many copies. `0` is allowed: a workload declared and parked, which is how one is turned off without losing its command. |
-| `singleton` | worker, service | Two of this workload must never run at once — see below. Refuses `replicas` above 1, and refused on a cron process. |
+| `singleton` | worker, service | Two of this workload must never run at once — see below. Refuses `replicas` above 1, and refused on a cron process and on a task, neither of which has a second copy to overlap. |
 | `cpu`, `memory` | all | Kubernetes quantities, applied as request and limit alike — the same two strings the web process takes. |
-| `schedule` | cron | A five-field cron expression, **read in UTC**. Required on a cron process and refused on a worker or a service. |
+| `schedule` | cron | A five-field cron expression, **read in UTC**. Required on a cron process and refused on every other type — a worker and a service run continuously, and a task runs once per deploy. |
 | `concurrencyPolicy` | cron | `Allow`, `Forbid` (the default) or `Replace`. A job that takes longer than its interval is far more often running behind than meant to run twice. |
-| `timeout` | cron | A Go duration bounding one run; an hour by default. It becomes the Job's `activeDeadlineSeconds`. |
-| `health` | worker, service | A health check, the same shape the project's web process takes. A worker's **must name the `port`** it is made against, because a worker publishes none of its own; a service's falls back to its own port. Refused on a cron process: how a run went is its exit status, not a probe. |
-| `previews` | all | Whether it runs in preview environments. **Off for a worker and a scheduled job unless asked for; on for a service unless it says otherwise** — see below. |
+| `timeout` | cron, task | A Go duration bounding one run; an hour by default. It becomes the Job's `activeDeadlineSeconds` — and for a task it is how long the deploy waits before calling it failed. |
+| `health` | worker, service | A health check, the same shape the project's web process takes. A worker's **must name the `port`** it is made against, because a worker publishes none of its own; a service's falls back to its own port. Refused on a cron process and on a task: how a run went is its exit status, not a probe. |
+| `previews` | all | Whether it runs in preview environments. **Off for a worker and a scheduled job unless asked for; on for a service and a task unless they say otherwise** — see below. |
 
 A worker is probed only where it asked to be, which is the opposite of the web
 process — every environment of a project is probed whether or not it declared
@@ -150,6 +160,68 @@ Two rules go with it, both at admission and at this route:
 One replica does not imply it. A queue consumer at one replica is usually fine
 overlapping, and inferring the constraint from the count would make the count
 mean two things.
+
+### Work that runs before a release takes traffic
+
+A schema migration had nowhere to go, and a readiness probe is not where it
+goes. The distinction is worth being precise about: a readiness check stops
+traffic reaching a pod that is not ready. It does **not** stop the previous
+release's pods being retired while a migration is half applied. Running the
+migration from the application's own entrypoint — which is what teams do
+instead — runs it once per replica, concurrently, on every rollout.
+
+```json
+{"name": "migrate", "type": "task", "command": ["npm", "run", "migrate"], "timeout": "10m"}
+```
+
+A task is a `batch/v1` Job that the environment's reconcile waits for:
+
+- **Once per deploy, whatever the replica count.** One Job, one run. The
+  environment records which Release the run was for, so however many times it
+  reconciles, one release runs one migration.
+- **Nothing of that release starts until it succeeds.** Not the web
+  Deployment, not the workers, not the services, not the route. A unit deploys
+  as one, so "takes traffic" means all of it.
+- **A failure fails the deploy, visibly, with the output.** The environment
+  goes `Degraded`, carries the run's own message on its `DeployTasksComplete`
+  condition, reports a failed deployment status to the commit, and the release
+  does not land — **whatever was serving keeps serving**. It is not a warning
+  and it does not decay into one.
+- **It is the environment's own run.** The same image, variables, claim
+  bindings, volumes, pull secret and security posture the environment's other
+  workloads get, so a preview's run touches the preview's own branch of the
+  database and nothing else. It is not selected by the environment's Service:
+  the pods carry the environment and process labels and no `component` label,
+  which is what keeps a migration pod out of the URL's backends.
+- **A rollback runs the work the release being rolled back to declared.** That
+  release's own process list, its own image, its own command — the same rule
+  every other workload follows.
+
+Several tasks run **in the order they are declared**, one at a time: "migrate,
+then seed" is a sentence, and running them together would make the second
+depend on a race. A task behind one that has not succeeded does not start.
+
+**Reversing a schema change is out of scope**, deliberately and permanently.
+Forward-only, idempotent work is the contract; a rollback runs the older
+release's task, and an application whose old code cannot read the new schema
+has a problem no deploy-time hook can solve. Say so in the migration, not to
+the platform.
+
+**A task runs in previews unless it says otherwise**, which is the service's
+default and for the same reason: a preview gets its own branch of the
+database, or an empty one, and a branch nothing has migrated is a preview that
+comes up broken.
+
+Two deploys racing serialize rather than collide. If a release arrives while
+the previous deploy's run is still going, the new one **waits for it** rather
+than killing it: stopping a migration half way through to start another is the
+failure this feature exists to prevent, not a tidier version of it. The wait is
+bounded by the running task's own `timeout`.
+
+A task that fails is not retried by the platform — `backoffLimit` is zero, so a
+failed run is a failed deploy rather than a burst of pods. Retrying it is a
+decision somebody makes: build again with the migration fixed, or ask for the
+run again with [Running one now](#running-one-now).
 
 ### Several workloads, one commit
 
@@ -302,6 +374,12 @@ up pointed at a Service with no pods behind it. A preview of a multi-workload
 unit has to be the whole set, or the preview is a misleading artifact rather
 than a useful one.
 
+For a **task** it is `true` unless the workload says otherwise, for the same
+reason one level down: a preview gets its own branch of the database, and a
+branch nothing has migrated is a preview that comes up broken. It runs against
+the preview's own resources — the preview's bindings, never production's — so
+the capability that would be dangerous is not one it has.
+
 Either way, a workload the environment declares and does not run is listed with
 `suspended` and a `reason` rather than left out.
 
@@ -361,15 +439,37 @@ joined to what the reconciler last saw of each.
         "startedAt": "2026-08-24T03:00:04Z"
       },
       "healthy": false
+    },
+    {
+      "name": "migrate",
+      "type": "task",
+      "command": ["npm", "run", "migrate"],
+      "timeout": "10m0s",
+      "deploy": "complete",
+      "lastRun": {
+        "name": "shop-production-migrate-7",
+        "phase": "Succeeded",
+        "startedAt": "2026-08-24T14:19:02Z",
+        "finishedAt": "2026-08-24T14:19:24Z",
+        "durationSeconds": 22
+      },
+      "healthy": true
     }
   ]
 }
 ```
 
 `healthy` is the platform's own verdict — a worker with no ready replica, a
-schedule whose most recent run failed — rather than something each client
-derives, so the dashboard and the CLI cannot disagree about what a red dot
-means.
+schedule whose most recent run failed, a deploy task that failed — rather than
+something each client derives, so the dashboard and the CLI cannot disagree
+about what a red dot means.
+
+`deploy` is a **task's** own field and is absent on everything else. It says
+what the task is doing to *this* deploy — `pending`, `running`, `complete` or
+`failed` — which is not the same question as how its last run went: a run
+recorded against another release has not happened for this one, however well it
+went, which is exactly what a rollback looks like. `failed` is a release that
+did not land, and what was serving before it still is.
 
 `address` is where a service answers **inside the cluster**, and it is the
 same value its siblings read out of `KITCHEN_SERVICE_<NAME>`. It is not a
@@ -389,14 +489,17 @@ An environment on a release the reconciler has not reached yet answers with the
 declaration and no live state. That is not reported as unhealthy: nothing is
 known, which is a different thing from something being wrong.
 
-## A scheduled job's runs
+## The runs of a scheduled job, or of a task
 
 ```http
 GET /api/v1/environments/{name}/processes/{process}/runs
 ```
 
-**Needs `viewer`.** The runs the cluster still holds, newest first. Each one is
-the Job that was the run:
+**Needs `viewer`.** The runs the cluster still holds, newest first — a
+schedule's firings, or a **task's one run per deploy**, which reads as the
+history of this environment's deploys. One endpoint for both, because a run is
+a run: what it printed and how it ended does not change with what started it.
+Each one is the Job that was the run:
 
 ```json
 {
@@ -423,7 +526,8 @@ again. A backoff limit above zero would turn one nightly failure into a burst
 of pods and one activity entry that arrived minutes late.
 
 The platform keeps the last three successful runs and the last five failed
-ones and collects the rest, so this list is short by design. **A run's output
+ones of a schedule, and the last five runs of a task, and collects the rest, so
+this list is short by design. **A run's output
 is not**: the log store keys on the Job's name, so a collected run is still
 readable.
 
@@ -451,11 +555,12 @@ It runs the project's own code with the project's own credentials at a moment
 of somebody's choosing, and a person who may push a commit that changes what
 the job does cannot be meaningfully stopped from running the job.
 
-The body is empty, and that is load-bearing: the Job is a copy of the CronJob's
-own template, so a manual run is the schedule firing early rather than a
-different thing that resembles it. Nothing from the request reaches the pod.
+The body is empty, and that is load-bearing. Nothing from the request reaches
+the pod; the only caller-supplied values are the two names in the path.
 
-Answers `202` with the run:
+For a **scheduled job** the Job is a copy of the CronJob's own template, so a
+manual run is the schedule firing early rather than a different thing that
+resembles it. Answers `202` with the run:
 
 ```json
 { "name": "shop-production-nightly-report-manual-x7k2p", "phase": "Running", "startedAt": "2026-08-24T14:22:10Z" }
@@ -463,6 +568,21 @@ Answers `202` with the run:
 
 The run's concurrency policy still applies: a job set to `Forbid` that is
 already running gets a second run the scheduler drops.
+
+For a **task** it means *run that again for the release this environment is
+on*, which is how a deploy a failed migration stopped is picked back up once
+the cause is gone. The API creates nothing: the run is the deploy's — the
+environment's variables, its resources, and the same gate in front of the
+release — so what it writes is the one fact the reconciler decides from, and
+the reconciler makes the run. If it succeeds the deploy carries on by itself.
+The answer names the run that is about to exist, which is what `202` is for:
+
+```json
+{ "name": "shop-production-migrate-3", "phase": "Running" }
+```
+
+The failed run is left exactly where it is, so its output and its message stay
+readable beside the new attempt.
 
 ## Failures are visible without `kubectl`
 
@@ -477,6 +597,12 @@ later failure replaces it, which is what the environment screen reads. Between
 the two, a nightly job that stopped working is something a person trips over
 rather than something they have to go and check.
 
+A **deploy task** is louder still, because a failed one means the release never
+landed: the environment goes `Degraded`, its `DeployTasksComplete` condition
+carries the run's own message, the commit's deployment status reports a
+failure, and the workloads panel says so in a banner above the list with the
+button that runs it again beside it.
+
 ## From a terminal
 
 ```sh
@@ -484,6 +610,8 @@ kitchen processes                                  # what production runs beside
 kitchen processes --environment shop-pr-42         # a preview's, including what it will not run
 kitchen processes runs nightly-report              # that job's recent runs
 kitchen processes run nightly-report               # run it now
+kitchen processes runs migrate                     # what the migration did on the last few deploys
+kitchen processes run migrate                      # try it again, which resumes the deploy
 kitchen logs --run shop-production-nightly-report-29387520 --follow
 
 # where one workload's siblings reach it

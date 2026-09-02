@@ -562,6 +562,10 @@ spec:
       allowPrivilegeEscalation: false   # the default, and the one the platform
       dropCapabilities: [ALL]           # tightens; there is no list to add one
   processes:                            # what it ships *besides* the web process
+    - name: migrate                     # a batch/v1 Job, once per deploy, and
+      type: task                        # nothing takes traffic until it succeeds
+      command: [npm, run, migrate]
+      timeout: 10m                      # how long the deploy waits for it
     - name: worker                      # a Deployment with no Service, no route
       type: worker
       command: [node, worker.js]
@@ -587,7 +591,7 @@ spec:
       timeout: 30m                      # becomes activeDeadlineSeconds
       concurrencyPolicy: Forbid         # Allow | Forbid | Replace
       previews: false                   # unset means off for a worker and a
-                                        # cron, and on for a service
+                                        # cron, and on for a service and a task
 status:
   conditions: [...]                     # Ready, SourceConnected, RegistryConnected,
                                         # WebhookRegistered, InitialBuild
@@ -658,6 +662,16 @@ cluster and nowhere else; a `cron` runs on its schedule and each firing is a
 Job. Publishing stays the exception `runtime` declares — nothing in this list
 gets a route, whatever its type.
 
+A `task` is the one entry that does not keep running (#272): it is one Job per
+deploy, and the Environment's reconcile applies **nothing** of the release —
+no Deployment, no Service, no CronJob, no route — until it has succeeded, so a
+schema migration finishes before anything serves a request and a run that
+fails leaves the release that was serving serving. It takes a `timeout` (how
+long the deploy waits), no schedule, no port, no health check and no
+`singleton`; several of them run in the order they are declared. Reversing a
+schema change is out of scope — a rollback runs the task the release it goes
+back to declared, which is the most the platform can honestly do.
+
 A workload that declares no `build` runs the Release's image with another
 command, which is why this was a field rather than a second build. One that
 declares a `build` is built from its own directory of the repository: a
@@ -673,12 +687,13 @@ namespace, and every workload of the environment is handed
 preview's web process talks to the preview's own API, which is what makes a
 preview of a multi-workload unit a preview of the unit.
 
-`previews` unset means off for a `worker` and a `cron` and on for a `service`,
-which is why the field is a pointer. A preview shares the project's
-environment variables, so a preview that emails customers nightly is a bad
-afternoon and a preview worker draining the production queue is a worse one; a
-service, by contrast, is addressed only by its own environment's siblings, so
-leaving it out protects nothing and breaks the preview. The list merges per
+`previews` unset means off for a `worker` and a `cron` and on for a `service`
+and a `task`, which is why the field is a pointer. A preview shares the
+project's environment variables, so a preview that emails customers nightly is
+a bad afternoon and a preview worker draining the production queue is a worse
+one; a service, by contrast, is addressed only by its own environment's
+siblings, so leaving it out protects nothing and breaks the preview — and a
+preview whose own database branch nothing migrated is broken the same way. The list merges per
 `name`, so two people adding two workloads do not drop each other's.
 
 `runtime.notRequestDriven` is a workload that does work nobody asked for, and
@@ -714,7 +729,9 @@ update, and at one replica that surges to a second copy and takes none away.
 One replica does not imply the declaration: a queue consumer at one replica is
 usually fine overlapping, and inferring the constraint from the count would
 make the count mean two things. A `cron` process is refused it — whether two
-of its runs may overlap is `concurrencyPolicy`, whose default is `Forbid`.
+of its runs may overlap is `concurrencyPolicy`, whose default is `Forbid` —
+and so is a `task`, which is one run per deploy and has no second copy to
+overlap.
 
 `runtime.command` and `runtime.args` start the application container, the same
 two fields a process has and in the same exec form. `previewArgs` replaces
@@ -740,8 +757,8 @@ tolerate it is too loose to catch a wedge afterwards.
 
 A process's `health` is opt-in and has to name its `port`, both refused at
 admission rather than ignored: a worker publishes no port to fall back on, and
-a scheduled run's verdict is its exit status, so the field is refused on a
-`cron` process outright.
+a run's verdict — a scheduled one's or a deploy task's — is its exit status, so
+the field is refused on a `cron` process and on a `task` outright.
 
 `runtime.security` is the posture the application's containers run under, and
 until it existed nothing was applied to them at all: they ran as whatever the
@@ -1155,6 +1172,13 @@ status:
       image: harbor.example.com/kitchen/my-shop-api@sha256:9f2c...   # its own build's
       replicas: 1
       readyReplicas: 1
+    - name: migrate                     # a deploy task, which materializes no
+      type: task                        # standing object: its runs are its Jobs
+      release: my-shop-rel-000042       # the release this run was made for
+      attempt: 3                        # which run of it this environment has made
+      lastRun:
+        name: my-shop-pr-42-migrate-3
+        phase: Succeeded
     - name: nightly-report
       type: cron
       workload: my-shop-production-nightly-report
@@ -1169,7 +1193,8 @@ status:
         message: "BackoffLimitExceeded: Job has reached the specified backoff limit"
       lastFailure: {...}                # the most recent one that failed
   conditions: [...]                     # Ready, RouteProgrammed, WorkloadAvailable,
-                                        # PreviewProtected (previews only),
+                                        # DeployTasksComplete (only where the release
+                                        # declares one), PreviewProtected (previews only),
                                         # ScaleToZero (where the platform idles anything)
 ```
 
@@ -1186,6 +1211,14 @@ per pair rather than platform-wide. A release move clears it — the answer was
 about the artifact that was running, and carrying it forward would report a
 scan that never happened. `GET /compliance/drift` is the same information
 across the estate, joined to what was decided at promotion.
+
+On a deploy task the row carries two fields nothing else uses: `release` — the
+Release its last run was made for — and `attempt`, how many runs of it this
+environment has ever started. Together they are what makes "once per deploy" a
+fact rather than a hope: the reconciler holds nothing between passes, so a run
+is started exactly when the release recorded here is not the one being
+deployed. A rollback to a release the environment ran before is a new deploy
+and runs the task again; clearing `release` is what a retry through the API is.
 
 `processes` is why a scheduled job that stopped working is something a person
 trips over rather than something they have to go and check. `lastFailure` is
@@ -1216,8 +1249,18 @@ needs no changes — see [AUTH.md](AUTH.md). Production environments are never g
 protection is asked for on a platform that runs no gate, the Environment gets **no route
 at all** rather than a public one, and says so in `PreviewProtected`.
 
-The same pass materializes the Release's `processes`: a **worker** becomes a
-plain Deployment named `<environment>-<process>` with no Service and no route —
+Before any of that, the same pass runs the Release's **tasks** and waits for
+them (#272). A task is a `batch/v1` Job named `<environment>-<process>-<n>`,
+and while one is unfinished the reconcile applies nothing at all — no
+Deployment, no Service, no CronJob, no route — so the release that was serving
+carries on serving. A failed run puts the Environment in `Degraded` with the
+run's message on `DeployTasksComplete`, which is also what the commit's deploy
+status reports as a failure. Tasks run in declared order, one at a time, and a
+release that arrives while the previous deploy's run is still going waits for
+it rather than killing it.
+
+The same pass materializes the Release's other `processes`: a **worker** becomes
+a plain Deployment named `<environment>-<process>` with no Service and no route —
 nothing addresses it, so there is nothing to publish and no certificate to
 want — and a **cron** becomes a `batch/v1` CronJob of the same name, with the
 process's schedule in UTC, its concurrency policy, and its timeout as

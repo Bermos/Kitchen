@@ -63,6 +63,12 @@ import (
 //     reaches the preview's own API and production's reaches production's,
 //     with nothing in either of them naming the other. That is what makes a
 //     preview of a multi-workload unit a preview of the unit.
+//   - **A deploy task is not here at all.** It is the one workload that does
+//     not keep running and is not materialized by this pass: it is one Job per
+//     deploy, run and waited for before any of this is applied, which is
+//     internal/controller/deploytasks.go. What it leaves here is its row —
+//     taken from that pass rather than recomputed — so an environment's
+//     workload list is the whole of what the release declares.
 //   - **A scheduled job is a batch/v1 CronJob**, and its runs are Jobs. Their
 //     logs are already collected — every container on the node is — but a run
 //     is only *findable* if the pipeline knows which run it was, which is why
@@ -175,6 +181,12 @@ func (r *EnvironmentReconciler) reconcileProcesses(
 	// mounts are the environment's volume claims; each process gets the
 	// ones that name it, and nothing else's.
 	mounts []mountedVolume,
+	// tasks is what the deploy-task pass already settled. Its rows are used
+	// as they are rather than recomputed: they carry which release each task
+	// ran for and how, which is the record that keeps a migration to one run
+	// per deploy, and a second opinion about it here would be a second way to
+	// decide whether one is due.
+	tasks deployTaskOutcome,
 ) ([]kitchenv1alpha1.ProcessStatus, error) {
 	declared := release.Spec.ConfigSnapshot.Processes
 	statuses := make([]kitchenv1alpha1.ProcessStatus, 0, len(declared))
@@ -184,6 +196,16 @@ func (r *EnvironmentReconciler) reconcileProcesses(
 	for i := range declared {
 		process := declared[i]
 		status := kitchenv1alpha1.ProcessStatus{Name: process.Name, Type: process.Type}
+		// A deploy task materializes nothing that stays: it ran, or it was
+		// not meant to run here, and either way this pass only exists because
+		// it finished. Its row comes from the pass that owns it.
+		if process.RunsOnce() {
+			if settled := findProcessStatus(tasks.statuses, process.Name); settled != nil {
+				status = *settled
+			}
+			statuses = append(statuses, status)
+			continue
+		}
 		if !process.RunsIn(env.Spec.Type) {
 			// Declared, deliberately not running here. It is reported rather
 			// than omitted so that a preview's process list is the project's
@@ -747,15 +769,23 @@ func (r *EnvironmentReconciler) recordRuns(
 			Run:         run.Name,
 			Value:       runSeconds(*run),
 		}
+		// A deploy task's run is named for what it is. The two read the same
+		// way in the feed and mean different things: a nightly job that
+		// failed is a job to fix, and a deploy task that failed is a release
+		// that never landed.
+		what := "scheduled job"
+		if statuses[i].Type == kitchenv1alpha1.ProcessTask {
+			what = "deploy task"
+		}
 		if run.Phase == kitchenv1alpha1.RunFailed {
 			event.Type = clickhouse.EventRunFailed
-			event.Message = fmt.Sprintf("scheduled job %s failed", statuses[i].Name)
+			event.Message = fmt.Sprintf("%s %s failed", what, statuses[i].Name)
 			if run.Message != "" {
 				event.Message += ": " + run.Message
 			}
 		} else {
 			event.Type = clickhouse.EventRunSucceeded
-			event.Message = fmt.Sprintf("scheduled job %s ran", statuses[i].Name)
+			event.Message = fmt.Sprintf("%s %s ran", what, statuses[i].Name)
 		}
 		r.Activity.Record(ctx, event)
 	}

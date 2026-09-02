@@ -37,6 +37,10 @@ func TestWhichWorkloadsAPreviewRuns(t *testing.T) {
 		{"a worker that opted in", ProcessSpec{Type: ProcessWorker, Previews: ptr.To(true)}, true},
 		{"a service comes up unless taken out", ProcessSpec{Type: ProcessService}, true},
 		{"a service taken out stays out", ProcessSpec{Type: ProcessService, Previews: ptr.To(false)}, false},
+		// A preview gets its own branch of the database, and a branch nothing
+		// has migrated is a preview that comes up broken.
+		{"a deploy task runs unless taken out", ProcessSpec{Type: ProcessTask}, true},
+		{"a deploy task taken out stays out", ProcessSpec{Type: ProcessTask, Previews: ptr.To(false)}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -104,15 +108,17 @@ func TestAWorkloadBuildDefaults(t *testing.T) {
 	}
 }
 
-// Only a service is addressed, and only a worker or a service is a Deployment.
+// Only a service is addressed, only a worker or a service is a Deployment,
+// and only a task is one run bound to a deploy.
 func TestWhatEachWorkloadShapeIs(t *testing.T) {
 	for _, tc := range []struct {
-		processType           ProcessType
-		addressed, continuous bool
+		processType                    ProcessType
+		addressed, continuous, oncePer bool
 	}{
-		{ProcessWorker, false, true},
-		{ProcessService, true, true},
-		{ProcessCron, false, false},
+		{ProcessWorker, false, true, false},
+		{ProcessService, true, true, false},
+		{ProcessCron, false, false, false},
+		{ProcessTask, false, false, true},
 	} {
 		process := ProcessSpec{Type: tc.processType}
 		if process.Addressed() != tc.addressed {
@@ -120,6 +126,9 @@ func TestWhatEachWorkloadShapeIs(t *testing.T) {
 		}
 		if process.LongRunning() != tc.continuous {
 			t.Errorf("%s long running = %v, want %v", tc.processType, process.LongRunning(), tc.continuous)
+		}
+		if process.RunsOnce() != tc.oncePer {
+			t.Errorf("%s runs once = %v, want %v", tc.processType, process.RunsOnce(), tc.oncePer)
 		}
 	}
 }

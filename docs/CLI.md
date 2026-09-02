@@ -200,7 +200,7 @@ give.
 | `kitchen deploy` | Build this commit and follow the deploy | `POST /projects/{name}/builds` and the follow |
 | `kitchen cancel` | Stop a build that is still running | `POST /builds/{name}/cancel` |
 | `kitchen logs` | An environment's or a build's logs, `--follow` to tail | `GET /environments/{name}/logs`, `GET /builds/{name}/logs` |
-| `kitchen processes` | The workers and scheduled jobs an environment runs, and (`runs`, `run`) one job's history and running it now | `GET /environments/{name}/processes`, `GET`/`POST /environments/{name}/processes/{process}/runs` |
+| `kitchen processes` | The workloads an environment runs besides its web process, and (`runs`, `run`) one workload's run history and running it now — a scheduled job off its schedule, or a deploy task again | `GET /environments/{name}/processes`, `GET`/`POST /environments/{name}/processes/{process}/runs` |
 | `kitchen env list/set/rm` | The project's environment variables | `PATCH /projects/{name}/env` |
 | `kitchen secret list/set/rm` | The project's own secrets — credentials the platform did not mint | `GET /projects/{name}/secrets`, `PUT`/`DELETE /projects/{name}/secrets/{secret}` |
 | `kitchen rollback` | Put an environment back on an earlier release, saying what that changes first | `GET /releases/{name}/config-diff`, `PATCH /environments/{name}` |
@@ -418,14 +418,17 @@ is still readable by name.
 A project deploys a web process, and it may also declare other workloads:
 **workers**, which run continuously and are never addressed; **services**,
 which run continuously and are reachable from the rest of the unit and from
-nowhere outside the cluster; and **scheduled jobs**, which run on a cron
-expression in UTC.
+nowhere outside the cluster; **scheduled jobs**, which run on a cron expression
+in UTC; and **tasks**, which run once per deploy and have to finish before any
+of that release takes traffic.
 
 ```sh
 kitchen processes                             # what production runs besides the web process
 kitchen processes --environment shop-pr-42    # a preview's, including what it will not run
 kitchen processes runs nightly-report         # that job's recent runs, newest first
 kitchen processes run nightly-report          # run it now, off the schedule
+kitchen processes runs migrate                # what the migration did on the last few deploys
+kitchen processes run migrate                 # try it again, which resumes the deploy
 ```
 
 What is listed is the *release's* workload list, so an environment that has
@@ -436,6 +439,13 @@ and a scheduled job run in previews only if they were opted in, because a
 preview that emails customers nightly is a bad afternoon, and a service runs
 unless it was opted out, because a preview missing one of its own services is a
 broken preview.
+
+A task's row says what it is doing to the deploy rather than how a workload is
+— `--json` carries it as `deploy`: `pending`, `running`, `complete` or
+`failed`. `failed` is a release that never landed, and what was serving before
+it still is; the run's own message is on the row. Running it again is how a
+deploy stopped by a failed migration is picked back up once the cause is gone,
+and the platform carries on by itself if it succeeds.
 
 A service's address is on its row and in `--json` as `address`, which is what
 somebody wiring two workloads together is after — it is the same value the
@@ -453,11 +463,19 @@ alongside the rest of the project's settings:
 
 ```sh
 kitchen api PATCH /projects/shop --data '{"processes":[
+  {"name":"migrate","type":"task","command":["npm","run","migrate"],"timeout":"10m"},
   {"name":"worker","type":"worker","command":["node","worker.js"],"replicas":2},
   {"name":"api","type":"service","port":8080,"build":{"rootDirectory":"services/api"}},
   {"name":"nightly-report","type":"cron","schedule":"0 3 * * *","command":["node","report.js"]}
 ]}'
 ```
+
+A `task` is where a schema migration goes: it runs once per deploy however many
+copies of the other workloads there are, several of them run in the order they
+are declared, and a run that fails stops the deploy where it stands. `timeout`
+is how long the deploy waits for it. Reversing a schema change is deliberately
+out of scope — forward-only, idempotent work is the contract, and a rollback
+runs the task the release it goes back to declared.
 
 A workload with a `build` is built from its own directory of the repository, so
 one commit produces several images that ship as one release and roll back

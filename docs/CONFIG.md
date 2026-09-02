@@ -201,6 +201,7 @@ The workloads the project ships besides its web process —
 ```json
 {
   "processes": [
+    {"name": "migrate", "type": "task", "command": ["npm", "run", "migrate"], "timeout": "10m"},
     {"name": "worker", "type": "worker", "command": ["node", "worker.js"], "replicas": 2},
     {"name": "api", "type": "service", "port": 8080, "build": {"rootDirectory": "services/api", "dockerfileTarget": "api"}},
     {"name": "nightly", "type": "cron", "schedule": "0 3 * * *", "command": ["node", "nightly.js"]}
@@ -211,18 +212,28 @@ The workloads the project ships besides its web process —
 | Key | What it does |
 |---|---|
 | `name` | A DNS label, and not `web` — the web process is the project's own runtime, and this list is what it ships besides it. |
-| `type` | `worker` (runs continuously, never addressed), `service` (runs continuously, addressed by the rest of the unit and never published) or `cron` (runs on a schedule). |
+| `type` | `worker` (runs continuously, never addressed), `service` (runs continuously, addressed by the rest of the unit and never published), `cron` (runs on a schedule) or `task` (runs once per deploy, and the release takes no traffic until it succeeds — where a schema migration goes). |
 | `command`, `args` | Exec form, as above. |
 | `port` | A service's listening port, and the port its siblings reach it on. Required on a service and refused on anything else. |
 | `build` | This workload's own build: `strategy` (`dockerfile` or `buildpacks`), `dockerfilePath`, `dockerfileTarget`, and `rootDirectory` relative to the repository root. That directory is the workload's build root — `dockerfilePath` is relative to it and nothing above it is part of the build — so a path that leaves it is refused here, exactly as `build.dockerfilePath` is for the project. `dockerfileTarget` is which stage of that file to ship, and it falls back to the project's stage rather than to the file's last one; a stage on a `buildpacks` workload is refused naming that workload. Absent means it runs the project's image with another command. Refused on a `cron`. |
 | `replicas` | A worker's or a service's copy count. Zero is a workload that is declared and parked. |
-| `singleton` | Two of this workload must never run at once, so a deploy stops the old copy before starting the new one. Refuses `replicas` above 1, and refused on a `cron` — that question is `concurrencyPolicy`. |
+| `singleton` | Two of this workload must never run at once, so a deploy stops the old copy before starting the new one. Refuses `replicas` above 1, and refused on a `cron` — that question is `concurrencyPolicy` — and on a `task`, which is one run per deploy. |
 | `cpu`, `memory` | Kubernetes quantities. |
-| `schedule` | A five-field cron expression, read in UTC. Required for `cron`, refused on the other two. |
+| `schedule` | A five-field cron expression, read in UTC. Required for `cron`, refused on every other type. |
 | `concurrencyPolicy` | `Allow`, `Forbid` (the default) or `Replace`, when a run is due and the last one has not finished. |
-| `timeout` | A Go duration bounding one run. An hour by default. |
-| `previews` | Run this workload in preview environments too. A worker and a scheduled job are off unless asked for; a service is on unless it says otherwise, because a preview missing one of its own services is a broken preview. |
-| `health` | A worker's or a service's health check. A worker's must name its `port` — it publishes none — and a service's falls back to its own. Refused on a scheduled process, whose verdict is its run's exit status. |
+| `timeout` | A Go duration bounding one run. An hour by default — and for a `task`, how long the deploy waits for it before calling it failed. |
+| `previews` | Run this workload in preview environments too. A worker and a scheduled job are off unless asked for; a service and a task are on unless they say otherwise, because a preview missing one of its own services — or with a database branch nothing migrated — is a broken preview. |
+| `health` | A worker's or a service's health check. A worker's must name its `port` — it publishes none — and a service's falls back to its own. Refused on a scheduled process and on a task, whose verdict is the run's exit status. |
+
+A `task` is the one entry here that is not a thing that keeps running: it is
+work that happens once per deploy and finishes before any of that release
+serves a request, which is why a schema migration belongs in it and not in the
+application's entrypoint. A run that fails stops the deploy where it stands and
+leaves whatever was serving serving; tasks run in the order they are declared;
+and **reversing a schema change is out of scope** — forward-only, idempotent
+work is the contract, and a rollback runs the task the older release declared.
+[The workloads page](api/processes.md#work-that-runs-before-a-release-takes-traffic)
+is the whole of it.
 
 A `build` here is how a commit that adds a workload builds it: the file is read
 at the commit under build, so the set of images a commit produces is the set

@@ -7,9 +7,17 @@ import { may } from "../lib/policy";
 import { useAsync, usePoll } from "../lib/useAsync";
 import StatusDot from "./StatusDot.vue";
 
-// The workloads an environment runs besides its web process (#78, #271): its
-// workers, its scheduled jobs, and the services the rest of the unit talks to
-// over the cluster network.
+// The workloads an environment runs besides its web process (#78, #271, #272):
+// its workers, its scheduled jobs, the services the rest of the unit talks to
+// over the cluster network, and the tasks that run once per deploy before any
+// of it takes traffic.
+//
+// A deploy task is the loudest thing here after a failing schedule, and for a
+// stronger reason: a failed one means the release did not land at all, and the
+// version somebody thinks they are looking at is not the version that is
+// serving. So it is said in a banner above the list, in those words, with the
+// button that runs it again beside it — not left to be inferred from a red dot
+// on a row.
 //
 // The whole point of this panel is the sentence "a CronJob whose pods fail
 // silently is the classic way this feature disappoints". So a failing schedule
@@ -41,8 +49,19 @@ const moving = computed(() =>
   processes.value.some(
     (p) =>
       !p.suspended &&
-      ((p.active ?? 0) > 0 || (p.type !== "cron" && (p.readyReplicas ?? 0) < (p.replicas ?? 0))),
+      ((p.active ?? 0) > 0 ||
+        p.deploy === "running" ||
+        p.deploy === "pending" ||
+        (p.type !== "cron" && p.type !== "task" && (p.readyReplicas ?? 0) < (p.replicas ?? 0))),
   ),
+);
+
+// The tasks holding this deploy up, and the ones that failed it. A failed task
+// is a release that never landed, which is a different sentence from "a
+// workload is unwell" and is worth saying at the top of the panel.
+const blockedBy = computed(() => processes.value.filter((p) => p.deploy === "failed"));
+const waitingOn = computed(() =>
+  processes.value.filter((p) => p.deploy === "running" || p.deploy === "pending"),
 );
 usePoll(() => void refresh(), 5000, () => moving.value);
 
@@ -56,7 +75,7 @@ async function toggle(process: Process) {
     return;
   }
   expanded.value = process.name;
-  if (process.type === "cron" && !process.suspended) await loadRuns(process.name);
+  if (hasRuns(process) && !process.suspended) await loadRuns(process.name);
 }
 
 async function loadRuns(name: string) {
@@ -76,7 +95,10 @@ async function runNow(process: Process) {
     const started = await api.startProcessRun(props.environment, process.name);
     toast.add({
       title: `${process.name} is running`,
-      description: `Run ${started.name}. Its output is in the logs under this run.`,
+      description:
+        process.type === "task"
+          ? `Run ${started.name}. The deploy carries on if it succeeds; its output is in the logs under this run.`
+          : `Run ${started.name}. Its output is in the logs under this run.`,
       color: "success",
       icon: "i-lucide-play",
     });
@@ -93,6 +115,12 @@ async function runNow(process: Process) {
   }
 }
 
+// A schedule and a deploy task both have runs; a worker and a service are
+// already running and have none.
+function hasRuns(process: Process): boolean {
+  return process.type === "cron" || process.type === "task";
+}
+
 function tone(process: Process) {
   if (process.suspended) return "neutral" as const;
   return process.healthy ? ("success" as const) : ("error" as const);
@@ -102,6 +130,12 @@ function tone(process: Process) {
 // nor broken — it is deliberately not running — so it says that instead.
 function state(process: Process): string {
   if (process.suspended) return "not run here";
+  if (process.type === "task") {
+    if (process.deploy === "failed") return "failed — this release did not deploy";
+    if (process.deploy === "running") return "running — the deploy is waiting";
+    if (process.deploy === "complete") return "ran for this release";
+    return "not run for this release yet";
+  }
   if (process.type === "cron") {
     if (!process.healthy) return "last run failed";
     if ((process.active ?? 0) > 0) return `${process.active} running`;
@@ -169,10 +203,38 @@ function buildOf(process: Process): string {
     <p class="text-xs text-muted mb-3">
       What this environment runs besides its web process. A worker runs continuously and is never addressed; a
       service runs continuously and is reachable from the rest of this environment, and is never published; a
-      scheduled job runs on its cron expression, in UTC, and every firing is a run with its own logs. The list is
-      the release's, so an environment that was rolled back runs what that release declared — the same workloads,
-      built to the same images.
+      scheduled job runs on its cron expression, in UTC, and every firing is a run with its own logs; a task runs
+      once per deploy and has to finish before any of the release takes traffic, which is where a schema migration
+      goes. The list is the release's, so an environment that was rolled back runs what that release declared — the
+      same workloads, built to the same images.
     </p>
+
+    <!-- A failed deploy task is not a workload being unwell: it is a release
+         that never landed, so it is said in those words above the list. -->
+    <UAlert
+      v-for="task in blockedBy"
+      :key="task.name"
+      class="mb-3"
+      color="error"
+      variant="soft"
+      icon="i-lucide-octagon-x"
+      :title="`${task.name} failed, so this release was not deployed`"
+      :description="
+        `${task.lastFailure?.name ?? task.lastRun?.name ?? 'The run'} did not succeed` +
+        (task.lastFailure?.message ? ` — ${task.lastFailure.message}` : '') +
+        `. Nothing of this release is serving; what was running before it still is. Fix it and deploy again, or run ${task.name} again once the cause is gone.`
+      "
+    />
+    <UAlert
+      v-for="task in waitingOn"
+      :key="`waiting-${task.name}`"
+      class="mb-3"
+      color="warning"
+      variant="soft"
+      icon="i-lucide-hourglass"
+      :title="`Waiting for ${task.name} before this release takes traffic`"
+      :description="`It runs once for this deploy. Until it succeeds nothing of this release is serving, and what was running before it still is.`"
+    />
 
     <UAlert v-if="error" color="error" variant="soft" icon="i-lucide-triangle-alert" :title="error" />
     <div v-else class="rounded-md border border-default divide-y divide-default overflow-hidden">
@@ -199,14 +261,14 @@ function buildOf(process: Process): string {
             {{ timeAgo(process.lastRun.startedAt) }}
           </span>
           <UButton
-            v-if="mayRun && process.type === 'cron' && !process.suspended"
+            v-if="mayRun && hasRuns(process) && !process.suspended"
             color="neutral"
             variant="ghost"
             size="xs"
             icon="i-lucide-play"
             :loading="starting === process.name"
             :class="process.lastRun?.startedAt ? '' : 'ml-auto'"
-            aria-label="Run now"
+            :aria-label="process.type === 'task' ? 'Run this task again' : 'Run now'"
             @click.stop="runNow(process)"
           />
         </div>
@@ -258,6 +320,17 @@ function buildOf(process: Process): string {
               <dt class="text-dimmed">Timeout</dt>
               <dd class="text-toned">{{ process.timeout }}</dd>
             </template>
+            <template v-if="process.type === 'task'">
+              <dt class="text-dimmed">Runs</dt>
+              <dd class="text-toned">
+                Once per deploy, before anything of the release takes traffic — however many copies of the other
+                workloads there are. A run that fails stops the deploy where it stands, and a rollback runs the task
+                the release it goes back to declared. Undoing a schema change is the application's, not the
+                platform's.
+              </dd>
+              <dt class="text-dimmed">Timeout</dt>
+              <dd class="text-toned">{{ process.timeout }} — how long the deploy waits for it</dd>
+            </template>
             <template v-if="process.cpu || process.memory">
               <dt class="text-dimmed">Resources</dt>
               <dd class="text-toned">{{ [process.cpu, process.memory].filter(Boolean).join(" / ") }}</dd>
@@ -276,7 +349,7 @@ function buildOf(process: Process): string {
             </template>
           </dl>
 
-          <div v-if="process.type === 'cron' && !process.suspended">
+          <div v-if="hasRuns(process) && !process.suspended">
             <p class="text-dimmed mb-1">Recent runs</p>
             <UAlert
               v-if="runsError[process.name]"
