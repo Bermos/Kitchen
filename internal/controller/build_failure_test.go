@@ -22,6 +22,8 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/utils/ptr"
+
+	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 )
 
 func terminated(name string, exit int32, reason string) corev1.ContainerStatus {
@@ -147,6 +149,69 @@ func TestFailureFromPodSaysNothingWhenItHasNothing(t *testing.T) {
 	}
 	if got := failureMessage(nil, "Job has reached the specified backoff limit"); got != "Job has reached the specified backoff limit" {
 		t.Errorf("failureMessage() = %q, want the job's own message", got)
+	}
+}
+
+// The log a node with user.max_user_namespaces=0 produces says "no space left
+// on device" and never names the sysctl, which is the whole reason it is
+// recognised here. These are the lines a Talos node actually printed.
+func TestUserNamespacesDeniedIsReadOffRootlesskit(t *testing.T) {
+	denied := &kitchenv1alpha1.BuildFailureStatus{
+		Container: "buildkit",
+		ExitCode:  ptr.To(int32(1)),
+		Message:   "buildkit exited 1",
+		Log: []string{
+			"could not connect to unix:///run/user/1000/buildkit/buildkitd.sock after 10 trials",
+			"========== log ==========",
+			`level=warning msg="[rootlesskit:parent] /proc/sys/user/max_user_namespaces needs to be set to non-zero."`,
+			"[rootlesskit:parent] error: failed to start the child: fork/exec /proc/self/exe: no space left on device",
+		},
+	}
+	if !userNamespacesDenied(denied) {
+		t.Fatal("userNamespacesDenied() = false for the log the failure actually produces")
+	}
+
+	message := userNamespacesDeniedMessage(denied)
+	for _, want := range []string{
+		"buildkit", "user namespaces", "user.max_user_namespaces", "buildpacks",
+	} {
+		if !strings.Contains(message, want) {
+			t.Errorf("the message does not mention %q: %s", want, message)
+		}
+	}
+}
+
+// Everything else keeps the failure it already had. The disk case is the one
+// that matters: "no space left on device" from a builder that really did fill
+// a volume is not a sysctl, which is why rootlesskit has to be named too.
+func TestUserNamespacesDeniedLeavesOtherFailuresAlone(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		failure *kitchenv1alpha1.BuildFailureStatus
+	}{
+		{
+			name: "a build the repository broke",
+			failure: &kitchenv1alpha1.BuildFailureStatus{
+				Container: "buildkit",
+				Message:   "buildkit exited 1",
+				Log:       []string{`ERROR: process "/bin/sh -c go build ./..." did not complete successfully: exit code: 2`},
+			},
+		},
+		{
+			name: "a volume that really is full",
+			failure: &kitchenv1alpha1.BuildFailureStatus{
+				Container: "creator",
+				Message:   "creator exited 1",
+				Log:       []string{"failed to export: write /layers/app.tgz: no space left on device"},
+			},
+		},
+		{name: "no failure at all", failure: nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if userNamespacesDenied(tc.failure) {
+				t.Errorf("userNamespacesDenied(%+v) = true, want false", tc.failure)
+			}
+		})
 	}
 }
 
