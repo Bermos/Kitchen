@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.23.0](https://github.com/Bermos/Kitchen/compare/v0.22.0...v0.23.0) (2026-09-03)
+
+
+### ⚠ BREAKING CHANGES
+
+* **platform:** `ProcessSpec.Previews` is now `*bool`, so that an absent value can mean "the default for this type" — off for a worker and a scheduled job, on for a service — and `false` can mean false. The wire shape is unchanged and stored objects read identically; Go code reading the field directly should call `PreviewsEnabled()` instead.
+
+### Features
+
+* **api:** the platform's own health checks are not a project's traffic ([062f860](https://github.com/Bermos/Kitchen/commit/062f86086ba67e974ee58e805f17284753d52d12))
+* **build:** a project says which stage of its Dockerfile to ship ([#296](https://github.com/Bermos/Kitchen/issues/296)) ([d9255c5](https://github.com/Bermos/Kitchen/commit/d9255c5ef9292e6a8f86cca723bc348eba51a93d))
+* **operator:** an application can ask for the security posture its workloads run under ([#291](https://github.com/Bermos/Kitchen/issues/291)) ([694b569](https://github.com/Bermos/Kitchen/commit/694b569a5483ec60ad0c3cfd191560fcc65a1bba)), closes [#276](https://github.com/Bermos/Kitchen/issues/276)
+* **operator:** an operator sets the ceiling one build may take ([#290](https://github.com/Bermos/Kitchen/issues/290)) ([4c9bc95](https://github.com/Bermos/Kitchen/commit/4c9bc958701cb614896ef55dd53e89c517504ab1)), closes [#278](https://github.com/Bermos/Kitchen/issues/278)
+* **operator:** work that runs once per deploy, before the release takes traffic ([#297](https://github.com/Bermos/Kitchen/issues/297)) ([2eac151](https://github.com/Bermos/Kitchen/commit/2eac151e04ec72e6e12b269d63d87e55a12b7bb5))
+* **platform:** a project can ship several workloads that deploy and roll back as one ([#295](https://github.com/Bermos/Kitchen/issues/295)) ([dbd45c5](https://github.com/Bermos/Kitchen/commit/dbd45c5b2a9f62ae456cb71676b046804c8572a4)), closes [#271](https://github.com/Bermos/Kitchen/issues/271)
+
+
+### Bug fixes
+
+* **build:** one meaning for a project's root directory, and it is the build root ([#292](https://github.com/Bermos/Kitchen/issues/292)) ([19b2eb2](https://github.com/Bermos/Kitchen/commit/19b2eb23e722656282392cc51bd6414b4a1a6934)), closes [#274](https://github.com/Bermos/Kitchen/issues/274)
+* **operator:** roll the workloads that read a rotated secret, and say why ([#288](https://github.com/Bermos/Kitchen/issues/288)) ([cc0a989](https://github.com/Bermos/Kitchen/commit/cc0a98914a660e3558cc0c2709e18a63e398c369)), closes [#277](https://github.com/Bermos/Kitchen/issues/277)
+
 ## [0.22.0](https://github.com/Bermos/Kitchen/compare/v0.21.0...v0.22.0) (2026-09-02)
 
 
