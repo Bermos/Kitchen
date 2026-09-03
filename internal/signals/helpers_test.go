@@ -22,6 +22,7 @@ import (
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -133,6 +134,50 @@ func deployment(desired, available int32) appsv1.Deployment {
 		},
 		Spec:   appsv1.DeploymentSpec{Replicas: &replicas},
 		Status: appsv1.DeploymentStatus{AvailableReplicas: available},
+	}
+}
+
+// installJob is one of the platform's own Jobs — the shape of the KEDA
+// install, the gate publisher, a rescan — old enough that the grace on a Job
+// with no pod has passed.
+func installJob(name string) batchv1.Job {
+	return batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              name,
+			Namespace:         controller.PlatformNamespace,
+			CreationTimestamp: metav1.NewTime(testNow.Add(-time.Hour)),
+			Labels:            map[string]string{labelPartOf: labelPartOfKitchen},
+		},
+	}
+}
+
+// runJob is one of an environment's Jobs — a scheduled run, a deploy task —
+// labelled the way the environment reconciler labels them.
+func runJob(name string) batchv1.Job {
+	return batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              name,
+			Namespace:         controller.AppNamespace(testProject),
+			CreationTimestamp: metav1.NewTime(testNow.Add(-time.Hour)),
+			Labels: map[string]string{
+				controller.LabelProject:     testProject,
+				controller.LabelEnvironment: testEnvironment,
+			},
+		},
+	}
+}
+
+// refusedEvent is the FailedCreate Warning the controller of a workload with
+// no pods leaves behind, which is the only place the reason exists.
+func refusedEvent(namespace, kind, name, message string) clickhouse.K8sEvent {
+	return clickhouse.K8sEvent{
+		Timestamp: testNow.Add(-30 * time.Minute),
+		Namespace: namespace,
+		Kind:      kind,
+		Name:      name,
+		Reason:    reasonFailedCreate,
+		Message:   message,
+		Count:     42,
 	}
 }
 

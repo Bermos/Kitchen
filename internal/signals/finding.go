@@ -72,7 +72,7 @@ const (
 	// ScopeEnvironment is one running environment, which is what the
 	// developer's diagnostics strip renders.
 	ScopeEnvironment ScopeKind = "environment"
-	// ScopeWorkload is a Deployment, StatefulSet or DaemonSet addressed
+	// ScopeWorkload is a Deployment, StatefulSet, DaemonSet or Job addressed
 	// directly, for the platform's own workloads that belong to no project.
 	ScopeWorkload ScopeKind = "workload"
 	// ScopeNode is one cluster node.

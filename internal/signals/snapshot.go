@@ -22,6 +22,7 @@ import (
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
@@ -63,6 +64,11 @@ type Snapshot struct {
 	Deployments  []appsv1.Deployment
 	StatefulSets []appsv1.StatefulSet
 	DaemonSets   []appsv1.DaemonSet
+	// Jobs is every Job in the cluster, of which only the ones the platform
+	// created are surveyed; see snapshotJobs. They are here rather than folded
+	// into the three serving kinds because a Job is a different question: it
+	// wants pods once, and having none is normal for most of its life.
+	Jobs         []batchv1.Job
 	Nodes        []corev1.Node
 	Claims       []corev1.PersistentVolumeClaim
 	Gateways     []gatewayv1.Gateway
