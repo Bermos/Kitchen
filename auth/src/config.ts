@@ -258,3 +258,40 @@ export function allowedOrigins(config: Config): ReadonlySet<string> {
 	}
 	return origins;
 }
+
+/**
+ * The OAuth clients that are the platform's own — the only ones this issuer
+ * will mint a token for a named resource for.
+ *
+ * This issuer serves two kinds of client from one registry. Some are the
+ * platform's: the dashboard, seeded here with an id the chart chooses. The
+ * rest belong to *applications* — an `oidcClient` claim registers one for
+ * whatever a project developer is deploying, and it exists so that their app
+ * can sign people in.
+ *
+ * `validAudiences` says which audiences may be asked for; it never said *by
+ * whom*. So an application's client could exchange its code with
+ * `resource=<the operator API>` and be handed a JWT the API accepts as the
+ * person who pressed "Allow" — with every role that person holds, for an hour,
+ * renewable for a week. The consent screen lists scopes and has never listed
+ * an audience, so there was nothing there to refuse either. Third-party API
+ * access is not a feature Kitchen has; until it is, `resource` belongs to the
+ * platform's own clients, and `src/auth.ts` refuses it to anybody else.
+ *
+ * It is derived from configuration rather than from anything a registration
+ * says about itself: a client id is issued by the provider, so a developer
+ * cannot choose one, and nothing a developer can reach writes this list. The
+ * operator API keeps the same rule against `azp` on its side
+ * (`internal/api/auth.go`, PlatformClientIDs), so neither service depends on
+ * the other's enforcement.
+ *
+ * The CLI is deliberately absent: it holds an API key and exchanges it here
+ * for a session-minted token, which asks for no resource and names no client.
+ */
+export function platformClients(config: Config): ReadonlySet<string> {
+	const clients = new Set<string>();
+	if (config.ui?.clientId) {
+		clients.add(config.ui.clientId);
+	}
+	return clients;
+}

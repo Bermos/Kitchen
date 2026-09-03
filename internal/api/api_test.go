@@ -61,6 +61,10 @@ const (
 	// write is recorded against, and testSubject is that account's `sub`.
 	testCaller  = "grace@example.com"
 	testSubject = "user_1"
+	// testDashboardClient is the OAuth client the harness's platform signs
+	// its dashboard in as — the whole of PlatformClientIDs here, and so the
+	// only `azp` a token may carry and still be honoured.
+	testDashboardClient = "kitchen-ui"
 	// otherProject is the second project the fixtures know about: the one a
 	// read must not return, which is what most of the scoping assertions are.
 	otherProject = "blog"
@@ -164,6 +168,23 @@ func (i *issuer) tokenFor(t *testing.T, subject, email string) string {
 		"sub":            subject,
 		"email":          email,
 		"email_verified": true,
+		"iss":            i.url(),
+		"aud":            i.url(),
+		"iat":            time.Now().Add(-time.Minute).Unix(),
+		"exp":            time.Now().Add(time.Hour).Unix(),
+	}, nil)
+}
+
+// tokenFromClient mints a token the way an OAuth client's code exchange does:
+// the same account, the same audience, plus the `azp` naming which client the
+// issuer handed it to.
+func (i *issuer) tokenFromClient(t *testing.T, clientID string) string {
+	t.Helper()
+	return i.sign(t, map[string]any{
+		"sub":            testSubject,
+		"email":          testCaller,
+		"email_verified": true,
+		"azp":            clientID,
 		"iss":            i.url(),
 		"aud":            i.url(),
 		"iat":            time.Now().Add(-time.Minute).Unix(),
@@ -871,7 +892,7 @@ func newHarness(t *testing.T, kitchen *kitchenv1alpha1.Kitchen, objs ...runtime.
 		Build()
 
 	logs := &stubLogs{}
-	server := &Server{Client: c, Namespace: testNamespace}
+	server := &Server{Client: c, Namespace: testNamespace, DashboardClientID: testDashboardClient}
 	server.logStore = func(context.Context) (logReader, error) { return logs, nil }
 
 	return &harness{server: server, handler: server.Handler(), issuer: iss, logs: logs}
@@ -1646,6 +1667,53 @@ func TestTheIssuerIsDerivedFromTheKitchenObject(t *testing.T) {
 				t.Fatalf("want the API's own URL accepted as an audience, got %v", cfg.audiences)
 			}
 		})
+	}
+}
+
+// The issuer registers a client for every application an `oidcClient` claim
+// asks for, and those clients belong to whoever deployed the application. A
+// token one of them obtained is a valid token — the signature, the issuer, the
+// audience and the account are all real — and honouring it would let anybody's
+// app act on this API as the person who pressed "Allow" on its consent screen,
+// with every role that person holds. So the API asks the one further question:
+// which client was this minted for.
+func TestATokenFromAnApplicationsOwnClientIsRefused(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+
+	for name, spec := range map[string]struct {
+		token func(t *testing.T) string
+		want  int
+	}{
+		// The CI path: a key exchanged at the issuer becomes a token minted
+		// straight from a session, which names no client at all.
+		"minted from a session": {
+			token: func(t *testing.T) string { return h.issuer.token(t) },
+			want:  http.StatusOK,
+		},
+		"issued to the dashboard": {
+			token: func(t *testing.T) string { return h.issuer.tokenFromClient(t, testDashboardClient) },
+			want:  http.StatusOK,
+		},
+		"issued to an application's client": {
+			token: func(t *testing.T) string { return h.issuer.tokenFromClient(t, "shop-preview-oidc") },
+			want:  http.StatusUnauthorized,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			recorder := h.do(t, http.MethodGet, "/api/v1/me", "", spec.token(t))
+			if recorder.Code != spec.want {
+				t.Fatalf("want %d, got %d: %s", spec.want, recorder.Code, recorder.Body.String())
+			}
+		})
+	}
+}
+
+func TestPlatformClientIDsIsTheDashboardAndNothingElse(t *testing.T) {
+	if got := PlatformClientIDs(""); len(got) != 0 {
+		t.Fatalf("an installation that named no dashboard client trusts no client: %v", got)
+	}
+	if got := PlatformClientIDs("  renamed-ui  "); len(got) != 1 || got[0] != "renamed-ui" {
+		t.Fatalf("want the dashboard's id alone, got %v", got)
 	}
 }
 

@@ -1107,7 +1107,10 @@ auth:
   ui:
     # -- Register the Kitchen UI as an OAuth client.
     enabled: true
-    # -- Client id the UI authenticates with.
+    # -- Client id the UI authenticates with. It is also the one OAuth client
+    # the operator API will accept a token from: an application's own client,
+    # registered by an `oidcClient` claim, cannot call the API as the person
+    # who signed in to it.
     clientId: kitchen-ui
     # -- Redirect URIs the issuer will send people back to. Defaults to
     # `<kitchen.api.externalURL>/auth/callback`. Add a `http://localhost:…`
