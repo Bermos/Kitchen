@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.23.1](https://github.com/Bermos/Kitchen/compare/v0.23.0...v0.23.1) (2026-09-03)
+
+
+### Bug fixes
+
+* **api:** give a manual run a TTL so something collects it ([#329](https://github.com/Bermos/Kitchen/issues/329)) ([7adafec](https://github.com/Bermos/Kitchen/commit/7adafec9f10800f50d0585b1a59493efe7ecb128)), closes [#251](https://github.com/Bermos/Kitchen/issues/251)
+* **api:** make the repository picker and its preflight ask for a person ([#332](https://github.com/Bermos/Kitchen/issues/332)) ([e3e5665](https://github.com/Bermos/Kitchen/commit/e3e5665bfb41bee2a7e4de15a132c1b5635cc86b)), closes [#222](https://github.com/Bermos/Kitchen/issues/222)
+* **api:** read every workload's pod in the live build-log fallback ([#330](https://github.com/Bermos/Kitchen/issues/330)) ([3fa2690](https://github.com/Bermos/Kitchen/commit/3fa269015440034788091447df4b21e894a7f3de)), closes [#304](https://github.com/Bermos/Kitchen/issues/304)
+* **auth:** keep the API's audience to the platform's own OAuth clients ([#337](https://github.com/Bermos/Kitchen/issues/337)) ([02b6df5](https://github.com/Bermos/Kitchen/commit/02b6df5dc4b6ecd66ef70055eebf9d3bbaf6ac3b))
+* **cli:** ask before projects create replaces this directory's link ([#335](https://github.com/Bermos/Kitchen/issues/335)) ([9b5c484](https://github.com/Bermos/Kitchen/commit/9b5c484a96f313d3d29f624c71ebf1086dc8a478))
+* **cli:** exit non-zero when a followed deploy settles Degraded ([#328](https://github.com/Bermos/Kitchen/issues/328)) ([1b872a0](https://github.com/Bermos/Kitchen/commit/1b872a0c8e7be9c99492c1a2af93afa14c69e25f)), closes [#302](https://github.com/Bermos/Kitchen/issues/302)
+* **operator:** delete a stalled build's jobs when the build is failed ([#334](https://github.com/Bermos/Kitchen/issues/334)) ([3503c77](https://github.com/Bermos/Kitchen/commit/3503c77bbe0353ee49cebc3d16cc8f8279310c56)), closes [#234](https://github.com/Bermos/Kitchen/issues/234)
+* **operator:** name the sysctl when a build is refused a user namespace ([#327](https://github.com/Bermos/Kitchen/issues/327)) ([f6a34bc](https://github.com/Bermos/Kitchen/commit/f6a34bc0b1e6de5b5cbe8c4b9ae39bdc4e5853e9))
+* **signals:** survey Jobs, so a refused Job is not invisible ([#336](https://github.com/Bermos/Kitchen/issues/336)) ([7ad2ca7](https://github.com/Bermos/Kitchen/commit/7ad2ca708b774a800d5c2caf3e6b20c8aa6ebbad))
+
+
+### Documentation
+
+* **backup:** say what is not automated, and where the design lives ([fe427e3](https://github.com/Bermos/Kitchen/commit/fe427e37a1e22d4e94c4541885ded447d9234ffe))
+* **registries:** a page for GHCR, Harbor and the bundled registry ([#333](https://github.com/Bermos/Kitchen/issues/333)) ([e43b243](https://github.com/Bermos/Kitchen/commit/e43b243ef08d0c2b22c6d1e37b5034ddf752708e)), closes [#120](https://github.com/Bermos/Kitchen/issues/120)
+* **scope:** park a platform-wide point-in-time restore and docs that ship with the code ([6516964](https://github.com/Bermos/Kitchen/commit/6516964c376a1ea83ad5199194e12431627dd245))
+* **ui:** add the UX review mockups the dashboard issues reference ([327e6fe](https://github.com/Bermos/Kitchen/commit/327e6fe5c25bcf49869958d55cc24b98377c1280))
+
 ## [0.23.0](https://github.com/Bermos/Kitchen/compare/v0.22.0...v0.23.0) (2026-09-03)
 
 
