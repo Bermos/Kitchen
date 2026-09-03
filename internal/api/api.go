@@ -92,6 +92,12 @@ type Server struct {
 	// ExtraAudiences are token audiences accepted on top of the issuer and
 	// the API's own external URL.
 	ExtraAudiences []string
+	// DashboardClientID is the OAuth client the dashboard signs in as, the
+	// same id the chart seeds the identity provider with. It is what
+	// PlatformClientIDs turns into the set of clients this API accepts a
+	// token from; empty leaves that set empty, so only session-minted tokens
+	// (a CI key's) are accepted.
+	DashboardClientID string
 	// UI, when set, answers everything outside /api/: the dashboard's
 	// static files, which are public — every request with state stays
 	// behind the token check.
@@ -329,7 +335,10 @@ func (s *Server) reader() client.Reader {
 // routing table can be exercised without binding a port.
 func (s *Server) Handler() http.Handler {
 	if s.auth == nil {
-		s.auth = &authenticator{extraAudiences: s.ExtraAudiences}
+		s.auth = &authenticator{
+			extraAudiences:  s.ExtraAudiences,
+			platformClients: PlatformClientIDs(s.DashboardClientID),
+		}
 	}
 	if s.logStore == nil {
 		s.logStore = s.telemetryStore

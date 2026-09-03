@@ -1,4 +1,5 @@
 import { betterAuth, type BetterAuthOptions } from "better-auth";
+import { APIError, createAuthMiddleware } from "better-auth/api";
 import { jwt, organization, twoFactor } from "better-auth/plugins";
 import { apiKey } from "@better-auth/api-key";
 import { oauthProvider } from "@better-auth/oauth-provider";
@@ -6,16 +7,93 @@ import { passkey } from "@better-auth/passkey";
 import { sso } from "@better-auth/sso";
 import type { Pool } from "pg";
 
-import { allowedOrigins, type Config } from "./config.js";
+import { allowedOrigins, platformClients, type Config } from "./config.js";
+import { log } from "./log.js";
 
 export const LOGIN_PATH = "/login";
 export const CONSENT_PATH = "/consent";
+
+/** The provider's token endpoint, where a resource indicator is honoured. */
+const TOKEN_PATH = "/oauth2/token";
 
 /**
  * Scopes this issuer knows about. "openid" is what makes the discovery
  * document an OIDC one rather than a plain OAuth 2.0 authorization server.
  */
 const SCOPES = ["openid", "profile", "email", "offline_access"] as const;
+
+/**
+ * Which client is asking for this token.
+ *
+ * A public client sends its id in the body; a confidential one authenticates
+ * with HTTP Basic and sends nothing in the body at all, so both have to be
+ * read. The header is split exactly the way the provider's own client lookup
+ * splits it — first colon, no unescaping — so that the id checked here and the
+ * id authenticated a moment later cannot be two different strings. Anything
+ * unreadable is nobody, which the caller below refuses rather than guesses at.
+ */
+function requestingClient(body: Record<string, unknown>, authorization: string | null): string {
+	const fromBody = typeof body.client_id === "string" ? body.client_id.trim() : "";
+	if (fromBody) {
+		return fromBody;
+	}
+	if (!authorization?.startsWith("Basic ")) {
+		return "";
+	}
+	const decoded = Buffer.from(authorization.slice("Basic ".length), "base64").toString("utf8");
+	const separator = decoded.indexOf(":");
+	return separator === -1 ? "" : decoded.slice(0, separator);
+}
+
+/**
+ * Refuses a resource indicator to any client that is not the platform's own.
+ *
+ * `validAudiences` on the provider bounds *what* may be asked for; nothing
+ * bounded *who* could ask. Every client this issuer knows — the dashboard and
+ * every application an `oidcClient` claim registered alike — could exchange a
+ * code with `resource=<the operator API>` and receive a JWT the API accepts as
+ * the person who authorized it, holding every role that person holds. See
+ * `platformClients` in config.ts for why the answer is configuration rather
+ * than something a registration claims about itself.
+ *
+ * It refuses rather than strips, because a client that asked for an audience
+ * and silently got another one is the audience confusion the resource
+ * indicator exists to prevent. `invalid_target` is RFC 8707's word for it.
+ * Signing in is untouched: without a `resource` an application's client gets
+ * exactly what it got before — an ID token, an opaque access token, and
+ * `/oauth2/userinfo`.
+ */
+function guardResourceIndicator(config: Config): BetterAuthOptions["hooks"] {
+	const platform = platformClients(config);
+	return {
+		before: createAuthMiddleware(async (ctx) => {
+			if (ctx.path !== TOKEN_PATH) {
+				return;
+			}
+			const body: Record<string, unknown> =
+				ctx.body && typeof ctx.body === "object" ? (ctx.body as Record<string, unknown>) : {};
+			const resource = typeof body.resource === "string" ? body.resource.trim() : "";
+			if (!resource) {
+				return;
+			}
+			const clientId = requestingClient(body, ctx.request?.headers.get("authorization") ?? null);
+			if (clientId && platform.has(clientId)) {
+				return;
+			}
+			log.warn("refused a resource indicator to a client that is not the platform's own", {
+				clientId: clientId || "(none)",
+				resource,
+			});
+			throw new APIError("BAD_REQUEST", {
+				error: "invalid_target",
+				error_description:
+					"this client may not request a token for another resource: the resource indicator is " +
+					"the platform's own clients' alone, and a token for the Kitchen API is not something " +
+					"an application may be granted on a person's behalf",
+			});
+		}),
+	};
+}
 
 /**
  * The better-auth configuration, kept separate from the instance because the
@@ -43,6 +121,10 @@ export function authOptions(config: Config, database: Pool): BetterAuthOptions {
 		// issuer alone was enough only while nothing but the issuer's own pages
 		// posted here.
 		trustedOrigins: [...allowedOrigins(config)],
+		// Who may ask for a token for another resource — the operator API
+		// above all. It runs ahead of the provider's own token endpoint, which
+		// is where `resource` is read.
+		hooks: guardResourceIndicator(config),
 		session: {
 			// No freshness window. better-auth guards `/list-sessions` on a session
 			// created within the last day by default, and nothing in Kitchen can
@@ -94,6 +176,11 @@ export function authOptions(config: Config, database: Pool): BetterAuthOptions {
 				// the operator API is added because it is a resource server
 				// of its own, and a token for the API should say so rather
 				// than be a token for everything.
+				//
+				// It is half the rule: this list is issuer-wide, so it says
+				// what may be asked for and not by whom. `hooks.before`
+				// above is the other half — only the platform's own clients
+				// may name a resource at all.
 				validAudiences: config.apiURL ? [config.baseURL, config.apiURL] : undefined,
 				//
 				//

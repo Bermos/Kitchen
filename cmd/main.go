@@ -128,7 +128,10 @@ func main() {
 			"and the API's own external URL, both of which come from the Kitchen object.")
 	flag.StringVar(&uiClientID, "ui-client-id", "kitchen-ui",
 		"OAuth client id the dashboard signs in as. The chart seeds the identity provider "+
-			"with the same id, so this only changes for installations that renamed that client.")
+			"with the same id, so this only changes for installations that renamed that client. It is also "+
+			"the whole of the API's platform-client list: a token naming any other client in `azp` — an "+
+			"application's own client, registered by an oidcClient claim — is refused rather than honoured "+
+			"as the person who signed in to that application.")
 	// Self-update. These are flags rather than fields on the Kitchen
 	// singleton because the singleton is a post-install hook and is not
 	// re-applied on upgrade, so a chart value flipped in a `helm upgrade`
@@ -553,11 +556,15 @@ func main() {
 		// could run.
 		AddonsPermitted: addonPermitted(addonInstalls),
 		ExtraAudiences:  splitList(apiAudiences),
-		UI:              ui.Handler(api.UIConfig(mgr.GetClient(), uiClientID)),
-		Activity:        recorder,
-		Audit:           auditor,
-		Version:         version.Version,
-		SelfUpdate:      selfUpdate,
+		// The same id, for the other half of what it decides: the dashboard
+		// is the one OAuth client this API will act on behalf of, so a token
+		// naming an application's client is refused however valid it is.
+		DashboardClientID: uiClientID,
+		UI:                ui.Handler(api.UIConfig(mgr.GetClient(), uiClientID)),
+		Activity:          recorder,
+		Audit:             auditor,
+		Version:           version.Version,
+		SelfUpdate:        selfUpdate,
 		// The follower's own accounting of what Hubble told it it lost, which
 		// is what the ingest signal and the ingest screen are made of. Note
 		// that the counts are the *local* replica's: the follower runs on the

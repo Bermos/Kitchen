@@ -138,7 +138,7 @@ rather than as a stranger with an odd address.
 | `KITCHEN_AUTH_SERVICE_ACCOUNT_EMAIL` | no | Machine account owning that key, default `operator@kitchen.local` |
 | `KITCHEN_AUTH_BOOTSTRAP_TOKEN` | no | Token for the first-administrator link |
 | `KITCHEN_AUTH_API_URL` | no | Public URL of the operator API, accepted as a token audience |
-| `KITCHEN_AUTH_UI_CLIENT_ID` | no | Client id for the Kitchen UI, default `kitchen-ui` |
+| `KITCHEN_AUTH_UI_CLIENT_ID` | no | Client id for the Kitchen UI, default `kitchen-ui`. The one client allowed to name a `resource` at the token endpoint |
 | `KITCHEN_AUTH_UI_REDIRECT_URIS` | no | The UI's redirect URIs, comma separated. Without them no UI client is seeded |
 | `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` | no | Upstream GitHub OAuth app; set both or neither |
 | `KITCHEN_AUTH_ALLOW_SOCIAL_SIGNUP` | no | Let an unknown GitHub account create an account, default `false` |

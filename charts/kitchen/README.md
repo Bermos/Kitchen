@@ -1757,7 +1757,7 @@ kubectl delete namespace kitchen-system
 | `auth.serviceAccountEmail` | `operator@kitchen.local` | Machine account owning that key. |
 | `auth.bootstrap.enabled` / `.token` | `true` / `""` | One-time first-administrator link. |
 | `auth.ui.enabled` | `true` | Register the Kitchen UI as an OAuth client (PKCE, no secret). |
-| `auth.ui.clientId` | `kitchen-ui` | Client id the UI authenticates with. |
+| `auth.ui.clientId` | `kitchen-ui` | Client id the UI authenticates with, and the one OAuth client the operator API accepts a token from. |
 | `auth.ui.redirectURIs` | `[]` | Defaults to `<kitchen.api.externalURL>/auth/callback`. |
 | `auth.github.clientId` / `.clientSecret` | `""` | Upstream GitHub OAuth app. |
 | `auth.github.existingSecret` / `.existingSecretKey` | `""` / `clientSecret` | Read the client secret from an existing secret. |

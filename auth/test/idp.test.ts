@@ -688,3 +688,222 @@ describe("renewing the dashboard's session", () => {
 		assert.equal(after.ok, false, "the replay takes the whole family with it");
 	});
 });
+
+/**
+ * Issue #314: every client this issuer knows could ask for a token for the
+ * operator API, and the API took it as the person who consented.
+ *
+ * An `oidcClient` claim registers a client for whatever a project developer
+ * is deploying — that is the feature. Its consent screen lists scopes and has
+ * never listed an audience, so somebody signing in to a colleague's app was
+ * asked about `profile` and `email` and got, if the app asked for it, a token
+ * carrying every role they hold on this platform. The resource indicator is
+ * the platform's own clients' alone until third-party API access is a feature
+ * with a consent screen that says so.
+ */
+describe("the resource indicator belongs to the platform's own clients", () => {
+	let kitchen: Harness;
+	let cookie = "";
+	/** The client an oidcClient claim would have registered for an app. */
+	let app = { client_id: "", client_secret: "" };
+
+	const apiURL = "https://kitchen.apps.example.com";
+	const dashboardRedirectURI = `${apiURL}/auth/callback`;
+	const appRedirectURI = "https://shop-pr-7.apps.example.com/auth/callback";
+	const admin = {
+		name: "Radia",
+		email: "radia@example.com",
+		password: "correct horse battery staple",
+	};
+
+	const claimsOf = (token: string): Record<string, unknown> =>
+		JSON.parse(Buffer.from(token.split(".")[1] ?? "", "base64url").toString("utf8")) as Record<string, unknown>;
+
+	/**
+	 * An authorization code for the application's client, consent and all —
+	 * the whole of what somebody pressing "Allow" on its screen produces.
+	 */
+	async function appCode(verifier: string): Promise<string> {
+		const challenge = createHash("sha256").update(verifier).digest("base64url");
+		const authorize = await kitchen.fetch(
+			`/oauth2/authorize?${new URLSearchParams({
+				response_type: "code",
+				client_id: app.client_id,
+				redirect_uri: appRedirectURI,
+				scope: "openid profile email",
+				state: "opaque",
+				code_challenge: challenge,
+				code_challenge_method: "S256",
+			})}`,
+			{ headers: { cookie }, redirect: "manual" },
+		);
+		const target =
+			authorize.status === 302
+				? (authorize.headers.get("location") ?? "")
+				: ((await authorize.clone().json().catch(() => ({}))) as { url?: string }).url;
+		assert.ok(target, `authorize did not redirect: ${authorize.status} ${await authorize.text()}`);
+
+		const location = new URL(target, kitchen.url);
+		let callback = location.href;
+		if (location.pathname === "/consent") {
+			const consent = await kitchen.fetch("/oauth2/consent", {
+				method: "POST",
+				headers: { "content-type": "application/json", origin: kitchen.url, cookie },
+				body: JSON.stringify({ accept: true, oauth_query: location.search.slice(1) }),
+			});
+			assert.equal(consent.status, 200, await consent.clone().text());
+			const decision = (await consent.json()) as { url?: string; redirect_uri?: string };
+			const accepted = decision.url ?? decision.redirect_uri;
+			assert.ok(accepted, "consent hands back the client's callback");
+			callback = accepted;
+		}
+		const code = new URL(callback, kitchen.url).searchParams.get("code");
+		assert.ok(code, "the redirect carries an authorization code");
+		return code;
+	}
+
+	/** The application's code exchange, which authenticates with HTTP Basic. */
+	const appToken = (code: string, verifier: string, resource?: string): Promise<Response> =>
+		kitchen.fetch("/oauth2/token", {
+			method: "POST",
+			headers: {
+				"content-type": "application/x-www-form-urlencoded",
+				authorization: `Basic ${Buffer.from(`${app.client_id}:${app.client_secret}`).toString("base64")}`,
+			},
+			body: new URLSearchParams({
+				grant_type: "authorization_code",
+				code,
+				redirect_uri: appRedirectURI,
+				code_verifier: verifier,
+				...(resource ? { resource } : {}),
+			}),
+		});
+
+	before(async () => {
+		kitchen = await startHarness({
+			apiURL,
+			ui: { clientId: "kitchen-ui", redirectURIs: [dashboardRedirectURI] },
+		});
+
+		await kitchen.fetch("/bootstrap", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ token: kitchen.bootstrapToken, ...admin }),
+		});
+		const signIn = await kitchen.fetch("/sign-in/email", {
+			method: "POST",
+			headers: { "content-type": "application/json", origin: kitchen.url },
+			body: JSON.stringify({ email: admin.email, password: admin.password }),
+		});
+		cookie = signIn.headers
+			.getSetCookie()
+			.map((value) => value.split(";")[0])
+			.join("; ");
+
+		// Registered exactly the way the operator registers an oidcClient
+		// claim's client: RFC 7591, under the operator's service credential.
+		const registration = await kitchen.fetch("/oauth2/register", {
+			method: "POST",
+			headers: { "content-type": "application/json", "x-api-key": kitchen.serviceKey },
+			body: JSON.stringify({
+				client_name: "shop preview",
+				redirect_uris: [appRedirectURI],
+				grant_types: ["authorization_code", "refresh_token"],
+			}),
+		});
+		assert.equal(registration.status, 200, await registration.clone().text());
+		app = (await registration.json()) as typeof app;
+	});
+
+	after(async () => {
+		await kitchen.stop();
+	});
+
+	it("refuses an application's client a token for the operator API", async () => {
+		const verifier = randomBytes(32).toString("base64url");
+		const response = await appToken(await appCode(verifier), verifier, apiURL);
+
+		assert.equal(response.ok, false, "an app's client must not be able to act on the API as its user");
+		const body = (await response.json()) as { error?: string };
+		assert.equal(body.error, "invalid_target");
+	});
+
+	// The issuer itself is an audience too, and the operator API accepts a
+	// token for it — that is the CI path. So "any resource but the API" is not
+	// the rule; the rule is that a resource indicator is not this client's to
+	// use at all.
+	it("refuses an application's client a token for the issuer", async () => {
+		const verifier = randomBytes(32).toString("base64url");
+		const response = await appToken(await appCode(verifier), verifier, kitchen.url);
+
+		assert.equal(response.ok, false);
+		assert.equal(((await response.json()) as { error?: string }).error, "invalid_target");
+	});
+
+	// The feature an oidcClient claim exists for, untouched: the app signs
+	// somebody in and learns who they are. What it does not get is a token
+	// anything else in the platform will honour.
+	it("still signs somebody in to the application", async () => {
+		const verifier = randomBytes(32).toString("base64url");
+		const response = await appToken(await appCode(verifier), verifier);
+		assert.equal(response.status, 200, await response.clone().text());
+
+		const tokens = (await response.json()) as { access_token: string; id_token: string };
+		assert.ok(tokens.id_token, "an ID token is the whole of what the app asked for");
+		assert.equal(claimsOf(tokens.id_token).email, admin.email);
+	});
+
+	it("still issues the dashboard a token for the operator API", async () => {
+		const verifier = randomBytes(32).toString("base64url");
+		const challenge = createHash("sha256").update(verifier).digest("base64url");
+		const authorize = await kitchen.fetch(
+			`/oauth2/authorize?${new URLSearchParams({
+				response_type: "code",
+				client_id: "kitchen-ui",
+				redirect_uri: dashboardRedirectURI,
+				scope: "openid profile email",
+				state: "opaque",
+				code_challenge: challenge,
+				code_challenge_method: "S256",
+			})}`,
+			{ headers: { cookie }, redirect: "manual" },
+		);
+		const target =
+			authorize.status === 302
+				? (authorize.headers.get("location") ?? "")
+				: ((await authorize.clone().json().catch(() => ({}))) as { url?: string }).url;
+		const code = new URL(target ?? "", kitchen.url).searchParams.get("code");
+		assert.ok(code);
+
+		const response = await kitchen.fetch("/oauth2/token", {
+			method: "POST",
+			headers: { "content-type": "application/x-www-form-urlencoded" },
+			body: new URLSearchParams({
+				grant_type: "authorization_code",
+				client_id: "kitchen-ui",
+				code,
+				redirect_uri: dashboardRedirectURI,
+				code_verifier: verifier,
+				resource: apiURL,
+			}),
+		});
+		assert.equal(response.status, 200, await response.clone().text());
+
+		const claims = claimsOf(((await response.json()) as { access_token: string }).access_token);
+		const audience = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
+		assert.ok(audience.includes(apiURL), `the dashboard's token is still for the API: ${JSON.stringify(audience)}`);
+		assert.equal(claims.azp, "kitchen-ui");
+	});
+
+	// The CI path names no client and asks for no resource, so nothing above
+	// applies to it — and it is what `kitchen` on a developer's machine and in
+	// a pipeline authenticates with.
+	it("still exchanges an API key for a token the operator API accepts", async () => {
+		const response = await kitchen.fetch("/token", { headers: { "x-api-key": kitchen.serviceKey } });
+		assert.equal(response.status, 200, await response.clone().text());
+
+		const claims = claimsOf(((await response.json()) as { token: string }).token);
+		assert.equal(claims.aud, kitchen.url);
+		assert.equal(claims.azp, undefined, "a session token names no client, which is what the API reads as CI");
+	});
+});

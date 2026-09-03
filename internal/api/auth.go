@@ -63,7 +63,9 @@ type Caller struct {
 	// applies that rule; this carries the fact it needs.
 	EmailVerified bool
 	// ClientID is the OAuth client the token was issued to, when the token
-	// says so (`azp`). Empty for tokens minted straight from a session.
+	// says so (`azp`). Empty for tokens minted straight from a session, and
+	// otherwise one of PlatformClientIDs — a token naming any other client
+	// never reaches a handler.
 	ClientID string
 	// Scopes the token was granted. Kitchen does not authorize on them and
 	// is not going to: the token says who the caller is, and Kitchen decides
@@ -159,6 +161,35 @@ type issuerConfig struct {
 	audiences []string
 }
 
+// PlatformClientIDs is the one place that says which OAuth clients are the
+// platform's own — the only clients this API will act on behalf of.
+//
+// The issuer registers clients for two quite different things. Some are the
+// platform's: the dashboard, seeded with an id the chart chooses. The rest
+// belong to *applications* — an `oidcClient` claim registers one for whatever
+// a project developer is deploying, and its redirect list is theirs to name.
+// Both are clients of the same issuer, and until a token said which one it was
+// issued to, an application's client could ask for a token for this API
+// (`resource=`) and be handed the consenting person's whole role here. An
+// operator signing in to a colleague's app would have handed it operator
+// access for an hour.
+//
+// So the set is derived from configuration the chart writes — the dashboard's
+// client id, `--ui-client-id`, the same value the identity provider is seeded
+// with — and never from anything a registration says about itself. A client id
+// is issued by the provider, so a developer cannot choose one; and nothing a
+// developer can reach writes this list.
+//
+// The CLI is deliberately not in it: it holds an API key and exchanges it at
+// the issuer for a session-minted token, which names no client at all
+// (docs/CLI.md). A token with no `azp` is the CI path and stays accepted.
+func PlatformClientIDs(dashboardClientID string) []string {
+	if id := strings.TrimSpace(dashboardClientID); id != "" {
+		return []string{id}
+	}
+	return nil
+}
+
 // authenticator validates bearer tokens against the platform's identity
 // provider. Validation is stateless — a signature check against the issuer's
 // JWKS plus the registered claims — so no request ever waits on the identity
@@ -168,6 +199,10 @@ type authenticator struct {
 	// Kitchen object, for installations that put the API behind another
 	// name than the one the platform generates.
 	extraAudiences []string
+	// platformClients are the OAuth clients whose tokens this API accepts —
+	// PlatformClientIDs is what says which those are. A token naming any
+	// other client in `azp` is refused however valid its signature is.
+	platformClients []string
 
 	mu       sync.Mutex
 	issuer   string
@@ -307,6 +342,26 @@ func (a *authenticator) authenticate(ctx context.Context, req *http.Request, cfg
 	claims := tokenClaims{}
 	if err := token.Claims(&claims); err != nil {
 		return Caller{}, fmt.Errorf("the token's claims are unreadable: %w", err)
+	}
+	// Which client the token was issued to, when it says. The audience check
+	// above establishes that the token is *for* this API; this establishes
+	// that it was minted for something entitled to call it. An application's
+	// OAuth client is a client of the same issuer as the dashboard, and a
+	// token it obtained by asking for `resource=<this API>` would otherwise
+	// arrive here signed, unexpired, in audience, and carrying every role the
+	// person who pressed "Allow" holds. The identity provider refuses to mint
+	// such a token at all (auth/src/auth.ts); this is the resource server's
+	// own half of the same rule, so that neither an older issuer nor a
+	// federated one can make the API's answer depend on somebody else's
+	// enforcement.
+	//
+	// No `azp` means the token was minted straight from a session, which is
+	// what a CI key is exchanged for. That path is unchanged.
+	if claims.ClientID != "" && !slices.Contains(a.platformClients, claims.ClientID) {
+		return Caller{}, fmt.Errorf(
+			"the token was issued to the OAuth client %q, which is not one of the platform's own: "+
+				"a client registered for an application cannot call this API as the person who signed in to it",
+			claims.ClientID)
 	}
 	if claims.Subject == "" {
 		return Caller{}, errors.New("the token names no subject")

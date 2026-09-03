@@ -48,6 +48,16 @@ The `resource` parameter is what makes the access token a JWT with the API as
 its audience. Without it the provider issues an opaque token, which the
 operator cannot validate and will refuse.
 
+**Only the platform's own clients may ask for it.** The issuer registers a
+client for every application that asks for one (`oidcClient` claims), and those
+clients belong to whoever deployed the application. A `resource` from any
+client but the dashboard's is refused at the token endpoint (`invalid_target`),
+and a token whose `azp` names any other client is refused here — so an
+application cannot call this API as the person who signed in to it, however
+willingly they pressed "Allow". A token with no `azp` is one minted from a
+session, which is the API-key path above and is unaffected. See
+[AUTH.md](AUTH.md), "The operator API".
+
 **CI, with an API key.** API keys are the identity provider's (better-auth's
 api-key plugin) — see the decision below. The key is exchanged for a
 short-lived JWT at the issuer, and the API sees only the JWT:

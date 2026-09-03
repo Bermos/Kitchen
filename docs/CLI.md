@@ -154,7 +154,9 @@ decisions for `auth/` rather than things the CLI can assume:
   host — so `http://127.0.0.1:<port>/callback` could only be registered for one
   fixed port, which may be in use. A public `kitchen-cli` client would have to
   be seeded the way `kitchen-ui` is (`auth/src/seed.ts`), with that decision
-  made deliberately.
+  made deliberately — and it would have to join the platform's client list on
+  both sides, because a token naming a client the API does not know as the
+  platform's is refused (AUTH.md, "The operator API").
 
 So the API key is the whole of it, and that is a smaller credential than a
 person's token would be. If the issuer grows a device endpoint, `kitchen login`
