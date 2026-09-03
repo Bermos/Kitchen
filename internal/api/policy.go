@@ -88,6 +88,14 @@ const (
 	//
 	// It is also what docs/API.md has always said a key is: "a member of
 	// exactly one project" that "has no platform surface at all".
+	//
+	// The two routes that joined it (#222) are the create-a-project form's
+	// other fields — the repository listing and the preflight — and they are
+	// here for the consequence rather than for the reason: both answer from
+	// the platform's own git credential, so they told a machine account what
+	// every repository the installation reaches is called. Their whole
+	// justification was that a project cannot be created without them, and a
+	// caller who may not create one has no use for them.
 	requirePerson
 	// requireOperator admits the platform's operators alone.
 	requireOperator
@@ -578,23 +586,37 @@ func (s *Server) routes() []route {
 		{"DELETE /api/v1/addons/{name}", s.deleteAddon, operatorOnly("removing an addon")},
 
 		// Connections hold the platform's credentials to everything else, so
-		// every one of these is the operator's — except the two the
+		// every one of these is the operator's — except the three the
 		// create-a-project form is filled in from. The list is the picker: it
 		// answers an operator with the connections themselves and everybody
 		// else with the three things a dropdown needs — name, capabilities,
 		// readiness. The repository listing is the next field of the same
 		// form, and it is the caller's own account that would otherwise be
-		// typing the repository's name into it. Neither creates, edits, tests
-		// or deletes anything, and neither can reach a credential: the second
-		// answers what the stored credential can see, never the credential.
+		// typing the repository's name into it. None of the three creates,
+		// edits, tests or deletes anything, and none can reach a credential:
+		// the last two answer what the stored credential can see, never the
+		// credential.
+		//
+		// The last two are `any person` rather than `any account` (#222). They
+		// answer from the *platform's* credential, not the caller's, so what a
+		// listing carries is every repository the installation's PAT or App
+		// reaches — which for a GitHub App across an organisation is that
+		// organisation's directory. The reason they admit somebody holding no
+		// role at all is that they are the form the first project is created
+		// on, and since #203 creating a project is `any person`: a picker that
+		// feeds a form its caller may not submit has no reason left to answer
+		// them. So a CI key loses the reading half of the surface #203 closed
+		// the writing half of.
 		{"GET /api/v1/connections", s.listConnections, byRole("choosing a connection")},
-		{"GET /api/v1/connections/{name}/repositories", s.listConnectionRepositories, anyCaller()},
+		{"GET /api/v1/connections/{name}/repositories", s.listConnectionRepositories,
+			anyPerson("listing what a connection can see")},
 		// The third field of the same form, and the one that is worth being
 		// wrong about early: it reads the repository the way a build would
 		// and says what the platform makes of it, so a root directory one
 		// level off is a sentence on the form rather than a failed build
 		// five minutes later. It writes nothing and reaches no credential.
-		{"POST /api/v1/connections/{name}/detect", s.detectRepository, anyCaller()},
+		{"POST /api/v1/connections/{name}/detect", s.detectRepository,
+			anyPerson("reading a repository before a project exists")},
 		{"POST /api/v1/connections", s.createConnection, operatorOnly("adding a connection")},
 		{"POST /api/v1/connections/test", s.testConnection, operatorOnly("testing a connection")},
 		{"GET /api/v1/connections/{name}", s.getConnection, operatorOnly("reading a connection")},

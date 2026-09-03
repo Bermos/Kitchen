@@ -230,6 +230,68 @@ func TestAPersonMayStillCreateAProject(t *testing.T) {
 	}
 }
 
+// #222: the reading half of the same surface. The repository listing and the
+// preflight answer from the *platform's* git credential, so a key holding
+// developer on one project could read the name of every repository the
+// installation's PAT or App can see, and the contents of any one of them.
+// Their whole justification was the create-a-project form, and since #203 a
+// key may not submit it.
+func TestACIKeyIsRefusedTheCreateAProjectFormsOtherFields(t *testing.T) {
+	github := fakeGitHubRepos(t, "ghp_stored", `[{"full_name": "acme/secret-plans", "default_branch": "main"}]`)
+	h := newHarness(t, nil, append(fixtures(), gitHubConnection("hub", github.URL, "ghp_stored")...)...)
+	h.demoteCaller(t)
+	h.grantTo(t, ciKeySubject, ciKeyEmail, kitchenv1alpha1.AccessRoleDeveloper)
+	asKey := h.issuer.tokenFor(t, ciKeySubject, ciKeyEmail)
+
+	for _, refused := range []struct {
+		method, path, body, doing string
+	}{
+		{http.MethodGet, "/api/v1/connections/hub/repositories", "", "listing what a connection can see"},
+		{http.MethodPost, "/api/v1/connections/hub/detect", `{"repo": "acme/secret-plans", "ref": "main"}`,
+			"reading a repository before a project exists"},
+	} {
+		recorder := h.do(t, refused.method, refused.path, refused.body, asKey)
+		if recorder.Code != http.StatusForbidden {
+			t.Fatalf("%s %s: want 403, got %d: %s",
+				refused.method, refused.path, recorder.Code, recorder.Body.String())
+		}
+		// The refusal names the operation and the account, and the guard runs
+		// in front of the handler, so nothing the provider knows comes back.
+		body := recorder.Body.String()
+		if !strings.Contains(body, refused.doing) || !strings.Contains(body, ciKeyEmail) {
+			t.Fatalf("%s %s: the refusal explains neither the operation nor the caller: %s",
+				refused.method, refused.path, body)
+		}
+		if strings.Contains(body, "secret-plans") {
+			t.Fatalf("%s %s: the refusal carries what the platform's credential can see: %s",
+				refused.method, refused.path, body)
+		}
+	}
+
+	// The connection picker in front of both stays open: a key that can read
+	// its project can still be told a `gitSource` exists, which is what makes
+	// `GET /connections` the picker rather than the operator's list.
+	if recorder := h.do(t, http.MethodGet, "/api/v1/connections", "", asKey); recorder.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+// And a person holding no role at all still gets both, because both are the
+// form they create their first project on.
+func TestAPersonWithNoProjectsStillGetsTheCreateAProjectForm(t *testing.T) {
+	github := fakeGitHubRepos(t, "ghp_stored", `[{"full_name": "acme/storefront", "default_branch": "main"}]`)
+	h := newHarness(t, nil, append(fixtures(), gitHubConnection("hub", github.URL, "ghp_stored")...)...)
+	h.demoteCaller(t)
+
+	recorder := h.do(t, http.MethodGet, "/api/v1/connections/hub/repositories", "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if view := decode[connectionRepositoriesView](t, recorder); len(view.Items) != 1 {
+		t.Fatalf("want the listing, got %+v", view)
+	}
+}
+
 // Creating writes both things: the credential at the issuer, and the grant
 // that makes it useful.
 func TestIssuingAKeyWritesTheGrantWithIt(t *testing.T) {
