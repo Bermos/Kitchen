@@ -1,7 +1,7 @@
 {
   "name": "kitchen-ui",
   "private": true,
-  "version": "0.22.0",
+  "version": "0.23.0",
   "type": "module",
   "description": "The Kitchen dashboard: a Vue SPA talking only to the operator REST API.",
   "scripts": {
