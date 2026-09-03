@@ -59,6 +59,18 @@ var (
 	// releaseWait bounds the look for the Release a successful build makes.
 	// The reconciler writes it as soon as it sees the build succeed.
 	releaseWait = 2 * time.Minute
+	// degradedSettle is how long an environment has to read Degraded before
+	// the deploy is called failed.
+	//
+	// Degraded is not by itself a verdict: an environment carries the phase
+	// its *last* pass left on it, so a retry of a failed migration reads
+	// Degraded for the moment between the release being promoted onto it and
+	// the reconciler looking at the new one. Stopping at the first Degraded —
+	// which is what this command used to do — would report that as a failed
+	// deploy. Waiting a few polls costs a genuine failure this much and
+	// nothing else, because a failed deploy stays failed: nothing about it
+	// changes until somebody builds, rolls back or retries.
+	degradedSettle = 15 * time.Second
 )
 
 // The event types a followed deploy emits, spelled once. They are the `type`
@@ -82,9 +94,10 @@ type deployEvent struct {
 	Environment *environment `json:"environment,omitempty"`
 	// URL is where the deployed environment answers, on the result event.
 	URL string `json:"url,omitempty"`
-	// OK is on the result event alone: whether the build succeeded. It is the
-	// same fact the exit status carries, for a caller reading one line of
-	// JSON rather than a status.
+	// OK is on the result event alone: whether the deploy worked — the build
+	// succeeded and, where one was waited for, the environment did not settle
+	// Degraded. It is the same fact the exit status carries, for a caller
+	// reading one line of JSON rather than a status.
 	OK *bool `json:"ok,omitempty"`
 }
 
@@ -114,9 +127,11 @@ Following prints the build's own output as it arrives and then reports the
 release and the environment that picked it up. --detach starts the build and
 prints it; --no-wait stops when the build does.
 
-The exit status is the build's: 0 when it succeeded, 9 when it failed or was
-cancelled. Whether the environment went live in the time allowed is in the
-result rather than in the status, because it is a different question from
+The exit status is the deploy's: 0 when it worked, 9 when the build failed or
+was cancelled, and 12 when the build succeeded and the environment settled
+Degraded — the release was refused, and what was serving before it still is.
+An environment that has not gone live within --environment-timeout is neither:
+"not live yet" is in the result, because it is a different question from
 whether the deploy worked.`),
 		Args: cobra.NoArgs,
 		RunE: run(func(cmd *cobra.Command, _ []string) error {
@@ -433,23 +448,28 @@ func (d *deployment) watch(ctx context.Context, started *build) error {
 	streaming.Wait()
 
 	result := deployEvent{Type: eventResult, Build: finished}
-	ok := finished.Phase == phaseSucceeded
-	result.OK = &ok
+	built := finished.Phase == phaseSucceeded
 
-	if ok && !d.options.noWait {
-		released, deployed := d.awaitDeploy(ctx, finished)
-		result.Release, result.Environment = released, deployed
+	// The deploy's verdict, which is the build's until there is an
+	// environment to have one of its own.
+	var refused error
+	if built && !d.options.noWait {
+		released, deployed, err := d.awaitDeploy(ctx, finished)
+		result.Release, result.Environment, refused = released, deployed, err
 		if deployed != nil {
 			result.URL = deployed.URL
 		}
 	}
 
+	ok := built && refused == nil
+	result.OK = &ok
 	d.emit(result)
-	if !ok {
+
+	if !built {
 		return failf(codeBuildFailed, "the build %s ended %s", finished.Name, strings.ToLower(finished.Phase)).
 			withHint("its output is above; `kitchen logs --build " + finished.Name + "` reads it again")
 	}
-	return nil
+	return refused
 }
 
 // awaitBuild polls until the build stops moving, reporting every phase change.
@@ -506,24 +526,34 @@ func (d *deployment) streamLogs(ctx context.Context, name string) {
 // awaitDeploy follows what a successful build turns into: the Release the
 // reconciler writes from it, and the Environment that picks the release up.
 //
-// Neither is an error when it does not arrive. A build of a branch nothing
-// deploys produces a release nothing promotes, and an environment that is slow
-// to go live is a fact about the environment rather than about this command —
-// both are reported as what was actually seen.
-func (d *deployment) awaitDeploy(ctx context.Context, finished *build) (*release, *environment) {
+// Neither *arriving* is an error. A build of a branch nothing deploys produces
+// a release nothing promotes, and an environment that is slow to go live is a
+// fact about the environment rather than about this command — both are
+// reported as what was actually seen, and both exit 0.
+//
+// An environment that settles Degraded is the one thing here that is a
+// failure, and it is the reason this returns an error at all: the platform
+// refused the release and went on serving the previous one, which a caller
+// reading only the exit status has to be told about. Settling is the whole of
+// the judgement — see degradedSettle.
+func (d *deployment) awaitDeploy(ctx context.Context, finished *build) (*release, *environment, error) {
 	released := d.awaitRelease(ctx, finished.Name)
 	if released == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 	d.emit(deployEvent{Type: eventRelease, Release: released})
 
 	var last *environment
+	// degradedSince is when the environment first read Degraded with nothing
+	// on it saying work was still in flight. Zero whenever it is anything
+	// else, so a Degraded that clears starts the count again.
+	var degradedSince time.Time
 	deadline := time.Now().Add(d.options.environmentWait)
 	for {
 		environments, err := d.client.projectEnvironments(ctx, d.project)
 		if err != nil {
 			d.runtime.printer().note("could not read the environments: %v", asFailure(err).Error())
-			return released, last
+			return released, last, nil
 		}
 		for i := range environments {
 			if environments[i].Release != released.Name {
@@ -534,14 +564,44 @@ func (d *deployment) awaitDeploy(ctx context.Context, finished *build) (*release
 				d.emit(deployEvent{Type: eventEnvironment, Environment: &current})
 			}
 			last = &current
-			if current.Phase == phaseLive || current.Phase == phaseDegraded {
-				return released, last
+
+			switch {
+			case current.Phase == phaseLive:
+				return released, last, nil
+			case current.Phase != phaseDegraded || current.deployInFlight():
+				degradedSince = time.Time{}
+			case degradedSince.IsZero():
+				degradedSince = time.Now()
+			case time.Since(degradedSince) >= degradedSettle:
+				return released, last, degradedFailure(last)
 			}
 		}
-		if time.Now().After(deadline) || !sleep(ctx, buildPollInterval) {
-			return released, last
+		if !time.Now().After(deadline) && sleep(ctx, buildPollInterval) {
+			continue
 		}
+		// The wait is over. An environment that read Degraded for the whole
+		// of it is the same refused deploy, reported late rather than not at
+		// all — unless the wait ended because somebody interrupted it, which
+		// is not a verdict on anything.
+		if ctx.Err() == nil && !degradedSince.IsZero() {
+			return released, last, degradedFailure(last)
+		}
+		return released, last, nil
 	}
+}
+
+// degradedFailure is what a settled Degraded exits with. The reason is the
+// environment's own condition, which for the case this exists for — a deploy
+// task that failed — is the sentence the reconciler wrote naming the task, its
+// run and what the run said.
+func degradedFailure(env *environment) error {
+	message := env.Name + " ended degraded: the release did not take traffic"
+	if why := env.degradedReason(); why != "" {
+		message = env.Name + " ended degraded: " + why
+	}
+	return fail(codeDeployFailed, message).
+		withHint("what was serving before this release still is; `kitchen processes --environment " +
+			env.Name + "` shows the run and `kitchen logs --environment " + env.Name + "` reads its output")
 }
 
 // awaitRelease looks for the release a build produced.
@@ -600,7 +660,14 @@ func renderDeployEvent(s tui.Styles, event deployEvent) string {
 }
 
 func renderDeployResult(s tui.Styles, event deployEvent) string {
-	if event.OK == nil || !*event.OK {
+	// The build's own line is drawn from the build's phase rather than from
+	// `ok`, which is the whole deploy's: a build that succeeded into an
+	// environment that refused the release is `ok: false` and still a build
+	// that succeeded.
+	if event.Build == nil {
+		return ""
+	}
+	if event.Build.Phase != phaseSucceeded {
 		return s.Bad.Render("✗ build " + strings.ToLower(event.Build.Phase))
 	}
 	built := s.OK.Render("✓ build succeeded")
@@ -620,8 +687,11 @@ func renderDeployResult(s tui.Styles, event deployEvent) string {
 		if event.URL != "" {
 			where += " " + s.Accent.Render(event.URL)
 		}
-		lines = append(lines, fmt.Sprintf("%s %s %s",
-			s.OK.Render("✓"), where, s.Phase(event.Environment.Phase)))
+		mark := s.OK.Render("✓")
+		if event.Environment.Phase == phaseDegraded {
+			mark = s.Bad.Render("✗")
+		}
+		lines = append(lines, fmt.Sprintf("%s %s %s", mark, where, s.Phase(event.Environment.Phase)))
 	}
 	return strings.Join(lines, "\n")
 }

@@ -47,6 +47,7 @@ const (
 	exitBuildFailed     = 9
 	exitNotLinked       = 10
 	exitTimedOut        = 11
+	exitDeployFailed    = 12
 	// exitInterrupted follows the shell's convention for SIGINT (128 + 2), so
 	// a caller cannot mistake "somebody pressed ctrl-c" for a refusal.
 	exitInterrupted = 130
@@ -67,6 +68,7 @@ const (
 	codeBuildFailed     = "buildFailed"
 	codeNotLinked       = "notLinked"
 	codeTimedOut        = "timedOut"
+	codeDeployFailed    = "deployFailed"
 	codeInterrupted     = "interrupted"
 )
 
@@ -93,6 +95,9 @@ var exitCodes = []exitCodeSpec{
 	{exitBuildFailed, codeBuildFailed, "A followed build ended Failed or Cancelled. The command worked; the build did not"},
 	{exitNotLinked, codeNotLinked, "No project could be resolved. Pass --project, set KITCHEN_PROJECT, or run `kitchen link`"},
 	{exitTimedOut, codeTimedOut, "A wait ran out before what it was waiting for happened. Nothing was undone"},
+	{exitDeployFailed, codeDeployFailed,
+		"A followed deploy ended Degraded: the build succeeded and the release did not take traffic. " +
+			"What was serving before it still is"},
 	{exitInterrupted, codeInterrupted, "Interrupted (SIGINT). Whatever was already started on the platform keeps running"},
 }
 

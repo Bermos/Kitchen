@@ -125,11 +125,15 @@ table.
 | `9` | buildFailed | A followed build ended Failed or Cancelled — the command worked, the build did not |
 | `10` | notLinked | No project resolved: `--project`, `KITCHEN_PROJECT`, or `kitchen link` |
 | `11` | timedOut | A wait ran out. Nothing was undone |
+| `12` | deployFailed | A followed deploy ended Degraded — the build succeeded, the release did not take traffic, and what was serving before it still is |
 | `130` | interrupted | SIGINT. What was already started keeps running |
 
-`9` is the one worth special handling: it means your deploy reached the
-platform and the *application* failed to build. Read the logs rather than
-retrying.
+`9` and `12` are the two worth special handling, and they are different
+failures. `9` means your deploy reached the platform and the *application*
+failed to build. `12` means it built and the platform refused to serve it —
+almost always a deploy task, such as a schema migration, that failed before the
+release could take traffic; the error's `message` names the task and its run.
+Read the logs in both cases rather than retrying.
 
 ## Configuration: `kitchen.json`
 
@@ -236,8 +240,9 @@ kitchen builds --json                       # recent builds, newest first
 kitchen config check --json
 ```
 
-`kitchen deploy` streams NDJSON and exits `9` if the build fails; add
-`--detach` to return as soon as it is queued.
+`kitchen deploy` streams NDJSON, exits `9` if the build fails and `12` if the
+environment refused the release it produced; add `--detach` to return as soon
+as it is queued.
 
 ### Values are never readable
 

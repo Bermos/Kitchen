@@ -157,7 +157,7 @@ func TestExitCodesAreAContract(t *testing.T) {
 	for _, code := range []string{
 		codeFailed, codeUsage, codeUnauthenticated, codeForbidden, codeNotFound,
 		codeConflict, codeUnavailable, codeUnreachable, codeBuildFailed,
-		codeNotLinked, codeTimedOut, codeInterrupted,
+		codeNotLinked, codeTimedOut, codeDeployFailed, codeInterrupted,
 	} {
 		status, documented := byName[code]
 		if !documented {
