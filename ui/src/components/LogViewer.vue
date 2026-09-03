@@ -17,6 +17,11 @@ const props = defineProps<{
   streamer?: (query: LogQuery, onLine: (line: LogLine) => void, signal: AbortSignal) => Promise<void>;
   /** ClickHouse expression scoping this object, for the jump to Observability. */
   queryClause?: string;
+  /** What to call the thing that wrote a line, keyed by the line's `run` — the
+   * name of the Job behind it. A build that is several images is several Jobs,
+   * and their lines are one merged tail; without this it is one anonymous
+   * stream. Lines whose run is not named fall back to their container. */
+  runLabels?: Record<string, string>;
 }>();
 
 const search = ref("");
@@ -116,6 +121,13 @@ function levelClass(line: LogLine): string {
   return "text-toned";
 }
 
+// Which of the merged streams a line came from: the caller's name for its
+// Job where there is one, and the container otherwise — which is what every
+// log the platform shows was labelled with before any of them were merged.
+function origin(line: LogLine): string {
+  return props.runLabels?.[line.run ?? ""] || line.container || line.source;
+}
+
 function time(line: LogLine): string {
   const date = new Date(line.timestamp);
   return Number.isNaN(date.getTime()) ? "—" : date.toLocaleTimeString("en-GB");
@@ -181,7 +193,7 @@ function time(line: LogLine): string {
         <tbody>
           <tr v-for="(line, i) in lines" :key="i" class="hover:bg-elevated/50 align-top">
             <td class="px-3 py-0.5 text-dimmed whitespace-nowrap select-none">{{ time(line) }}</td>
-            <td class="px-3 py-0.5 text-muted whitespace-nowrap">{{ line.container || line.source }}</td>
+            <td class="px-3 py-0.5 text-muted whitespace-nowrap">{{ origin(line) }}</td>
             <td v-if="line.level" class="px-3 py-0.5 whitespace-nowrap select-none" :class="levelClass(line)">
               {{ line.level }}
             </td>

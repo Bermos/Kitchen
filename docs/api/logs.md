@@ -26,7 +26,7 @@ GET /environments/{name}/logs?limit=200&container=app
 | `search` | Case-insensitive substring of the message |
 | `container` | One container of the pod |
 | `process` | One of the project's workers or scheduled jobs. Runtime logs only — a build's lines carry no process |
-| `run` | One firing of a scheduled job, by the Job's name |
+| `run` | One Job's lines, by its name: one firing of a scheduled job, or one workload's build of a commit that built several images |
 
 Lines come back oldest first — a log reads forwards — as
 `{timestamp, source, project, environment, build, process, run, pod, container, stream, level, message, fields}`.
@@ -68,6 +68,16 @@ container read is the builder, or the clone while the builder has not started �
 a build pod's two containers are two steps, and interleaving them by timestamp
 would produce a log that is neither. Once the job's TTL collects the pod there
 is only the store, which is the normal state of every finished build.
+
+A commit that builds several images builds each of them in its own Job, and
+every one of those pods is read: a build that failed in its third workload is
+exactly the build somebody is watching, and it must not read as a build that
+produced no output at all. The pods' lines are merged by their timestamps into
+one tail, and each line carries the `run` it came from — the build Job's name,
+which is what the stored rows carry too, so the live tail and the history that
+replaces it attribute a line identically. `run` narrows the read to one of
+them, and `container` still answers with that container's output or with
+nothing.
 
 `cluster` lines are collected deliberately: a node whose storage or networking
 is failing is exactly when Kitchen looks broken, and the answer is in someone

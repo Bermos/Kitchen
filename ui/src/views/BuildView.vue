@@ -201,6 +201,21 @@ const failedCondition = computed(() =>
 const logFetcher = (query: LogQuery) => api.buildLogs(name.value, query);
 const logStreamer = (query: LogQuery, onLine: (line: LogLine) => void, signal: AbortSignal) =>
   api.streamBuildLogs(name.value, query, onLine, signal);
+
+/** What to call each stream of a build that is several images: its workload,
+ *  named as the table above names it. One commit's images are built in a Job
+ *  each and their output is one log, so without this the tail of a failing
+ *  workload is indistinguishable from the web process's. Empty for the great
+ *  majority, which build one image and have nothing to tell apart. */
+const logRunLabels = computed<Record<string, string>>(() => {
+  const workloads = build.value?.workloads ?? [];
+  if (!workloads.length) return {};
+  const labels: Record<string, string> = { [build.value?.name ?? ""]: "web" };
+  for (const workload of workloads) {
+    if (workload.job) labels[workload.job] = workload.name;
+  }
+  return labels;
+});
 </script>
 
 <template>
@@ -586,7 +601,13 @@ const logStreamer = (query: LogQuery, onLine: (line: LogLine) => void, signal: A
 
       <div>
         <h2 class="text-sm font-medium text-highlighted mb-2">Build output</h2>
-        <LogViewer :fetcher="logFetcher" :streamer="logStreamer" :live="moving" :query-clause="`build = '${build.name}'`" />
+        <LogViewer
+          :fetcher="logFetcher"
+          :streamer="logStreamer"
+          :live="moving"
+          :run-labels="logRunLabels"
+          :query-clause="`build = '${build.name}'`"
+        />
       </div>
     </template>
     <div v-else-if="loading" class="py-24 text-center text-muted text-sm">Loading…</div>

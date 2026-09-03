@@ -53,8 +53,9 @@ func logQueryFrom(req *http.Request) (clickhouse.LogQuery, error) {
 	return clickhouse.LogQuery{
 		// `process` and `run` narrow an environment's logs to one of its
 		// workers or scheduled jobs, and to one firing of a schedule. They are
-		// read here rather than on the environment handler alone because they
-		// cost nothing on a build's logs, which never carry either.
+		// read here rather than on the environment handler alone because a
+		// build's logs answer `run` too: it is the build Job's name, which is
+		// what tells one workload's build output from another's.
 		Process:   strings.TrimSpace(req.URL.Query().Get("process")),
 		Run:       strings.TrimSpace(req.URL.Query().Get("run")),
 		Container: strings.TrimSpace(req.URL.Query().Get("container")),
