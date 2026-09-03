@@ -144,6 +144,14 @@ const (
 	// reported. Two minutes is past the cluster autoscaler's reaction time on
 	// installations that have one, and well past the scheduler's own retries.
 	PendingGrace = 2 * time.Minute
+
+	// JobNoPodGrace is how long a Job may exist with no pod at all before that
+	// is a refusal rather than a Job the controller has not got to yet. It is
+	// the same two minutes, and the same reading, the build reconciler takes
+	// of a build Job — the two are one condition on two kinds of Job, and a
+	// cluster where one of them fired and the other did not would be telling
+	// two stories about one cluster.
+	JobNoPodGrace = 2 * time.Minute
 )
 
 // Continuity. The one rule here whose threshold is not a number in this file —

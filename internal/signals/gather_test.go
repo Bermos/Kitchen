@@ -158,15 +158,21 @@ func TestGatherReadsTheCluster(t *testing.T) {
 	}
 	pod := readyPod()
 	worker := node(testNode, "4", "16Gi")
+	// A Job is read with the three serving kinds: it is the kind whose
+	// admission refusal is invisible everywhere else.
+	job := installJob("kitchen-keda-install")
 
 	snapshot := Gather(context.Background(), Sources{
-		Client: testClient(t, kitchenSingleton(false), environment, &pod, &worker),
+		Client: testClient(t, kitchenSingleton(false), environment, &pod, &worker, &job),
 		Now:    func() time.Time { return testNow },
 	}, Options{})
 
 	if len(snapshot.Pods) != 1 || len(snapshot.Nodes) != 1 || len(snapshot.Environments) != 1 {
 		t.Fatalf("gathered %d pods, %d nodes, %d environments",
 			len(snapshot.Pods), len(snapshot.Nodes), len(snapshot.Environments))
+	}
+	if len(snapshot.Jobs) != 1 {
+		t.Fatalf("gathered %d jobs, want the one in the cluster", len(snapshot.Jobs))
 	}
 	if snapshot.Platform.BaseDomain != "example.com" || snapshot.Platform.RetentionDays != 30 {
 		t.Fatalf("platform facts = %+v", snapshot.Platform)

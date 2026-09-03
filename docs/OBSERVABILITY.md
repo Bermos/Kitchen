@@ -684,7 +684,7 @@ means it also surfaces on the environment's diagnostics strip.
 | `workload.at-cpu-limit` | usage pinned at limit sustained (throttling proxy) | `metrics_5m` vs. limit gauge |
 | `workload.imagepull` | ImagePullBackOff / ErrImagePull | pod status (API) |
 | `workload.unschedulable` | pod Pending with PodScheduled=False, with the scheduler's reason | pod conditions (API) |
-| `workload.admission-refused` | workload wants pods, has none, FailedCreate Warning names why | workloads + `k8s_events` — the survey's PodSecurity lesson, applied to app namespaces |
+| `workload.admission-refused` | a Deployment, StatefulSet, DaemonSet or platform-created Job wants pods, has none, FailedCreate Warning names why | workloads + Jobs + `k8s_events` — the survey's PodSecurity lesson, applied to app namespaces; a build's Job is `build.stalled`'s |
 | `workload.notready` | available < desired beyond grace period | workload status (API) |
 | `env.error-rate` | 5xx ratio over threshold vs. trailing baseline | `http_requests_1m` |
 | `env.latency-regressed` | p95 sustained above trailing baseline | `http_requests_1m` |

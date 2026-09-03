@@ -111,7 +111,8 @@ func workloadSignals() []Signal {
 		ID:       SignalAdmissionRefused,
 		Version:  1,
 		Audience: AudienceDeveloper,
-		Summary:  "a workload wants pods, has none at all, and a FailedCreate event says why",
+		Summary: "a workload or a Job wants pods, has none at all, and a FailedCreate event " +
+			"says why",
 		Requires: []Input{InputWorkloads, InputPods, InputClusterEvents},
 		Evaluate: evaluateAdmissionRefused,
 	}, {
@@ -452,9 +453,17 @@ func evaluateUnschedulable(snapshot *Snapshot) []Finding {
 // how the log collector sat dead for hours on a cluster whose every condition
 // read True, and the detail names the suspect out loud because the reader has
 // no reason to think of Pod Security on their own.
+//
+// It reads Jobs alongside the three serving kinds, because a Job is where the
+// failure mode is hardest to see: an install, a rescan or a scheduled run that
+// is refused leaves a Job that reports nothing, no pod for anything else to
+// report on, and a feature that simply never arrives. Which Jobs are its to
+// judge — and why a build's is not — is snapshotJobs'.
 func evaluateAdmissionRefused(snapshot *Snapshot) []Finding {
 	findings := make([]Finding, 0, 1)
-	for _, workload := range snapshotWorkloads(snapshot) {
+	candidates := snapshotWorkloads(snapshot)
+	candidates = append(candidates, snapshotJobs(snapshot)...)
+	for _, workload := range candidates {
 		if workload.desired == 0 || workload.hasPods {
 			continue
 		}

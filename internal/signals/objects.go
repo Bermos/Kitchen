@@ -22,6 +22,7 @@ import (
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -43,11 +44,21 @@ import (
 const (
 	labelComponentKind = "app.kubernetes.io/component"
 	labelComponentName = "app.kubernetes.io/name"
+
+	// labelPartOf and labelPartOfKitchen are what the component survey selects
+	// the platform's own workloads on, and what tells a Job the operator
+	// created from one somebody else's tooling left in the cluster.
+	labelPartOf        = "app.kubernetes.io/part-of"
+	labelPartOfKitchen = "kitchen"
+
+	// labelBuild is on every Job the build reconciler creates. Its only use
+	// here is to leave those Jobs alone; see snapshotJobs.
+	labelBuild = "kitchen.bermos.dev/build"
 )
 
-// workloadFacts is one Deployment, StatefulSet or DaemonSet reduced to what
-// the rules ask of it. The three kinds report their counts in three different
-// places and a rule that cared would have to say so three times.
+// workloadFacts is one Deployment, StatefulSet, DaemonSet or Job reduced to
+// what the rules ask of it. The kinds report their counts in four different
+// places and a rule that cared would have to say so four times.
 type workloadFacts struct {
 	kind      string
 	namespace string
@@ -64,11 +75,22 @@ type workloadFacts struct {
 	// not against the evaluation.
 	changedAt time.Time
 	reason    string
+	// scopeName is the subject a finding about this workload is at, within an
+	// environment. It is empty for the Deployment that *is* the environment,
+	// which is what makes its fingerprint the environment's own; a Job carries
+	// its name here, so that a refused run is its own finding rather than one
+	// that collides with the Deployment's.
+	scopeName string
 }
 
 func (w workloadFacts) scope() Scope {
 	if w.project != "" && w.environment != "" {
-		return Scope{Kind: ScopeEnvironment, Project: w.project, Environment: w.environment}
+		return Scope{
+			Kind:        ScopeEnvironment,
+			Project:     w.project,
+			Environment: w.environment,
+			Name:        w.scopeName,
+		}
 	}
 	return Scope{Kind: ScopeWorkload, Namespace: w.namespace, Name: w.name}
 }
@@ -111,6 +133,14 @@ func snapshotWorkloads(snapshot *Snapshot) []workloadFacts {
 	for i := range facts {
 		facts[i].hasPods = workloadHasPods(snapshot, facts[i])
 	}
+	sortFacts(facts)
+	return facts
+}
+
+// sortFacts fixes the order a round walks workloads in, so that two
+// evaluations of the same cluster produce the same findings in the same
+// sequence.
+func sortFacts(facts []workloadFacts) {
 	sort.Slice(facts, func(i, j int) bool {
 		if facts[i].namespace != facts[j].namespace {
 			return facts[i].namespace < facts[j].namespace
@@ -120,7 +150,123 @@ func snapshotWorkloads(snapshot *Snapshot) []workloadFacts {
 		}
 		return facts[i].name < facts[j].name
 	})
+}
+
+// snapshotJobs is the Jobs the platform created, reduced to the same facts,
+// for the one rule that has anything to say about a Job: a Job whose pods are
+// refused at admission has no pods at all, and every screen that counts
+// failing pods shows nothing wrong.
+//
+// It is separate from snapshotWorkloads rather than a fourth kind inside it,
+// because a Job is a different question from a Deployment and answering it
+// takes three decisions the serving kinds never have to make:
+//
+//   - Which Jobs count. A cluster Kitchen owns has few Deployments that are
+//     not the platform's, but a Job is what every other piece of tooling in a
+//     cluster creates — a backup, a migration somebody ran by hand, a Helm
+//     hook — and none of those are Kitchen's to report on. So a Job is
+//     surveyed only when it carries the platform's part-of label or an
+//     application's project and environment ones, which between them cover
+//     every Job the operator and the API create.
+//   - A build's Job is left alone. build.stalled already reports exactly this
+//     condition from the Stalled condition the build reconciler writes, and it
+//     names the Build rather than a Job with a generated-looking name.
+//   - A finished Job is not a fault, and neither is a suspended one. Both are
+//     Jobs that want no pods, which is the ordinary state of most Jobs in a
+//     cluster and would otherwise be reported as the worst thing this package
+//     knows how to say.
+//
+// Only workload.admission-refused reads these facts, which is why they are
+// gathered here rather than in snapshotWorkloads: a Job is not "not ready" for
+// having no pods yet, and an environment's Job having none is not that
+// environment failing to serve.
+func snapshotJobs(snapshot *Snapshot) []workloadFacts {
+	facts := make([]workloadFacts, 0, len(snapshot.Jobs))
+	for i := range snapshot.Jobs {
+		job := &snapshot.Jobs[i]
+		if !surveyedJob(job) || jobFinished(job) || jobSuspended(job) {
+			continue
+		}
+		// Creating a pod is immediate on an idle cluster and takes a moment on
+		// a busy one, so a Job younger than the grace has not failed to create
+		// one yet — the same reading, and the same two minutes, the build
+		// reconciler takes of a build Job.
+		if snapshot.Now.Sub(jobStartedAt(job)) < JobNoPodGrace {
+			continue
+		}
+		fact := newWorkloadFacts(&job.ObjectMeta, "Job",
+			replicasOrOne(job.Spec.Parallelism), job.Status.Active)
+		fact.scopeName = job.Name
+		fact.hasPods = jobHasPods(job)
+		facts = append(facts, fact)
+	}
+	sortFacts(facts)
 	return facts
+}
+
+// surveyedJob is a Job Kitchen created: the platform's own — a KEDA or add-on
+// install, the gate publisher, a rescan, a self-update — or an application's,
+// which the operator and the API label with the project and environment they
+// belong to. A build's Job is neither, on purpose.
+func surveyedJob(job *batchv1.Job) bool {
+	if job.Labels[labelBuild] != "" {
+		return false
+	}
+	if job.Labels[labelPartOf] == labelPartOfKitchen {
+		return true
+	}
+	return job.Labels[controller.LabelProject] != "" &&
+		job.Labels[controller.LabelEnvironment] != ""
+}
+
+// jobFinished is a Job that has run: it wants no more pods, and having none is
+// what finishing looks like. A Job past its TTL needs no test of its own — the
+// TTL controller deletes it, so it is not in the snapshot at all — and where
+// nothing collects one, its completion time is still here to say it has run.
+func jobFinished(job *batchv1.Job) bool {
+	if job.Status.Succeeded > 0 || job.Status.CompletionTime != nil {
+		return true
+	}
+	for i := range job.Status.Conditions {
+		condition := &job.Status.Conditions[i]
+		if condition.Status != corev1.ConditionTrue {
+			continue
+		}
+		if condition.Type == batchv1.JobComplete || condition.Type == batchv1.JobFailed {
+			return true
+		}
+	}
+	return false
+}
+
+// jobSuspended is a Job somebody parked. It has no pods because it was asked
+// to have none.
+func jobSuspended(job *batchv1.Job) bool {
+	return job.Spec.Suspend != nil && *job.Spec.Suspend
+}
+
+// jobHasPods reads the Job's own counters rather than the pod list, which is
+// the reading the build reconciler already takes of the same question: a pod
+// refused at admission is never created, so it is counted nowhere and the
+// rejection lands on the Job as an event instead, while a pod that was created
+// and has since gone still leaves Succeeded or Failed behind it.
+//
+// Counting pods would also be wrong here in a way it is not for a Deployment:
+// an application's Job shares its namespace and its environment label with the
+// Deployment serving that environment, so any test over the pod list would find
+// the web pods and call the Job served.
+func jobHasPods(job *batchv1.Job) bool {
+	return job.Status.Active > 0 || job.Status.Succeeded > 0 || job.Status.Failed > 0
+}
+
+// jobStartedAt is when the Job controller took the Job, which is when it began
+// having to create a pod. It falls back to creation for the moment between the
+// two.
+func jobStartedAt(job *batchv1.Job) time.Time {
+	if job.Status.StartTime != nil {
+		return job.Status.StartTime.Time
+	}
+	return job.CreationTimestamp.Time
 }
 
 func newWorkloadFacts(meta *metav1.ObjectMeta, kind string, desired, available int32) workloadFacts {

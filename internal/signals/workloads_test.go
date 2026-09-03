@@ -22,6 +22,7 @@ import (
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -249,16 +250,10 @@ func TestAdmissionRefusedNamesPodSecurity(t *testing.T) {
 		},
 		Status: appsv1.DaemonSetStatus{DesiredNumberScheduled: 3, NumberAvailable: 0},
 	}}
-	snapshot.ClusterEvents = []clickhouse.K8sEvent{{
-		Timestamp: testNow.Add(-30 * time.Minute),
-		Namespace: controller.PlatformNamespace,
-		Kind:      "DaemonSet",
-		Name:      "kitchen-collector",
-		Reason:    reasonFailedCreate,
-		Message: `Error creating: pods "kitchen-collector-" is forbidden: ` +
-			`violates PodSecurity "baseline:latest": hostPath volumes`,
-		Count: 42,
-	}}
+	snapshot.ClusterEvents = []clickhouse.K8sEvent{refusedEvent(
+		controller.PlatformNamespace, "DaemonSet", "kitchen-collector",
+		`Error creating: pods "kitchen-collector-" is forbidden: `+
+			`violates PodSecurity "baseline:latest": hostPath volumes`)}
 
 	finding := expectOne(t, evaluate(t, SignalAdmissionRefused, snapshot))
 	expectDetail(t, finding, "pod-security.kubernetes.io/enforce")
@@ -283,6 +278,133 @@ func TestAdmissionRefusedStaysQuietWhenPodsExist(t *testing.T) {
 		Message:   "Error creating: exceeded quota",
 	}}
 	expectNone(t, evaluate(t, SignalAdmissionRefused, snapshot))
+}
+
+// The same lesson on a Job, which is where it is hardest to see: an install
+// that is refused leaves a Job reporting nothing, no pod for anything else to
+// report on, and a platform feature that simply never arrives.
+func TestAdmissionRefusedReportsARefusedPlatformJob(t *testing.T) {
+	const name = "kitchen-keda-install"
+	snapshot := newSnapshot()
+	snapshot.Jobs = []batchv1.Job{installJob(name)}
+	snapshot.ClusterEvents = []clickhouse.K8sEvent{refusedEvent(
+		controller.PlatformNamespace, "Job", name,
+		`Error creating: pods "kitchen-keda-install-" is forbidden: `+
+			`violates PodSecurity "baseline:latest": hostPath volumes`)}
+
+	finding := expectOne(t, evaluate(t, SignalAdmissionRefused, snapshot))
+	expectDetail(t, finding, "Job wants 1 and has none")
+	expectDetail(t, finding, "pod-security.kubernetes.io/enforce")
+	if finding.Fingerprint != "workload.admission-refused/kitchen-system/"+name {
+		t.Fatalf("fingerprint = %q", finding.Fingerprint)
+	}
+}
+
+// An environment's own Job is the developer's, and it is named: two of an
+// environment's runs refused at once are two findings, and neither of them is
+// the environment's Deployment.
+func TestAdmissionRefusedNamesAnEnvironmentsJob(t *testing.T) {
+	const name = "shop-pr-41-migrate-3"
+	snapshot := newSnapshot()
+	snapshot.Jobs = []batchv1.Job{runJob(name)}
+	snapshot.ClusterEvents = []clickhouse.K8sEvent{refusedEvent(
+		controller.AppNamespace(testProject), "Job", name,
+		"Error creating: pods is forbidden: exceeded quota: shop, requested: pods=1")}
+
+	finding := expectOne(t, evaluate(t, SignalAdmissionRefused, snapshot))
+	expectDetail(t, finding, "ResourceQuota")
+	if finding.Scope.Kind != ScopeEnvironment || finding.Scope.Name != name {
+		t.Fatalf("scope = %+v, want the environment's, naming the Job", finding.Scope)
+	}
+	if finding.Fingerprint != "workload.admission-refused/"+testProject+"/"+testEnvironment+"/"+name {
+		t.Fatalf("fingerprint = %q", finding.Fingerprint)
+	}
+}
+
+// A build's Job is build.stalled's to report: that rule names the Build, this
+// one would name a Job whose name nobody chose.
+func TestAdmissionRefusedLeavesABuildJobAlone(t *testing.T) {
+	snapshot := newSnapshot()
+	job := runJob("shop-build-9f2c1a")
+	job.Labels[labelBuild] = "shop-9f2c1a"
+	snapshot.Jobs = []batchv1.Job{job}
+	snapshot.ClusterEvents = []clickhouse.K8sEvent{refusedEvent(
+		job.Namespace, "Job", job.Name,
+		`Error creating: pods "shop-build-9f2c1a-" is forbidden: violates PodSecurity "baseline:latest"`)}
+
+	expectNone(t, evaluate(t, SignalAdmissionRefused, snapshot))
+}
+
+// A Job nothing on the platform created is nothing for the platform to report
+// on. A cluster's Deployments are almost all Kitchen's; its Jobs are not.
+func TestAdmissionRefusedIgnoresAJobKitchenDidNotCreate(t *testing.T) {
+	snapshot := newSnapshot()
+	job := installJob("nightly-backup")
+	job.Labels = map[string]string{"app.kubernetes.io/part-of": "someone-elses-backup"}
+	snapshot.Jobs = []batchv1.Job{job}
+	snapshot.ClusterEvents = []clickhouse.K8sEvent{refusedEvent(
+		job.Namespace, "Job", job.Name, "Error creating: exceeded quota")}
+
+	expectNone(t, evaluate(t, SignalAdmissionRefused, snapshot))
+}
+
+// A Job that has run has no pods because it is done, which is the ordinary
+// state of most Jobs in a cluster and the one this rule must never report.
+func TestAdmissionRefusedSkipsAFinishedJob(t *testing.T) {
+	snapshot := newSnapshot()
+	job := installJob("kitchen-keda-install")
+	job.Status.Succeeded = 1
+	job.Status.CompletionTime = &metav1.Time{Time: testNow.Add(-40 * time.Minute)}
+	snapshot.Jobs = []batchv1.Job{job}
+	// The first attempt was refused and the second was not: the event is still
+	// in the window, and the Job is finished.
+	snapshot.ClusterEvents = []clickhouse.K8sEvent{refusedEvent(
+		job.Namespace, "Job", job.Name, "Error creating: exceeded quota")}
+
+	expectNone(t, evaluate(t, SignalAdmissionRefused, snapshot))
+}
+
+// A Job whose pod exists — or existed — is not refused, whatever the pod went
+// on to do. The counters are read rather than the pod list, because an
+// environment's Job shares its namespace and labels with the Deployment
+// serving it.
+func TestAdmissionRefusedSkipsAJobWithPods(t *testing.T) {
+	snapshot := newSnapshot()
+	job := runJob("shop-pr-41-migrate-3")
+	job.Status.Failed = 1
+	snapshot.Jobs = []batchv1.Job{job}
+	snapshot.ClusterEvents = []clickhouse.K8sEvent{refusedEvent(
+		job.Namespace, "Job", job.Name, "Error creating: exceeded quota")}
+
+	expectNone(t, evaluate(t, SignalAdmissionRefused, snapshot))
+}
+
+// Creating a pod takes a moment on a busy cluster. A Job younger than the
+// grace has not failed to create one yet.
+func TestAdmissionRefusedWaitsTheGraceOnAYoungJob(t *testing.T) {
+	snapshot := newSnapshot()
+	job := installJob("kitchen-keda-install")
+	job.CreationTimestamp = metav1.NewTime(testNow.Add(-30 * time.Second))
+	snapshot.Jobs = []batchv1.Job{job}
+	snapshot.ClusterEvents = []clickhouse.K8sEvent{refusedEvent(
+		job.Namespace, "Job", job.Name, "Error creating: exceeded quota")}
+
+	expectNone(t, evaluate(t, SignalAdmissionRefused, snapshot))
+}
+
+// A suspended Job wants no pods, and the other two rules over workloads never
+// see a Job at all: a run in progress is not an environment failing to serve.
+func TestJobsReachOnlyTheAdmissionRule(t *testing.T) {
+	snapshot := newSnapshot()
+	suspended := installJob("kitchen-rescan")
+	suspended.Spec.Suspend = ptr(true)
+	snapshot.Jobs = []batchv1.Job{suspended, runJob("shop-pr-41-migrate-3")}
+	snapshot.ClusterEvents = []clickhouse.K8sEvent{refusedEvent(
+		suspended.Namespace, "Job", suspended.Name, "Error creating: exceeded quota")}
+
+	expectNone(t, evaluate(t, SignalAdmissionRefused, snapshot))
+	expectNone(t, evaluate(t, SignalNotReady, snapshot))
+	expectNone(t, evaluate(t, SignalRTOAtRisk, snapshot))
 }
 
 func TestNotReadyFiresPastTheGrace(t *testing.T) {

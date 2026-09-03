@@ -28,6 +28,7 @@ import (
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -204,7 +205,14 @@ func gatherWorkloads(ctx context.Context, reader client.Client, snapshot *Snapsh
 	deployments := &appsv1.DeploymentList{}
 	statefulSets := &appsv1.StatefulSetList{}
 	daemonSets := &appsv1.DaemonSetList{}
-	for _, list := range []client.ObjectList{deployments, statefulSets, daemonSets} {
+	// Jobs are listed with the three serving kinds, and for the same reason:
+	// a Job whose pods are refused at admission has no pods at all, which is
+	// the one failure that looks like health from every other angle. Which of
+	// them the survey judges is decided in snapshotJobs, not here — a list
+	// narrowed by a selector could not tell "the platform created no Jobs"
+	// from "the read came back empty".
+	jobs := &batchv1.JobList{}
+	for _, list := range []client.ObjectList{deployments, statefulSets, daemonSets, jobs} {
 		if err := reader.List(ctx, list); err != nil {
 			// One kind failing makes the whole workload picture wrong rather
 			// than partial: admission-refused turns on "this workload has no
@@ -217,6 +225,7 @@ func gatherWorkloads(ctx context.Context, reader client.Client, snapshot *Snapsh
 	snapshot.Deployments = deployments.Items
 	snapshot.StatefulSets = statefulSets.Items
 	snapshot.DaemonSets = daemonSets.Items
+	snapshot.Jobs = jobs.Items
 }
 
 // gatherEdgeObjects reads the Gateway API kinds and cert-manager's.
