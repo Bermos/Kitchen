@@ -48,6 +48,14 @@ const githubTokenLink =
   encodeURIComponent("Kitchen deploys from the repositories this token can reach") +
   "&contents=read&repository_hooks=write&statuses=write&deployments=write&pull_requests=write";
 
+// A registry has no token page to link — the credential is made at whichever
+// registry the connection points at, and the form cannot know which yet. What
+// it can link is the page that answers "which credential does this registry
+// want", which is where somebody typing ghcr.io needs to be: GHCR refuses
+// every token but a classic one with write:packages, and nothing on this form
+// can say so for all four registries at once.
+const registriesDocLink = "https://github.com/Bermos/Kitchen/blob/main/docs/REGISTRIES.md";
+
 export function providerGuidance(provider: string, apiUrl?: string): ProviderGuidance | undefined {
   const origin = instanceOrigin(apiUrl);
   switch (provider) {
@@ -125,8 +133,14 @@ export function providerGuidance(provider: string, apiUrl?: string): ProviderGui
     case "dockerRegistry":
       return {
         tokenLabel: "Username and password",
-        purpose: "Builds log in with this to push images — a robot account with push access to the registry is enough.",
-        permissions: [],
+        purpose:
+          "Builds log in with this to push images, and the environment's pods pull with the same credential — so it needs push and pull, not push alone. A robot account scoped to one registry project is enough.",
+        permissions: [
+          "GitHub Container Registry wants a classic personal access token with write:packages. Fine-grained tokens are refused, and repo does not cover write:packages — a token that clones the repository still fails at the push, as a 403 in the last seconds of the build.",
+          "The URL is the prefix images are named under, not just a host: ghcr.io/<owner> (lowercase), harbor.example.com/<project>.",
+          "Testing this connection asks what docker login asks. It rules on the credential, not on what the credential may push, so a green test and a 403 at the end of a build are consistent with each other.",
+        ],
+        link: { href: registriesDocLink, label: "Setting up a registry: GHCR, Harbor, and the bundled one" },
       };
     case "s3":
       return {

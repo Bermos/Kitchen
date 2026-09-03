@@ -37,6 +37,17 @@ describe("connectors", () => {
     expect(providerGuidance("svn")).toBeUndefined();
   });
 
+  it("names GHCR's classic-token rule on the registry form, and links the page that explains it", () => {
+    // The two things somebody typing ghcr.io into this form is about to get
+    // wrong: the token flavour, and that the same credential does the pull.
+    const guidance = providerGuidance("dockerRegistry");
+    expect(guidance?.purpose).toContain("pull");
+    const permissions = guidance?.permissions.join(" ") ?? "";
+    expect(permissions).toContain("classic");
+    expect(permissions).toContain("write:packages");
+    expect(guidance?.link?.href).toContain("docs/REGISTRIES.md");
+  });
+
   it("reads an API URL down to the instance it names", () => {
     expect(instanceOrigin("https://github.internal/api/v3")).toBe("https://github.internal");
     expect(instanceOrigin("  https://ghe.example.com:8443/api/v3  ")).toBe("https://ghe.example.com:8443");
