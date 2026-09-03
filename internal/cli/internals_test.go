@@ -245,3 +245,41 @@ func TestEveryFailureCarriesACode(t *testing.T) {
 type errStub struct{}
 
 func (errStub) Error() string { return "something went wrong" }
+
+// A commit that builds several images builds each in its own Job, and their
+// output is one tail. The line says which of them wrote it; every other line
+// on the platform is unchanged by that.
+func TestLogLineNamesTheWorkloadThatWroteIt(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		line logLine
+		want string
+	}{
+		{
+			name: "a workload's own build Job",
+			line: logLine{Build: "shop-bld-abc", Run: "shop-bld-abc-api"},
+			want: "api",
+		},
+		{
+			name: "the web process's, which is the build's own Job",
+			line: logLine{Build: "shop-bld-abc", Run: "shop-bld-abc"},
+			want: "",
+		},
+		{
+			name: "a build of one image, whose lines carry the Job and nothing to tell apart",
+			line: logLine{Build: "shop-bld-abc", Run: "shop-bld-abc", Container: "buildkit"},
+			want: "",
+		},
+		{
+			name: "one firing of a scheduled job, which is not a build at all",
+			line: logLine{Run: "shop-production-nightly-report-29387520", Container: "app"},
+			want: "",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.line.workload(); got != tc.want {
+				t.Errorf("workload() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

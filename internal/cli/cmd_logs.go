@@ -247,9 +247,16 @@ func instant(value string) (string, error) {
 // the line had one, and the message. `withSource` adds which container it came
 // from, which matters when the lines are an environment's (several pods) and
 // does not when they are one build's.
+//
+// A build of several images is the exception: it names the workload that
+// wrote the line whether `withSource` is on or not, because its Jobs' output
+// is one merged tail and every one of their containers is called the same
+// thing.
 func renderLogLine(s tui.Styles, line logLine, withSource bool) string {
 	parts := []string{s.Subtle.Render(line.Timestamp.Local().Format("15:04:05"))}
-	if withSource && line.Container != "" {
+	if workload := line.workload(); workload != "" {
+		parts = append(parts, s.Accent.Render(workload))
+	} else if withSource && line.Container != "" {
 		parts = append(parts, s.Subtle.Render(line.Container))
 	}
 	if line.Level != "" {
@@ -257,4 +264,20 @@ func renderLogLine(s tui.Styles, line logLine, withSource bool) string {
 	}
 	parts = append(parts, line.Message)
 	return strings.Join(parts, " ")
+}
+
+// workload is which workload of a unit wrote a build line, and empty for
+// every other line there is.
+//
+// A commit that builds several images builds each of them in a Job named
+// after the build and the workload, and `run` is that Job's name — so the
+// build's own Job is the web process's and anything else is a workload's,
+// under a name this trims back to the workload's own. Nothing else on the
+// platform answers this: a line carries the Job it came from, not the setting
+// that produced the Job.
+func (l logLine) workload() string {
+	if l.Build == "" || l.Run == "" || l.Run == l.Build {
+		return ""
+	}
+	return strings.TrimPrefix(l.Run, l.Build+"-")
 }

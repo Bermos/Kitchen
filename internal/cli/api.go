@@ -934,19 +934,24 @@ type processRun struct {
 // logLine is one line out of the telemetry store, from a build or from
 // something running.
 type logLine struct {
-	Timestamp   time.Time         `json:"timestamp"`
-	Source      string            `json:"source"`
-	Project     string            `json:"project,omitempty"`
-	Environment string            `json:"environment,omitempty"`
-	Build       string            `json:"build,omitempty"`
-	Pod         string            `json:"pod,omitempty"`
-	Container   string            `json:"container,omitempty"`
-	Stream      string            `json:"stream,omitempty"`
-	Level       string            `json:"level,omitempty"`
-	Message     string            `json:"message"`
-	TraceID     string            `json:"traceId,omitempty"`
-	SpanID      string            `json:"spanId,omitempty"`
-	Fields      map[string]string `json:"fields,omitempty"`
+	Timestamp   time.Time `json:"timestamp"`
+	Source      string    `json:"source"`
+	Project     string    `json:"project,omitempty"`
+	Environment string    `json:"environment,omitempty"`
+	Build       string    `json:"build,omitempty"`
+	// Run is the Job the line's pod belongs to: one firing of a scheduled
+	// job, or — on a build line — the Job of one workload of a commit that
+	// built several images. It is what tells those apart, so it travels
+	// through `--json` rather than being dropped on the way.
+	Run       string            `json:"run,omitempty"`
+	Pod       string            `json:"pod,omitempty"`
+	Container string            `json:"container,omitempty"`
+	Stream    string            `json:"stream,omitempty"`
+	Level     string            `json:"level,omitempty"`
+	Message   string            `json:"message"`
+	TraceID   string            `json:"traceId,omitempty"`
+	SpanID    string            `json:"spanId,omitempty"`
+	Fields    map[string]string `json:"fields,omitempty"`
 }
 
 // The phase words, spelled once. They are the platform's, from

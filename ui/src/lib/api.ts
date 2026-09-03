@@ -1910,6 +1910,10 @@ export interface LogLine {
   build: string;
   pod: string;
   container: string;
+  /** The Job the line's pod belongs to, for the lines that have one: a
+   * scheduled job's firing, or the build of one workload of a unit that
+   * builds several images. */
+  run?: string;
   stream: string;
   /** Best-effort severity the collector parsed out of the line; "" when unknown. */
   level?: string;

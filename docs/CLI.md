@@ -441,6 +441,11 @@ the platform keeps a handful of finished Jobs and collects the rest, but the
 lines stay for the whole container-log retention, so last month's failed report
 is still readable by name.
 
+A build of a commit that produces several images is several Jobs, and their
+output is one tail: each line names the workload that wrote it, and `--json`
+carries the Job it came from as `run` — which `--run` also narrows to, when
+one workload's build is the only one worth reading.
+
 ### Workloads
 
 A project deploys a web process, and it may also declare other workloads:

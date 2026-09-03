@@ -20,6 +20,7 @@ import (
 	"bufio"
 	"context"
 	"io"
+	"sort"
 	"strings"
 	"time"
 
@@ -34,7 +35,7 @@ import (
 	"github.com/Bermos/Kitchen/internal/controller"
 )
 
-// A build's output, read off its own pod.
+// A build's output, read off the pods that are writing it.
 //
 // Every log on the platform is read out of the telemetry store: the collector
 // ships every container's output into ClickHouse, which is what makes a
@@ -48,9 +49,9 @@ import (
 // is well, a build that failed in its first seconds can finish before its
 // first line has been shipped.
 //
-// So while the pod is still there — the job keeps it for its TTL — it is asked
-// too. The store stays the source of record and answers first; this answers
-// when it has nothing to say.
+// So while the pods are still there — each job keeps its own for its TTL —
+// they are asked too. The store stays the source of record and answers first;
+// this answers when it has nothing to say.
 
 // podLogLines is a source of log lines: everything since a point in time,
 // oldest first. Nil is a source that does not exist.
@@ -99,52 +100,139 @@ const (
 	livePodLogBytes = 4 << 20
 )
 
+// buildLogSource is one build pod worth reading: the Job it belongs to, the
+// pod that Job made, and the container of that pod whose output is the Job's
+// build log.
+type buildLogSource struct {
+	job       string
+	pod       *corev1.Pod
+	container string
+}
+
 // buildPodLines is the live source for one build's log, or nil when there is
-// no pod to read: the job has been collected, or the installation does not
+// no pod to read: the jobs have been collected, or the installation does not
 // grant the log subresource.
 //
-// The container is chosen rather than merged. A build pod is a clone and a
-// builder, and interleaving two containers' output by the timestamps two
-// different processes wrote would produce a log that is neither. The builder
-// is what a reader wants; the clone is what they want when the builder never
-// ran.
+// A build is one commit and a commit can be several images (#271): the web
+// process's Job, which every build has, and one more for each workload that
+// builds an image of its own. All of them are read, because the moment this
+// exists for is watching a build fail — and a build that failed in its third
+// workload's Job would otherwise show the web process's output and nothing at
+// all from the one that failed.
+//
+// The container within a pod is chosen rather than merged. A build pod is a
+// clone and a builder, and interleaving two containers' output by the
+// timestamps two different processes wrote would produce a log that is
+// neither. The builder is what a reader wants; the clone is what they want
+// when the builder never ran.
 func (s *Server) buildPodLines(
 	ctx context.Context, build *kitchenv1alpha1.Build, query clickhouse.LogQuery,
 ) podLogLines {
 	if s.PodLogs == nil {
 		return nil
 	}
-	pod, container := s.buildPodContainer(ctx, build)
-	if pod == nil || container == "" {
-		return nil
+	sources := s.buildPodSources(ctx, build)
+	// A read narrowed to a container no build pod is running has an answer,
+	// and the answer is nothing rather than another container's output. A
+	// read narrowed to one `run` is the same question asked of the Job: it is
+	// the Job's name on the stored rows, and the store answers such a read
+	// with that Job's lines alone.
+	kept := sources[:0]
+	for _, source := range sources {
+		if query.Container != "" && query.Container != source.container {
+			continue
+		}
+		if query.Run != "" && query.Run != source.job {
+			continue
+		}
+		kept = append(kept, source)
 	}
-	// A read narrowed to a container this pod is not running has an answer,
-	// and the answer is nothing rather than the other container's output.
-	if query.Container != "" && query.Container != container {
+	sources = kept
+	if len(sources) == 0 {
 		return nil
-	}
-	template := clickhouse.LogLine{
-		Source:    clickhouse.SourceBuild,
-		Project:   build.Spec.ProjectRef.Name,
-		Build:     build.Name,
-		Pod:       pod.Name,
-		Container: container,
-		Stream:    "stdout",
 	}
 	return func(ctx context.Context, since time.Time) ([]clickhouse.LogLine, error) {
 		if since.IsZero() {
 			since = query.Since
 		}
-		stream, err := s.PodLogs(ctx, pod.Namespace, pod.Name, container, since)
-		if err != nil {
-			// A pod deleted between the two calls, or a cluster that will not
-			// serve its logs, is not an error the reader can act on: the
-			// store's answer — which is usually the whole log — stands.
-			return nil, nil
+		merged := []clickhouse.LogLine{}
+		for _, source := range sources {
+			merged = append(merged, s.buildPodSourceLines(ctx, build, source, since)...)
 		}
-		defer func() { _ = stream.Close() }()
-		return narrow(parsePodLog(stream, template, since), query), nil
+		// One pod's output arrives in the order it was written; several pods'
+		// does not, and a merge that left them in the order they were read
+		// would be one workload's whole build followed by the next one's. The
+		// sort is stable, so lines sharing a timestamp stay in their own pod's
+		// order and behind the pod that was read first — the web process's.
+		sort.SliceStable(merged, func(i, j int) bool {
+			return merged[i].Timestamp.Before(merged[j].Timestamp)
+		})
+		// The limit is the merged tail's, not each pod's: a build's log is
+		// read from its end, and four ends are not one.
+		return narrow(merged, query), nil
 	}
+}
+
+// buildPodSourceLines is one build pod's share of the log.
+func (s *Server) buildPodSourceLines(
+	ctx context.Context, build *kitchenv1alpha1.Build, source buildLogSource, since time.Time,
+) []clickhouse.LogLine {
+	stream, err := s.PodLogs(ctx, source.pod.Namespace, source.pod.Name, source.container, since)
+	if err != nil {
+		// A pod deleted between the two calls, or a cluster that will not
+		// serve its logs, is not an error the reader can act on: the store's
+		// answer — which is usually the whole log — stands. Nor is it a
+		// reason to drop the other workloads' output.
+		return nil
+	}
+	defer func() { _ = stream.Close() }()
+	return parsePodLog(stream, clickhouse.LogLine{
+		Source:  clickhouse.SourceBuild,
+		Project: build.Spec.ProjectRef.Name,
+		Build:   build.Name,
+		// Which workload wrote the line, spelled the way the store spells it:
+		// `run` is materialized from the `batch.kubernetes.io/job-name` label
+		// the Job controller stamps on every pod, and a workload's build is
+		// its own Job. So a merged live tail and the same build's stored
+		// history attribute a line identically.
+		Run:       source.job,
+		Pod:       source.pod.Name,
+		Container: source.container,
+		Stream:    "stdout",
+	}, since)
+}
+
+// buildPodSources is every build pod of this Build there is to read: the web
+// process's, and one per workload of a unit that builds several images.
+//
+// The Job names come from the Build's own status rather than from planning
+// them again, because the status is what was actually created — a workload
+// added to the project while this build was running has no Job here, and this
+// build is not the one that will build it.
+//
+// The web process's Job comes first, which is the order they were created in
+// and the order a reader expects: it is the project's own image.
+func (s *Server) buildPodSources(ctx context.Context, build *kitchenv1alpha1.Build) []buildLogSource {
+	namespace := controller.AppNamespace(build.Spec.ProjectRef.Name)
+	jobs := make([]string, 0, len(build.Status.Workloads)+1)
+	jobs = append(jobs, build.Name)
+	for _, workload := range build.Status.Workloads {
+		// A workload the reconciler has recorded but not yet created a Job
+		// for has nothing to read, and the web process's Job is already here.
+		if workload.Job == "" || workload.Job == build.Name {
+			continue
+		}
+		jobs = append(jobs, workload.Job)
+	}
+	sources := make([]buildLogSource, 0, len(jobs))
+	for _, job := range jobs {
+		pod, container := s.buildPodContainer(ctx, namespace, job)
+		if pod == nil || container == "" {
+			continue
+		}
+		sources = append(sources, buildLogSource{job: job, pod: pod, container: container})
+	}
+	return sources
 }
 
 // narrow applies the parts of the query the kubelet cannot: the search term,
@@ -170,13 +258,12 @@ func narrow(lines []clickhouse.LogLine, query clickhouse.LogQuery) []clickhouse.
 	return kept
 }
 
-// buildPodContainer is the build's pod and the container worth reading: the
-// builder, unless it never ran, in which case whatever did.
-func (s *Server) buildPodContainer(ctx context.Context, build *kitchenv1alpha1.Build) (*corev1.Pod, string) {
+// buildPodContainer is one build Job's pod and the container worth reading:
+// the builder, unless it never ran, in which case whatever did.
+func (s *Server) buildPodContainer(ctx context.Context, namespace, job string) (*corev1.Pod, string) {
 	pods := &corev1.PodList{}
-	namespace := controller.AppNamespace(build.Spec.ProjectRef.Name)
 	if err := s.reader().List(ctx, pods, client.InNamespace(namespace),
-		client.MatchingLabels{"job-name": build.Name}); err != nil {
+		client.MatchingLabels{"job-name": job}); err != nil {
 		return nil, ""
 	}
 	if len(pods.Items) == 0 {
