@@ -365,6 +365,16 @@ and `failure.reason` is `JobHasNoPod`.
 carries no elapsed time, so that a stuck build is not rewriting its own status
 every half minute.
 
+Failing a stalled build also deletes its Jobs, every image of the commit's
+rather than only the project's own. Nothing else the platform fails does that,
+and the reason is particular to this one: a stalled Job is still active, so
+whatever was refusing its pods can stop refusing them a minute after the build
+was failed, and the Job would then build and push an image that no build,
+release or environment refers to. There is nothing to lose by deleting it — a
+Job with no pod has no log — where an ordinary failed build's Job is exactly
+where its log comes from. Once a build is failed for a stall, raising the quota
+does not revive it; rebuilding the commit is what builds it.
+
 ## An artifact's evidence
 
 `GET /builds/{name}/attestations` answers everything attached to what the

@@ -529,7 +529,7 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		// and the stall diagnosis is made against the first that has not
 		// finished — a unit whose second workload cannot be scheduled says
 		// so rather than reporting the first one's healthy progress.
-		return r.observeRunning(ctx, build, project, pendingJob(outcomes, job))
+		return r.observeRunning(ctx, build, project, pendingJob(outcomes, job), outcomes)
 	}
 	return r.succeed(ctx, build, project, job, target, outcomes)
 }

@@ -1391,6 +1391,95 @@ var _ = Describe("Build Controller", func() {
 				// platform error rather than as a failing build.
 				Expect(cond.Reason).To(Equal(reasonBuildStalled))
 			})
+
+			// #234: failing the Build is not what stops it building. The Job
+			// is still active and the job-controller still retrying, so a
+			// Pod Security level or a quota relaxed a minute after the
+			// deadline would let it build and push an image for a Build that
+			// is already terminal.
+			It("takes the job with it, so nothing can push for a build that is over", func() {
+				reconcileOnce()
+				refusedAtAdmission("stall-deleted.1")
+				startedAgo(buildStallDeadline + time.Minute)
+
+				reconcileOnce()
+
+				err := k8sClient.Get(ctx, jobKey, &batchv1.Job{})
+				Expect(apierrors.IsNotFound(err)).To(BeTrue(),
+					"a stalled build's job must not outlive the build it belongs to")
+			})
+
+			// One commit is several images since #295, and any one of their
+			// Jobs is equally able to push after the Build has been failed.
+			It("takes every workload's job with it, not only the web process's", func() {
+				workloadJob := types.NamespacedName{
+					Name: workloadJobName(buildName, "api"), Namespace: appNS,
+				}
+				DeferCleanup(func() {
+					job := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{
+						Name: workloadJob.Name, Namespace: workloadJob.Namespace,
+					}}
+					Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, job,
+						client.PropagationPolicy(metav1.DeletePropagationBackground)))).To(Succeed())
+				})
+
+				projectKey := types.NamespacedName{Name: projectName, Namespace: namespace}
+				project := &kitchenv1alpha1.Project{}
+				Expect(k8sClient.Get(ctx, projectKey, project)).To(Succeed())
+				project.Spec.Processes = []kitchenv1alpha1.ProcessSpec{{
+					Name: "api", Type: kitchenv1alpha1.ProcessService, Port: 8080,
+					Build: &kitchenv1alpha1.ProcessBuildSpec{
+						Strategy:      kitchenv1alpha1.BuildStrategyDockerfile,
+						RootDirectory: "services/api",
+					},
+				}}
+				Expect(k8sClient.Update(ctx, project)).To(Succeed())
+
+				reconcileOnce()
+				Expect(k8sClient.Get(ctx, workloadJob, &batchv1.Job{})).To(Succeed(),
+					"the workload's own job is what this spec is about")
+
+				refusedAtAdmission("stall-workload.1")
+				startedAgo(buildStallDeadline + time.Minute)
+
+				reconcileOnce()
+
+				build := &kitchenv1alpha1.Build{}
+				Expect(k8sClient.Get(ctx, buildKey, build)).To(Succeed())
+				Expect(build.Status.Phase).To(Equal(kitchenv1alpha1.BuildFailed))
+				Expect(apierrors.IsNotFound(k8sClient.Get(ctx, jobKey, &batchv1.Job{}))).To(BeTrue())
+				Expect(apierrors.IsNotFound(k8sClient.Get(ctx, workloadJob, &batchv1.Job{}))).To(BeTrue(),
+					"a unit's second image can push after the build is over just as its first can")
+			})
+		})
+
+		// The other half of #234's decision: deletion is free only for a
+		// stall, because a stall has no pod. Every other failure ends with a
+		// pod that has already run, and that pod is where the build's logs
+		// come from — a Job the reconciler deleted would take the account of
+		// the failure with it.
+		It("keeps the job of a build that failed on the deadline, because the log is in its pod", func() {
+			reconcileOnce()
+
+			job := &batchv1.Job{}
+			Expect(k8sClient.Get(ctx, jobKey, job)).To(Succeed())
+			now := metav1.Now()
+			job.Status.StartTime = &now
+			job.Status.Failed = 1
+			job.Status.Conditions = []batchv1.JobCondition{
+				{Type: batchv1.JobFailureTarget, Status: corev1.ConditionTrue, Reason: "DeadlineExceeded"},
+				{Type: batchv1.JobFailed, Status: corev1.ConditionTrue, Reason: "DeadlineExceeded",
+					Message: "Job was active longer than specified deadline"},
+			}
+			Expect(k8sClient.Status().Update(ctx, job)).To(Succeed())
+
+			reconcileOnce()
+
+			build := &kitchenv1alpha1.Build{}
+			Expect(k8sClient.Get(ctx, buildKey, build)).To(Succeed())
+			Expect(build.Status.Phase).To(Equal(kitchenv1alpha1.BuildFailed))
+			Expect(k8sClient.Get(ctx, jobKey, &batchv1.Job{})).To(Succeed(),
+				"only a stall may delete a job: this one's pod is the log")
 		})
 
 		It("records which container failed the build, and what it printed", func() {
