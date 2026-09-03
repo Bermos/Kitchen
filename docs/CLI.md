@@ -325,11 +325,39 @@ kitchen deploy --json --timeout 30m
 {"type":"result","ok":true,"url":"https://shop.example.com","build":{…},"environment":{…}}
 ```
 
-**The exit status is the build's**: `0` when it succeeded, `9` when it failed or
-was cancelled. Whether the environment went live inside
-`--environment-timeout` is in the result rather than in the status, because it
-is a different question from whether the deploy worked — the result carries the
-environment's phase and URL either way.
+**The exit status is the deploy's**: `0` when it worked, `9` when the build
+failed or was cancelled, and `12` when the build succeeded and the environment
+settled `Degraded` — the release was refused, and what was serving before it
+still is. A failed deploy task is the case that makes the difference: the
+platform is working exactly as designed when it stops the deploy where it
+stands, and a pipeline that read `0` there was being told a half-applied
+migration had shipped.
+
+```sh
+kitchen deploy --json
+{"type":"environment","environment":{"name":"shop-production","phase":"Degraded",…}}
+{"type":"result","ok":false,"build":{…},"environment":{…}}
+{"error":{"code":"deployFailed","message":"shop-production ended degraded: migrate failed before this release could take traffic … Run shop-production-migrate-1: exit status 1","hint":"…"}}
+```
+
+The reason is the environment's own condition, so it names the task, its run and
+what the run said; on a terminal it is the same sentence on stderr. `ok` on the
+result event is the whole deploy's verdict — the same fact the exit status
+carries — rather than the build's alone.
+
+**`Degraded` on its own is not the verdict.** An environment carries the phase
+its last reconcile left on it, so a retry of a failed deploy reads `Degraded`
+for the moment between the release being promoted onto it and the platform
+looking at the new one; and a `Degraded` whose conditions say a deploy task is
+still running has not finished. Both are waited on. It is a settled `Degraded` —
+one that holds, with nothing on the environment saying work is in flight — that
+exits `12`.
+
+Everything else about the environment stays a fact in the result rather than in
+the status. A build of a branch nothing promotes produces a release no
+environment picks up, and an environment that has not gone live inside
+`--environment-timeout` has not gone live yet; both exit `0`, and the result
+carries the environment's phase and URL either way.
 
 ### Environment variables
 
@@ -1017,6 +1045,7 @@ to be read by whoever sent the request. `hint` says what would fix it.
 | 9 | `buildFailed` | A followed build ended Failed or Cancelled. The command worked; the build did not |
 | 10 | `notLinked` | No project could be resolved |
 | 11 | `timedOut` | A wait ran out. Nothing was undone |
+| 12 | `deployFailed` | A followed deploy ended Degraded: the build succeeded and the release did not take traffic. What was serving before it still is |
 | 130 | `interrupted` | SIGINT. Whatever was already started on the platform keeps running |
 
 `kitchen schema | jq '.exitCodes'` is the same table, from the CLI itself.
@@ -1054,7 +1083,8 @@ cannot write it carries on and exchanges every time.
 | Bubble Tea | Only when stdout is a terminal and `--json` is off | The follower prints log lines *above* the status block, so they land in the terminal's scrollback rather than in a frame that gets redrawn — and none of it can reach a pipe |
 | Prompts | Every question has a flag; `--no-input` is implied off a terminal | A command that hangs waiting for an answer in CI is worse than one that refuses and says which flag it wanted |
 | Following a deploy | Poll the build, stream its logs, then watch for the release and the environment | All four are things the API already answers; the CLI renders them and drives nothing |
-| The exit status of a deploy | The build's | "Did my build pass" and "is it live yet" are different questions; the second is in the result, where a caller can read the phase and the URL |
+| The exit status of a deploy | The build's, plus `12` for an environment that settled `Degraded` | "Did my build pass", "was my release refused" and "is it live yet" are three questions. The first two are answers a pipeline has to be able to branch on, so they are codes; the third is a fact about the environment, and stays in the result where a caller reads the phase and the URL |
+| When `Degraded` counts as refused | Only once it has settled: it holds, and no condition says work is in flight | A phase is what the last reconcile left behind, so a retry reads `Degraded` for a moment before the platform looks at the new release. Stopping at the first `Degraded` would report that as a failure — and stopping at none of them is the hole this closes |
 | Credentials on the command line | `--api-key-file` and `--api-key-stdin` preferred, `--api-key` documented as visible in the process list | The convenient spelling should not be the one that leaks |
 | A project's settings | No command; `kitchen api PATCH /projects/{name}` | One JSON body written occasionally by an admin — a port, a replica count, a health check, a security posture, a process list, arguments, a classification, the Dockerfile stage to ship (which `projects create` does carry, since the first build starts with the project). A flag per field would be a second surface to keep in step with the first, and a list of records with commands and schedules in it has no flag-shaped spelling worth having |
 | Account management | No command, and none possible | Changing a password, or ending a session, is done at the identity provider against its session cookie — and this CLI holds a key, never a session. It is not an endpoint `kitchen api` reaches either, because that reaches the operator API and these are not on it ([AUTH.md](AUTH.md), "Managing an account") |

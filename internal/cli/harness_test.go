@@ -76,6 +76,13 @@ type platform struct {
 	buildPhases []string
 	phaseReads  int
 
+	// environmentSteps is walked one entry per read of a project's
+	// environments, so a test can play a deploy through Deploying, a moment
+	// of Degraded and Live. The last entry answers every read after it, and
+	// an empty list means `environments` answers them all.
+	environmentSteps [][]environment
+	environmentReads int
+
 	// backup is the archive POST /platform/backup answers with, and
 	// backupFilename the name it suggests. A nil archive is refused the way
 	// the API refuses a member.
@@ -186,7 +193,7 @@ func (p *platform) serve(w http.ResponseWriter, req *http.Request) {
 		}
 		writeAnswer(w, http.StatusOK, p.configDiff)
 	case strings.HasSuffix(path, "/environments"):
-		writeAnswer(w, http.StatusOK, list[environment]{Items: p.environments})
+		writeAnswer(w, http.StatusOK, list[environment]{Items: p.readEnvironments()})
 	case strings.HasSuffix(path, "/promotions") && req.Method == http.MethodPost:
 		p.createPromotion(w, body)
 	case strings.HasSuffix(path, "/promotions"):
@@ -400,6 +407,22 @@ func (p *platform) answerBuild(w http.ResponseWriter) {
 		p.builds[0] = current
 	}
 	writeAnswer(w, http.StatusOK, current)
+}
+
+// readEnvironments answers one read of a project's environments, walking
+// environmentSteps when a test set one.
+func (p *platform) readEnvironments() []environment {
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
+	if len(p.environmentSteps) == 0 {
+		return p.environments
+	}
+	at := p.environmentReads
+	if at > len(p.environmentSteps)-1 {
+		at = len(p.environmentSteps) - 1
+	}
+	p.environmentReads++
+	return p.environmentSteps[at]
 }
 
 func (p *platform) answerProject(w http.ResponseWriter) {

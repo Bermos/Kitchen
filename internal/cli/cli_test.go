@@ -35,6 +35,13 @@ const (
 	// testRefusal is the sentence the fake platform refuses with. The
 	// assertions are about where it ends up rather than what it says.
 	testRefusal = "adding a connection needs the operator role; you are a member"
+
+	// What a followed deploy produces: the release the build makes, the
+	// environment that picks it up, and the run of the deploy task whose
+	// failure stops the whole thing.
+	testRelease     = "shop-rel-42"
+	testEnvironment = "shop-production"
+	testTaskRun     = "shop-production-migrate-1"
 )
 
 func TestWhoamiAnswersTheAccountAsJSON(t *testing.T) {
@@ -270,14 +277,14 @@ func TestDeployFollowsTheBuildAndAnswersEvents(t *testing.T) {
 	for _, event := range events {
 		seen[event["type"].(string)] = true
 	}
-	for _, wanted := range []string{"build", "log", "release", "environment", "result"} {
+	for _, wanted := range []string{eventBuild, eventLog, eventRelease, eventEnvironment, eventResult} {
 		if !seen[wanted] {
 			t.Fatalf("no %s event in the stream: %v", wanted, events)
 		}
 	}
 
 	final := events[len(events)-1]
-	if final["type"] != "result" {
+	if final["type"] != eventResult {
 		t.Fatalf("the stream does not end in a result: %v", final)
 	}
 	if final["ok"] != true || final["url"] != "https://shop.example.com" {
@@ -310,11 +317,165 @@ func TestAFailedBuildHasItsOwnExitStatus(t *testing.T) {
 	// reading the stream sees what happened before it sees that it failed.
 	lines := h.lines()
 	result := lines[len(lines)-2]
-	if result["type"] != "result" || result["ok"] != false {
+	if result["type"] != eventResult || result["ok"] != false {
 		t.Fatalf("unexpected result event: %v", result)
 	}
 	if refusal := lines[len(lines)-1]; refusal["error"] == nil {
 		t.Fatalf("no error envelope: %v", refusal)
+	}
+}
+
+// What the platform does with a successful build, as a followed deploy has to
+// report it. A build that passed into an environment that refused the release
+// is not a deploy that worked, and the four tests below are the whole of that
+// judgement: the settled refusal, the moment of Degraded that clears, the
+// Degraded that says it is still working, and the branch nothing promotes.
+
+// deployingProject sets up the half every one of them shares: a build that
+// succeeds and the release it produces. What an environment does with that
+// release is each test's own.
+func deployingProject(h *harness) {
+	h.env["KITCHEN_PROJECT"] = testProject
+	h.platform.buildPhases = []string{"Running", "Succeeded"}
+	h.platform.releases = []release{{
+		Name: testRelease, Project: testProject, Build: "shop-bld-abc123def456-xk2p9",
+		Image: "reg/shop@sha256:…",
+	}}
+}
+
+// refusedEnvironment is what the reconciler leaves behind when a deploy task
+// fails: the phase red, and the condition naming the task, its run and what
+// the run said. Nothing was applied, so the previous release is still serving.
+func refusedEnvironment() environment {
+	return environment{
+		Name: testEnvironment, Project: testProject, Release: testRelease, Phase: "Degraded",
+		Conditions: []condition{{
+			Type: condDeployTasks, Status: "False", Reason: "TaskFailed",
+			Message: "migrate failed before this release could take traffic, so nothing was deployed and " +
+				testEnvironment + " is still serving what it was. Run " + testTaskRun + ": exit status 1",
+		}},
+	}
+}
+
+func TestADeployThatSettlesDegradedExitsNonZero(t *testing.T) {
+	quicken(t)
+	// The second read of the environments is the settled one: the first
+	// starts the count and nothing has to elapse for the next to end it.
+	degradedSettle = 0
+
+	h := newHarness(t)
+	deployingProject(h)
+	h.platform.environments = []environment{refusedEnvironment()}
+
+	if code := h.run("deploy", "--sha", "abc123def456", "--json"); code != exitDeployFailed {
+		t.Fatalf("exit %d, wanted %d; stderr: %s", code, exitDeployFailed, h.stderr.String())
+	}
+
+	lines := h.lines()
+	result := lines[len(lines)-2]
+	if result["type"] != eventResult || result["ok"] != false {
+		t.Fatalf("the result does not say the deploy failed: %v", result)
+	}
+	envelope, isError := lines[len(lines)-1]["error"].(map[string]any)
+	if !isError {
+		t.Fatalf("the stream does not end in an error envelope: %v", lines[len(lines)-1])
+	}
+	if envelope["code"] != codeDeployFailed {
+		t.Fatalf("code %v, wanted %q", envelope["code"], codeDeployFailed)
+	}
+	message, _ := envelope["message"].(string)
+	if !strings.Contains(message, "migrate") || !strings.Contains(message, testTaskRun) {
+		t.Fatalf("the reason names neither the failed task nor its run: %q", message)
+	}
+
+	// A person is told the same thing, on stderr. A fresh platform because
+	// the first run walked this one's build phases to the end.
+	person := newHarness(t)
+	deployingProject(person)
+	person.platform.environments = []environment{refusedEnvironment()}
+	if code := person.run("deploy", "--sha", "abc123def456"); code != exitDeployFailed {
+		t.Fatalf("exit %d, wanted %d", code, exitDeployFailed)
+	}
+	if !strings.Contains(person.stderr.String(), "migrate failed") {
+		t.Fatalf("the reason did not reach stderr: %q", person.stderr.String())
+	}
+}
+
+// A phase is what the *last* pass left on the environment, so a retry of a
+// failed deploy reads Degraded for the moment between the release being
+// promoted onto it and the reconciler looking at the new one. That is not a
+// failed deploy, and stopping at the first Degraded is what made it look like
+// one.
+func TestATransientDegradedIsNotAFailedDeploy(t *testing.T) {
+	quicken(t)
+	// Long enough that nothing settles inside this test: the environment
+	// reaches Live first, which is the whole point.
+	degradedSettle = time.Minute
+
+	h := newHarness(t)
+	deployingProject(h)
+	h.platform.environmentSteps = [][]environment{
+		{refusedEnvironment()},
+		{refusedEnvironment()},
+		{{
+			Name: testEnvironment, Project: testProject, Release: testRelease,
+			Phase: "Live", URL: "https://shop.example.com",
+		}},
+	}
+
+	if code := h.run("deploy", "--sha", "abc123def456", "--json"); code != exitOK {
+		t.Fatalf("exit %d, stderr: %s", code, h.stderr.String())
+	}
+	lines := h.lines()
+	final := lines[len(lines)-1]
+	if final["type"] != eventResult || final["ok"] != true {
+		t.Fatalf("a deploy that went live did not answer as one: %v", final)
+	}
+}
+
+// The other half of the same judgement, and the one that has to be read off
+// the environment rather than timed: a Degraded whose own conditions say a
+// deploy task is still running is waited on, and the wait running out is
+// reported as what was seen — not as a refusal.
+func TestADegradedThatIsStillWorkingIsWaitedOut(t *testing.T) {
+	quicken(t)
+	// Nothing here settles by the clock, so only the condition can be what
+	// keeps this deploy waiting.
+	degradedSettle = 0
+
+	h := newHarness(t)
+	deployingProject(h)
+	working := refusedEnvironment()
+	working.Conditions = []condition{{
+		Type: condDeployTasks, Status: "False", Reason: reasonTaskRunning,
+		Message: "migrate is running as " + testTaskRun + "; nothing of this release takes traffic until it succeeds",
+	}}
+	h.platform.environments = []environment{working}
+
+	if code := h.run("deploy", "--sha", "abc123def456", "--environment-timeout", "50ms", "--json"); code != exitOK {
+		t.Fatalf("exit %d, wanted %d; stderr: %s", code, exitOK, h.stderr.String())
+	}
+}
+
+// A build of a branch nothing promotes produces a release no environment
+// picks up, which is not a failure and never was.
+func TestADeployNothingPromotesStillExitsZero(t *testing.T) {
+	quicken(t)
+
+	h := newHarness(t)
+	deployingProject(h)
+	// No environment holds the release.
+
+	if code := h.run("deploy", "--sha", "abc123def456", "--environment-timeout", "50ms", "--json"); code != exitOK {
+		t.Fatalf("exit %d, stderr: %s", code, h.stderr.String())
+	}
+	lines := h.lines()
+	final := lines[len(lines)-1]
+	if final["type"] != eventResult || final["ok"] != true {
+		t.Fatalf("unexpected result: %v", final)
+	}
+	if _, deployed := final["environment"]; deployed {
+		t.Fatalf("an environment appeared from nowhere: %v", final)
 	}
 }
 
@@ -653,12 +814,17 @@ func TestTextOutputGoesToStdoutWithoutEscapeSequences(t *testing.T) {
 }
 
 // quicken shortens the deploy follow's own waits, so a test of the whole flow
-// takes milliseconds rather than the seconds a person would wait.
+// takes milliseconds rather than the seconds a person would wait. It restores
+// degradedSettle too, so a test of the Degraded judgement can set that one to
+// whatever makes its own case deterministic.
 func quicken(t *testing.T) {
 	t.Helper()
-	poll, grace, wait := buildPollInterval, logGrace, releaseWait
+	poll, grace, wait, settle := buildPollInterval, logGrace, releaseWait, degradedSettle
 	buildPollInterval, logGrace, releaseWait = 5*time.Millisecond, 10*time.Millisecond, 200*time.Millisecond
-	t.Cleanup(func() { buildPollInterval, logGrace, releaseWait = poll, grace, wait })
+	degradedSettle = 20 * time.Millisecond
+	t.Cleanup(func() {
+		buildPollInterval, logGrace, releaseWait, degradedSettle = poll, grace, wait, settle
+	})
 }
 
 // A project's own secrets. The whole of what these check is that a value goes

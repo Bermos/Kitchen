@@ -317,7 +317,9 @@ has the whole argument, and it is a decision rather than a gap.
 it, so a commit that only exists on your laptop cannot be built. It streams
 the build's own log, and exits `9` if the build fails, which is how a script
 tells "the deploy did not reach the platform" from "the application did not
-compile".
+compile". It exits `12` for the third answer: the build succeeded and the
+environment refused the release — a deploy task that failed, most often — so
+what was serving before it still is.
 
 In CI, skip `login` and set `KITCHEN_API_KEY`.
 

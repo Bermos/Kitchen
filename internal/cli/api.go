@@ -816,6 +816,48 @@ type environment struct {
 	Conditions      []condition      `json:"conditions,omitempty"`
 }
 
+// The two conditions a followed deploy reads an environment's phase through,
+// and the reasons that mean the platform has not finished with it. Both are
+// the operator's own words — a CLI that spelled them differently would be a
+// second vocabulary for the same states.
+const (
+	condDeployTasks = "DeployTasksComplete"
+	condReady       = "Ready"
+
+	// reasonTaskRunning and reasonPreviousRunActive are the two reasons that
+	// say a deploy task is still going. Neither is Degraded today — the
+	// reconciler calls that Deploying — which is exactly why they are read
+	// rather than assumed: a Degraded that says it is still working is
+	// waited on, not reported.
+	reasonTaskRunning       = "TaskRunning"
+	reasonPreviousRunActive = "PreviousRunActive"
+)
+
+// deployInFlight reports whether anything on this environment says the
+// platform is still working on the release it holds.
+func (e *environment) deployInFlight() bool {
+	for _, c := range e.Conditions {
+		if c.Reason == reasonTaskRunning || c.Reason == reasonPreviousRunActive {
+			return true
+		}
+	}
+	return false
+}
+
+// degradedReason is why the environment is not ready, in the platform's own
+// sentence — the deploy-task condition first, since for the case that stops a
+// deploy dead it names the task, its run and what the run said.
+func (e *environment) degradedReason() string {
+	for _, wanted := range []string{condDeployTasks, condReady} {
+		for _, c := range e.Conditions {
+			if c.Type == wanted && c.Status == "False" && c.Message != "" {
+				return c.Message
+			}
+		}
+	}
+	return ""
+}
+
 // process is one of a project's workers or scheduled jobs, as one environment
 // is running it.
 // processBuild is one workload's own build: which directory of the repository
