@@ -451,13 +451,12 @@ whoever can claim that address at the issuer.
 
 | Surface | Role |
 |---|---|
-| `/platform/*`, `PATCH /settings`, `/connections/{name}` (bar its repository listing) and every connection write, `/updates`, `GET /environments/{name}/objects`, `GET /compliance`, `GET /audit/verify` | `operator` |
+| `/platform/*`, `PATCH /settings`, `/connections/{name}` (bar its repository listing and its preflight) and every connection write, `/updates`, `GET /environments/{name}/objects`, `GET /compliance`, `GET /audit/verify` | `operator` |
 | `GET /settings` | `operator` — it carries the base domain, the issuer, the gateway address and the operator list itself |
 | `DELETE /projects/{name}`, the project's own settings, membership and key writes | project `admin` |
 | Builds and cancellations, releases, environment variables, the project's own secrets, environments, domains, claims | project `developer` |
 | Projects, builds, releases, environments, logs, metrics, requests, diagnostics, signals, traces, and a project's members and keys | project `viewer` |
-| `POST /projects` | any account a person signs in as — see [Machine accounts](#machine-accounts) |
-| `GET /connections/{name}/repositories` | any account |
+| `POST /projects`, `GET /connections/{name}/repositories`, `POST /connections/{name}/detect` | any account a person signs in as — see [Machine accounts](#machine-accounts) |
 | `GET /status`, `GET /connections` | any account, with a body that varies by role |
 | `GET /me` | any account — it describes the caller to themselves |
 | `/logs`, `/events`, `/traffic`, `/metrics/overview`, `/traces`, `/audit` and the collection `GET`s | filtered to the projects the caller can see |
@@ -487,8 +486,14 @@ Four rules go with that table:
   not published to everybody by a struct they share. The repository listing
   next to it (`GET /connections/{name}/repositories`) is not an exception to
   the rule but an ordinary route: it is the same form's next field, it answers
-  everybody the same thing, and what it carries is what the credential can
-  see — never the credential.
+  everybody it answers at all the same thing, and what it carries is what the
+  credential can see — never the credential. It and the preflight next to it
+  (`POST /connections/{name}/detect`) are `any person`, not `any account`: both
+  answer from the platform's own git credential rather than the caller's, so
+  the listing is every repository the *installation* reaches — an organisation
+  directory, where the connection is a GitHub App across one. Their whole
+  justification is that a project cannot be created without them, and since
+  creating a project is `any person` a CI key has no form left to fill in.
 - **A field withheld by role is absent, never zeroed.** The dashboard has to be
   able to tell "no tunnel is configured" from "you are not allowed to know", and
   an empty component survey reads as a healthy platform running nothing.
@@ -515,16 +520,27 @@ which is what stops a key that can trigger a build from also being able to
 change the base domain — without a fourth role, and without storing permissions
 on the key. Revocation stays where it already is: one place, at the issuer.
 
-**A machine account may not create a project**, and that is the one place the
-platform asks what *kind* of account is calling rather than what role it holds.
-The rest of the model is deliberately blind to the distinction — a role is
-resolved from the subject alone, and a machine account's address is a display
-detail — but project creation is not a private act. Its creator becomes its
-`admin`; an `admin` issues keys; and the operator goes on to register a webhook
-on the named repository through the *platform's* git connection, build it on
-the platform's builders and publish it under the base domain. A key that could
-do that would be a credential able to mint its own successors, which is exactly
-what `POST /projects/{name}/keys` refuses to issue an `admin` key to avoid.
+**A machine account may not create a project**, and that is the only reason
+the platform ever asks what *kind* of account is calling rather than what role
+it holds. The rest of the model is deliberately blind to the distinction — a
+role is resolved from the subject alone, and a machine account's address is a
+display detail — but project creation is not a private act. Its creator
+becomes its `admin`; an `admin` issues keys; and the operator goes on to
+register a webhook on the named repository through the *platform's* git
+connection, build it on the platform's builders and publish it under the base
+domain. A key that could do that would be a credential able to mint its own
+successors, which is exactly what `POST /projects/{name}/keys` refuses to issue
+an `admin` key to avoid.
+
+The two routes the create-a-project form is filled in from — `GET
+/connections/{name}/repositories` and `POST /connections/{name}/detect` — ask
+the same question, and go with it rather than beside it. They are not acts of
+widening; they answer from the *platform's* git credential, so what a key got
+back was the name of every repository the installation's PAT or App can reach
+and the contents of any one of them, whether or not the key's project has
+anything to do with it. Their entire justification was that a project cannot
+be created without them. A caller who may not create one has no form to fill
+in, so they ask for a person too.
 
 The check is the reserved domain and nothing cleverer: a machine account can
 only exist under `machines.kitchen.local` and a person can only exist outside

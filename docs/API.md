@@ -70,13 +70,18 @@ grant for that account in `spec.access` — `developer` by default, which is the
 day job: builds, promotions, rollbacks, environment variables, logs. So a key
 is a member of exactly one project and has no platform surface at all: it can
 trigger a build on `shop` and it cannot change the base domain, read another
-project, or see that another project exists. **Nor can it create one** — that
-is the single route whose requirement is `any person` rather than a role,
-because a project's creator becomes its `admin`, and an `admin` issues keys. Nothing about the role is stored
-on the key, and there is no fourth role for machines — it is an ordinary grant
-on an ordinary project, which is why a key can never outrank the project it was
-made for. See [Keys for CI](api/projects.md#keys-for-ci) for issuing one, and
-[AUTH.md](AUTH.md#machine-accounts) for why it is built this way.
+project, or see that another project exists. **Nor can it create one** — the
+requirement there is `any person` rather than a role, because a project's
+creator becomes its `admin`, and an `admin` issues keys. The two routes the
+create-a-project form is filled in from ask the same thing for the consequence
+rather than for the reason: they answer from the platform's own git
+credential, so a listing is every repository the *installation* reaches, and a
+caller who may not create a project has no form to fill in. Nothing about the
+role is stored on the key, and there is no fourth role for machines — it is an
+ordinary grant on an ordinary project, which is why a key can never outrank
+the project it was made for. See [Keys for CI](api/projects.md#keys-for-ci)
+for issuing one, and [AUTH.md](AUTH.md#machine-accounts) for why it is built
+this way.
 
 **Revocation is at the issuer.** Deleting a key stops it working immediately,
 and the operator has nothing to invalidate because it never held anything;
@@ -109,7 +114,7 @@ are not roles:
 | Value | Means |
 |---|---|
 | `any account` | a valid token, and nothing more |
-| `any person` | a valid token that is not a CI key's. Not a role — a machine account already holds the role it needs; what this refuses is *widening* it. One route: `POST /projects` |
+| `any person` | a valid token that is not a CI key's. Not a role — a machine account already holds the role it needs; what this refuses is *widening* it. Three routes, and they are the create-a-project form: `POST /projects`, and the two fields it is filled in from (`GET /connections/{name}/repositories`, `POST /connections/{name}/detect`), which answer from the platform's own git credential |
 | `any account — filtered` | a valid token; the answer is narrowed to the projects the caller can see |
 | `any account — body varies` | a valid token; the shape of the body depends on the caller's platform role, and any list inside it is narrowed to the projects they can see. Two routes: `GET /status` and `GET /connections` |
 
@@ -267,8 +272,8 @@ name against `internal/api/policy.go`, so a route that moves fails them too.
 | PATCH | `/addons/{name}` | Turn its install on or off, or say where it goes | `operator` |
 | DELETE | `/addons/{name}` | Remove it. `202` — the operator finishes it, and refuses while anything provisions through it | `operator` |
 | GET | `/connections` | An operator: every connection (never their credentials). Anybody else: the picker — name, capabilities, readiness | any account — body varies |
-| GET | `/connections/{name}/repositories` | What this connection's credential can see, for the repository field of the create-a-project form | any account |
-| POST | `/connections/{name}/detect` | What the platform makes of a repository, read the way a build would, before the project exists | any account |
+| GET | `/connections/{name}/repositories` | What this connection's credential can see, for the repository field of the create-a-project form | any person |
+| POST | `/connections/{name}/detect` | What the platform makes of a repository, read the way a build would, before the project exists | any person |
 | POST | `/connections` | Create one — the credential goes in, and never comes back out | `operator` |
 | POST | `/connections/test` | Try a credential against its provider, storing nothing | `operator` |
 | GET | `/connections/{name}` | One connection | `operator` |

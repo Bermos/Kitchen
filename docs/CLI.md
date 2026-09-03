@@ -124,8 +124,13 @@ What a key may do is a project role on a machine account, which is the
 narrowest credential the platform can issue: a key made for `shop` can deploy
 `shop`, cannot see that any other project exists, and cannot create one —
 `kitchen projects create` is refused for a key, because a project's creator
-becomes its admin and an admin issues keys. That is the right shape for a CLI,
-which is exactly where a too-broad token ends up on a laptop.
+becomes its admin and an admin issues keys. The preflight that command runs
+first (`POST /connections/{name}/detect`) is refused for a key as well, along
+with the repository listing beside it: both read through the *platform's* git
+credential, and both exist to fill in a form a key may not submit. The
+preflight is advice, so what a key sees is a warning about it and then the
+refusal of the create itself. That is the right shape for a CLI, which is
+exactly where a too-broad token ends up on a laptop.
 
 In CI, skip `login` entirely:
 

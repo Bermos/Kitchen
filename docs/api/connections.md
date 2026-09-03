@@ -254,6 +254,13 @@ and this is the field after the connection. It reads no credential back — the
 token is used to ask the provider a question and never leaves the operator —
 and it writes nothing.
 
+It does ask for **a person**, though, where the list asks only for an account:
+the answer is what the *platform's* credential can see, not what the caller
+can, so on an installation whose connection is a GitHub App across an
+organisation this is that organisation's directory. A CI key is refused with
+`403` — its whole reason to call this was to fill in a form it may not submit,
+since `POST /projects` is `any person` too.
+
 Three things can happen instead of a listing, and all three answer `200`,
 because none of them is a failure of the platform and each ends with somebody
 who still has a repository to name:
@@ -271,9 +278,9 @@ takes a typed `owner/name` in every one of these cases.
 The listing is what the token can reach — owned, shared, and through an
 organisation it belongs to — which for a fine-grained token is exactly the
 repositories it was granted. There is no CLI command for it: `kitchen api GET
-/connections/gh/repositories` reaches it authenticated, and `kitchen projects
-create` needs no picker — it takes the repository from the checkout it is run
-in, or from `--repo`.
+/connections/gh/repositories` reaches it as whoever is signed in, and `kitchen
+projects create` needs no picker — it takes the repository from the checkout
+it is run in, or from `--repo`.
 
 ### What the platform makes of a repository
 
@@ -337,6 +344,11 @@ preflight asks the repository itself before it says anything about a
 directory, and the message that comes back names the connection, because an
 installation may have several and the fix is usually the credential of the one
 that was asked.
+
+Like the listing above it, this asks for **a person**: it reads a repository
+through the platform's own credential rather than the caller's, and the form
+it is the third field of is one a CI key may not submit. A key is refused with
+`403`.
 
 `detected: false` is not an error and does not stop a project being created:
 the build strategy can be set afterwards, and the build is still what decides.
