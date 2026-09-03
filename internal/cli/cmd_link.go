@@ -103,15 +103,9 @@ func linkDirectory(parent context.Context, r *Runtime, yes bool) error {
 		return err
 	}
 
-	root := repositoryRoot(r.WorkingDir)
-	if existing, dir, err := findLink(r.WorkingDir); err != nil {
+	root, _, err := linkTarget(r, found.Name, yes)
+	if err != nil {
 		return err
-	} else if existing != nil && existing.Project != found.Name {
-		if err := confirm(r, fmt.Sprintf("%s is linked to %s. Link it to %s instead?",
-			dir, existing.Project, found.Name), yes); err != nil {
-			return err
-		}
-		root = dir
 	}
 
 	path, err := writeLink(root, &link{Project: found.Name, API: base})
@@ -125,6 +119,35 @@ func linkDirectory(parent context.Context, r *Runtime, yes bool) error {
 			s.OK.Render("Linked to"), s.Title.Render(found.Name), found.Role, s.Accent.Render(base),
 			s.Subtle.Render("wrote "+path))
 	})
+}
+
+// linkTarget decides where a link naming this project belongs, and asks first
+// when the directory already deploys a different one.
+//
+// It is shared by `kitchen link` and `kitchen projects create`, because a link
+// written without a word is the same surprise whichever command wrote it: the
+// next `kitchen builds` is quietly about another project, which reads as the
+// platform having lost this one. The question is the same sentence in both,
+// and --yes is the answer to it in both.
+//
+// It answers the directory to write in and the project that was linked there
+// before — empty for a directory that was not linked, and for one already
+// linked to this same project, since neither replaces anything.
+func linkTarget(r *Runtime, name string, yes bool) (root, replaced string, err error) {
+	existing, dir, err := findLink(r.WorkingDir)
+	if err != nil {
+		return "", "", err
+	}
+	if existing == nil || existing.Project == name {
+		return repositoryRoot(r.WorkingDir), "", nil
+	}
+	if err := confirm(r, fmt.Sprintf("%s is linked to %s. Link it to %s instead?",
+		dir, existing.Project, name), yes); err != nil {
+		return "", "", err
+	}
+	// The link that is being replaced is rewritten where it already is, which
+	// for a link found in a parent directory is not this one.
+	return dir, existing.Project, nil
 }
 
 // chooseProject resolves which project to link to: the flag or the

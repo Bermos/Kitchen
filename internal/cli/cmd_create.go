@@ -52,6 +52,9 @@ type projectCreated struct {
 	// Path is the .kitchen/project.json that was written, empty when --no-link
 	// was given or there was no working copy to write it in.
 	Path string `json:"path,omitempty"`
+	// Replaced is the project this directory deployed to before, when the link
+	// written here took one over. Empty when nothing was replaced.
+	Replaced string `json:"replaced,omitempty"`
 }
 
 func newProjectCreateCommand(r *Runtime) *cobra.Command {
@@ -89,6 +92,10 @@ Creating a project starts a build of its production branch straight away, so
 than set afterwards: a monorepo corrected by a later change is corrected one
 failed build too late, and a multi-stage Dockerfile whose last stage is not the
 runtime ships the wrong image and reports success.
+
+The link is written the way kitchen link writes it: a directory already
+deploying another project is asked about before that link is replaced — --yes
+answers that too, and --link=false writes no link at all.
 
 It is the one command a CI key cannot run. A project's creator becomes its
 admin and an admin issues keys, so creating one is a person's; a key signed in
@@ -217,6 +224,17 @@ func createProject(parent context.Context, r *Runtime, options createOptions) er
 		options.branch = verdict.Ref
 	}
 
+	// Where the link goes, settled before the project is written rather than
+	// after. A directory already deploying something else is a question — the
+	// same one `kitchen link` asks — and a question asked after the create
+	// could only be answered by refusing a project that already exists.
+	linkRoot, replaced := "", ""
+	if options.link {
+		if linkRoot, replaced, err = linkTarget(r, options.name, options.yes); err != nil {
+			return err
+		}
+	}
+
 	created, err := client.createProject(ctx, newProject{
 		Name:             options.name,
 		Repo:             options.repo,
@@ -237,10 +255,11 @@ func createProject(parent context.Context, r *Runtime, options createOptions) er
 	// project exists by now, and reporting the create as a failure would send
 	// somebody looking for a project that is already there.
 	if options.link {
-		if written, err := writeLink(repositoryRoot(r.WorkingDir), &link{Project: created.Name, API: base}); err != nil {
+		if written, err := writeLink(linkRoot, &link{Project: created.Name, API: base}); err != nil {
 			r.printer().warn("created the project but could not link this directory: %v", err)
 		} else {
 			answer.Path = written
+			answer.Replaced = replaced
 		}
 	}
 
@@ -252,7 +271,11 @@ func createProject(parent context.Context, r *Runtime, options createOptions) er
 			fmt.Fprintf(out, "%s\n", s.Subtle.Render(describeDetection(verdict)))
 		}
 		if answer.Path != "" {
-			fmt.Fprintf(out, "%s\n", s.Subtle.Render("wrote "+answer.Path))
+			wrote := "wrote " + answer.Path
+			if answer.Replaced != "" {
+				wrote += ", replacing the link to " + answer.Replaced
+			}
+			fmt.Fprintf(out, "%s\n", s.Subtle.Render(wrote))
 		}
 		fmt.Fprintf(out, "%s\n", s.Accent.Render("building "+created.ProductionBranch+
 			" — kitchen builds watch"))
