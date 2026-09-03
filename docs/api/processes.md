@@ -527,9 +527,11 @@ of pods and one activity entry that arrived minutes late.
 
 The platform keeps the last three successful runs and the last five failed
 ones of a schedule, and the last five runs of a task, and collects the rest, so
-this list is short by design. **A run's output
-is not**: the log store keys on the Job's name, so a collected run is still
-readable.
+this list is short by design. A **run started by hand** belongs to no schedule
+and so falls off no history limit; it is kept for seven days after it finishes
+and then collected, which is long enough for whoever started it to come back
+to it. **A run's output is not** bounded by any of that: the log store keys on
+the Job's name, so a collected run is still readable.
 
 ```http
 GET /api/v1/environments/{name}/logs?run=shop-production-nightly-report-29387520

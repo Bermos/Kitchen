@@ -28,6 +28,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
@@ -428,6 +429,23 @@ func (s *Server) processRuns(w http.ResponseWriter, req *http.Request) {
 	writeList(w, views)
 }
 
+// manualRunTTLSeconds is how long a finished manual run's Job (and its pod)
+// sticks around before the job-controller collects it.
+//
+// It is the one Job the platform creates that nothing else would ever collect:
+// a scheduled run is owned by its CronJob and falls off the two history
+// limits, and a run started by hand has no CronJob to be collected with. So it
+// carries its own TTL instead — and a generous one, because the other TTLs in
+// the platform are collection windows for a reconciler and this one is a
+// window for a *person*. Whoever pressed the button has to be able to find the
+// run afterwards, on the listing and on `status.processes[].lastRun`, which is
+// a question asked in days rather than in the hour a build gets. Seven days is
+// past any of that and still an end.
+//
+// The run's output outlives the Job either way: the logs are in the store
+// under the Job's name, which is what `kitchen logs --run` reads.
+const manualRunTTLSeconds = 7 * 24 * 3600
+
 // triggerProcessRun starts one run now: a scheduled process off its schedule,
 // or a deploy task whose failure is holding a release back.
 //
@@ -484,6 +502,11 @@ func (s *Server) triggerProcessRun(w http.ResponseWriter, req *http.Request) {
 		},
 		Spec: *cron.Spec.JobTemplate.Spec.DeepCopy(),
 	}
+	// The template's own TTL is not the one that applies here: it is the
+	// CronJob's, written for a Job the CronJob owns and its history limits
+	// collect. This copy is owned by nobody, so it is given the TTL that
+	// collects it.
+	job.Spec.TTLSecondsAfterFinished = ptr.To(int32(manualRunTTLSeconds))
 	if !s.recorded(w, req, audit.Transition{
 		Object:    env,
 		Kind:      audit.KindEnvironment,

@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -423,6 +424,56 @@ var _ = Describe("Workers and scheduled jobs", func() {
 		Expect(nightly.LastFailure).NotTo(BeNil(),
 			"a job that fails four nights in five must not read as healthy on the fifth")
 		Expect(nightly.LastFailure.Name).To(Equal(failed))
+	})
+
+	It("reads a bounded number of runs, newest first", func() {
+		environment(prodName, kitchenv1alpha1.EnvironmentProduction)
+
+		// A run that is still going, which is all this case needs: what is
+		// under test is how many of them come back and in what order, not what
+		// any of them did.
+		startedRun := func(name string, startedAt time.Time) string {
+			job := &batchv1.Job{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      name,
+					Namespace: appNS,
+					Labels: map[string]string{
+						labelEnvironment: prodName,
+						labelProcess:     "nightly",
+					},
+				},
+				Spec: batchv1.JobSpec{
+					Template: corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							RestartPolicy: corev1.RestartPolicyNever,
+							Containers:    []corev1.Container{{Name: "app", Image: "example.invalid/app:latest"}},
+						},
+					},
+				},
+			}
+			ExpectWithOffset(1, k8sClient.Create(ctx, job)).To(Succeed())
+			job.Status.StartTime = ptr.To(metav1.NewTime(startedAt))
+			ExpectWithOffset(1, k8sClient.Status().Update(ctx, job)).To(Succeed())
+			return name
+		}
+
+		// More runs than the CronJob's history limits would ever leave: a run
+		// started by hand is not one of them, and a schedule busier than the
+		// reconcile interval outruns them anyway (#251).
+		started := time.Now().Add(-24 * time.Hour)
+		newest := ""
+		for i := range maxRunsRead + 5 {
+			started = started.Add(time.Minute)
+			newest = startedRun(fmt.Sprintf("%s-nightly-manual-%d", prodName, i), started)
+		}
+
+		runs, err := reconciler.runsOf(ctx, appNS, prodName, "nightly")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(runs).To(HaveLen(maxRunsRead))
+		Expect(runs[0].Name).To(Equal(newest), "the bound keeps the newest, not the first listed")
+		for i := 1; i < len(runs); i++ {
+			Expect(runStart(runs[i-1])).To(BeTemporally(">=", runStart(runs[i])))
+		}
 	})
 
 	It("reports a worker's readiness", func() {

@@ -100,6 +100,16 @@ const (
 	successfulRunHistory = int32(3)
 	failedRunHistory     = int32(5)
 
+	// maxRunsRead bounds one process's run listing in the reconciler. The two
+	// limits above are the CronJob's, and they bound only what the CronJob
+	// owns: a run somebody started by hand is collected by its own TTL and a
+	// schedule busier than the reconcile interval outruns the history limits
+	// between passes. Twenty is comfortably more than the eight those limits
+	// keep, so the two things this feeds — the last run and the last failure —
+	// are still computed over everything normally in the namespace, while a
+	// namespace that has got away from us cannot make a reconcile unbounded.
+	maxRunsRead = 20
+
 	// runBackoffLimit is zero, and that is a decision: a scheduled run that
 	// failed is a failed run, not a retried one, and the schedule is what
 	// tries again. A backoff limit above zero turns one nightly failure into
@@ -575,13 +585,17 @@ func (r *EnvironmentReconciler) observeCronJob(
 	return nil
 }
 
-// runsOf reads the runs of one scheduled process, newest first.
+// runsOf reads the newest maxRunsRead runs of one scheduled process, newest
+// first.
 //
 // It reads Jobs rather than the CronJob's `status.active`, because the
-// question is what *happened* and an active list holds only what has not.
-// What the store keeps is bounded by the two history limits above, which is
-// why the API answers a run listing from here and its logs from ClickHouse:
-// the Job goes, the output stays.
+// question is what *happened* and an active list holds only what has not. What
+// the cluster keeps is bounded by the two history limits above for the runs
+// the CronJob owns and by its own TTL for a run started by hand — but neither
+// bound holds at the instant of a list, so the listing bounds itself as well.
+// The output is bounded by none of it: a run's logs are in ClickHouse under
+// the Job's name, which is why the API answers a run listing from here and its
+// logs from there — the Job goes, the output stays.
 func (r *EnvironmentReconciler) runsOf(
 	ctx context.Context,
 	appNS, envName, processName string,
@@ -600,6 +614,9 @@ func (r *EnvironmentReconciler) runsOf(
 	sort.Slice(runs, func(a, b int) bool {
 		return runStart(runs[a]).After(runStart(runs[b]))
 	})
+	if len(runs) > maxRunsRead {
+		runs = runs[:maxRunsRead]
+	}
 	return runs, nil
 }
 
