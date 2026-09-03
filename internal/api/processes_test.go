@@ -551,6 +551,16 @@ func TestRunningAScheduledJobNow(t *testing.T) {
 	if job.Spec.Template.Spec.Containers[0].Image != testReleaseImage {
 		t.Fatalf("the run is not on the release's image: %+v", job.Spec.Template.Spec.Containers[0])
 	}
+	// Nothing owns this Job — the CronJob's history limits reach only the runs
+	// it made itself — so without a TTL of its own it would be the one object
+	// the platform creates and never collects (#251).
+	if job.Spec.TTLSecondsAfterFinished == nil ||
+		*job.Spec.TTLSecondsAfterFinished != int32(manualRunTTLSeconds) {
+		t.Fatalf("a manual run is never collected: %v", job.Spec.TTLSecondsAfterFinished)
+	}
+	if len(job.OwnerReferences) != 0 {
+		t.Fatalf("a manual run has no owner, so the TTL is what collects it: %+v", job.OwnerReferences)
+	}
 }
 
 func TestRunningAScheduledJobNothingHasMaterialized(t *testing.T) {
