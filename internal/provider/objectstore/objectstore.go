@@ -45,6 +45,7 @@ import (
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/provider/contract"
+	"github.com/Bermos/Kitchen/internal/provider/naming"
 )
 
 // ErrUnsupportedProvider is returned by Default for a provider this package
@@ -128,6 +129,10 @@ type Instance struct {
 	// ID is what the other operations address the bucket by — the bucket's
 	// name at the store, since a bucket is found again by nothing else.
 	ID string
+	// Name is what the provisioner called the bucket, recorded on the claim
+	// so that a bucket made under one naming rule keeps its name when the
+	// rule changes; see internal/provider/naming.
+	Name string
 	// Binding reaches the bucket.
 	Binding Binding
 	// Provenance declares what the bucket's objects derive from.
@@ -152,9 +157,11 @@ type Branch struct {
 // as success. Provision and CreateBranch may answer ErrNotReady while the
 // store is coming up.
 type Provisioner interface {
-	// Provision creates (or finds) the bucket of the given name and returns
-	// its binding.
-	Provision(ctx context.Context, name string) (Instance, error)
+	// Provision creates (or finds) the claim's bucket and returns its
+	// binding. The provisioner names it — naming.Resolve out of the claim's
+	// project and S3's own 63 characters — rather than being told what to
+	// call it.
+	Provision(ctx context.Context, res naming.Resource) (Instance, error)
 	// Deprovision removes the bucket, everything in it, and the credential
 	// scoped to it.
 	Deprovision(ctx context.Context, instanceID string) error
@@ -194,7 +201,7 @@ type CapableProvisioner interface {
 	// ProvisionWith is Provision with the claim's requirements applied,
 	// refusing with an error wrapping ErrUnsatisfiable before creating
 	// anything when one cannot be honoured.
-	ProvisionWith(ctx context.Context, name string, req Requirements) (Instance, error)
+	ProvisionWith(ctx context.Context, res naming.Resource, req Requirements) (Instance, error)
 }
 
 // The provider names the Connection enum admits for an object store.

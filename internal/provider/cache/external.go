@@ -22,6 +22,8 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+
+	"github.com/Bermos/Kitchen/internal/provider/naming"
 )
 
 // External is a server somebody else runs, reached over the URL its
@@ -92,14 +94,22 @@ func NewExternal(opts Options) (*External, error) {
 }
 
 // Provision hands over the server's own keyspace.
-func (e *External) Provision(_ context.Context, name string) (Instance, error) {
-	return e.instance(name, 0, Requirements{})
+func (e *External) Provision(ctx context.Context, res naming.Resource) (Instance, error) {
+	return e.ProvisionWith(ctx, res, Requirements{})
 }
 
 // ProvisionWith is Provision with the claim's requirements checked against
 // what the operator said the server is.
-func (e *External) ProvisionWith(_ context.Context, name string, req Requirements) (Instance, error) {
+//
+// There is nothing at the server to look a name up against — this provider
+// creates nothing, so nothing of another project's can be adopted here — and
+// the name is only what the keyspace is recorded under.
+func (e *External) ProvisionWith(ctx context.Context, res naming.Resource, req Requirements) (Instance, error) {
 	if err := e.satisfies(req); err != nil {
+		return Instance{}, err
+	}
+	name, err := naming.Resolve(ctx, res, naming.Provider{Kind: "keyspace"})
+	if err != nil {
 		return Instance{}, err
 	}
 	return e.instance(name, 0, req)
@@ -179,7 +189,8 @@ func (e *External) instance(name string, database int, _ Requirements) (Instance
 		port = "6379"
 	}
 	return Instance{
-		ID: name,
+		ID:   name,
+		Name: name,
 		Binding: Binding{
 			URL:      parsed.String(),
 			Host:     parsed.Hostname(),

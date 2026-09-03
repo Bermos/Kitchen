@@ -32,6 +32,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/provider/naming"
+)
+
+// The two claims these tests provision for, both of project "shop": the
+// instance's name is kitchen-<project>-<claim>.
+var (
+	shopCache = naming.Resource{Project: "shop", Claim: "cache"}
+	shopJobs  = naming.Resource{Project: "shop", Claim: "jobs"}
 )
 
 func testScheme(t *testing.T) *runtime.Scheme {
@@ -153,7 +161,7 @@ func TestProvisionWaitsUntilTheInstanceServes(t *testing.T) {
 	provisioner, c := newValkey(t)
 	ctx := context.Background()
 
-	_, err := provisioner.Provision(ctx, "kitchen-shop-cache")
+	_, err := provisioner.Provision(ctx, shopCache)
 	if !errors.Is(err, ErrNotReady) {
 		t.Fatalf("want ErrNotReady while it starts, got %v", err)
 	}
@@ -178,7 +186,7 @@ func TestProvisionWaitsUntilTheInstanceServes(t *testing.T) {
 	if err := c.Status().Update(ctx, set); err != nil {
 		t.Fatal(err)
 	}
-	instance, err := provisioner.Provision(ctx, "kitchen-shop-cache")
+	instance, err := provisioner.Provision(ctx, shopCache)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,12 +207,12 @@ func TestABranchInheritsTheUsageAndIsEmpty(t *testing.T) {
 	provisioner, c := newValkey(t)
 	ctx := context.Background()
 
-	if _, err := provisioner.ProvisionWith(ctx, "kitchen-jobs", Requirements{Usage: UsageQueue}); !errors.Is(err, ErrNotReady) {
+	if _, err := provisioner.ProvisionWith(ctx, shopJobs, Requirements{Usage: UsageQueue}); !errors.Is(err, ErrNotReady) {
 		t.Fatalf("want ErrNotReady, got %v", err)
 	}
-	ready(t, c, DefaultCacheNamespace, "kitchen-jobs")
+	ready(t, c, DefaultCacheNamespace, "kitchen-shop-jobs")
 
-	instance, err := provisioner.ProvisionWith(ctx, "kitchen-jobs", Requirements{Usage: UsageQueue})
+	instance, err := provisioner.ProvisionWith(ctx, shopJobs, Requirements{Usage: UsageQueue})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,15 +248,15 @@ func TestDeprovisionRemovesTheVolumeToo(t *testing.T) {
 	provisioner, c := newValkey(t)
 	ctx := context.Background()
 
-	if _, err := provisioner.ProvisionWith(ctx, "kitchen-jobs", Requirements{Usage: UsageQueue}); !errors.Is(err, ErrNotReady) {
+	if _, err := provisioner.ProvisionWith(ctx, shopJobs, Requirements{Usage: UsageQueue}); !errors.Is(err, ErrNotReady) {
 		t.Fatalf("want ErrNotReady, got %v", err)
 	}
 	// The volume a StatefulSet's claim template leaves behind, as the API
 	// server would have created it.
 	pvc := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{
-		Name:      "data-kitchen-jobs-0",
+		Name:      "data-kitchen-shop-jobs-0",
 		Namespace: DefaultCacheNamespace,
-		Labels:    map[string]string{instanceLabel: "kitchen-jobs"},
+		Labels:    map[string]string{instanceLabel: "kitchen-shop-jobs"},
 	}, Spec: corev1.PersistentVolumeClaimSpec{
 		AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
 		Resources: corev1.VolumeResourceRequirements{
@@ -259,19 +267,19 @@ func TestDeprovisionRemovesTheVolumeToo(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := provisioner.Deprovision(ctx, DefaultCacheNamespace+"/kitchen-jobs"); err != nil {
+	if err := provisioner.Deprovision(ctx, DefaultCacheNamespace+"/kitchen-shop-jobs"); err != nil {
 		t.Fatal(err)
 	}
 	for _, object := range []client.Object{
 		&appsv1.StatefulSet{}, &corev1.Service{}, &corev1.Secret{},
 	} {
-		key := types.NamespacedName{Namespace: DefaultCacheNamespace, Name: "kitchen-jobs"}
+		key := types.NamespacedName{Namespace: DefaultCacheNamespace, Name: "kitchen-shop-jobs"}
 		if err := c.Get(ctx, key, object); err == nil {
 			t.Errorf("%T outlived the instance", object)
 		}
 	}
 	if err := c.Get(ctx, types.NamespacedName{
-		Namespace: DefaultCacheNamespace, Name: "data-kitchen-jobs-0",
+		Namespace: DefaultCacheNamespace, Name: "data-kitchen-shop-jobs-0",
 	}, &corev1.PersistentVolumeClaim{}); err == nil {
 		t.Error("the volume outlived the instance it belonged to")
 	}
@@ -281,7 +289,8 @@ func TestDeprovisionRemovesTheVolumeToo(t *testing.T) {
 // one shared by accident.
 func TestLongNamesDoNotCollide(t *testing.T) {
 	long := strings.Repeat("a", 60)
-	first, second := resourceName(long+"-one"), resourceName(long+"-two")
+	first := naming.Resource{Project: "shop", Claim: long + "-one"}.Qualified(maxInstanceName)
+	second := naming.Resource{Project: "shop", Claim: long + "-two"}.Qualified(maxInstanceName)
 	if first == second {
 		t.Fatalf("two claims collided on %q", first)
 	}
@@ -301,5 +310,75 @@ func ready(t *testing.T, c client.Client, namespace, name string) {
 	set.Status.ReadyReplicas = 1
 	if err := c.Status().Update(context.Background(), set); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// An instance is named after the project as well as the claim and records
+// the project on itself, so a claim of the same name in another project
+// never reaches an instance left behind under deletionPolicy Retain.
+func TestAnInstanceCarriesTheProjectThatClaimedIt(t *testing.T) {
+	provisioner, c := newValkey(t)
+	ctx := context.Background()
+
+	if _, err := provisioner.Provision(ctx, shopCache); !errors.Is(err, ErrNotReady) {
+		t.Fatalf("want ErrNotReady, got %v", err)
+	}
+	set := &appsv1.StatefulSet{}
+	key := types.NamespacedName{Namespace: DefaultCacheNamespace, Name: "kitchen-shop-cache"}
+	if err := c.Get(ctx, key, set); err != nil {
+		t.Fatal(err)
+	}
+	if got := set.Labels[naming.LabelProject]; got != "shop" {
+		t.Fatalf("the instance records project %q", got)
+	}
+
+	// Another project's claim of the same name gets an instance of its own.
+	theirs := naming.Resource{Project: "warehouse", Claim: "cache"}
+	if _, err := provisioner.Provision(ctx, theirs); !errors.Is(err, ErrNotReady) {
+		t.Fatalf("want an instance of its own, still starting, got %v", err)
+	}
+	other := &appsv1.StatefulSet{}
+	otherKey := types.NamespacedName{Namespace: DefaultCacheNamespace, Name: "kitchen-warehouse-cache"}
+	if err := c.Get(ctx, otherKey, other); err != nil {
+		t.Fatal(err)
+	}
+	if got := other.Labels[naming.LabelProject]; got != "warehouse" {
+		t.Fatalf("the second instance records project %q", got)
+	}
+}
+
+// An instance from before the project was in the name is not adopted by
+// whoever asks for it first.
+func TestAnInstanceNamedBeforeTheProjectIsRefusedUntilItIsHandedOver(t *testing.T) {
+	provisioner, c := newValkey(t)
+	ctx := context.Background()
+	legacy := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{
+		Name:      "kitchen-cache",
+		Namespace: DefaultCacheNamespace,
+		Labels:    map[string]string{instanceLabel: "kitchen-cache", managedByLabel: managedByValue},
+	}}
+	if err := c.Create(ctx, legacy); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := provisioner.Provision(ctx, shopCache)
+	if !errors.Is(err, naming.ErrNotAdoptable) {
+		t.Fatalf("want ErrNotAdoptable, got %v", err)
+	}
+	if !strings.Contains(err.Error(), naming.AdoptAnnotation) {
+		t.Errorf("the refusal does not say how to hand it over: %v", err)
+	}
+
+	handed := naming.Resource{Project: "shop", Claim: "cache", HandOver: "kitchen-cache"}
+	if _, err := provisioner.Provision(ctx, handed); !errors.Is(err, ErrNotReady) {
+		t.Fatalf("want the handed-over instance, still starting, got %v", err)
+	}
+	adopted := &appsv1.StatefulSet{}
+	key := types.NamespacedName{Namespace: DefaultCacheNamespace, Name: "kitchen-cache"}
+	if err := c.Get(ctx, key, adopted); err != nil {
+		t.Fatal(err)
+	}
+	if got := adopted.Labels[naming.LabelProject]; got != "shop" {
+		t.Fatalf("the handed-over instance records project %q", got)
 	}
 }

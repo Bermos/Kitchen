@@ -33,6 +33,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/provider/naming"
 	"github.com/Bermos/Kitchen/internal/provider/objectstore"
 	"github.com/Bermos/Kitchen/internal/provider/objectstore/objectstoretest"
 )
@@ -45,20 +46,20 @@ type recordingStore struct {
 	refuse error
 }
 
-func (p *recordingStore) Provision(ctx context.Context, name string) (objectstore.Instance, error) {
-	return p.ProvisionWith(ctx, name, objectstore.Requirements{})
+func (p *recordingStore) Provision(ctx context.Context, res naming.Resource) (objectstore.Instance, error) {
+	return p.ProvisionWith(ctx, res, objectstore.Requirements{})
 }
 
 func (p *recordingStore) ProvisionWith(
 	ctx context.Context,
-	name string,
+	res naming.Resource,
 	req objectstore.Requirements,
 ) (objectstore.Instance, error) {
 	p.asked = req
 	if p.refuse != nil {
 		return objectstore.Instance{}, p.refuse
 	}
-	return p.S3.ProvisionWith(ctx, name, req)
+	return p.S3.ProvisionWith(ctx, res, req)
 }
 
 var _ = Describe("An objectStore claim", func() {
@@ -207,7 +208,7 @@ var _ = Describe("An objectStore claim", func() {
 
 		claim := getClaim()
 		Expect(claim.Status.Phase).To(Equal(kitchenv1alpha1.ClaimBound))
-		bucket := objectstore.BucketName(claimName)
+		bucket := naming.Resource{Project: projectName, Claim: claimName}.Qualified(63)
 		Expect(claim.Status.InstanceID).To(Equal(bucket))
 		Expect(claim.Status.DataProvenance).To(Equal(string(objectstore.ProvenanceProduction)))
 		Expect(claim.Status.PreviewMode).To(Equal("fresh"), "s3 declares a fresh bucket per preview")

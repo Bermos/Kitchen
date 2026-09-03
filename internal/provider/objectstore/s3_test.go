@@ -27,8 +27,16 @@ import (
 	"k8s.io/utils/ptr"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/provider/naming"
 	"github.com/Bermos/Kitchen/internal/provider/objectstore"
 	"github.com/Bermos/Kitchen/internal/provider/objectstore/objectstoretest"
+)
+
+// The two claims these tests provision for, both of project "shop": the
+// bucket is kitchen-<project>-<claim>.
+var (
+	shopUploads = naming.Resource{Project: "shop", Claim: "uploads"}
+	shopCDN     = naming.Resource{Project: "shop", Claim: "cdn"}
 )
 
 const (
@@ -47,15 +55,22 @@ func scoped(store *objectstoretest.Store, inCluster bool) *objectstore.S3 {
 	}
 }
 
+// shopsBucket is what project "shop"'s claim "uploads" is named, and
+// legacyBucket is what it was named before names carried the project.
+const (
+	shopsBucket  = "kitchen-shop-uploads"
+	legacyBucket = "kitchen-uploads"
+)
+
 func TestProvisionIsABucketAUserAndAPolicyPerClaim(t *testing.T) {
 	store := objectstoretest.New()
 	s := scoped(store, true)
 
-	instance, err := s.ProvisionWith(context.Background(), "shop-uploads", objectstore.Requirements{Versioning: true})
+	instance, err := s.ProvisionWith(context.Background(), shopUploads, objectstore.Requirements{Versioning: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	bucket := objectstore.BucketName("shop-uploads")
+	bucket := shopsBucket
 	if instance.ID != bucket || instance.Binding.Bucket != bucket {
 		t.Errorf("the instance is addressed by its bucket, got %q / %q", instance.ID, instance.Binding.Bucket)
 	}
@@ -100,12 +115,12 @@ func TestProvisionAgainReissuesTheCredentialRatherThanADuplicate(t *testing.T) {
 	s := scoped(store, true)
 	ctx := context.Background()
 
-	first, err := s.Provision(ctx, "shop-uploads")
+	first, err := s.Provision(ctx, shopUploads)
 	if err != nil {
 		t.Fatal(err)
 	}
 	store.Put(first.ID, "photo.jpg")
-	second, err := s.Provision(ctx, "shop-uploads")
+	second, err := s.Provision(ctx, shopUploads)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +142,7 @@ func TestPublicReadIsRefusedInClusterAndHonouredElsewhere(t *testing.T) {
 	ctx := context.Background()
 
 	store := objectstoretest.New()
-	_, err := scoped(store, true).ProvisionWith(ctx, "shop-cdn", objectstore.Requirements{PublicRead: true})
+	_, err := scoped(store, true).ProvisionWith(ctx, shopCDN, objectstore.Requirements{PublicRead: true})
 	if !errors.Is(err, objectstore.ErrUnsatisfiable) {
 		t.Fatalf("the bundled store is reached inside the cluster alone; want ErrUnsatisfiable, got %v", err)
 	}
@@ -139,7 +154,7 @@ func TestPublicReadIsRefusedInClusterAndHonouredElsewhere(t *testing.T) {
 	}
 
 	store = objectstoretest.New()
-	instance, err := scoped(store, false).ProvisionWith(ctx, "shop-cdn", objectstore.Requirements{PublicRead: true})
+	instance, err := scoped(store, false).ProvisionWith(ctx, shopCDN, objectstore.Requirements{PublicRead: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +169,7 @@ func TestSizeIsAQuotaWhereThereIsAnAdminAPIAndARefusalWhereThereIsNot(t *testing
 	ctx := context.Background()
 
 	store := objectstoretest.New()
-	instance, err := scoped(store, true).ProvisionWith(ctx, "shop-uploads", objectstore.Requirements{Size: "1Gi"})
+	instance, err := scoped(store, true).ProvisionWith(ctx, shopUploads, objectstore.Requirements{Size: "1Gi"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,12 +179,12 @@ func TestSizeIsAQuotaWhereThereIsAnAdminAPIAndARefusalWhereThereIsNot(t *testing
 
 	unscoped := scoped(objectstoretest.New(), false)
 	unscoped.Admin = nil
-	_, err = unscoped.ProvisionWith(ctx, "shop-uploads", objectstore.Requirements{Size: "1Gi"})
+	_, err = unscoped.ProvisionWith(ctx, shopUploads, objectstore.Requirements{Size: "1Gi"})
 	if !errors.Is(err, objectstore.ErrUnsatisfiable) || !strings.Contains(err.Error(), "scopedCredentials") {
 		t.Errorf("a store with no admin API cannot be given a quota, and the refusal names the flag: %v", err)
 	}
 
-	_, err = scoped(objectstoretest.New(), true).ProvisionWith(ctx, "shop-uploads", objectstore.Requirements{Size: "lots"})
+	_, err = scoped(objectstoretest.New(), true).ProvisionWith(ctx, shopUploads, objectstore.Requirements{Size: "lots"})
 	if !errors.Is(err, objectstore.ErrUnsatisfiable) {
 		t.Errorf("a size that is not a quantity is refused, got %v", err)
 	}
@@ -180,7 +195,7 @@ func TestWithoutScopedCredentialsTheApplicationGetsTheConnectionsOwn(t *testing.
 	s := scoped(store, false)
 	s.Admin = nil
 
-	instance, err := s.Provision(context.Background(), "shop-uploads")
+	instance, err := s.Provision(context.Background(), shopUploads)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +212,7 @@ func TestABranchIsAnEmptyBucketShapedLikeItsParent(t *testing.T) {
 	s := scoped(store, true)
 	ctx := context.Background()
 
-	parent, err := s.ProvisionWith(ctx, "shop-uploads", objectstore.Requirements{Versioning: true})
+	parent, err := s.ProvisionWith(ctx, shopUploads, objectstore.Requirements{Versioning: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,7 +255,7 @@ func TestDeprovisionRemovesEverythingAndTolerantesAbsence(t *testing.T) {
 	s := scoped(store, true)
 	ctx := context.Background()
 
-	instance, err := s.ProvisionWith(ctx, "shop-uploads", objectstore.Requirements{Size: "1Gi"})
+	instance, err := s.ProvisionWith(ctx, shopUploads, objectstore.Requirements{Size: "1Gi"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -268,7 +283,7 @@ func TestAStoreThatIsNotAnsweringIsNotReady(t *testing.T) {
 	store := objectstoretest.New()
 	store.NotReady = errors.Join(objectstore.ErrNotReady, errors.New("connection refused"))
 
-	_, err := scoped(store, true).Provision(context.Background(), "shop-uploads")
+	_, err := scoped(store, true).Provision(context.Background(), shopUploads)
 	if !errors.Is(err, objectstore.ErrNotReady) {
 		t.Errorf("want ErrNotReady, got %v", err)
 	}
@@ -276,17 +291,20 @@ func TestAStoreThatIsNotAnsweringIsNotReady(t *testing.T) {
 
 func TestBucketNamesFitAndStayApart(t *testing.T) {
 	long := strings.Repeat("a", 60)
-	if got := objectstore.BucketName(long); len(got) > 63 || got == objectstore.BucketName(long+"b") {
+	bucketOf := func(claim string) string {
+		return naming.Resource{Project: "shop", Claim: claim}.Qualified(63)
+	}
+	if got := bucketOf(long); len(got) > 63 || got == bucketOf(long+"b") {
 		t.Errorf("a long claim name is truncated with a digest rather than cut: %q", got)
 	}
-	if got := objectstore.BucketName("Shop-Uploads"); got != "kitchen-shop-uploads" {
+	if got := bucketOf("Uploads"); got != shopsBucket {
 		t.Errorf("bucket names are lowercase: %q", got)
 	}
-	branch := objectstore.BranchBucketName(objectstore.BucketName(long), "project-pr-1234")
+	branch := objectstore.BranchBucketName(bucketOf(long), "project-pr-1234")
 	if len(branch) > 63 || !strings.Contains(branch, "project-pr-1234") {
 		t.Errorf("the environment half keeps the most room: %q", branch)
 	}
-	key := objectstore.AccessKeyFor("kitchen-shop-uploads")
+	key := objectstore.AccessKeyFor(shopsBucket)
 	if len(key) > 20 || key == objectstore.AccessKeyFor("kitchen-shop-upload") {
 		t.Errorf("an access key fits MinIO's limit and differs per bucket: %q", key)
 	}
@@ -342,4 +360,84 @@ func TestConfigIsReadOnceForEverybody(t *testing.T) {
 		t.Errorf("a provider this package does not know: %v", err)
 	}
 	_ = ptr.To(true)
+}
+
+// A bucket is named after the project as well as the claim and tagged with
+// it, so that a bucket left behind under deletionPolicy Retain is not what
+// another project's claim of the same name is handed.
+func TestABucketCarriesTheProjectThatClaimedIt(t *testing.T) {
+	store := objectstoretest.New()
+	instance, err := scoped(store, true).Provision(context.Background(), shopUploads)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if instance.Name != shopsBucket {
+		t.Fatalf("the bucket is %q", instance.Name)
+	}
+	if got := store.Buckets[instance.Name].Tags[naming.LabelProject]; got != "shop" {
+		t.Fatalf("the bucket is tagged for project %q", got)
+	}
+}
+
+func TestAnotherProjectsRetainedBucketIsNotAdopted(t *testing.T) {
+	store := objectstoretest.New()
+	ctx := context.Background()
+	if _, err := scoped(store, true).Provision(ctx, shopUploads); err != nil {
+		t.Fatal(err)
+	}
+
+	theirs, err := scoped(store, true).Provision(ctx, naming.Resource{Project: "warehouse", Claim: "uploads"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if theirs.ID == shopsBucket {
+		t.Fatal("another project's claim was handed the first project's bucket")
+	}
+	if got := store.Buckets[theirs.ID].Tags[naming.LabelProject]; got != "warehouse" {
+		t.Fatalf("the second bucket is tagged for project %q", got)
+	}
+}
+
+// A bucket from before the project was in the name is nobody's to take.
+func TestABucketNamedBeforeTheProjectIsRefusedUntilItIsHandedOver(t *testing.T) {
+	store := objectstoretest.New()
+	ctx := context.Background()
+	if err := store.MakeBucket(ctx, legacyBucket, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := scoped(store, true).Provision(ctx, shopUploads)
+	if !errors.Is(err, naming.ErrNotAdoptable) {
+		t.Fatalf("want ErrNotAdoptable, got %v", err)
+	}
+	if _, made := store.Buckets[shopsBucket]; made {
+		t.Fatal("a second bucket was created while the claim was refused")
+	}
+
+	handed := naming.Resource{Project: "shop", Claim: "uploads", HandOver: legacyBucket}
+	instance, err := scoped(store, true).Provision(ctx, handed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if instance.ID != legacyBucket {
+		t.Fatalf("the handed-over bucket is %q", instance.ID)
+	}
+	if got := store.Buckets[legacyBucket].Tags[naming.LabelProject]; got != "shop" {
+		t.Fatalf("the handed-over bucket is tagged for project %q", got)
+	}
+}
+
+// Tagging is a record, not the boundary: a store that implements none still
+// provisions, because the bucket's name carries the project either way.
+func TestAStoreWithNoTaggingStillProvisions(t *testing.T) {
+	store := objectstoretest.New()
+	store.NoTagging = errors.New("NotImplemented")
+
+	instance, err := scoped(store, true).Provision(context.Background(), shopUploads)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if instance.Name != shopsBucket {
+		t.Fatalf("the bucket is %q", instance.Name)
+	}
 }

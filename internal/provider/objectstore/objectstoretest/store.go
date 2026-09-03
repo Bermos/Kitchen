@@ -47,6 +47,9 @@ type Store struct {
 	// Refuse makes MakeBucket fail with this error, for a store that
 	// refuses.
 	Refuse error
+	// NoTagging makes Tags and SetTags fail, the way a compatible store
+	// that implements no bucket tagging does.
+	NoTagging error
 }
 
 // Bucket is one bucket as the fake keeps it.
@@ -54,6 +57,8 @@ type Bucket struct {
 	Versioned  bool
 	PublicRead []byte
 	Objects    map[string]int
+	// Tags is the bucket's tag set, where the store keeps one.
+	Tags map[string]string
 }
 
 // User is one user as the fake keeps it.
@@ -128,6 +133,56 @@ func (s *Store) Versioning(_ context.Context, bucket string) (bool, error) {
 		return false, fmt.Errorf("NoSuchBucket: %s", bucket)
 	}
 	return b.Versioned, nil
+}
+
+// Tag records a tag on a bucket, so that a test can set up a store whose
+// buckets were tagged by an earlier reconcile.
+func (s *Store) Tag(bucket, key, value string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	b, ok := s.Buckets[bucket]
+	if !ok {
+		b = &Bucket{Objects: map[string]int{}}
+		s.Buckets[bucket] = b
+	}
+	if b.Tags == nil {
+		b.Tags = map[string]string{}
+	}
+	b.Tags[key] = value
+}
+
+func (s *Store) Tags(_ context.Context, bucket string) (map[string]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.NoTagging != nil {
+		return nil, s.NoTagging
+	}
+	b, ok := s.Buckets[bucket]
+	if !ok {
+		return nil, fmt.Errorf("NoSuchBucket: %s", bucket)
+	}
+	out := map[string]string{}
+	for key, value := range b.Tags {
+		out[key] = value
+	}
+	return out, nil
+}
+
+func (s *Store) SetTags(_ context.Context, bucket string, values map[string]string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.NoTagging != nil {
+		return s.NoTagging
+	}
+	b, ok := s.Buckets[bucket]
+	if !ok {
+		return fmt.Errorf("NoSuchBucket: %s", bucket)
+	}
+	b.Tags = map[string]string{}
+	for key, value := range values {
+		b.Tags[key] = value
+	}
+	return nil
 }
 
 func (s *Store) SetAnonymousRead(_ context.Context, bucket string, policy []byte) error {

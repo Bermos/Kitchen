@@ -53,6 +53,7 @@ import (
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/provider/contract"
+	"github.com/Bermos/Kitchen/internal/provider/naming"
 )
 
 // ErrUnsupportedProvider is returned by Default for a provider this package
@@ -162,6 +163,10 @@ type Instance struct {
 	// instance by. Opaque: a namespaced object name for the in-cluster
 	// provisioner, the server's own address for an external one.
 	ID string
+	// Name is what the provisioner called the instance, recorded on the
+	// claim so that a resource provisioned under one naming rule keeps its
+	// name when the rule changes; see internal/provider/naming.
+	Name string
 	// Binding reaches the instance.
 	Binding Binding
 	// Provenance declares what the instance's data derives from.
@@ -186,9 +191,10 @@ type Branch struct {
 // Delete operations treat already-absent as success. Both may answer
 // ErrNotReady while an instance the cluster has to start is coming up.
 type Provisioner interface {
-	// Provision creates (or finds) the instance of the given name and
-	// returns its binding.
-	Provision(ctx context.Context, name string) (Instance, error)
+	// Provision creates (or finds) the claim's instance and returns its
+	// binding. The provisioner names it — naming.Resolve out of the claim's
+	// project and its own budget — rather than being told what to call it.
+	Provision(ctx context.Context, res naming.Resource) (Instance, error)
 	// Deprovision destroys the instance and everything in it.
 	Deprovision(ctx context.Context, instanceID string) error
 	// CreateBranch creates (or finds) a preview's own instance beside the
@@ -228,7 +234,7 @@ type CapableProvisioner interface {
 	// ProvisionWith is Provision with the claim's requirements applied. It
 	// answers an error wrapping ErrUnsatisfiable, before creating anything,
 	// when it cannot honour one.
-	ProvisionWith(ctx context.Context, name string, req Requirements) (Instance, error)
+	ProvisionWith(ctx context.Context, res naming.Resource, req Requirements) (Instance, error)
 }
 
 // The provider names the Connection enum admits for a cache.

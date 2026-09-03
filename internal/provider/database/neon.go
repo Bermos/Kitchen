@@ -24,6 +24,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+
+	"github.com/Bermos/Kitchen/internal/provider/naming"
 )
 
 // DefaultNeonAPIURL is Neon's public API. Overridable through the
@@ -68,7 +70,15 @@ type neonBranch struct {
 // The instance is declared production: a claim's Neon project IS the
 // database the application runs against, not a copy of anything. The region
 // is Neon's own answer to where it put the project.
-func (n *Neon) Provision(ctx context.Context, name string) (Instance, error) {
+func (n *Neon) Provision(ctx context.Context, res naming.Resource) (Instance, error) {
+	// Neon has nowhere to record a project — its API takes a name and no
+	// tags — so here the name is the whole of the record, which is exactly
+	// why it carries the project.
+	name, err := naming.Resolve(ctx, res, naming.Provider{Kind: "Neon project", Lookup: n.owner})
+	if err != nil {
+		return Instance{}, err
+	}
+
 	existing, err := n.findProject(ctx, name)
 	if err != nil {
 		return Instance{}, err
@@ -83,7 +93,7 @@ func (n *Neon) Provision(ctx context.Context, name string) (Instance, error) {
 			return Instance{}, err
 		}
 		return Instance{
-			ID: existing.ID, Binding: binding,
+			ID: existing.ID, Name: name, Binding: binding,
 			Provenance: ProvenanceProduction, Region: existing.RegionID,
 		}, nil
 	}
@@ -101,9 +111,19 @@ func (n *Neon) Provision(ctx context.Context, name string) (Instance, error) {
 		return Instance{}, err
 	}
 	return Instance{
-		ID: created.Project.ID, Binding: binding,
+		ID: created.Project.ID, Name: name, Binding: binding,
 		Provenance: ProvenanceProduction, Region: created.Project.RegionID,
 	}, nil
+}
+
+// owner answers naming.Lookup. A Neon project carries no label, so it is
+// found or it is not: the project a name belongs to is the name itself.
+func (n *Neon) owner(ctx context.Context, name string) (naming.Owner, error) {
+	found, err := n.findProject(ctx, name)
+	if err != nil {
+		return naming.Owner{}, err
+	}
+	return naming.Owner{Found: found != nil}, nil
 }
 
 // Deprovision deletes the Neon project with its data; already gone is fine.

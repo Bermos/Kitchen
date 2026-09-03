@@ -21,16 +21,16 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"math/big"
-	"strings"
+
+	"github.com/Bermos/Kitchen/internal/provider/naming"
 )
 
 // A bucket's name is what it is found again by, so the names here are
 // deterministic functions of the claim and the preview, kept inside what S3
-// takes — 3 to 63 characters of lowercase letters, digits and hyphens — and
-// truncated the way internal/provider/database truncates a Cluster's name:
-// what is cut is replaced by a digest of the whole, because two claims whose
-// names share a long prefix landing on one bucket is two projects sharing
-// one bucket, the worst outcome anything in this package can have.
+// takes — 3 to 63 characters of lowercase letters, digits and hyphens — by
+// internal/provider/naming, which is also where a claim's bucket gets the
+// project in its name and where the refusal to adopt another project's is
+// written.
 
 const (
 	// maxBucketName is S3's own limit.
@@ -42,16 +42,12 @@ const (
 	maxAccessKey = 20
 )
 
-// BucketName is the bucket a claim's instance lives in.
-func BucketName(name string) string { return truncateName("kitchen-"+name, maxBucketName) }
-
 // BranchBucketName is a preview's own bucket beside its parent's — the
 // parent's name with the environment's appended, each trimmed so the pair
 // fits, with the environment half keeping the most room because it is what
 // makes it unique.
 func BranchBucketName(parent, environment string) string {
-	prefix := truncateName(parent, maxBucketName/2)
-	return truncateName(prefix+"-"+environment, maxBucketName)
+	return naming.Join(parent, maxBucketName/2, environment, maxBucketName)
 }
 
 // AccessKeyFor is the access key of the credential scoped to a bucket:
@@ -64,16 +60,6 @@ func AccessKeyFor(bucket string) string {
 
 // PolicyName is the name of the policy scoped to a bucket at a MinIO.
 func PolicyName(bucket string) string { return bucket }
-
-func truncateName(name string, limit int) string {
-	name = strings.ToLower(name)
-	if len(name) <= limit {
-		return strings.Trim(name, "-")
-	}
-	sum := sha256.Sum256([]byte(name))
-	suffix := "-" + hex.EncodeToString(sum[:])[:8]
-	return strings.Trim(name[:limit-len(suffix)], "-") + suffix
-}
 
 // secretKeyAlphabet is what a minted secret access key is drawn from: the
 // characters every S3 client and every shell accept without quoting.

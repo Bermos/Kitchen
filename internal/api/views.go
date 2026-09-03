@@ -1219,10 +1219,17 @@ type claimView struct {
 	// provider declared nothing — shown as undeclared, treated by policy as
 	// the worst case. Residency is where the provider reported the resource
 	// actually is; absent means it reported nothing.
-	DataProvenance string          `json:"dataProvenance,omitempty"`
-	Residency      string          `json:"residency,omitempty"`
-	CreatedAt      time.Time       `json:"createdAt"`
-	Conditions     []conditionView `json:"conditions,omitempty"`
+	DataProvenance string `json:"dataProvenance,omitempty"`
+	Residency      string `json:"residency,omitempty"`
+	// InstanceName is what the provider calls the resource this claim is
+	// bound to — kitchen-<project>-<claim>, or the unqualified name a claim
+	// bound before provider-side names carried the project keeps. It is
+	// answered because it is what an operator needs to know to hand a
+	// resource over (docs/api/claims.md, "Rebinding a retained resource");
+	// it is a name, never a credential. Absent until the claim binds.
+	InstanceName string          `json:"instanceName,omitempty"`
+	CreatedAt    time.Time       `json:"createdAt"`
+	Conditions   []conditionView `json:"conditions,omitempty"`
 
 	// Postgres is what the claim asked the database itself to be — the major
 	// version, the extensions, the volume. Absent when the claim asked for
@@ -1280,6 +1287,7 @@ func newClaimView(claim *kitchenv1alpha1.ResourceClaim) claimView {
 		DataClass:        string(claim.Spec.DataClass),
 		DataProvenance:   claim.Status.DataProvenance,
 		Residency:        claim.Status.Residency,
+		InstanceName:     claim.Status.InstanceName,
 		CreatedAt:        claim.CreationTimestamp.Time,
 		Conditions:       conditionViews(claim.Status.Conditions),
 		RedirectURIs:     claim.Status.RedirectURIs,

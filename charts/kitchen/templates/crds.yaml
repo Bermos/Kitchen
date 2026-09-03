@@ -8574,6 +8574,22 @@ spec:
                   opaque to the platform. It is what deprovisioning and branch operations
                   address.
                 type: string
+              instanceName:
+                description: |-
+                  InstanceName is what the provider calls the provisioned resource: the
+                  database, bucket or cache instance's own name at the provider, which
+                  is what a later reconcile finds it again by.
+
+                  It is recorded because the name is not a constant. A resource
+                  provisioned before names carried the project (kitchen-<claim>) keeps
+                  that name for as long as the claim is bound to it — renaming it would
+                  leave its data behind and hand the application an empty one — while
+                  anything provisioned since is kitchen-<project>-<claim>, which is what
+                  stops one project's claim adopting another project's retained data.
+                  Empty on a claim that has never bound, and on one bound by an operator
+                  old enough not to have written it, which reads as the unqualified
+                  name.
+                type: string
               keepsPodsRunning:
                 description: |-
                   KeepsPodsRunning is the provider's declaration that this claim's

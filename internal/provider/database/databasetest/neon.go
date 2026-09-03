@@ -105,6 +105,25 @@ func (s *NeonServer) LastAuthorization() string {
 	return s.lastAuth
 }
 
+// AddProject seeds a project the provisioner did not create — a database
+// left behind by a claim that has since been deleted, which is what a
+// retained resource looks like from the provider's side.
+func (s *NeonServer) AddProject(name string) *NeonProject {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.nextID++
+	project := &NeonProject{
+		ID:       fmt.Sprintf("proj-%d", s.nextID),
+		Name:     name,
+		Branches: map[string]*NeonBranch{},
+	}
+	s.nextID++
+	main := &NeonBranch{ID: fmt.Sprintf("br-%d", s.nextID), Name: "main", Default: true}
+	project.Branches[main.ID] = main
+	s.projects[project.ID] = project
+	return project
+}
+
 // ProjectNamed returns a snapshot of the project with that name, or nil.
 func (s *NeonServer) ProjectNamed(name string) *NeonProject {
 	s.mu.Lock()

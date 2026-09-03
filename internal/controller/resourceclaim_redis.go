@@ -30,6 +30,7 @@ import (
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/provider/cache"
+	"github.com/Bermos/Kitchen/internal/provider/naming"
 )
 
 // The redis half of the ResourceClaim reconciler: a cache or a queue from a
@@ -188,6 +189,9 @@ func (r *ResourceClaimReconciler) provisionCache(
 	case errors.Is(err, cache.ErrNotReady):
 		result, err := r.pending(ctx, claim, "Provisioning", err)
 		return result, true, err
+	case errors.Is(err, naming.ErrNotAdoptable):
+		result, err := r.failed(ctx, claim, "InstanceNotAdoptable", err)
+		return result, true, err
 	case errors.Is(err, cache.ErrUnsatisfiable):
 		result, err := r.failed(ctx, claim, "RequirementsUnsatisfiable", err)
 		return result, true, err
@@ -199,6 +203,7 @@ func (r *ResourceClaimReconciler) provisionCache(
 		return ctrl.Result{}, true, err
 	}
 	claim.Status.InstanceID = instance.ID
+	claim.Status.InstanceName = instance.Name
 	claim.Status.SecretName = secretName
 	claim.Status.DataProvenance = string(instance.Provenance)
 	claim.Status.Residency = instance.Region
@@ -220,10 +225,10 @@ func provisionCacheInstance(
 	claim *kitchenv1alpha1.ResourceClaim,
 	provisioner cache.Provisioner,
 ) (cache.Instance, error) {
-	name := instanceName(claim)
+	resource := claimResource(claim)
 	requirements := cacheRequirements(claim)
 	if requirements.Empty() {
-		return provisioner.Provision(ctx, name)
+		return provisioner.Provision(ctx, resource)
 	}
 	capable, ok := provisioner.(cache.CapableProvisioner)
 	if !ok {
@@ -233,7 +238,7 @@ func provisionCacheInstance(
 				"or drop config.redis from the claim",
 			cache.ErrUnsatisfiable, claim.Connection(), cache.ProviderValkey)
 	}
-	return capable.ProvisionWith(ctx, name, requirements)
+	return capable.ProvisionWith(ctx, resource, requirements)
 }
 
 // cacheRequirements reads the claim's spec.config into what the provisioner

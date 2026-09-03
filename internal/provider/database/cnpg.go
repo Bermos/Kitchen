@@ -18,8 +18,6 @@ package database
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -33,6 +31,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/Bermos/Kitchen/internal/provider/naming"
 )
 
 // CloudNativePG: Postgres in the cluster Kitchen was installed into, which is
@@ -167,8 +167,8 @@ func firstNonEmpty(values ...string) string {
 }
 
 // Provision creates a database with nothing asked of it beyond a name.
-func (c *CNPG) Provision(ctx context.Context, name string) (Instance, error) {
-	return c.ProvisionWith(ctx, name, Requirements{})
+func (c *CNPG) Provision(ctx context.Context, res naming.Resource) (Instance, error) {
+	return c.ProvisionWith(ctx, res, Requirements{})
 }
 
 // ProvisionWith creates (or finds) the Cluster for a claim.
@@ -177,13 +177,20 @@ func (c *CNPG) Provision(ctx context.Context, name string) (Instance, error) {
 // created and before the cluster is even read: a claim asking for an
 // extension nothing supplies is refused as a claim, which is the whole reason
 // this method exists rather than Provision alone.
-func (c *CNPG) ProvisionWith(ctx context.Context, name string, req Requirements) (Instance, error) {
+func (c *CNPG) ProvisionWith(ctx context.Context, res naming.Resource, req Requirements) (Instance, error) {
 	resolution, err := resolveImage(c.Images, req)
 	if err != nil {
 		return Instance{}, err
 	}
 
-	cluster, err := c.ensureCluster(ctx, clusterName(name), resolution, req, nil)
+	name, err := naming.Resolve(ctx, res, naming.Provider{
+		Kind: "database", Limit: maxClusterName, Lookup: c.owner,
+	})
+	if err != nil {
+		return Instance{}, err
+	}
+
+	cluster, err := c.ensureCluster(ctx, name, res.Project, resolution, req, nil)
 	if err != nil {
 		return Instance{}, err
 	}
@@ -193,6 +200,7 @@ func (c *CNPG) ProvisionWith(ctx context.Context, name string, req Requirements)
 	}
 	return Instance{
 		ID:      c.Namespace + "/" + cluster.GetName(),
+		Name:    cluster.GetName(),
 		Binding: binding,
 		// A database the platform provisions for an environment holds that
 		// environment's own data, and the primary is production's. Only a
@@ -217,7 +225,8 @@ func (c *CNPG) CreateBranch(ctx context.Context, instanceID, name string) (Branc
 	if err != nil {
 		return Branch{}, err
 	}
-	child, err := c.ensureCluster(ctx, branchName(parent.GetName(), name), Resolution{}, Requirements{}, parent)
+	child, err := c.ensureCluster(ctx, branchName(parent.GetName(), name),
+		parent.GetLabels()[naming.LabelProject], Resolution{}, Requirements{}, parent)
 	if err != nil {
 		return Branch{}, err
 	}
@@ -257,6 +266,7 @@ func (c *CNPG) DeleteBranch(ctx context.Context, _, branchID string) error {
 func (c *CNPG) ensureCluster(
 	ctx context.Context,
 	name string,
+	project string,
 	resolution Resolution,
 	req Requirements,
 	parent *unstructured.Unstructured,
@@ -271,6 +281,14 @@ func (c *CNPG) ensureCluster(
 		// change under a live Postgres, and a claim that asks for a different
 		// one is asking for a different database. The claim's config is
 		// applied when the Cluster is created and documented as such.
+		//
+		// The project label is the exception, and only where there is none:
+		// a database an operator has just handed over records whose it is
+		// from now on, so the next claim of that name is answered from the
+		// record rather than from the hand-over.
+		if err := c.recordProject(ctx, existing, project); err != nil {
+			return nil, err
+		}
 		return existing, c.ready(existing)
 	case meta.IsNoMatchError(err):
 		return nil, notInstalled(err)
@@ -278,7 +296,7 @@ func (c *CNPG) ensureCluster(
 		return nil, err
 	}
 
-	desired, err := c.desiredCluster(name, resolution, req, parent)
+	desired, err := c.desiredCluster(name, project, resolution, req, parent)
 	if err != nil {
 		return nil, err
 	}
@@ -320,6 +338,7 @@ func (c *CNPG) ensureNamespace(ctx context.Context) error {
 // desiredCluster builds the Cluster object.
 func (c *CNPG) desiredCluster(
 	name string,
+	project string,
 	resolution Resolution,
 	req Requirements,
 	parent *unstructured.Unstructured,
@@ -365,8 +384,45 @@ func (c *CNPG) desiredCluster(
 	cluster.SetGroupVersionKind(clusterGVK())
 	cluster.SetName(name)
 	cluster.SetNamespace(c.Namespace)
-	cluster.SetLabels(map[string]string{managedByLabel: managedByValue})
+	labels := map[string]string{managedByLabel: managedByValue}
+	if project != "" {
+		labels[naming.LabelProject] = project
+	}
+	cluster.SetLabels(labels)
 	return cluster, nil
+}
+
+// owner answers naming.Lookup: whether a Cluster of that name is there and
+// which project it was created for. A cluster that does not serve cnpg at
+// all has no databases in it, so nothing is there to adopt.
+func (c *CNPG) owner(ctx context.Context, name string) (naming.Owner, error) {
+	existing := &unstructured.Unstructured{}
+	existing.SetGroupVersionKind(clusterGVK())
+	err := c.Client.Get(ctx, types.NamespacedName{Namespace: c.Namespace, Name: name}, existing)
+	switch {
+	case apierrors.IsNotFound(err):
+		return naming.Owner{}, nil
+	case meta.IsNoMatchError(err):
+		return naming.Owner{}, nil
+	case err != nil:
+		return naming.Owner{}, err
+	}
+	return naming.Owner{Found: true, Project: existing.GetLabels()[naming.LabelProject]}, nil
+}
+
+// recordProject writes the project onto a Cluster that carries none — the
+// one thing a found Cluster is updated with, and only ever from empty.
+func (c *CNPG) recordProject(ctx context.Context, cluster *unstructured.Unstructured, project string) error {
+	if project == "" || cluster.GetLabels()[naming.LabelProject] != "" {
+		return nil
+	}
+	labels := cluster.GetLabels()
+	if labels == nil {
+		labels = map[string]string{}
+	}
+	labels[naming.LabelProject] = project
+	cluster.SetLabels(labels)
+	return c.Client.Update(ctx, cluster)
 }
 
 // initDB is the bootstrap block: a fresh database owned by a fresh role, with
@@ -579,32 +635,15 @@ func nestedString(object *unstructured.Unstructured, fields ...string) string {
 	return value
 }
 
-// clusterName and branchName keep a Cluster's name inside what Kubernetes and
+// maxClusterName keeps a Cluster's name inside what Kubernetes and
 // cnpg will take. cnpg derives Service and Secret names from it by appending
 // suffixes, so the budget is smaller than a label's 63: 50 leaves room for
 // "-app", "-rw" and the instance ordinals.
 const maxClusterName = 50
 
-func clusterName(name string) string { return truncateName(name, maxClusterName) }
-
 // branchName is the parent's name with the environment's appended, each
 // trimmed so the pair fits — the environment half is what makes it unique, so
 // it is the half that keeps the most room.
 func branchName(parent, environment string) string {
-	prefix := truncateName(parent, maxClusterName/2)
-	return truncateName(prefix+"-"+environment, maxClusterName)
-}
-
-// truncateName shortens a name to fit, and replaces what it cut with a digest
-// of the whole rather than simply dropping it. Two claims whose names share a
-// long prefix would otherwise land on one Cluster — which is two projects
-// sharing one database, and the worst outcome anything in this file can have.
-func truncateName(name string, limit int) string {
-	name = strings.ToLower(name)
-	if len(name) <= limit {
-		return strings.Trim(name, "-")
-	}
-	sum := sha256.Sum256([]byte(name))
-	suffix := "-" + hex.EncodeToString(sum[:])[:8]
-	return strings.Trim(name[:limit-len(suffix)], "-") + suffix
+	return naming.Join(parent, maxClusterName/2, environment, maxClusterName)
 }

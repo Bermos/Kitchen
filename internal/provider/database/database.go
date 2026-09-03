@@ -60,6 +60,7 @@ import (
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/provider/contract"
+	"github.com/Bermos/Kitchen/internal/provider/naming"
 )
 
 // ErrUnsupportedProvider is returned by Default for providers without an
@@ -128,6 +129,11 @@ type Instance struct {
 	// instance by. Opaque to the caller: a cloud project ID, a namespaced
 	// object name — whatever the implementation can find it again under.
 	ID string
+	// Name is what the provisioner called the instance, which is what a
+	// later reconcile finds it again by. It is recorded on the claim so that
+	// a resource provisioned under one naming rule keeps its name when the
+	// rule changes; see internal/provider/naming.
+	Name string
 	// Binding reaches the instance's primary branch.
 	Binding Binding
 	// Provenance declares what the instance's data derives from. Empty means
@@ -182,9 +188,13 @@ type Branch struct {
 // returning masked or synthetic here; nothing else in the platform needs to
 // know it exists. See docs/CRDS.md, "The provider contract".
 type Provisioner interface {
-	// Provision creates (or finds) the database instance of the given name
-	// and returns its binding.
-	Provision(ctx context.Context, name string) (Instance, error)
+	// Provision creates (or finds) the database instance for a claim and
+	// returns its binding. The provisioner names it — naming.Resolve out of
+	// the claim's project and its own budget — rather than being told what
+	// to call it, because the budget is the provisioner's own and the
+	// refusal to adopt somebody else's database has to be every
+	// provisioner's.
+	Provision(ctx context.Context, res naming.Resource) (Instance, error)
 	// Deprovision destroys the instance and its data.
 	Deprovision(ctx context.Context, instanceID string) error
 	// CreateBranch creates (or finds) a branch of the instance's data under
@@ -237,7 +247,7 @@ type CapableProvisioner interface {
 	// resolves them to an image *before* it creates anything and answers an
 	// error wrapping ErrUnsatisfiable when it cannot, naming what it could
 	// not supply and what it could.
-	ProvisionWith(ctx context.Context, name string, req Requirements) (Instance, error)
+	ProvisionWith(ctx context.Context, res naming.Resource, req Requirements) (Instance, error)
 }
 
 // Options is what a Provisioner is built from. It is a struct rather than an

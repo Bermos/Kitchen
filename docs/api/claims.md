@@ -72,9 +72,14 @@ for a different database means asking for a different database.
 self-hosted provider, `Delete` deletes the database and CloudNativePG collects
 its volume with it — the data is gone. `Retain` leaves the database running in
 the platform's own database namespace, still holding its volume, and a claim of
-the same name created later against the same connection finds it and rebinds to
-it. That namespace is deliberately not the project's own: deleting a project
-deletes that one, and a retained database has to survive exactly that.
+**the same name in the same project** created later against the same connection
+finds it and rebinds to it. That namespace is deliberately not the project's
+own: deleting a project deletes that one, and a retained database has to
+survive exactly that.
+
+**Rebinding is project-qualified**, and that is the whole of what stops a
+retained resource being adopted by whoever asks for it next — see
+[Rebinding a retained resource](#rebinding-a-retained-resource) below.
 
 Every type takes an optional `dataClass` — `public`, `internal`,
 `confidential` or `strictlyConfidential` — classifying the data the resource
@@ -148,9 +153,12 @@ the block is applied when the bucket is created.
 
 **What `deletionPolicy` means for a bucket.** `Retain`, the default, leaves
 the bucket, its objects and — at a MinIO — its user at the store; a claim of
-the same name created later against the same connection finds the bucket by
-name and re-issues its credential. `Delete` removes the credential, every
-version of every object, and the bucket. **A preview's bucket goes with the
+**the same name in the same project** created later against the same
+connection finds the bucket by name and re-issues its credential — the name
+carries the project, so no other project's claim can be the one that finds
+it ([Rebinding a retained resource](#rebinding-a-retained-resource)).
+`Delete` removes the credential, every version of every object, and the
+bucket. **A preview's bucket goes with the
 preview under either policy**, like a database branch: it is the platform's
 bookkeeping, not the data the policy exists to protect.
 
@@ -448,13 +456,57 @@ keeps the preview from reading production's keys and does not keep a
 
 `deletionPolicy: Retain` (the default) keeps the instance and everything in
 it; `Delete` destroys both, and for a queue that is somebody's unfinished
-work, which is exactly why Retain is the default. Preview instances are torn
-down with their previews under either policy. At an external server the
+work, which is exactly why Retain is the default. A retained instance is
+rebound only by a claim of the same name in the same project
+([Rebinding a retained resource](#rebinding-a-retained-resource)). Preview
+instances are torn down with their previews under either policy. At an external server the
 platform destroys nothing on the way out: the keyspace is the server's, and
 emptying somebody else's database is not the platform's to do.
 
 The CLI reaches all of this through `kitchen api`, as for every claim type;
 no command creates a claim.
+
+## Rebinding a retained resource
+
+`deletionPolicy: Retain` is the default for every type that provisions data,
+which means deleting a claim usually leaves a database, a bucket or a cache
+instance behind at the provider. What a *later* claim may be bound to is
+therefore a question about data, and it is answered by the provider-side
+name.
+
+**The name carries the project.** Every object the platform provisions is
+named `kitchen-<project>-<claim>`, cut to whatever the provider's own budget
+is with a digest of the whole replacing what was cut, and labelled or tagged
+`kitchen.bermos.dev/project` — a label on a CloudNativePG `Cluster` or a
+Valkey instance, a tag on a bucket, and for Neon the name alone, because its
+API has nowhere else to put it. A claim looks up the name and, where the
+provider records one, checks the project: an object whose recorded project is
+not the claim's is **refused**, with the provider's sentence on the claim's
+`Ready` condition and nothing created in its place. So a claim of the same
+name in a second project against the same connection is given a resource of
+its own; it never binds to the first project's data.
+
+A claim already bound keeps the name it is bound to — `status.instanceName`,
+which the answer carries. A resource provisioned before the project was in
+the name is addressed by the old name for as long as the claim exists, because
+renaming it would leave its data behind and hand the application an empty one.
+
+**An object named before the project was in the name is never adopted
+silently.** Nothing records whose data is in it, so a claim that finds one
+fails with `InstanceNotAdoptable` on its `Ready` condition, naming the object.
+Nothing is created and nothing is destroyed. An operator who knows whose it is
+hands it over by naming it on the claim:
+
+```sh
+kubectl annotate resourceclaim <claim> -n kitchen-system \
+  kitchen.bermos.dev/adopt-instance=<the object's name>
+```
+
+The next reconcile binds to it and records the project on it, so it is asked
+for once. It is deliberately the one thing here that is not an API call: this
+endpoint takes no annotations from a request body, so nobody can ask for
+another project's data through it. Deleting the object at the provider is the
+other way out, and is the right one for an orphan nobody wants.
 
 ## What a preview gets, and what a claim costs the workload
 
