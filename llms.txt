@@ -65,6 +65,10 @@ text of one.
 
 - [charts/kitchen/README.md](charts/kitchen/README.md): Every chart value, the
   prerequisites, and the upgrade and uninstall paths.
+- [docs/REGISTRIES.md](docs/REGISTRIES.md): Where builds push and environments
+  pull from. The registry Kitchen ships, GitHub Container Registry, Harbor and
+  a plain Distribution — the credential each one wants, and the two failures
+  that do not look like credential failures.
 - [docs/SCOPE.md](docs/SCOPE.md): Who the product is for, what is in it, and
   the decisions — taken and open — that shaped it.
 

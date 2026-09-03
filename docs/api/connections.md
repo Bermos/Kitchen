@@ -84,6 +84,12 @@ is what builds authenticate against:
  "credential": {"username": "robot$kitchen", "password": "…"}}
 ```
 
+Which credential each registry wants is a how-to rather than a reference, and
+lives in [Image registries](../REGISTRIES.md): the one Kitchen ships, GitHub
+Container Registry — where the token must be a **classic** PAT with
+`write:packages`, which `repo` does not cover — Harbor, and a plain
+Distribution.
+
 `config` is the provider's own configuration and passes through as given — a
 self-hosted forge names its API endpoint as `apiUrl`:
 `{"apiUrl": "https://github.internal/api/v3"}` for GitHub Enterprise,
