@@ -129,6 +129,11 @@ something builds. That is the same rule the port and the replica count follow,
 and it is what makes a rollback exact — the release being rolled back to runs
 the worker command it was built with, not today's.
 
+Idling is not among these fields: a project scales to zero as a whole, because
+only the web process sits behind the interceptor that measures the request
+pressure it is scaled on — [CRDS.md](../CRDS.md) states why a `service` and a
+`worker` are never idled, and what to do when one workload must stay warm.
+
 ### A worker that must never run twice
 
 `singleton` is [the project runtime's own declaration](projects.md#changing-a-projects-settings)

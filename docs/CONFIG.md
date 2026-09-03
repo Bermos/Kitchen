@@ -244,6 +244,11 @@ into it. A workload is defined by the code it runs, so one the commit no longer
 names is one whose command may no longer be in the image; merging would keep it
 running until somebody noticed.
 
+There is no per-workload idling setting here, and that is deliberate: scale to
+zero is the project's policy because only the web process is idled — see
+[the Project's `scaleToZero`](CRDS.md) for why, and what to do when one
+workload must stay warm.
+
 ## What it cannot set
 
 The file lives in a repository, and **a preview builds a commit from a pull

@@ -708,6 +708,36 @@ Project's live value rather than the Release's frozen copy, for the same
 reason `scaleToZero` is not snapshotted at all: a rollback must not quietly
 start parking an environment again.
 
+**Idling is the web process's, and that is why `scaleToZero` is the project's.**
+The signal behind scale to zero is request pressure at the KEDA interceptor,
+and the interceptor sits on the environment's public route — where the web
+process is the only thing behind it. So it is the web Deployment that parks
+and the web Deployment a request wakes; a `worker`, a `service`, a `cron` and
+a `task` are left running whatever the mode says. A `service` is the one that
+looks as though it ought to be covered and is not: its callers are its own
+siblings inside the environment and never touch the Gateway, so there is no
+signal to idle it on and none to wake it on — and a `worker` has no requests
+at all. A per-workload field would be a declaration with no mechanism under
+it.
+
+The consequence is that a **mixed posture is not expressible**: a project
+cannot park its web process and keep one service always-on, because the policy
+is the project's, all of it or none of it. A workload that must stay warm is
+met two ways today — the project does not idle (`scaleToZero.mode: never`, or
+`runtime.notRequestDriven` where the reason is that something of it does work
+nobody asked for), or the workload moves into a project of its own, which is
+the honest answer when what it runs does not in fact ship as one thing with
+the rest.
+
+If a signal for the others ever exists — an interceptor that can front an
+in-cluster Service — the override is designed rather than guessed at: a
+`scaleToZero` block mirroring the project's three fields, on `runtime` for the
+web process and on a `processes` entry for the rest, absent meaning take the
+project's, so every declaration written before it keeps meaning what it means.
+Until such a signal exists only the web process's copy could be honoured,
+which is what the Project's own field already says — so it is a sketch here
+and not a field (#303).
+
 `runtime.singleton` is the *web* workload two of which must never run at once.
 It becomes `strategy: Recreate` on the Deployment — the old pod stops before the
 new one starts — and a CEL rule on the CRD **refuses** `replicas` above one

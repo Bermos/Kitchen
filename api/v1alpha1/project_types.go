@@ -192,6 +192,10 @@ const (
 // is a running-cost decision about the environment as it stands today.
 // Rolling back should not quietly un-park an environment, and turning the
 // policy on should not have to wait for the next build.
+//
+// It is a policy of the Project rather than of each workload for a second
+// reason, which is the mechanism: only the web process is idled. docs/CRDS.md
+// says why a mixed posture is not expressible and what to do instead.
 type ScaleToZeroPolicy struct {
 	// +kubebuilder:default=previews
 	// +optional
@@ -382,6 +386,13 @@ type ProjectSpec struct {
 	// cold-starting on the next request. It does nothing unless the platform
 	// runs the machinery for it — `spec.scaleToZero.enabled` on the Kitchen
 	// object — and every environment then stays on plain Deployment routing.
+	//
+	// Idling is the web process's: the signal behind scale to zero is request
+	// pressure at the KEDA interceptor, and the interceptor sits on the
+	// environment's public route, where the web process is the only thing
+	// behind it. So it is the web Deployment that parks and the web Deployment
+	// a request wakes; a worker, a service, a cron and a task are left running
+	// whatever the mode says.
 	// +kubebuilder:default={}
 	// +optional
 	ScaleToZero ScaleToZeroPolicy `json:"scaleToZero,omitempty"`
