@@ -245,8 +245,8 @@
       "description": "This workload's own build, for a repository that ships several images from one commit. Absent means it runs the project's image with another command, which is one build rather than two. Refused on a scheduled process.",
       "properties": {
         "strategy": {
-          "enum": ["dockerfile", "buildpacks"],
-          "description": "How the image is produced. Default dockerfile. There is deliberately no auto: detection answers a port and a buildpack, and a workload has neither question open."
+          "enum": ["auto", "dockerfile", "buildpacks"],
+          "description": "How the image is produced. Default auto, which reads this workload's own rootDirectory and decides: a Dockerfile there wins, otherwise the framework detected there is built with buildpacks, otherwise the build fails naming this workload."
         },
         "dockerfilePath": {
           "type": "string",

@@ -336,24 +336,37 @@ type ProcessSpec struct {
 // ProcessBuildSpec is one workload's own build: which directory of the
 // repository it is, and how the image comes out of it.
 //
-// It is [ProjectBuildSpec] for a workload, minus one value. `auto` is not
-// among the strategies here, and that is deliberate rather than unfinished:
-// detection's output is a framework, and what the platform does with a
-// framework is fill in the web process's port and tell the buildpacks
-// lifecycle what it is building. A workload has neither question open — a
-// service names its own port, and a workload asking for buildpacks has said
-// which of the two builders to use. What detection would add is a repository
-// read per workload per build to answer a question already answered.
+// It is [ProjectBuildSpec] for a workload, and it takes the same three
+// strategies for the same reason. The monorepo this feature exists for is
+// `services/api` with a Dockerfile beside `services/worker` without one, and
+// a workload that had to name `buildpacks` where a single-project version of
+// the same directory would not was an asymmetry with nothing behind it.
 type ProcessBuildSpec struct {
-	// Strategy is how the image is produced. It defaults to `dockerfile`,
-	// which is what a monorepo shipping several images almost always has.
-	// +kubebuilder:validation:Enum=dockerfile;buildpacks
-	// +kubebuilder:default=dockerfile
+	// Strategy is how the image is produced, defaulting to `auto` — which is
+	// the project's own default, over this workload's root directory rather
+	// than over the project's.
+	//
+	// `auto` resolves in one order: a Dockerfile at DockerfilePath under
+	// RootDirectory wins and this is a dockerfile build; otherwise the
+	// framework detection finds there decides, and this is a buildpacks
+	// build; otherwise the build fails with a message naming this workload
+	// and the two things that would settle it — a Dockerfile where this
+	// workload's build looks for one, or a `strategy` of its own.
+	//
+	// It is the repository that answers it, not the project: a workload does
+	// not inherit the project's strategy, and `Kitchen.spec.builds.
+	// defaultStrategy` is what an unconfigured *project* does. Detection
+	// here settles the strategy alone — a workload names its own port and
+	// its own command, which are the other two things detection would have
+	// been asked for.
+	// +kubebuilder:validation:Enum=auto;dockerfile;buildpacks
+	// +kubebuilder:default=auto
 	// +optional
 	Strategy BuildStrategy `json:"strategy,omitempty"`
 
 	// DockerfilePath is the Dockerfile, relative to RootDirectory, for a
-	// dockerfile build.
+	// dockerfile build — and the file an `auto` build looks for before it
+	// decides this workload is one.
 	// +kubebuilder:default=Dockerfile
 	// +optional
 	DockerfilePath string `json:"dockerfilePath,omitempty"`
@@ -412,7 +425,7 @@ type ProcessBuildSpec struct {
 // would come to disagree with a project's.
 func (b ProcessBuildSpec) EffectiveStrategy() BuildStrategy {
 	if b.Strategy == "" {
-		return BuildStrategyDockerfile
+		return BuildStrategyAuto
 	}
 	return b.Strategy
 }

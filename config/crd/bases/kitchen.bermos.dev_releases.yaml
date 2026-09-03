@@ -201,7 +201,8 @@ spec:
                               default: Dockerfile
                               description: |-
                                 DockerfilePath is the Dockerfile, relative to RootDirectory, for a
-                                dockerfile build.
+                                dockerfile build — and the file an `auto` build looks for before it
+                                decides this workload is one.
                               type: string
                             dockerfileTarget:
                               description: |-
@@ -250,12 +251,28 @@ spec:
                                 - dockerfile
                                 - buildpacks
                               - enum:
+                                - auto
                                 - dockerfile
                                 - buildpacks
-                              default: dockerfile
+                              default: auto
                               description: |-
-                                Strategy is how the image is produced. It defaults to `dockerfile`,
-                                which is what a monorepo shipping several images almost always has.
+                                Strategy is how the image is produced, defaulting to `auto` — which is
+                                the project's own default, over this workload's root directory rather
+                                than over the project's.
+
+                                `auto` resolves in one order: a Dockerfile at DockerfilePath under
+                                RootDirectory wins and this is a dockerfile build; otherwise the
+                                framework detection finds there decides, and this is a buildpacks
+                                build; otherwise the build fails with a message naming this workload
+                                and the two things that would settle it — a Dockerfile where this
+                                workload's build looks for one, or a `strategy` of its own.
+
+                                It is the repository that answers it, not the project: a workload does
+                                not inherit the project's strategy, and `Kitchen.spec.builds.
+                                defaultStrategy` is what an unconfigured *project* does. Detection
+                                here settles the strategy alone — a workload names its own port and
+                                its own command, which are the other two things detection would have
+                                been asked for.
                               type: string
                           type: object
                         command:

@@ -26,6 +26,7 @@ import (
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/detect"
+	"github.com/Bermos/Kitchen/internal/framework"
 	"github.com/Bermos/Kitchen/internal/provider"
 	"github.com/Bermos/Kitchen/internal/repoconfig"
 )
@@ -94,6 +95,14 @@ type buildPlan struct {
 	// stage of and one commit now builds several files.
 	DockerfileTarget string
 
+	// DetectedFramework is what detection made of this image's directory,
+	// empty where nothing was detected — an explicit strategy, or the web
+	// process, whose framework is the Build's own `status.detectedFramework`.
+	// It is on the plan for the reason DockerfileTarget is: a unit now
+	// produces several images from several directories, and what was
+	// detected is a fact about one of them.
+	DetectedFramework string
+
 	// Job is the build Job's name in the application namespace.
 	Job string
 
@@ -134,12 +143,20 @@ func buildWorkloads(
 // The web plan is passed in rather than derived, because resolving it is the
 // reconciler's whole detection dance — the strategy the platform settled on,
 // the framework it read out of the repository — and doing it twice would be
-// two answers to one question.
+// two answers to one question. `detected` is the same dance for the workloads
+// that left the question open, keyed by workload name and empty for a unit
+// where every workload named its strategy — see detectWorkloads.
+//
+// A workload on `auto` with nothing detected for it keeps `auto` on its plan,
+// which is what an observation of a running build looks like: the strategy
+// was an input to a pod spec that already exists, and nothing downstream of
+// creation reads it.
 func buildPlansFor(
 	project *kitchenv1alpha1.Project,
 	build *kitchenv1alpha1.Build,
 	registry provider.RegistryTarget,
 	web buildPlan,
+	detected map[string]framework.Framework,
 ) []buildPlan {
 	plans := []buildPlan{web}
 	for _, workload := range buildWorkloads(project, build) {
@@ -148,6 +165,14 @@ func buildPlansFor(
 		}
 		repository := workloadRepository(registry.Prefix, project.Name, workload.Name)
 		strategy := workload.Build.EffectiveStrategy()
+		// What `auto` turned out to be. It is settled before the stage is
+		// resolved below, because a workload that turned out to be a
+		// dockerfile build inherits the unit's stage exactly as one that
+		// named `dockerfile` does.
+		found := detected[workload.Name]
+		if strategy == kitchenv1alpha1.BuildStrategyAuto && found.Strategy != "" {
+			strategy = found.Strategy
+		}
 		// This workload's own stage where it named one, and the unit's where
 		// it did not — one chain, stated once in buildDockerfileTarget. The
 		// name itself is spelled by the one place that says what a stage may
@@ -164,8 +189,9 @@ func buildPlansFor(
 			target = buildDockerfileTarget(project, build, target)
 		}
 		plans = append(plans, buildPlan{
-			Workload: workload.Name,
-			Strategy: strategy,
+			Workload:          workload.Name,
+			Strategy:          strategy,
+			DetectedFramework: found.Name,
 			// A workload's build root is a build root, so it is spelled by
 			// the one place that says what one is: `apps/api`, `./apps/api/`
 			// and `apps/api` are one directory here exactly as they are for
@@ -272,7 +298,7 @@ func plansUnderway(
 	// started.
 	web.DockerfileTarget = build.Status.DockerfileTarget
 	if len(build.Status.Workloads) == 0 {
-		return buildPlansFor(project, build, registry, web)
+		return buildPlansFor(project, build, registry, web, nil)
 	}
 	plans := make([]buildPlan, 0, len(build.Status.Workloads)+1)
 	plans = append(plans, web)
@@ -283,11 +309,12 @@ func plansUnderway(
 		// can act on; the stage is here because a failed build is diagnosed
 		// against it.
 		plans = append(plans, buildPlan{
-			Workload:         workload.Name,
-			Job:              workload.Job,
-			DockerfileTarget: workload.DockerfileTarget,
-			Repository:       workload.Repository,
-			Tag:              workload.Repository + ":" + shortSHA(build.Spec.Git.SHA),
+			Workload:          workload.Name,
+			Job:               workload.Job,
+			DockerfileTarget:  workload.DockerfileTarget,
+			DetectedFramework: workload.DetectedFramework,
+			Repository:        workload.Repository,
+			Tag:               workload.Repository + ":" + shortSHA(build.Spec.Git.SHA),
 		})
 	}
 	return plans
@@ -331,11 +358,12 @@ type planOutcome struct {
 // workloadStatusFor is the row a plan's outcome writes onto the Build.
 func workloadStatusFor(outcome planOutcome, image string) kitchenv1alpha1.WorkloadBuildStatus {
 	status := kitchenv1alpha1.WorkloadBuildStatus{
-		Name:             outcome.Plan.Workload,
-		Job:              outcome.Plan.Job,
-		Repository:       outcome.Plan.Repository,
-		DockerfileTarget: outcome.Plan.DockerfileTarget,
-		Phase:            kitchenv1alpha1.BuildRunning,
+		Name:              outcome.Plan.Workload,
+		Job:               outcome.Plan.Job,
+		Repository:        outcome.Plan.Repository,
+		DockerfileTarget:  outcome.Plan.DockerfileTarget,
+		DetectedFramework: outcome.Plan.DetectedFramework,
+		Phase:             kitchenv1alpha1.BuildRunning,
 	}
 	switch {
 	case outcome.Failed:

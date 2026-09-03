@@ -700,6 +700,18 @@ type WorkloadBuildStatus struct {
 	// +optional
 	DockerfileTarget string `json:"dockerfileTarget,omitempty"`
 
+	// DetectedFramework is what `strategy: auto` made of this workload's own
+	// root directory — `dockerfile` where it found one, the framework it
+	// recognised otherwise. It is empty for a workload that named its
+	// strategy, which asked detection nothing.
+	//
+	// It is per workload rather than folded into the Build's own
+	// `detectedFramework` because a unit is several directories: the field
+	// above is the project's own image, and a monorepo whose API is a
+	// Dockerfile and whose worker is Python has two answers, not one.
+	// +optional
+	DetectedFramework string `json:"detectedFramework,omitempty"`
+
 	// Message explains a workload that did not build. It is empty for one
 	// that did.
 	// +optional

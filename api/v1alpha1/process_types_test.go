@@ -99,8 +99,8 @@ func TestWhichImageAWorkloadRuns(t *testing.T) {
 // import — see EffectiveStrategy's own comment, and
 // internal/detect/buildroot_test.go for the rules themselves.
 func TestAWorkloadBuildDefaults(t *testing.T) {
-	if empty := (ProcessBuildSpec{}); empty.EffectiveStrategy() != BuildStrategyDockerfile {
-		t.Errorf("strategy = %s, want dockerfile", empty.EffectiveStrategy())
+	if empty := (ProcessBuildSpec{}); empty.EffectiveStrategy() != BuildStrategyAuto {
+		t.Errorf("strategy = %s, want auto", empty.EffectiveStrategy())
 	}
 	declared := ProcessBuildSpec{Strategy: BuildStrategyBuildpacks, DockerfilePath: "docker/prod.Dockerfile"}
 	if declared.EffectiveStrategy() != BuildStrategyBuildpacks {

@@ -256,11 +256,12 @@ type Process struct {
 
 // ProcessBuild is one workload's own build as a client sends it.
 //
-// There is no `auto` here and no root directory relative to the project's:
-// see [v1alpha1.ProcessBuildSpec] for both, which are decisions rather than
-// omissions.
+// The root directory is relative to the repository root rather than to the
+// project's own: see [v1alpha1.ProcessBuildSpec], where that is a decision
+// rather than an omission.
 type ProcessBuild struct {
-	// Strategy is dockerfile or buildpacks; empty means dockerfile.
+	// Strategy is auto, dockerfile or buildpacks; empty means auto, which
+	// reads this workload's root directory and decides.
 	Strategy string `json:"strategy,omitempty"`
 	// DockerfilePath is relative to RootDirectory; empty means Dockerfile.
 	DockerfilePath string `json:"dockerfilePath,omitempty"`
@@ -466,13 +467,14 @@ func applyProcessBuild(process *kitchenv1alpha1.ProcessSpec, request Process) er
 	build := &kitchenv1alpha1.ProcessBuildSpec{}
 	switch strategy := strings.TrimSpace(request.Build.Strategy); kitchenv1alpha1.BuildStrategy(strategy) {
 	case "":
-		build.Strategy = kitchenv1alpha1.BuildStrategyDockerfile
-	case kitchenv1alpha1.BuildStrategyDockerfile, kitchenv1alpha1.BuildStrategyBuildpacks:
+		build.Strategy = kitchenv1alpha1.BuildStrategyAuto
+	case kitchenv1alpha1.BuildStrategyAuto,
+		kitchenv1alpha1.BuildStrategyDockerfile,
+		kitchenv1alpha1.BuildStrategyBuildpacks:
 		build.Strategy = kitchenv1alpha1.BuildStrategy(strategy)
 	default:
 		return fmt.Errorf(
-			"process %q: build.strategy must be dockerfile or buildpacks (got %q) — there is no auto for a "+
-				"workload, which has neither question detection answers",
+			"process %q: build.strategy must be auto, dockerfile or buildpacks (got %q)",
 			process.Name, request.Build.Strategy)
 	}
 

@@ -413,11 +413,20 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 			strategy = detected.Strategy
 			target.Strategy = strategy
 		}
+		// The same question for every workload that left its own strategy
+		// open, over its own root directory. It is asked here rather than
+		// inside the planning below because a repository that cannot be read
+		// parks the Build, and a workload nothing recognises fails it naming
+		// itself — neither of which a plan can express.
+		workloadFrameworks, stop, err := r.detectWorkloads(ctx, build, project)
+		if stop != nil {
+			return *stop, err
+		}
 		// Every image this commit produces, the project's own first. A
 		// project whose workloads declare no build of their own plans one,
 		// which is the build that was always here.
 		web = webPlan(project, build, registry, strategy)
-		plans := buildPlansFor(project, build, registry, web)
+		plans := buildPlansFor(project, build, registry, web, workloadFrameworks)
 		// Checked once every plan is settled and before anything is created:
 		// a stage means nothing to a lifecycle that has none, and an image
 		// built ignoring one would be pushed and reported as a success.
@@ -436,19 +445,21 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 			if !plan.isWeb() {
 				planCacheStatus = r.planCache(ctx, build, project, builds.Cache, target, plan)
 				workloads = append(workloads, kitchenv1alpha1.WorkloadBuildStatus{
-					Name:             plan.Workload,
-					Job:              plan.Job,
-					Repository:       plan.Repository,
-					DockerfileTarget: plan.DockerfileTarget,
-					Phase:            kitchenv1alpha1.BuildRunning,
+					Name:              plan.Workload,
+					Job:               plan.Job,
+					Repository:        plan.Repository,
+					DockerfileTarget:  plan.DockerfileTarget,
+					DetectedFramework: plan.DetectedFramework,
+					Phase:             kitchenv1alpha1.BuildRunning,
 				})
 			}
-			// A workload names its strategy outright, so detection has
-			// nothing to say about it — the framework below is the web
-			// process's and reaches only the plan that asked for it.
+			// The framework each image was built against: the web process's
+			// own, and for a workload the one detection made of its
+			// directory — which is empty where the workload named its
+			// strategy and asked detection nothing.
 			planDetected := detected
 			if !plan.isWeb() {
-				planDetected = framework.Framework{}
+				planDetected = workloadFrameworks[plan.Workload]
 			}
 			if err := r.createJob(ctx, build, project, plan, planDetected, planCacheStatus,
 				builds.Resources, appNS, credsSecret, gitCreds.Secret); err != nil {
