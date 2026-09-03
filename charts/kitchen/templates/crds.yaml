@@ -6825,6 +6825,13 @@ spec:
                   cold-starting on the next request. It does nothing unless the platform
                   runs the machinery for it — `spec.scaleToZero.enabled` on the Kitchen
                   object — and every environment then stays on plain Deployment routing.
+
+                  Idling is the web process's: the signal behind scale to zero is request
+                  pressure at the KEDA interceptor, and the interceptor sits on the
+                  environment's public route, where the web process is the only thing
+                  behind it. So it is the web Deployment that parks and the web Deployment
+                  a request wakes; a worker, a service, a cron and a task are left running
+                  whatever the mode says.
                 properties:
                   idleAfter:
                     default: 5m
