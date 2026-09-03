@@ -275,6 +275,54 @@ func tailLines(out string, limit int) []string {
 	return lines
 }
 
+// userNamespacesDenied reports whether a failed build is the node refusing
+// rootless BuildKit the user namespace it cannot start without.
+//
+// The kernel answers a clamped `user.max_user_namespaces` with ENOSPC, which
+// rootlesskit prints as "no space left on device" — a sentence about disk, for
+// a failure that is about a sysctl and nothing else. That mismatch is the
+// whole reason this exists: nothing in the build's own output points at the
+// setting that has to move.
+//
+// It matches rootlesskit's own words — the warning naming the sysctl, or its
+// fork failure — because nothing else the platform runs writes either. The
+// buildpacks lifecycle creates no user namespace at all and so can never
+// produce them.
+func userNamespacesDenied(failure *kitchenv1alpha1.BuildFailureStatus) bool {
+	if failure == nil {
+		return false
+	}
+	said := strings.ToLower(failure.Message + "\n" + strings.Join(failure.Log, "\n"))
+	if strings.Contains(said, "max_user_namespaces") {
+		return true
+	}
+	return strings.Contains(said, "rootlesskit") && strings.Contains(said, "no space left on device")
+}
+
+// userNamespacesDeniedMessage is what such a build says on the Build, on the
+// commit and in the dashboard.
+//
+// It names the sysctl, because that is the fix and it appears nowhere in what
+// the builder printed; it says whose it is, because a node setting is the
+// operator's and the person reading this is usually whoever pushed the commit;
+// and it names the strategy that does not need it, because an installation
+// that builds with buildpacks has a second way out.
+func userNamespacesDeniedMessage(failure *kitchenv1alpha1.BuildFailureStatus) string {
+	container := "the builder"
+	if failure != nil && failure.Container != "" {
+		container = failure.Container
+	}
+	return fmt.Sprintf(
+		"%s could not start: the node does not allow user namespaces, and rootless "+
+			"BuildKit creates one before it does anything at all — the "+
+			"\"no space left on device\" it reports is what the kernel answers with, not a "+
+			"full disk. An operator sets user.max_user_namespaces above zero on the nodes "+
+			"that run builds; it is a cluster prerequisite for the dockerfile strategy, and "+
+			"Talos ships it at 0. Builds using the buildpacks strategy create no user "+
+			"namespace and are unaffected",
+		container)
+}
+
 // failureMessage is what the Build's condition and the commit's status check
 // say, which is the failure when there is one and the Job's own sentence when
 // there is not.

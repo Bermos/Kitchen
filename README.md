@@ -86,7 +86,7 @@ things a cluster needs before it can run anything at all.
 
 ### 1. Cluster prerequisites
 
-Four things, none of which the chart installs:
+Five things, none of which the chart installs:
 
 - **Cilium as the CNI**, with `gatewayAPI.enabled=true` and kube-proxy
   replacement. Its Gateway API implementation *is* the ingress; there is no
@@ -107,6 +107,28 @@ Four things, none of which the chart installs:
   L2 announcements or BGP. cloudflared sidesteps needing a routable address,
   but not needing an address: Cilium will not mark a Gateway `Programmed`
   without one.
+- **`user.max_user_namespaces` above zero on every node that runs builds**, for
+  the Dockerfile build strategy. BuildKit runs rootless here, and rootless
+  means it creates a user namespace before it does anything at all. Talos ships
+  the sysctl at `0`, and what `rootlesskit` reports when it cannot fork into a
+  namespace is `no space left on device` — which names neither the sysctl nor
+  the cause, so every Dockerfile build fails a few seconds in for a reason
+  nothing on the screen states. On Talos, without a reboot:
+
+  ```sh
+  talosctl -n <node> patch mc --mode=no-reboot -p @- <<'YAML'
+  machine:
+    sysctls:
+      user.max_user_namespaces: "64000"
+  YAML
+  ```
+
+  An installation that builds with buildpacks alone can skip it: the CNB
+  lifecycle enters as the builder image's own user and creates no user
+  namespace. That is the same carve-out the app namespaces' Pod Security level
+  makes — see [application namespaces have a level of their
+  own](charts/kitchen/README.md#application-namespaces-have-a-level-of-their-own),
+  the other node-level fact the Dockerfile strategy depends on.
 ### 2. Wildcard DNS and a Cloudflare token
 
 Every generated URL is `<slug>.<baseDomain>`, so you need a wildcard record and

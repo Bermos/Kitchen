@@ -537,8 +537,8 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 // restateFailure is what a failed Job becomes on the Build: the reason the
 // platform files it under, and the sentence a person reads.
 //
-// Two failures are restated rather than reported as the exit status they are,
-// because in both cases the exit status is not the answer:
+// Three failures are restated rather than reported as the exit status they
+// are, because in none of them is the exit status the answer:
 //
 //   - A build killed for its memory hit the platform's own ceiling, and the
 //     sentence that says so is the difference between a fix and "the build
@@ -547,6 +547,11 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 //     builder's own words about an option nobody typed. It is the repository's
 //     own failure like any other broken build, and it is restated because the
 //     fix is a name in one of three places.
+//   - A build the node refused a user namespace to dies in rootlesskit's words
+//     about disk space, which is about neither disk nor space. It keeps the
+//     reason of a build that failed — it ran, and no image came out — and
+//     gains a message naming the sysctl, because that is the fix and nothing
+//     the builder printed mentions it.
 //
 // The diagnosis is already on build.Status.Failure, written from the pod by
 // the caller; this refines its message and names which image of the commit
@@ -566,6 +571,8 @@ func restateFailure(
 	case targetNotFound(failure.Plan, build.Status.Failure):
 		reason = reasonTargetNotFound
 		build.Status.Failure.Message = targetNotFoundMessage(project, build, failure.Plan)
+	case userNamespacesDenied(build.Status.Failure):
+		build.Status.Failure.Message = userNamespacesDeniedMessage(build.Status.Failure)
 	}
 	message := failureMessage(build.Status.Failure, failure.Message)
 	if !failure.Plan.isWeb() {
