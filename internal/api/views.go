@@ -452,20 +452,27 @@ type buildWorkloadView struct {
 	// reason: recorded when the Job was created, so an old build reads as
 	// the artifacts it actually shipped.
 	DockerfileTarget string `json:"dockerfileTarget,omitempty"`
-	Message          string `json:"message,omitempty"`
+	// DetectedFramework is what this workload's `strategy: auto` made of its
+	// own root directory, absent for a workload that named its strategy and
+	// so asked detection nothing. The build's own `detectedFramework` above
+	// is the project's image; a unit is several directories and can have
+	// several answers.
+	DetectedFramework string `json:"detectedFramework,omitempty"`
+	Message           string `json:"message,omitempty"`
 }
 
 func buildWorkloadViews(workloads []kitchenv1alpha1.WorkloadBuildStatus) []buildWorkloadView {
 	views := make([]buildWorkloadView, 0, len(workloads))
 	for _, workload := range workloads {
 		views = append(views, buildWorkloadView{
-			Name:             workload.Name,
-			Phase:            string(workload.Phase),
-			Image:            workload.Image,
-			Repository:       workload.Repository,
-			Job:              workload.Job,
-			DockerfileTarget: workload.DockerfileTarget,
-			Message:          workload.Message,
+			Name:              workload.Name,
+			Phase:             string(workload.Phase),
+			Image:             workload.Image,
+			Repository:        workload.Repository,
+			Job:               workload.Job,
+			DockerfileTarget:  workload.DockerfileTarget,
+			DetectedFramework: workload.DetectedFramework,
+			Message:           workload.Message,
 		})
 	}
 	return views

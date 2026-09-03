@@ -212,10 +212,10 @@ func TestRefusingAnUnworkableProcessList(t *testing.T) {
 		// A scheduled process runs an image; it is not one.
 		"a build on a scheduled process": `[{"name": "n", "type": "cron", "schedule": "0 3 * * *", ` +
 			`"build": {"rootDirectory": "services/report"}}]`,
-		// There is no auto for a workload: detection answers a port and a
-		// buildpack, and a workload has neither question open.
-		"a workload build asking for auto": `[{"name": "api", "type": "service", "port": 8080, ` +
-			`"build": {"strategy": "auto"}}]`,
+		// The three the project has and nothing else: a workload takes
+		// `auto` (#305), so what is refused is a fourth word.
+		"a workload build asking for a strategy nothing builds": `[{"name": "api", ` +
+			`"type": "service", "port": 8080, "build": {"strategy": "nixpacks"}}]`,
 		// A workload's root directory is its build root, and its Dockerfile
 		// path is relative to that root — the same two relations a project's
 		// own build has, so they are refused the same way. Nothing above a
@@ -278,10 +278,14 @@ func TestDeclaringAServiceWorkloadWithItsOwnBuild(t *testing.T) {
 	if api == nil || api.Port != 8080 || api.Build == nil {
 		t.Fatalf("the service did not stick: %+v", api)
 	}
+	// A workload that names no strategy is `auto`, exactly as the project
+	// is: the build reads this workload's own directory and decides, so the
+	// monorepo case — a Dockerfile beside a directory without one — needs
+	// nothing said (#305).
 	if api.Build.RootDirectory != "services/api" ||
-		api.Build.EffectiveStrategy() != kitchenv1alpha1.BuildStrategyDockerfile ||
+		api.Build.EffectiveStrategy() != kitchenv1alpha1.BuildStrategyAuto ||
 		api.Build.DockerfilePath != "" {
-		t.Fatalf("a workload build defaults to a Dockerfile in its own directory: %+v", api.Build)
+		t.Fatalf("a workload build that named no strategy is not auto: %+v", api.Build)
 	}
 	// A service is in a preview unless it says otherwise: a preview missing
 	// one of its own services is a broken preview, not a protected one.

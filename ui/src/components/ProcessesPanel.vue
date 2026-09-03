@@ -193,6 +193,12 @@ function buildOf(process: Process): string {
   const build = process.build;
   if (!build) return "the project's own image, started differently";
   const where = build.rootDirectory && build.rootDirectory !== "." ? build.rootDirectory : "the repository root";
+  if (build.strategy === "auto") {
+    // The strategy is a read of that directory at the commit, so nothing here
+    // can say which of the two it will be. What each build settled on is on
+    // the build's own page, per image.
+    return `${build.dockerfilePath ?? "Dockerfile"} in ${where} if it is there, buildpacks otherwise`;
+  }
   if (build.strategy === "dockerfile") {
     // Which stage of that file, when this workload names one. A workload that
     // names none is built to the project's stage, which the build's own page

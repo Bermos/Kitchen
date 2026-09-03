@@ -790,6 +790,128 @@ var _ = Describe("Build Controller", func() {
 			Expect(ready.Message).To(ContainSubstring("no Dockerfile and no framework detected"))
 		})
 
+		// A workload's build takes the project's own three strategies, and
+		// defaults to the same one (#305). The monorepo this exists for is a
+		// service with a Dockerfile beside one without: both build, and
+		// neither has to say which builder it is.
+		Describe("a workload that names no strategy", func() {
+			declareWorkloads := func(workloads ...kitchenv1alpha1.ProcessSpec) {
+				GinkgoHelper()
+				project := &kitchenv1alpha1.Project{}
+				Expect(k8sClient.Get(ctx,
+					types.NamespacedName{Name: projectName, Namespace: namespace}, project)).To(Succeed())
+				project.Spec.Processes = workloads
+				Expect(k8sClient.Update(ctx, project)).To(Succeed())
+				for _, workload := range workloads {
+					name := workloadJobName(buildName, workload.Name)
+					DeferCleanup(func() {
+						job := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: appNS}}
+						Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, job,
+							client.PropagationPolicy(metav1.DeletePropagationBackground)))).To(Succeed())
+					})
+				}
+			}
+
+			It("builds each one as its own directory turns out to be", func() {
+				declareWorkloads(
+					kitchenv1alpha1.ProcessSpec{
+						Name: "api", Type: kitchenv1alpha1.ProcessService, Port: 8080,
+						Build: &kitchenv1alpha1.ProcessBuildSpec{RootDirectory: "services/api"},
+					},
+					kitchenv1alpha1.ProcessSpec{
+						Name: "worker", Type: kitchenv1alpha1.ProcessWorker,
+						Build: &kitchenv1alpha1.ProcessBuildSpec{RootDirectory: "services/worker"},
+					},
+					// An explicit strategy asks detection nothing, which is
+					// what keeps a declaration written before any of this
+					// building exactly as it did — this directory says
+					// nothing about itself and is built all the same.
+					kitchenv1alpha1.ProcessSpec{
+						Name: "reports", Type: kitchenv1alpha1.ProcessWorker,
+						Build: &kitchenv1alpha1.ProcessBuildSpec{
+							Strategy:      kitchenv1alpha1.BuildStrategyBuildpacks,
+							RootDirectory: "services/reports",
+						},
+					},
+				)
+				source = &fakeSource{files: map[string]string{
+					"Dockerfile":                       "FROM scratch\n",
+					"services/api/Dockerfile":          "FROM scratch\n",
+					"services/worker/requirements.txt": "flask\n",
+					"services/reports/README.md":       "# nothing detection knows",
+				}}
+
+				reconcileOnce()
+
+				api := &batchv1.Job{}
+				Expect(k8sClient.Get(ctx, types.NamespacedName{
+					Name: workloadJobName(buildName, "api"), Namespace: appNS}, api)).To(Succeed())
+				Expect(api.Spec.Template.Spec.Containers[0].Image).To(Equal(BuildkitImage))
+
+				worker := &batchv1.Job{}
+				Expect(k8sClient.Get(ctx, types.NamespacedName{
+					Name: workloadJobName(buildName, "worker"), Namespace: appNS}, worker)).To(Succeed())
+				Expect(worker.Spec.Template.Spec.Containers[0].Image).To(Equal(BuildpacksBuilderImage))
+				// The lifecycle is pointed at the workload's own directory,
+				// which is what detection read.
+				Expect(worker.Spec.Template.Spec.Containers[0].Args).
+					To(ContainElement("-app=/workspace/source/services/worker"))
+
+				reports := &batchv1.Job{}
+				Expect(k8sClient.Get(ctx, types.NamespacedName{
+					Name: workloadJobName(buildName, "reports"), Namespace: appNS}, reports)).To(Succeed())
+				Expect(reports.Spec.Template.Spec.Containers[0].Image).To(Equal(BuildpacksBuilderImage))
+
+				// What each workload's `auto` turned out to be is recorded on
+				// its own row: a unit is several directories, and the Build's
+				// own detectedFramework is the project's image alone.
+				build := &kitchenv1alpha1.Build{}
+				Expect(k8sClient.Get(ctx, buildKey, build)).To(Succeed())
+				Expect(build.Status.Phase).To(Equal(kitchenv1alpha1.BuildRunning))
+				Expect(build.Status.DetectedFramework).To(Equal(framework.Dockerfile))
+				detected := map[string]string{}
+				for _, workload := range build.Status.Workloads {
+					detected[workload.Name] = workload.DetectedFramework
+				}
+				Expect(detected).To(HaveKeyWithValue("api", framework.Dockerfile))
+				Expect(detected).To(HaveKeyWithValue("worker", framework.Python))
+				// It named its strategy, so nothing was detected for it.
+				Expect(detected).To(HaveKeyWithValue("reports", ""))
+			})
+
+			It("fails naming the workload when its directory is neither", func() {
+				declareWorkloads(kitchenv1alpha1.ProcessSpec{
+					Name: "worker", Type: kitchenv1alpha1.ProcessWorker,
+					Build: &kitchenv1alpha1.ProcessBuildSpec{RootDirectory: "services/worker"},
+				})
+				source = &fakeSource{files: map[string]string{
+					"Dockerfile":                "FROM scratch\n",
+					"services/worker/README.md": "# nothing to build",
+				}}
+
+				reconcileOnce()
+
+				// The whole unit is refused before anything is created: a
+				// release is all of it or none.
+				Expect(apierrors.IsNotFound(k8sClient.Get(ctx, jobKey, &batchv1.Job{}))).To(BeTrue())
+				Expect(apierrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{
+					Name: workloadJobName(buildName, "worker"), Namespace: appNS}, &batchv1.Job{}))).To(BeTrue())
+
+				build := &kitchenv1alpha1.Build{}
+				Expect(k8sClient.Get(ctx, buildKey, build)).To(Succeed())
+				Expect(build.Status.Phase).To(Equal(kitchenv1alpha1.BuildFailed))
+				ready := meta.FindStatusCondition(build.Status.Conditions, condReady)
+				Expect(ready).NotTo(BeNil())
+				Expect(ready.Reason).To(Equal(reasonFrameworkNotDetected))
+				// Which workload, the file it looked for, and the setting
+				// that would settle it — a sentence about "the repository"
+				// beside four directories is not an answer.
+				Expect(ready.Message).To(ContainSubstring(`workload "worker"`))
+				Expect(ready.Message).To(ContainSubstring("services/worker/Dockerfile"))
+				Expect(ready.Message).To(ContainSubstring("build.strategy"))
+			})
+		})
+
 		It("fails saying so when the repository itself cannot be read", func() {
 			// Not a root directory one level off: the repository is not
 			// there, or this connection's credential may not see it. The two

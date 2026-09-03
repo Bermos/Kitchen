@@ -33,6 +33,7 @@ import (
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/detect"
+	"github.com/Bermos/Kitchen/internal/framework"
 	"github.com/Bermos/Kitchen/internal/provider"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -400,7 +401,7 @@ func TestABuildPlansOneImagePerWorkloadThatDeclaresABuild(t *testing.T) {
 	registry := provider.RegistryTarget{Prefix: "registry.example.com/kitchen"}
 
 	plans := buildPlansFor(project, build,
-		registry, webPlan(project, build, registry, kitchenv1alpha1.BuildStrategyDockerfile))
+		registry, webPlan(project, build, registry, kitchenv1alpha1.BuildStrategyDockerfile), nil)
 
 	if len(plans) != 2 {
 		t.Fatalf("want the project's image and the one workload that declared a build, got %d plans", len(plans))
@@ -425,8 +426,106 @@ func TestABuildPlansOneImagePerWorkloadThatDeclaresABuild(t *testing.T) {
 	if api.Job != "shop-bld-abc123def456-api" {
 		t.Errorf("a workload's Job has to say which build and which workload: %s", api.Job)
 	}
-	if api.Strategy != kitchenv1alpha1.BuildStrategyDockerfile {
-		t.Errorf("a workload's strategy defaults to dockerfile: %s", api.Strategy)
+	// It named no strategy, so it is `auto` and nothing has resolved it here:
+	// what it turns out to be is a read of services/api at this commit, which
+	// TestAWorkloadOnAutoIsPlannedAsWhatDetectionFound covers.
+	if api.Strategy != kitchenv1alpha1.BuildStrategyAuto {
+		t.Errorf("a workload's strategy defaults to auto: %s", api.Strategy)
+	}
+}
+
+// dockerfileFound is what detection answers for a directory that has a
+// Dockerfile in it: the one entry of the catalogue that is not a framework at
+// all, but the repository saying it builds itself.
+func dockerfileFound() framework.Framework {
+	found, ok := framework.ByName(framework.Dockerfile)
+	if !ok {
+		panic("the catalogue lost its Dockerfile entry")
+	}
+	return found
+}
+
+// A workload declares no strategy far more often than it declares one, and
+// what it then builds as is a read of its own directory — the project's own
+// `auto` over `services/worker` instead of over the repository root (#305).
+//
+// A monorepo where one service ships a Dockerfile and the next does not is
+// the layout the workload build exists for, and neither of them has to say
+// which builder it is.
+func TestAWorkloadOnAutoIsPlannedAsWhatDetectionFound(t *testing.T) {
+	python, ok := framework.ByName(framework.Python)
+	if !ok {
+		t.Fatal("the catalogue lost its Python entry")
+	}
+	project := &kitchenv1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: "shop"},
+		Spec: kitchenv1alpha1.ProjectSpec{
+			Build: kitchenv1alpha1.ProjectBuildSpec{DockerfileTarget: "runtime"},
+			Processes: []kitchenv1alpha1.ProcessSpec{
+				// A Dockerfile where this one looks: a dockerfile build, and
+				// one that inherits the unit's stage exactly as a workload
+				// that said `dockerfile` outright does.
+				{
+					Name: "api", Type: kitchenv1alpha1.ProcessService, Port: 8080,
+					Build: &kitchenv1alpha1.ProcessBuildSpec{RootDirectory: "services/api"},
+				},
+				// No Dockerfile, and a framework detection recognised: the
+				// lifecycle builds it, and there is no stage to inherit.
+				{
+					Name: "worker", Type: kitchenv1alpha1.ProcessWorker,
+					Build: &kitchenv1alpha1.ProcessBuildSpec{RootDirectory: "services/worker"},
+				},
+				// An explicit strategy asked detection nothing and is
+				// unaffected by any of it.
+				{
+					Name: "reports", Type: kitchenv1alpha1.ProcessWorker,
+					Build: &kitchenv1alpha1.ProcessBuildSpec{
+						Strategy: kitchenv1alpha1.BuildStrategyBuildpacks, RootDirectory: "services/reports",
+					},
+				},
+			},
+		},
+	}
+	build := &kitchenv1alpha1.Build{
+		ObjectMeta: metav1.ObjectMeta{Name: "shop-bld-abc123def456"},
+		Spec:       kitchenv1alpha1.BuildSpec{Git: kitchenv1alpha1.GitRevision{SHA: "abc123def456", Branch: "main"}},
+	}
+	registry := provider.RegistryTarget{Prefix: "registry.example.com/kitchen"}
+
+	plans := buildPlansFor(project, build,
+		registry, webPlan(project, build, registry, kitchenv1alpha1.BuildStrategyDockerfile),
+		map[string]framework.Framework{"api": dockerfileFound(), "worker": python})
+	if len(plans) != 4 {
+		t.Fatalf("want the project's image and three workloads, got %d plans", len(plans))
+	}
+	for _, tc := range []struct {
+		plan      buildPlan
+		strategy  kitchenv1alpha1.BuildStrategy
+		framework string
+		target    string
+	}{
+		{plans[1], kitchenv1alpha1.BuildStrategyDockerfile, framework.Dockerfile, "runtime"},
+		{plans[2], kitchenv1alpha1.BuildStrategyBuildpacks, framework.Python, ""},
+		{plans[3], kitchenv1alpha1.BuildStrategyBuildpacks, "", ""},
+	} {
+		if tc.plan.Strategy != tc.strategy {
+			t.Errorf("%s is built with %s, want %s", tc.plan.describe(), tc.plan.Strategy, tc.strategy)
+		}
+		if tc.plan.DetectedFramework != tc.framework {
+			t.Errorf("%s recorded framework %q, want %q",
+				tc.plan.describe(), tc.plan.DetectedFramework, tc.framework)
+		}
+		if tc.plan.DockerfileTarget != tc.target {
+			t.Errorf("%s ships stage %q, want %q", tc.plan.describe(), tc.plan.DockerfileTarget, tc.target)
+		}
+	}
+
+	// What each workload turned out to be is recorded on its own row, since a
+	// unit is several directories and the Build's own detectedFramework is
+	// the project's image alone.
+	row := workloadStatusFor(planOutcome{Plan: plans[2]}, "")
+	if row.DetectedFramework != framework.Python {
+		t.Errorf("a workload's row lost what was detected for it: %+v", row)
 	}
 }
 
@@ -457,8 +556,12 @@ func TestEachImageResolvesItsOwnDockerfileStage(t *testing.T) {
 	}
 	registry := provider.RegistryTarget{Prefix: "registry.example.com/kitchen"}
 
+	// Both workloads named no strategy, so both are `auto` — and both found a
+	// Dockerfile, which is what makes them dockerfile builds with a stage to
+	// inherit.
+	found := map[string]framework.Framework{"api": dockerfileFound(), "worker": dockerfileFound()}
 	plans := buildPlansFor(project, build,
-		registry, webPlan(project, build, registry, kitchenv1alpha1.BuildStrategyDockerfile))
+		registry, webPlan(project, build, registry, kitchenv1alpha1.BuildStrategyDockerfile), found)
 	if len(plans) != 3 {
 		t.Fatalf("want the project's image and two workloads, got %d plans", len(plans))
 	}
@@ -485,7 +588,7 @@ func TestEachImageResolvesItsOwnDockerfileStage(t *testing.T) {
 		Build: &kitchenv1alpha1.RepoBuildConfig{DockerfileTarget: "committed"},
 	}
 	plans = buildPlansFor(project, build,
-		registry, webPlan(project, build, registry, kitchenv1alpha1.BuildStrategyDockerfile))
+		registry, webPlan(project, build, registry, kitchenv1alpha1.BuildStrategyDockerfile), found)
 	if plans[0].DockerfileTarget != "committed" || plans[2].DockerfileTarget != "committed" {
 		t.Errorf("the commit's own stage did not win: %q and %q",
 			plans[0].DockerfileTarget, plans[2].DockerfileTarget)
@@ -502,13 +605,13 @@ func TestEachImageResolvesItsOwnDockerfileStage(t *testing.T) {
 		Build: &kitchenv1alpha1.ProcessBuildSpec{Strategy: kitchenv1alpha1.BuildStrategyBuildpacks},
 	})
 	plans = buildPlansFor(project, build,
-		registry, webPlan(project, build, registry, kitchenv1alpha1.BuildStrategyDockerfile))
+		registry, webPlan(project, build, registry, kitchenv1alpha1.BuildStrategyDockerfile), found)
 	if plans[3].DockerfileTarget != "" {
 		t.Errorf("a buildpacks workload inherited a stage it has no file for: %q", plans[3].DockerfileTarget)
 	}
 	project.Spec.Processes[2].Build.DockerfileTarget = "runner"
 	plans = buildPlansFor(project, build,
-		registry, webPlan(project, build, registry, kitchenv1alpha1.BuildStrategyDockerfile))
+		registry, webPlan(project, build, registry, kitchenv1alpha1.BuildStrategyDockerfile), found)
 	if unbuildableTarget(plans) == nil {
 		t.Error("a stage the workload named itself on a buildpacks build was not refused")
 	}

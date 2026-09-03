@@ -102,9 +102,12 @@ process takes no health check at all, since how a run went is its exit status.
 A workload with a "build" is built from its own directory of the repository, so
 one commit produces several images that ship as one release and roll back
 together. Without one it runs the project's image with another command, which
-is one build rather than two. The strategy is dockerfile or buildpacks — there
-is no auto for a workload — and a scheduled process is refused a build: give it
-to the worker or service that ships the image and run the schedule on that.
+is one build rather than two. The strategy is auto, dockerfile or buildpacks,
+and it defaults to auto: a Dockerfile in that workload's own directory makes it
+a dockerfile build, anything else detection recognises there is built with
+buildpacks, and a directory that is neither fails the build naming the workload.
+A scheduled process is refused a build: give it to the worker or service that
+ships the image and run the schedule on that.
 
 "dockerfileTarget" on that build is which stage of the workload's Dockerfile to
 ship, which is the case one multi-stage file yielding an API, a worker and a

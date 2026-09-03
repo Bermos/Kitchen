@@ -75,6 +75,7 @@ produces all of them.
       "repository": "registry.example.com/kitchen/shop-api",
       "image": "registry.example.com/kitchen/shop-api@sha256:9f2c…",
       "dockerfileTarget": "api",
+      "detectedFramework": "dockerfile",
       "job": "shop-bld-abc123def456-api"
     }
   ]
@@ -84,6 +85,12 @@ produces all of them.
 `image` is the project's own — the web process's — and `workloads` is one row
 per workload that declared a build of its own. A project that ships one image
 has none, and answers exactly as it always did.
+
+`detectedFramework` on a row is what that workload's `strategy: auto` made of
+its own directory — `dockerfile` where it found one, the framework it
+recognised otherwise — and is absent for a workload that named its strategy.
+The build's own `detectedFramework` is the project's image: a unit is several
+directories, so it can have several answers.
 
 Three things hold "one commit, one coordinated release" up:
 

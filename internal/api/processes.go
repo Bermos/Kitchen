@@ -173,8 +173,9 @@ func newProcessBuildView(build *kitchenv1alpha1.ProcessBuildSpec) *processBuildV
 	// The Dockerfile is a dockerfile build's alone. Reporting it beside a
 	// buildpacks strategy would be a setting that reads back and does
 	// nothing, which is the shape of confusion this repository refuses
-	// everywhere else.
-	if build.EffectiveStrategy() == kitchenv1alpha1.BuildStrategyDockerfile {
+	// everywhere else. `auto` keeps it: the file is what `auto` looks for,
+	// and a workload that has one is a dockerfile build.
+	if build.EffectiveStrategy() != kitchenv1alpha1.BuildStrategyBuildpacks {
 		view.DockerfilePath = detect.NormalizeDockerfile(build.DockerfilePath)
 		view.DockerfileTarget = detect.NormalizeTarget(build.DockerfileTarget)
 	}

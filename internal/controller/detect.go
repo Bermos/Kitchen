@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -72,6 +73,101 @@ func (r *BuildReconciler) detectFramework(
 		DockerfilePath:     buildDockerfilePath(project, build),
 		ConsiderDockerfile: strategy == kitchenv1alpha1.BuildStrategyAuto,
 	})
+}
+
+// detectWorkloads is `strategy: auto` for the workloads of a unit: the same
+// read of the same repository the project's own build makes, over each
+// workload's root directory instead of over the project's.
+//
+// It is the project's detection rather than a second one — internal/detect
+// says what a build root is and what is in it, and a workload's build root is
+// a build root — but it stops at the strategy. A workload names its own port
+// and its own command, so the framework it produces is wanted for one thing
+// beyond the choice of builder: telling the lifecycle what it is building,
+// which is what makes a static site come out served rather than run.
+//
+// The refusal is the part worth being careful about. A workload the platform
+// read and did not recognise names itself, its root directory and the two
+// things that would settle it, because "no Dockerfile and no framework
+// detected" beside four workloads that built is not an answer.
+//
+// A non-nil second return is the Build having been parked or failed, exactly
+// as decide's is: the repository being unreadable right now parks every
+// workload with it, since none of them can be decided either.
+func (r *BuildReconciler) detectWorkloads(
+	ctx context.Context,
+	build *kitchenv1alpha1.Build,
+	project *kitchenv1alpha1.Project,
+) (map[string]framework.Framework, *ctrl.Result, error) {
+	pending := make([]kitchenv1alpha1.ProcessSpec, 0)
+	for _, workload := range buildWorkloads(project, build) {
+		if workload.Build != nil && workload.Build.EffectiveStrategy() == kitchenv1alpha1.BuildStrategyAuto {
+			pending = append(pending, workload)
+		}
+	}
+	if len(pending) == 0 {
+		return nil, nil, nil
+	}
+
+	// One reader for all of them: the connection and its credential are the
+	// project's, and resolving them per workload would be the same two reads
+	// once per image.
+	reader, err := r.sourceReaderFor(ctx, project)
+	if err != nil {
+		res, updateErr := r.pending(ctx, build, reasonSourceUnreadable, err)
+		return nil, &res, updateErr
+	}
+
+	detected := make(map[string]framework.Framework, len(pending))
+	for _, workload := range pending {
+		root := detect.NormalizeRoot(workload.Build.RootDirectory)
+		dockerfile := detect.NormalizeDockerfile(workload.Build.DockerfilePath)
+		signals, err := detect.Signals(ctx, reader, detect.Target{
+			Repo:           project.Spec.Source.Repo,
+			Ref:            build.Spec.Git.SHA,
+			RootDirectory:  root,
+			DockerfilePath: dockerfile,
+			// A workload on `auto` has asked exactly this question: is there
+			// a Dockerfile here, and if not, what is this?
+			ConsiderDockerfile: true,
+		})
+		switch {
+		case errors.Is(err, errSourceUnreadable):
+			res, updateErr := r.pending(ctx, build, reasonSourceUnreadable, err)
+			return nil, &res, updateErr
+		case errors.Is(err, errRepositoryUnreadable):
+			res, updateErr := r.fail(ctx, build, project, reasonRepositoryUnreadable, err.Error())
+			return nil, &res, updateErr
+		case err != nil:
+			res, updateErr := r.fail(ctx, build, project, reasonFrameworkNotDetected,
+				fmt.Sprintf("workload %q: %s", workload.Name, err.Error()))
+			return nil, &res, updateErr
+		}
+		found, ok := framework.Detect(signals)
+		if !ok {
+			res, updateErr := r.fail(ctx, build, project, reasonFrameworkNotDetected,
+				undetectedWorkload(project, build, workload.Name, root, dockerfile))
+			return nil, &res, updateErr
+		}
+		detected[workload.Name] = found
+	}
+	return detected, nil, nil
+}
+
+// undetectedWorkload is what a workload on `auto` that the platform read and
+// did not recognise is told. It names the workload, because a unit builds
+// several images and a sentence about "the repository" would leave somebody
+// looking at four directories; and it names both ways out, because either is
+// one line in the project's settings or one file in the commit.
+func undetectedWorkload(
+	project *kitchenv1alpha1.Project,
+	build *kitchenv1alpha1.Build,
+	workload, root, dockerfile string,
+) string {
+	return fmt.Sprintf(
+		"workload %q: %s in %s at %s: add %s, or set workload %q's build.strategy to dockerfile or buildpacks",
+		workload, detect.ErrNotRecognised, project.Spec.Source.Repo, detect.ShortRef(build.Spec.Git.SHA),
+		path.Join(root, dockerfile), workload)
 }
 
 // sourceReaderFor resolves the source-reading half of the Project's git

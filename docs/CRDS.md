@@ -577,7 +577,13 @@ spec:
       type: service                     # and still no route: never published
       port: 8080                        # required here, refused on the others
       build:                            # its own directory of the repository
-        strategy: dockerfile            # dockerfile | buildpacks; no auto
+        strategy: auto                  # auto | dockerfile | buildpacks. auto is
+                                        # the default and reads this workload's own
+                                        # rootDirectory: a Dockerfile there wins,
+                                        # else what detection finds goes to
+                                        # buildpacks, else the build fails naming
+                                        # this workload. It never inherits the
+                                        # project's strategy
         dockerfilePath: Dockerfile      # relative to rootDirectory, which is
         dockerfileTarget: api           # which stage of that file to ship. Unset
                                         # takes the project's, not the file's last

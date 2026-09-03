@@ -234,9 +234,15 @@ which is what makes a monorepo one project instead of four:
            "dockerfileTarget": "api", "rootDirectory": "services/api"}}
 ```
 
+A workload that names no `strategy` is `auto`, which is the case a monorepo is:
+`services/api` with a Dockerfile beside `services/worker` without one builds
+both, and neither has to say which builder it is. What each workload's `auto`
+resolved to is reported per workload by
+[`GET /builds/{name}`](builds.md), as `detectedFramework`.
+
 | Field | What it means |
 | --- | --- |
-| `strategy` | `dockerfile` (the default) or `buildpacks`. There is **no `auto`**: detection's output is a framework, and what the platform does with a framework is fill in the web process's port and tell the buildpacks lifecycle what it is building — a workload has neither question open, since a service names its own port and a workload asking for buildpacks has said which builder to use. |
+| `strategy` | `auto` (the default), `dockerfile` or `buildpacks` — the project's own three. `auto` reads **this workload's** `rootDirectory` at the commit: a Dockerfile at its `dockerfilePath` wins and this is a dockerfile build; otherwise the framework detected there is built with buildpacks; otherwise the build fails naming this workload, the file it looked for and the strategy that would settle it. It resolves the builder alone — a workload names its own port and its own command, which are the other two things detection would answer — and it is never the project's `strategy` inherited: a workload's is its own. |
 | `dockerfilePath` | The Dockerfile, relative to `rootDirectory`. Defaults to `Dockerfile`. |
 | `dockerfileTarget` | Which stage of that Dockerfile produces this workload's image. Left out, the project's stage stands in — see below. |
 | `rootDirectory` | The directory this workload is built from, **relative to the repository root** — not to the project's own root directory, since the whole point is that each workload names where it lives once. |
