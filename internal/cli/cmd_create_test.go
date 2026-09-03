@@ -454,3 +454,130 @@ func TestDescribingADetectionLeavesOutAPortThereIsNone(t *testing.T) {
 		}
 	}
 }
+
+// The link is written on the same terms `kitchen link` writes one, and the
+// four cases are these: a directory that was not linked, one already linked to
+// this project, and one linked to another — with an answer and without one.
+//
+// The last is the one that cost somebody an afternoon: the link was replaced
+// without a word, and the next `kitchen builds` was about a project the
+// platform had never heard of.
+func TestCreateProjectLinksADirectoryThatWasNotLinked(t *testing.T) {
+	h := newHarness(t)
+	h.platform.connections = twoConnections()
+	h.platform.detected = &detection{Detected: true}
+
+	if code := h.run("projects", "create", testProject, "--repo", "acme/shop",
+		"--connection", gitConnection, "--registry", registryConnection, "--json"); code != exitOK {
+		t.Fatalf("exit %d: %s", code, h.stderr.String())
+	}
+	answer := projectCreated{}
+	h.answer(&answer)
+	if answer.Path == "" || answer.Replaced != "" {
+		t.Errorf("an unlinked directory reported a replacement: %+v", answer)
+	}
+}
+
+func TestCreateProjectDoesNotAskAboutALinkToItself(t *testing.T) {
+	h := newHarness(t)
+	h.platform.connections = twoConnections()
+	h.platform.detected = &detection{Detected: true}
+	if _, err := writeLink(h.work, &link{Project: testProject, API: h.platform.server.URL}); err != nil {
+		t.Fatal(err)
+	}
+
+	if code := h.run("projects", "create", testProject, "--repo", "acme/shop",
+		"--connection", gitConnection, "--registry", registryConnection, "--json"); code != exitOK {
+		t.Fatalf("exit %d: %s", code, h.stderr.String())
+	}
+	answer := projectCreated{}
+	h.answer(&answer)
+	if answer.Replaced != "" {
+		t.Errorf("replaced a link to the same project: %+v", answer)
+	}
+}
+
+func TestCreateProjectRefusesToReplaceALinkWithoutYes(t *testing.T) {
+	h := newHarness(t)
+	h.platform.connections = twoConnections()
+	h.platform.detected = &detection{Detected: true}
+	if _, err := writeLink(h.work, &link{Project: "billing", API: h.platform.server.URL}); err != nil {
+		t.Fatal(err)
+	}
+
+	if code := h.run("projects", "create", testProject, "--repo", "acme/shop",
+		"--connection", gitConnection, "--registry", registryConnection, "--json"); code != exitUsage {
+		t.Fatalf("exit %d, wanted %d: %s", code, exitUsage, h.stderr.String())
+	}
+	refusal := h.failure()
+	if !strings.Contains(refusal.Error(), "billing") || !strings.Contains(refusal.Hint, "--yes") {
+		t.Errorf("the refusal does not name the link or the flag that answers it: %+v", refusal)
+	}
+	// Asked before the project is written, so a refusal leaves nothing behind
+	// — neither a project nor a link somebody has to put back.
+	if creates := h.platform.sent("POST", "/projects"); len(creates) != 0 {
+		t.Errorf("the project was created anyway: %+v", creates)
+	}
+	if existing, _, err := findLink(h.work); err != nil || existing == nil || existing.Project != "billing" {
+		t.Errorf("the link was replaced anyway: %+v %v", existing, err)
+	}
+}
+
+func TestCreateProjectSaysWhichLinkItReplaced(t *testing.T) {
+	h := newHarness(t)
+	h.platform.connections = twoConnections()
+	h.platform.detected = &detection{Detected: true}
+	if _, err := writeLink(h.work, &link{Project: "billing", API: h.platform.server.URL}); err != nil {
+		t.Fatal(err)
+	}
+
+	if code := h.run("projects", "create", testProject, "--repo", "acme/shop", "--yes",
+		"--connection", gitConnection, "--registry", registryConnection, "--json"); code != exitOK {
+		t.Fatalf("exit %d: %s", code, h.stderr.String())
+	}
+	answer := projectCreated{}
+	h.answer(&answer)
+	if answer.Replaced != "billing" {
+		t.Errorf("the answer does not say what it replaced: %+v", answer)
+	}
+	if existing, _, err := findLink(h.work); err != nil || existing == nil || existing.Project != testProject {
+		t.Errorf("the link was not replaced: %+v %v", existing, err)
+	}
+
+	// And the person reading text rather than JSON is told the same thing.
+	h.platform.detected = &detection{Detected: true}
+	if _, err := writeLink(h.work, &link{Project: "billing", API: h.platform.server.URL}); err != nil {
+		t.Fatal(err)
+	}
+	if code := h.run("projects", "create", testProject, "--repo", "acme/shop", "--yes",
+		"--connection", gitConnection, "--registry", registryConnection); code != exitOK {
+		t.Fatalf("exit %d: %s", code, h.stderr.String())
+	}
+	if out := h.stdout.String(); !strings.Contains(out, "replacing the link to billing") {
+		t.Errorf("the output does not say what it replaced:\n%s", out)
+	}
+}
+
+// A prompt somebody is there to answer is answered, and "no" is a cancel that
+// leaves both the project and the link alone.
+func TestCreateProjectAsksBeforeReplacingALink(t *testing.T) {
+	h := newHarness(t)
+	h.platform.connections = twoConnections()
+	h.platform.detected = &detection{Detected: true}
+	h.stdinTerminal = true
+	h.stdin = strings.NewReader("n\n")
+	if _, err := writeLink(h.work, &link{Project: "billing", API: h.platform.server.URL}); err != nil {
+		t.Fatal(err)
+	}
+
+	if code := h.run("projects", "create", testProject, "--repo", "acme/shop",
+		"--connection", gitConnection, "--registry", registryConnection, "--json"); code == exitOK {
+		t.Fatal("replaced a link the answer refused")
+	}
+	if question := h.stderr.String(); !strings.Contains(question, "is linked to billing") {
+		t.Errorf("the question does not say what is linked where: %q", question)
+	}
+	if creates := h.platform.sent("POST", "/projects"); len(creates) != 0 {
+		t.Errorf("the project was created anyway: %+v", creates)
+	}
+}

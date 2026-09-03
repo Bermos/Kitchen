@@ -235,7 +235,11 @@ is the whole of it in a checkout: the repository comes from `origin`, the name
 from the repository, and the two connections from the platform when it offers
 only one that can do each job. It ends by writing the same
 `.kitchen/project.json` `kitchen link` writes, so the directory is linked to the
-project it just made.
+project it just made. It replaces an existing link on the same terms `kitchen
+link` does: a directory already deploying another project is asked about first
+(`--yes` answers that question too, and with no terminal it is a failure naming
+the flag rather than a silent rewrite), the answer's `replaced` says which
+project was taken over, and `--link=false` writes no link at all.
 
 Before the project is written, the repository is read through the same
 preflight the dashboard's new-project dialog runs — `POST
