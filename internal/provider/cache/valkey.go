@@ -34,6 +34,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/Bermos/Kitchen/internal/provider/naming"
 )
 
 const (
@@ -172,8 +174,8 @@ func firstNonEmpty(values ...string) string {
 }
 
 // Provision creates an instance with nothing asked of it beyond a name.
-func (v *Valkey) Provision(ctx context.Context, name string) (Instance, error) {
-	return v.ProvisionWith(ctx, name, Requirements{})
+func (v *Valkey) Provision(ctx context.Context, res naming.Resource) (Instance, error) {
+	return v.ProvisionWith(ctx, res, Requirements{})
 }
 
 // ProvisionWith creates (or finds) the instance for a claim.
@@ -182,17 +184,25 @@ func (v *Valkey) Provision(ctx context.Context, name string) (Instance, error) {
 // asking for a version nothing publishes, or a memory limit that is not a
 // quantity, is refused as a claim rather than left as a pod that will not
 // start.
-func (v *Valkey) ProvisionWith(ctx context.Context, name string, req Requirements) (Instance, error) {
+func (v *Valkey) ProvisionWith(ctx context.Context, res naming.Resource, req Requirements) (Instance, error) {
 	settings, err := v.resolve(req)
 	if err != nil {
 		return Instance{}, err
 	}
-	binding, err := v.ensureInstance(ctx, resourceName(name), settings)
+	name, err := naming.Resolve(ctx, res, naming.Provider{
+		Kind: "cache instance", Limit: maxInstanceName, Lookup: v.owner,
+	})
+	if err != nil {
+		return Instance{}, err
+	}
+	settings.project = res.Project
+	binding, err := v.ensureInstance(ctx, name, settings)
 	if err != nil {
 		return Instance{}, err
 	}
 	return Instance{
-		ID:      v.Namespace + "/" + resourceName(name),
+		ID:      v.Namespace + "/" + name,
+		Name:    name,
 		Binding: binding,
 		// An instance the platform provisions for a project holds that
 		// project's own data, and the claim's is production's. Only a
@@ -243,6 +253,9 @@ type settings struct {
 	usage     Usage
 	image     string
 	maxMemory resource.Quantity
+	// project is whose instance this is, written onto every object as the
+	// label a later claim's adoption is judged against.
+	project string
 }
 
 // resolve turns a claim's requirements into settings, refusing before
@@ -323,7 +336,10 @@ func (v *Valkey) inherit(ctx context.Context, instanceID string) (settings, erro
 	if image == "" && len(parent.Spec.Template.Spec.Containers) > 0 {
 		image = parent.Spec.Template.Spec.Containers[0].Image
 	}
-	return settings{usage: usage, image: image, maxMemory: quantity}, nil
+	return settings{
+		usage: usage, image: image, maxMemory: quantity,
+		project: parent.Labels[naming.LabelProject],
+	}, nil
 }
 
 // ensureInstance makes the three objects an instance is, in the order that
@@ -333,11 +349,11 @@ func (v *Valkey) ensureInstance(ctx context.Context, name string, cfg settings) 
 	if err := v.ensureNamespace(ctx); err != nil {
 		return Binding{}, err
 	}
-	password, err := v.ensureSecret(ctx, name)
+	password, err := v.ensureSecret(ctx, name, cfg.project)
 	if err != nil {
 		return Binding{}, err
 	}
-	if err := v.ensureService(ctx, name); err != nil {
+	if err := v.ensureService(ctx, name, cfg.project); err != nil {
 		return Binding{}, err
 	}
 	ready, err := v.ensureStatefulSet(ctx, name, cfg)
@@ -368,7 +384,7 @@ func (v *Valkey) ensureNamespace(ctx context.Context) error {
 // ensureSecret mints the instance's password once and reads it back
 // afterwards. It is minted here rather than derived from anything, so that
 // nothing outside this Secret can reconstruct it.
-func (v *Valkey) ensureSecret(ctx context.Context, name string) (string, error) {
+func (v *Valkey) ensureSecret(ctx context.Context, name, project string) (string, error) {
 	secret := &corev1.Secret{}
 	key := types.NamespacedName{Namespace: v.Namespace, Name: name}
 	err := v.Client.Get(ctx, key, secret)
@@ -391,7 +407,7 @@ func (v *Valkey) ensureSecret(ctx context.Context, name string) (string, error) 
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: v.Namespace,
-			Labels:    v.labels(name),
+			Labels:    v.labels(name, project),
 		},
 		Type: corev1.SecretTypeOpaque,
 		// Data rather than StringData: this is a value the provisioner reads
@@ -404,7 +420,7 @@ func (v *Valkey) ensureSecret(ctx context.Context, name string) (string, error) 
 		if apierrors.IsAlreadyExists(err) {
 			// Another reconcile got there first; read its password rather
 			// than a second one nothing would be able to use.
-			return v.ensureSecret(ctx, name)
+			return v.ensureSecret(ctx, name, project)
 		}
 		return "", err
 	}
@@ -424,7 +440,7 @@ func newPassword() (string, error) {
 // ensureService gives the instance its address. A plain ClusterIP: an
 // application reaches it by name, and nothing outside the cluster reaches it
 // at all.
-func (v *Valkey) ensureService(ctx context.Context, name string) error {
+func (v *Valkey) ensureService(ctx context.Context, name, project string) error {
 	service := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: v.Namespace}}
 	err := v.Client.Get(ctx, types.NamespacedName{Namespace: v.Namespace, Name: name}, service)
 	if err == nil {
@@ -434,7 +450,7 @@ func (v *Valkey) ensureService(ctx context.Context, name string) error {
 		return err
 	}
 	service = &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: v.Namespace, Labels: v.labels(name)},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: v.Namespace, Labels: v.labels(name, project)},
 		Spec: corev1.ServiceSpec{
 			Selector: map[string]string{instanceLabel: name},
 			Ports: []corev1.ServicePort{{
@@ -458,6 +474,12 @@ func (v *Valkey) ensureStatefulSet(ctx context.Context, name string, cfg setting
 	err := v.Client.Get(ctx, key, existing)
 	switch {
 	case err == nil:
+		// The project label is the one thing written onto an instance that
+		// is already there, and only where there is none: an instance an
+		// operator has just handed over records whose it is from now on.
+		if err := v.recordProject(ctx, existing, cfg.project); err != nil {
+			return false, err
+		}
 		return existing.Status.ReadyReplicas >= 1, nil
 	case !apierrors.IsNotFound(err):
 		return false, err
@@ -474,7 +496,7 @@ func (v *Valkey) ensureStatefulSet(ctx context.Context, name string, cfg setting
 
 // desiredStatefulSet is the whole of what an instance runs.
 func (v *Valkey) desiredStatefulSet(name string, cfg settings) *appsv1.StatefulSet {
-	labels := v.labels(name)
+	labels := v.labels(name, cfg.project)
 	replicas := int32(1)
 	set := &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{
@@ -673,12 +695,44 @@ func (v *Valkey) deleteInstance(ctx context.Context, instanceID string) error {
 	return nil
 }
 
-func (v *Valkey) labels(name string) map[string]string {
-	return map[string]string{
+func (v *Valkey) labels(name, project string) map[string]string {
+	labels := map[string]string{
 		instanceLabel:            name,
 		managedByLabel:           managedByValue,
 		"app.kubernetes.io/name": "valkey",
 	}
+	if project != "" {
+		labels[naming.LabelProject] = project
+	}
+	return labels
+}
+
+// owner answers naming.Lookup: whether an instance of that name is there and
+// which project it was created for. The StatefulSet is the instance — the
+// Secret and the Service are made beside it and go with it — so it is the
+// one object asked.
+func (v *Valkey) owner(ctx context.Context, name string) (naming.Owner, error) {
+	existing := &appsv1.StatefulSet{}
+	err := v.Client.Get(ctx, types.NamespacedName{Namespace: v.Namespace, Name: name}, existing)
+	switch {
+	case apierrors.IsNotFound(err):
+		return naming.Owner{}, nil
+	case err != nil:
+		return naming.Owner{}, err
+	}
+	return naming.Owner{Found: true, Project: existing.Labels[naming.LabelProject]}, nil
+}
+
+// recordProject writes the project onto an instance that carries none.
+func (v *Valkey) recordProject(ctx context.Context, set *appsv1.StatefulSet, project string) error {
+	if project == "" || set.Labels[naming.LabelProject] != "" {
+		return nil
+	}
+	if set.Labels == nil {
+		set.Labels = map[string]string{}
+	}
+	set.Labels[naming.LabelProject] = project
+	return v.Client.Update(ctx, set)
 }
 
 func storageClass(name string) *string {

@@ -29,6 +29,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/provider/naming"
 	"github.com/Bermos/Kitchen/internal/provider/objectstore"
 )
 
@@ -172,6 +173,9 @@ func (r *ResourceClaimReconciler) provisionBucket(
 	case errors.Is(err, objectstore.ErrNotReady):
 		result, err := r.pending(ctx, claim, "Provisioning", err)
 		return result, true, err
+	case errors.Is(err, naming.ErrNotAdoptable):
+		result, err := r.failed(ctx, claim, "InstanceNotAdoptable", err)
+		return result, true, err
 	case errors.Is(err, objectstore.ErrUnsatisfiable):
 		result, err := r.failed(ctx, claim, "RequirementsUnsatisfiable", err)
 		return result, true, err
@@ -183,6 +187,7 @@ func (r *ResourceClaimReconciler) provisionBucket(
 		return ctrl.Result{}, true, err
 	}
 	claim.Status.InstanceID = instance.ID
+	claim.Status.InstanceName = instance.Name
 	claim.Status.SecretName = secretName
 	claim.Status.DataProvenance = string(instance.Provenance)
 	claim.Status.Residency = instance.Region
@@ -200,9 +205,10 @@ func provisionBucketInstance(
 	claim *kitchenv1alpha1.ResourceClaim,
 	provisioner objectstore.Provisioner,
 ) (objectstore.Instance, error) {
+	resource := claimResource(claim)
 	requirements := bucketRequirements(claim)
 	if requirements.Empty() {
-		return provisioner.Provision(ctx, claim.Name)
+		return provisioner.Provision(ctx, resource)
 	}
 	capable, ok := provisioner.(objectstore.CapableProvisioner)
 	if !ok {
@@ -211,7 +217,7 @@ func provisionBucketInstance(
 				"for any of them — drop config.objectStore from the claim",
 			objectstore.ErrUnsatisfiable, claim.Connection())
 	}
-	return capable.ProvisionWith(ctx, claim.Name, requirements)
+	return capable.ProvisionWith(ctx, resource, requirements)
 }
 
 // bucketRequirements reads the claim's spec.config into what the provisioner

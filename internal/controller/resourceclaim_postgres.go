@@ -35,6 +35,7 @@ import (
 	"github.com/Bermos/Kitchen/internal/provider/cache"
 	"github.com/Bermos/Kitchen/internal/provider/database"
 	"github.com/Bermos/Kitchen/internal/provider/inngest"
+	"github.com/Bermos/Kitchen/internal/provider/naming"
 	"github.com/Bermos/Kitchen/internal/provider/objectstore"
 )
 
@@ -216,6 +217,13 @@ func (r *ResourceClaimReconciler) provision(
 		// to ignore the word.
 		result, err := r.pending(ctx, claim, "Provisioning", err)
 		return result, true, err
+	case errors.Is(err, naming.ErrNotAdoptable):
+		// Somebody else's data, or data whose owner nothing records. The
+		// claim fails with the provider's own sentence on its condition
+		// rather than binding to it, and the requeue picks it up once an
+		// operator has acted.
+		result, err := r.failed(ctx, claim, "InstanceNotAdoptable", err)
+		return result, true, err
 	case errors.Is(err, database.ErrUnsatisfiable):
 		// The claim asked for something no image can supply. Nothing was
 		// created and retrying will refuse again, so the message is the whole
@@ -231,6 +239,7 @@ func (r *ResourceClaimReconciler) provision(
 		return ctrl.Result{}, true, err
 	}
 	claim.Status.InstanceID = instance.ID
+	claim.Status.InstanceName = instance.Name
 	claim.Status.SecretName = secretName
 	// The provider's own account of what it handed over, and where it put
 	// it. Both may be empty — an undeclared provenance and an unreported
@@ -256,10 +265,10 @@ func provisionInstance(
 	claim *kitchenv1alpha1.ResourceClaim,
 	provisioner database.Provisioner,
 ) (database.Instance, error) {
-	name := instanceName(claim)
+	resource := claimResource(claim)
 	requirements := claimRequirements(claim)
 	if requirements.Empty() {
-		return provisioner.Provision(ctx, name)
+		return provisioner.Provision(ctx, resource)
 	}
 	capable, ok := provisioner.(database.CapableProvisioner)
 	if !ok {
@@ -269,7 +278,7 @@ func provisionInstance(
 				"or drop config.postgres from the claim",
 			database.ErrUnsatisfiable, claim.Connection(), database.ProviderCNPG)
 	}
-	return capable.ProvisionWith(ctx, name, requirements)
+	return capable.ProvisionWith(ctx, resource, requirements)
 }
 
 // claimRequirements reads the claim's spec.config into what the provisioner
@@ -617,13 +626,6 @@ func (r *ResourceClaimReconciler) writeBindingSecret(
 		return nil
 	})
 	return err
-}
-
-// instanceName is the deterministic provider-side name for a claim's
-// instance, which is what makes provisioning restartable: a lost status is
-// recovered by looking the name up rather than by provisioning twice.
-func instanceName(claim *kitchenv1alpha1.ResourceClaim) string {
-	return "kitchen-" + claim.Name
 }
 
 func claimBranchSecretName(claim, environment string) string {

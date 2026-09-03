@@ -1418,6 +1418,7 @@ status:
   phase: Bound                          # Pending | Bound | Failed
   secretName: shop-db-binding           # binding keys: url, host, port, user, password, database
   instanceID: proj-abc123               # provider-side ID, opaque; what deprovisioning addresses
+  instanceName: kitchen-my-shop-shop-db # what the provider calls it: kitchen-<project>-<claim>
   dataProvenance: production            # the provider's declaration: production | masked | synthetic;
                                         # absent = undeclared, treated by policy as the worst case
   residency: aws-eu-central-1           # where the provider reported the resource actually is
@@ -1512,6 +1513,48 @@ connection finds it by name and rebinds to it. That namespace is deliberately
 *not* the project's application namespace: deleting a project deletes that one,
 and a retained database has to survive exactly that.
 
+#### What a retained resource can be rebound by, and what it cannot
+
+**Rebinding is project-qualified.** A provider-side object is named
+`kitchen-<project>-<claim>` — cut to the provider's own budget with a digest
+of the whole replacing what was cut — and labelled or tagged
+`kitchen.bermos.dev/project`. Both halves matter: the name is what a claim
+looks up, and the label is what settles the two projects that can spell one
+name between them (project `a-b` claim `c` and project `a` claim `b-c`). A
+claim finding an object whose recorded project is not its own is **refused**,
+with the provider's sentence on its `Ready` condition, rather than bound to
+it.
+
+That is the whole of it, and it exists because the name used to be
+`kitchen-<claim>`: a name any project could produce. Under `Retain` a
+deleted claim leaves its database, bucket or cache instance behind, so a
+developer of another project creating a claim of the same name against the
+same Connection was bound to the first project's data, credential re-issued
+and nothing anywhere saying so.
+
+Two consequences worth knowing:
+
+- **A claim already bound keeps the name it is bound to**, recorded in
+  `status.instanceName`. A resource provisioned before the project was in the
+  name goes on being addressed by the old one; renaming it would leave its
+  data behind and hand the application an empty one.
+- **An object from before the project was in the name is never adopted
+  silently.** Nothing records whose data is in it, so a claim that finds one
+  fails with a message naming the object — nothing is created in its place
+  and nothing is destroyed. An operator who knows whose it is hands it over
+  by naming it on the claim:
+
+  ```sh
+  kubectl annotate resourceclaim <claim> -n kitchen-system \
+    kitchen.bermos.dev/adopt-instance=<the object's name>
+  ```
+
+  The next reconcile binds to it and records the project on it, so the
+  hand-over is asked for once. This is deliberately an operator's act on the
+  cluster: the API takes no annotations from a request body, so no developer
+  can ask for somebody else's data through it. Deleting the object at the
+  provider is the other way out.
+
 ### `type: objectStore` — a bucket for what the application writes
 
 The third type: somewhere to put a file the application did not build into
@@ -1538,12 +1581,13 @@ spec:
 status:
   phase: Bound
   secretName: shop-uploads-binding      # binding keys: endpoint, bucket, region, accessKeyId, secretAccessKey, forcePathStyle
-  instanceID: kitchen-shop-uploads      # the bucket's name at the store, which is what it is found again by
+  instanceID: kitchen-my-shop-shop-uploads   # the bucket's name at the store, which is what it is found again by
+  instanceName: kitchen-my-shop-shop-uploads # the same name, recorded as what a later reconcile looks up
   dataProvenance: production
   previewMode: fresh                    # every preview gets an empty bucket of its own
   branches:
     - environment: my-shop-pr-41
-      id: kitchen-shop-uploads-my-shop-pr-41
+      id: kitchen-my-shop-shop-uploads-my-shop-pr-41
       secretName: shop-uploads-binding-my-shop-pr-41
       provenance: synthetic             # an empty bucket never held production objects
 ```

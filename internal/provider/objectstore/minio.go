@@ -27,6 +27,7 @@ import (
 	"github.com/minio/madmin-go/v3"
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
+	"github.com/minio/minio-go/v7/pkg/tags"
 )
 
 // The real clients: minio-go for the S3 API, which every store speaks, and
@@ -126,6 +127,33 @@ func (b *minioBuckets) Versioning(ctx context.Context, bucket string) (bool, err
 		return false, classify(err)
 	}
 	return cfg.Enabled(), nil
+}
+
+// Tags reads the bucket's tag set. An untagged bucket, and a store that
+// implements no tagging at all, both read as no tags rather than as an
+// error: the tag set is a record beside the name, and its absence is an
+// answer.
+func (b *minioBuckets) Tags(ctx context.Context, bucket string) (map[string]string, error) {
+	set, err := b.client.GetBucketTagging(ctx, bucket)
+	if err != nil {
+		if isCode(err, "NoSuchTagSet", "NoSuchTagSetError", "NotImplemented") {
+			return map[string]string{}, nil
+		}
+		return nil, classify(err)
+	}
+	return set.ToMap(), nil
+}
+
+func (b *minioBuckets) SetTags(ctx context.Context, bucket string, values map[string]string) error {
+	set, err := tags.MapToBucketTags(values)
+	if err != nil {
+		return err
+	}
+	err = b.client.SetBucketTagging(ctx, bucket, set)
+	if isCode(err, "NotImplemented") {
+		return nil
+	}
+	return classify(err)
 }
 
 func (b *minioBuckets) SetAnonymousRead(ctx context.Context, bucket string, policy []byte) error {

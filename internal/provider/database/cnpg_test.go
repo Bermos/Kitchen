@@ -32,6 +32,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/provider/naming"
 )
 
 const (
@@ -41,6 +42,14 @@ const (
 	testCluster    = "kitchen-shop-db"
 	postgisImage16 = "ghcr.io/cloudnative-pg/postgis:16"
 )
+
+// shopDB is the claim these tests provision for: project "shop", claim "db",
+// which is what makes the Cluster kitchen-shop-db.
+var shopDB = naming.Resource{Project: shopProject, Claim: "db"}
+
+// shopProject is the project every claim in these tests belongs to, and what
+// the Cluster records as its owner.
+const shopProject = "shop"
 
 // cnpgScheme knows the two kinds this provisioner touches and CloudNativePG's
 // own, as an unstructured type — the same way the provisioner addresses it,
@@ -119,7 +128,7 @@ func getCluster(t *testing.T, c *CNPG, name string) *unstructured.Unstructured {
 func TestProvisionCreatesTheClusterAndReportsItNotReady(t *testing.T) {
 	cnpg := cnpgAgainstFakeCluster(t)
 
-	_, err := cnpg.Provision(context.Background(), "kitchen-shop-db")
+	_, err := cnpg.Provision(context.Background(), shopDB)
 	if !errors.Is(err, ErrNotReady) {
 		t.Fatalf("error %v, want ErrNotReady", err)
 	}
@@ -142,7 +151,7 @@ func TestProvisionCreatesTheClusterAndReportsItNotReady(t *testing.T) {
 func TestProvisionBindsOnceTheClusterIsServing(t *testing.T) {
 	cnpg := cnpgAgainstFakeCluster(t, readyCluster(), appSecret("kitchen-shop-db"))
 
-	instance, err := cnpg.Provision(context.Background(), "kitchen-shop-db")
+	instance, err := cnpg.Provision(context.Background(), shopDB)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +184,7 @@ func TestProvisionBindsOnceTheClusterIsServing(t *testing.T) {
 func TestExtensionsAreCreatedAtBootstrapRatherThanLeftToTheApplication(t *testing.T) {
 	cnpg := cnpgAgainstFakeCluster(t)
 
-	_, err := cnpg.ProvisionWith(context.Background(), "kitchen-maps", Requirements{
+	_, err := cnpg.ProvisionWith(context.Background(), naming.Resource{Project: "shop", Claim: "maps"}, Requirements{
 		Version:      "16",
 		Extensions:   []string{"postgis", "pgvector"},
 		StorageSize:  "40Gi",
@@ -185,7 +194,7 @@ func TestExtensionsAreCreatedAtBootstrapRatherThanLeftToTheApplication(t *testin
 		t.Fatalf("error %v, want ErrNotReady", err)
 	}
 
-	cluster := getCluster(t, cnpg, "kitchen-maps")
+	cluster := getCluster(t, cnpg, "kitchen-shop-maps")
 	if image := nestedString(cluster, "spec", "imageName"); image != postgisImage16 {
 		t.Fatalf("image %q, want the postgis build", image)
 	}
@@ -213,7 +222,7 @@ func TestExtensionsAreCreatedAtBootstrapRatherThanLeftToTheApplication(t *testin
 func TestAnUnsatisfiableClaimIsRefusedWithoutCreatingAnything(t *testing.T) {
 	cnpg := cnpgAgainstFakeCluster(t)
 
-	_, err := cnpg.ProvisionWith(context.Background(), "kitchen-metrics", Requirements{
+	_, err := cnpg.ProvisionWith(context.Background(), naming.Resource{Project: "shop", Claim: "metrics"}, Requirements{
 		Extensions: []string{"timescaledb"},
 	})
 	if !errors.Is(err, ErrUnsatisfiable) {
@@ -225,7 +234,7 @@ func TestAnUnsatisfiableClaimIsRefusedWithoutCreatingAnything(t *testing.T) {
 
 	cluster := &unstructured.Unstructured{}
 	cluster.SetGroupVersionKind(clusterGVK())
-	key := types.NamespacedName{Namespace: testDatabaseNamespace, Name: "kitchen-metrics"}
+	key := types.NamespacedName{Namespace: testDatabaseNamespace, Name: "kitchen-shop-metrics"}
 	if err := cnpg.Client.Get(context.Background(), key, cluster); !apierrors.IsNotFound(err) {
 		t.Fatalf("a cluster was created for a claim that was refused (%v)", err)
 	}
@@ -341,7 +350,7 @@ func TestResidencyIsReadOffThePrimarysNode(t *testing.T) {
 	}
 	cnpg := cnpgAgainstFakeCluster(t, readyCluster(), appSecret("kitchen-shop-db"), pod, node)
 
-	instance, err := cnpg.Provision(context.Background(), "kitchen-shop-db")
+	instance, err := cnpg.Provision(context.Background(), shopDB)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -362,7 +371,7 @@ func TestResidencyIsEmptyWhereTheClusterSaysNothingAboutItsTopology(t *testing.T
 	}
 	cnpg := cnpgAgainstFakeCluster(t, readyCluster(), appSecret("kitchen-shop-db"), pod, node)
 
-	instance, err := cnpg.Provision(context.Background(), "kitchen-shop-db")
+	instance, err := cnpg.Provision(context.Background(), shopDB)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -411,8 +420,9 @@ func connectionWithConfig(t *testing.T, config string) *kitchenv1alpha1.Connecti
 // database, which plain truncation would do to two long names sharing a
 // prefix.
 func TestTwoLongClaimNamesDoNotLandOnOneDatabase(t *testing.T) {
-	left := clusterName("kitchen-" + strings.Repeat("a", 40) + "-orders")
-	right := clusterName("kitchen-" + strings.Repeat("a", 40) + "-billing")
+	long := strings.Repeat("a", 40)
+	left := naming.Resource{Project: "shop", Claim: long + "-orders"}.Qualified(maxClusterName)
+	right := naming.Resource{Project: "shop", Claim: long + "-billing"}.Qualified(maxClusterName)
 
 	if left == right {
 		t.Fatalf("two claims resolved to the same database: %q", left)
@@ -427,7 +437,7 @@ func TestTwoLongClaimNamesDoNotLandOnOneDatabase(t *testing.T) {
 	}
 	// A name that fits is left exactly as it is — the digest is what replaces
 	// what was cut, not decoration.
-	if got := clusterName("kitchen-shop-db"); got != "kitchen-shop-db" {
+	if got := shopDB.Qualified(maxClusterName); got != "kitchen-shop-db" {
 		t.Fatalf("a name that fits was rewritten to %q", got)
 	}
 }
@@ -445,5 +455,118 @@ func TestAPreviewsDatabaseIsNamedAfterItsParentAndItsEnvironment(t *testing.T) {
 func TestTheProvisionerRefusesToBeBuiltWithoutACluster(t *testing.T) {
 	if _, err := NewCNPG(Options{Connection: connectionWithConfig(t, "")}); err == nil {
 		t.Fatal("a provisioner with nothing to provision into was built")
+	}
+}
+
+// namedCluster is a Cluster somebody's earlier claim left behind, ready and
+// carrying whatever project it was recorded for — none, for one provisioned
+// before names carried the project.
+func namedCluster(name, project string) *unstructured.Unstructured {
+	cluster := readyCluster()
+	cluster.SetName(name)
+	labels := map[string]string{managedByLabel: managedByValue}
+	if project != "" {
+		labels[naming.LabelProject] = project
+	}
+	cluster.SetLabels(labels)
+	return cluster
+}
+
+// A database is named after the project as well as the claim, and records
+// the project on itself — the two halves of not handing one project's data
+// to another.
+func TestADatabaseCarriesTheProjectThatClaimedIt(t *testing.T) {
+	cnpg := cnpgAgainstFakeCluster(t)
+
+	if _, err := cnpg.Provision(context.Background(), shopDB); !errors.Is(err, ErrNotReady) {
+		t.Fatalf("want ErrNotReady, got %v", err)
+	}
+	cluster := getCluster(t, cnpg, "kitchen-shop-db")
+	if got := cluster.GetLabels()[naming.LabelProject]; got != shopProject {
+		t.Fatalf("the cluster records project %q", got)
+	}
+}
+
+// The bug: under the default Retain a deleted claim leaves its database
+// behind, and a claim of the same name in another project used to be bound
+// to it.
+func TestAnotherProjectsRetainedDatabaseIsNotAdopted(t *testing.T) {
+	retained := namedCluster("kitchen-shop-db", "shop")
+	cnpg := cnpgAgainstFakeCluster(t, retained, appSecret("kitchen-shop-db"))
+
+	_, err := cnpg.Provision(context.Background(), naming.Resource{Project: "warehouse", Claim: "db"})
+	if !errors.Is(err, ErrNotReady) {
+		t.Fatalf("want a database of its own, still starting, got %v", err)
+	}
+	mine := getCluster(t, cnpg, "kitchen-warehouse-db")
+	if got := mine.GetLabels()[naming.LabelProject]; got != "warehouse" {
+		t.Fatalf("the second project got a database recorded as %q", got)
+	}
+	// And the first project's is untouched.
+	if got := getCluster(t, cnpg, "kitchen-shop-db").GetLabels()[naming.LabelProject]; got != shopProject {
+		t.Fatalf("the retained database was rewritten to project %q", got)
+	}
+}
+
+// An orphan from before the project was in the name is not taken silently by
+// anybody: nothing records whose data is in it, so the claim fails saying so.
+func TestADatabaseNamedBeforeTheProjectIsRefusedUntilItIsHandedOver(t *testing.T) {
+	legacy := namedCluster("kitchen-db", "")
+	cnpg := cnpgAgainstFakeCluster(t, legacy, appSecret("kitchen-db"))
+	ctx := context.Background()
+
+	_, err := cnpg.Provision(ctx, naming.Resource{Project: shopProject, Claim: "db"})
+	if !errors.Is(err, naming.ErrNotAdoptable) {
+		t.Fatalf("want ErrNotAdoptable, got %v", err)
+	}
+	for _, says := range []string{"kitchen-db", naming.AdoptAnnotation, "provisioned before"} {
+		if !strings.Contains(err.Error(), says) {
+			t.Errorf("the refusal does not say %q: %v", says, err)
+		}
+	}
+	// Nothing was created in its place while the claim was refused.
+	stray := &unstructured.Unstructured{}
+	stray.SetGroupVersionKind(clusterGVK())
+	key := types.NamespacedName{Namespace: testDatabaseNamespace, Name: "kitchen-shop-db"}
+	if err := cnpg.Client.Get(ctx, key, stray); err == nil {
+		t.Fatal("a second database was created while the claim was refused")
+	}
+
+	// The operator hands it over by naming it, and the database records the
+	// project from then on.
+	instance, err := cnpg.Provision(ctx, naming.Resource{Project: shopProject, Claim: "db", HandOver: "kitchen-db"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if instance.Name != "kitchen-db" {
+		t.Fatalf("the handed-over database is %q", instance.Name)
+	}
+	if got := getCluster(t, cnpg, "kitchen-db").GetLabels()[naming.LabelProject]; got != shopProject {
+		t.Fatalf("the handed-over database records project %q", got)
+	}
+}
+
+// A claim bound before names carried the project keeps the database it is
+// bound to: renaming it would leave the data behind and hand the application
+// an empty one.
+func TestABoundClaimKeepsItsDatabaseAcrossReconciles(t *testing.T) {
+	legacy := namedCluster("kitchen-db", "")
+	cnpg := cnpgAgainstFakeCluster(t, legacy, appSecret("kitchen-db"))
+	ctx := context.Background()
+
+	first, err := cnpg.Provision(ctx, naming.Resource{Project: shopProject, Claim: "db", Unqualified: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Name != "kitchen-db" {
+		t.Fatalf("a claim bound under the old name got %q", first.Name)
+	}
+	// The next reconcile has the name on the claim's status.
+	second, err := cnpg.Provision(ctx, naming.Resource{Project: shopProject, Claim: "db", Name: first.Name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.ID != first.ID || second.Name != first.Name {
+		t.Fatalf("the bound database moved from %q to %q", first.ID, second.ID)
 	}
 }

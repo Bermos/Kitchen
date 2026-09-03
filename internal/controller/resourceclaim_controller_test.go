@@ -39,6 +39,7 @@ import (
 	"github.com/Bermos/Kitchen/internal/clickhouse"
 	"github.com/Bermos/Kitchen/internal/provider/database"
 	"github.com/Bermos/Kitchen/internal/provider/database/databasetest"
+	"github.com/Bermos/Kitchen/internal/provider/naming"
 )
 
 // recordingSignedStore captures the declaration envelopes the reconciler
@@ -65,6 +66,9 @@ var _ = Describe("ResourceClaim Controller", func() {
 	ctx := context.Background()
 	claimKey := types.NamespacedName{Name: claimName, Namespace: namespace}
 	appNS := "kitchen-" + projectName
+	// The provider-side name of this claim's database: the project is in it,
+	// so no other project's claim of this name can ever address it.
+	instance := "kitchen-" + projectName + "-" + claimName
 
 	var (
 		fake       *databasetest.NeonServer
@@ -207,7 +211,7 @@ var _ = Describe("ResourceClaim Controller", func() {
 		Expect(provisioned).NotTo(BeNil())
 		Expect(provisioned.Status).To(Equal(metav1.ConditionTrue))
 
-		project := fake.ProjectNamed("kitchen-" + claimName)
+		project := fake.ProjectNamed(instance)
 		Expect(project).NotTo(BeNil(), "no instance was provisioned at the provider")
 
 		// The provider's declaration reaches the status: what the data derives
@@ -221,7 +225,7 @@ var _ = Describe("ResourceClaim Controller", func() {
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: appNS, Name: claim.Status.SecretName}, secret)).To(Succeed())
 		Expect(secret.Labels).To(HaveKeyWithValue(labelManagedByKey, labelManagedByValue))
 		Expect(secret.Labels).To(HaveKeyWithValue(labelClaim, claimName))
-		branch := fake.BranchNamed("kitchen-"+claimName, "main")
+		branch := fake.BranchNamed(instance, "main")
 		Expect(branch).NotTo(BeNil())
 		Expect(string(secret.Data["host"])).To(Equal(branch.Host()))
 		Expect(string(secret.Data["password"])).To(Equal(branch.Password()))
@@ -336,7 +340,7 @@ var _ = Describe("ResourceClaim Controller", func() {
 		Expect(ready).NotTo(BeNil())
 		Expect(ready.Reason).To(Equal("ConnectionNotValidated"))
 		Expect(ready.Message).To(ContainSubstring("validated"))
-		Expect(fake.ProjectNamed("kitchen-"+claimName)).To(BeNil(), "nothing may be provisioned before validation")
+		Expect(fake.ProjectNamed(instance)).To(BeNil(), "nothing may be provisioned before validation")
 	})
 
 	It("fails a claim whose connection cannot provision databases", func() {
@@ -360,7 +364,7 @@ var _ = Describe("ResourceClaim Controller", func() {
 		reconcileOnce()
 
 		Expect(errors.IsNotFound(k8sClient.Get(ctx, claimKey, &kitchenv1alpha1.ResourceClaim{}))).To(BeTrue())
-		Expect(fake.ProjectNamed("kitchen-"+claimName)).NotTo(BeNil(), "Retain must keep the database")
+		Expect(fake.ProjectNamed(instance)).NotTo(BeNil(), "Retain must keep the database")
 		err := k8sClient.Get(ctx, types.NamespacedName{Namespace: appNS, Name: secretName}, &corev1.Secret{})
 		Expect(errors.IsNotFound(err)).To(BeTrue(), "the binding secret goes with the claim")
 	})
@@ -370,13 +374,112 @@ var _ = Describe("ResourceClaim Controller", func() {
 			claim.Spec.DeletionPolicy = kitchenv1alpha1.ClaimDelete
 		})
 		reconcileOnce()
-		Expect(fake.ProjectNamed("kitchen-" + claimName)).NotTo(BeNil())
+		Expect(fake.ProjectNamed(instance)).NotTo(BeNil())
 
 		Expect(k8sClient.Delete(ctx, getClaim())).To(Succeed())
 		reconcileOnce()
 
 		Expect(errors.IsNotFound(k8sClient.Get(ctx, claimKey, &kitchenv1alpha1.ResourceClaim{}))).To(BeTrue())
-		Expect(fake.ProjectNamed("kitchen-"+claimName)).To(BeNil(), "Delete must deprovision the database")
+		Expect(fake.ProjectNamed(instance)).To(BeNil(), "Delete must deprovision the database")
+	})
+
+	// The security fix: a provider-side name carries the project, so a
+	// database another project retained is not what this claim binds to.
+	Context("naming and adoption", func() {
+		const otherProject = "clwarehouse"
+
+		otherProjectObject := func() *kitchenv1alpha1.Project {
+			return &kitchenv1alpha1.Project{
+				ObjectMeta: metav1.ObjectMeta{Name: otherProject, Namespace: namespace},
+				Spec: kitchenv1alpha1.ProjectSpec{
+					Source: kitchenv1alpha1.GitSourceSpec{
+						ConnectionRef: kitchenv1alpha1.LocalObjectReference{Name: "gh"},
+						Repo:          "acme/clwarehouse",
+					},
+					Registry: kitchenv1alpha1.RegistrySpec{
+						ConnectionRef: kitchenv1alpha1.LocalObjectReference{Name: "registry"},
+					},
+				},
+			}
+		}
+
+		AfterEach(func() {
+			Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, otherProjectObject()))).To(Succeed())
+		})
+
+		It("names the database after the project and the claim, and records the name", func() {
+			createClaim(nil)
+			reconcileOnce()
+
+			claim := getClaim()
+			Expect(claim.Status.InstanceName).To(Equal(instance))
+			Expect(fake.ProjectNamed(instance)).NotTo(BeNil())
+			Expect(fake.ProjectNamed("kitchen-"+claimName)).To(BeNil(),
+				"a name built out of the claim alone is a name any project can produce")
+		})
+
+		It("keeps the database it is bound to across reconciles", func() {
+			createClaim(nil)
+			reconcileOnce()
+			bound := getClaim()
+
+			reconcileOnce()
+			reconcileOnce()
+			again := getClaim()
+			Expect(again.Status.InstanceID).To(Equal(bound.Status.InstanceID))
+			Expect(again.Status.InstanceName).To(Equal(bound.Status.InstanceName))
+		})
+
+		It("does not hand one project's retained database to another project's claim", func() {
+			By("binding a claim of project A and then deleting it under Retain")
+			createClaim(nil)
+			reconcileOnce()
+			retained := getClaim().Status.InstanceName
+			Expect(k8sClient.Delete(ctx, getClaim())).To(Succeed())
+			reconcileOnce()
+			Expect(fake.ProjectNamed(retained)).NotTo(BeNil(), "Retain keeps the database")
+
+			By("creating a claim of the same name in project B against the same connection")
+			Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, otherProjectObject()))).To(Succeed())
+			createClaim(func(claim *kitchenv1alpha1.ResourceClaim) {
+				claim.Spec.ProjectRef.Name = otherProject
+			})
+			reconcileOnce()
+
+			claim := getClaim()
+			Expect(claim.Status.Phase).To(Equal(kitchenv1alpha1.ClaimBound))
+			Expect(claim.Status.InstanceName).NotTo(Equal(retained),
+				"the second project must not be bound to the first project's data")
+			Expect(claim.Status.InstanceName).To(Equal("kitchen-" + otherProject + "-" + claimName))
+		})
+
+		It("refuses a database named before the project was in the name, saying how to hand it over", func() {
+			legacy := "kitchen-" + claimName
+			fake.AddProject(legacy)
+			createClaim(nil)
+			reconcileOnce()
+
+			claim := getClaim()
+			Expect(claim.Status.Phase).To(Equal(kitchenv1alpha1.ClaimFailed))
+			Expect(claim.Status.InstanceID).To(BeEmpty())
+			ready := readyCondition(claim)
+			Expect(ready).NotTo(BeNil())
+			Expect(ready.Reason).To(Equal("InstanceNotAdoptable"))
+			Expect(ready.Message).To(ContainSubstring(legacy))
+			Expect(ready.Message).To(ContainSubstring(naming.AdoptAnnotation),
+				"the refusal must say how an operator hands the database over")
+			Expect(fake.ProjectNamed(instance)).To(BeNil(),
+				"nothing is created in its place while the claim is refused")
+
+			By("an operator naming it on the claim")
+			claim.Annotations = map[string]string{naming.AdoptAnnotation: legacy}
+			Expect(k8sClient.Update(ctx, claim)).To(Succeed())
+			reconcileOnce()
+
+			bound := getClaim()
+			Expect(bound.Status.Phase).To(Equal(kitchenv1alpha1.ClaimBound))
+			Expect(bound.Status.InstanceName).To(Equal(legacy))
+		})
 	})
 
 	Context("with preview branching", func() {
@@ -425,7 +528,7 @@ var _ = Describe("ResourceClaim Controller", func() {
 			Expect(entry.Environment).To(Equal(previewEnvName))
 			Expect(entry.SecretName).To(Equal(claimName + "-binding-" + previewEnvName))
 
-			branch := fake.BranchNamed("kitchen-"+claimName, previewEnvName)
+			branch := fake.BranchNamed(instance, previewEnvName)
 			Expect(branch).NotTo(BeNil(), "no branch was created at the provider")
 			Expect(entry.ID).To(Equal(branch.ID))
 			Expect(entry.Provenance).To(Equal("production"),
@@ -462,7 +565,7 @@ var _ = Describe("ResourceClaim Controller", func() {
 
 			reconcileOnce()
 
-			Expect(fake.BranchNamed("kitchen-"+claimName, previewEnvName)).To(BeNil(), "the branch must go with the Environment")
+			Expect(fake.BranchNamed(instance, previewEnvName)).To(BeNil(), "the branch must go with the Environment")
 			err := k8sClient.Get(ctx, types.NamespacedName{Namespace: appNS, Name: secretName}, &corev1.Secret{})
 			Expect(errors.IsNotFound(err)).To(BeTrue(), "the per-environment binding must go with the Environment")
 			Expect(errors.IsNotFound(k8sClient.Get(ctx, envKey, &kitchenv1alpha1.Environment{}))).To(BeTrue(),
@@ -481,8 +584,8 @@ var _ = Describe("ResourceClaim Controller", func() {
 			Expect(errors.IsNotFound(k8sClient.Get(ctx, claimKey, &kitchenv1alpha1.ResourceClaim{}))).To(BeTrue())
 			// Retain keeps the instance but never the branches: they exist for
 			// previews the platform runs, not for the application's data.
-			Expect(fake.ProjectNamed("kitchen-" + claimName)).NotTo(BeNil())
-			Expect(fake.BranchNamed("kitchen-"+claimName, previewEnvName)).To(BeNil())
+			Expect(fake.ProjectNamed(instance)).NotTo(BeNil())
+			Expect(fake.BranchNamed(instance, previewEnvName)).To(BeNil())
 			env := &kitchenv1alpha1.Environment{}
 			Expect(k8sClient.Get(ctx, envKey, env)).To(Succeed())
 			Expect(controllerutil.ContainsFinalizer(env, claimBranchFinalizer)).To(BeFalse(),
@@ -509,7 +612,7 @@ var _ = Describe("ResourceClaim Controller", func() {
 			claim = getClaim()
 			Expect(claim.Status.PreviewMode).To(Equal("shared"))
 			Expect(claim.Status.Branches).To(BeEmpty(), "a shared preview reads production's binding and gets no branch")
-			Expect(fake.BranchNamed("kitchen-"+claimName, previewEnvName)).To(BeNil())
+			Expect(fake.BranchNamed(instance, previewEnvName)).To(BeNil())
 		})
 
 		It("deploys a preview without the variables of a claim that binds nothing there, and says why", func() {

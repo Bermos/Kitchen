@@ -34,6 +34,7 @@ import (
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/provider/database"
+	"github.com/Bermos/Kitchen/internal/provider/naming"
 )
 
 // plainProvisioner can be asked for a database and nothing else — the shape
@@ -46,7 +47,7 @@ type plainProvisioner struct {
 	branchErr error
 }
 
-func (p *plainProvisioner) Provision(context.Context, string) (database.Instance, error) {
+func (p *plainProvisioner) Provision(context.Context, naming.Resource) (database.Instance, error) {
 	return p.instance, p.err
 }
 func (p *plainProvisioner) Deprovision(context.Context, string) error { return nil }
@@ -60,6 +61,9 @@ func (p *plainProvisioner) DeleteBranch(context.Context, string, string) error {
 type capableProvisioner struct {
 	plainProvisioner
 	asked database.Requirements
+	// named is the resource it was asked to provision, so a test can check
+	// that the project reaches the provisioner.
+	named naming.Resource
 	// refuse is returned from ProvisionWith, before anything would be
 	// created.
 	refuse error
@@ -67,10 +71,11 @@ type capableProvisioner struct {
 
 func (p *capableProvisioner) ProvisionWith(
 	_ context.Context,
-	_ string,
+	res naming.Resource,
 	req database.Requirements,
 ) (database.Instance, error) {
 	p.asked = req
+	p.named = res
 	if p.refuse != nil {
 		return database.Instance{}, p.refuse
 	}

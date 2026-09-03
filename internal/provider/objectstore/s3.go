@@ -22,6 +22,8 @@ import (
 	"fmt"
 
 	"k8s.io/apimachinery/pkg/api/resource"
+
+	"github.com/Bermos/Kitchen/internal/provider/naming"
 )
 
 // BucketAPI is the S3 half of what the provisioner does: the calls every
@@ -41,6 +43,13 @@ type BucketAPI interface {
 	SetAnonymousRead(ctx context.Context, bucket string, policy []byte) error
 	RemoveAllObjects(ctx context.Context, bucket string) error
 	RemoveBucket(ctx context.Context, bucket string) error
+	// Tags reads a bucket's tag set; a bucket with none reads as an empty
+	// map and no error, the way an absent tag set is not a failure.
+	Tags(ctx context.Context, bucket string) (map[string]string, error)
+	// SetTags replaces a bucket's tag set. A store that refuses tagging
+	// answers an error wrapping ErrUnsatisfiable, which the provisioner
+	// takes as "this store records nothing" rather than as a failure.
+	SetTags(ctx context.Context, bucket string, tags map[string]string) error
 }
 
 // AdminAPI is the MinIO half: users, policies and quotas, which the S3 API
@@ -74,16 +83,21 @@ type S3 struct {
 var _ CapableProvisioner = (*S3)(nil)
 
 // Provision creates or finds the claim's bucket and issues its credential.
-func (s *S3) Provision(ctx context.Context, name string) (Instance, error) {
-	return s.ProvisionWith(ctx, name, Requirements{})
+func (s *S3) Provision(ctx context.Context, res naming.Resource) (Instance, error) {
+	return s.ProvisionWith(ctx, res, Requirements{})
 }
 
 // ProvisionWith is Provision with the claim's requirements applied. Every
 // requirement is checked against what this store can do *before* the first
 // call to it, so a refusal leaves nothing behind.
-func (s *S3) ProvisionWith(ctx context.Context, name string, req Requirements) (Instance, error) {
-	bucket := BucketName(name)
+func (s *S3) ProvisionWith(ctx context.Context, res naming.Resource, req Requirements) (Instance, error) {
 	quota, err := s.refuseUnsatisfiable(req)
+	if err != nil {
+		return Instance{}, err
+	}
+	bucket, err := naming.Resolve(ctx, res, naming.Provider{
+		Kind: "bucket", Limit: maxBucketName, Lookup: s.owner,
+	})
 	if err != nil {
 		return Instance{}, err
 	}
@@ -91,6 +105,7 @@ func (s *S3) ProvisionWith(ctx context.Context, name string, req Requirements) (
 	if err != nil {
 		return Instance{}, err
 	}
+	s.recordProject(ctx, bucket, res.Project)
 	if req.PublicRead {
 		if err := s.Buckets.SetAnonymousRead(ctx, bucket, anonymousReadPolicy(bucket)); err != nil {
 			return Instance{}, fmt.Errorf("making bucket %s publicly readable: %w", bucket, err)
@@ -103,10 +118,58 @@ func (s *S3) ProvisionWith(ctx context.Context, name string, req Requirements) (
 	}
 	return Instance{
 		ID:         bucket,
+		Name:       bucket,
 		Binding:    binding,
 		Provenance: ProvenanceProduction,
 		Region:     s.Config.Region,
 	}, nil
+}
+
+// owner answers naming.Lookup: whether a bucket of that name is at the store
+// and which project Kitchen tagged it for. A store that will not answer
+// GetBucketTagging — S3 is not obliged to, and not every compatible store
+// implements it — reports the bucket with no project, which is the honest
+// answer and the one that refuses rather than adopts.
+func (s *S3) owner(ctx context.Context, bucket string) (naming.Owner, error) {
+	exists, err := s.Buckets.BucketExists(ctx, bucket)
+	if err != nil {
+		return naming.Owner{}, fmt.Errorf("looking for bucket %s: %w", bucket, err)
+	}
+	if !exists {
+		return naming.Owner{}, nil
+	}
+	tags, err := s.Buckets.Tags(ctx, bucket)
+	if err != nil {
+		return naming.Owner{Found: true}, nil
+	}
+	return naming.Owner{Found: true, Project: tags[naming.LabelProject]}, nil
+}
+
+// recordProject tags a bucket with the project it belongs to, where it does
+// not already carry one — a bucket an operator has just handed over records
+// whose it is from now on.
+//
+// It answers no error on purpose. Tagging is a *record*: the boundary is the
+// bucket's name, which carries the project whether or not the store will
+// keep a tag set, and S3 does not oblige a compatible store to implement
+// tagging at all. A store that refuses is a store where the name is the
+// whole of the record — not a claim that fails.
+func (s *S3) recordProject(ctx context.Context, bucket, project string) {
+	if project == "" {
+		return
+	}
+	tags, err := s.Buckets.Tags(ctx, bucket)
+	if err != nil {
+		return
+	}
+	if tags[naming.LabelProject] == project {
+		return
+	}
+	if tags == nil {
+		tags = map[string]string{}
+	}
+	tags[naming.LabelProject] = project
+	_ = s.Buckets.SetTags(ctx, bucket, tags)
 }
 
 // refuseUnsatisfiable is the check every requirement goes through first,

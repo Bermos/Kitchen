@@ -34,7 +34,7 @@ func neonAgainstFake(t *testing.T) (*Neon, *databasetest.NeonServer) {
 func TestProvisionCreatesAProjectAndReadsItsBinding(t *testing.T) {
 	neon, fake := neonAgainstFake(t)
 
-	instance, err := neon.Provision(context.Background(), "kitchen-shop-db")
+	instance, err := neon.Provision(context.Background(), shopDB)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +76,7 @@ func TestNeonDeclaresBranchesProductionDerived(t *testing.T) {
 	neon, _ := neonAgainstFake(t)
 	ctx := context.Background()
 
-	instance, err := neon.Provision(ctx, "kitchen-shop-db")
+	instance, err := neon.Provision(ctx, shopDB)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +98,7 @@ func TestNeonDeclaresBranchesProductionDerived(t *testing.T) {
 	}
 
 	// The idempotent Provision path reports the region too.
-	found, err := neon.Provision(ctx, "kitchen-shop-db")
+	found, err := neon.Provision(ctx, shopDB)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,11 +113,11 @@ func TestProvisionIsIdempotentByName(t *testing.T) {
 	neon, fake := neonAgainstFake(t)
 	ctx := context.Background()
 
-	first, err := neon.Provision(ctx, "kitchen-shop-db")
+	first, err := neon.Provision(ctx, shopDB)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := neon.Provision(ctx, "kitchen-shop-db")
+	second, err := neon.Provision(ctx, shopDB)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +134,7 @@ func TestBranchLifecycle(t *testing.T) {
 	neon, fake := neonAgainstFake(t)
 	ctx := context.Background()
 
-	instance, err := neon.Provision(ctx, "kitchen-shop-db")
+	instance, err := neon.Provision(ctx, shopDB)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +173,7 @@ func TestDeprovisionRemovesTheProject(t *testing.T) {
 	neon, fake := neonAgainstFake(t)
 	ctx := context.Background()
 
-	instance, err := neon.Provision(ctx, "kitchen-shop-db")
+	instance, err := neon.Provision(ctx, shopDB)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,7 +193,7 @@ func TestProviderErrorsCarryTheAPIsDiagnostic(t *testing.T) {
 	neon, fake := neonAgainstFake(t)
 	fake.FailWith("branches are locked")
 
-	_, err := neon.Provision(context.Background(), "kitchen-shop-db")
+	_, err := neon.Provision(context.Background(), shopDB)
 	if err == nil {
 		t.Fatal("want an error")
 	}

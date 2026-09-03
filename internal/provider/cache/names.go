@@ -17,29 +17,19 @@ limitations under the License.
 package cache
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"strings"
 
 	"k8s.io/apimachinery/pkg/util/intstr"
+
+	"github.com/Bermos/Kitchen/internal/provider/naming"
 )
 
 // The name budget. A StatefulSet's pods are its name plus "-0", and its
 // Service's name has to be a DNS label, so the instance's name is capped
-// well short of 63 and a name over the cap keeps its readable head and gets
-// a hash of the whole for its tail. Two claims whose names differ only past
-// the cap therefore still get two instances rather than colliding on one.
-const (
-	maxInstanceName = 48
-	hashLength      = 8
-)
-
-// resourceName is the object name for a claim's instance: the claim's own
-// where it fits, and a truncated one with a hash suffix where it does not.
-func resourceName(name string) string {
-	return truncateName(name, maxInstanceName)
-}
+// well short of 63; internal/provider/naming is what keeps a name inside it
+// without ever mapping two names onto one.
+const maxInstanceName = 48
 
 // branchName is a preview's instance beside the one it branches from. The
 // environment's name goes in the hash rather than the head, because two
@@ -50,20 +40,7 @@ func branchName(instanceID, environment string) string {
 	if err != nil {
 		parent = instanceID
 	}
-	return truncateName(parent+"-"+environment, maxInstanceName)
-}
-
-// truncateName keeps a name inside a budget without ever mapping two names
-// onto one.
-func truncateName(name string, max int) string {
-	name = strings.ToLower(name)
-	if len(name) <= max {
-		return name
-	}
-	sum := sha256.Sum256([]byte(name))
-	suffix := hex.EncodeToString(sum[:])[:hashLength]
-	head := strings.TrimRight(name[:max-hashLength-1], "-")
-	return head + "-" + suffix
+	return naming.Truncate(parent+"-"+environment, maxInstanceName)
 }
 
 // splitID takes an instance ID apart into the namespace and name it is

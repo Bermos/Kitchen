@@ -40,6 +40,7 @@ import (
 	"github.com/Bermos/Kitchen/internal/provider/cache"
 	"github.com/Bermos/Kitchen/internal/provider/database"
 	"github.com/Bermos/Kitchen/internal/provider/inngest"
+	"github.com/Bermos/Kitchen/internal/provider/naming"
 	"github.com/Bermos/Kitchen/internal/provider/objectstore"
 )
 
@@ -360,6 +361,28 @@ func hasCapability(conn *kitchenv1alpha1.Connection, capability kitchenv1alpha1.
 // namespace — the one every contract writes its binding to.
 func claimSecretName(claim string) string {
 	return claim + "-binding"
+}
+
+// claimResource is what every contract hands its provisioner instead of a
+// name: which project's claim this is, what it is already bound to, and
+// whether an operator has handed it an object named before names carried the
+// project. The provisioner turns that into a name through naming.Resolve,
+// because the budget a name has to fit is the provisioner's own.
+//
+// A provider-side name used to be kitchen-<claim> and nothing else, which is
+// a name any project can produce: under the default deletionPolicy Retain a
+// deleted claim leaves its database behind, and the next claim of that name —
+// in any project — was bound to it. See internal/provider/naming.
+func claimResource(claim *kitchenv1alpha1.ResourceClaim) naming.Resource {
+	return naming.Resource{
+		Project: claim.Spec.ProjectRef.Name,
+		Claim:   claim.Name,
+		Name:    claim.Status.InstanceName,
+		// Bound by an operator that did not record the name: it was
+		// provisioned under the unqualified one, and it keeps it.
+		Unqualified: claim.Status.InstanceName == "" && claim.Status.InstanceID != "",
+		HandOver:    claim.Annotations[naming.AdoptAnnotation],
+	}
 }
 
 // mapEnvironmentToClaims enqueues every claim of an Environment's project.
