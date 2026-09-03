@@ -47,6 +47,29 @@ Kitchen assumes these exist; the chart does **not** install them:
   With cloudflared you still want LB IPAM — you just do not need L2 or BGP,
   because the tunnel dials out from inside the cluster.
 - **Wildcard DNS** for `*.<baseDomain>`, pointed at that address.
+- **`user.max_user_namespaces` above zero on every node that runs builds**, if
+  anything is built with the **Dockerfile strategy**. BuildKit runs rootless
+  here, so it creates a user namespace before it does anything at all. Talos
+  ships the sysctl at `0`; `rootlesskit` cannot fork its child, and the error
+  it reports for that is `no space left on device`, which names neither the
+  sysctl nor the cause. Every Dockerfile build then fails a few seconds after
+  it starts. On Talos the value can be set without a reboot:
+
+  ```sh
+  talosctl -n <node> patch mc --mode=no-reboot -p @- <<'YAML'
+  machine:
+    sysctls:
+      user.max_user_namespaces: "64000"
+  YAML
+  ```
+
+  An installation that builds with buildpacks alone can skip it — the CNB
+  lifecycle enters as the builder image's own user and creates no user
+  namespace — which is the same carve-out
+  [`kitchen.appNamespaces.podSecurity`](#application-namespaces-have-a-level-of-their-own)
+  makes for `baseline`. The two are the node-level pair the Dockerfile strategy
+  needs: a Kubernetes namespace relaxed enough to admit the builder's pod, and a
+  node that lets the builder create the user namespace it runs in.
 The platform namespace is **not** in that list — the chart creates and labels
 `kitchen-system` itself; see [Install](#install).
 
@@ -169,6 +192,14 @@ that vets what it deploys and little else.
 The level is reconciled, not only written at creation: raising or lowering the
 value and running `helm upgrade` relabels the namespaces that already exist on
 each project's next reconcile.
+
+This is one of two node-level facts the Dockerfile strategy depends on, and the
+only one the operator can write. The other is the node's own
+`user.max_user_namespaces`, which has to be above zero for rootless BuildKit to
+create its user namespace at all and which no label reaches — see
+[Prerequisites](#prerequisites). They fail differently and both fail quietly:
+the level refuses the pod at admission, the sysctl lets the pod start and kills
+the builder inside it seconds later.
 
 #### Adopting an existing namespace
 
