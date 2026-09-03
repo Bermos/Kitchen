@@ -191,6 +191,125 @@ have to rediscover it:
   natural SRE-grade evolution of our Release/Environment model. Steal the model, or
   integrate Kargo outright, when the demand shows up.
 
+- **Platform-wide point-in-time restore.** The scenario is a breach found late: security
+  says the platform has been compromised for some unknown stretch of time, nobody can say
+  which projects were touched, and the only answer anybody trusts is to put everything
+  back to a moment before it started. Kitchen has more of the machinery than it looks: a
+  Release is an immutable image digest plus a config snapshot, a rollback is already a
+  Promotion of an older Release, and the audit log is a dense, attributed, per-object
+  transition history kept for at least 90 days — which is precisely the index needed to
+  answer *what was this environment running at T*. So the restore itself is a fan-out of
+  promotions the platform can already make, and every hard part is somewhere else.
+
+  What the fan-out is wrapped in is the actual feature: on starting a restore, every
+  project owner gets a page saying what is about to happen to their project — which
+  release each environment goes back to, which configuration changes are reverted, what
+  is *not* being restored — and signs off. Projects roll back as their owners approve, or
+  all at once when the last one is green; which of the two is a choice at start time,
+  because a staged rollback is only correct when projects do not call each other.
+
+  The parts that need thinking through, in roughly the order they will bite:
+
+  - **A restore is not a rotation, and a breach needs both.** Putting back the connection
+    credential that was in use at T restores a secret the attacker has had for a week. A
+    platform-wide rollback is therefore paired with rotation, or it is a downgrade
+    wearing a recovery's clothes — and the sign-off page has to name every credential it
+    will hand back unrotated, because that list is the one an owner needs to read.
+  - **Only what still exists can be moved.** Rolling an environment back is a promotion;
+    resurrecting a Project that was deleted at T+2 is not, because the finalizer already
+    garbage-collected its environments, releases, domains and namespace. Live state can
+    only undo *changes to things that survive*, so a true point-in-time restore composes
+    with the archive series — a scheduled `kitchen backup` is what makes deletions
+    reversible, and [BACKUP.md](BACKUP.md) is half of this feature already.
+  - **The index has to outlive the store it lives in.** The transition history is in
+    ClickHouse, which is explicitly not backed up and ages out on a retention. The one
+    query that reconstructs the platform's past is then the one piece of telemetry that
+    has to be as durable as the objects it restores — either the timeline moves out of
+    the telemetry store, or the restore reads it out of the archives instead.
+  - **A Release does not carry everything a project is.** It carries the digest and the
+    config snapshot; it does not carry the ResourceClaim's data, the members added since
+    T, the domains, or the OIDC client's redirect list. Application data probably never
+    comes back this way — it belongs to whoever runs the database — though the provider
+    interface already has branch operations against opaque IDs, so a Neon-backed claim is
+    the one case where a data-side point-in-time is somebody else's solved problem.
+  - **Consent has to survive the situation it exists for.** At 3am, in a real incident,
+    an owner may be asleep, unreachable, or the compromised account. So the operator can
+    override any single sign-off and the override is an audit record naming them — the
+    escalation ladder `internal/api/exceptions.go` already models. And because operator
+    and developer are hats rather than people, a one-person installation must be able to
+    approve its own projects without a second account, a second login or a second
+    browser.
+  - **It is the most destructive write the platform has**, which makes it the strictest
+    reading of the blast-radius rule: it says what it will do before it does it, it
+    answers `202` and reports progress per project, and it is one long correlated run in
+    the audit log rather than a hundred unrelated promotions.
+
+- **Docs and runbooks that ship with the code.** Internal documentation lives in the
+  repository it describes, in markdown, and the platform publishes it — which sounds like
+  a docs site and is not one, because the interesting half is that Kitchen already knows
+  which commit each environment is running. Collect `docs/**` at build time (the builder
+  already reads the repository at the commit through the project's git Connection to
+  detect its framework), attach the result to what that build produced, and three things
+  fall out with no versioning model of their own: the docs an environment shows are the docs of the
+  code it is running, switching environments is switching which release you are reading,
+  and a rollback rolls the documentation back with the deploy because it never moved
+  separately in the first place. Serving them is the platform's job rather than the
+  application's, for the reason that matters: the moment anyone needs the runbook is the
+  moment the app is down.
+
+  **The docs half is scoped as issue #187**, and scoping it turned the feature inside
+  out. The first draft published a *rendered site* — the renderer is an image, so pick
+  zensical or Hugo — served on its own origin behind the preview gate, because
+  project-authored HTML and script on the dashboard's origin would be handed the reader's
+  session. What that design cannot do is the thing actually wanted: docs that live on the
+  project page, in the platform's own styling, where nobody can ship a light theme into a
+  dark dashboard or a font nobody asked for.
+
+  So the artifact is **an HTML fragment per page and a navigation tree**, not a site: no
+  stylesheet, no script, no theme, and the dashboard renders it with its own components.
+  That is also the safer half of the trade, which is worth stating because Backstage's
+  TechDocs made the other one — a full themed site, sanitized in the reader's browser and
+  injected into a shadow DOM — and has paid for it in advisories twice over, once for a
+  second route that served the bytes unsanitized and once for a gap in the allowlist. The
+  rules that follow are all the same rule: never accept what you intend to strip. Raw
+  HTML passthrough off, so the vocabulary is closed; sanitizing in Go on the server, so
+  no route can forget and a fixed allowlist applies retroactively; an unknown class
+  dropped rather than passed through, which is what makes "it cannot be off-brand" a
+  guarantee rather than a hope. With no script and no style left in the payload the
+  origin question dissolves, and the docs can live at `/projects/{project}/docs`.
+
+  Two things survived from the first draft unchanged. The fragments are an OCI referrer
+  on the build's artifact — where `internal/attestation` already puts megabytes that came
+  out of a pod — so the feature adds no storage, no PVC and no dependency on object
+  storage (#81), and is backed up exactly as much as the image it belongs to. And a
+  renderer image stays as the escape hatch for a project that needs MkDocs or Hugo
+  semantics, sanitized identically; what changed is that the common case no longer pays
+  for it, since a markdown converter with no theme to run needs no pod at all.
+
+  Then the sweet part, still parked — a runbook linked from the page that tells you when
+  to run it, started from there by people allowed to start it, with an audit trail:
+
+  - **The language question dissolves.** A runbook is an entrypoint into an image plus
+    typed parameters, not an interpreter the platform embeds — so Go, Node, a shell
+    script or Ansible are all "an image with that in it", and the project picks. The
+    contract is (image, entrypoint, parameter schema, timeout), and the execution
+    primitive is one Kitchen already built twice: a quality gate is a pod that is given
+    nothing and whose result is read back out of it under a size bound, and a runbook is
+    that pod with a person's name on it and permission to have effects.
+  - **Nothing from the request reaches argv.** Parameters are declared, validated against
+    their schema and handed over as environment or a file, never interpolated into a
+    shell — the rule the KEDA install job is built to, and it matters far more here,
+    where the trigger is a text box on a documentation page.
+  - **A repository cannot grant itself power.** The runbook is declared in the repo, so it
+    is reviewed, versioned and rolled back like the docs around it — but the role it
+    demands is a floor the platform sets, which a declaration may raise and never lower.
+    It runs in the project's namespace under the project's identity, and where it needs
+    the platform it gets a scoped token for the REST API rather than a kubeconfig,
+    because a runbook reaching for `kubectl` is the premise failing.
+  - It is the same execution shape as cron jobs and background workers (issue #78) with a
+    different trigger — one primitive, three triggers: a schedule, a queue, and a person
+    reading the documentation.
+
 ---
 
 ## Rough phasing
