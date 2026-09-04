@@ -40,10 +40,19 @@ import (
 // enough for a cron job to check that the archive it just took carries the
 // accounts as well as the objects.
 //
-// It carries the POST alone. Reading what an archive *would* hold, without
-// taking one, is `kitchen api GET /platform/backup` — the fallback CLAUDE.md
-// keeps for exactly this: a route reachable from a terminal on the day it
-// lands, without a command for every one.
+// `kitchen backup` itself carries the POST alone. Reading what an archive
+// *would* hold, without taking one, is `kitchen api GET /platform/backup` —
+// the fallback CLAUDE.md keeps for exactly this: a route reachable from a
+// terminal on the day it lands, without a command for every one.
+//
+// The two subcommands are the scheduled half. `kitchen backup list` is what
+// the destination holds — the age of the newest archive there is the check
+// worth alerting on, rather than the exit code of the last run — and
+// `kitchen backup run` takes one to the destination now, which is how an
+// operator finds out on the day they configure it whether the credential
+// works. Configuring the destination stays `kitchen api PUT
+// /platform/backup/destination`: a one-time operator setup with a credential
+// in it, which is exactly what that fallback is for.
 //
 // There is no `kitchen restore`, and there cannot be. A restore happens into a
 // cluster whose accounts database is gone, so the credentials this command
@@ -132,6 +141,7 @@ docs/BACKUP.md.`),
 		"where to write the archive. The default is the name the platform suggests, "+
 			"in the current directory")
 	cmd.Flags().BoolVarP(&force, "force", "f", false, "overwrite the file if it is already there")
+	cmd.AddCommand(newBackupListCommand(r), newBackupRunCommand(r))
 
 	return describe(cmd, meta{
 		Calls: []string{"POST /api/v1/platform/backup"},
@@ -267,4 +277,152 @@ func absolute(r *Runtime, path string) string {
 		return path
 	}
 	return filepath.Join(r.WorkingDir, path)
+}
+
+// backupObject is one object at the destination, as `kitchen backup list`
+// reads it.
+type backupObject struct {
+	Key      string `json:"key"`
+	Size     int64  `json:"size"`
+	Modified string `json:"modified"`
+	// Archive is whether this is an archive the platform wrote, and so
+	// whether retention would ever prune it. A bucket may hold other things,
+	// and they are listed too precisely so that nobody has to wonder.
+	Archive bool `json:"archive"`
+}
+
+// backupDestinationHolds is what `kitchen backup list` answers with.
+type backupDestinationHolds struct {
+	// Destination described, never its credential.
+	Destination string         `json:"destination"`
+	Objects     []backupObject `json:"objects"`
+	Truncated   bool           `json:"truncated,omitempty"`
+}
+
+// backupStarted is what `kitchen backup run` answers with: the Job doing the
+// work, so that it can be followed.
+type backupStarted struct {
+	Job         string `json:"job"`
+	Destination string `json:"destination"`
+}
+
+func newBackupListCommand(r *Runtime) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "list",
+		Short: "What the backup destination holds",
+		Long: strings.TrimSpace(`
+List the archives at the platform's backup destination.
+
+It reads the destination rather than the platform's own status, which is the
+point: the status says what the last run believed it did, and this says what is
+actually there — the only half a recovery can use.
+
+The check worth alerting on is the age of the newest archive here, not the exit
+code of the last run.`),
+		Args: cobra.NoArgs,
+		RunE: run(func(cmd *cobra.Command, args []string) error {
+			client, err := r.client()
+			if err != nil {
+				return err
+			}
+			ctx, cancel := r.context(commandContext(cmd))
+			defer cancel()
+
+			holds := backupDestinationHolds{}
+			if err := client.do(ctx, "reading the backup destination",
+				"GET", "/platform/backup/runs", nil, nil, &holds); err != nil {
+				return err
+			}
+			return r.printer().document(holds, func(s tui.Styles) string {
+				if len(holds.Objects) == 0 {
+					return fmt.Sprintf("Nothing at %s yet.\n", holds.Destination)
+				}
+				rows := make([][]string, 0, len(holds.Objects))
+				for _, object := range holds.Objects {
+					kind := "other"
+					if object.Archive {
+						kind = "archive"
+					}
+					rows = append(rows, []string{object.Key, humanBytes(object.Size), object.Modified, kind})
+				}
+				return s.Table([]string{"KEY", "SIZE", "MODIFIED", "WHAT"}, rows)
+			})
+		}),
+	}
+
+	return describe(cmd, meta{
+		Calls:  []string{"GET /api/v1/platform/backup/runs"},
+		Output: output{Mode: outputDocument, Kind: "backupDestinationHolds"},
+		Needs: needs{Auth: true,
+			Platform: onlyInTheDashboard("Platform → Backup", "/platform/backup")},
+		Examples: []example{
+			{"What is at the destination", "kitchen backup list --json"},
+		},
+	})
+}
+
+func newBackupRunCommand(r *Runtime) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "run",
+		Short: "Take a backup now, to the destination",
+		Long: strings.TrimSpace(`
+Run the scheduled backup now, writing to the platform's destination rather than
+to this machine.
+
+This is what makes a destination testable: press it once on the day it is
+configured and find out whether the credential works, rather than at 02:00 six
+weeks later. It answers as soon as the run has been started — the run itself is
+a Job in the platform namespace, and "kitchen backup list" is how to see what it
+left behind.
+
+Configuring the destination is a one-time operator setup with a credential in
+it, and stays "kitchen api PUT /platform/backup/destination".`),
+		Args: cobra.NoArgs,
+		RunE: run(func(cmd *cobra.Command, args []string) error {
+			client, err := r.client()
+			if err != nil {
+				return err
+			}
+			ctx, cancel := r.context(commandContext(cmd))
+			defer cancel()
+
+			started := backupStarted{}
+			if err := client.do(ctx, "starting a backup",
+				"POST", "/platform/backup/runs", nil, struct{}{}, &started); err != nil {
+				return err
+			}
+			return r.printer().document(started, func(s tui.Styles) string {
+				return fmt.Sprintf("%s %s\n  %s\n",
+					s.OK.Render("Started"), s.Title.Render(started.Job),
+					s.Subtle.Render("writing to "+started.Destination+"; kitchen backup list says what arrived"))
+			})
+		}),
+	}
+
+	return describe(cmd, meta{
+		Calls: []string{"POST /api/v1/platform/backup/runs"},
+		Output: output{Mode: outputDocument, Kind: "backupStarted",
+			Note: "the run has been started, not finished; `kitchen backup list` says what arrived"},
+		Needs: needs{Auth: true,
+			Platform: onlyInTheDashboard("Platform → Backup", "/platform/backup")},
+		Examples: []example{
+			{"Take one to the destination now", "kitchen backup run --json"},
+		},
+	})
+}
+
+// humanBytes is a size as a person reads it. Archives are measured in
+// megabytes and the number is read to answer "does that look right", so one
+// decimal place is the whole of what it needs.
+func humanBytes(size int64) string {
+	const unit = 1024
+	if size < unit {
+		return fmt.Sprintf("%d B", size)
+	}
+	div, exp := int64(unit), 0
+	for n := size / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", float64(size)/float64(div), "KMGTPE"[exp])
 }

@@ -840,6 +840,17 @@ type KitchenSpec struct {
 	// +optional
 	Databases DatabasesSpec `json:"databases,omitempty"`
 
+	// Backup is the platform's own scheduled backup: when it runs, where the
+	// archive goes, and how much of it is kept.
+	//
+	// The empty-object default is what gives an installation predating the
+	// field the run timeout: structural defaulting only descends into objects
+	// that are present. It configures nothing on its own — an empty block has
+	// no schedule, and no schedule is no CronJob.
+	// +kubebuilder:default={}
+	// +optional
+	Backup BackupSpec `json:"backup,omitempty"`
+
 	// +optional
 	Observability ObservabilitySpec `json:"observability,omitempty"`
 
@@ -1009,6 +1020,12 @@ type KitchenStatus struct {
 	// class, with what each class currently holds and how far back it goes.
 	// +optional
 	Retention *RetentionStatus `json:"retention,omitempty"`
+
+	// Backup reports what the scheduled backup has actually been doing: when
+	// one last worked, where it went, and what went wrong if something did.
+	// Absent means no run has ever been observed.
+	// +optional
+	Backup *BackupStatus `json:"backup,omitempty"`
 
 	// ClockSync reports the last measurement of node clock drift. The
 	// *consequence* of drift is a component in the survey above; this is the

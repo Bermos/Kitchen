@@ -108,6 +108,21 @@ selfUpdate:
 # The archive comes from a Secret or from an existing volume. A Secret is the
 # obvious answer and has etcd's limit behind it (about 1 MiB), which a real
 # installation's archive will pass; a volume is the answer past that.
+backup:
+  # -- Name of the ServiceAccount a scheduled backup runs as. Generated when
+  # empty. The schedule, the destination and the retention are *not* here:
+  # they are runtime configuration on the Kitchen object, edited on the Backup
+  # screen or through `PUT /platform/backup/destination` and `PATCH /settings`,
+  # because a backup that could only be reconfigured by a `helm upgrade` is one
+  # nobody reconfigures.
+  serviceAccountName: ""
+  rbac:
+    # -- Create the scheduled backup's ServiceAccount and its roles. Read-only
+    # throughout, and not a privilege reduction: a backup reads every credential
+    # the platform holds, which is the manager's own power. It is a separate
+    # account so the grant is legible in one file and gone with the release.
+    create: true
+
 restore:
   # -- Run the restore Job. Requires either `secretName` or `existingClaim`.
   enabled: false

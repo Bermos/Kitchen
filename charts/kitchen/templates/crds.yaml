@@ -4034,6 +4034,158 @@ spec:
                     - name
                     type: object
                 type: object
+              backup:
+                default: {}
+                description: |-
+                  Backup is the platform's own scheduled backup: when it runs, where the
+                  archive goes, and how much of it is kept.
+
+                  The empty-object default is what gives an installation predating the
+                  field the run timeout: structural defaulting only descends into objects
+                  that are present. It configures nothing on its own — an empty block has
+                  no schedule, and no schedule is no CronJob.
+                properties:
+                  destination:
+                    description: Destination is where archives are written.
+                    properties:
+                      s3:
+                        description: S3Destination is a bucket at an S3-compatible
+                          store.
+                        properties:
+                          bucket:
+                            description: |-
+                              Bucket archives are written into. It should be a bucket of its own:
+                              see the retention note below, and docs/BACKUP.md on why this bucket is
+                              the cluster's root credential store.
+                            minLength: 1
+                            type: string
+                          credentialsSecretRef:
+                            description: |-
+                              CredentialsSecretRef names a Secret in the platform namespace holding
+                              accessKeyId and secretAccessKey. It is written by
+                              PUT /platform/backup/destination and never read back, like every other
+                              credential this API stores.
+
+                              Absent means the ambient credential chain — IRSA, EKS Pod Identity, an
+                              instance role — which is the better answer where it is available,
+                              because there is then no long-lived key anywhere to leak.
+                            properties:
+                              name:
+                                minLength: 1
+                                type: string
+                            required:
+                            - name
+                            type: object
+                          endpoint:
+                            description: |-
+                              Endpoint overrides AWS. This is what makes MinIO, R2, Backblaze,
+                              Wasabi, Ceph and Garage the same code path rather than five backends.
+                            type: string
+                          forcePathStyle:
+                            description: |-
+                              ForcePathStyle addresses the bucket as <endpoint>/<bucket> rather than
+                              <bucket>.<endpoint>. Every store that is reached by IP address or by a
+                              name with no wildcard certificate behind it needs this — MinIO in a
+                              cluster is the usual one.
+                            type: boolean
+                          kmsKeyId:
+                            description: KMSKeyID names the key when the encryption
+                              is aws:kms.
+                            type: string
+                          prefix:
+                            description: |-
+                              Prefix is the key prefix inside the bucket. Pruning only ever considers
+                              objects under it that are named like an archive this platform wrote, so
+                              a bucket somebody also keeps other things in does not lose them.
+                            type: string
+                          region:
+                            description: |-
+                              Region the bucket is in. Most S3-compatible stores want one even where
+                              it means nothing; us-east-1 is the conventional answer for those.
+                            type: string
+                          serverSideEncryption:
+                            description: |-
+                              ServerSideEncryption asks the store to encrypt the object at rest:
+                              "AES256" or "aws:kms". The archive is every credential the platform
+                              holds, so a store that can encrypt it should be told to.
+                            enum:
+                            - AES256
+                            - aws:kms
+                            type: string
+                        required:
+                        - bucket
+                        type: object
+                      type:
+                        description: |-
+                          Type is the kind of store. The enum lives on BackupDestinationType
+                          itself, so it is not repeated here.
+                        enum:
+                        - s3
+                        type: string
+                    required:
+                    - type
+                    type: object
+                    x-kubernetes-validations:
+                    - message: 'spec.backup.destination.s3 is required when the destination
+                        type is s3: it names the bucket archives are written to.'
+                      rule: self.type != 's3' || has(self.s3)
+                    - message: an s3 block belongs to a destination of type s3 alone.
+                      rule: self.type == 's3' || !has(self.s3)
+                  retention:
+                    description: |-
+                      Retention is how many archives the destination keeps. Left empty,
+                      nothing is ever pruned, which is the safe default: an archive costs
+                      pennies and the failure this feature exists to prevent is having too
+                      few of them.
+                    properties:
+                      keepDays:
+                        description: KeepDays deletes archives older than this many
+                          days.
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      keepLast:
+                        description: KeepLast is how many of the newest archives survive
+                          a prune.
+                        format: int32
+                        minimum: 1
+                        type: integer
+                    type: object
+                  schedule:
+                    description: |-
+                      Schedule is a five-field cron expression, in UTC — as every schedule on
+                      this platform is, and worth saying out loud on a platform that already
+                      measures node clock drift. Empty means no scheduled backup, which is
+                      what an installation that predates this field keeps having.
+
+                      A quiet hour is the right answer: the accounts half of an archive is
+                      taken through the identity provider's database, and a dump competing
+                      with sign-ins helps nobody.
+                    type: string
+                  suspend:
+                    description: |-
+                      Suspend pauses the schedule without losing it — the answer to "we are
+                      doing maintenance" that is not "delete the configuration and hope
+                      somebody puts it back".
+                    type: boolean
+                  timeout:
+                    default: 30m
+                    description: |-
+                      Timeout bounds one run: the export, the upload, the read-back and the
+                      prune together.
+                    type: string
+                type: object
+                x-kubernetes-validations:
+                - message: 'spec.backup.destination is required when a schedule is
+                    set: an archive written to a volume on this cluster does not survive
+                    the loss of this cluster, so there is deliberately no local destination.
+                    Configure a destination, or clear the schedule.'
+                  rule: '!has(self.schedule) || size(self.schedule) == 0 || has(self.destination)'
+                - message: 'spec.backup.retention needs a destination to apply to:
+                    retention prunes what is at the destination, and with no destination
+                    it overrides nothing.'
+                  rule: '!has(self.retention) || (!has(self.retention.keepLast) &&
+                    !has(self.retention.keepDays)) || has(self.destination)'
               baseDomain:
                 description: |-
                   Base domain for generated URLs: <slug>.<baseDomain>. Requires wildcard
@@ -5284,6 +5436,60 @@ spec:
                     items:
                       type: string
                     type: array
+                type: object
+              backup:
+                description: |-
+                  Backup reports what the scheduled backup has actually been doing: when
+                  one last worked, where it went, and what went wrong if something did.
+                  Absent means no run has ever been observed.
+                properties:
+                  archives:
+                    description: |-
+                      Archives is how many archives the last run left at the destination,
+                      after its prune.
+                    format: int32
+                    type: integer
+                  destination:
+                    description: 'Destination described, and never its credential:
+                      "s3://bucket/prefix".'
+                    type: string
+                  lastFailure:
+                    description: LastFailure is when a run last failed.
+                    format: date-time
+                    type: string
+                  lastRun:
+                    description: LastRun is when a run last started, whatever became
+                      of it.
+                    format: date-time
+                    type: string
+                  lastSuccess:
+                    description: |-
+                      LastSuccess is when a run last finished, having uploaded an archive and
+                      read it back. It is the number an operator should be watching.
+                    format: date-time
+                    type: string
+                  lastSuccessArchive:
+                    description: |-
+                      LastSuccessArchive is the key that run wrote, and LastSuccessBytes how
+                      big it was.
+                    type: string
+                  lastSuccessBytes:
+                    format: int64
+                    type: integer
+                  message:
+                    description: |-
+                      Message explains the state above in the words that name the fix: why
+                      there is no schedule, why the last run failed, or why a schedule that
+                      exists has never produced an archive.
+                    type: string
+                  schedule:
+                    description: |-
+                      Schedule in force, echoed so that a reader of the status does not have
+                      to fetch the spec to know what "late" would mean.
+                    type: string
+                  suspended:
+                    description: Suspended is whether the schedule is paused.
+                    type: boolean
                 type: object
               clockSync:
                 description: |-

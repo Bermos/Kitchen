@@ -37,6 +37,17 @@ The field carries no `omitempty` for exactly that reason.
  "buildTimeoutMinutes": 60, "logRetentionDays": 30, "operators": [{"email": "anna@example.com"}, {"subject": "user_01H8X…"}]}
 ```
 
+It also carries **the scheduled backup's ordinary settings** —
+`backupSchedule`, `backupSuspend`, `backupKeepLast` and `backupKeepDays` — and
+serves the whole scheduled backup back under `backup`, the same object
+`GET /platform/backup` serves. What it does **not** carry, and never will, is
+where the archives go: a destination holds the bucket's key pair, this route
+must never carry a credential, and so it has an address of its own at
+[`PUT /platform/backup/destination`](./platform.md#the-destination). An empty
+`backupSchedule` turns the scheduled backup off; `0` on either retention bound
+removes that bound. A schedule with no destination is a `400` here as well as
+at admission, and it names the route that fixes it.
+
 Fields left out stay as they are, `operators` included — a settings patch that
 does not mention the list cannot disturb it. When it does, the list replaces
 the old one wholesale, and each entry names its account the same two ways a

@@ -1,0 +1,116 @@
+{{- include "kitchen.validate" . -}}
+{{- if .Values.backup.rbac.create }}
+{{- /*
+The scheduled backup's own identity.
+
+The CronJob itself is the operator's, not this chart's: the schedule and the
+destination are runtime configuration edited through the REST API, and a Helm
+template only ever sees deploy-time values. What the chart can create safely is
+the account that CronJob runs as, and that is what this file is — alongside
+restore.yaml and preview-gate-rbac.yaml, for the same reason.
+
+Be honest about what the separation is and is not. A backup reads every
+credential the platform holds, which is the manager's own power, so this is
+**not** a privilege reduction. It is the argument restore.yaml already makes
+for its own account: the grant is enumerable, visible in one file, and gone
+with the release, which means the CronJob's power is legible without reading
+the manager's ClusterRole.
+
+Read-only throughout. A backup writes nothing to the cluster — the archive goes
+to the destination, and the run's result goes on the pod's termination message.
+*/}}
+{{- $serviceAccount := include "kitchen.backupServiceAccountName" . }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $serviceAccount }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kitchen.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backup
+---
+# The Kitchen singleton is cluster-scoped, so the half that reads it has to be
+# as well. It is also where spec.backup lives, which is how a run learns where
+# to write to.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "kitchen.fullname" . }}-backup
+  labels:
+    {{- include "kitchen.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backup
+rules:
+  - apiGroups: ["kitchen.bermos.dev"]
+    resources: ["kitchens"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "kitchen.fullname" . }}-backup
+  labels:
+    {{- include "kitchen.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backup
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "kitchen.fullname" . }}-backup
+subjects:
+  - kind: ServiceAccount
+    name: {{ $serviceAccount }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "kitchen.fullname" . }}-backup
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kitchen.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backup
+rules:
+  # Every namespaced kind internal/backup carries, enumerated rather than
+  # wildcarded for restore.yaml's reason: it is enumerable, and that is the
+  # whole argument for this account existing beside the manager's.
+  # TestBackupRoleCoversTheArchive holds this list to backup.Kinds, because a
+  # kind added to the archive and forgotten here is a scheduled backup that
+  # silently stops carrying it.
+  - apiGroups: ["kitchen.bermos.dev"]
+    resources:
+      - addons
+      - connections
+      - projects
+      - builds
+      - releases
+      - environments
+      - domains
+      - resourceclaims
+      - savedqueries
+      - exceptions
+      - accessreviews
+    verbs: ["get", "list", "watch"]
+  # The credentials the archive carries — and the destination's own, which is
+  # a Secret in this namespace like any other. Reading every secret here is
+  # the manager's power and it is the whole point of a backup; it is why this
+  # account is about legibility rather than least privilege.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "kitchen.fullname" . }}-backup
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kitchen.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backup
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "kitchen.fullname" . }}-backup
+subjects:
+  - kind: ServiceAccount
+    name: {{ $serviceAccount }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

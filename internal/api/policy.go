@@ -563,6 +563,21 @@ func (s *Server) routes() []route {
 		// gone, so there is nobody left to authenticate. See internal/api/backup.go.
 		{"GET /api/v1/platform/backup", s.getBackup, operatorOnly("reading what a platform backup would carry")},
 		{"POST /api/v1/platform/backup", s.createBackup, operatorOnly("exporting the platform's state")},
+		// The destination has an address of its own because it carries a
+		// credential, and PATCH /settings must never carry one. The schedule
+		// and the retention are ordinary settings and go through the route
+		// that already edits this object.
+		{"PUT /api/v1/platform/backup/destination", s.putBackupDestination,
+			operatorOnly("setting where the platform's backups are written")},
+		{"DELETE /api/v1/platform/backup/destination", s.deleteBackupDestination,
+			operatorOnly("removing where the platform's backups are written")},
+		// What the destination actually holds, read from the destination —
+		// not from the platform's own belief about it, which is the only
+		// half a recovery cannot use.
+		{"GET /api/v1/platform/backup/runs", s.listBackupRuns,
+			operatorOnly("reading what the platform's backup destination holds")},
+		{"POST /api/v1/platform/backup/runs", s.createBackupRun,
+			operatorOnly("running the platform's backup now")},
 
 		// Settings carry the base domain, the issuer and the gateway address,
 		// so even reading them is the operator's.

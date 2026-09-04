@@ -126,6 +126,22 @@ type KitchenReconciler struct {
 	// so on every protected preview.
 	PreviewGateServiceAccount string
 
+	// BackupImage is the image the scheduled backup's CronJob runs. It is the
+	// operator's own image — /backup is a second binary in it, so that the
+	// archive and the code that reads it are the same release — and the chart
+	// passes it in for the reason it passes the gate's: a pod cannot read its
+	// own image back. Empty falls back to PreviewGateImage, which is the same
+	// image, for an installation whose chart predates the flag.
+	BackupImage string
+
+	// BackupServiceAccount is the identity a scheduled backup runs as. The
+	// chart creates it beside the restore Job's and passes the name in,
+	// because the name is release-name prefixed and only the chart knows it.
+	// Empty leaves runs on the namespace's default account, which can read
+	// nothing — so the backup fails, loudly, rather than writing an archive
+	// with none of the platform's credentials in it.
+	BackupServiceAccount string
+
 	// APIReader reads straight from the API server, bypassing the cache.
 	// The component survey needs it for events and pods: field selectors are
 	// not served by the cache, and caching every event and pod in the cluster
@@ -161,6 +177,8 @@ type KitchenReconciler struct {
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=connections,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=cert-manager.io,resources=clusterissuers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=cert-manager.io,resources=certificates,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=batch,resources=cronjobs,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile drives the platform's shared infrastructure.
 func (r *KitchenReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -210,6 +228,7 @@ func (r *KitchenReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	registryReady := r.reconcileRegistry(ctx, kitchen, setCond)
 	objectStoreReady := r.reconcileObjectStore(ctx, kitchen, setCond)
 	accessReady := r.reconcileAccess(ctx, kitchen, setCond)
+	backupReady := r.reconcileBackup(ctx, kitchen, setCond)
 	seeded, err := r.seedAddons(ctx, kitchen)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -233,6 +252,7 @@ func (r *KitchenReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		"certificateReady", certReady,
 		"complianceReady", complianceReady,
 		"operatorsConfigured", accessReady,
+		"backupReady", backupReady,
 		"scaleToZeroReady", idlingReady,
 		"databasesReady", databasesReady,
 		"componentsHealthy", componentsHealthy)

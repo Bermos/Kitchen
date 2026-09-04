@@ -87,6 +87,8 @@ func main() {
 	var previewGateImage string
 	var qualityGateImage string
 	var previewGateServiceAccount string
+	var backupImage string
+	var backupServiceAccount string
 	var apiAddr string
 	var apiAudiences string
 	var uiClientID string
@@ -121,6 +123,16 @@ func main() {
 			"rather than asking the REST API. The chart creates it and passes the name in, since only the "+
 			"chart knows its release-name prefix. Without it the gate reads nothing and refuses every "+
 			"protected preview.")
+	flag.StringVar(&backupImage, "backup-image", "",
+		"Image the scheduled backup's CronJob runs. It is this operator's own image — /backup is a "+
+			"second binary in it, so that the archive and the code that reads it are the same release — "+
+			"and a pod cannot read its own image back, so the chart passes it in. Without it a "+
+			"configured schedule reports that it cannot be created.")
+	flag.StringVar(&backupServiceAccount, "backup-service-account", "",
+		"ServiceAccount a scheduled backup runs as. It is separate from the manager's so that the "+
+			"grant is legible in one file and gone with the release — not smaller: a backup reads every "+
+			"credential the platform holds. The chart creates it and passes the name in, since only the "+
+			"chart knows its release-name prefix.")
 	flag.StringVar(&apiAddr, "api-bind-address", ":8092",
 		"The address the REST API binds to.")
 	flag.StringVar(&apiAudiences, "api-audiences", "",
@@ -381,6 +393,8 @@ func main() {
 		Scheme:                    mgr.GetScheme(),
 		PreviewGateImage:          previewGateImage,
 		PreviewGateServiceAccount: previewGateServiceAccount,
+		BackupImage:               backupImage,
+		BackupServiceAccount:      backupServiceAccount,
 		Addons:                    addonInstalls,
 		Audit:                     auditor,
 	}).SetupWithManager(mgr); err != nil {

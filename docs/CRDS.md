@@ -169,6 +169,30 @@ spec:
     auditFloorOverride:                 # the only way under the 90-day floor, and an audit record
       reason: demonstration cluster; holds no production data at all
       approvedBy: cto@example.com
+  backup:                               # the platform's own scheduled backup
+    schedule: "0 3 * * *"               # five fields, UTC. Empty = no scheduled backup, which is what
+                                        # an installation predating the field keeps having. A schedule
+                                        # with no destination is refused at admission: an archive on a
+                                        # volume on this cluster does not survive the loss of this
+                                        # cluster, so there is deliberately no local destination
+    suspend: false                      # pause the schedule without losing it
+    timeout: 30m                        # bounds one run: export, upload, read-back and prune together
+    destination:
+      type: s3                          # any S3-compatible store; the endpoint override is what makes
+      s3:                               # MinIO, R2, Backblaze, Wasabi, Ceph and Garage one code path
+        bucket: kitchen-backups         # give it its own bucket: it becomes this cluster's root
+        prefix: prod                    # credential store — see docs/BACKUP.md
+        region: eu-central-1
+        endpoint: ""                    # empty is AWS
+        forcePathStyle: false           # <endpoint>/<bucket>; every store reached by IP needs it
+        serverSideEncryption: AES256    # AES256 | aws:kms — the archive is every secret, in the clear
+        credentialsSecretRef:           # accessKeyId + secretAccessKey; written by
+          name: kitchen-backup-destination   # PUT /platform/backup/destination and never read back.
+                                        # Absent = the ambient chain (IRSA, Pod Identity, an instance
+                                        # role), which is the better answer where it is available
+    retention:                          # both bounds apply where both are set; empty keeps everything,
+      keepLast: 30                      # which is the safe default. It is not a safety property:
+      keepDays: 90                      # retention deletes, and Object Lock is the store's answer
   observability:
     clickhouse:
       retentionDays: 30                 # the retention every telemetry class inherits when
@@ -191,7 +215,7 @@ status:
   conditions: [...]                     # Ready, GatewayProgrammed, TunnelConnected,
                                         # TelemetrySchemaReady, PreviewGateReady, RegistryReady,
                                         # ObjectStoreReady, ScaleToZeroReady, DatabasesReady,
-                                        # ComplianceReady
+                                        # ComplianceReady, BackupReady
   gatewayAddress: 203.0.113.7
   registry:
     host: registry.apps.example.com
@@ -232,6 +256,17 @@ status:
         rows: 41203311
         oldest: 2026-08-10T04:11:02Z    # the claim the rule makes: nothing older than this
         expired: 0                      # rows still past the horizon; a small number is normal
+  backup:                               # what the schedule has actually been doing — the half of this
+    schedule: 0 3 * * *                 # feature that matters most, because a backup system's
+    suspended: false                    # characteristic failure is six weeks of no archive that
+    destination: s3://kitchen-backups/prod   # nobody noticed. Also a BackupReady condition and a
+    lastRun: 2026-08-24T03:00:00Z       # `backup` row in status.components, which is the list an
+    lastSuccess: 2026-08-24T03:01:44Z   # operator already reads
+    lastSuccessArchive: prod/kitchen-backup-prod-2026-08-24T030102Z.tar.gz
+    lastSuccessBytes: 4718592
+    lastFailure: null
+    archives: 30                        # what the last run left at the destination, after its prune
+    message: the last archive was written to s3://kitchen-backups/prod 6 hours ago
   clockSync:
     checked: 2026-08-24T09:00:00Z
     method: kubelet node lease renewTime, compared with the operator's own clock

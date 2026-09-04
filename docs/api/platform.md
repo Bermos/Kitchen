@@ -480,6 +480,16 @@ takes one:
  "excluded": ["telemetry: logs, metrics, traces and flow data in ClickHouse are not backed up …"],
  "snapshots": {"supported": false,
                "message": "the VolumeSnapshot API is registered but no VolumeSnapshotClass exists …"},
+ "schedule": {"schedule": "0 3 * * *", "suspended": false, "timeoutMinutes": 30,
+              "destination": {"type": "s3", "described": "s3://kitchen-backups/prod",
+                              "bucket": "kitchen-backups", "prefix": "prod",
+                              "region": "eu-central-1", "credential": "stored"},
+              "keepLast": 30,
+              "lastSuccess": "2026-08-19T03:01:44Z",
+              "lastSuccessArchive": "prod/kitchen-backup-prod-2026-08-19T030102Z.tar.gz",
+              "lastSuccessBytes": 4718592, "archives": 30,
+              "ready": true, "reason": "BackedUp",
+              "message": "the last archive was written to s3://kitchen-backups/prod 6 hours ago"},
  "filename": "kitchen-backup-prod-2026-08-19T090000Z.tar.gz"}
 ```
 
@@ -506,3 +516,114 @@ into a cluster whose accounts database is gone, so the credentials to
 authenticate here are inside the archive and there is nobody left to call it.
 The chart renders a Job for it instead — see
 [docs/BACKUP.md](../BACKUP.md).
+
+#### The schedule
+
+`schedule` on that answer is the scheduled backup, and `schedule.lastSuccess`
+is the field worth reading first. A screen that only said what an archive
+*would* carry could not tell an operator that the last one was taken in March,
+and six weeks of no archive that nobody noticed is a backup system's
+characteristic failure — not a corrupt archive. The same object is served on
+`GET /settings` as `backup`, so the settings screen and the backup screen
+cannot come to disagree; `ready`, `reason` and `message` are the platform's own
+`BackupReady` condition rather than a second opinion derived here.
+
+`destination` describes where archives go and never how it authenticates.
+`credential` says only *how*: `stored` is a key this platform holds in a
+Secret, `ambient` is the credential chain the pod already has — IRSA, EKS Pod
+Identity, an instance role — which is the better answer where it is available,
+because there is then no long-lived key anywhere to leak.
+
+The **schedule, the suspend and the retention** are ordinary settings and are
+changed through `PATCH /settings`:
+
+```json
+{"backupSchedule": "0 3 * * *", "backupSuspend": false,
+ "backupKeepLast": 30, "backupKeepDays": 90}
+```
+
+Every field is optional and a field that is absent is untouched. An empty
+`backupSchedule` turns the scheduled backup off; `0` on either retention bound
+removes that bound, which is the only way back to keeping everything. A
+schedule with no destination is refused here as well as at admission — an
+archive written to a volume on this cluster does not survive the loss of this
+cluster, so there is deliberately no local destination — and so is a retention
+with nothing to prune.
+
+The schedule is a **five-field cron expression in UTC**, as every schedule on
+this platform is. A quiet hour is the right answer: the accounts half of an
+archive is taken through the identity provider's database.
+
+#### The destination
+
+`PUT /platform/backup/destination` is where archives go, and it has an address
+of its own for one reason: **it carries a credential, and `PATCH /settings`
+must never carry one.**
+
+```json
+{"type": "s3",
+ "s3": {"bucket": "kitchen-backups", "prefix": "prod", "region": "eu-central-1",
+        "endpoint": "https://minio.example.com", "forcePathStyle": true,
+        "serverSideEncryption": "AES256",
+        "accessKeyId": "…", "secretAccessKey": "…"}}
+```
+
+`s3` is any S3-compatible store — AWS, MinIO, R2, Backblaze, Wasabi, Ceph,
+Garage — because `endpoint` and `forcePathStyle` make those one code path
+rather than six backends. `region` is wanted even by stores where it means
+nothing; `us-east-1` is the conventional answer for those.
+
+The operator writes the key pair into a Secret carrying
+`app.kubernetes.io/managed-by: kitchen`, patches the singleton to point at it,
+and answers with the same view `GET /platform/backup` serves — **bucket and
+prefix, and no key, ever**. The three things the credential half can say:
+
+- `accessKeyId` **and** `secretAccessKey` store a new key. Half a pair is
+  refused rather than discovered on the first run.
+- `"ambientCredentials": true` moves the destination onto the pod's own
+  credential chain and deletes the key this platform was storing. It is
+  explicit because the API never reads a credential back, so a form
+  redisplaying a destination cannot send the key it never received.
+- Neither: the destination is rewritten and whatever credential is stored
+  stays. An unmentioned key must survive an edit of the bucket's prefix.
+
+`DELETE /platform/backup/destination` removes the destination and, with it, the
+Secret this API wrote — and only that one: a Secret something else put there
+carries no `managed-by` label and is left where it is. The retention goes too,
+because it prunes what is at the destination and with none it overrides
+nothing. A destination still carrying a schedule is `409`, naming the field to
+clear first, rather than handing back a CEL rule's message.
+
+#### Runs
+
+`GET /platform/backup/runs` is what the destination *actually holds*:
+
+```json
+{"destination": "s3://kitchen-backups/prod/",
+ "objects": [{"key": "prod/kitchen-backup-prod-2026-08-19T030102Z.tar.gz",
+              "size": 4718592, "modified": "2026-08-19T03:01:44Z", "archive": true}]}
+```
+
+It reads the bucket rather than the platform's own status on purpose: the
+status says what the last run believed it did, and this says what is there now,
+which is the only half a recovery can use. Objects that are *not* archives this
+platform wrote are listed too, with `archive: false`, precisely so that nobody
+has to wonder what retention would touch — pruning only ever considers keys
+named the way this platform names an archive. A destination that cannot be
+reached is `502` with the store's own message; a listing longer than 200
+objects is cut newest-first and says `"truncated": true`.
+
+`POST /platform/backup/runs` takes one now, to the destination, without
+downloading anything. It answers `202` with the Job's name:
+
+```json
+{"job": "kitchen-backup-manual-x7k2p", "destination": "s3://kitchen-backups/prod"}
+```
+
+This is what makes a destination testable: press it once on the day it is
+configured and find out whether the credential works, rather than at 02:00 six
+weeks later. Nothing from the request reaches the Job — the pod template is the
+scheduled CronJob's own, copied, with a TTL added because this run is owned by
+nobody. It is recorded in the audit log as an `export` against the `Kitchen`
+object, exactly as a download is, because an archive leaving the cluster is the
+same event whichever direction it left in.

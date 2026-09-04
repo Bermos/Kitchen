@@ -24,6 +24,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
@@ -77,8 +78,17 @@ type settingsView struct {
 	// install needs to read together — and because a `dns.mismatch` finding
 	// names the addresses it compared, which is only meaningful if the
 	// settings page can say where they came from.
-	PublicAddresses []string        `json:"publicAddresses,omitempty"`
-	Conditions      []conditionView `json:"conditions,omitempty"`
+	PublicAddresses []string `json:"publicAddresses,omitempty"`
+	// Backup is the scheduled backup as this route can edit it — the
+	// schedule, the suspend and the retention — plus what it has been doing,
+	// so that a PATCH answers with the state it produced rather than making
+	// the caller fetch it from somewhere else.
+	//
+	// The destination is in it and its credential is not: writing a
+	// credential is PUT /platform/backup/destination's, deliberately, because
+	// this route must never carry one.
+	Backup     backupScheduleView `json:"backup"`
+	Conditions []conditionView    `json:"conditions,omitempty"`
 	// Operators is `spec.access.operators`: who holds the platform role. It
 	// is here rather than on a surface of its own because this route already
 	// carries the base domain, the issuer and the gateway address, and is
@@ -133,6 +143,7 @@ func newSettingsView(kitchen *kitchenv1alpha1.Kitchen) settingsView {
 		LogRetentionDays:    kitchen.Spec.Observability.ClickHouse.RetentionDays,
 		GatewayAddress:      kitchen.Status.GatewayAddress,
 		PublicAddresses:     kitchen.Spec.Ingress.PublicAddresses,
+		Backup:              newBackupScheduleView(kitchen),
 		Conditions:          conditionViews(kitchen.Status.Conditions),
 		Operators:           operatorViews(kitchen.Spec.Access.Operators),
 	}
@@ -189,6 +200,19 @@ type patchSettingsRequest struct {
 	BuildTimeoutMinutes *int32 `json:"buildTimeoutMinutes"`
 	ReleaseRetention    *int32 `json:"releaseRetention"`
 	LogRetentionDays    *int32 `json:"logRetentionDays"`
+	// BackupSchedule, BackupSuspend, BackupKeepLast and BackupKeepDays are
+	// the scheduled backup's ordinary settings: when it runs, whether it is
+	// paused, and how much of the destination survives a prune. The
+	// destination itself is not here and never will be — it carries a
+	// credential, and this route must not.
+	//
+	// Pointers, like everything else on this request: the empty schedule is a
+	// setting (no scheduled backup at all), and a request that does not
+	// mention the field must not be able to clear it.
+	BackupSchedule *string `json:"backupSchedule"`
+	BackupSuspend  *bool   `json:"backupSuspend"`
+	BackupKeepLast *int32  `json:"backupKeepLast"`
+	BackupKeepDays *int32  `json:"backupKeepDays"`
 	// Operators replaces the whole platform access list, and is a pointer so
 	// that a request which does not mention it cannot disturb it — the
 	// difference between an absent list and an empty one is load-bearing on
@@ -278,6 +302,9 @@ func (s *Server) patchSettings(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 		kitchen.Spec.Observability.ClickHouse.RetentionDays = *body.LogRetentionDays
+	}
+	if !s.applyBackupSettings(w, kitchen, body) {
+		return
 	}
 	was := kitchen.Spec.Access.Operators
 	if body.Operators != nil {
@@ -534,6 +561,10 @@ func changedSettingsFields(body patchSettingsRequest) []string {
 		{"buildTimeoutMinutes", body.BuildTimeoutMinutes != nil},
 		{"releaseRetention", body.ReleaseRetention != nil},
 		{"logRetentionDays", body.LogRetentionDays != nil},
+		{"backupSchedule", body.BackupSchedule != nil},
+		{"backupSuspend", body.BackupSuspend != nil},
+		{"backupKeepLast", body.BackupKeepLast != nil},
+		{"backupKeepDays", body.BackupKeepDays != nil},
 		{"operators", body.Operators != nil},
 	} {
 		if field.changed {
@@ -541,4 +572,71 @@ func changedSettingsFields(body patchSettingsRequest) []string {
 		}
 	}
 	return fields
+}
+
+// applyBackupSettings writes the scheduled backup's ordinary settings, and
+// refuses the two combinations admission would refuse.
+//
+// Both refusals are enforced here as well as by the CRD's own CEL rules, and
+// that is not belt and braces: admission answers with a rule's message, and
+// this answers with the field, the reason and the route that fixes it. A
+// caller who set a schedule with nowhere to write to should be told what to do
+// about it by the thing they were talking to.
+func (s *Server) applyBackupSettings(
+	w http.ResponseWriter,
+	kitchen *kitchenv1alpha1.Kitchen,
+	body patchSettingsRequest,
+) bool {
+	spec := &kitchen.Spec.Backup
+	if body.BackupSchedule != nil {
+		schedule := strings.TrimSpace(*body.BackupSchedule)
+		if schedule != "" {
+			if fields := len(strings.Fields(schedule)); fields != 5 {
+				badRequest(w, "backupSchedule is a five-field cron expression in UTC, like \"0 3 * * *\" "+
+					"(got %q, which has %d fields). An empty schedule turns the scheduled backup off.",
+					schedule, fields)
+				return false
+			}
+			if spec.Destination == nil {
+				badRequest(w, "backupSchedule needs somewhere to write to: an archive on a volume on "+
+					"this cluster does not survive the loss of this cluster, so there is deliberately "+
+					"no local destination. Set one with PUT /api/v1/platform/backup/destination first.")
+				return false
+			}
+		}
+		spec.Schedule = schedule
+	}
+	if body.BackupSuspend != nil {
+		spec.Suspend = *body.BackupSuspend
+	}
+	for _, bound := range []struct {
+		name  string
+		value *int32
+		into  **int32
+	}{
+		{"backupKeepLast", body.BackupKeepLast, &spec.Retention.KeepLast},
+		{"backupKeepDays", body.BackupKeepDays, &spec.Retention.KeepDays},
+	} {
+		if bound.value == nil {
+			continue
+		}
+		switch {
+		case *bound.value < 0:
+			badRequest(w, "%s cannot be negative (got %d); 0 removes the bound, which keeps every archive",
+				bound.name, *bound.value)
+			return false
+		case *bound.value == 0:
+			// Removing a bound is a real setting and the only way back to
+			// keeping everything, so it has to be expressible.
+			*bound.into = nil
+		default:
+			*bound.into = ptr.To(*bound.value)
+		}
+	}
+	if (spec.Retention.KeepLast != nil || spec.Retention.KeepDays != nil) && spec.Destination == nil {
+		badRequest(w, "a backup retention needs a destination to apply to: it prunes what is at the "+
+			"destination, and with no destination it overrides nothing.")
+		return false
+	}
+	return true
 }
