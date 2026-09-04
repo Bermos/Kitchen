@@ -554,8 +554,13 @@ type auditPackDecision struct {
 
 // auditPackArtifact is the evidence set for one artifact, as an index.
 type auditPackArtifact struct {
-	Release    string `json:"release"`
-	Build      string `json:"build,omitempty"`
+	Release string `json:"release"`
+	Build   string `json:"build,omitempty"`
+	// Workload is which image of the unit this row indexes, absent for the
+	// project's own. A release deploys one image per workload that declared
+	// a build of its own, and each is attested in its own right — so a unit
+	// of five workloads is five rows against one release, not one.
+	Workload   string `json:"workload,omitempty"`
 	Repository string `json:"repository,omitempty"`
 	Digest     string `json:"digest,omitempty"`
 	Image      string `json:"image,omitempty"`

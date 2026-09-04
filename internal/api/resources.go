@@ -1310,12 +1310,29 @@ func (s *Server) listProjectReleases(w http.ResponseWriter, req *http.Request) {
 }
 
 func (s *Server) getRelease(w http.ResponseWriter, req *http.Request) {
+	ctx := req.Context()
 	release := &kitchenv1alpha1.Release{}
-	if err := s.get(req.Context(), req.PathValue("name"), release); err != nil {
+	if err := s.get(ctx, req.PathValue("name"), release); err != nil {
 		s.writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, newReleaseView(release))
+	view := newReleaseView(release)
+	// The unit's compliance answer, which is per artifact: a release is
+	// attested when every image it deploys is, and names the ones that are
+	// not otherwise. It is read off the build because the build is what holds
+	// the evidence index — a pruned build answers with a caveat rather than
+	// with "not attested", which would be a different and untrue statement.
+	build := &kitchenv1alpha1.Build{}
+	if err := s.get(ctx, release.Spec.BuildRef.Name, build); err != nil {
+		if !apierrors.IsNotFound(err) {
+			s.writeError(w, err)
+			return
+		}
+		view.Attestation = newUnitAttestationView(nil)
+	} else {
+		view.Attestation = newUnitAttestationView(build)
+	}
+	writeJSON(w, http.StatusOK, view)
 }
 
 func (s *Server) environments(ctx context.Context, project string) ([]kitchenv1alpha1.Environment, error) {

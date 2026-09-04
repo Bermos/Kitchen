@@ -822,9 +822,19 @@ func (s *RescanSweeper) indexEvidence(
 	}, build); err != nil {
 		return
 	}
-	artifact := build.Status.Artifact
-	if artifact == nil || artifact.Digest == "" ||
-		!strings.HasSuffix(state.Artifact, "@"+artifact.Digest) {
+	// Which image of the unit was scanned. The sweep scans the release's own
+	// image today, but the index is a unit's — every artifact of a build now
+	// carries its own (#300) — so the row is written against the artifact
+	// whose digest the scan was about rather than against the first one.
+	var artifact *kitchenv1alpha1.ArtifactStatus
+	for _, candidate := range build.Artifacts() {
+		if candidate.Artifact.Digest != "" &&
+			strings.HasSuffix(state.Artifact, "@"+candidate.Artifact.Digest) {
+			artifact = candidate.Artifact
+			break
+		}
+	}
+	if artifact == nil {
 		return
 	}
 	entry := kitchenv1alpha1.ArtifactEvidence{

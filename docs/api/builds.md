@@ -109,11 +109,13 @@ Each workload's image is pushed to a repository beside the project's own —
 together and is covered by one credential, one retention rule and one quota.
 Each caches separately too, since they share no layers.
 
-**Evidence is the project's own image's.** The attestation the platform
-attaches — provenance, an SBOM, and the quality gates that run over it — is
-made about `image`, not about each workload's. A unit whose every artifact
-carries its own evidence is a larger change than this one, and it is named as
-an open item rather than implied by silence.
+**Every image carries its own evidence.** The attestation the platform
+attaches — its build record, the builder's provenance and bill of materials,
+and the quality gates that run — is made once per image, about that image's
+own digest. Each row of `workloads` carries its own `artifact` and its own
+`gates` beside the build's, and the release is attested only when every one of
+them is. [An artifact's evidence](#an-artifacts-evidence) is where that is
+spelled out.
 
 ## What the commit configured for itself
 
@@ -433,6 +435,22 @@ A build that produced no artifact digest answers `409`: it is a build nothing
 can be said about, which is not the same as one with no evidence. A registry
 that cannot be asked answers `502`.
 
+**It answers about one image, and `?workload=` says which.** A commit that
+builds several images produces one artifact per workload, each attested about
+its own digest, so there is no single answer to "what is attached to this
+build". Without the parameter you get the project's own image — which is what
+this endpoint has always answered and the only image a single-workload project
+has; `?workload=api` gets the API's. Naming a workload the build never
+produced answers `400`, saying what it did produce; naming one that pushed no
+image answers `409`.
+
+```sh
+curl -sS -H "authorization: Bearer $TOKEN" \
+  "https://kitchen.apps.example.com/api/v1/builds/shop-bld-abc123def456/attestations?workload=api"
+```
+
+`kitchen attestations shop-bld-abc123def456 --workload api` is the same read.
+
 The endpoint is a convenience. Everything it returns lives in the registry
 against the artifact's digest, as DSSE envelopes attached through OCI 1.1
 referrers, and is readable by anything that speaks them.
@@ -465,6 +483,44 @@ have to carry the vocabulary; the URI travels with it because the URI is the
 authority. `source` says who made the claim — the platform signs both, so the
 signature cannot tell them apart, and a claim about what a build did is worth
 more when the thing that did the building made it.
+
+`sourceType` says where the artifact's evidence came from, and reads `built`
+on everything the platform holds evidence about today. It is published rather
+than implied because a reader has to be able to tell a built artifact from one
+of another kind without knowing which release of Kitchen wrote the field.
+
+### One evidence record per image
+
+A unit's other images carry the same object, on their own row:
+
+```json
+"workloads": [
+  {
+    "name": "api",
+    "phase": "Succeeded",
+    "image": "registry.apps.example.com/shop-api@sha256:be21…",
+    "artifact": {
+      "repository": "registry.apps.example.com/shop-api",
+      "digest": "sha256:be21…",
+      "sourceType": "built",
+      "attested": true,
+      "keyID": "9f2c…",
+      "evidence": [{"predicateType": "https://slsa.dev/provenance/v1",
+                    "kind": "provenance", "source": "builder", "manifest": "sha256:7c04…"}]
+    },
+    "gates": [{"name": "trivy", "phase": "Completed", "source": "platform", "attested": true}]
+  }
+]
+```
+
+The build record signed for a workload's image carries a `workload` key and
+that workload's own strategy and detected framework; the project's own image's
+carries neither, and is character for character the record it has always been.
+That is deliberate: this is not a re-attestation of everything already
+shipped.
+
+**The release-level answer is per artifact**, and it is on the release rather
+than here — see [environments and releases](environments.md#is-this-release-attested).
 
 ## How a change was reviewed
 
@@ -524,17 +580,32 @@ hundred critical vulnerabilities has completed, because it did its job.
 says whether the findings were acceptable: gates record facts, and whether a
 fact is disqualifying is a property of the environment being deployed to.
 
+**A gate is a claim about an image, so each one runs once per image the commit
+produced.** `gates` above is the project's own image's; each row of
+`workloads` carries its own `gates` for its own artifact, under a Job of its
+own. A run that failed names the image it failed on — `workload api: the gate
+did not run: the scanner exited 137` — because "the gate did not run" beside
+four workloads that did is not an answer. The project's own image's messages
+are unchanged, which is what a single-workload project reads.
+
 `POST /builds/{name}/gates` ingests a result that was produced somewhere else —
 typically a scanner the application's own CI already ran:
 
 ```json
 {
   "gate": "trivy",
+  "workload": "api",
   "version": "0.58.0",
   "format": "trivy-json",
   "findings": { "Results": [ ... ] }
 }
 ```
+
+`workload` names which image of the unit the gate ran over, and is absent for
+the project's own — the only image a single-workload project has. A result
+about one image says nothing about the others, so it is recorded against the
+one it names and nothing else: the row lands in that workload's `gates` and
+the attestation on that workload's digest.
 
 The findings are carried unmodified into a signed attestation attached to the
 artifact's digest, and the answer says where it went. It is the one endpoint
@@ -551,7 +622,8 @@ of the same name that the platform ran itself.
 A build with no artifact digest answers `409`; a registry that cannot be
 written answers `502`; an installation holding no signing key answers `409`,
 because storing an unsigned result would leave something in the registry that
-looks like evidence and is not.
+looks like evidence and is not. A `workload` the build never produced answers
+`400`, saying what it did produce.
 
 ## Exploitability assertions (VEX)
 
@@ -623,13 +695,22 @@ attachment manifest, which moves whenever anything else is attached. Who may sub
 `compliance.vex` on the platform singleton; whose statements an environment then
 takes the word of is that environment's bundle parameters.
 
+**A statement suppresses a finding on an image**, and a unit ships several: a
+`workload` beside `document` says which image the assertion is about, absent
+for the project's own. "This CVE does not apply" said about the API is not a
+claim about the worker, which may not even carry the package — so the same
+document filed about two images is two assertions with two index rows, and the
+attestation lands on the digest of the image named.
+
 Refusals: a build with no artifact digest answers `409`; a platform with VEX
 turned off answers `409`; an author the platform does not admit answers `403`;
 a platform holding no signing key answers `409`, because an unsigned document in
 the registry would look like evidence and not be; a registry that cannot be
-written answers `502`.
+written answers `502`; a `workload` the build never produced answers `400`.
 
-`GET /builds/{name}/vex` is the other half:
+`GET /builds/{name}/vex` is the other half, and takes the same `?workload=`
+the evidence read does — the statements and the findings it joins them to are
+one image's:
 
 ```json
 {

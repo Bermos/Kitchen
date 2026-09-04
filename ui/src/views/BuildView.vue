@@ -7,6 +7,7 @@ import { duration, shortSHA, timeAgo } from "../lib/format";
 import { callerFor } from "../lib/me";
 import { may } from "../lib/policy";
 import { useAsync, usePoll } from "../lib/useAsync";
+import ArtifactEvidenceCell from "../components/ArtifactEvidenceCell.vue";
 import ConditionsTable from "../components/ConditionsTable.vue";
 import LogViewer from "../components/LogViewer.vue";
 import OperatorOnly from "../components/OperatorOnly.vue";
@@ -66,19 +67,27 @@ async function cancel() {
 // Nothing here is stored on the Build. The attestations live in the registry
 // against the artifact's digest and are readable with cosign — this panel is a
 // convenience over that, not the record itself.
+//
+// A commit produces one image per workload that declares a build of its own,
+// and each carries its own evidence against its own digest — so what is read
+// back is one image's, and `evidenceOf` says whose. The empty string is the
+// project's own image.
 const evidence = ref<EvidenceSet | null>(null);
+const evidenceOf = ref("");
 const evidenceError = ref("");
-const loadingEvidence = ref(false);
+const loadingEvidence = ref("");
 
-async function loadEvidence() {
-  loadingEvidence.value = true;
+async function loadEvidence(workload = "") {
+  loadingEvidence.value = workload || "web";
   evidenceError.value = "";
+  evidence.value = null;
+  evidenceOf.value = workload;
   try {
-    evidence.value = await api.attestations(name.value);
+    evidence.value = await api.attestations(name.value, workload);
   } catch (cause) {
     evidenceError.value = cause instanceof Error ? cause.message : String(cause);
   } finally {
-    loadingEvidence.value = false;
+    loadingEvidence.value = "";
   }
 }
 
@@ -86,7 +95,35 @@ async function loadEvidence() {
 // about something else now.
 watch(name, () => {
   evidence.value = null;
+  evidenceOf.value = "";
   evidenceError.value = "";
+});
+
+/** Which images of the unit carry no signed evidence. A release deploys every
+ *  one of them, so a unit is attested only when all of them are — and one
+ *  attested artifact standing in for five is the answer this replaces. */
+const unattestedImages = computed(() => {
+  const current = build.value;
+  if (!current?.artifact?.digest) return [];
+  const missing = current.artifact.attested ? [] : ["web"];
+  for (const workload of current.workloads ?? []) {
+    if (workload.phase === "Failed") continue;
+    if (!workload.artifact?.attested) missing.push(workload.name);
+  }
+  return missing;
+});
+
+/** Every quality gate run of this commit, with the image it ran over. A gate
+ *  is a claim about an image, so a unit of three images has three runs of one
+ *  gate and they are not interchangeable. */
+const gateRuns = computed(() => {
+  const current = build.value;
+  if (!current) return [];
+  const runs = (current.gates ?? []).map((ran) => ({ workload: "web", ran }));
+  for (const workload of current.workloads ?? []) {
+    for (const ran of workload.gates ?? []) runs.push({ workload: workload.name, ran });
+  }
+  return runs;
 });
 
 // What the layer cache did, in the words the duration needs next to it. A
@@ -293,7 +330,11 @@ const logRunLabels = computed<Record<string, string>>(() => {
           </p>
           <p class="text-xs text-muted mt-0.5">
             They ship as one thing: one release, deployed and rolled back together. The build is over when all of
-            them are.
+            them are, and the release is attested only when every one of them is.
+          </p>
+          <p v-if="unattestedImages.length" class="text-xs text-warning mt-1">
+            No signed evidence describes {{ unattestedImages.join(", ") }}. The images are real and what runs from
+            them is honest about what it is; what they cannot do is satisfy a policy that requires evidence.
           </p>
         </div>
         <div class="overflow-x-auto">
@@ -303,7 +344,8 @@ const logRunLabels = computed<Record<string, string>>(() => {
                 <th class="py-1 pr-3 font-normal">Workload</th>
                 <th class="py-1 pr-3 font-normal">Phase</th>
                 <th class="py-1 pr-3 font-normal">Stage</th>
-                <th class="py-1 font-normal">Image</th>
+                <th class="py-1 pr-3 font-normal">Image</th>
+                <th class="py-1 font-normal">Evidence</th>
               </tr>
             </thead>
             <tbody class="divide-y divide-default">
@@ -315,14 +357,34 @@ const logRunLabels = computed<Record<string, string>>(() => {
                      case the stage exists for, so which stage each one got is
                      part of what this commit produced. -->
                 <td class="py-1 pr-3 font-mono text-toned">{{ build.dockerfileTarget || "last" }}</td>
-                <td class="py-1 font-mono text-toned break-all">{{ build.image || "not pushed yet" }}</td>
+                <td class="py-1 pr-3 font-mono text-toned break-all">{{ build.image || "not pushed yet" }}</td>
+                <!-- Every image of the unit carries its own evidence against
+                     its own digest, so this column is per row and not a fact
+                     about the commit. A release is attested only when all of
+                     them are. -->
+                <td class="py-1"><ArtifactEvidenceCell :artifact="build.artifact" /></td>
               </tr>
               <tr v-for="workload in build.workloads" :key="workload.name">
                 <td class="py-1 pr-3 font-mono text-highlighted">{{ workload.name }}</td>
                 <td class="py-1 pr-3"><PhaseBadge :phase="workload.phase" /></td>
                 <td class="py-1 pr-3 font-mono text-toned">{{ workload.dockerfileTarget || "last" }}</td>
-                <td class="py-1 font-mono text-toned break-all">
+                <td class="py-1 pr-3 font-mono text-toned break-all">
                   {{ workload.image || workload.message || "not pushed yet" }}
+                </td>
+                <td class="py-1">
+                  <div class="flex items-center gap-2 flex-wrap">
+                    <ArtifactEvidenceCell :artifact="workload.artifact" />
+                    <UButton
+                      v-if="workload.artifact?.digest"
+                      size="xs"
+                      color="neutral"
+                      variant="ghost"
+                      :loading="loadingEvidence === workload.name"
+                      @click="loadEvidence(workload.name)"
+                    >
+                      Read
+                    </UButton>
+                  </div>
                 </td>
               </tr>
             </tbody>
@@ -456,8 +518,14 @@ const logRunLabels = computed<Record<string, string>>(() => {
               {{ build.artifact.message }}
             </p>
           </div>
-          <UButton size="xs" color="neutral" variant="subtle" :loading="loadingEvidence" @click="loadEvidence">
-            {{ evidence ? "Re-read the evidence" : "Read the evidence" }}
+          <UButton
+            size="xs"
+            color="neutral"
+            variant="subtle"
+            :loading="loadingEvidence === 'web'"
+            @click="loadEvidence()"
+          >
+            {{ evidence && evidenceOf === "" ? "Re-read the evidence" : "Read the evidence" }}
           </UButton>
         </div>
 
@@ -470,6 +538,10 @@ const logRunLabels = computed<Record<string, string>>(() => {
         />
 
         <template v-else-if="evidence">
+          <p class="text-xs text-muted">
+            Attached to <span class="font-mono">{{ evidenceOf || "web" }}</span
+            >'s own digest — <span class="font-mono break-all">{{ evidence.subject }}</span>
+          </p>
           <p v-if="!evidence.attestations.length" class="text-xs text-muted">
             Nothing is attached to this digest. The artifact is real and what is deployed from it is honest about what
             it is running — what it cannot do is satisfy a policy that requires evidence.
@@ -557,28 +629,41 @@ const logRunLabels = computed<Record<string, string>>(() => {
       <!-- What the gates did. Deliberately not what they found, and
            deliberately not whether it was acceptable: a gate records facts and
            the verdict belongs to the environment being deployed to. -->
-      <div v-if="build.gates?.length" class="rounded-md border border-default px-5 py-4 space-y-3">
+      <div v-if="gateRuns.length" class="rounded-md border border-default px-5 py-4 space-y-3">
         <div>
           <p class="text-sm font-medium text-highlighted">Quality gates</p>
           <p class="text-xs text-muted mt-0.5">
-            What ran over this artifact. A gate that found problems still completed — what it found is in its
-            attestation, and whether that is disqualifying is a question about the environment being deployed to.
+            What ran over each image this commit produced. A gate that found problems still completed — what it found
+            is in its attestation, and whether that is disqualifying is a question about the environment being
+            deployed to.
           </p>
         </div>
         <div class="space-y-2">
-          <div v-for="ran in build.gates" :key="ran.name" class="rounded border border-default px-3 py-2">
+          <div
+            v-for="run in gateRuns"
+            :key="`${run.workload}/${run.ran.name}`"
+            class="rounded border border-default px-3 py-2"
+          >
             <p class="text-xs flex items-center gap-2 flex-wrap">
-              <UIcon :name="gateIcon(ran)" class="size-4" :class="gateTone(ran)" />
-              <span class="font-medium text-highlighted">{{ ran.name }}</span>
-              <UBadge :color="gateBadge(ran)" variant="subtle" size="sm">{{ ran.phase?.toLowerCase() }}</UBadge>
-              <span v-if="ran.source === 'external'" class="text-dimmed">
-                reported by {{ ran.reportedBy || "somebody else" }}
+              <UIcon :name="gateIcon(run.ran)" class="size-4" :class="gateTone(run.ran)" />
+              <span class="font-medium text-highlighted">{{ run.ran.name }}</span>
+              <!-- Which image it ran over. A gate is a claim about an image,
+                   so a run that did not say which would be a claim about
+                   whichever image the reader assumed. -->
+              <span v-if="build.workloads?.length" class="font-mono text-dimmed">{{ run.workload }}</span>
+              <UBadge :color="gateBadge(run.ran)" variant="subtle" size="sm">
+                {{ run.ran.phase?.toLowerCase() }}
+              </UBadge>
+              <span v-if="run.ran.source === 'external'" class="text-dimmed">
+                reported by {{ run.ran.reportedBy || "somebody else" }}
               </span>
-              <span v-if="ran.attested" class="text-success">signed</span>
-              <span v-else-if="ran.phase === 'Completed'" class="text-warning">not signed</span>
+              <span v-if="run.ran.attested" class="text-success">signed</span>
+              <span v-else-if="run.ran.phase === 'Completed'" class="text-warning">not signed</span>
             </p>
-            <p v-if="ran.message" class="text-[11px] text-warning mt-1">{{ ran.message }}</p>
-            <p v-else-if="ran.finishedAt" class="text-[11px] text-dimmed mt-1">{{ timeAgo(ran.finishedAt) }}</p>
+            <p v-if="run.ran.message" class="text-[11px] text-warning mt-1">{{ run.ran.message }}</p>
+            <p v-else-if="run.ran.finishedAt" class="text-[11px] text-dimmed mt-1">
+              {{ timeAgo(run.ran.finishedAt) }}
+            </p>
           </div>
         </div>
       </div>

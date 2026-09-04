@@ -68,6 +68,13 @@ type gateSubmission struct {
 	// not have to ask twice.
 	Gate string `json:"gate"`
 
+	// Workload is which image of the unit the gate ran over, absent for the
+	// project's own — which is the only image a single-workload project has
+	// and what every submission before #300 meant. A result submitted about
+	// one image of a unit says nothing about the others, so it is recorded
+	// against the one it names and nothing else.
+	Workload string `json:"workload,omitempty"`
+
 	// Version is the gate's, which is what makes a finding reproducible. A
 	// scanner whose vulnerability database moves hourly is a different gate
 	// every hour under the same version string, and recording what was
@@ -109,18 +116,20 @@ func (s *Server) submitGate(w http.ResponseWriter, req *http.Request) {
 		s.writeError(w, err)
 		return
 	}
-	artifact := build.Status.Artifact
-	if artifact == nil || artifact.Digest == "" || artifact.Repository == "" {
-		writeJSON(w, http.StatusConflict, errorBody{Error: "this build produced no artifact digest, " +
-			"so there is nothing a gate result could be about"})
-		return
-	}
-
 	submission := gateSubmission{}
 	if err := decodeFindings(req, &submission); err != nil {
 		writeJSON(w, http.StatusBadRequest, errorBody{Error: err.Error()})
 		return
 	}
+	// Which image of the unit the result is about. It is read out of the body
+	// rather than the path because it is part of what is being asserted: the
+	// same gate, the same commit and a different image is a different claim.
+	subjectArtifact, refusal := requestedArtifact(build, submission.Workload, "a gate result could be about")
+	if refusal != nil {
+		writeJSON(w, refusal.status, errorBody{Error: refusal.message})
+		return
+	}
+	artifact := subjectArtifact.Artifact
 	if submission.Gate == "" {
 		writeJSON(w, http.StatusBadRequest, errorBody{
 			Error: "a gate result has to say which gate produced it"})
@@ -177,7 +186,7 @@ func (s *Server) submitGate(w http.ResponseWriter, req *http.Request) {
 	}
 
 	now := metav1.Now()
-	recordSubmittedGate(build, submission, reporter, manifest, now)
+	recordSubmittedGate(build, subjectArtifact, submission, reporter, manifest, now)
 	if err := s.Client.Status().Update(ctx, build); err != nil {
 		// The evidence is attached and is the thing that matters; the Build's
 		// summary of it is not. Saying so beats answering an error for a
@@ -185,13 +194,17 @@ func (s *Server) submitGate(w http.ResponseWriter, req *http.Request) {
 		s.log().Error(err, "recording a submitted gate result on the build failed", "build", build.Name)
 	}
 
-	writeJSON(w, http.StatusCreated, map[string]any{
+	accepted := map[string]any{
 		"gate":          submission.Gate,
 		"predicateType": attestation.PredicateQualityGate,
 		"manifest":      manifest,
 		"reportedBy":    reporter,
 		"subject":       subject,
-	})
+	}
+	if subjectArtifact.Workload != "" {
+		accepted["workload"] = subjectArtifact.Workload
+	}
+	writeJSON(w, http.StatusCreated, accepted)
 }
 
 // submittedGateRecord is the predicate. It is the same shape a gate the
@@ -222,6 +235,7 @@ func submittedGateRecord(submission gateSubmission, reporter string) map[string]
 // platform ran itself.
 func recordSubmittedGate(
 	build *kitchenv1alpha1.Build,
+	subject kitchenv1alpha1.BuildArtifact,
 	submission gateSubmission,
 	reporter, manifest string,
 	now metav1.Time,
@@ -239,17 +253,20 @@ func recordSubmittedGate(
 		finished := metav1.NewTime(*submission.FinishedAt)
 		status.FinishedAt = &finished
 	}
-	if build.Status.Artifact != nil {
-		build.Status.Artifact.Evidence = append(build.Status.Artifact.Evidence, kitchenv1alpha1.ArtifactEvidence{
-			PredicateType: attestation.PredicateQualityGate,
-			Manifest:      manifest,
-			// The platform signed it; somebody else made the claim. This is
-			// the same distinction `source` draws on the gate itself, and it
-			// is why neither says simply "attested".
-			Source: "platform",
-		})
-	}
-	for index, existing := range build.Status.Gates {
+	subject.Artifact.Evidence = append(subject.Artifact.Evidence, kitchenv1alpha1.ArtifactEvidence{
+		PredicateType: attestation.PredicateQualityGate,
+		Manifest:      manifest,
+		// The platform signed it; somebody else made the claim. This is
+		// the same distinction `source` draws on the gate itself, and it
+		// is why neither says simply "attested".
+		Source: "platform",
+	})
+	// The row goes beside the platform's own runs over the *same* image: the
+	// Build's own list for the web process, the workload's row otherwise. A
+	// result about the API submitted into the worker's row would be the
+	// self-marked homework this endpoint's attribution exists to prevent.
+	rows := build.GatesFor(subject.Workload)
+	for index, existing := range *rows {
 		if existing.Name != status.Name {
 			continue
 		}
@@ -260,10 +277,10 @@ func recordSubmittedGate(
 		if existing.Source == gateSourcePlatform && existing.Phase == kitchenv1alpha1.GateCompleted {
 			return
 		}
-		build.Status.Gates[index] = status
+		(*rows)[index] = status
 		return
 	}
-	build.Status.Gates = append(build.Status.Gates, status)
+	*rows = append(*rows, status)
 }
 
 // decodeFindings reads a gate submission, under this endpoint's own limit

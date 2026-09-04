@@ -793,6 +793,83 @@ func packChangeLog(
 	return log
 }
 
+// packOneArtifact fills one row: what is attached to this image, the gates
+// that ran over it and the exploitability assertions filed about it.
+//
+// Gates and VEX are the image's own, never the unit's. A gate result is a
+// claim about an image and a VEX statement suppresses a finding on one, so a
+// row that repeated the web process's gates under the worker's digest would
+// be the audit pack asserting a scan that never ran.
+func packOneArtifact(
+	row *auditPackArtifact,
+	subject kitchenv1alpha1.BuildArtifact,
+	build *kitchenv1alpha1.Build,
+) {
+	artifact := subject.Artifact
+	row.Repository = artifact.Repository
+	row.Digest = artifact.Digest
+	row.KeyID = artifact.KeyID
+	row.Message = artifact.Message
+	if at := artifact.AttestedAt; at != nil {
+		attested := at.Time.UTC()
+		row.AttestedAt = &attested
+	}
+	for _, evidence := range artifact.Evidence {
+		row.Evidence = append(row.Evidence, auditPackEvidence{
+			PredicateType: evidence.PredicateType,
+			Manifest:      evidence.Manifest,
+			Source:        evidence.Source,
+		})
+	}
+	sort.Slice(row.Evidence, func(i, j int) bool {
+		if row.Evidence[i].PredicateType != row.Evidence[j].PredicateType {
+			return row.Evidence[i].PredicateType < row.Evidence[j].PredicateType
+		}
+		return row.Evidence[i].Manifest < row.Evidence[j].Manifest
+	})
+	for _, gate := range *build.GatesFor(subject.Workload) {
+		gateRow := auditPackGate{
+			Name:          gate.Name,
+			Phase:         string(gate.Phase),
+			Source:        gate.Source,
+			ReportedBy:    gate.ReportedBy,
+			PredicateType: gate.PredicateType,
+			Message:       gate.Message,
+		}
+		if at := gate.Attested; at != nil {
+			attested := at.Time.UTC()
+			gateRow.Attested = &attested
+		}
+		if at := gate.FinishedAt; at != nil {
+			finished := at.Time.UTC()
+			gateRow.FinishedAt = &finished
+		}
+		row.Gates = append(row.Gates, gateRow)
+	}
+	sort.Slice(row.Gates, func(i, j int) bool { return row.Gates[i].Name < row.Gates[j].Name })
+	for _, statement := range build.Status.VEX {
+		if statement.Workload != subject.Workload {
+			continue
+		}
+		vexRow := auditPackVEX{
+			Author:      statement.Author,
+			SubmittedBy: statement.SubmittedBy,
+			Statements:  statement.Statements,
+			Digest:      statement.Manifest,
+		}
+		if at := statement.IngestedAt; at != nil {
+			ingested := at.Time.UTC()
+			vexRow.SubmittedAt = &ingested
+		}
+		row.VEX = append(row.VEX, vexRow)
+	}
+	sort.Slice(row.VEX, func(i, j int) bool { return row.VEX[i].Digest < row.VEX[j].Digest })
+	if row.Repository != "" {
+		row.Fetch = fmt.Sprintf("cosign verify-attestation --key public.pem %s@%s",
+			row.Repository, row.Digest)
+	}
+}
+
 // packReviewProvenance is §8 for one build, and the sentence that stands in
 // for it when there is nothing.
 func packReviewProvenance(build *kitchenv1alpha1.Build) (*auditPackReviewProvenance, string) {
@@ -1014,73 +1091,33 @@ func packAttestations(
 			artifacts = append(artifacts, view)
 			continue
 		}
-		artifact := build.Status.Artifact
-		if artifact == nil || artifact.Digest == "" {
+		// One row per image the release deploys, the project's own first. A
+		// unit ships one image per workload that declares a build and each
+		// carries its own evidence against its own digest (#300), so a single
+		// row per release would be an index of one image presented as the
+		// index of what was deployed.
+		unit := build.Artifacts()
+		if len(unit) == 0 || unit[0].Artifact.Digest == "" {
 			view.Message = "this build produced no artifact digest, so there is nothing evidence " +
 				"could have been attached to"
 			artifacts = append(artifacts, view)
 			continue
 		}
-		view.Repository = artifact.Repository
-		view.Digest = artifact.Digest
-		view.KeyID = artifact.KeyID
-		view.Message = artifact.Message
-		if at := artifact.AttestedAt; at != nil {
-			attested := at.Time.UTC()
-			view.AttestedAt = &attested
+		for _, subject := range unit {
+			row := view
+			row.Evidence = []auditPackEvidence{}
+			if subject.Workload != "" {
+				row.Workload = subject.Workload
+				row.Image = build.ImageOf(subject.Workload)
+				// The newest scan the platform recorded is the sweep's, and
+				// the sweep scans the release's own image. Claiming it for a
+				// workload's would be attributing findings to an image
+				// nothing scanned.
+				row.NewestScan = nil
+			}
+			packOneArtifact(&row, subject, build)
+			artifacts = append(artifacts, row)
 		}
-		for _, evidence := range artifact.Evidence {
-			view.Evidence = append(view.Evidence, auditPackEvidence{
-				PredicateType: evidence.PredicateType,
-				Manifest:      evidence.Manifest,
-				Source:        evidence.Source,
-			})
-		}
-		sort.Slice(view.Evidence, func(i, j int) bool {
-			if view.Evidence[i].PredicateType != view.Evidence[j].PredicateType {
-				return view.Evidence[i].PredicateType < view.Evidence[j].PredicateType
-			}
-			return view.Evidence[i].Manifest < view.Evidence[j].Manifest
-		})
-		for _, gate := range build.Status.Gates {
-			row := auditPackGate{
-				Name:          gate.Name,
-				Phase:         string(gate.Phase),
-				Source:        gate.Source,
-				ReportedBy:    gate.ReportedBy,
-				PredicateType: gate.PredicateType,
-				Message:       gate.Message,
-			}
-			if at := gate.Attested; at != nil {
-				attested := at.Time.UTC()
-				row.Attested = &attested
-			}
-			if at := gate.FinishedAt; at != nil {
-				finished := at.Time.UTC()
-				row.FinishedAt = &finished
-			}
-			view.Gates = append(view.Gates, row)
-		}
-		sort.Slice(view.Gates, func(i, j int) bool { return view.Gates[i].Name < view.Gates[j].Name })
-		for _, statement := range build.Status.VEX {
-			row := auditPackVEX{
-				Author:      statement.Author,
-				SubmittedBy: statement.SubmittedBy,
-				Statements:  statement.Statements,
-				Digest:      statement.Manifest,
-			}
-			if at := statement.IngestedAt; at != nil {
-				ingested := at.Time.UTC()
-				row.SubmittedAt = &ingested
-			}
-			view.VEX = append(view.VEX, row)
-		}
-		sort.Slice(view.VEX, func(i, j int) bool { return view.VEX[i].Digest < view.VEX[j].Digest })
-		if view.Repository != "" {
-			view.Fetch = fmt.Sprintf("cosign verify-attestation --key public.pem %s@%s",
-				view.Repository, view.Digest)
-		}
-		artifacts = append(artifacts, view)
 	}
 	return artifacts
 }

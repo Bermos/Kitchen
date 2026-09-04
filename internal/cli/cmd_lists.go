@@ -165,6 +165,8 @@ on --json and on "kitchen logs --build".`),
 }
 
 func newAttestationsCommand(r *Runtime) *cobra.Command {
+	var workload string
+
 	cmd := &cobra.Command{
 		Use:     "attestations <build>",
 		Aliases: []string{"evidence"},
@@ -187,7 +189,13 @@ apart.
 "verified" means a signature was accepted by a key this platform holds. A set
 read where the platform holds no key reports itself as a listing rather than a
 verification: a reader that could not tell the two apart would eventually treat
-one as the other.`),
+one as the other.
+
+A commit that builds more than one image produces one artifact per workload,
+and each carries its own evidence against its own digest. --workload names
+which to read; without it you get the project's own image, which is the only
+one a single-workload project has. "kitchen builds" and the build itself list
+the workloads a commit produced.`),
 		Args: cobra.ExactArgs(1),
 		RunE: run(func(cmd *cobra.Command, args []string) error {
 			client, err := r.client()
@@ -197,7 +205,7 @@ one as the other.`),
 			ctx, cancel := r.context(commandContext(cmd))
 			defer cancel()
 
-			set, err := client.buildAttestations(ctx, args[0])
+			set, err := client.buildAttestations(ctx, args[0], workload)
 			if err != nil {
 				return err
 			}
@@ -223,6 +231,8 @@ one as the other.`),
 			})
 		}),
 	}
+	cmd.Flags().StringVar(&workload, "workload", "",
+		"which image of the unit to read, e.g. api — the project's own image by default")
 
 	return describe(cmd, meta{
 		Calls:  []string{"GET /api/v1/builds/{name}/attestations"},
@@ -230,6 +240,8 @@ one as the other.`),
 		Needs:  needs{Auth: true},
 		Examples: []example{
 			{"What is attached to a build's artifact", "kitchen attestations shop-bld-7 --json"},
+			{"What is attached to one workload's image",
+				"kitchen attestations shop-bld-7 --workload api --json"},
 		},
 	})
 }

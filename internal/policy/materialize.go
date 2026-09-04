@@ -145,15 +145,19 @@ func ClaimFacts(env *kitchenv1alpha1.Environment, claims []kitchenv1alpha1.Resou
 	return out
 }
 
-// EvidenceSources indexes whose claim each attached predicate type was,
-// from the build's own evidence index — the registry knows what is attached,
-// the index knows who attached it.
-func EvidenceSources(build *kitchenv1alpha1.Build) map[string]string {
+// EvidenceSources indexes whose claim each attached predicate type was, for
+// one image of the unit — the registry knows what is attached, the index
+// knows who attached it.
+//
+// It is per artifact because the index is: a unit's workloads are each
+// attested in their own right, and folding five indexes into one map would
+// attribute the worker's SBOM to whoever attached the API's.
+func EvidenceSources(artifact *kitchenv1alpha1.ArtifactStatus) map[string]string {
 	sources := map[string]string{}
-	if build == nil || build.Status.Artifact == nil {
+	if artifact == nil {
 		return sources
 	}
-	for _, entry := range build.Status.Artifact.Evidence {
+	for _, entry := range artifact.Evidence {
 		sources[entry.PredicateType] = entry.Source
 	}
 	return sources
@@ -163,16 +167,23 @@ func EvidenceSources(build *kitchenv1alpha1.Build) map[string]string {
 // cannot be asked: the build's index alone — predicate types and sources,
 // no predicates, nothing verified. An evaluation over it is honest about
 // what it saw; a rule that wants the predicate's content will fire.
+//
+// It covers every image of the unit, each entry naming the workload it is
+// about, because a degraded reading that quietly narrowed to the project's
+// own image would be a smaller answer wearing the same shape as the full one.
 func IndexedEvidence(build *kitchenv1alpha1.Build) []Evidence {
 	out := []Evidence{}
-	if build == nil || build.Status.Artifact == nil {
+	if build == nil {
 		return out
 	}
-	for _, entry := range build.Status.Artifact.Evidence {
-		out = append(out, Evidence{
-			PredicateType: entry.PredicateType,
-			Source:        entry.Source,
-		})
+	for _, artifact := range build.Artifacts() {
+		for _, entry := range artifact.Artifact.Evidence {
+			out = append(out, Evidence{
+				PredicateType: entry.PredicateType,
+				Source:        entry.Source,
+				Workload:      artifact.Workload,
+			})
+		}
 	}
 	return out
 }

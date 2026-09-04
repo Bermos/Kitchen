@@ -43,6 +43,54 @@ automatic ones):
 `rolledBack` when the environment was moved back to an older release, and
 `superseded` when another release replaced it any other way.
 
+## Is this release attested?
+
+`GET /releases/{name}` carries the unit's own compliance answer on
+`attestation`, and it is **per artifact**:
+
+```json
+{
+  "name": "shop-rel-42",
+  "image": "registry.apps.example.com/shop@sha256:9d3f…",
+  "workloads": [{"name": "api", "image": "registry.apps.example.com/shop-api@sha256:be21…"}],
+  "attestation": {
+    "attested": false,
+    "missing": ["api"],
+    "artifacts": [
+      {"workload": "web", "repository": "registry.apps.example.com/shop",
+       "digest": "sha256:9d3f…", "sourceType": "built", "attested": true,
+       "evidence": [{"predicateType": "https://slsa.dev/provenance/v1", "kind": "provenance",
+                     "source": "builder"}]},
+      {"workload": "api", "repository": "registry.apps.example.com/shop-api",
+       "digest": "sha256:be21…", "sourceType": "built", "attested": false,
+       "message": "the builder's attestations could not be read: …"}
+    ]
+  }
+}
+```
+
+A release deploys one image per workload of its unit, so **`attested` is true
+only when every one of them is** — and `missing` names the ones that are not,
+by workload, `web` for the project's own image. A single flag standing in for
+five images is precisely a compliance surface reporting success over what it
+never looked at: a unit of five workloads used to ship with provenance and an
+SBOM for the web process and nothing at all for the other four, with nothing
+saying so.
+
+`sourceType` says where each artifact's evidence came from. It reads `built`
+on everything the platform holds evidence about today and is published rather
+than implied, so that a reader can tell a built artifact from one of another
+kind without knowing which release of Kitchen wrote the field.
+
+`caveat` replaces the answer when the build that produced the release has been
+pruned: there is no evidence index left to read, which is a different fact
+from "not attested" and says so. The evidence itself is still in the registry,
+against the digests above.
+
+The answer is on the single release read and not on a listing, because
+producing it means reading the build the release came from. `kitchen api GET
+/releases/shop-rel-42` reaches it from a terminal.
+
 ## What a move would change
 
 Rollback is the one destructive write this API offers, and it is usually made

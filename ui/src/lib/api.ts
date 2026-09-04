@@ -365,6 +365,13 @@ export interface BuildWorkload {
    * absent for the file's last stage. What it was given, not what the project
    * says now. */
   dockerfileTarget?: string;
+  /** What this workload's build produced, by content, and whether the platform
+   * attested it. Every image the unit ships carries its own evidence against
+   * its own digest, so this is the workload's answer and not the project's. */
+  artifact?: Artifact;
+  /** What each quality gate did over this workload's artifact. A gate is a
+   * claim about an image, so a unit runs each gate once per image. */
+  gates?: QualityGate[];
   message?: string;
 }
 
@@ -429,8 +436,16 @@ export interface BuildCache {
  *  The evidence itself is not here — it lives in the registry against the
  *  digest, and `attestations()` is what reads it back. */
 export interface Artifact {
+  /** Which image of the unit this is — `web` for the project's own. Set only
+   *  where an artifact is listed among the unit's others; the build's own
+   *  `artifact` and each `workloads[]` row already say which image they are. */
+  workload?: string;
   repository?: string;
   digest?: string;
+  /** Where this artifact's evidence came from. `built` on everything the
+   *  platform holds evidence about today, published rather than implied so a
+   *  reader need not infer it from the absence of anything else. */
+  sourceType?: "built";
   attested: boolean;
   attestedAt?: string;
   keyID?: string;
@@ -1024,6 +1039,26 @@ export interface Release {
   workloads?: { name: string; image: string }[];
   environments?: string[];
   createdAt: string;
+  /** Whether every image this release deploys carries signed evidence, and
+   * which do not when some do. Present on the single release read only, since
+   * answering it means reading the build that produced the release. */
+  attestation?: ReleaseAttestation;
+}
+
+/** The unit's own compliance answer: a release is attested when every image
+ *  it deploys is, and names the ones that are not otherwise. A single flag
+ *  standing in for several images is the shape this replaces. */
+export interface ReleaseAttestation {
+  attested: boolean;
+  /** One entry per image, the web process's first, each with its own digest
+   *  and its own evidence index. */
+  artifacts: Artifact[];
+  /** Every image with no signed evidence, by workload — `web` for the
+   *  project's own. Empty exactly when `attested` is true. */
+  missing?: string[];
+  /** Why the answer is weaker than it looks: the build that produced this
+   *  release has been pruned, so there is no evidence index left to read. */
+  caveat?: string;
 }
 
 /** How one entry of a release's configuration snapshot compares with
@@ -3723,7 +3758,14 @@ export const api = {
   // the last decision would mint an artefact missing it.
   reviewAccess: (name: string, body: { decisions?: AccessDecision[]; close?: boolean }) =>
     request<AccessReview>("PATCH", `/access/reviews/${encodeURIComponent(name)}`, body),
-  attestations: (build: string) => request<EvidenceSet>("GET", `/builds/${encodeURIComponent(build)}/attestations`),
+  /** What is attached to one image of a unit. `workload` names which — absent
+   *  is the project's own image, which is the only one a single-workload
+   *  project has and what this read has always answered. */
+  attestations: (build: string, workload?: string) =>
+    request<EvidenceSet>(
+      "GET",
+      `/builds/${encodeURIComponent(build)}/attestations` + (workload ? `?workload=${encodeURIComponent(workload)}` : ""),
+    ),
   // Exploitability assertions, joined to the findings they modify. The read is
   // what keeps a suppression from being silent: it is the one place a person
   // can see that a critical finding is not blocking, who said it does not

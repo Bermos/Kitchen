@@ -131,8 +131,11 @@ func (r *BuildReconciler) reconcileGates(
 		// one that does not exist would be recording a fact about nothing.
 		return ctrl.Result{}, nil
 	}
-	artifact := build.Status.Artifact
-	if artifact == nil || artifact.Digest == "" || artifact.Repository == "" {
+	// Every image the unit ships, not the project's own alone. A gate is a
+	// claim about an image, and a Release deploys several of them (#300) —
+	// gating one and calling the unit scanned is the shape #277 is about.
+	artifacts := gateableArtifacts(build)
+	if len(artifacts) == 0 {
 		return ctrl.Result{}, nil
 	}
 
@@ -159,20 +162,22 @@ func (r *BuildReconciler) reconcileGates(
 	}
 
 	appNS := appNamespace(project.Name)
-	artifactRef := attestation.ArtifactRef(artifact.Repository, artifact.Digest)
 
 	changed, waiting := false, false
-	for _, gate := range gates {
-		status := gateStatus(build, gate.Name)
-		if status.Phase == kitchenv1alpha1.GateCompleted || status.Phase == kitchenv1alpha1.GateFailed {
-			continue
+	for _, artifact := range artifacts {
+		rows := build.GatesFor(artifact.Workload)
+		for _, gate := range gates {
+			status := gateStatus(*rows, gate.Name)
+			if status.Phase == kitchenv1alpha1.GateCompleted || status.Phase == kitchenv1alpha1.GateFailed {
+				continue
+			}
+			moved, running, err := r.runGate(ctx, build, project, gate, appNS, artifact, rows)
+			if err != nil {
+				return ctrl.Result{}, err
+			}
+			changed = changed || moved
+			waiting = waiting || running
 		}
-		moved, running, err := r.runGate(ctx, build, project, gate, appNS, artifactRef)
-		if err != nil {
-			return ctrl.Result{}, err
-		}
-		changed = changed || moved
-		waiting = waiting || running
 	}
 
 	if changed {
@@ -196,10 +201,13 @@ func (r *BuildReconciler) runGate(
 	build *kitchenv1alpha1.Build,
 	project *kitchenv1alpha1.Project,
 	gate kitchenv1alpha1.QualityGateSpec,
-	appNS, artifactRef string,
+	appNS string,
+	artifact kitchenv1alpha1.BuildArtifact,
+	rows *[]kitchenv1alpha1.QualityGateStatus,
 ) (changed, running bool, err error) {
 	log := logf.FromContext(ctx)
-	name := gateJobName(build.Name, gate.Name)
+	name := gateJobNameFor(build.Name, gate.Name, artifact.Workload)
+	artifactRef := attestation.ArtifactRef(artifact.Artifact.Repository, artifact.Artifact.Digest)
 
 	job := &batchv1.Job{}
 	switch err := r.Get(ctx, types.NamespacedName{Namespace: appNS, Name: name}, job); {
@@ -211,8 +219,9 @@ func (r *BuildReconciler) runGate(
 			}
 			return false, false, err
 		}
-		log.Info("quality gate started", "build", build.Name, "gate", gate.Name)
-		return setGate(build, kitchenv1alpha1.QualityGateStatus{
+		log.Info("quality gate started",
+			"build", build.Name, "gate", gate.Name, "artifact", artifact.Name())
+		return setGate(rows, kitchenv1alpha1.QualityGateStatus{
 			Name:   gate.Name,
 			Phase:  kitchenv1alpha1.GateRunning,
 			Source: gateSourcePlatform,
@@ -224,20 +233,20 @@ func (r *BuildReconciler) runGate(
 	complete, failed, message := jobOutcome(job)
 	switch {
 	case complete:
-		return r.publishGate(ctx, build, gate, appNS, name, artifactRef)
+		return r.publishGate(ctx, build, gate, appNS, name, artifact, rows)
 	case failed:
 		// The gate did not run. That is not the same as a gate that ran and
 		// found problems, and the difference is the reason this branch exists
 		// rather than recording an empty result.
-		return setGate(build, kitchenv1alpha1.QualityGateStatus{
+		return setGate(rows, kitchenv1alpha1.QualityGateStatus{
 			Name:       gate.Name,
 			Phase:      kitchenv1alpha1.GateFailed,
 			Source:     gateSourcePlatform,
 			FinishedAt: ptr.To(metav1.Now()),
-			Message:    "the gate did not run: " + message,
+			Message:    onArtifact(artifact, "the gate did not run: "+message),
 		}), false, nil
 	default:
-		return setGate(build, kitchenv1alpha1.QualityGateStatus{
+		return setGate(rows, kitchenv1alpha1.QualityGateStatus{
 			Name:   gate.Name,
 			Phase:  kitchenv1alpha1.GateRunning,
 			Source: gateSourcePlatform,
@@ -250,25 +259,28 @@ func (r *BuildReconciler) publishGate(
 	ctx context.Context,
 	build *kitchenv1alpha1.Build,
 	gate kitchenv1alpha1.QualityGateSpec,
-	appNS, jobName, artifactRef string,
+	appNS, jobName string,
+	artifact kitchenv1alpha1.BuildArtifact,
+	rows *[]kitchenv1alpha1.QualityGateStatus,
 ) (changed, running bool, err error) {
 	report, found := r.gateReport(ctx, appNS, jobName)
 	switch {
 	case !found:
-		return setGate(build, kitchenv1alpha1.QualityGateStatus{
+		return setGate(rows, kitchenv1alpha1.QualityGateStatus{
 			Name:       gate.Name,
 			Phase:      kitchenv1alpha1.GateFailed,
 			Source:     gateSourcePlatform,
 			FinishedAt: ptr.To(metav1.Now()),
-			Message:    "the gate finished but left no report of where its findings went",
+			Message: onArtifact(artifact,
+				"the gate finished but left no report of where its findings went"),
 		}), false, nil
 	case report.Error != "":
-		return setGate(build, kitchenv1alpha1.QualityGateStatus{
+		return setGate(rows, kitchenv1alpha1.QualityGateStatus{
 			Name:       gate.Name,
 			Phase:      kitchenv1alpha1.GateFailed,
 			Source:     gateSourcePlatform,
 			FinishedAt: ptr.To(metav1.Now()),
-			Message:    "the gate's findings could not be stored: " + report.Error,
+			Message:    onArtifact(artifact, "the gate's findings could not be stored: "+report.Error),
 		}), false, nil
 	}
 
@@ -284,16 +296,16 @@ func (r *BuildReconciler) publishGate(
 		FinishedAt:    &finished,
 	}
 
-	if err := r.attestGate(ctx, build, gate, artifactRef, report, &status); err != nil {
+	if err := r.attestGate(ctx, build, gate, artifact, report, &status); err != nil {
 		// The gate ran, so it completed. What is missing is the signature,
 		// which is a different failure and is recorded as one: an unattested
 		// result cannot satisfy a policy, and saying "the gate failed" would
 		// send somebody to look at the scanner.
-		status.Message = err.Error()
+		status.Message = onArtifact(artifact, err.Error())
 		logf.FromContext(ctx).Info("a quality gate's findings were not attested",
-			"build", build.Name, "gate", gate.Name, "cause", err.Error())
+			"build", build.Name, "gate", gate.Name, "artifact", artifact.Name(), "cause", err.Error())
 	}
-	return setGate(build, status), false, nil
+	return setGate(rows, status), false, nil
 }
 
 // attestGate signs one gate's findings and attaches them to the artifact.
@@ -301,10 +313,11 @@ func (r *BuildReconciler) attestGate(
 	ctx context.Context,
 	build *kitchenv1alpha1.Build,
 	gate kitchenv1alpha1.QualityGateSpec,
-	artifactRef string,
+	artifact kitchenv1alpha1.BuildArtifact,
 	report gateReport,
 	status *kitchenv1alpha1.QualityGateStatus,
 ) error {
+	artifactRef := attestation.ArtifactRef(artifact.Artifact.Repository, artifact.Artifact.Digest)
 	kitchen := &kitchenv1alpha1.Kitchen{}
 	if err := r.Get(ctx, types.NamespacedName{Name: KitchenSingletonName}, kitchen); err != nil {
 		return fmt.Errorf("the platform configuration could not be read: %w", err)
@@ -348,13 +361,11 @@ func (r *BuildReconciler) attestGate(
 
 	attested := metav1.Now()
 	status.Attested = &attested
-	if build.Status.Artifact != nil {
-		build.Status.Artifact.Evidence = append(build.Status.Artifact.Evidence, kitchenv1alpha1.ArtifactEvidence{
-			PredicateType: attestation.PredicateQualityGate,
-			Manifest:      manifest,
-			Source:        sourcePlatform,
-		})
-	}
+	artifact.Artifact.Evidence = append(artifact.Artifact.Evidence, kitchenv1alpha1.ArtifactEvidence{
+		PredicateType: attestation.PredicateQualityGate,
+		Manifest:      manifest,
+		Source:        sourcePlatform,
+	})
 	return nil
 }
 
@@ -549,9 +560,11 @@ func enabledGates(kitchen *kitchenv1alpha1.Kitchen) []kitchenv1alpha1.QualityGat
 	return gates
 }
 
-// gateStatus is what is already recorded for one gate.
-func gateStatus(build *kitchenv1alpha1.Build, name string) kitchenv1alpha1.QualityGateStatus {
-	for _, status := range build.Status.Gates {
+// gateStatus is what is already recorded for one gate over one artifact.
+func gateStatus(
+	rows []kitchenv1alpha1.QualityGateStatus, name string,
+) kitchenv1alpha1.QualityGateStatus {
+	for _, status := range rows {
 		if status.Name == name {
 			return status
 		}
@@ -559,10 +572,41 @@ func gateStatus(build *kitchenv1alpha1.Build, name string) kitchenv1alpha1.Quali
 	return kitchenv1alpha1.QualityGateStatus{Name: name}
 }
 
+// gateableArtifacts is every image of the unit a gate can actually be run
+// over: one that was pushed and whose digest the platform knows.
+//
+// An artifact without both is not a gate that failed — it is an image nothing
+// can be said about, and the Build's own artifact rows are what say so.
+func gateableArtifacts(build *kitchenv1alpha1.Build) []kitchenv1alpha1.BuildArtifact {
+	out := []kitchenv1alpha1.BuildArtifact{}
+	for _, artifact := range build.Artifacts() {
+		if artifact.Artifact.Digest == "" || artifact.Artifact.Repository == "" {
+			continue
+		}
+		out = append(out, artifact)
+	}
+	return out
+}
+
+// onArtifact names the image a gate failed on, and only when there is more
+// than one thing it could mean.
+//
+// A single-workload project's gate messages are what they always were: there
+// is one image, the sentence is about it, and prefixing every message with
+// `web:` would be noise on the great majority of builds. A unit of five
+// workloads is the case where "the gate did not run" is not an answer, and
+// this is what makes it one.
+func onArtifact(artifact kitchenv1alpha1.BuildArtifact, message string) string {
+	if artifact.Workload == "" {
+		return message
+	}
+	return "workload " + artifact.Workload + ": " + message
+}
+
 // setGate records one gate's status, answering whether anything changed — so
 // that a reconcile which learned nothing does not write to the API server.
-func setGate(build *kitchenv1alpha1.Build, status kitchenv1alpha1.QualityGateStatus) bool {
-	for index, existing := range build.Status.Gates {
+func setGate(rows *[]kitchenv1alpha1.QualityGateStatus, status kitchenv1alpha1.QualityGateStatus) bool {
+	for index, existing := range *rows {
 		if existing.Name != status.Name {
 			continue
 		}
@@ -570,10 +614,10 @@ func setGate(build *kitchenv1alpha1.Build, status kitchenv1alpha1.QualityGateSta
 			(existing.Attested != nil) == (status.Attested != nil) {
 			return false
 		}
-		build.Status.Gates[index] = status
+		(*rows)[index] = status
 		return true
 	}
-	build.Status.Gates = append(build.Status.Gates, status)
+	*rows = append(*rows, status)
 	return true
 }
 
@@ -597,4 +641,18 @@ func gateJobName(buildName, gateName string) string {
 		return name
 	}
 	return buildName + "-gate-" + gateName[:room]
+}
+
+// gateJobNameFor names a gate's Job for one image of a unit.
+//
+// The web process's name is exactly what it was — that is the Job every gate
+// this platform has ever run was called, and a rename would restart finished
+// gates on every existing build. A workload's carries the workload, hashed
+// down by the same truncation the build Jobs use, so two workloads whose
+// names share a prefix can never land on one Job.
+func gateJobNameFor(buildName, gateName, workload string) string {
+	if workload == "" {
+		return gateJobName(buildName, gateName)
+	}
+	return fitJobName(buildName + "-gate-" + gateName + "-" + workload)
 }

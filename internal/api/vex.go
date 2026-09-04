@@ -77,6 +77,13 @@ const maxVEXDocument = 4 << 20
 // for byte is a different claim from the one somebody made.
 type vexSubmission struct {
 	Document json.RawMessage `json:"document"`
+
+	// Workload is which image of the unit the assertion is about, absent for
+	// the project's own — the only image a single-workload project has, and
+	// what every submission before #300 meant. A statement suppresses a
+	// finding on *an image*: "this CVE does not apply" said about the API is
+	// not a claim about the worker, which may not even carry the package.
+	Workload string `json:"workload,omitempty"`
 }
 
 // vexStatementView is one statement as the read surface shows it.
@@ -162,12 +169,15 @@ func (s *Server) listVEX(w http.ResponseWriter, req *http.Request) {
 		s.writeError(w, err)
 		return
 	}
-	artifact := build.Status.Artifact
-	if artifact == nil || artifact.Digest == "" || artifact.Repository == "" {
-		writeJSON(w, http.StatusConflict, errorBody{Error: "this build produced no artifact digest, " +
-			"so there is nothing a VEX statement could be about"})
+	// Which image of the unit is being asked about. Absent is the project's
+	// own, which is what this endpoint has always answered and the only
+	// answer a single-workload project has.
+	subject, refusal := requestedArtifact(build, req.URL.Query().Get("workload"), "a VEX statement could be about")
+	if refusal != nil {
+		writeJSON(w, refusal.status, errorBody{Error: refusal.message})
 		return
 	}
+	artifact := subject.Artifact
 
 	set, err := s.artifactEvidence(ctx, build, artifact)
 	if err != nil {
@@ -182,7 +192,7 @@ func (s *Server) listVEX(w http.ResponseWriter, req *http.Request) {
 	body := vexBody{
 		Subject:      attestation.ArtifactRef(artifact.Repository, artifact.Digest),
 		Verification: "verified",
-		Statements:   vexStatements(set, build, now),
+		Statements:   vexStatements(set, build, subject.Workload, now),
 		Findings:     []vexFindingView{},
 	}
 	if !set.Verified {
@@ -202,9 +212,18 @@ func (s *Server) listVEX(w http.ResponseWriter, req *http.Request) {
 // asking why a finding came back needs to see the assertion that ran out. The
 // two are the same reading of the same documents, disagreeing only about a
 // statement neither of them believes.
-func vexStatements(set attestation.EvidenceSet, build *kitchenv1alpha1.Build, at time.Time) []vexStatementView {
+func vexStatements(
+	set attestation.EvidenceSet, build *kitchenv1alpha1.Build, workload string, at time.Time,
+) []vexStatementView {
 	submitters := map[string]string{}
 	for _, ingested := range build.Status.VEX {
+		// The index is the unit's and the evidence set is one image's, so a
+		// document filed about another image of the same unit must not lend
+		// its submitter to this one — the same `@id` filed twice is two
+		// assertions about two artifacts.
+		if ingested.Workload != workload {
+			continue
+		}
 		if ingested.DocumentID != "" {
 			submitters[ingested.DocumentID] = ingested.SubmittedBy
 		}
@@ -331,10 +350,13 @@ func joinFindings(findings []vexFindingView, statements []vexStatementView) []ve
 
 // vexAccepted is the answer to a submission.
 type vexAccepted struct {
-	DocumentID      string   `json:"documentID,omitempty"`
-	PredicateType   string   `json:"predicateType"`
-	Manifest        string   `json:"manifest"`
-	Subject         string   `json:"subject"`
+	DocumentID    string `json:"documentID,omitempty"`
+	PredicateType string `json:"predicateType"`
+	Manifest      string `json:"manifest"`
+	Subject       string `json:"subject"`
+	// Workload is which image of the unit the assertion was filed about,
+	// absent for the project's own.
+	Workload        string   `json:"workload,omitempty"`
 	Author          string   `json:"author"`
 	SubmittedBy     string   `json:"submittedBy"`
 	Statements      int      `json:"statements"`
@@ -350,18 +372,17 @@ func (s *Server) submitVEX(w http.ResponseWriter, req *http.Request) {
 		s.writeError(w, err)
 		return
 	}
-	artifact := build.Status.Artifact
-	if artifact == nil || artifact.Digest == "" || artifact.Repository == "" {
-		writeJSON(w, http.StatusConflict, errorBody{Error: "this build produced no artifact digest, " +
-			"so there is nothing a VEX statement could be about"})
-		return
-	}
-
 	submission := vexSubmission{}
 	if err := decodeVEX(req, &submission); err != nil {
 		writeJSON(w, http.StatusBadRequest, errorBody{Error: err.Error()})
 		return
 	}
+	subject, refusal := requestedArtifact(build, submission.Workload, "a VEX statement could be about")
+	if refusal != nil {
+		writeJSON(w, refusal.status, errorBody{Error: refusal.message})
+		return
+	}
+	artifact := subject.Artifact
 	if len(submission.Document) == 0 {
 		writeJSON(w, http.StatusBadRequest, errorBody{
 			Error: "`document` carries the OpenVEX document itself, as JSON"})
@@ -471,8 +492,8 @@ func (s *Server) submitVEX(w http.ResponseWriter, req *http.Request) {
 		s.writeError(w, err)
 		return
 	}
-	subject := attestation.ArtifactRef(artifact.Repository, artifact.Digest)
-	manifest, err := writer.Attach(ctx, subject, envelope, predicateType)
+	subjectRef := attestation.ArtifactRef(artifact.Repository, artifact.Digest)
+	manifest, err := writer.Attach(ctx, subjectRef, envelope, predicateType)
 	if err != nil {
 		s.log().Error(err, "attaching a VEX document failed", "build", build.Name)
 		writeJSON(w, http.StatusBadGateway, errorBody{
@@ -482,7 +503,7 @@ func (s *Server) submitVEX(w http.ResponseWriter, req *http.Request) {
 	}
 
 	now := metav1.Now()
-	recordIngestedVEX(build, document, vulnerabilities, submitter, manifest, envelopeDigest, now)
+	recordIngestedVEX(build, subject, document, vulnerabilities, submitter, manifest, envelopeDigest, now)
 	if err := s.Client.Status().Update(ctx, build); err != nil {
 		// The evidence is attached and is the thing that matters; the Build's
 		// index of it is not. Saying so beats answering an error for a write
@@ -494,7 +515,8 @@ func (s *Server) submitVEX(w http.ResponseWriter, req *http.Request) {
 		DocumentID:      document.ID,
 		PredicateType:   predicateType,
 		Manifest:        manifest,
-		Subject:         subject,
+		Subject:         subjectRef,
+		Workload:        subject.Workload,
 		Author:          document.Author,
 		SubmittedBy:     submitter,
 		Statements:      len(document.Statements),
@@ -551,6 +573,7 @@ func documentAssertions(document vex.Document) []map[string]string {
 // the register read as two waivers.
 func recordIngestedVEX(
 	build *kitchenv1alpha1.Build,
+	subject kitchenv1alpha1.BuildArtifact,
 	document vex.Document,
 	vulnerabilities []string,
 	submitter, manifest, envelopeDigest string,
@@ -558,6 +581,7 @@ func recordIngestedVEX(
 ) {
 	ingested := kitchenv1alpha1.VEXStatus{
 		DocumentID:      document.ID,
+		Workload:        subject.Workload,
 		Author:          document.Author,
 		SubmittedBy:     submitter,
 		Statements:      int32(len(document.Statements)),
@@ -577,7 +601,10 @@ func recordIngestedVEX(
 	}
 	replaced := false
 	for index, existing := range build.Status.VEX {
-		if existing.DocumentID == ingested.DocumentID {
+		// Document and image together: the same document filed about two
+		// images of one unit is two assertions, and one row for both would
+		// make the register read as a waiver of something it never covered.
+		if existing.DocumentID == ingested.DocumentID && existing.Workload == ingested.Workload {
 			build.Status.VEX[index] = ingested
 			replaced = true
 			break

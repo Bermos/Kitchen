@@ -263,20 +263,37 @@ func (e *PolicyEvaluator) claimFacts(
 	return policy.ClaimFacts(env, list.Items), nil
 }
 
-// materializeEvidence reads what the release's artifact carries, verified
+// materializeEvidence reads what the release's artifacts carry, verified
 // against the platform's key — the registry is the source of truth, and a
 // registry that cannot be asked is a requeue rather than a judgement over a
 // guess. A release whose build or artifact is gone is judged on nothing.
+//
+// **Every image the release deploys, not the project's own alone.** A unit
+// ships one image per workload that declares a build (#271) and each carries
+// its own evidence against its own digest (#300), so an evaluation over the
+// first of them would judge a five-image release on one image's SBOM and one
+// image's exploitability assertions — and would say `allowed` while four of
+// them had never been looked at. Each artifact's set is materialized in its
+// own right, which is also what keeps "the newest vulnerability scan" a
+// question asked within an image rather than across a unit.
 func (e *PolicyEvaluator) materializeEvidence(
 	ctx context.Context,
 	kitchen *kitchenv1alpha1.Kitchen,
 	project *kitchenv1alpha1.Project,
 	build *kitchenv1alpha1.Build,
 ) ([]policy.Evidence, error) {
-	if build == nil || build.Status.Artifact == nil || build.Status.Artifact.Digest == "" {
+	if build == nil {
+		return policy.IndexedEvidence(nil), nil
+	}
+	artifacts := []kitchenv1alpha1.BuildArtifact{}
+	for _, artifact := range build.Artifacts() {
+		if artifact.Artifact.Digest != "" && artifact.Artifact.Repository != "" {
+			artifacts = append(artifacts, artifact)
+		}
+	}
+	if len(artifacts) == 0 {
 		return policy.IndexedEvidence(build), nil
 	}
-	artifact := build.Status.Artifact
 
 	reader, err := e.evidenceReader(ctx, project)
 	if err != nil {
@@ -286,11 +303,17 @@ func (e *PolicyEvaluator) materializeEvidence(
 	if key, err := SigningKeyFor(ctx, e.Client, kitchen); err == nil && key != nil {
 		verifiers = append(verifiers, key)
 	}
-	set, err := reader.Evidence(ctx, artifact.Repository+"@"+artifact.Digest, verifiers...)
-	if err != nil {
-		return nil, fmt.Errorf("the artifact's evidence could not be read from the registry: %w", err)
+	evidence := []policy.Evidence{}
+	for _, artifact := range artifacts {
+		ref := artifact.Artifact.Repository + "@" + artifact.Artifact.Digest
+		set, err := reader.Evidence(ctx, ref, verifiers...)
+		if err != nil {
+			return nil, fmt.Errorf("the artifact's evidence could not be read from the registry: %w", err)
+		}
+		evidence = append(evidence,
+			policy.EvidenceFrom(artifact.Workload, set, policy.EvidenceSources(artifact.Artifact))...)
 	}
-	return policy.EvidenceFrom(set, policy.EvidenceSources(build)), nil
+	return evidence, nil
 }
 
 // evidenceReader resolves the registry the project's artifacts live in — the

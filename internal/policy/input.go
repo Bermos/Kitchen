@@ -153,6 +153,16 @@ type Evidence struct {
 	// for evidence found attached by something else.
 	Source   string `json:"source,omitempty"`
 	Verified bool   `json:"verified"`
+	// Workload is which image of the unit this piece of evidence is about,
+	// empty for the project's own — which for a single-workload project is
+	// every one of them, so the canonical encoding of such an input is
+	// exactly what it was before a unit could be several images (#300).
+	//
+	// A release deploys one image per workload and each carries its own
+	// evidence against its own digest, so a rule that asks whether an SBOM
+	// is attached is asking about an image, not about a release. The field
+	// is what lets a bundle say which.
+	Workload string `json:"workload,omitempty"`
 	// Predicate is the statement's predicate, verbatim.
 	Predicate json.RawMessage `json:"predicate,omitempty"`
 }
@@ -236,7 +246,16 @@ func (in Input) Digest() (string, error) {
 // The registry keeps every scan regardless — history is retained, which is an
 // acceptance criterion of #134. What is collapsed is the evaluation's view of
 // it, not the evidence.
-func EvidenceFrom(set attestation.EvidenceSet, sourceByPredicateType map[string]string) []Evidence {
+// The set is **one artifact's**, and so is the collapsing. A unit ships
+// several images and each is scanned in its own right, so the newest scan is
+// picked within an artifact and never across them — collapsing across the set
+// would drop the worker's findings in favour of the API's simply because the
+// API was scanned more recently, which is the same superseded-reading mistake
+// one level up. Callers with several artifacts call this once per artifact
+// and concatenate, naming each with `workload`.
+func EvidenceFrom(
+	workload string, set attestation.EvidenceSet, sourceByPredicateType map[string]string,
+) []Evidence {
 	newest, scanned := NewestVulnerabilityScan(set.Attestations)
 	out := make([]Evidence, 0, len(set.Attestations))
 	for index, entry := range set.Attestations {
@@ -247,6 +266,7 @@ func EvidenceFrom(set attestation.EvidenceSet, sourceByPredicateType map[string]
 			PredicateType: entry.PredicateType,
 			Source:        sourceByPredicateType[entry.PredicateType],
 			Verified:      entry.Verified,
+			Workload:      workload,
 			Predicate:     entry.Statement.Predicate,
 		})
 	}

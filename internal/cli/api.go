@@ -184,8 +184,12 @@ type revision struct {
 
 // artifact is what a build produced, by content.
 type artifact struct {
+	// Workload is which image of the unit this is — `web` for the project's
+	// own — set where an artifact is listed among the unit's others.
+	Workload   string             `json:"workload,omitempty"`
 	Repository string             `json:"repository,omitempty"`
 	Digest     string             `json:"digest,omitempty"`
+	SourceType string             `json:"sourceType,omitempty"`
 	Attested   bool               `json:"attested"`
 	AttestedAt *time.Time         `json:"attestedAt,omitempty"`
 	KeyID      string             `json:"keyID,omitempty"`
@@ -258,6 +262,37 @@ type build struct {
 	// it exited, and the last of what it printed. Absent on every build that
 	// did not fail.
 	Failure *buildFailure `json:"failure,omitempty"`
+	// Workloads is the other images this one commit produced, for a project
+	// whose unit is more than one workload. Empty for the great majority,
+	// which ship one image — the `image` above.
+	Workloads []buildWorkload `json:"workloads,omitempty"`
+}
+
+// buildWorkload is one workload's own build within one commit's: what it
+// pushed, what the platform attested about it, and what ran over it.
+//
+// Every image the unit ships carries its own evidence against its own digest,
+// so `artifact` and `gates` here are this image's and never the project's.
+type buildWorkload struct {
+	Name             string    `json:"name"`
+	Phase            string    `json:"phase,omitempty"`
+	Image            string    `json:"image,omitempty"`
+	Repository       string    `json:"repository,omitempty"`
+	Job              string    `json:"job,omitempty"`
+	DockerfileTarget string    `json:"dockerfileTarget,omitempty"`
+	Artifact         *artifact `json:"artifact,omitempty"`
+	Gates            []gate    `json:"gates,omitempty"`
+	Message          string    `json:"message,omitempty"`
+}
+
+// gateRun is one gate's run over one image of a unit: the run, with the image
+// it ran over. A gate is a claim about an image, and a listing that did not
+// say which image would be a claim about whichever one the reader assumed.
+type gateRun struct {
+	// Workload is `web` for the project's own image, the workload's name
+	// otherwise.
+	Workload string `json:"workload"`
+	gate     `json:",inline"`
 }
 
 // repoConfig is the commit's own kitchen.json: where it was read from, and
@@ -372,7 +407,10 @@ type source struct {
 // application's own CI, which ran the scanner minutes before Kitchen saw the
 // commit.
 type gateSubmission struct {
-	Gate       string          `json:"gate"`
+	Gate string `json:"gate"`
+	// Workload is which image of the unit the gate ran over, empty for the
+	// project's own. A result about one image says nothing about the others.
+	Workload   string          `json:"workload,omitempty"`
 	Version    string          `json:"version,omitempty"`
 	Format     string          `json:"format,omitempty"`
 	FinishedAt *time.Time      `json:"finishedAt,omitempty"`
@@ -383,6 +421,7 @@ type gateSubmission struct {
 // went and whose word it is recorded as.
 type gateAccepted struct {
 	Gate          string `json:"gate"`
+	Workload      string `json:"workload,omitempty"`
 	PredicateType string `json:"predicateType"`
 	Manifest      string `json:"manifest"`
 	ReportedBy    string `json:"reportedBy"`
@@ -456,11 +495,15 @@ type vexAnswer struct {
 // assertion into a shape of this CLI's choosing would be the CLI editing it.
 type vexSubmission struct {
 	Document json.RawMessage `json:"document"`
+	// Workload is which image of the unit the assertion is about, empty for
+	// the project's own. A suppression applies to an image, not to a commit.
+	Workload string `json:"workload,omitempty"`
 }
 
 // vexAccepted is what the API answers a submission with.
 type vexAccepted struct {
 	DocumentID      string   `json:"documentID,omitempty"`
+	Workload        string   `json:"workload,omitempty"`
 	PredicateType   string   `json:"predicateType"`
 	Manifest        string   `json:"manifest"`
 	Subject         string   `json:"subject"`
@@ -1103,11 +1146,26 @@ func (c *client) projectBuilds(ctx context.Context, name string) ([]build, error
 	return answer.Items, err
 }
 
-func (c *client) buildAttestations(ctx context.Context, name string) (*evidenceSet, error) {
+// buildAttestations reads what is attached to one image of a unit. An empty
+// workload is the project's own image, which is the only image a
+// single-workload project has and what this read has always answered.
+func (c *client) buildAttestations(
+	ctx context.Context, name, workload string,
+) (*evidenceSet, error) {
 	answer := &evidenceSet{}
 	err := c.do(ctx, "reading "+name+"'s evidence",
-		http.MethodGet, "/builds/"+name+"/attestations", nil, nil, answer)
+		http.MethodGet, "/builds/"+name+"/attestations", workloadQuery(workload), nil, answer)
 	return answer, err
+}
+
+// workloadQuery is the `?workload=` the evidence reads take, or nothing at
+// all for the project's own image — so a single-workload project's request is
+// character for character the one it always sent.
+func workloadQuery(workload string) url.Values {
+	if workload == "" {
+		return nil
+	}
+	return url.Values{"workload": []string{workload}}
 }
 
 func (c *client) projectReleases(ctx context.Context, name string) ([]release, error) {
@@ -1180,10 +1238,10 @@ func (c *client) submitGate(ctx context.Context, name string, body gateSubmissio
 
 // vex reads the artifact's exploitability assertions joined to the findings
 // they modify.
-func (c *client) vex(ctx context.Context, name string) (*vexAnswer, error) {
+func (c *client) vex(ctx context.Context, name, workload string) (*vexAnswer, error) {
 	answer := &vexAnswer{}
 	return answer, c.do(ctx, "reading the VEX statements on "+name,
-		http.MethodGet, "/builds/"+name+"/vex", nil, nil, answer)
+		http.MethodGet, "/builds/"+name+"/vex", workloadQuery(workload), nil, answer)
 }
 
 // submitVEX attaches an OpenVEX document to the build's artifact.

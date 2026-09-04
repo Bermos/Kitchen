@@ -1195,16 +1195,30 @@ func (r *BuildReconciler) succeed(
 		build.Status.CompletedAt = ptr.To(metav1.Now())
 	}
 
+	// What each workload of the unit was built to, read out of its own Job's
+	// pod. It is resolved here, before anything is attested, because the two
+	// steps below correct it: the digest an image *is* is only settled by
+	// harvesting its evidence.
+	workloadImages := r.workloadImages(ctx, target.Namespace, outcomes)
+	build.Status.Workloads = workloadStatuses(outcomes, imagesByName(workloadImages))
+
 	// Attesting comes before the Release exists, because it is what decides
-	// which digest the artifact *is*. A builder asked for provenance or an
+	// which digest each artifact *is*. A builder asked for provenance or an
 	// SBOM pushes an index and reports that; the evidence inside it is about
 	// the image manifest, so the image manifest is the artifact, and a
 	// Release created from the reported digest would deploy something no
 	// evidence describes.
-	build.Status.Artifact = r.attestBuild(ctx, build, project, target, image)
+	//
+	// It runs once per image the commit produced — the project's own, then
+	// every workload that declared a build of its own. A Release deploys all
+	// of them, so evidence about one of them alone would be a compliance
+	// surface reporting success over images nothing looked at (#300).
+	build.Status.Artifact = r.attestBuild(ctx, build, project, target,
+		artifactSubject{Strategy: target.Strategy, Image: image})
 	if artifact := build.Status.Artifact; artifact != nil && artifact.Repository != "" && artifact.Digest != "" {
 		image = attestation.ArtifactRef(artifact.Repository, artifact.Digest)
 	}
+	workloadImages = r.attestWorkloads(ctx, build, project, target, outcomes, workloadImages)
 
 	if err := r.Audit.Record(ctx, audit.Transition{
 		Object:      build,
@@ -1239,14 +1253,11 @@ func (r *BuildReconciler) succeed(
 		return r.fail(ctx, build, project, reasonConfigInvalid, err.Error())
 	}
 
-	// What each workload of the unit was built to, read out of its own Job's
-	// pod. Frozen onto the Release beside the snapshot, because the two
-	// answer different halves of one question: the snapshot says what each
-	// workload *is*, and this says what it *was built to* — and a rollback
-	// is only a rollback if it restores both.
-	workloadImages := r.workloadImages(ctx, target.Namespace, outcomes)
-	build.Status.Workloads = workloadStatuses(outcomes, imagesByName(workloadImages))
-
+	// The workload images resolved and attested above are frozen onto the
+	// Release beside the snapshot, because the two answer different halves of
+	// one question: the snapshot says what each workload *is*, and they say
+	// what it *was built to* — and a rollback is only a rollback if it
+	// restores both.
 	release := &kitchenv1alpha1.Release{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      releaseName(project.Name, build.Spec.Git.SHA),
@@ -1356,6 +1367,64 @@ func (r *BuildReconciler) workloadImages(
 		}
 		image, _ := r.imageWithDigest(ctx, appNS, outcome.Plan.Job, outcome.Plan.Tag)
 		images = append(images, kitchenv1alpha1.WorkloadImage{Name: outcome.Plan.Workload, Image: image})
+	}
+	return images
+}
+
+// attestWorkloads attaches evidence to every image of the unit besides the
+// project's own, and answers the image set with each digest as the evidence
+// calls it.
+//
+// It is the same act as attesting the web process's image, performed once per
+// workload, and the correction it makes is the same one: a builder asked for
+// provenance or an SBOM pushes an index and reports that, so the digest the
+// artifact *is* is only known once the evidence has been harvested. Doing it
+// here rather than in `workloadImages` is what keeps the Release's frozen set
+// and the evidence describing the same images — a Release built from the
+// reported digests would deploy images no attestation is about.
+//
+// Nothing here can fail the build. An artifact that could not be attested is
+// recorded as one, on its own row, and the consequence lands where it belongs:
+// on a policy that requires evidence, over a Release the platform will now say
+// is not fully attested.
+func (r *BuildReconciler) attestWorkloads(
+	ctx context.Context,
+	build *kitchenv1alpha1.Build,
+	project *kitchenv1alpha1.Project,
+	target buildTarget,
+	outcomes []planOutcome,
+	images []kitchenv1alpha1.WorkloadImage,
+) []kitchenv1alpha1.WorkloadImage {
+	strategies := make(map[string]kitchenv1alpha1.BuildStrategy, len(outcomes))
+	for _, outcome := range outcomes {
+		if !outcome.Plan.isWeb() {
+			strategies[outcome.Plan.Workload] = outcome.Plan.Strategy
+		}
+	}
+	corrected := make(map[string]string, len(images))
+	for index := range build.Status.Workloads {
+		workload := &build.Status.Workloads[index]
+		if workload.Image == "" {
+			// Nothing pushed: a workload still running, one that failed, or
+			// one whose digest could not be read. There is no artifact for
+			// evidence to be attached to, and the Build's own rows say which
+			// of the three it is.
+			continue
+		}
+		workload.Artifact = r.attestBuild(ctx, build, project, target, artifactSubject{
+			Workload: workload.Name,
+			Strategy: strategies[workload.Name],
+			Image:    workload.Image,
+		})
+		if artifact := workload.Artifact; artifact.Repository != "" && artifact.Digest != "" {
+			workload.Image = attestation.ArtifactRef(artifact.Repository, artifact.Digest)
+			corrected[workload.Name] = workload.Image
+		}
+	}
+	for index := range images {
+		if image, ok := corrected[images[index].Name]; ok {
+			images[index].Image = image
+		}
 	}
 	return images
 }

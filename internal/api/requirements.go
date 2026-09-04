@@ -579,59 +579,119 @@ func (s *Server) materializeEvidence(
 		return out
 	}
 	out.build = build
-	artifact := build.Status.Artifact
-	if artifact == nil || artifact.Digest == "" {
+
+	// Every image the release deploys, not the project's own alone. A unit
+	// ships one image per workload that declares a build, each attested in
+	// its own right, and an eligibility answer over the first of them would
+	// preview a promotion that judges all of them (#300).
+	artifacts := []kitchenv1alpha1.BuildArtifact{}
+	for _, artifact := range build.Artifacts() {
+		if artifact.Artifact.Digest != "" && artifact.Artifact.Repository != "" {
+			artifacts = append(artifacts, artifact)
+		}
+	}
+	if len(artifacts) == 0 {
 		out.caveat = "The release's build recorded no artifact digest, so nothing carries evidence"
 		return out
 	}
-	sources := policy.EvidenceSources(build)
-	for _, entry := range artifact.Evidence {
-		out.views = append(out.views, eligibilityEvidenceView{
-			PredicateType: entry.PredicateType,
-			Source:        entry.Source,
-		})
+	// Which images of the unit carry no signed evidence at all. It is said
+	// here rather than left to be inferred from a short list: an eligibility
+	// answer that showed the API's provenance and said nothing about the
+	// worker would read as covering the release.
+	//
+	// The notes accumulate rather than overwrite one another, because they
+	// are answers to different questions — what the artifacts carry, and how
+	// well this read could see it — and the second silently replacing the
+	// first is how a caveat comes to hide the thing it was written for.
+	notes := []string{}
+	if missing := build.ArtifactsWithoutEvidence(); len(missing) > 0 {
+		notes = append(notes, "No signed evidence describes "+artifactSentence(missing)+
+			", so a rule requiring evidence will fire for "+
+			pluralArtifacts(len(missing), "it", "them"))
 	}
 
-	set, err := s.artifactEvidence(ctx, build, artifact)
-	if err != nil {
-		// The index without the registry: types and sources, no predicates,
-		// nothing verified.
-		out.input = policy.IndexedEvidence(build)
-		out.caveat = "The registry could not be asked to verify the evidence, so it is listed unverified: " +
-			err.Error()
-		return out
-	}
-	out.input = policy.EvidenceFrom(set, sources)
-
-	verified := map[string]bool{}
-	indexed := map[string]bool{}
-	for i := range out.views {
-		indexed[out.views[i].PredicateType] = true
-	}
-	for _, evidence := range set.Attestations {
-		if evidence.Verified {
-			verified[evidence.PredicateType] = true
-		}
-		// Evidence in the registry the index never heard of — attached by
-		// something other than the platform — is still evidence the artifact
-		// carries, listed with no source claimed for it.
-		if !indexed[evidence.PredicateType] {
-			indexed[evidence.PredicateType] = true
+	registryFailed, unsigned := "", false
+	for _, subject := range artifacts {
+		sources := policy.EvidenceSources(subject.Artifact)
+		indexed := map[string]bool{}
+		for _, entry := range subject.Artifact.Evidence {
+			indexed[entry.PredicateType] = true
 			out.views = append(out.views, eligibilityEvidenceView{
-				PredicateType: evidence.PredicateType,
-				Verified:      evidence.Verified,
+				PredicateType: entry.PredicateType,
+				Source:        entry.Source,
+				Workload:      subject.Name(),
 			})
 		}
-	}
-	for i := range out.views {
-		if verified[out.views[i].PredicateType] {
-			out.views[i].Verified = true
+
+		set, err := s.artifactEvidence(ctx, build, subject.Artifact)
+		if err != nil {
+			// The index without the registry: types and sources, no
+			// predicates, nothing verified.
+			registryFailed = err.Error()
+			continue
+		}
+		out.input = append(out.input,
+			policy.EvidenceFrom(subject.Workload, set, sources)...)
+
+		verified := map[string]bool{}
+		for _, evidence := range set.Attestations {
+			if evidence.Verified {
+				verified[evidence.PredicateType] = true
+			}
+			// Evidence in the registry the index never heard of — attached by
+			// something other than the platform — is still evidence the
+			// artifact carries, listed with no source claimed for it.
+			if !indexed[evidence.PredicateType] {
+				indexed[evidence.PredicateType] = true
+				out.views = append(out.views, eligibilityEvidenceView{
+					PredicateType: evidence.PredicateType,
+					Verified:      evidence.Verified,
+					Workload:      subject.Name(),
+				})
+			}
+		}
+		for i := range out.views {
+			if out.views[i].Workload == subject.Name() && verified[out.views[i].PredicateType] {
+				out.views[i].Verified = true
+			}
+		}
+		if !set.Verified && !unsigned {
+			unsigned = true
+			notes = append(notes,
+				"The platform holds no signing key, so the evidence is listed without verification")
 		}
 	}
-	if !set.Verified {
-		out.caveat = "The platform holds no signing key, so the evidence is listed without verification"
+	if registryFailed != "" {
+		// One artifact the registry would not answer for makes the whole
+		// answer a degraded one: an input half read from the registry and
+		// half from the index would be an evaluation nobody could reproduce.
+		out.input = policy.IndexedEvidence(build)
+		notes = append(notes,
+			"The registry could not be asked to verify the evidence, so it is listed unverified: "+
+				registryFailed)
 	}
+	out.caveat = strings.Join(notes, ". ")
 	return out
+}
+
+// artifactSentence names images of a unit in a sentence a person reads.
+func artifactSentence(names []string) string {
+	switch len(names) {
+	case 0:
+		return ""
+	case 1:
+		return "workload " + names[0]
+	default:
+		return "workloads " + strings.Join(names[:len(names)-1], ", ") + " and " + names[len(names)-1]
+	}
+}
+
+// pluralArtifacts picks the word for one artifact or several.
+func pluralArtifacts(count int, one, many string) string {
+	if count == 1 {
+		return one
+	}
+	return many
 }
 
 // artifactEvidence reads what is attached to a build's artifact, verified
