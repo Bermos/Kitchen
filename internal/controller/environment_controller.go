@@ -172,6 +172,12 @@ func (r *EnvironmentReconciler) git() gitReporting {
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=kitchens,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;create
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
+// An environment's plain configuration files are a ConfigMap of its own, so
+// the environment both writes it and takes it away: when a release stops
+// declaring a plain file, and with the environment in the finalizer. `delete`
+// is therefore as necessary here as `create` is — without it every pass ends
+// on a forbidden delete and no Deployment is ever written.
+// +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
