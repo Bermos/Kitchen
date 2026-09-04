@@ -318,12 +318,17 @@ func processPodSpec(
 		applyProbes(&container, process.Health, process.Port)
 	}
 	pod := corev1.PodSpec{
-		// The same credential the web process pulls with. Without it the pods
-		// sit in ImagePullBackOff while everything else reads as healthy.
-		ImagePullSecrets: []corev1.LocalObjectReference{
-			{Name: registrySecretName(project.Spec.Registry.ConnectionRef.Name)},
-		},
-		Containers: []corev1.Container{container},
+		// The credential this workload's image is pulled with: the project's
+		// registry for one the platform built, and the image's own Connection
+		// — or nothing at all — for one it did not. Without the right one the
+		// pods sit in ImagePullBackOff while everything else reads as
+		// healthy, which is a long way to walk back from.
+		//
+		// It is asked of the release's own process list rather than of the
+		// project's, for the reason the image is: what this environment runs
+		// is what its release declared.
+		ImagePullSecrets: pullSecretsFor(project, release.Spec.ConfigSnapshot.Processes, process.Name),
+		Containers:       []corev1.Container{container},
 		// The volume claims that name this process, and no other's: a
 		// volume that attaches once, mounted by two processes, is the
 		// Multi-Attach failure the claim names a process to avoid.

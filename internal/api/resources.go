@@ -110,14 +110,25 @@ func (s *Server) getProject(w http.ResponseWriter, req *http.Request) {
 // — so the two fields the preflight (POST /connections/{name}/detect) exists
 // to let somebody correct are the two that can be sent with the project.
 type createProjectRequest struct {
-	Name             string `json:"name"`
-	Repo             string `json:"repo"`
-	Connection       string `json:"connection"`
-	Registry         string `json:"registry"`
-	ProductionBranch string `json:"productionBranch,omitempty"`
-	Previews         *bool  `json:"previews,omitempty"`
-	RootDirectory    string `json:"rootDirectory,omitempty"`
-	DockerfilePath   string `json:"dockerfilePath,omitempty"`
+	Name string `json:"name"`
+	// Repo, Connection and Registry are a project built from a repository:
+	// where the source is, what reads it, and where the images it produces
+	// are pushed. Image is the other kind of project — software this
+	// platform did not build — and exactly one of `repo` and `image` is
+	// sent (#307).
+	Repo       string `json:"repo,omitempty"`
+	Connection string `json:"connection,omitempty"`
+	Registry   string `json:"registry,omitempty"`
+	// Image is the web process's image, published by somebody else: a
+	// repository, a tag or a digest of it, and optionally the Connection to
+	// pull it with. A project sent this way has no repository, so it needs
+	// no registry, no source connection, no production branch and no
+	// previews — and is refused all four rather than having them ignored.
+	Image            *appconfig.Image `json:"image,omitempty"`
+	ProductionBranch string           `json:"productionBranch,omitempty"`
+	Previews         *bool            `json:"previews,omitempty"`
+	RootDirectory    string           `json:"rootDirectory,omitempty"`
+	DockerfilePath   string           `json:"dockerfilePath,omitempty"`
 	// DockerfileTarget is the stage of a multi-stage Dockerfile to ship. It
 	// is here for the reason the two paths are: the preflight lists the
 	// stages the file declares while the form is still open, and a project
@@ -174,6 +185,115 @@ func (s *Server) requireConnection(
 	return false
 }
 
+// projectSource settles which kind of project is being created, answering the
+// request itself when the body describes neither or both.
+//
+// A project's source is a union with exactly one member set, and this is
+// where a person finds that out — the CRD's rule would refuse the same body
+// with the same meaning, but only after a round trip and in the vocabulary of
+// an admission webhook. Everything a repository needs is refused of an image
+// project here rather than ignored: a registry, a source connection, a
+// production branch and a build root all read back as settings that took, and
+// none of them would do anything.
+func (s *Server) projectSource(
+	ctx context.Context,
+	w http.ResponseWriter,
+	body createProjectRequest,
+) (kitchenv1alpha1.ProjectSourceSpec, bool) {
+	switch {
+	case body.Repo == "" && body.Image == nil:
+		badRequest(w, "a project is software that becomes a running application, and this names none: "+
+			"send `repo` with the connection that reads it, or `image` with a repository somebody else "+
+			"publishes and a tag or a digest of it")
+		return kitchenv1alpha1.ProjectSourceSpec{}, false
+	case body.Repo != "" && body.Image != nil:
+		badRequest(w, "a project's source is one thing: `repo` is a repository this platform builds and "+
+			"`image` is software somebody else built — send one of them, not both")
+		return kitchenv1alpha1.ProjectSourceSpec{}, false
+	case body.Image != nil:
+		for _, refused := range []struct{ field, value string }{
+			{"registry", body.Registry},
+			{"connection", body.Connection},
+			{"productionBranch", body.ProductionBranch},
+		} {
+			if refused.value == "" {
+				continue
+			}
+			badRequest(w, "%s is a repository's setting, and this project's source is an image: "+
+				"it builds nothing, pushes nothing and has no branch", refused.field)
+			return kitchenv1alpha1.ProjectSourceSpec{}, false
+		}
+		image, err := appconfig.ImageSource("image", *body.Image)
+		if err != nil {
+			badRequest(w, "%s", err.Error())
+			return kitchenv1alpha1.ProjectSourceSpec{}, false
+		}
+		// The pull credential, where one was named. A public image needs
+		// none, which is why an empty connection is not an error here.
+		if image.ConnectionRef != nil &&
+			!s.requireConnection(ctx, w, "image.connection", image.ConnectionRef.Name,
+				kitchenv1alpha1.CapabilityImageStore) {
+			return kitchenv1alpha1.ProjectSourceSpec{}, false
+		}
+		return kitchenv1alpha1.ProjectSourceSpec{Image: image}, true
+	}
+
+	if owner, repo, ok := strings.Cut(body.Repo, "/"); !ok || owner == "" || repo == "" {
+		badRequest(w, "repo must be the provider's owner/name form (got %q)", body.Repo)
+		return kitchenv1alpha1.ProjectSourceSpec{}, false
+	}
+	if !s.requireConnection(ctx, w, "connection", body.Connection, kitchenv1alpha1.CapabilityGitSource) {
+		return kitchenv1alpha1.ProjectSourceSpec{}, false
+	}
+	if !s.requireConnection(ctx, w, "registry", body.Registry, kitchenv1alpha1.CapabilityImageStore) {
+		return kitchenv1alpha1.ProjectSourceSpec{}, false
+	}
+	branch := body.ProductionBranch
+	if branch == "" {
+		branch = defaultProductionBranch
+	}
+	return kitchenv1alpha1.ProjectSourceSpec{Git: &kitchenv1alpha1.GitSourceSpec{
+		ConnectionRef:    kitchenv1alpha1.LocalObjectReference{Name: body.Connection},
+		Repo:             body.Repo,
+		ProductionBranch: branch,
+	}}, true
+}
+
+// projectOrigin names where a project's software comes from, for the audit
+// record and the log line: the repository, or the image reference.
+func projectOrigin(source kitchenv1alpha1.ProjectSourceSpec) string {
+	if source.HasRepository() {
+		return source.GitSource().Repo
+	}
+	return source.ImageSource().Reference()
+}
+
+// previewsRefusal and previewsRefusalFor are the sentence a project with no
+// repository gets when somebody asks it for previews. It is a refusal rather
+// than a silent no, because a preview that never appears reads as a fault —
+// which is the whole reason this is worded rather than merely enforced.
+func previewsRefusal(project *kitchenv1alpha1.Project) string {
+	return previewsRefusalFor(project.Name, project.Spec.Source)
+}
+
+func previewsRefusalFor(name string, source kitchenv1alpha1.ProjectSourceSpec) string {
+	return fmt.Sprintf(
+		"previews are environments for pull requests, and %q has no repository to open one against: "+
+			"its source is the image %s. Nothing about it changes until that image does, so there is "+
+			"nothing for a preview to show.",
+		name, source.ImageSource().Reference())
+}
+
+// repositorySettingRefusal is the same shape of answer for the other settings
+// that belong to a repository: the production branch, and the review
+// requirement made against it.
+func repositorySettingRefusal(project *kitchenv1alpha1.Project) string {
+	return fmt.Sprintf(
+		"a production branch and a pull request requirement are a repository's settings, and %q has no "+
+			"repository: its source is the image %s",
+		project.Name, project.Spec.Source.ImageSource().Reference())
+}
+
 func (s *Server) createProject(w http.ResponseWriter, req *http.Request) {
 	ctx := req.Context()
 
@@ -207,14 +327,11 @@ func (s *Server) createProject(w http.ResponseWriter, req *http.Request) {
 		badRequest(w, "%s", err.Error())
 		return
 	}
-	if owner, repo, ok := strings.Cut(body.Repo, "/"); !ok || owner == "" || repo == "" {
-		badRequest(w, "repo must be the provider's owner/name form (got %q)", body.Repo)
-		return
-	}
-	if !s.requireConnection(ctx, w, "connection", body.Connection, kitchenv1alpha1.CapabilityGitSource) {
-		return
-	}
-	if !s.requireConnection(ctx, w, "registry", body.Registry, kitchenv1alpha1.CapabilityImageStore) {
+	// Which kind of project this is, settled before anything else is
+	// checked: the two ask for different fields, and every message below
+	// depends on knowing which was meant.
+	source, ok := s.projectSource(ctx, w, body)
+	if !ok {
 		return
 	}
 	// Checked before anything is recorded, so a name somebody already took
@@ -225,13 +342,22 @@ func (s *Server) createProject(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	branch := body.ProductionBranch
-	if branch == "" {
-		branch = defaultProductionBranch
-	}
-	previews := true
+	branch := source.GitSource().ProductionBranch
+	// A project with no repository has no pull requests to preview, so
+	// previews are off and asking for them is refused rather than ignored.
+	previews := source.HasRepository()
 	if body.Previews != nil {
+		if *body.Previews && !source.HasRepository() {
+			badRequest(w, "%s", previewsRefusalFor(body.Name, source))
+			return
+		}
 		previews = *body.Previews
+	}
+	var registry *kitchenv1alpha1.RegistrySpec
+	if source.HasRepository() {
+		registry = &kitchenv1alpha1.RegistrySpec{
+			ConnectionRef: kitchenv1alpha1.LocalObjectReference{Name: body.Registry},
+		}
 	}
 
 	caller, _ := CallerFrom(ctx)
@@ -242,14 +368,8 @@ func (s *Server) createProject(w http.ResponseWriter, req *http.Request) {
 			Annotations: map[string]string{requestedByAnnotation: callerName(caller)},
 		},
 		Spec: kitchenv1alpha1.ProjectSpec{
-			Source: kitchenv1alpha1.GitSourceSpec{
-				ConnectionRef:    kitchenv1alpha1.LocalObjectReference{Name: body.Connection},
-				Repo:             body.Repo,
-				ProductionBranch: branch,
-			},
-			Registry: kitchenv1alpha1.RegistrySpec{
-				ConnectionRef: kitchenv1alpha1.LocalObjectReference{Name: body.Registry},
-			},
+			Source:   source,
+			Registry: registry,
 			Previews: kitchenv1alpha1.PreviewsSpec{Enabled: ptr.To(previews)},
 			Build: kitchenv1alpha1.ProjectBuildSpec{
 				RootDirectory:    body.RootDirectory,
@@ -271,8 +391,9 @@ func (s *Server) createProject(w http.ResponseWriter, req *http.Request) {
 		Operation: clickhouse.AuditCreate,
 		To:        project.Name,
 		Project:   project.Name,
-		Reason:    fmt.Sprintf("project %s created from %s", project.Name, body.Repo),
+		Reason:    fmt.Sprintf("project %s created from %s", project.Name, projectOrigin(source)),
 		Details: map[string]any{
+			"source":           projectOrigin(source),
 			"repo":             body.Repo,
 			"productionBranch": branch,
 			"sourceConnection": body.Connection,
@@ -290,11 +411,11 @@ func (s *Server) createProject(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	s.log().Info("project created through the api",
-		"project", project.Name, "repo", body.Repo, "caller", callerName(caller))
+		"project", project.Name, "source", projectOrigin(source), "caller", callerName(caller))
 	s.Activity.Record(ctx, clickhouse.Event{
 		Type:    clickhouse.EventProjectCreated,
 		Project: project.Name,
-		Message: fmt.Sprintf("project %s created from %s", project.Name, body.Repo),
+		Message: fmt.Sprintf("project %s created from %s", project.Name, projectOrigin(source)),
 		Actor:   callerName(caller),
 	})
 	writeJSON(w, http.StatusCreated, newProjectView(project, s.roleOn(ctx, project)))
@@ -813,18 +934,32 @@ func (s *Server) patchProject(w http.ResponseWriter, req *http.Request) {
 	}
 
 	patch := client.MergeFrom(project.DeepCopy())
+	// The three settings below are the repository's, and a project whose
+	// source is an image has none. They are refused rather than ignored: a
+	// production branch that read back as the empty string on a project with
+	// no branch is a setting somebody would go looking for.
+	if body.ProductionBranch != nil || body.RequirePullRequest != nil {
+		if !project.Spec.Source.HasRepository() {
+			badRequest(w, "%s", repositorySettingRefusal(project))
+			return
+		}
+	}
 	if body.ProductionBranch != nil {
 		branch := strings.TrimSpace(*body.ProductionBranch)
 		if branch == "" {
 			badRequest(w, "productionBranch cannot be empty: every project has a branch whose builds go to production")
 			return
 		}
-		project.Spec.Source.ProductionBranch = branch
+		project.Spec.Source.Git.ProductionBranch = branch
 	}
 	if body.RequirePullRequest != nil {
-		project.Spec.Source.RequirePullRequest = *body.RequirePullRequest
+		project.Spec.Source.Git.RequirePullRequest = *body.RequirePullRequest
 	}
 	if body.Previews != nil {
+		if *body.Previews && !project.Spec.Source.HasRepository() {
+			badRequest(w, "%s", previewsRefusal(project))
+			return
+		}
 		project.Spec.Previews.Enabled = body.Previews
 	}
 	if body.PreviewsProtected != nil {
@@ -978,7 +1113,7 @@ func (s *Server) deleteProject(w http.ResponseWriter, req *http.Request) {
 		Project:   project.Name,
 		Reason: fmt.Sprintf(
 			"project %s deleted, with its environments, builds, releases, domains and claims", project.Name),
-		Details: map[string]any{"repo": project.Spec.Source.Repo},
+		Details: map[string]any{"repo": project.Spec.Source.GitSource().Repo},
 	}) {
 		return
 	}
@@ -1222,7 +1357,7 @@ func (s *Server) revisionToBuild(
 		}
 	}
 	if revision.Branch == "" {
-		revision.Branch = project.Spec.Source.ProductionBranch
+		revision.Branch = project.Spec.Source.GitSource().ProductionBranch
 	}
 	if revision.Branch == "" {
 		return kitchenv1alpha1.GitRevision{}, fmt.Errorf(

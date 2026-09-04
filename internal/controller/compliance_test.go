@@ -246,7 +246,7 @@ func attestFixtures(t *testing.T) (*BuildReconciler, *stubAttester, *kitchenv1al
 	project := &kitchenv1alpha1.Project{
 		ObjectMeta: metav1.ObjectMeta{Name: "shop", Namespace: PlatformNamespace},
 		Spec: kitchenv1alpha1.ProjectSpec{
-			Source: kitchenv1alpha1.GitSourceSpec{Repo: "acme/shop"},
+			Source: kitchenv1alpha1.ProjectSourceSpec{Git: &kitchenv1alpha1.GitSourceSpec{Repo: "acme/shop"}},
 		},
 	}
 	target := buildTarget{Connection: connection, Strategy: kitchenv1alpha1.BuildStrategyBuildpacks}

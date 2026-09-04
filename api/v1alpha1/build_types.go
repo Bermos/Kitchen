@@ -112,13 +112,22 @@ func CommitBody(message string) string {
 	return body
 }
 
-// GitRevision identifies the commit a Build builds.
+// GitRevision identifies the commit a Build builds, and is empty for a Build
+// that has none — an acquisition, which resolves the digest of an image
+// somebody else built (#307).
+//
+// The SHA and the branch carry no length floor of their own any more. They
+// had one, and it could not stay: a Go struct field is never omitted from the
+// serialized object however it is tagged, so a Build with no commit is a `git`
+// key holding two empty strings, and a floor on either would refuse it. The
+// pair is checked together on [BuildSpec] instead, which is where "a commit is
+// a SHA *and* a branch, or neither" can actually be said.
 type GitRevision struct {
-	// +kubebuilder:validation:MinLength=7
-	SHA string `json:"sha"`
+	// +optional
+	SHA string `json:"sha,omitempty"`
 
-	// +kubebuilder:validation:MinLength=1
-	Branch string `json:"branch"`
+	// +optional
+	Branch string `json:"branch,omitempty"`
 
 	// Message is the commit's *subject* — its first line and nothing else.
 	// Every surface the platform shows it on is a row in a table: a build
@@ -150,11 +159,29 @@ type GitRevision struct {
 // BuildSpec defines one build execution for one commit. Builds are immutable:
 // a rebuild is a new Build object.
 // +kubebuilder:validation:XValidation:rule="self == oldSelf",message="Build spec is immutable"
+// +kubebuilder:validation:XValidation:rule="!has(self.git) || (!has(self.git.sha) && !has(self.git.branch)) || (has(self.git.sha) && size(self.git.sha) >= 7 && has(self.git.branch) && size(self.git.branch) > 0)",message="a build of a repository names the commit it builds: a SHA of at least seven characters and the branch it is on. A build that names neither is the acquisition of an image somebody else built, and it names no commit at all."
 type BuildSpec struct {
 	ProjectRef LocalObjectReference `json:"projectRef"`
 
-	Git GitRevision `json:"git"`
+	// Git is the commit this Build builds, empty for a project whose source
+	// is an image rather than a repository (#307).
+	//
+	// Nothing fakes a commit. An acquisition — a Build that resolves a
+	// vendored image's digest and produces a Release without running a
+	// builder — leaves both halves empty rather than inventing a SHA and a
+	// branch for the fields to hold, because every rule that asks a commit a
+	// question would then get an answer it could not check. What reads it
+	// asks [Build.FromRepository] first.
+	// +optional
+	Git GitRevision `json:"git,omitempty"`
 }
+
+// FromRepository reports whether this Build has a commit behind it: a build
+// of a repository rather than the acquisition of an image somebody else
+// built. It is the Build's half of ProjectSourceSpec.HasRepository, and it is
+// read off what the Build was created with rather than off the project, whose
+// source could have been changed since.
+func (b *Build) FromRepository() bool { return b.Spec.Git.SHA != "" }
 
 // BuildPhase is the coarse lifecycle summary of a Build.
 // +kubebuilder:validation:Enum=Queued;Running;Succeeded;Failed;Cancelled

@@ -111,16 +111,22 @@ type projectView struct {
 	//
 	// An operator reads `admin` on every project, including one they are not
 	// listed on, which is access.ProjectRoleFor's rule and not this view's.
-	Role               string `json:"role"`
-	Repo               string `json:"repo"`
-	Connection         string `json:"connection"`
-	Registry           string `json:"registry"`
-	ProductionBranch   string `json:"productionBranch"`
-	RequirePullRequest bool   `json:"requirePullRequest"`
-	Previews           bool   `json:"previews"`
-	PreviewsProtected  bool   `json:"previewsProtected"`
-	BuildStrategy      string `json:"buildStrategy,omitempty"`
-	DockerfilePath     string `json:"dockerfilePath,omitempty"`
+	Role string `json:"role"`
+	// Repo, Connection, Registry, ProductionBranch and RequirePullRequest
+	// are a project built from a repository. Image is the other kind — the
+	// web process running an image this platform did not build — and the two
+	// groups never both carry anything: a project's source is one or the
+	// other (#307).
+	Repo               string           `json:"repo"`
+	Connection         string           `json:"connection"`
+	Registry           string           `json:"registry"`
+	Image              *imageSourceView `json:"image,omitempty"`
+	ProductionBranch   string           `json:"productionBranch"`
+	RequirePullRequest bool             `json:"requirePullRequest"`
+	Previews           bool             `json:"previews"`
+	PreviewsProtected  bool             `json:"previewsProtected"`
+	BuildStrategy      string           `json:"buildStrategy,omitempty"`
+	DockerfilePath     string           `json:"dockerfilePath,omitempty"`
 	// DockerfileTarget is the stage of a multi-stage Dockerfile this project
 	// ships. Absent is the file's last stage.
 	DockerfileTarget string       `json:"dockerfileTarget,omitempty"`
@@ -181,15 +187,45 @@ type projectView struct {
 	RPO         string `json:"rpo,omitempty"`
 }
 
+// imageSourceView is an image this platform did not build, as a client reads
+// it back: where it lives, which version of it to run, and what it is pulled
+// with. The credential itself is never here — it is a Connection's name, like
+// every other credential the API names and never reads back.
+type imageSourceView struct {
+	Repository string `json:"repository"`
+	Tag        string `json:"tag,omitempty"`
+	Digest     string `json:"digest,omitempty"`
+	Connection string `json:"connection,omitempty"`
+	// Reference is the two of them as one string — `repository@digest` where
+	// a digest is pinned, `repository:tag` otherwise — because that is what
+	// every surface showing an image shows, and deriving it in three clients
+	// is three chances to derive it differently.
+	Reference string `json:"reference"`
+}
+
+func newImageSourceView(image *kitchenv1alpha1.ImageSourceSpec) *imageSourceView {
+	if image == nil {
+		return nil
+	}
+	return &imageSourceView{
+		Repository: image.Repository,
+		Tag:        image.Tag,
+		Digest:     image.Digest,
+		Connection: image.PullConnection(),
+		Reference:  image.Reference(),
+	}
+}
+
 func newProjectView(project *kitchenv1alpha1.Project, role access.ProjectRole) projectView {
 	view := projectView{
 		Name:               project.Name,
 		Role:               role.String(),
-		Repo:               project.Spec.Source.Repo,
-		Connection:         project.Spec.Source.ConnectionRef.Name,
-		Registry:           project.Spec.Registry.ConnectionRef.Name,
-		ProductionBranch:   project.Spec.Source.ProductionBranch,
-		RequirePullRequest: project.Spec.Source.RequirePullRequest,
+		Repo:               project.Spec.Source.GitSource().Repo,
+		Connection:         project.Spec.Source.GitSource().ConnectionRef.Name,
+		Registry:           project.Spec.RegistryConnection(),
+		Image:              newImageSourceView(project.Spec.Source.Image),
+		ProductionBranch:   project.Spec.Source.GitSource().ProductionBranch,
+		RequirePullRequest: project.Spec.Source.GitSource().RequirePullRequest,
 		Previews:           project.Spec.Previews.IsEnabled(),
 		PreviewsProtected:  project.Spec.Previews.IsProtected(),
 		BuildStrategy:      string(project.Spec.Build.Strategy),

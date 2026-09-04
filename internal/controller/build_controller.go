@@ -243,6 +243,10 @@ type BuildReconciler struct {
 	// layer cache is there. Nil asks the real one; tests answer without a
 	// registry at all.
 	CacheProbes CacheProbeFactory
+	// Resolvers resolves how the reconciler asks a registry which digest a
+	// vendored image reference names (#307). Nil asks the real one with the
+	// credential the pods will pull with; tests answer without a registry.
+	Resolvers ImageResolverFactory
 
 	// PodLogs reads the tail of a failing build container's output, which is
 	// what turns "the job failed" into a diagnosis. SetupWithManager fills it
@@ -305,6 +309,45 @@ func (r *BuildReconciler) git() gitReporting {
 // +kubebuilder:rbac:groups="",resources=events,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch
 
+// projectFor is the project this Build belongs to, and which of the two kinds
+// of Build it is (#307).
+//
+// The two questions are one call because the second is only ever asked of the
+// answer to the first, and both end the reconcile in the same three ways: the
+// project is not there yet, the Build and the project disagree about whether
+// there is a commit, or there is no commit at all and the whole of this Build
+// is an acquisition — resolving the digest an image reference names and
+// freezing it onto a Release without running a builder. A stop is a result
+// Reconcile returns as its own; a nil one is a build of a repository, which
+// is the rest of Reconcile.
+func (r *BuildReconciler) projectFor(
+	ctx context.Context,
+	build *kitchenv1alpha1.Build,
+) (*kitchenv1alpha1.Project, *ctrl.Result, error) {
+	project := &kitchenv1alpha1.Project{}
+	key := types.NamespacedName{Namespace: build.Namespace, Name: build.Spec.ProjectRef.Name}
+	if err := r.Get(ctx, key, project); err != nil {
+		result, err := r.pending(ctx, build, "ProjectMissing", err)
+		return nil, &result, err
+	}
+	switch {
+	case !project.Spec.Source.HasRepository() && build.FromRepository():
+		result, err := r.fail(ctx, build, project, reasonSourceMismatch, fmt.Sprintf(
+			"this build names commit %s, and project %s has no repository: its source is the image %s",
+			shortSHA(build.Spec.Git.SHA), project.Name, project.Spec.Source.ImageSource().Reference()))
+		return project, &result, err
+	case !project.Spec.Source.HasRepository():
+		result, err := r.acquire(ctx, build, project)
+		return project, &result, err
+	case !build.FromRepository():
+		result, err := r.fail(ctx, build, project, reasonSourceMismatch, fmt.Sprintf(
+			"this build names no commit, and project %s is built from %s: every build of it is of a commit",
+			project.Name, project.Spec.Source.GitSource().Repo))
+		return project, &result, err
+	}
+	return project, nil, nil
+}
+
 // Reconcile drives a Build from Queued through a BuildKit Job to a Release.
 func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
@@ -330,9 +373,9 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		return r.reconcileGates(ctx, build)
 	}
 
-	project := &kitchenv1alpha1.Project{}
-	if err := r.Get(ctx, types.NamespacedName{Namespace: build.Namespace, Name: build.Spec.ProjectRef.Name}, project); err != nil {
-		return r.pending(ctx, build, "ProjectMissing", err)
+	project, stop, err := r.projectFor(ctx, build)
+	if stop != nil {
+		return *stop, err
 	}
 
 	builds := r.platformBuilds(ctx)
@@ -346,7 +389,7 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	}
 
 	registryConn := &kitchenv1alpha1.Connection{}
-	if err := r.Get(ctx, types.NamespacedName{Namespace: build.Namespace, Name: project.Spec.Registry.ConnectionRef.Name}, registryConn); err != nil {
+	if err := r.Get(ctx, types.NamespacedName{Namespace: build.Namespace, Name: project.Spec.RegistryConnection()}, registryConn); err != nil {
 		return r.pending(ctx, build, "RegistryConnectionMissing", err)
 	}
 	registry, err := provider.Registry(registryConn)
@@ -1122,7 +1165,7 @@ exit "$code"
 // TODO: derive the host from the project's git Connection once git providers
 // beyond GitHub are wired up.
 func repoCloneURL(project *kitchenv1alpha1.Project) string {
-	return fmt.Sprintf("https://github.com/%s.git", project.Spec.Source.Repo)
+	return fmt.Sprintf("https://github.com/%s.git", project.Spec.Source.GitSource().Repo)
 }
 
 // buildRootDir is the build root: the directory within the repository the
@@ -1134,10 +1177,24 @@ func buildRootDir(project *kitchenv1alpha1.Project) string {
 	return detect.NormalizeRoot(project.Spec.Build.RootDirectory)
 }
 
-// dockerConfigVolume mounts the registry credentials the build pushes with.
-// Both strategies read them the same way: BuildKit and the CNB lifecycle
-// alike take a docker config directory from DOCKER_CONFIG.
+// dockerConfigVolume is the credential a pod reads through DOCKER_CONFIG:
+// the registry credentials a build pushes with, and the credential a scan or
+// a gate pulls with. Both build strategies read them the same way — BuildKit
+// and the CNB lifecycle alike take a docker config directory from that
+// variable.
+//
+// An empty name is not a fault: a public image is pulled anonymously, which is
+// what a vendored workload with no Connection wants (#307). It mounts an empty
+// directory rather than naming a Secret that does not exist, because the two
+// are the same thing to whatever reads the config and only one of them lets
+// the pod start.
 func dockerConfigVolume(credsSecret string) corev1.Volume {
+	if credsSecret == "" {
+		return corev1.Volume{
+			Name:         "docker-config",
+			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+		}
+	}
 	return corev1.Volume{
 		Name: "docker-config",
 		VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{
@@ -1202,6 +1259,16 @@ func (r *BuildReconciler) succeed(
 	workloadImages := r.workloadImages(ctx, target.Namespace, outcomes)
 	build.Status.Workloads = workloadStatuses(outcomes, imagesByName(workloadImages))
 
+	// A unit may mix the two freely: an upstream image as one workload and a
+	// sidecar built from this repository as another (#307). Nothing built
+	// them, so they have no Job and no outcome — they are resolved here and
+	// frozen onto the same Release, which is what makes the unit deploy,
+	// preview and roll back as one.
+	vendored, vendoredRows, err := r.vendoredWorkloads(ctx, build, project, target.Namespace)
+	if err != nil {
+		return r.fail(ctx, build, project, reasonImageUnresolved, err.Error())
+	}
+
 	// Attesting comes before the Release exists, because it is what decides
 	// which digest each artifact *is*. A builder asked for provenance or an
 	// SBOM pushes an index and reports that; the evidence inside it is about
@@ -1219,6 +1286,11 @@ func (r *BuildReconciler) succeed(
 		image = attestation.ArtifactRef(artifact.Repository, artifact.Digest)
 	}
 	workloadImages = r.attestWorkloads(ctx, build, project, target, outcomes, workloadImages)
+	// Appended after attestation rather than before it: nothing here built
+	// these, so there is nothing of the platform's to attach to them. What a
+	// vendor published about them is #309's question.
+	workloadImages = append(workloadImages, vendored...)
+	build.Status.Workloads = append(build.Status.Workloads, vendoredRows...)
 
 	if err := r.Audit.Record(ctx, audit.Transition{
 		Object:      build,
@@ -1302,7 +1374,7 @@ func (r *BuildReconciler) succeed(
 		if err := r.routePreview(ctx, build, project, *pullRequest, release.Name); err != nil {
 			return ctrl.Result{}, err
 		}
-	case build.Spec.Git.Branch == project.Spec.Source.ProductionBranch:
+	case build.Spec.Git.Branch == project.Spec.Source.GitSource().ProductionBranch:
 		// The build's target is stage one of the project's pipeline when it
 		// has one, and the production target when it does not (with no stages
 		// the entry point and the production target are the same environment)
@@ -1776,7 +1848,10 @@ func (r *BuildReconciler) ensureEnvironment(
 // The API server defaults spec.previews.enabled to true, and an unset field
 // reads the same way.
 func previewsEnabled(project *kitchenv1alpha1.Project) bool {
-	return project.Spec.Previews.IsEnabled()
+	// A project with no repository has no pull requests, so it has nothing to
+	// preview whatever the setting says (#307). The Project's own `Previews`
+	// condition is where that is said in words; this is where it is true.
+	return project.Spec.Source.HasRepository() && project.Spec.Previews.IsEnabled()
 }
 
 // imageWithDigest reads the builder's own account of what it pushed from the
@@ -1899,7 +1974,7 @@ func (r *BuildReconciler) resolveGitCredential(
 	project *kitchenv1alpha1.Project,
 	srcNS, appNS string,
 ) gitCredential {
-	connName := project.Spec.Source.ConnectionRef.Name
+	connName := project.Spec.Source.GitSource().ConnectionRef.Name
 	if connName == "" {
 		return gitCredential{Absent: "the project names no source connection"}
 	}

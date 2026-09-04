@@ -185,11 +185,23 @@ function healthOf(process: Process): string {
 }
 
 // Where a workload's image comes from: its own directory of the repository,
-// or the project's own image run with another command. It is the whole of
-// what makes a monorepo one project — four directories, four images, one
-// commit — so it is on the row's detail rather than left to be inferred from
-// an image reference nobody reads.
+// an image somebody else built, or the project's own image run with another
+// command. It is the whole of what makes a monorepo one project — four
+// directories, four images, one commit — so it is on the row's detail rather
+// than left to be inferred from an image reference nobody reads.
+//
+// The third answer is #307's. A vendored workload is described the same way
+// a built one is, in the same row, because it is a workload of the same unit:
+// it deploys, previews and rolls back with the rest of it, and the only thing
+// that differs is that nothing here built it.
 function buildOf(process: Process): string {
+  const image = process.imageSource;
+  if (image) {
+    const pull = image.connection
+      ? `pulled with the ${image.connection} connection`
+      : "pulled anonymously: a public image";
+    return `${image.reference}, an image this platform did not build — ${pull}`;
+  }
   const build = process.build;
   if (!build) return "the project's own image, started differently";
   const where = build.rootDirectory && build.rootDirectory !== "." ? build.rootDirectory : "the repository root";
@@ -302,7 +314,7 @@ function buildOf(process: Process): string {
           <dl class="grid grid-cols-[8rem_1fr] gap-x-4 gap-y-1">
             <dt class="text-dimmed">Command</dt>
             <dd class="font-mono text-toned break-all">{{ commandOf(process) }}</dd>
-            <dt class="text-dimmed">Built from</dt>
+            <dt class="text-dimmed">{{ process.imageSource ? "Image source" : "Built from" }}</dt>
             <dd class="text-toned break-all">{{ buildOf(process) }}</dd>
             <template v-if="process.address">
               <dt class="text-dimmed">Address</dt>

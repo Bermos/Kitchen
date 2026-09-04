@@ -631,3 +631,93 @@ const (
 	// recompute, or work it cannot afford to lose.
 	CapabilityCache Capability = "cache"
 )
+
+// ImageSourceSpec is an image this platform did not build (#307).
+//
+// `ProcessBuildSpec` says how an image is produced from the repository, and
+// its absence used to mean one thing — run the project's own image. This is
+// the third answer to that question, and the one an application that arrives
+// as a published image has: there is no commit, no directory and no builder,
+// only a repository somewhere and a version of it to run.
+//
+// It is one type for both places that ask, because they are one question. A
+// named workload declares it as [ProcessSpec.Image]; the web process declares
+// it as [ProjectSourceSpec.Image], which is where it has to go because the
+// web process is `spec.runtime` and not an entry in the process list.
+//
+// The version is a tag, a digest, or both. A tag alone is what a vendor
+// publishes and what somebody types; a digest is what a Release freezes, so
+// that a rollback restores the exact image that release ran rather than
+// whatever the tag has moved to since. Naming both is the strictest form —
+// this tag, and it must still be this content.
+//
+// +kubebuilder:validation:XValidation:rule="has(self.tag) || has(self.digest)",message="a vendored image needs a tag or a digest: without one there is no way to say which version of the repository to run"
+type ImageSourceSpec struct {
+	// Repository is where the image lives, registry host included and
+	// without a tag or a digest — `ghcr.io/home-assistant/home-assistant`,
+	// `docker.io/library/postgres`. The host is written out rather than
+	// defaulted to Docker Hub: every other image reference the platform
+	// stores is fully qualified, and a bare `postgres` that resolved
+	// somewhere by convention would be the one that did not.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=255
+	// +kubebuilder:validation:Pattern=`^([a-z0-9]+([.\-_][a-z0-9]+)*(:[0-9]+)?/)?[a-z0-9]+([._\-][a-z0-9]+)*(/[a-z0-9]+([._\-][a-z0-9]+)*)*$`
+	Repository string `json:"repository"`
+
+	// Tag is the version as the vendor publishes it — `2026.9.1`, `stable`.
+	// +kubebuilder:validation:MaxLength=128
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9_][A-Za-z0-9._-]*$`
+	// +optional
+	Tag string `json:"tag,omitempty"`
+
+	// Digest pins the exact content, `sha256:` and sixty-four hex digits. It
+	// is what a Release records whatever was declared here, because a tag is
+	// a moving target and a rollback that followed one would not be a
+	// rollback.
+	// +kubebuilder:validation:Pattern=`^sha256:[a-f0-9]{64}$`
+	// +optional
+	Digest string `json:"digest,omitempty"`
+
+	// ConnectionRef is the credential the image is *pulled* with: a
+	// Connection with the imageStore capability, holding a docker config for
+	// the registry this repository is on.
+	//
+	// It is separate from `spec.registry` — the credential the platform
+	// *pushes* under — because they are two registries and, for a vendored
+	// image, two accounts: the platform never writes where a vendor
+	// publishes, and the account it pushes its own builds with has no
+	// business being handed to a third party's registry.
+	//
+	// Absent means an anonymous pull, which is what the great majority of
+	// vendored images want: a public image needs no credential at all, and
+	// requiring one would be a Connection somebody had to invent.
+	// +optional
+	ConnectionRef *LocalObjectReference `json:"connectionRef,omitempty"`
+}
+
+// Reference is the image reference to run: the digest where one is pinned,
+// and the tag otherwise.
+//
+// A digest wins over a tag when both are named, because both together mean
+// "this tag, and it must still be this content" — and the content is what
+// runs. What resolves a tag *to* a digest is the acquisition path, which
+// records what it found on the Release; this is what it asks the registry
+// about.
+func (i ImageSourceSpec) Reference() string {
+	if i.Digest != "" {
+		return i.Repository + "@" + i.Digest
+	}
+	if i.Tag != "" {
+		return i.Repository + ":" + i.Tag
+	}
+	return i.Repository
+}
+
+// PullConnection is the Connection this image is pulled with, empty for an
+// anonymous pull.
+func (i ImageSourceSpec) PullConnection() string {
+	if i.ConnectionRef == nil {
+		return ""
+	}
+	return i.ConnectionRef.Name
+}

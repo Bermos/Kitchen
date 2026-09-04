@@ -699,7 +699,16 @@ spec:
               a rebuild is a new Build object.
             properties:
               git:
-                description: GitRevision identifies the commit a Build builds.
+                description: |-
+                  Git is the commit this Build builds, empty for a project whose source
+                  is an image rather than a repository (#307).
+
+                  Nothing fakes a commit. An acquisition — a Build that resolves a
+                  vendored image's digest and produces a Release without running a
+                  builder — leaves both halves empty rather than inventing a SHA and a
+                  branch for the fields to hold, because every rule that asks a commit a
+                  question would then get an answer it could not check. What reads it
+                  asks [Build.FromRepository] first.
                 properties:
                   author:
                     type: string
@@ -715,7 +724,6 @@ spec:
                     maxLength: 4100
                     type: string
                   branch:
-                    minLength: 1
                     type: string
                   message:
                     description: |-
@@ -730,11 +738,7 @@ spec:
                     format: int32
                     type: integer
                   sha:
-                    minLength: 7
                     type: string
-                required:
-                - branch
-                - sha
                 type: object
               projectRef:
                 description: |-
@@ -748,12 +752,18 @@ spec:
                 - name
                 type: object
             required:
-            - git
             - projectRef
             type: object
             x-kubernetes-validations:
             - message: Build spec is immutable
               rule: self == oldSelf
+            - message: 'a build of a repository names the commit it builds: a SHA
+                of at least seven characters and the branch it is on. A build that
+                names neither is the acquisition of an image somebody else built,
+                and it names no commit at all.'
+              rule: '!has(self.git) || (!has(self.git.sha) && !has(self.git.branch))
+                || (has(self.git.sha) && size(self.git.sha) >= 7 && has(self.git.branch)
+                && size(self.git.branch) > 0)'
           status:
             description: BuildStatus defines the observed state of a Build.
             properties:
@@ -1312,6 +1322,83 @@ spec:
                               minimum: 1
                               type: integer
                           type: object
+                        image:
+                          description: |-
+                            Image says this workload runs an image this platform did not build:
+                            a repository somewhere, and a tag or a digest of it (#307).
+
+                            It is the third answer to the question [Build] asks, and the reason
+                            the two exclude each other is that they are answers to one question.
+                            Absent from both is the original arrangement and still the default:
+                            the workload runs the project's own image with another command.
+
+                            A unit may mix them freely — an upstream image as one workload and a
+                            sidecar built from the repository as another — and that is the case
+                            this field exists for. They ship in one Release, which records the
+                            digest each of them resolved to, so the unit rolls back as one and the
+                            vendored digests come back exactly as the built ones do.
+
+                            It takes no build strategy, no root directory and no Dockerfile
+                            because there is nothing to detect: [ProcessBuildSpec] deliberately
+                            has no `auto` that reaches outside the repository (#305), and a
+                            vendored workload sidesteps that question rather than adding to it.
+                          properties:
+                            connectionRef:
+                              description: |-
+                                ConnectionRef is the credential the image is *pulled* with: a
+                                Connection with the imageStore capability, holding a docker config for
+                                the registry this repository is on.
+
+                                It is separate from `spec.registry` — the credential the platform
+                                *pushes* under — because they are two registries and, for a vendored
+                                image, two accounts: the platform never writes where a vendor
+                                publishes, and the account it pushes its own builds with has no
+                                business being handed to a third party's registry.
+
+                                Absent means an anonymous pull, which is what the great majority of
+                                vendored images want: a public image needs no credential at all, and
+                                requiring one would be a Connection somebody had to invent.
+                              properties:
+                                name:
+                                  minLength: 1
+                                  type: string
+                              required:
+                              - name
+                              type: object
+                            digest:
+                              description: |-
+                                Digest pins the exact content, `sha256:` and sixty-four hex digits. It
+                                is what a Release records whatever was declared here, because a tag is
+                                a moving target and a rollback that followed one would not be a
+                                rollback.
+                              pattern: ^sha256:[a-f0-9]{64}$
+                              type: string
+                            repository:
+                              description: |-
+                                Repository is where the image lives, registry host included and
+                                without a tag or a digest — `ghcr.io/home-assistant/home-assistant`,
+                                `docker.io/library/postgres`. The host is written out rather than
+                                defaulted to Docker Hub: every other image reference the platform
+                                stores is fully qualified, and a bare `postgres` that resolved
+                                somewhere by convention would be the one that did not.
+                              maxLength: 255
+                              minLength: 1
+                              pattern: ^([a-z0-9]+([.\-_][a-z0-9]+)*(:[0-9]+)?/)?[a-z0-9]+([._\-][a-z0-9]+)*(/[a-z0-9]+([._\-][a-z0-9]+)*)*$
+                              type: string
+                            tag:
+                              description: Tag is the version as the vendor publishes
+                                it — `2026.9.1`, `stable`.
+                              maxLength: 128
+                              pattern: ^[A-Za-z0-9_][A-Za-z0-9._-]*$
+                              type: string
+                          required:
+                          - repository
+                          type: object
+                          x-kubernetes-validations:
+                          - message: 'a vendored image needs a tag or a digest: without
+                              one there is no way to say which version of the repository
+                              to run'
+                            rule: has(self.tag) || has(self.digest)
                         name:
                           description: |-
                             Name identifies the process within the project. It is a DNS label
@@ -1566,6 +1653,10 @@ spec:
                           give the build to the worker or service that ships it, and
                           run this on that image'
                         rule: self.type != 'cron' || !has(self.build)
+                      - message: 'a workload is built from the repository or run from
+                          an image somebody else built, never both: keep `build` or
+                          keep `image`'
+                        rule: '!has(self.build) || !has(self.image)'
                     type: array
                     x-kubernetes-list-map-keys:
                     - name
@@ -5985,8 +6076,11 @@ spec:
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.source.repo
+    - jsonPath: .spec.source.git.repo
       name: Repo
+      type: string
+    - jsonPath: .spec.source.image.repository
+      name: Image
       type: string
     - jsonPath: .status.conditions[?(@.type=="Ready")].status
       name: Ready
@@ -6018,8 +6112,32 @@ spec:
             type: object
           spec:
             description: |-
-              ProjectSpec defines the desired state of a Project: a repository that
-              becomes a running application.
+              ProjectSpec defines the desired state of a Project: software that becomes a
+              running application.
+
+              It was "a repository that becomes a running application" until #307, and
+              the two rules below are the whole of what changed about the *project* when
+              it stopped having to be one. Each refuses a combination that would
+              otherwise be a setting nothing reads:
+
+                - A registry is where builds are *pushed*, so a project that builds
+                  needs one and a project that builds nothing has no use for one. It is
+                  tied to the source rather than left optional in both directions,
+                  because a registry on a vendored project reads as the place its image
+                  comes from and is not.
+                - A workload built from the repository needs a repository. This is the
+                  one cross-field rule a workload's own spec cannot state: `spec.image`
+                  and `spec.build` exclude each other there, but neither knows whether
+                  the project has a repository at all.
+
+              Previews are the one refusal that is deliberately *not* here. They follow
+              pull requests and an image source has none, but `previews.enabled` defaults
+              to true, so an admission rule against it would refuse every vendored
+              project ever written — including one that never mentioned previews. The
+              refusal is the API's, where a person asking for them can be answered, and
+              the Project's `Previews` condition, which says the same thing to one who
+              merely inherited the default. A preview that silently never appears reads
+              as a fault; a condition saying why does not.
             properties:
               access:
                 description: |-
@@ -6510,6 +6628,83 @@ spec:
                           minimum: 1
                           type: integer
                       type: object
+                    image:
+                      description: |-
+                        Image says this workload runs an image this platform did not build:
+                        a repository somewhere, and a tag or a digest of it (#307).
+
+                        It is the third answer to the question [Build] asks, and the reason
+                        the two exclude each other is that they are answers to one question.
+                        Absent from both is the original arrangement and still the default:
+                        the workload runs the project's own image with another command.
+
+                        A unit may mix them freely — an upstream image as one workload and a
+                        sidecar built from the repository as another — and that is the case
+                        this field exists for. They ship in one Release, which records the
+                        digest each of them resolved to, so the unit rolls back as one and the
+                        vendored digests come back exactly as the built ones do.
+
+                        It takes no build strategy, no root directory and no Dockerfile
+                        because there is nothing to detect: [ProcessBuildSpec] deliberately
+                        has no `auto` that reaches outside the repository (#305), and a
+                        vendored workload sidesteps that question rather than adding to it.
+                      properties:
+                        connectionRef:
+                          description: |-
+                            ConnectionRef is the credential the image is *pulled* with: a
+                            Connection with the imageStore capability, holding a docker config for
+                            the registry this repository is on.
+
+                            It is separate from `spec.registry` — the credential the platform
+                            *pushes* under — because they are two registries and, for a vendored
+                            image, two accounts: the platform never writes where a vendor
+                            publishes, and the account it pushes its own builds with has no
+                            business being handed to a third party's registry.
+
+                            Absent means an anonymous pull, which is what the great majority of
+                            vendored images want: a public image needs no credential at all, and
+                            requiring one would be a Connection somebody had to invent.
+                          properties:
+                            name:
+                              minLength: 1
+                              type: string
+                          required:
+                          - name
+                          type: object
+                        digest:
+                          description: |-
+                            Digest pins the exact content, `sha256:` and sixty-four hex digits. It
+                            is what a Release records whatever was declared here, because a tag is
+                            a moving target and a rollback that followed one would not be a
+                            rollback.
+                          pattern: ^sha256:[a-f0-9]{64}$
+                          type: string
+                        repository:
+                          description: |-
+                            Repository is where the image lives, registry host included and
+                            without a tag or a digest — `ghcr.io/home-assistant/home-assistant`,
+                            `docker.io/library/postgres`. The host is written out rather than
+                            defaulted to Docker Hub: every other image reference the platform
+                            stores is fully qualified, and a bare `postgres` that resolved
+                            somewhere by convention would be the one that did not.
+                          maxLength: 255
+                          minLength: 1
+                          pattern: ^([a-z0-9]+([.\-_][a-z0-9]+)*(:[0-9]+)?/)?[a-z0-9]+([._\-][a-z0-9]+)*(/[a-z0-9]+([._\-][a-z0-9]+)*)*$
+                          type: string
+                        tag:
+                          description: Tag is the version as the vendor publishes
+                            it — `2026.9.1`, `stable`.
+                          maxLength: 128
+                          pattern: ^[A-Za-z0-9_][A-Za-z0-9._-]*$
+                          type: string
+                      required:
+                      - repository
+                      type: object
+                      x-kubernetes-validations:
+                      - message: 'a vendored image needs a tag or a digest: without
+                          one there is no way to say which version of the repository
+                          to run'
+                        rule: has(self.tag) || has(self.digest)
                     name:
                       description: |-
                         Name identifies the process within the project. It is a DNS label
@@ -6761,6 +6956,10 @@ spec:
                       the build to the worker or service that ships it, and run this
                       on that image'
                     rule: self.type != 'cron' || !has(self.build)
+                  - message: 'a workload is built from the repository or run from
+                      an image somebody else built, never both: keep `build` or keep
+                      `image`'
+                    rule: '!has(self.build) || !has(self.image)'
                 type: array
                 x-kubernetes-list-map-keys:
                 - name
@@ -6817,7 +7016,16 @@ spec:
                 - stages
                 type: object
               registry:
-                description: RegistrySpec selects where built images are stored.
+                description: |-
+                  Registry is where this project's builds push their images: a
+                  Connection with the imageStore capability. It is required of a project
+                  built from a repository and refused of one whose source is an image,
+                  which builds nothing — see the rules on this type.
+
+                  It is not the credential a vendored image is *pulled* with. That is
+                  named on the image itself ([ImageSourceSpec.ConnectionRef]), because a
+                  vendor's registry is somewhere the platform never writes and often
+                  somewhere it needs no account at all.
                 properties:
                   connectionRef:
                     description: Connection with the imageStore capability.
@@ -7266,55 +7474,158 @@ spec:
                     type: string
                 type: object
               source:
-                description: GitSourceSpec links a Project to a repository via a gitSource
-                  Connection.
+                description: |-
+                  ProjectSourceSpec is where a Project's software comes from, and it is a
+                  union: exactly one member is set (#307).
+
+                  Until this existed the answer was always a repository, and a Project's
+                  `spec.source` *was* the [GitSourceSpec]. That is the first member, and it
+                  is unchanged in every respect but where it sits. The second is an image
+                  somebody else built — the home lab's Home Assistant, an upstream service a
+                  team runs but does not develop — which has no commit for anything upstream
+                  of a Release to key on.
+
+                  It is a union rather than two optional fields with a rule about them
+                  because the two are answers to one question, and a project that set both
+                  would be saying its web process is two things. Exactly one is set: a
+                  project always has a web process, and a web process always comes from
+                  somewhere.
+
+                  What follows from which member is set is the whole of the difference
+                  upstream of a Release. A repository is built, so it needs a `registry` to
+                  push to, produces a Build with a builder Job, and has pull requests to
+                  preview. An image is acquired, so it needs no registry at all, produces a
+                  Build that resolves a digest and runs no builder, and has no pull requests
+                  — which the Project says in words rather than by previews quietly never
+                  appearing.
                 properties:
-                  connectionRef:
-                    description: Connection with the gitSource capability.
+                  git:
+                    description: Git is a repository this platform builds.
                     properties:
-                      name:
+                      connectionRef:
+                        description: Connection with the gitSource capability.
+                        properties:
+                          name:
+                            minLength: 1
+                            type: string
+                        required:
+                        - name
+                        type: object
+                      productionBranch:
+                        default: main
+                        description: Branch whose builds auto-promote to the production
+                          Environment.
+                        type: string
+                      repo:
+                        description: Repository in the provider's owner/name form.
                         minLength: 1
                         type: string
+                      requirePullRequest:
+                        description: |-
+                          RequirePullRequest refuses to build a commit on the production branch
+                          that the git provider cannot say arrived through a reviewed pull
+                          request.
+
+                          It is a project setting because the bar differs by what the project is:
+                          the same platform carries an internal tool and a payments service, and
+                          forcing one policy on both gets the strict one loosened. An environment
+                          may demand more than this — a project's own baseline is a floor, not a
+                          ceiling, and promotion checks again.
+
+                          It applies to the production branch only. A pull request's own builds
+                          are what produces the request being reviewed, so requiring the review
+                          before them would be a deadlock.
+
+                          **A machine identity on the platform's allowlist is exempt** — a
+                          release automation commit is never going to have a reviewer, and the
+                          alternative to an auditable allowlist is somebody turning this off.
+                        type: boolean
                     required:
-                    - name
+                    - connectionRef
+                    - repo
                     type: object
-                  productionBranch:
-                    default: main
-                    description: Branch whose builds auto-promote to the production
-                      Environment.
-                    type: string
-                  repo:
-                    description: Repository in the provider's owner/name form.
-                    minLength: 1
-                    type: string
-                  requirePullRequest:
+                  image:
                     description: |-
-                      RequirePullRequest refuses to build a commit on the production branch
-                      that the git provider cannot say arrived through a reviewed pull
-                      request.
+                      Image is the web process's image, published by somebody else. The
+                      project's other workloads declare their own on [ProcessSpec.Image];
+                      this is the web process's, which is `spec.runtime` and has no entry in
+                      the process list to declare one on.
+                    properties:
+                      connectionRef:
+                        description: |-
+                          ConnectionRef is the credential the image is *pulled* with: a
+                          Connection with the imageStore capability, holding a docker config for
+                          the registry this repository is on.
 
-                      It is a project setting because the bar differs by what the project is:
-                      the same platform carries an internal tool and a payments service, and
-                      forcing one policy on both gets the strict one loosened. An environment
-                      may demand more than this — a project's own baseline is a floor, not a
-                      ceiling, and promotion checks again.
+                          It is separate from `spec.registry` — the credential the platform
+                          *pushes* under — because they are two registries and, for a vendored
+                          image, two accounts: the platform never writes where a vendor
+                          publishes, and the account it pushes its own builds with has no
+                          business being handed to a third party's registry.
 
-                      It applies to the production branch only. A pull request's own builds
-                      are what produces the request being reviewed, so requiring the review
-                      before them would be a deadlock.
-
-                      **A machine identity on the platform's allowlist is exempt** — a
-                      release automation commit is never going to have a reviewer, and the
-                      alternative to an auditable allowlist is somebody turning this off.
-                    type: boolean
-                required:
-                - connectionRef
-                - repo
+                          Absent means an anonymous pull, which is what the great majority of
+                          vendored images want: a public image needs no credential at all, and
+                          requiring one would be a Connection somebody had to invent.
+                        properties:
+                          name:
+                            minLength: 1
+                            type: string
+                        required:
+                        - name
+                        type: object
+                      digest:
+                        description: |-
+                          Digest pins the exact content, `sha256:` and sixty-four hex digits. It
+                          is what a Release records whatever was declared here, because a tag is
+                          a moving target and a rollback that followed one would not be a
+                          rollback.
+                        pattern: ^sha256:[a-f0-9]{64}$
+                        type: string
+                      repository:
+                        description: |-
+                          Repository is where the image lives, registry host included and
+                          without a tag or a digest — `ghcr.io/home-assistant/home-assistant`,
+                          `docker.io/library/postgres`. The host is written out rather than
+                          defaulted to Docker Hub: every other image reference the platform
+                          stores is fully qualified, and a bare `postgres` that resolved
+                          somewhere by convention would be the one that did not.
+                        maxLength: 255
+                        minLength: 1
+                        pattern: ^([a-z0-9]+([.\-_][a-z0-9]+)*(:[0-9]+)?/)?[a-z0-9]+([._\-][a-z0-9]+)*(/[a-z0-9]+([._\-][a-z0-9]+)*)*$
+                        type: string
+                      tag:
+                        description: Tag is the version as the vendor publishes it
+                          — `2026.9.1`, `stable`.
+                        maxLength: 128
+                        pattern: ^[A-Za-z0-9_][A-Za-z0-9._-]*$
+                        type: string
+                    required:
+                    - repository
+                    type: object
+                    x-kubernetes-validations:
+                    - message: 'a vendored image needs a tag or a digest: without
+                        one there is no way to say which version of the repository
+                        to run'
+                      rule: has(self.tag) || has(self.digest)
                 type: object
+                x-kubernetes-validations:
+                - message: 'a project''s source is one thing: a repository this platform
+                    builds (`git`), or an image somebody else built (`image`) — set
+                    exactly one of them'
+                  rule: has(self.git) != has(self.image)
             required:
-            - registry
             - source
             type: object
+            x-kubernetes-validations:
+            - message: 'a registry is where built images are pushed: a project built
+                from a repository needs one, and a project whose source is an image
+                builds nothing and has nothing to push there'
+              rule: has(self.source.git) == has(self.registry)
+            - message: 'a workload built from the repository needs a repository: this
+                project''s source is an image, so every workload of it runs an image
+                somebody else built (`image`)'
+              rule: has(self.source.git) || !has(self.processes) || !self.processes.exists(p,
+                has(p.build))
           status:
             description: ProjectStatus defines the observed state of a Project.
             properties:
@@ -8039,6 +8350,83 @@ spec:
                               minimum: 1
                               type: integer
                           type: object
+                        image:
+                          description: |-
+                            Image says this workload runs an image this platform did not build:
+                            a repository somewhere, and a tag or a digest of it (#307).
+
+                            It is the third answer to the question [Build] asks, and the reason
+                            the two exclude each other is that they are answers to one question.
+                            Absent from both is the original arrangement and still the default:
+                            the workload runs the project's own image with another command.
+
+                            A unit may mix them freely — an upstream image as one workload and a
+                            sidecar built from the repository as another — and that is the case
+                            this field exists for. They ship in one Release, which records the
+                            digest each of them resolved to, so the unit rolls back as one and the
+                            vendored digests come back exactly as the built ones do.
+
+                            It takes no build strategy, no root directory and no Dockerfile
+                            because there is nothing to detect: [ProcessBuildSpec] deliberately
+                            has no `auto` that reaches outside the repository (#305), and a
+                            vendored workload sidesteps that question rather than adding to it.
+                          properties:
+                            connectionRef:
+                              description: |-
+                                ConnectionRef is the credential the image is *pulled* with: a
+                                Connection with the imageStore capability, holding a docker config for
+                                the registry this repository is on.
+
+                                It is separate from `spec.registry` — the credential the platform
+                                *pushes* under — because they are two registries and, for a vendored
+                                image, two accounts: the platform never writes where a vendor
+                                publishes, and the account it pushes its own builds with has no
+                                business being handed to a third party's registry.
+
+                                Absent means an anonymous pull, which is what the great majority of
+                                vendored images want: a public image needs no credential at all, and
+                                requiring one would be a Connection somebody had to invent.
+                              properties:
+                                name:
+                                  minLength: 1
+                                  type: string
+                              required:
+                              - name
+                              type: object
+                            digest:
+                              description: |-
+                                Digest pins the exact content, `sha256:` and sixty-four hex digits. It
+                                is what a Release records whatever was declared here, because a tag is
+                                a moving target and a rollback that followed one would not be a
+                                rollback.
+                              pattern: ^sha256:[a-f0-9]{64}$
+                              type: string
+                            repository:
+                              description: |-
+                                Repository is where the image lives, registry host included and
+                                without a tag or a digest — `ghcr.io/home-assistant/home-assistant`,
+                                `docker.io/library/postgres`. The host is written out rather than
+                                defaulted to Docker Hub: every other image reference the platform
+                                stores is fully qualified, and a bare `postgres` that resolved
+                                somewhere by convention would be the one that did not.
+                              maxLength: 255
+                              minLength: 1
+                              pattern: ^([a-z0-9]+([.\-_][a-z0-9]+)*(:[0-9]+)?/)?[a-z0-9]+([._\-][a-z0-9]+)*(/[a-z0-9]+([._\-][a-z0-9]+)*)*$
+                              type: string
+                            tag:
+                              description: Tag is the version as the vendor publishes
+                                it — `2026.9.1`, `stable`.
+                              maxLength: 128
+                              pattern: ^[A-Za-z0-9_][A-Za-z0-9._-]*$
+                              type: string
+                          required:
+                          - repository
+                          type: object
+                          x-kubernetes-validations:
+                          - message: 'a vendored image needs a tag or a digest: without
+                              one there is no way to say which version of the repository
+                              to run'
+                            rule: has(self.tag) || has(self.digest)
                         name:
                           description: |-
                             Name identifies the process within the project. It is a DNS label
@@ -8293,6 +8681,10 @@ spec:
                           give the build to the worker or service that ships it, and
                           run this on that image'
                         rule: self.type != 'cron' || !has(self.build)
+                      - message: 'a workload is built from the repository or run from
+                          an image somebody else built, never both: keep `build` or
+                          keep `image`'
+                        rule: '!has(self.build) || !has(self.image)'
                     type: array
                     x-kubernetes-list-map-keys:
                     - name

@@ -212,7 +212,11 @@ func (r *BuildReconciler) runGate(
 	job := &batchv1.Job{}
 	switch err := r.Get(ctx, types.NamespacedName{Namespace: appNS, Name: name}, job); {
 	case apierrors.IsNotFound(err):
-		credsSecret := registrySecretName(project.Spec.Registry.ConnectionRef.Name)
+		// The credential this artifact is pulled with — the project's
+		// registry for an image the platform built, and the workload's own
+		// Connection for one it did not (empty for a public image, which is
+		// pulled anonymously).
+		credsSecret := pullSecretName(project, project.Spec.Processes, artifact.Workload)
 		if err := r.Create(ctx, gateJob(name, appNS, build, project, gate, credsSecret, artifactRef, r.QualityGateImage)); err != nil {
 			if apierrors.IsAlreadyExists(err) {
 				return false, true, nil
@@ -410,7 +414,7 @@ func (r *BuildReconciler) gateTarget(
 	}
 	connection := &kitchenv1alpha1.Connection{}
 	if err := r.Get(ctx, types.NamespacedName{
-		Namespace: build.Namespace, Name: project.Spec.Registry.ConnectionRef.Name,
+		Namespace: build.Namespace, Name: project.Spec.RegistryConnection(),
 	}, connection); err != nil {
 		return buildTarget{}, err
 	}

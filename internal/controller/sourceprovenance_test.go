@@ -88,12 +88,12 @@ func sourceFixtures(
 	project := &kitchenv1alpha1.Project{
 		ObjectMeta: metav1.ObjectMeta{Name: "shop", Namespace: PlatformNamespace},
 		Spec: kitchenv1alpha1.ProjectSpec{
-			Source: kitchenv1alpha1.GitSourceSpec{
+			Source: kitchenv1alpha1.ProjectSourceSpec{Git: &kitchenv1alpha1.GitSourceSpec{
 				ConnectionRef:      kitchenv1alpha1.LocalObjectReference{Name: "gh"},
 				Repo:               "acme/shop",
 				ProductionBranch:   "main",
 				RequirePullRequest: true,
-			},
+			}},
 		},
 	}
 	build := &kitchenv1alpha1.Build{
@@ -302,7 +302,7 @@ func TestAProjectThatDoesNotRequireReviewStillRecordsWhatItFound(t *testing.T) {
 			Approvals: []gitprovider.Approval{{Reviewer: "bob"}},
 		},
 	}, nil)
-	project.Spec.Source.RequirePullRequest = false
+	project.Spec.Source.Git.RequirePullRequest = false
 
 	status, refusal := reconciler.resolveSourceProvenance(context.Background(), build, project)
 	if refusal != nil {

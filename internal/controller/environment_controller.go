@@ -867,9 +867,13 @@ func (r *EnvironmentReconciler) applyDeployment(
 		// name derived from the same Connection, so the Deployment only has
 		// to name it — without which the pods sit in ImagePullBackOff while
 		// every other part of the environment reads as healthy.
-		deploy.Spec.Template.Spec.ImagePullSecrets = []corev1.LocalObjectReference{
-			{Name: registrySecretName(project.Spec.Registry.ConnectionRef.Name)},
-		}
+		//
+		// A web process running an image this platform did not build pulls
+		// with that image's own Connection instead, or with nothing where the
+		// image is public: see pullcredentials.go, which is the one place
+		// that question is answered.
+		deploy.Spec.Template.Spec.ImagePullSecrets = pullSecretsFor(
+			project, release.Spec.ConfigSnapshot.Processes, kitchenv1alpha1.WebProcessName)
 		// The volume claims this process mounts, written every time so
 		// that a claim taken away takes its mount with it.
 		volumes, volumeMounts := podVolumes(mounts)

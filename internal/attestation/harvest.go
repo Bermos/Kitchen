@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 )
@@ -299,4 +300,38 @@ func Restate(repository, digest string, statement Statement) (Statement, error) 
 // repository and digest the Build status carries separately.
 func ArtifactRef(repository, digest string) string {
 	return repository + "@" + digest
+}
+
+// Resolve is the digest an image reference names right now.
+//
+// It is what turns a vendored image's tag into something a Release can freeze
+// (#307). A tag is a moving target — the whole reason a Release records a
+// digest rather than what the project declared — so it is asked once, at the
+// moment the artifact is acquired, and never again for that release.
+//
+// A reference that already names a digest is answered without a request. That
+// is not only an optimisation: a project that pinned a digest is entitled to
+// deploy without the platform being able to reach the vendor's registry at
+// all.
+//
+// The answer is always `repository@sha256:…`, in the repository as written —
+// what came back is a digest for *this* repository, and rewriting the
+// repository from a redirect would name an artifact nobody asked for.
+func (s *Store) Resolve(ctx context.Context, ref string) (string, error) {
+	options := []name.Option{}
+	if s.PlainHTTP {
+		options = append(options, name.Insecure)
+	}
+	reference, err := name.ParseReference(ref, options...)
+	if err != nil {
+		return "", fmt.Errorf("%q is not an image reference: %w", ref, err)
+	}
+	if digest, ok := reference.(name.Digest); ok {
+		return ArtifactRef(digest.Context().Name(), digest.DigestStr()), nil
+	}
+	descriptor, err := remote.Head(reference, s.options(ctx)...)
+	if err != nil {
+		return "", fmt.Errorf("the digest of %s could not be read from its registry: %w", ref, err)
+	}
+	return ArtifactRef(reference.Context().Name(), descriptor.Digest.String()), nil
 }

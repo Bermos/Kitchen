@@ -95,8 +95,8 @@ func gateFixtures(t *testing.T, gates ...kitchenv1alpha1.QualityGateSpec) (
 	project := &kitchenv1alpha1.Project{
 		ObjectMeta: metav1.ObjectMeta{Name: "shop", Namespace: PlatformNamespace},
 		Spec: kitchenv1alpha1.ProjectSpec{
-			Source: kitchenv1alpha1.GitSourceSpec{Repo: "acme/shop"},
-			Registry: kitchenv1alpha1.RegistrySpec{
+			Source: kitchenv1alpha1.ProjectSourceSpec{Git: &kitchenv1alpha1.GitSourceSpec{Repo: "acme/shop"}},
+			Registry: &kitchenv1alpha1.RegistrySpec{
 				ConnectionRef: kitchenv1alpha1.LocalObjectReference{Name: "registry"},
 			},
 		},

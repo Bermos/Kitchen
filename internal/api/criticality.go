@@ -555,8 +555,8 @@ func (g *complianceGraph) connectionUses(project *kitchenv1alpha1.Project) map[s
 		}
 		uses[name] = append(uses[name], reason)
 	}
-	add(project.Spec.Source.ConnectionRef.Name, "source")
-	add(project.Spec.Registry.ConnectionRef.Name, "registry")
+	add(project.Spec.Source.GitSource().ConnectionRef.Name, "source")
+	add(project.Spec.RegistryConnection(), "registry")
 	for _, claim := range g.claimsOf(project.Name) {
 		if ref := claim.Spec.ConnectionRef; ref != nil {
 			add(ref.Name, "claim "+claim.Name)

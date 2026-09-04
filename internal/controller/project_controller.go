@@ -52,6 +52,13 @@ const (
 	condRegistryConnected = "RegistryConnected"
 	condWebhookRegistered = "WebhookRegistered"
 	condInitialBuild      = "InitialBuild"
+	// condPreviews says whether this project gets preview environments, and
+	// for one with no repository says why it cannot.
+	condPreviews = "Previews"
+
+	// reasonNoRepository is a repository's answer asked of a project that has
+	// none, because its source is an image somebody else built (#307).
+	reasonNoRepository = "NoRepository"
 
 	// initialBuildAnnotation says a Build was the platform's own idea rather
 	// than a push or a request, which is the difference between "nobody has
@@ -117,8 +124,9 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			Project:    project.Name,
 			Reason:     fmt.Sprintf("project %s appeared", project.Name),
 			Details: map[string]any{
-				"repo":             project.Spec.Source.Repo,
-				"productionBranch": project.Spec.Source.ProductionBranch,
+				"source":           projectSourceDescription(project),
+				"repo":             project.Spec.Source.GitSource().Repo,
+				"productionBranch": project.Spec.Source.GitSource().ProductionBranch,
 			},
 		}); err != nil {
 			return ctrl.Result{}, err
@@ -150,21 +158,38 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		})
 	}
 
-	sourceConn, err := r.checkConnection(ctx, project, project.Spec.Source.ConnectionRef.Name,
-		kitchenv1alpha1.CapabilityGitSource, condSourceConnected, setCond)
-	sourceOK := err == nil
-	_, err = r.checkConnection(ctx, project, project.Spec.Registry.ConnectionRef.Name,
-		kitchenv1alpha1.CapabilityImageStore, condRegistryConnected, setCond)
-	registryOK := err == nil
+	// A project whose source is an image has no repository to read, nothing
+	// to push, and no webhook to register — so it is asked none of the three
+	// (#307). Its own connection question is the pull credential, and that is
+	// asked of the image the workloads name rather than of the project.
+	var (
+		sourceConn        *kitchenv1alpha1.Connection
+		sourceOK          = true
+		registryOK        = true
+		retryInitialBuild bool
+		err               error
+	)
+	r.setPreviewsCondition(project, setCond)
+	if project.Spec.Source.HasRepository() {
+		sourceConn, err = r.checkConnection(ctx, project, project.Spec.Source.GitSource().ConnectionRef.Name,
+			kitchenv1alpha1.CapabilityGitSource, condSourceConnected, setCond)
+		sourceOK = err == nil
+		_, err = r.checkConnection(ctx, project, project.Spec.RegistryConnection(),
+			kitchenv1alpha1.CapabilityImageStore, condRegistryConnected, setCond)
+		registryOK = err == nil
 
-	if sourceOK {
-		r.ensureWebhook(ctx, project, sourceConn, setCond)
+		if sourceOK {
+			r.ensureWebhook(ctx, project, sourceConn, setCond)
+		}
+	} else {
+		meta.RemoveStatusCondition(&project.Status.Conditions, condSourceConnected)
+		meta.RemoveStatusCondition(&project.Status.Conditions, condRegistryConnected)
+		meta.RemoveStatusCondition(&project.Status.Conditions, condWebhookRegistered)
 	}
 
 	// The first build waits for both connections: a build with nowhere to
 	// push its image is a failed build, and the project is about to be
-	// requeued anyway.
-	retryInitialBuild := false
+	// requeued anyway. A project that builds nothing waits for neither.
 	if sourceOK && registryOK {
 		retryInitialBuild = r.ensureInitialBuild(ctx, project, sourceConn, setCond)
 	}
@@ -206,9 +231,9 @@ func (r *ProjectReconciler) finalize(ctx context.Context, project *kitchenv1alph
 		return ctrl.Result{}, nil
 	}
 
-	if project.Status.WebhookID != "" {
+	if project.Spec.Source.HasRepository() && project.Status.WebhookID != "" {
 		if provider, err := r.resolveProvider(ctx, project, nil); err == nil {
-			if err := provider.DeleteWebhook(ctx, project.Spec.Source.Repo, project.Status.WebhookID); err != nil {
+			if err := provider.DeleteWebhook(ctx, project.Spec.Source.GitSource().Repo, project.Status.WebhookID); err != nil {
 				log.Error(err, "failed to delete webhook, continuing", "webhookID", project.Status.WebhookID)
 			}
 		}
@@ -249,7 +274,7 @@ func (r *ProjectReconciler) finalize(ctx context.Context, project *kitchenv1alph
 		Reason: fmt.Sprintf(
 			"project %s deleted: its environments, builds, releases, domains, claims and namespace went with it",
 			project.Name),
-		Details: map[string]any{"repo": project.Spec.Source.Repo},
+		Details: map[string]any{"source": projectSourceDescription(project)},
 	}); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -418,7 +443,7 @@ func (r *ProjectReconciler) ensureWebhook(
 	}
 
 	hookURL := fmt.Sprintf("%s/webhooks/git/%s", apiExternalURL(kitchen), conn.Name)
-	id, err := provider.EnsureWebhook(ctx, project.Spec.Source.Repo, gitprovider.WebhookSpec{
+	id, err := provider.EnsureWebhook(ctx, project.Spec.Source.GitSource().Repo, gitprovider.WebhookSpec{
 		URL:    hookURL,
 		Secret: secret,
 		Events: []string{"push", "pull_request"},
@@ -440,7 +465,7 @@ func (r *ProjectReconciler) resolveProvider(
 ) (gitprovider.Provider, error) {
 	if conn == nil {
 		conn = &kitchenv1alpha1.Connection{}
-		key := types.NamespacedName{Namespace: project.Namespace, Name: project.Spec.Source.ConnectionRef.Name}
+		key := types.NamespacedName{Namespace: project.Namespace, Name: project.Spec.Source.GitSource().ConnectionRef.Name}
 		if err := r.Get(ctx, key, conn); err != nil {
 			return nil, err
 		}
@@ -590,8 +615,8 @@ func (r *ProjectReconciler) mapConnectionToProjects(ctx context.Context, obj cli
 	requests := make([]ctrl.Request, 0, len(projects.Items))
 	for i := range projects.Items {
 		project := &projects.Items[i]
-		if project.Spec.Source.ConnectionRef.Name != conn.Name &&
-			project.Spec.Registry.ConnectionRef.Name != conn.Name {
+		if project.Spec.Source.GitSource().ConnectionRef.Name != conn.Name &&
+			project.Spec.RegistryConnection() != conn.Name {
 			continue
 		}
 		requests = append(requests, ctrl.Request{NamespacedName: types.NamespacedName{
@@ -645,4 +670,41 @@ func (r *ProjectReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&kitchenv1alpha1.Connection{}, handler.EnqueueRequestsFromMapFunc(r.mapConnectionToProjects)).
 		Named("project").
 		Complete(r)
+}
+
+// setPreviewsCondition says, in words, whether this project gets preview
+// environments — and for a project with no repository, why it does not.
+//
+// It is a condition rather than a refusal at admission because
+// `previews.enabled` defaults to true: a vendored project that never mentioned
+// previews would otherwise be refused outright. And it is written rather than
+// left implicit because a preview that silently never appears reads as a
+// fault — which is the whole of what #307 asked for here.
+func (r *ProjectReconciler) setPreviewsCondition(
+	project *kitchenv1alpha1.Project,
+	setCond func(string, metav1.ConditionStatus, string, string),
+) {
+	switch {
+	case !project.Spec.Source.HasRepository():
+		setCond(condPreviews, metav1.ConditionFalse, reasonNoRepository, fmt.Sprintf(
+			"previews are environments for pull requests, and this project has no repository to open one "+
+				"against: its source is the image %s. Nothing about it changes until that image does.",
+			project.Spec.Source.ImageSource().Reference()))
+	case !project.Spec.Previews.IsEnabled():
+		setCond(condPreviews, metav1.ConditionFalse, "Disabled",
+			"previews are turned off for this project: a pull request against it gets no environment of its own")
+	default:
+		setCond(condPreviews, metav1.ConditionTrue, "Enabled",
+			"a pull request against this project gets a preview environment of its own")
+	}
+}
+
+// projectSourceDescription names where a project's software comes from, for
+// the records that used to name a repository and now have two answers to
+// choose between.
+func projectSourceDescription(project *kitchenv1alpha1.Project) string {
+	if project.Spec.Source.HasRepository() {
+		return project.Spec.Source.GitSource().Repo
+	}
+	return project.Spec.Source.ImageSource().Reference()
 }

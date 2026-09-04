@@ -38,6 +38,31 @@ watch(open, (value) => {
   if (value) void connections.refresh();
 });
 
+// Which kind of project is being created. A project's source is a repository
+// this platform builds or an image somebody else built, never both (#307), so
+// this is one form with two shapes rather than two flows: the name, the
+// preview switch and the create button are the same question either way, and
+// only what is between them changes.
+const sourceKind = ref<"repo" | "image">("repo");
+const sourceKinds = [
+  { label: "A repository", value: "repo" },
+  { label: "An image", value: "image" },
+];
+const fromRepo = computed(() => sourceKind.value === "repo");
+
+// The vendored image: where it lives, which version of it to run, and what it
+// is pulled with. The pull credential is optional and left out by default,
+// because the great majority of vendored images are public — asking for a
+// Connection would be one somebody had to invent.
+const imageRepository = ref("");
+const imageVersion = ref("");
+const imageConnection = ref<string>();
+
+// A digest is `sha256:` and sixty-four hex digits; anything else is a tag.
+// One field rather than two, because a vendor publishes one string and
+// nobody thinks of it as two kinds of thing.
+const versionIsDigest = computed(() => /^sha256:[a-f0-9]{64}$/.test(imageVersion.value.trim()));
+
 const name = ref("");
 const nameEdited = ref(false);
 const repo = ref("");
@@ -212,42 +237,66 @@ watch(repo, (value) => {
 });
 
 // "acme/shop" suggests the name "shop", cut down to what the API accepts —
-// until the name is edited by hand, at which point it is the user's.
-watch(repo, (value) => {
+// until the name is edited by hand, at which point it is the user's. An image
+// reference suggests one the same way, from its last path segment.
+function suggestName(from: string) {
   if (nameEdited.value) return;
-  const tail = value.split("/").pop() ?? "";
+  const tail = from.split("/").pop() ?? "";
   name.value = tail
     .toLowerCase()
     .replace(/[^a-z0-9-]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 46);
-});
+}
+watch(repo, suggestName);
+watch(imageRepository, suggestName);
 
-const ready = computed(() =>
-  Boolean(name.value && repo.value.includes("/") && connection.value && registry.value),
-);
+const ready = computed(() => {
+  if (!name.value) return false;
+  if (fromRepo.value) return Boolean(repo.value.includes("/") && connection.value && registry.value);
+  return Boolean(imageRepository.value.trim() && imageVersion.value.trim());
+});
 
 const creating = ref(false);
 async function create() {
   if (!ready.value || creating.value) return;
   creating.value = true;
   try {
-    const project = await api.createProject({
-      name: name.value,
-      repo: repo.value,
-      connection: connection.value!,
-      registry: registry.value!,
-      productionBranch: productionBranch.value || undefined,
-      previews: previews.value,
-      rootDirectory: rootDirectory.value || undefined,
-      dockerfilePath: dockerfilePath.value || undefined,
-      dockerfileTarget: dockerfileTarget.value || undefined,
-    });
+    // Only the fields the chosen source has. A repository's settings sent
+    // with an image are refused by the API rather than ignored, which is the
+    // right answer and a poor thing to make somebody read.
+    const version = imageVersion.value.trim();
+    const project = await api.createProject(
+      fromRepo.value
+        ? {
+            name: name.value,
+            repo: repo.value,
+            connection: connection.value!,
+            registry: registry.value!,
+            productionBranch: productionBranch.value || undefined,
+            previews: previews.value,
+            rootDirectory: rootDirectory.value || undefined,
+            dockerfilePath: dockerfilePath.value || undefined,
+            dockerfileTarget: dockerfileTarget.value || undefined,
+          }
+        : {
+            name: name.value,
+            image: {
+              repository: imageRepository.value.trim(),
+              tag: versionIsDigest.value ? undefined : version,
+              digest: versionIsDigest.value ? version : undefined,
+              connection: imageConnection.value || undefined,
+            },
+          },
+    );
     open.value = false;
     name.value = "";
     nameEdited.value = false;
     repo.value = "";
     typedRepo.value = "";
+    imageRepository.value = "";
+    imageVersion.value = "";
+    imageConnection.value = undefined;
     branchEdited.value = false;
     rootDirectory.value = "";
     dockerfilePath.value = "";
@@ -272,7 +321,7 @@ async function create() {
   <UModal
     v-model:open="open"
     title="New project"
-    description="Connect a repository and Kitchen builds and deploys it."
+    description="Connect a repository and Kitchen builds and deploys it — or point it at an image somebody else built."
   >
     <slot>
       <UButton icon="i-lucide-plus" size="sm">New project</UButton>
@@ -287,7 +336,62 @@ async function create() {
           icon="i-lucide-triangle-alert"
           :title="connections.error.value"
         />
-        <UFormField label="Repository" :help="repoNote" required>
+        <!-- Which kind of project. It is first because everything under it
+             depends on the answer, and it is two buttons rather than two
+             modals because the name, the previews and the create button are
+             the same question either way. -->
+        <UFormField label="Source">
+          <UTabs
+            v-model="sourceKind"
+            :items="sourceKinds"
+            :content="false"
+            size="sm"
+            class="w-full"
+          />
+        </UFormField>
+
+        <template v-if="!fromRepo">
+          <UFormField
+            label="Image repository"
+            help="Where the image lives, registry host included and without a tag — ghcr.io/home-assistant/home-assistant."
+            required
+          >
+            <UInput v-model="imageRepository" placeholder="ghcr.io/acme/thing" class="w-full font-mono" autofocus />
+          </UFormField>
+          <UFormField
+            label="Version"
+            :help="
+              versionIsDigest
+                ? 'A digest: the exact content, which never moves.'
+                : 'A tag as the vendor publishes it, or a sha256: digest to pin the exact content.'
+            "
+            required
+          >
+            <UInput v-model="imageVersion" placeholder="2026.9.1" class="w-full font-mono" />
+          </UFormField>
+          <UFormField
+            label="Pull credential"
+            :help="
+              imageConnection
+                ? registryNote
+                : 'Leave it empty for a public image, which is pulled anonymously. This is never the connection a project pushes its own builds to.'
+            "
+          >
+            <USelect
+              v-model="imageConnection"
+              :items="registryOptions"
+              :loading="connections.loading.value"
+              placeholder="None — a public image"
+              class="w-full"
+            />
+          </UFormField>
+          <p class="text-xs text-muted">
+            There is no repository, so there is nothing to build, nowhere to push and no pull request to preview.
+            The digest this resolves to is what the release records, so a rollback restores the exact image it ran.
+          </p>
+        </template>
+
+        <UFormField v-if="fromRepo" label="Repository" :help="repoNote" required>
           <USelectMenu
             v-if="canPickRepo"
             v-model="repo"
@@ -316,7 +420,7 @@ async function create() {
         >
           <UInput v-model="name" class="w-full font-mono" @input="nameEdited = true" />
         </UFormField>
-        <div class="grid gap-4 sm:grid-cols-2">
+        <div v-if="fromRepo" class="grid gap-4 sm:grid-cols-2">
           <UFormField label="Git connection" :help="sourceNote" required>
             <USelect
               v-model="connection"
@@ -337,7 +441,7 @@ async function create() {
           </UFormField>
         </div>
         <p
-          v-if="connections.data.value && (!sourcesAvailable.length || !registriesAvailable.length)"
+          v-if="fromRepo && connections.data.value && (!sourcesAvailable.length || !registriesAvailable.length)"
           class="text-xs text-warning"
         >
           {{ !sourcesAvailable.length ? "No gitSource connection yet" : "No imageStore connection yet" }} —
@@ -346,7 +450,7 @@ async function create() {
           </template>
           <template v-else>ask an operator to add one before creating this project.</template>
         </p>
-        <UFormField label="Production branch" help="Builds of this branch promote to production.">
+        <UFormField v-if="fromRepo" label="Production branch" help="Builds of this branch promote to production.">
           <UInput v-model="productionBranch" class="w-44 font-mono" @input="branchEdited = true" />
         </UFormField>
 
@@ -355,7 +459,7 @@ async function create() {
              or an unconventionally-placed Dockerfile needs, so they sit with
              the verdict they explain rather than in a settings page reached
              after the first build has already failed. -->
-        <div class="rounded-md border border-default p-3 space-y-3">
+        <div v-if="fromRepo" class="rounded-md border border-default p-3 space-y-3">
           <div class="grid gap-3 sm:grid-cols-2">
             <UFormField label="Root directory" help="The directory that is built. Empty is the repository itself.">
               <UInput v-model="rootDirectory" placeholder="apps/shop" class="w-full font-mono" />
@@ -401,6 +505,7 @@ async function create() {
           </p>
         </div>
         <USwitch
+          v-if="fromRepo"
           v-model="previews"
           label="Preview environments"
           description="Every pull request gets its own environment, gated behind platform login."

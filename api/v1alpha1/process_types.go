@@ -163,6 +163,7 @@ const DefaultRunTimeout = time.Hour
 // +kubebuilder:validation:XValidation:rule="!has(self.singleton) || !self.singleton || self.type != 'cron'",message="a scheduled process cannot be a singleton: whether two of its runs may overlap is concurrencyPolicy, and Forbid is its default"
 // +kubebuilder:validation:XValidation:rule="!has(self.singleton) || !self.singleton || !has(self.replicas) || self.replicas <= 1",message="a singleton workload cannot run more than one replica: leave replicas at 1, or turn singleton off"
 // +kubebuilder:validation:XValidation:rule="self.type != 'cron' || !has(self.build)",message="a scheduled process runs an image, it is not one: give the build to the worker or service that ships it, and run this on that image"
+// +kubebuilder:validation:XValidation:rule="!has(self.build) || !has(self.image)",message="a workload is built from the repository or run from an image somebody else built, never both: keep `build` or keep `image`"
 type ProcessSpec struct {
 	// Name identifies the process within the project. It is a DNS label
 	// because it appears in the name of everything the process
@@ -233,6 +234,27 @@ type ProcessSpec struct {
 	// declare the build there and point the schedule at it.
 	// +optional
 	Build *ProcessBuildSpec `json:"build,omitempty"`
+
+	// Image says this workload runs an image this platform did not build:
+	// a repository somewhere, and a tag or a digest of it (#307).
+	//
+	// It is the third answer to the question [Build] asks, and the reason
+	// the two exclude each other is that they are answers to one question.
+	// Absent from both is the original arrangement and still the default:
+	// the workload runs the project's own image with another command.
+	//
+	// A unit may mix them freely — an upstream image as one workload and a
+	// sidecar built from the repository as another — and that is the case
+	// this field exists for. They ship in one Release, which records the
+	// digest each of them resolved to, so the unit rolls back as one and the
+	// vendored digests come back exactly as the built ones do.
+	//
+	// It takes no build strategy, no root directory and no Dockerfile
+	// because there is nothing to detect: [ProcessBuildSpec] deliberately
+	// has no `auto` that reaches outside the repository (#305), and a
+	// vendored workload sidesteps that question rather than adding to it.
+	// +optional
+	Image *ImageSourceSpec `json:"image,omitempty"`
 
 	// Replicas is how many copies of a worker run. It is meaningless for a
 	// scheduled process — how many run at once is ConcurrencyPolicy's

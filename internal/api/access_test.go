@@ -103,12 +103,12 @@ func blogFixtures() []runtime.Object {
 	project := &kitchenv1alpha1.Project{
 		ObjectMeta: metav1.ObjectMeta{Name: otherProject, Namespace: testNamespace},
 		Spec: kitchenv1alpha1.ProjectSpec{
-			Source: kitchenv1alpha1.GitSourceSpec{
+			Source: kitchenv1alpha1.ProjectSourceSpec{Git: &kitchenv1alpha1.GitSourceSpec{
 				ConnectionRef:    kitchenv1alpha1.LocalObjectReference{Name: "gh"},
 				Repo:             "acme/blog",
 				ProductionBranch: defaultProductionBranch,
-			},
-			Registry: kitchenv1alpha1.RegistrySpec{
+			}},
+			Registry: &kitchenv1alpha1.RegistrySpec{
 				ConnectionRef: kitchenv1alpha1.LocalObjectReference{Name: "registry"},
 			},
 		},

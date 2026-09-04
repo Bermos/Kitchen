@@ -133,6 +133,21 @@ export interface SecuritySettings {
   dropCapabilities?: string[];
 }
 
+/** An image this platform did not build: where it lives, which version of it
+ * to run, and what it is pulled with. The credential itself never travels —
+ * it is a Connection's name, like every other credential this API names and
+ * never reads back. */
+export interface ImageSource {
+  repository: string;
+  tag?: string;
+  digest?: string;
+  connection?: string;
+  /** The two of them as one string: `repository@digest` where a digest is
+   * pinned, `repository:tag` otherwise. It is derived once, by the API, so
+   * that three clients cannot derive it three ways. */
+  reference: string;
+}
+
 export interface Project {
   name: string;
   /** The calling account's role on this project: "admin", "developer" or
@@ -142,9 +157,16 @@ export interface Project {
    * offers is derived from the same table the API enforces. An operator reads
    * "admin" on every project, including ones they are not listed on. */
   role: string;
+  /** The repository this project is built from, and the two Connections that
+   * read it and hold what it pushes. All three are empty on a project whose
+   * software this platform did not build — its source is `image` instead, and
+   * a project's source is one or the other. */
   repo: string;
   connection: string;
   registry: string;
+  /** The web process's image, where this project runs one somebody else
+   * built. Absent for a project built from a repository. */
+  image?: ImageSource;
   productionBranch: string;
   /** Refuse to build a production-branch commit the git provider cannot say
    *  arrived through a reviewed pull request. */
@@ -305,11 +327,25 @@ export interface ProjectSettings {
   rpo?: string;
 }
 
+/** A vendored image, as the create flow sends one. `connection` is the
+ * Connection it is pulled with, and is left out for a public image. */
+export interface NewImageSource {
+  repository: string;
+  tag?: string;
+  digest?: string;
+  connection?: string;
+}
+
 export interface NewProject {
   name: string;
-  repo: string;
-  connection: string;
-  registry: string;
+  /** A repository this platform builds, with the two Connections that read it
+   * and hold what it pushes — or `image`, software somebody else built.
+   * Exactly one of the two is sent: a project's source is one or the other,
+   * and sending both is refused. */
+  repo?: string;
+  connection?: string;
+  registry?: string;
+  image?: NewImageSource;
   productionBranch?: string;
   previews?: boolean;
   /** The build context, when the preflight showed it was wrong and somebody
@@ -1287,6 +1323,11 @@ export interface Process {
   image?: string;
   /** This workload's own build, when it has one. */
   build?: ProcessBuild;
+  /** What this workload declares when its image is one the platform did not
+   * build. `image` above is what the release resolved that to; the two differ
+   * exactly when the tag has moved since, which is the difference a rollback
+   * is about. */
+  imageSource?: ImageSource;
   /** The worker's health check, timings resolved. Absent for a worker that
    * declared none: unlike the web process, a worker is probed only where it
    * asked to be. */

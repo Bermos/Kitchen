@@ -100,6 +100,7 @@ much of it.
 | `command`, `args` | all | Exec form — a list of words, never a shell line. Absent runs the image's own entrypoint, which is what a workload with its own image wants and never what a buildpacks-built one does. |
 | `port` | service | The port it listens on, and the port its siblings reach it on — the same number, deliberately. **Required on a service and refused on anything else**: only a service is addressed, and a port on a worker would read back as a setting that took while nothing ever connected to it. |
 | `build` | worker, service, task | This workload's own build — see [Several workloads, one commit](#several-workloads-one-commit). Absent means it runs the project's image with another command. Refused on a cron process. |
+| `image` | all | An image this platform did not build — see [A workload that runs a vendored image](#a-workload-that-runs-a-vendored-image). It excludes `build`: a workload is built here or published elsewhere, never both. Absent from both still means the project's own image run with another command. |
 | `replicas` | worker, service | How many copies. `0` is allowed: a workload declared and parked, which is how one is turned off without losing its command. |
 | `singleton` | worker, service | Two of this workload must never run at once — see below. Refuses `replicas` above 1, and refused on a cron process and on a task, neither of which has a second copy to overlap. |
 | `cpu`, `memory` | all | Kubernetes quantities, applied as request and limit alike — the same two strings the web process takes. |
@@ -332,6 +333,47 @@ What that produces:
 A workload with no `build` runs the project's image with another command, which
 is what a worker sharing the web process's codebase wants and is one build
 rather than two.
+
+### A workload that runs a vendored image
+
+`build` says how a workload's image is produced from the repository, and its
+absence used to mean one thing. `image` is the third answer: an image this
+platform did not build.
+
+```json
+{"processes": [
+  {"name": "cache", "type": "service", "port": 6379,
+   "image": {"repository": "docker.io/library/redis", "tag": "7.4"}},
+  {"name": "api", "type": "service", "port": 8080,
+   "build": {"rootDirectory": "services/api"}}
+]}
+```
+
+| Field | What it means |
+| --- | --- |
+| `repository` | Where the image lives, registry host included and without a tag or a digest. |
+| `tag` | The version as the vendor publishes it. One of `tag` and `digest` is required. |
+| `digest` | `sha256:` and sixty-four hex digits, pinning the exact content. Naming both means "this tag, and it must still be this content". |
+| `connection` | A Connection with the `imageStore` capability holding a docker config for that registry. **Left out for a public image**, which is pulled anonymously. |
+
+The unit above is the case this exists for: an upstream image as one workload
+and a sidecar built from this repository as another, in one Release. It
+deploys as one, previews the built half's pull requests, and **rolls back as
+one** — the Release records the digest every workload resolved to, and
+restoring it restores that exact set whether the platform built the image or
+not.
+
+**The credential is the image's, not the project's.** A workload with an
+`image` pulls with the Connection named on it — or with nothing where it names
+none — while everything the platform built still pulls with what the build
+pushed under. The two are different registries and, for a vendored image,
+different accounts.
+
+`image` takes no strategy, no root directory and no Dockerfile, because there
+is nothing to detect. A workload of a project **with no repository at all** can
+only be vendored; declaring a `build` there is refused, since there is no
+repository to build from — see
+[a project whose software this platform did not build](projects.md#a-project-whose-software-this-platform-did-not-build).
 
 ### Reaching one workload from another
 

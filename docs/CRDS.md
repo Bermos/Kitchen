@@ -510,7 +510,9 @@ for an extension should not be able to choose the image it arrives in.
 
 ## `Project` (namespaced: kitchen-system)
 
-The unit a user thinks in: a repo that becomes a running app.
+The unit a user thinks in: software that becomes a running app. Usually a
+repository this platform builds; since #307, optionally an image somebody else
+built.
 
 ```yaml
 apiVersion: kitchen.bermos.dev/v1alpha1
@@ -518,13 +520,19 @@ kind: Project
 metadata:
   name: my-shop
 spec:
-  source:
-    connectionRef: { name: github-main }
-    repo: bermos/my-shop
-    productionBranch: main
-    requirePullRequest: false           # refuse a production commit the provider cannot say was
+  source:                               # a union: exactly one member is set
+    git:                                # a repository this platform builds
+      connectionRef: { name: github-main }
+      repo: bermos/my-shop
+      productionBranch: main
+      requirePullRequest: false         # refuse a production commit the provider cannot say was
                                         # reviewed. Preview builds are unaffected; machine
                                         # identities on the platform's allowlist are exempt
+    # image:                            # ...or the web process's image, published by somebody else
+    #   repository: ghcr.io/home-assistant/home-assistant
+    #   tag: "2026.9.1"                 # a tag or a digest; both means "this tag, and still this content"
+    #   digest: sha256:…
+    #   connectionRef: { name: ghcr }   # what it is *pulled* with; omit for a public image
   build:
     strategy: auto                      # auto takes the Kitchen default; dockerfile | buildpacks decide here
     dockerfilePath: Dockerfile          # when strategy: dockerfile; relative to rootDirectory,
@@ -538,8 +546,8 @@ spec:
     rootDirectory: .                    # the build root: the directory that is built, and what
                                         # every path the project declares is relative to. Both
                                         # strategies mean the same directory by it
-  registry:
-    connectionRef: { name: harbor }
+  registry:                             # where builds push. Required with source.git,
+    connectionRef: { name: harbor }     # and refused with source.image, which builds nothing
   previews:
     enabled: true
     protected: true                     # gate preview URLs behind platform login (default)
@@ -625,6 +633,13 @@ spec:
                                         # stage; a stage on a buildpacks workload
                                         # fails the build naming this workload
         rootDirectory: services/api     # this workload's build root
+    - name: cache                       # a workload running an image nobody here
+      type: service                     # built: the third answer to what `build` asks
+      port: 6379
+      image:                            # excludes `build`; a workload is one or the other
+        repository: docker.io/library/redis
+        tag: "7.4"                      # a tag or a digest, as above
+        # connectionRef: { name: ghcr } # what it is pulled with; omit for a public image
     - name: nightly-report              # a batch/v1 CronJob; one firing is a run
       type: cron
       schedule: "0 3 * * *"             # five fields, read in UTC
@@ -634,8 +649,9 @@ spec:
       previews: false                   # unset means off for a worker and a
                                         # cron, and on for a service and a task
 status:
-  conditions: [...]                     # Ready, SourceConnected, RegistryConnected,
-                                        # WebhookRegistered, InitialBuild
+  conditions: [...]                     # Ready, Previews, SourceConnected, RegistryConnected,
+                                        # WebhookRegistered, InitialBuild. The middle three
+                                        # belong to a repository and are absent without one
   productionEnvironmentRef: { name: my-shop-production }
   latestBuildRef: { name: my-shop-bld-8f3a2c1 }
   initialBuildRef: { name: my-shop-bld-8f3a2c1 }   # the build the platform made
@@ -647,6 +663,25 @@ push: the reconciler resolves the production branch's tip and creates one
 Build of it as soon as both connections are usable, and records it here so it
 is never done twice. The `InitialBuild` condition carries why it has not
 happened yet when it has not.
+
+**A project whose source is an image has no repository, and is asked nothing a
+repository is asked.** No source Connection, no registry to push to, no
+webhook, and no pull requests — so `SourceConnected`, `RegistryConnected` and
+`WebhookRegistered` are not written at all, and the `Previews` condition is
+`False` with reason `NoRepository` and a message saying why rather than the
+previews quietly never appearing. Its `initialBuildRef` is an **acquisition**:
+a Build with no commit, which resolves the digest the image reference names,
+freezes it onto a Release and runs no builder. Nothing fakes a commit — the
+Build names no SHA and no branch, so the commit-shaped policy rules stay inert
+rather than being satisfied by a substitute.
+
+A unit may mix the two: a project built from a repository can carry a workload
+that runs an upstream image (`processes[].image` above). They ship in one
+Release, which records the digest every workload resolved to, so the unit
+deploys and rolls back as one — the vendored digests restored exactly as the
+built ones are. The pods pull with the image's own `connectionRef`, or with
+nothing where it names none; only what the platform built pulls with what the
+build pushed under.
 
 Two of those reasons look alike and are not. `NoCommit` — an empty repository,
 or a production branch that is not there — is the project's own configuration
@@ -873,11 +908,11 @@ metadata:
   ownerReferences: [Project my-shop]
 spec:
   projectRef: { name: my-shop }
-  git:
-    sha: 8f3a2c1d...
-    branch: feat/checkout
-    message: "Add checkout flow"
-    author: bermos
+  git:                                  # the commit this builds. Empty for an *acquisition* —
+    sha: 8f3a2c1d...                    # a Build of a project whose source is an image, which
+    branch: feat/checkout               # resolves a digest and runs no builder. A SHA and a
+    message: "Add checkout flow"        # branch, or neither: half a commit is refused at
+    author: bermos                      # admission, and nothing fakes one
     pullRequest: 42                     # unset for direct pushes
 status:
   phase: Succeeded                      # Queued | Running | Succeeded | Failed | Cancelled

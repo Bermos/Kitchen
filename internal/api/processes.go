@@ -92,6 +92,12 @@ type processView struct {
 	// Build is this workload's own build, when it has one: which directory
 	// of the repository it is and how the image comes out of it.
 	Build *processBuildView `json:"build,omitempty"`
+	// ImageSource is what this workload declares when the image is one the
+	// platform did not build: a repository somebody else publishes and a tag
+	// or a digest of it. It is the declaration, where `Image` above is what
+	// the release resolved it to — the two differ exactly when a tag has
+	// moved since, which is the difference a rollback is about.
+	ImageSource *imageSourceView `json:"imageSource,omitempty"`
 	// ConcurrencyPolicy and Timeout are a scheduled process's; Replicas is a
 	// worker's declared count and ReadyReplicas what is actually up.
 	ConcurrencyPolicy string `json:"concurrencyPolicy,omitempty"`
@@ -228,14 +234,15 @@ func newProcessView(
 	release string,
 ) processView {
 	view := processView{
-		Name:     process.Name,
-		Type:     string(process.Type),
-		Command:  process.Command,
-		Args:     process.Args,
-		Schedule: process.Schedule,
-		Port:     process.Port,
-		Build:    newProcessBuildView(process.Build),
-		Healthy:  true,
+		Name:        process.Name,
+		Type:        string(process.Type),
+		Command:     process.Command,
+		Args:        process.Args,
+		Schedule:    process.Schedule,
+		Port:        process.Port,
+		Build:       newProcessBuildView(process.Build),
+		ImageSource: newImageSourceView(process.Image),
+		Healthy:     true,
 	}
 	switch {
 	case process.Type == kitchenv1alpha1.ProcessCron:

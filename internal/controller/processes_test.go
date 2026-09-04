@@ -162,11 +162,11 @@ var _ = Describe("Workers and scheduled jobs", func() {
 		Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, &kitchenv1alpha1.Project{
 			ObjectMeta: metav1.ObjectMeta{Name: projectName, Namespace: namespace},
 			Spec: kitchenv1alpha1.ProjectSpec{
-				Source: kitchenv1alpha1.GitSourceSpec{
+				Source: kitchenv1alpha1.ProjectSourceSpec{Git: &kitchenv1alpha1.GitSourceSpec{
 					ConnectionRef: kitchenv1alpha1.LocalObjectReference{Name: "gh"},
 					Repo:          "acme/procshop",
-				},
-				Registry: kitchenv1alpha1.RegistrySpec{
+				}},
+				Registry: &kitchenv1alpha1.RegistrySpec{
 					ConnectionRef: kitchenv1alpha1.LocalObjectReference{Name: "registry"},
 				},
 				Previews: kitchenv1alpha1.PreviewsSpec{Protected: ptr.To(false)},
@@ -580,7 +580,7 @@ func runJob(
 func TestProcessPodSpecProbes(t *testing.T) {
 	release := &kitchenv1alpha1.Release{Spec: kitchenv1alpha1.ReleaseSpec{Image: "registry.example.com/app@sha256:abc"}}
 	project := &kitchenv1alpha1.Project{Spec: kitchenv1alpha1.ProjectSpec{
-		Registry: kitchenv1alpha1.RegistrySpec{ConnectionRef: kitchenv1alpha1.LocalObjectReference{Name: "harbor"}},
+		Registry: &kitchenv1alpha1.RegistrySpec{ConnectionRef: kitchenv1alpha1.LocalObjectReference{Name: "harbor"}},
 	}}
 
 	for name, tc := range map[string]struct {
@@ -663,7 +663,7 @@ func TestProcessPodSpecCarriesTheProjectsSecurityPosture(t *testing.T) {
 		},
 	}}
 	project := &kitchenv1alpha1.Project{Spec: kitchenv1alpha1.ProjectSpec{
-		Registry: kitchenv1alpha1.RegistrySpec{ConnectionRef: kitchenv1alpha1.LocalObjectReference{Name: "harbor"}},
+		Registry: &kitchenv1alpha1.RegistrySpec{ConnectionRef: kitchenv1alpha1.LocalObjectReference{Name: "harbor"}},
 	}}
 
 	spec := processPodSpec(release, project,

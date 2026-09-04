@@ -67,7 +67,7 @@ func (r *BuildReconciler) detectFramework(
 		return framework.Framework{}, err
 	}
 	return detect.Framework(ctx, reader, detect.Target{
-		Repo:               project.Spec.Source.Repo,
+		Repo:               project.Spec.Source.GitSource().Repo,
 		Ref:                build.Spec.Git.SHA,
 		RootDirectory:      buildRootDir(project),
 		DockerfilePath:     buildDockerfilePath(project, build),
@@ -123,7 +123,7 @@ func (r *BuildReconciler) detectWorkloads(
 		root := detect.NormalizeRoot(workload.Build.RootDirectory)
 		dockerfile := detect.NormalizeDockerfile(workload.Build.DockerfilePath)
 		signals, err := detect.Signals(ctx, reader, detect.Target{
-			Repo:           project.Spec.Source.Repo,
+			Repo:           project.Spec.Source.GitSource().Repo,
 			Ref:            build.Spec.Git.SHA,
 			RootDirectory:  root,
 			DockerfilePath: dockerfile,
@@ -166,7 +166,7 @@ func undetectedWorkload(
 ) string {
 	return fmt.Sprintf(
 		"workload %q: %s in %s at %s: add %s, or set workload %q's build.strategy to dockerfile or buildpacks",
-		workload, detect.ErrNotRecognised, project.Spec.Source.Repo, detect.ShortRef(build.Spec.Git.SHA),
+		workload, detect.ErrNotRecognised, project.Spec.Source.GitSource().Repo, detect.ShortRef(build.Spec.Git.SHA),
 		path.Join(root, dockerfile), workload)
 }
 
@@ -181,7 +181,7 @@ func (r *BuildReconciler) sourceReaderFor(
 	project *kitchenv1alpha1.Project,
 ) (gitprovider.SourceReader, error) {
 	conn := &kitchenv1alpha1.Connection{}
-	key := types.NamespacedName{Namespace: project.Namespace, Name: project.Spec.Source.ConnectionRef.Name}
+	key := types.NamespacedName{Namespace: project.Namespace, Name: project.Spec.Source.GitSource().ConnectionRef.Name}
 	if err := r.Get(ctx, key, conn); err != nil {
 		return nil, fmt.Errorf("%w: %w", errSourceUnreadable, err)
 	}
@@ -309,7 +309,7 @@ func (r *BuildReconciler) readConfig(
 		return &res, updateErr
 	}
 	config, err := repoconfig.Read(ctx, reader, repoconfig.Target{
-		Repo:          project.Spec.Source.Repo,
+		Repo:          project.Spec.Source.GitSource().Repo,
 		Ref:           build.Spec.Git.SHA,
 		RootDirectory: buildRootDir(project),
 	})

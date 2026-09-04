@@ -131,7 +131,7 @@ func (r *BuildReconciler) resolveSourceProvenance(
 		return status, nil
 	}
 
-	provenance, err := reader.CommitProvenance(ctx, project.Spec.Source.Repo, build.Spec.Git.SHA)
+	provenance, err := reader.CommitProvenance(ctx, project.Spec.Source.GitSource().Repo, build.Spec.Git.SHA)
 	if err != nil {
 		// An outage is not a violation. See the note above: failing closed
 		// here stops the deployment that fixes the outage.
@@ -287,13 +287,13 @@ func sourceBreakGlassTransition(
 // build is exempted for is being the review vehicle, and only the event that
 // created it can establish that.
 func requiresPullRequest(build *kitchenv1alpha1.Build, project *kitchenv1alpha1.Project) bool {
-	if !project.Spec.Source.RequirePullRequest {
+	if !project.Spec.Source.GitSource().RequirePullRequest {
 		return false
 	}
 	if build.Spec.Git.PullRequest != nil {
 		return false
 	}
-	return build.Spec.Git.Branch == project.Spec.Source.ProductionBranch
+	return build.Spec.Git.Branch == project.Spec.Source.GitSource().ProductionBranch
 }
 
 // machineIdentity answers which allowlisted identity a commit's author matches,
@@ -372,7 +372,7 @@ func (r *BuildReconciler) changeReaderFor(
 ) (gitprovider.ChangeReader, bool) {
 	connection := &kitchenv1alpha1.Connection{}
 	key := types.NamespacedName{
-		Namespace: project.Namespace, Name: project.Spec.Source.ConnectionRef.Name,
+		Namespace: project.Namespace, Name: project.Spec.Source.GitSource().ConnectionRef.Name,
 	}
 	if err := r.Get(ctx, key, connection); err != nil {
 		return nil, false
@@ -415,7 +415,7 @@ func sourceRecord(
 	source *kitchenv1alpha1.SourceProvenanceStatus,
 ) map[string]any {
 	record := map[string]any{
-		"repository": project.Spec.Source.Repo,
+		"repository": project.Spec.Source.GitSource().Repo,
 		"commit":     build.Spec.Git.SHA,
 		"branch":     build.Spec.Git.Branch,
 		// Whose claim this is. The platform did not witness the review.

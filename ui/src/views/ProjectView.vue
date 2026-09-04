@@ -123,6 +123,15 @@ const promotions = computed(() => data.value?.promotions ?? []);
 const showPipeline = computed(() => pipelineShown(project.value?.promotionStages, promotions.value));
 const framework = computed(() => data.value?.builds.find((b) => b.detectedFramework)?.detectedFramework);
 
+// Where this project's software comes from. A project has a repository or it
+// has a vendored image, never both (#307), and the whole of the Git half of
+// this screen is about the first — a production branch, a review requirement,
+// previews, a build strategy and a root directory are all questions about a
+// repository, and a project with none is shown what it actually has instead
+// of a column of empty fields.
+const vendoredImage = computed(() => project.value?.image);
+const builtHere = computed(() => !!project.value?.repo);
+
 // What the repository is deciding for itself, read off the most recent build
 // that found a kitchen.json.
 //
@@ -427,14 +436,23 @@ async function saveSettings() {
   savingSettings.value = true;
   try {
     const saved = await api.updateProject(name.value, {
-      productionBranch: settings.productionBranch,
-      requirePullRequest: settings.requirePullRequest,
-      previews: settings.previews,
-      previewsProtected: settings.previewsProtected,
-      buildStrategy: settings.buildStrategy,
-      dockerfilePath: settings.dockerfilePath,
-      dockerfileTarget: settings.dockerfileTarget,
-      rootDirectory: settings.rootDirectory,
+      // A repository's settings, sent only by a project that has one. The
+      // API refuses a production branch or a pull request requirement on a
+      // project whose source is an image, and rightly — but a save of the
+      // data classification should not fail with a sentence about branches,
+      // and the cards these belong to are not on the screen either (#307).
+      ...(builtHere.value
+        ? {
+            productionBranch: settings.productionBranch,
+            requirePullRequest: settings.requirePullRequest,
+            previews: settings.previews,
+            previewsProtected: settings.previewsProtected,
+            buildStrategy: settings.buildStrategy,
+            dockerfilePath: settings.dockerfilePath,
+            dockerfileTarget: settings.dockerfileTarget,
+            rootDirectory: settings.rootDirectory,
+          }
+        : {}),
       port: settings.port,
       replicas: settings.replicas,
       cpu: settings.cpu,
@@ -703,7 +721,8 @@ function host(url?: string): string {
     <template v-else-if="project">
       <PageHeader :title="project.name" :breadcrumb="[{ label: 'Overview', to: '/' }, { label: project.name }]">
         <template #meta>
-          <span>{{ project.repo }}</span>
+          <span v-if="project.repo">{{ project.repo }}</span>
+          <span v-else-if="vendoredImage" class="font-mono">{{ vendoredImage.reference }}</span>
           <a
             v-if="production?.url"
             :href="production.url"
@@ -712,10 +731,10 @@ function host(url?: string): string {
             class="font-mono text-primary hover:underline"
             >{{ host(production.url) }}</a
           >
-          <span v-if="framework" class="inline-flex items-center gap-1">
+          <span v-if="framework && builtHere" class="inline-flex items-center gap-1">
             <UIcon name="i-lucide-sparkles" class="size-3" />{{ framework }}, detected
           </span>
-          <span class="font-mono">{{ project.productionBranch }}</span>
+          <span v-if="builtHere" class="font-mono">{{ project.productionBranch }}</span>
         </template>
         <template #actions>
           <UButton
@@ -1247,7 +1266,36 @@ function host(url?: string): string {
         </div>
 
         <form class="space-y-6" @submit.prevent="saveSettings">
-          <div class="rounded-md border border-default bg-muted p-5 space-y-4">
+          <!-- What this project runs, when nothing here built it. It is read
+               rather than edited: changing which image a project runs is a
+               different question from changing a setting of it, and #308 is
+               what makes a new version of it arrive at all. -->
+          <div v-if="vendoredImage" class="rounded-md border border-default bg-muted p-5 space-y-4">
+            <h2 class="text-sm font-medium text-highlighted">Image</h2>
+            <p class="text-xs text-toned max-w-3xl">
+              This project's web process runs an image this platform did not build. There is no repository, so
+              there is nothing to build, nowhere to push and no pull request to preview — the workloads below
+              may still declare images of their own, and they deploy and roll back with this one as one unit.
+            </p>
+            <dl class="grid grid-cols-[10rem_1fr] gap-x-4 gap-y-1 text-xs">
+              <dt class="text-dimmed">Repository</dt>
+              <dd class="font-mono text-toned break-all">{{ vendoredImage.repository }}</dd>
+              <template v-if="vendoredImage.tag">
+                <dt class="text-dimmed">Tag</dt>
+                <dd class="font-mono text-toned break-all">{{ vendoredImage.tag }}</dd>
+              </template>
+              <template v-if="vendoredImage.digest">
+                <dt class="text-dimmed">Digest</dt>
+                <dd class="font-mono text-toned break-all">{{ vendoredImage.digest }}</dd>
+              </template>
+              <dt class="text-dimmed">Pulled with</dt>
+              <dd class="text-toned break-all">
+                {{ vendoredImage.connection ? `the ${vendoredImage.connection} connection` : "nothing: a public image" }}
+              </dd>
+            </dl>
+          </div>
+
+          <div v-if="builtHere" class="rounded-md border border-default bg-muted p-5 space-y-4">
             <h2 class="text-sm font-medium text-highlighted">Git</h2>
             <UFormField label="Production branch" help="Builds of this branch promote to production.">
               <UInput v-model="settings.productionBranch" class="w-full max-w-44 font-mono" />
@@ -1266,7 +1314,7 @@ function host(url?: string): string {
             />
           </div>
 
-          <div class="rounded-md border border-default bg-muted p-5 space-y-4">
+          <div v-if="builtHere" class="rounded-md border border-default bg-muted p-5 space-y-4">
             <h2 class="text-sm font-medium text-highlighted">Build</h2>
             <div class="grid gap-4 sm:grid-cols-3">
               <UFormField
