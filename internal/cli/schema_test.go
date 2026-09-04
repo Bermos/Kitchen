@@ -91,6 +91,92 @@ func TestEveryCommandPublishesItself(t *testing.T) {
 			if command.Needs.Auth && len(command.Calls) == 0 {
 				t.Error("it needs a credential but names no endpoint")
 			}
+			// A command no credential this CLI can store may run says so, in
+			// both halves: the machine-readable statement, and the paragraph
+			// a person reads in --help. Neither is worth having alone — a
+			// screen name nothing publishes is a note in the source, and a
+			// paragraph with no field beside it is something a caller would
+			// have to parse English out of.
+			if platform := command.Needs.Platform; platform != nil {
+				if platform.Screen == "" {
+					t.Error("it is the dashboard's and names no screen")
+				}
+				if platform.Path == "" {
+					t.Error("it is the dashboard's and names no path to that screen")
+				}
+				if platform.Why != dashboardOnlyReason {
+					t.Errorf("it gives its own reason rather than the published one: %q", platform.Why)
+				}
+				if !strings.Contains(command.Description, platform.note()) {
+					t.Error("--help does not carry the statement `kitchen schema` publishes")
+				}
+			}
+		})
+	}
+}
+
+// The other half of the same statement: which commands are the dashboard's is
+// derived from the API's own table rather than kept as a list here (#208).
+//
+// A command is one no stored credential can run exactly when every endpoint it
+// — or anything under it — may call is one the API answers to an operator
+// alone, because the only credential `kitchen login` can store is a key
+// holding a role on one project. Both directions are checked, and the second
+// is the one that matters: a route that stops being the operator's leaves a
+// command telling people to use a dashboard they no longer need, and that is
+// exactly the kind of drift a published surface cannot afford.
+func TestDashboardOnlyMatchesTheAPIsTable(t *testing.T) {
+	policy, err := api.PolicyTable()
+	if err != nil {
+		t.Fatalf("reading the API's route table: %v", err)
+	}
+	kinds := map[string]string{}
+	for _, route := range policy.Routes {
+		kinds[route.Pattern] = route.Kind
+	}
+
+	document := tree(t)
+	// A group's reach is its own calls and every one of its subcommands', so
+	// that `kitchen access` is judged by what `kitchen access identities`
+	// does — a group is what somebody runs --help on first.
+	reach := map[string][]string{}
+	for _, command := range document.Commands {
+		for _, other := range document.Commands {
+			if other.Path == command.Path || strings.HasPrefix(other.Path, command.Path+" ") {
+				reach[command.Path] = append(reach[command.Path], other.Calls...)
+			}
+		}
+	}
+
+	for _, command := range document.Commands {
+		t.Run(command.Path, func(t *testing.T) {
+			operatorOnly, routes := true, 0
+			for _, call := range reach[command.Path] {
+				kind, known := kinds[call]
+				if !known {
+					// `kitchen api` reaches whatever it is given, and
+					// `kitchen login` talks to the issuer: neither is a row
+					// of the table, and neither is the operator's.
+					operatorOnly = false
+					break
+				}
+				routes++
+				if kind != api.PolicyOperator {
+					operatorOnly = false
+				}
+			}
+			operatorOnly = operatorOnly && routes > 0
+
+			switch {
+			case operatorOnly && command.Needs.Platform == nil:
+				t.Error("every endpoint this command reaches needs the operator role, which no " +
+					"credential `kitchen login` can store holds — so it has to say it is the " +
+					"dashboard's, or it ships unrunnable and silent (#208)")
+			case !operatorOnly && command.Needs.Platform != nil:
+				t.Error("this command says it is the dashboard's, but the API's table admits a " +
+					"project key to something it reaches — take the statement off, and give it " +
+					"a section in docs/CLI.md instead")
+			}
 		})
 	}
 }

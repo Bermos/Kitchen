@@ -325,6 +325,12 @@ type needs struct {
 	// Git is whether it reads the working copy. Every command that does can
 	// be told the same thing with flags instead.
 	Git bool `json:"git,omitempty"`
+	// Platform is set on a command that calls nothing but the platform's own
+	// surface, which the API answers to the operator role alone — and so on a
+	// command no credential `kitchen login` can store is able to run. It names
+	// the dashboard screen that can, and it is what dashboard_only.go is
+	// about (#208).
+	Platform *dashboardOnly `json:"platform,omitempty"`
 }
 
 // example is one runnable command line.
@@ -347,6 +353,13 @@ const (
 // describe attaches a command's metadata and returns it, so a command
 // definition reads as one expression.
 func describe(cmd *cobra.Command, m meta) *cobra.Command {
+	// A command that is the dashboard's says so in its own help, from the one
+	// text every one of them uses — appended here rather than written into
+	// each Long, so a command that becomes reachable loses the paragraph by
+	// losing the metadata rather than by somebody remembering to delete it.
+	if m.Needs.Platform != nil {
+		cmd.Long = strings.TrimRight(cmd.Long, "\n") + "\n\n" + m.Needs.Platform.note()
+	}
 	encoded, err := json.Marshal(m)
 	if err != nil {
 		// meta is a fixed struct of strings and booleans; this cannot fail at
@@ -389,7 +402,7 @@ func mustAnnotate(flags interface {
 func run(body func(cmd *cobra.Command, args []string) error) func(*cobra.Command, []string) error {
 	return func(cmd *cobra.Command, args []string) error {
 		if err := body(cmd, args); err != nil {
-			return asFailure(err)
+			return dashboardOnlyRefusal(cmd, asFailure(err))
 		}
 		return nil
 	}

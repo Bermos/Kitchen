@@ -162,6 +162,71 @@ So the API key is the whole of it, and that is a smaller credential than a
 person's token would be. If the issuer grows a device endpoint, `kitchen login`
 gains a browser flow and the key path stays for CI.
 
+### The platform commands are the dashboard's for now
+
+A key is a role on one project, and four command families call nothing but the
+platform's own surface, which the API answers to the operator role alone:
+
+| Command | What it calls |
+|---|---|
+| `kitchen backup` | `POST /platform/backup` |
+| `kitchen retention` | `GET /platform/retention` |
+| `kitchen access identities/reviews/show` | `GET /access/identities`, `GET /access/reviews`, `GET /access/reviews/{name}` |
+| `kitchen audit-pack` | `GET /projects/{name}/audit-pack` |
+
+**There is no credential `kitchen login` can store that runs any of them.**
+`kitchen api` is not the way round it either: it carries the same token, so a
+platform route is no more reachable through it than through the command. The
+escape hatch works for routes; it does not work for roles.
+
+So they are **declared the dashboard's for now**
+([#208](https://github.com/Bermos/Kitchen/issues/208)), rather than shipped as
+commands that are published, documented and silently unable to work. Three
+things say it, and all three come from one place in the code
+(`internal/cli/dashboard_only.go`), so they cannot come to say three different
+things:
+
+- each one's `--help` carries the statement and names the screen;
+- `kitchen schema` publishes it per command as `needs.platform` — the screen,
+  its path, and why the credential in hand cannot;
+- running one with a project key exits `4` like any other permission failure,
+  and the refusal carries the API's own sentence *plus* the screen that can do
+  it.
+
+```console
+$ kitchen retention
+Error: reading the platform's retention needs the operator role; you are a member
+  a project API key holds a role on one project, and this command calls the
+  platform's own surface, which needs the operator role — no credential
+  `kitchen login` can store holds one. Do it in the dashboard, under
+  Platform → Settings, under Retention (/platform/settings); see docs/CLI.md
+```
+
+```sh
+kitchen schema backup | jq '.commands[0].needs.platform'
+```
+
+Which commands these are is not a list anybody keeps: a command declares itself,
+and a test checks the declaration against the API's own route table
+(`internal/api/policy.go`) in both directions. A route that stops being the
+operator's fails the CLI's tests rather than leaving a command pointing at a
+dashboard nobody needs.
+
+**Everything else works with a key**, including four that look like they belong
+in the table above and do not. `kitchen drift`, `kitchen decisions`,
+`kitchen criticality` and `kitchen exceptions` are cross-project reads rather
+than platform ones: they answer for the projects the caller can see, which for
+a key is the one project it holds a role on. An operator gets the whole
+installation from the same call.
+
+**A platform-scoped key is the real answer**, and it is
+[#349](https://github.com/Bermos/Kitchen/issues/349) — designed together with
+[#318](https://github.com/Bermos/Kitchen/issues/318), because a key today is a
+full identity-provider session and both changes decide what a key *is*. Doing
+them one on top of the other would mean designing the same thing twice. The
+fresh-install bootstrap loop — a key comes from a route that needs a key — is
+part of that issue as well.
+
 ## Linking a directory
 
 ```sh
@@ -221,16 +286,19 @@ give.
 | `kitchen decisions list/show/replay` | The stored policy decisions, and re-running one from its stored inputs | `GET /decisions`, `GET /decisions/{id}`, `POST /decisions/{id}/replay` |
 | `kitchen drift` | What is deployed right now that no longer meets its environment's bar | `GET /compliance/drift` |
 | `kitchen criticality` | What supports each designated function, and (`dependents`) what breaks without one third party | `GET /compliance/criticality`, `GET /compliance/dependents` |
-| `kitchen access identities` | Who holds what on the platform, and which grants look like they belong to nobody | `GET /access/identities` |
-| `kitchen access reviews/show` | The recertification cycles and what each one decided | `GET /access/reviews`, `GET /access/reviews/{name}` |
-| `kitchen retention` | How long the platform keeps each class, and how far back each one goes | `GET /platform/retention` |
-| `kitchen audit-pack` | Export one project's whole compliance answer for a window, signed, as files on disk | `GET /projects/{name}/audit-pack` |
+| `kitchen access identities` † | Who holds what on the platform, and which grants look like they belong to nobody | `GET /access/identities` |
+| `kitchen access reviews/show` † | The recertification cycles and what each one decided | `GET /access/reviews`, `GET /access/reviews/{name}` |
+| `kitchen retention` † | How long the platform keeps each class, and how far back each one goes | `GET /platform/retention` |
+| `kitchen audit-pack` † | Export one project's whole compliance answer for a window, signed, as files on disk | `GET /projects/{name}/audit-pack` |
 | `kitchen releases` | The project's releases — what there is to roll back to | `GET /projects/{name}/releases` |
 | `kitchen environments` | The project's environments and where they answer | `GET /projects/{name}/environments` |
 | `kitchen api` | Any endpoint of the API, authenticated | anything |
 | `kitchen schema` | The whole CLI as JSON | — |
 | `kitchen version` | Which release of the CLI this is | — |
-| `kitchen backup` | Take a backup of the platform and write it to a file | `POST /platform/backup` |
+| `kitchen backup` † | Take a backup of the platform and write it to a file | `POST /platform/backup` |
+
+† The dashboard's for now: no credential `kitchen login` can store runs it — see
+[The platform commands are the dashboard's for now](#the-platform-commands-are-the-dashboards-for-now).
 
 ### Creating a project
 
@@ -883,8 +951,14 @@ kitchen api PATCH /access/reviews/access-review-8x2kd --data '{"decisions":
 ```
 
 Closing is what carries out the revocations and mints the retained artefact.
+
 All of these need the operator role: the answer is the whole installation's
-access in one document. See [docs/api/access.md](api/access.md).
+access in one document. So all of them are
+[the dashboard's for now](#the-platform-commands-are-the-dashboards-for-now) — no credential
+`kitchen login` can store holds that role, and the screen that can is
+**Platform → Audit**, under Access recertification. See
+[docs/api/access.md](api/access.md).
+
 ### Retention
 
 ```sh
@@ -920,6 +994,11 @@ kitchen api PATCH /platform/retention --data '{"audit": 60,
 
 See [docs/api/platform.md](api/platform.md) for the bodies and what the floor
 refuses.
+
+Reading it needs the operator role, so this command is
+[the dashboard's for now](#the-platform-commands-are-the-dashboards-for-now): the same table is
+on **Platform → Settings**, under Retention, and that is also where changing it
+has a form.
 
 ### The audit pack
 
@@ -968,7 +1047,11 @@ the bytes that were written rather than taken from the platform's header, so a
 mismatch with `servedDigest` is visible rather than assumed away.
 
 It needs the operator role, for the reason the route does: a pack folds three
-operator-only reads into a project's evidence. See
+operator-only reads into a project's evidence — so this command is
+[the dashboard's for now](#the-platform-commands-are-the-dashboards-for-now) too, and the button
+on **Platform → Audit** is what takes one today. The
+scheduled-export case above is exactly what
+[#349](https://github.com/Bermos/Kitchen/issues/349) would restore. See
 [docs/api/audit-pack.md](api/audit-pack.md).
 
 ### Anything else
@@ -1019,7 +1102,12 @@ a Job for that instead — [docs/BACKUP.md](BACKUP.md) is the procedure, and CI
 runs it on every change.
 
 Reading what an archive *would* carry, without taking one, is
-`kitchen api GET /platform/backup`.
+`kitchen api GET /platform/backup` — which needs the operator role like the
+export itself, so both are
+[the dashboard's for now](#the-platform-commands-are-the-dashboards-for-now).
+**Platform → Backup** has the button; the scheduling this command exists for is
+what
+[#349](https://github.com/Bermos/Kitchen/issues/349) is about.
 
 ## Output, exactly
 
@@ -1103,12 +1191,22 @@ cannot write it carries on and exchanges every time.
 | When `Degraded` counts as refused | Only once it has settled: it holds, and no condition says work is in flight | A phase is what the last reconcile left behind, so a retry reads `Degraded` for a moment before the platform looks at the new release. Stopping at the first `Degraded` would report that as a failure — and stopping at none of them is the hole this closes |
 | Credentials on the command line | `--api-key-file` and `--api-key-stdin` preferred, `--api-key` documented as visible in the process list | The convenient spelling should not be the one that leaks |
 | A project's settings | No command; `kitchen api PATCH /projects/{name}` | One JSON body written occasionally by an admin — a port, a replica count, a health check, a security posture, a process list, arguments, a classification, the Dockerfile stage to ship (which `projects create` does carry, since the first build starts with the project). A flag per field would be a second surface to keep in step with the first, and a list of records with commands and schedules in it has no flag-shaped spelling worth having |
+| The platform commands | Declared the dashboard's for now, in `--help`, in `kitchen schema` and in a refusal that names the screen | A key is a role on one project and those routes need the operator role, so no credential this CLI can store runs them — and `kitchen api` carries the same token, so it is no way round a *role*. Shipping them published and silently unrunnable was the state [#208](https://github.com/Bermos/Kitchen/issues/208) found; a platform-scoped key is the real answer and is [#349](https://github.com/Bermos/Kitchen/issues/349), designed with [#318](https://github.com/Bermos/Kitchen/issues/318) because both decide what a key is |
 | Account management | No command, and none possible | Changing a password, or ending a session, is done at the identity provider against its session cookie — and this CLI holds a key, never a session. It is not an endpoint `kitchen api` reaches either, because that reaches the operator API and these are not on it ([AUTH.md](AUTH.md), "Managing an account") |
 
 ## Open
 
 - **Browser sign-in**, once `auth/` decides between the device grant and a
   seeded loopback client — see [Signing in](#why-there-is-no-browser-sign-in).
+- **A credential for the platform commands.**
+  [#349](https://github.com/Bermos/Kitchen/issues/349): a platform-scoped key,
+  narrower than the operator role, designed together with
+  [#318](https://github.com/Bermos/Kitchen/issues/318) — a key today is a full
+  identity-provider session, and both changes decide what a key *is*. Until it
+  lands, `kitchen backup`, `kitchen retention`, `kitchen access` and
+  `kitchen audit-pack` are
+  [the dashboard's](#the-platform-commands-are-the-dashboards-for-now), and say
+  so themselves. The fresh-install bootstrap loop is part of that issue too.
 - **Released binaries.** The CLI builds from source and installs with `go
   install`; attaching cross-compiled binaries to the GitHub release is a fourth
   artifact job in `publish.yml`, and the release only goes live once every
