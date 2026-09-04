@@ -389,9 +389,10 @@ jobs:
             namespace: kitchen-system
           spec:
             source:
-              connectionRef: {name: e2e-git}
-              repo: ${REPO}
-              productionBranch: ${BRANCH}
+              git:
+                connectionRef: {name: e2e-git}
+                repo: ${REPO}
+                productionBranch: ${BRANCH}
             build:
               strategy: dockerfile
               rootDirectory: ${FIXTURE}

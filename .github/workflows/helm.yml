@@ -1175,8 +1175,9 @@ jobs:
             namespace: kitchen-system
           spec:
             source:
-              connectionRef: {name: none}
-              repo: acme/idler
+              git:
+                connectionRef: {name: none}
+                repo: acme/idler
             registry:
               connectionRef: {name: none}
             previews:
@@ -1374,8 +1375,9 @@ jobs:
             namespace: kitchen-system
           spec:
             source:
-              connectionRef: {name: backup-git}
-              repo: acme/survivor
+              git:
+                connectionRef: {name: backup-git}
+                repo: acme/survivor
             registry:
               connectionRef: {name: backup-git}
           EOF
@@ -1510,7 +1512,7 @@ jobs:
 
           # The acceptance criterion, in the words the issue asked for: the
           # project is back.
-          repo=$(kubectl -n kitchen-system get project survivor -o jsonpath='{.spec.source.repo}')
+          repo=$(kubectl -n kitchen-system get project survivor -o jsonpath='{.spec.source.git.repo}')
           [ "${repo}" = acme/survivor ] || {
             echo "::error::the project did not come back (repo '${repo}')"
             exit 1
