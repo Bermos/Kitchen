@@ -33,6 +33,86 @@ push is: the first line becomes the commit's **subject** and the rest its
 **body**. Whatever a caller sends — a whole `git log` entry, trailers included
 — reaches the `Build` as that pair.
 
+## A build that acquired an image
+
+Not every build built something. A project whose software this platform did
+not build is deployed by an **acquisition**: a `Build` that resolves what an
+image reference names, freezes the digest onto a `Release`, and runs no
+builder at all. It is still a `Build` because everything that reads a build
+reads one — `status.artifact`, the evidence index, the quality gates, the
+audit chain, the build screens and this API — and a `Release` with no build
+behind it would orphan all of them at once.
+
+Such a build carries no commit and an `acquisition` instead:
+
+```json
+{
+  "name": "home-assistant-acq-9f2c1a4b7e08",
+  "phase": "Succeeded",
+  "git": {},
+  "image": "ghcr.io/home-assistant/home-assistant@sha256:cd34…",
+  "acquisition": {
+    "reference": "ghcr.io/home-assistant/home-assistant:stable",
+    "image": "ghcr.io/home-assistant/home-assistant@sha256:cd34…",
+    "previous": "ghcr.io/home-assistant/home-assistant@sha256:ab12…",
+    "trigger": "poll",
+    "pinned": false,
+    "resolvedAt": "2026-09-04T11:20:03Z"
+  }
+}
+```
+
+The five fields are one answer to one question — *why did this environment
+change* — asked months later, when nobody remembers. `reference` is what was
+followed, `image` what arrived, `previous` what it replaced, `resolvedAt` when
+the registry was asked, and `trigger` what asked:
+
+| `trigger` | |
+|---|---|
+| `seed` | The project was created, so what it named was acquired. There is no push to wait for |
+| `poll` | The tag this project follows stopped naming the digest that was acquired |
+| `request` | Somebody asked, through [`POST /projects/{name}/acquisitions`](projects.md#acquiring-a-new-digest) |
+
+`pinned` is whether the project named a digest rather than a tag, which is how
+a project says it does not want to be moved: a pinned reference is never
+polled, so an acquisition of one is always something somebody asked for.
+
+A build that **failed** carries the half of this it has: `reference` and
+`trigger` are written before the registry is asked, so an acquisition that
+could not reach one still says what it was following and what asked it to.
+`image` and `resolvedAt` are absent, because nothing was resolved.
+
+A unit's other vendored workloads are rows in `workloads` as they are for a
+build, each carrying the `reference` it was acquired from beside the `image`
+it resolved to. A workload this platform built has an `image` and no
+`reference` — it was acquired from nothing.
+
+### The poll, and what it costs
+
+What corresponds to a push, for software with no commit, is a new digest under
+a watched tag. The platform asks: **one registry manifest HEAD per watched
+reference per `Kitchen.spec.builds.imagePollInterval`** — ten minutes by
+default, `0` to turn it off — never a pull, and never at all for a reference
+pinned to a digest. The estate is walked in batches so that a hundred vendored
+projects do not arrive at their registries in the same second.
+
+A registry that cannot be read is a build that **failed for a stated reason**,
+which is the point: an image nobody can resolve should read like a build that
+could not run, not like a platform that quietly stopped looking. It is exactly
+one such build per outage — the project's `status.imagePoll.message` is the
+record that it has already been said — and what is already running is not
+touched. An environment serving the digest it acquired last month goes on
+serving it, and rolling a vendored update back is the ordinary rollback,
+because the `Release` froze the digest rather than the tag.
+
+**This is deliberately not a registry webhook.** A webhook would answer the
+same question with no polling, and would require every vendor's registry to be
+able to reach this cluster — which the home lab this exists for cannot arrange
+and a private installation should not have to. It stays available as a later
+optimisation ([#306](https://github.com/Bermos/Kitchen/issues/306)); nothing
+in the model above would change if it landed, because a webhook delivery would
+create the same acquisition the poll creates.
+
 ## What a build says about its commit
 
 ```json

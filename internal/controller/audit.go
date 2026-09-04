@@ -51,4 +51,8 @@ const (
 	// actorPolicyEngine, because a verdict is the engine's word wherever it
 	// was asked for.
 	actorRescanSweep = "rescan"
+	// actorImagePoll attributes the acquisitions the digest poll creates: a
+	// tag the platform follows having moved is the vendored equivalent of a
+	// push, and nobody asked for it, so it is the pass's own name.
+	actorImagePoll = "imagepoll"
 )

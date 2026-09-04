@@ -331,6 +331,15 @@ kitchen:
       # `branch` gives each branch its own, a better hit rate on a long-lived
       # branch at one tag per branch that ever built, which nothing removes.
       scope: project
+    # -- How often the platform asks whether a watched tag has moved. A
+    # project whose software this platform did not build has no push to react
+    # to: what corresponds to one is a new digest under the tag it follows,
+    # and the platform asks — one registry manifest HEAD per watched
+    # reference, never a pull. A reference pinned to a digest is never asked
+    # about, whatever this says; pinning is how a project opts out of moving.
+    # `0` turns the poll off, for an installation that would rather move a
+    # vendored image by hand. The floor under anything else is one minute.
+    imagePollInterval: 10m
   appNamespaces:
     # -- Pod Security level enforced on the namespace each project's builds
     # and workloads run in. Written by the operator as the `enforce`, `audit`

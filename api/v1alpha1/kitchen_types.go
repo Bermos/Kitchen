@@ -17,6 +17,8 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"time"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -420,6 +422,59 @@ type BuildsSpec struct {
 	// +kubebuilder:default={}
 	// +optional
 	Cache BuildCacheSpec `json:"cache,omitempty"`
+
+	// ImagePollInterval is how often the platform asks whether a watched tag
+	// has moved (#308).
+	//
+	// A project whose software this platform did not build has no push to
+	// react to: what corresponds to one is a new digest under the tag it
+	// follows, and nothing would ever notice that without asking. So the
+	// platform asks, and this is how often — one registry manifest HEAD per
+	// watched reference, never a pull, so the cost of the question is a
+	// request and a few hundred bytes rather than an image.
+	//
+	// Ten minutes is the default because that is well inside how quickly
+	// anybody expects a vendored update to arrive and far outside anything a
+	// registry would call traffic. A reference pinned to a digest is not
+	// polled at all, whatever this says: pinning is how a project opts out.
+	//
+	// `0` turns the poll off entirely, which is the installation that would
+	// rather move a vendored image by hand — through the acquire route or by
+	// changing the project — than have the platform move it. It is a
+	// pointer for the reason BuildsSpec.TimeoutMinutes is one: that zero is
+	// a setting, and a duration serialized as an absent field would have the
+	// default applied back over it.
+	// +kubebuilder:default="10m"
+	// +optional
+	ImagePollInterval *metav1.Duration `json:"imagePollInterval,omitempty"`
+}
+
+// DefaultImagePollInterval is how often a watched tag is asked about when the
+// singleton says nothing — the compiled-in twin of the CRD default, which an
+// installation written before the field existed does not carry.
+const DefaultImagePollInterval = 10 * time.Minute
+
+// MinimumImagePollInterval is the floor under anything but zero. A minute is
+// already far below the rate at which a vendor publishes, and the floor is
+// what keeps a typo from turning the platform into a load generator against
+// somebody else's registry.
+const MinimumImagePollInterval = time.Minute
+
+// EffectiveImagePollInterval is the interval in force, and 0 for a poll that
+// is off. Nil-safe, so a singleton written before the field existed polls at
+// the default rather than not at all.
+func (s *BuildsSpec) EffectiveImagePollInterval() time.Duration {
+	if s == nil || s.ImagePollInterval == nil {
+		return DefaultImagePollInterval
+	}
+	switch interval := s.ImagePollInterval.Duration; {
+	case interval <= 0:
+		return 0
+	case interval < MinimumImagePollInterval:
+		return MinimumImagePollInterval
+	default:
+		return interval
+	}
 }
 
 // BuildResourcesSpec is what one build is allowed to take: two Kubernetes

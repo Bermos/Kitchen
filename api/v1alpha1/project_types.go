@@ -597,6 +597,40 @@ type ProjectStatus struct {
 	// seeded registry Connection.
 	// +optional
 	InitialBuildRef *LocalObjectReference `json:"initialBuildRef,omitempty"`
+
+	// ImagePoll is what the digest poll last did for this project (#308):
+	// when it last asked the registry whether a watched tag had moved, and
+	// what stopped it where something did.
+	//
+	// It is on the status rather than held in the operator's memory for two
+	// reasons, and the second is the one that matters. The interval survives
+	// a restart, so an operator rolled out at noon does not re-ask every
+	// registry the estate follows at the same instant. And a poll that
+	// cannot read a registry says so *here*, once, which is what keeps a
+	// registry that stays down from producing one failed Build every
+	// interval for a week.
+	// +optional
+	ImagePoll *ImagePollStatus `json:"imagePoll,omitempty"`
+}
+
+// ImagePollStatus is the digest poll's own record for one project.
+//
+// What it deliberately does not hold is the digest each reference resolved
+// to. That is on the Build the acquisition produced — `status.acquisition` —
+// because the Build is what the audit trail, the evidence index and every
+// build screen already key on, and a second copy of it here would be a second
+// answer to "what is this project running" that nothing keeps in step.
+type ImagePollStatus struct {
+	// LastPolledAt is when the registry was last asked.
+	// +optional
+	LastPolledAt *metav1.Time `json:"lastPolledAt,omitempty"`
+
+	// Message explains a poll that could not ask — a registry that would not
+	// answer, a pull credential that could not be read. It is cleared by the
+	// next poll that could, and while it is set the platform has already
+	// produced the one failed Build that says so.
+	// +optional
+	Message string `json:"message,omitempty"`
 }
 
 // +kubebuilder:object:root=true

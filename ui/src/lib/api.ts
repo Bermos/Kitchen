@@ -397,10 +397,32 @@ export interface Build {
    * more than one workload. Empty for the great majority, which ship one
    * image — the `image` above. The build is over when all of them are. */
   workloads?: BuildWorkload[];
+  /** What this build resolved, from which reference, when, and what it
+   * replaced — for a build that acquired an image somebody else built rather
+   * than building one. Absent on a build of a commit, whose answer to all
+   * four is the commit. */
+  acquisition?: Acquisition;
   startedAt?: string;
   completedAt?: string;
   createdAt: string;
   conditions?: Condition[];
+}
+
+/** A build with no commit, explaining itself: what it followed, what it found,
+ * when it looked, what it replaced, and what made it look. */
+export interface Acquisition {
+  /** What was followed, as the project declared it. */
+  reference?: string;
+  /** What it resolved to, always by digest. */
+  image?: string;
+  /** The image this one replaced, absent for a project's first. */
+  previous?: string;
+  /** What asked: `seed`, `poll` or `request`. */
+  trigger?: string;
+  /** Whether the project named a digest rather than a tag, which is how a
+   * project says it does not want to be moved. */
+  pinned?: boolean;
+  resolvedAt?: string;
 }
 
 /** One workload's own build within one commit's. */
@@ -409,6 +431,9 @@ export interface BuildWorkload {
   phase?: string;
   image?: string;
   repository?: string;
+  /** What this workload's image was acquired from, as the project declared it.
+   * Absent for a workload this platform built. */
+  reference?: string;
   job?: string;
   /** The stage of this workload's Dockerfile its build was told to produce,
    * absent for the file's last stage. What it was given, not what the project
@@ -3552,6 +3577,13 @@ export const api = {
   projectEnvironments: (name: string) => list<Environment>(`/projects/${name}/environments`)(),
   rebuild: (project: string, revision?: { sha: string; branch?: string }) =>
     request<Build>("POST", `/projects/${project}/builds`, revision ?? {}),
+
+  // The vendored equivalent of a rebuild: ask the registry what the tag this
+  // project follows names now, and take it. An empty body is "check now"; a
+  // digest is "take exactly this". Answers 202 — the operator resolves the
+  // digest and produces the release — with the Build that will carry it.
+  acquire: (project: string, digest?: string) =>
+    request<Build>("POST", `/projects/${project}/acquisitions`, digest ? { digest } : {}),
 
   // The platform upgrading itself. Creating an update takes a version and
   // nothing else; every other decision is the operator's.

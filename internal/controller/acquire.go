@@ -30,6 +30,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
@@ -50,11 +51,12 @@ import (
 // workload of the unit is pointed at, freeze the digests onto a Release, and
 // hand it to the same promotion the build path hands one to.
 //
-// It is deliberately the minimum. #308 is what makes an acquisition happen
-// again — a digest poll, and the Build a moved tag produces — and #309 is what
-// attaches evidence to an artifact nobody here built. Both extend this; what
-// is here is that a project with no repository deploys at all, which is what
-// everything else in the tree is written against.
+// What makes an acquisition happen *again* is the digest poll in
+// imagepoll.go (#308): a manifest HEAD per watched reference per interval,
+// and a Build pinned to the digest it found where a tag has moved. This is
+// still the whole of what such a Build does — the poll decides that one
+// should exist, and nothing more. #309 is what attaches evidence to an
+// artifact nobody here built, and extends this in its turn.
 //
 // Two things it does *not* do, both on purpose:
 //
@@ -146,10 +148,50 @@ func (r *BuildReconciler) acquire(
 		return ctrl.Result{}, err
 	}
 
+	// What the project declares, and what this Build was created to take.
+	// The two differ exactly when something had already asked the registry
+	// before this Build existed: the poll resolves a moved tag and pins the
+	// digest that moved it, and an operator may name one outright. Resolving
+	// the tag again here would be a different question with a possibly
+	// different answer, which is the one thing a pin exists to prevent.
+	declared := project.Spec.Source.ImageSource()
+	wanted := declared
+	if build.Spec.Acquire != nil && build.Spec.Acquire.Digest != "" {
+		wanted.Digest = build.Spec.Acquire.Digest
+	}
+	reference := declared.Reference()
+	if named := build.AcquisitionReference(); named != "" {
+		reference = named
+	}
+
+	// What this project is running now, so that the acquisition can say what
+	// it left as well as what it took. It is read before the resolution
+	// because it is a fact about the world this Build is about to change.
+	previous, err := latestAcquisition(ctx, r.Client, project, build.Name)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	previousImage := ""
+	if previous != nil {
+		previousImage = previous.Status.Acquisition.Image
+	}
+
+	// What this Build is trying to get, recorded before it tries. A failure
+	// leaves this behind — `fail` writes the status it was given — so an
+	// acquisition that could not reach its registry still says which
+	// reference it was following and what asked it to, which is the half of
+	// the record that a failed one has.
+	build.Status.Acquisition = &kitchenv1alpha1.AcquisitionStatus{
+		Reference: reference,
+		Previous:  previousImage,
+		Trigger:   build.AcquisitionTriggeredBy(),
+		Pinned:    declared.Digest != "",
+	}
+
 	// The web process first, then every workload that names an image of its
 	// own — the same order the build path plans in, so that the web process's
 	// answer is `spec.image` on the Release and the rest are rows beside it.
-	web, err := r.acquireImage(ctx, build, appNS, project.Spec.Source.ImageSource())
+	web, err := r.acquireImage(ctx, build, appNS, wanted)
 	if err != nil {
 		return r.fail(ctx, build, project, reasonImageUnresolved,
 			fmt.Sprintf("the web process's image could not be resolved: %v", err))
@@ -165,6 +207,8 @@ func (r *BuildReconciler) acquire(
 		build.Status.StartedAt = build.Status.CompletedAt
 	}
 	build.Status.Workloads = rows
+	build.Status.Acquisition.Image = web
+	build.Status.Acquisition.ResolvedAt = build.Status.CompletedAt
 
 	if err := r.Audit.Record(ctx, audit.Transition{
 		Object:      build,
@@ -174,10 +218,12 @@ func (r *BuildReconciler) acquire(
 		From:        string(build.Status.Phase),
 		To:          string(kitchenv1alpha1.BuildSucceeded),
 		Project:     project.Name,
-		Reason:      "the images this unit runs were resolved; nothing was built",
+		Reason:      acquisitionReason(web, previousImage),
 		Details: map[string]any{
 			"image":     web,
-			"declared":  project.Spec.Source.ImageSource().Reference(),
+			"previous":  previousImage,
+			"declared":  reference,
+			"trigger":   string(build.AcquisitionTriggeredBy()),
 			"workloads": len(workloads),
 		},
 	}); err != nil {
@@ -251,7 +297,7 @@ func (r *BuildReconciler) acquire(
 		Project: project.Name,
 		Build:   build.Name,
 		Release: release.Name,
-		Message: fmt.Sprintf("build %s acquired %s", build.Name, web),
+		Message: fmt.Sprintf("build %s %s", build.Name, acquisitionReason(web, previousImage)),
 	})
 	log.Info("image acquired", "build", build.Name, "release", release.Name, "image", web)
 	return ctrl.Result{}, r.Status().Update(ctx, build)
@@ -269,29 +315,65 @@ func (r *BuildReconciler) acquireImage(
 	appNS string,
 	image kitchenv1alpha1.ImageSourceSpec,
 ) (string, error) {
-	if image.Repository == "" {
-		return "", fmt.Errorf("no image is declared")
+	conn, dockerConfig, err := pullCredential(ctx, r.Client, build.Namespace, image)
+	if err != nil {
+		return "", err
 	}
-	var dockerConfig []byte
-	if connection := image.PullConnection(); connection != "" {
-		conn := &kitchenv1alpha1.Connection{}
-		key := types.NamespacedName{Namespace: build.Namespace, Name: connection}
-		if err := r.Get(ctx, key, conn); err != nil {
-			return "", fmt.Errorf("the pull connection %q could not be read: %w", connection, err)
-		}
-		secret := &corev1.Secret{}
-		key = types.NamespacedName{Namespace: build.Namespace, Name: conn.Spec.CredentialsSecretRef.Name}
-		if err := r.Get(ctx, key, secret); err != nil {
-			return "", fmt.Errorf("the credentials of pull connection %q could not be read: %w", connection, err)
-		}
-		dockerConfig = secret.Data[corev1.DockerConfigJsonKey]
+	if conn != nil {
 		// The pods pull with this, so it has to be in the application
 		// namespace under the name pullcredentials.go spells.
 		if _, err := r.syncRegistrySecret(ctx, conn, build.Namespace, appNS); err != nil {
 			return "", fmt.Errorf("the pull credential could not be put in %s: %w", appNS, err)
 		}
 	}
-	factory := r.Resolvers
+	return resolveWith(ctx, r.Resolvers, dockerConfig, image)
+}
+
+// pullCredential is the Connection an image is read with and the docker
+// config in it, both nil for the public image that needs neither.
+//
+// It is a free function because two things ask it: the acquisition, which
+// also has to put the credential where the pods will find it, and the digest
+// poll, which only ever reads. The poll deliberately does not sync anything —
+// a pass that wrote a Secret into every application namespace every ten
+// minutes would be a poll with side effects, and the acquisition it produces
+// syncs the credential a moment later anyway.
+func pullCredential(
+	ctx context.Context,
+	c client.Client,
+	namespace string,
+	image kitchenv1alpha1.ImageSourceSpec,
+) (*kitchenv1alpha1.Connection, []byte, error) {
+	if image.Repository == "" {
+		return nil, nil, fmt.Errorf("no image is declared")
+	}
+	connection := image.PullConnection()
+	if connection == "" {
+		return nil, nil, nil
+	}
+	conn := &kitchenv1alpha1.Connection{}
+	key := types.NamespacedName{Namespace: namespace, Name: connection}
+	if err := c.Get(ctx, key, conn); err != nil {
+		return nil, nil, fmt.Errorf("the pull connection %q could not be read: %w", connection, err)
+	}
+	secret := &corev1.Secret{}
+	key = types.NamespacedName{Namespace: namespace, Name: conn.Spec.CredentialsSecretRef.Name}
+	if err := c.Get(ctx, key, secret); err != nil {
+		return nil, nil, fmt.Errorf("the credentials of pull connection %q could not be read: %w", connection, err)
+	}
+	return conn, secret.Data[corev1.DockerConfigJsonKey], nil
+}
+
+// resolveWith asks one registry what digest a reference names, through the
+// factory a test replaces. A reference that already names a digest costs no
+// request at all — the resolver answers it back — which is what makes a
+// pinned project free to poll and free to acquire.
+func resolveWith(
+	ctx context.Context,
+	factory ImageResolverFactory,
+	dockerConfig []byte,
+	image kitchenv1alpha1.ImageSourceSpec,
+) (string, error) {
 	if factory == nil {
 		factory = defaultImageResolver
 	}
@@ -300,6 +382,68 @@ func (r *BuildReconciler) acquireImage(
 		return "", err
 	}
 	return resolver.Resolve(ctx, image.Reference())
+}
+
+// acquisitionReason is the sentence an acquisition is recorded under, in the
+// audit log and in the activity feed alike.
+//
+// It names both digests when there are two, because that is the whole of what
+// the entry is for: an environment that changed with no commit behind it is
+// only explicable if the record says what it was running and what it is
+// running now.
+func acquisitionReason(image, previous string) string {
+	if previous == "" || previous == image {
+		return fmt.Sprintf("acquired %s; nothing was built", image)
+	}
+	return fmt.Sprintf("acquired %s, replacing %s; nothing was built", image, previous)
+}
+
+// latestAcquisition is the newest succeeded acquisition of a project: the
+// Build whose resolution is what this project is running now.
+//
+// It is the comparison the poll makes — has the tag moved since — and the
+// "previous" an acquisition records. Both read it off the Build rather than
+// off a copy on the Project, so that there is one answer to "what did this
+// platform last take from that registry" and the audit trail is where it
+// lives.
+func latestAcquisition(
+	ctx context.Context,
+	c client.Client,
+	project *kitchenv1alpha1.Project,
+	exclude string,
+) (*kitchenv1alpha1.Build, error) {
+	builds := &kitchenv1alpha1.BuildList{}
+	if err := c.List(ctx, builds, client.InNamespace(project.Namespace),
+		client.MatchingLabels{kitchenv1alpha1.ProjectLabel: project.Name}); err != nil {
+		return nil, err
+	}
+	var newest *kitchenv1alpha1.Build
+	for i := range builds.Items {
+		build := &builds.Items[i]
+		switch {
+		case build.Name == exclude,
+			build.Spec.ProjectRef.Name != project.Name,
+			build.Status.Phase != kitchenv1alpha1.BuildSucceeded,
+			build.Status.Acquisition == nil,
+			build.Status.Acquisition.Image == "":
+			continue
+		}
+		if newest == nil || acquiredBefore(newest, build) {
+			newest = build
+		}
+	}
+	return newest, nil
+}
+
+// acquiredBefore orders two acquisitions. Creation is the ordering that
+// matters — a Build is created once and resolves immediately after — and the
+// name breaks the tie, because a creation timestamp has one-second
+// granularity and two acquisitions of one project can land inside it.
+func acquiredBefore(a, b *kitchenv1alpha1.Build) bool {
+	if a.CreationTimestamp.Equal(&b.CreationTimestamp) {
+		return a.Name < b.Name
+	}
+	return a.CreationTimestamp.Before(&b.CreationTimestamp)
 }
 
 // registryServerOf is the server a repository reference is on, which is the
@@ -348,6 +492,7 @@ func (r *BuildReconciler) vendoredWorkloads(
 		rows = append(rows, kitchenv1alpha1.WorkloadBuildStatus{
 			Name:       workload.Name,
 			Repository: workload.Image.Repository,
+			Reference:  workload.Image.Reference(),
 			Phase:      kitchenv1alpha1.BuildSucceeded,
 			Image:      image,
 		})

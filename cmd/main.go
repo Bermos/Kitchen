@@ -622,6 +622,19 @@ func main() {
 		os.Exit(1)
 	}
 
+	// The digest poll: what corresponds to a push, for a project whose
+	// software this platform did not build. A manifest HEAD per watched
+	// reference per interval, and the acquisition a moved tag produces.
+	// Leader-elected, and it idles on an installation with no vendored
+	// project, so it is added unconditionally like the sweeps around it.
+	if err := mgr.Add(&controller.ImagePollSweeper{
+		Client: mgr.GetClient(),
+		Audit:  auditor,
+	}); err != nil {
+		setupLog.Error(err, "unable to add the image poll to manager")
+		os.Exit(1)
+	}
+
 	// The access sweep: the recertification cadence, the orphaned-identity
 	// survey, and the watch for writes to Kitchen's own objects that no
 	// reconcile made. Leader-elected, and it idles until the Kitchen object

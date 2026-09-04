@@ -651,6 +651,20 @@ for previews is refused in words: there are no pull requests to open against a
 project with no repository. `kitchen projects create` does not carry this —
 see the decisions table.
 
+Such a project moves on its own: the platform asks its registry on an interval
+whether the tag it follows still names the digest it acquired, and takes a new
+one where it does not. To ask now, or to take one exactly:
+
+```sh
+kitchen api POST /projects/home-assistant/acquisitions
+kitchen api POST /projects/home-assistant/acquisitions --data '{"digest":"sha256:1f0c…"}'
+```
+
+Both answer `202` with the Build that carries it, whose `acquisition` says
+what was followed, what arrived and what it replaced — so `kitchen builds`
+lists a vendored update the way it lists a commit. Rolling one back is
+`kitchen rollback`, unchanged.
+
 `build.dockerfileTarget` on such a workload is which stage of its Dockerfile to
 ship — the per-workload counterpart of `--dockerfile-target` on `kitchen
 projects create`, and it goes through `kitchen api` for the same reason the
@@ -1305,6 +1319,7 @@ cannot write it carries on and exchanges every time.
 | When `Degraded` counts as refused | Only once it has settled: it holds, and no condition says work is in flight | A phase is what the last reconcile left behind, so a retry reads `Degraded` for a moment before the platform looks at the new release. Stopping at the first `Degraded` would report that as a failure — and stopping at none of them is the hole this closes |
 | Credentials on the command line | `--api-key-file` and `--api-key-stdin` preferred, `--api-key` documented as visible in the process list | The convenient spelling should not be the one that leaks |
 | A project whose software this platform did not build | No command; `kitchen api POST /projects` with an `image` instead of a `repo` | `kitchen projects create` is a command about *this checkout*: it links a directory to a project, takes the repository and the name from it, and preflights the layout. A project with no repository is not created from a checkout at all — there is nothing to link and nothing to detect — so it is a different flow with none of the command's reasons behind it. The whole body is three keys, and the dashboard's new-project dialog carries it |
+| Acquiring a new digest | No command; `kitchen api POST /projects/{name}/acquisitions` | The ordinary case needs no caller at all — the platform polls, and a moved tag produces the acquisition on its own. What is left is "check now", which is a button on a screen, and "take exactly this digest", which is a vendor's own pipeline calling one endpoint with one key at the end of its publish. Neither is about *this checkout*, which is what every command here is: `kitchen deploy` deploys the commit in the working directory, and a project with no repository has no working directory to be in. A `--image-digest` flag on `deploy` would be a second meaning for a command whose whole shape — link a directory, read its HEAD, follow the build — assumes the first |
 | A workload's vendored image | `kitchen processes set <name> --image <ref>`, and `kitchen api` for a whole list | It is one more key on a record; `--image` and `--image-connection` set it on the one workload named, and a list of six workloads is still a JSON body |
 | Declaring workloads at all | `kitchen processes set` and `kitchen processes rm`, one workload at a time | [#299](https://github.com/Bermos/Kitchen/issues/299) filed no command for this because `kitchen.json` was the real surface and `kitchen api` carried the rest. That reasoning holds exactly as long as there is a file: a project whose source is an image has no repository and no file, so the API, the dashboard and this command are not a fallback for it — they are the only route, and "reachable through `kitchen api`" is a lower bar than the platform sets for anything done routinely ([#310](https://github.com/Bermos/Kitchen/issues/310)). The objection is answered rather than ignored: nothing here composes a *list* of records on a command line |
 | A project's settings | No command; `kitchen api PATCH /projects/{name}` | One JSON body written occasionally by an admin — a port, a replica count, a health check, a security posture, arguments, a classification, the Dockerfile stage to ship (which `projects create` does carry, since the first build starts with the project). A flag per field would be a second surface to keep in step with the first, and a list of records with commands and schedules in it has no flag-shaped spelling worth having |

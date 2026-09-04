@@ -247,6 +247,17 @@ func (s *Server) routes() []route {
 			onProject(access.ProjectViewer, ofProject, "reading a project's builds")},
 		{"POST /api/v1/projects/{name}/builds", s.createBuild,
 			onProject(access.ProjectDeveloper, ofProject, "starting a build")},
+		// Acquiring an image somebody else built (#308): the vendored
+		// equivalent of a rebuild, for a project with no commit to name.
+		//
+		// **Admin, where a rebuild is a developer's.** A rebuild runs the
+		// commit this project already has through the same builder; an
+		// acquisition takes a new artifact from a third party's registry
+		// onto this platform, and the body may name the digest outright.
+		// That is a decision about where the software comes from rather
+		// than about running the build of it again.
+		{"POST /api/v1/projects/{name}/acquisitions", s.createAcquisition,
+			onProject(access.ProjectAdmin, ofProject, "acquiring an image")},
 		{"GET /api/v1/projects/{name}/releases", s.listProjectReleases,
 			onProject(access.ProjectViewer, ofProject, "reading a project's releases")},
 		{"GET /api/v1/projects/{name}/environments", s.listProjectEnvironments,

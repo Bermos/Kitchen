@@ -213,7 +213,8 @@ func buildForRevision(
 // It is the exact counterpart of the branch tip resolved above, and it exists
 // for the same reason: connecting software to the platform should deploy it,
 // not leave it waiting for an event. What makes the *second* acquisition
-// happen — a tag that has moved since — is #308.
+// happen — a tag that has moved since — is the digest poll (#308), which
+// compares what it finds against what this one resolved.
 func (r *ProjectReconciler) seedAcquisition(
 	ctx context.Context,
 	project *kitchenv1alpha1.Project,
@@ -231,6 +232,14 @@ func (r *ProjectReconciler) seedAcquisition(
 		},
 		Spec: kitchenv1alpha1.BuildSpec{
 			ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: project.Name},
+			// No digest: the seed has asked nothing yet, so it takes
+			// whatever the reference names when the Build is reconciled.
+			// The poll is the one that pins, because the poll has already
+			// asked (#308).
+			Acquire: &kitchenv1alpha1.AcquisitionSpec{
+				Reference: image.Reference(),
+				Trigger:   kitchenv1alpha1.AcquisitionSeeded,
+			},
 		},
 	}
 	if r.Audit != nil {
