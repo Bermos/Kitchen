@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.27.0](https://github.com/Bermos/Kitchen/compare/v0.26.0...v0.27.0) (2026-09-04)
+
+
+### Features
+
+* **api:** a project with no repository declares its workloads here ([#366](https://github.com/Bermos/Kitchen/issues/366)) ([802d0ac](https://github.com/Bermos/Kitchen/commit/802d0acbb459f202e7cdb5506a1d6a9dcfe49a96))
+* **operator:** a moved tag is what a push is, for an image this platform did not build ([#368](https://github.com/Bermos/Kitchen/issues/368)) ([9c6f5be](https://github.com/Bermos/Kitchen/commit/9c6f5be18db94305ffd45f56e2d3f1f2bca519f3))
+
+
+### Bug fixes
+
+* **ui:** serve the dashboard with a content security policy ([#371](https://github.com/Bermos/Kitchen/issues/371)) ([8d5e25b](https://github.com/Bermos/Kitchen/commit/8d5e25b5be63a599ac6bd2b3fead7460b7f4d195)), closes [#321](https://github.com/Bermos/Kitchen/issues/321)
+
 ## [0.26.0](https://github.com/Bermos/Kitchen/compare/v0.25.0...v0.26.0) (2026-09-04)
 
 
