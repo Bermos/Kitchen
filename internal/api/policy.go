@@ -680,6 +680,14 @@ func (s *Server) routes() []route {
 		// the platform and holds no credential: anyone signed in reads it,
 		// because it is what the developer choosing a dependency sees.
 		{"GET /api/v1/claim-types", s.listClaimTypes, anyCaller()},
+		// What a volume claim could bind: the cluster's PersistentVolumes,
+		// and the PersistentVolumeClaims of the projects this caller can
+		// see. It is a read over every project rather than the operator's
+		// alone — a developer who cannot see the storage cannot write the
+		// claim that mounts it — and it is filtered on the way out: a
+		// volume another project holds is listed as held, and the claim
+		// holding it is named only where that claim was readable anyway.
+		{"GET /api/v1/claim-volumes", s.listBindableVolumes, acrossProjects()},
 		{"GET /api/v1/claims", s.listClaims, acrossProjects()},
 		{"POST /api/v1/claims", s.createClaim,
 			onProject(access.ProjectDeveloper, ofProjectInBody, "claiming a resource")},

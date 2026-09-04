@@ -54,10 +54,11 @@ func TestListingClaimTypes(t *testing.T) {
 			// Shared is offered by every provider but one whose resource
 			// attaches to one pod at a time: a preview sharing that would
 			// take it from production.
-			if slices.Contains(provider.PreviewChoices, string(contract.PreviewShared)) == provider.ForcesRecreate ||
-				!slices.Contains(provider.PreviewChoices, string(contract.PreviewNone)) {
-				t.Errorf("%s via %s must offer none, and shared exactly when it does not force a recreate: %v",
-					view.Type, provider.Provider, provider.PreviewChoices)
+			offersShared := slices.Contains(provider.PreviewChoices, string(contract.PreviewShared))
+			mayShare := !provider.ForcesRecreate || provider.SharedIsReadOnly
+			if offersShared != mayShare || !slices.Contains(provider.PreviewChoices, string(contract.PreviewNone)) {
+				t.Errorf("%s via %s must offer none, and shared exactly when a preview sharing it would not "+
+					"take it from production: %v", view.Type, provider.Provider, provider.PreviewChoices)
 			}
 			if provider.PreviewChoices[0] != provider.PreviewMode {
 				t.Errorf("%s via %s lists its own mode first: %v", view.Type, provider.Provider, provider.PreviewChoices)

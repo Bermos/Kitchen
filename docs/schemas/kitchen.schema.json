@@ -116,9 +116,63 @@
       "type": "array",
       "description": "The configuration files this commit places into its workloads. Software the platform did not build is often configured by a file at a fixed path rather than by environment variables — Home Assistant's configuration.yaml, Gitea's app.ini — and this is where one is declared. Each is mounted read-only at its path into every workload it names, and is frozen into the release, so a rollback restores the file that release ran with. Declaring one merges onto the project's list by name, unlike processes: a project may hold a secret file this file may not declare, and a list that replaced would take it away. A file is placed exactly as written — nothing is substituted into it from the environment.",
       "items": { "$ref": "#/$defs/configFile" }
+    },
+    "volumes": {
+      "type": "array",
+      "description": "The persistent volumes this commit needs: which resource claim, mounted where, by which process. They are a requirement rather than a request — a volume claim is the project asking the platform for storage, and for a bound volume for storage the platform did not create and does not own, which is the project's standing rather than a fact about the code. This file is committed, so anybody who can open a pull request writes it. So the file declares what the code needs and the build checks it: a declaration the project has no claim for fails the build naming the claim to make, and one whose process, mount path, source or access mode disagrees with the claim fails naming both. That catches the failure this is for — the code writes to /data, the claim mounts /var/data, and everything is green until the first restart.",
+      "items": { "$ref": "#/$defs/volume" }
     }
   },
   "$defs": {
+    "volume": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "process", "mountPath"],
+      "description": "One volume claim the commit needs, as the commit understands it.",
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[-._a-zA-Z0-9]+$",
+          "maxLength": 253,
+          "description": "The resource claim's name, which is what ties the declaration to the thing the project actually has. Make the claim in the dashboard or with `kitchen api POST /claims`, and name it here.",
+          "examples": ["media", "config"]
+        },
+        "process": {
+          "type": "string",
+          "description": "The project's process that mounts it: \"web\" for the web process, or the name of a declared process. It and mountPath are the two facts about a volume that really are about the code, and the two the build checks the claim against.",
+          "examples": ["web", "worker"]
+        },
+        "mountPath": {
+          "type": "string",
+          "pattern": "^/([^/]+/)*[^/]+$",
+          "maxLength": 1024,
+          "description": "Where the volume appears inside that process's container, absolute.",
+          "examples": ["/data", "/media"]
+        },
+        "source": {
+          "type": "string",
+          "enum": ["provision", "bind"],
+          "description": "Which kind of volume the commit was written against, where the file wants to say. Leaving it out declares no opinion and matches either; a value that disagrees with the claim fails the build, because a commit written against twelve terabytes of existing media and a claim that cut a fresh empty disk are not the same application."
+        },
+        "accessMode": {
+          "type": "string",
+          "enum": ["ReadOnlyMany", "ReadWriteOnce", "ReadWriteMany"],
+          "description": "How the commit expects to mount it. Leaving it out declares no opinion; a value that disagrees with the claim fails the build, since read-only and read-write are the difference between an application that works and one that fails on its first write."
+        },
+        "size": {
+          "type": "string",
+          "description": "Refused here, and described so that the refusal is findable rather than arriving as an unknown field. How big a volume the platform cuts is the project's standing, not the commit's — ask for it on the claim."
+        },
+        "storageClass": {
+          "type": "string",
+          "description": "Refused here, for the reason size is: which storage a project is given is not something a committed file gets to choose."
+        },
+        "bind": {
+          "type": "object",
+          "description": "Refused here, and described so that the refusal is findable. Naming somebody's existing volume from a committed file would let a pull request mount a NAS export into its own preview — make the bound claim in the dashboard or with `kitchen api POST /claims`, and declare it here by name."
+        }
+      }
+    },
     "configFile": {
       "type": "object",
       "additionalProperties": false,

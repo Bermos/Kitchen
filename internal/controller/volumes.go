@@ -40,7 +40,14 @@ import (
 // discover: the workload is deployed by recreation, and it runs one replica
 // — the Deployment's count where the reconciler writes it, and the
 // autoscaler's ceiling where it does not. A class detected to support
-// ReadWriteMany lifts both.
+// ReadWriteMany lifts both, and so does a bound volume mounted ReadOnlyMany:
+// many pods may read one filesystem at once.
+//
+// Whether the mount is read-only is decided here too, and written on the pod
+// rather than trusted to the application. A claim that asked for
+// ReadOnlyMany is read-only everywhere; a preview of a *bound* volume is
+// read-only wherever it mounts production's own, which is what makes
+// sharing that volume with a preview safe at all.
 
 // mountedVolume is one volume claim as this environment mounts it.
 type mountedVolume struct {
@@ -54,6 +61,12 @@ type mountedVolume struct {
 	// attachOnce says the volume can be attached to one pod at a time, so
 	// the process mounting it is capped at one replica and recreated.
 	attachOnce bool
+	// readOnly says the process mounts the volume without being able to
+	// change what is on it. It is how a bound volume is shared — every
+	// reader gets what production reads, and a preview of a bound volume
+	// reads production's own — so it is set on the mount and on the pod's
+	// volume both, rather than trusted to the application.
+	readOnly bool
 }
 
 // volumeMountsFor collects the project's volume claims as this environment
@@ -84,6 +97,11 @@ func (r *EnvironmentReconciler) volumeMountsFor(
 			return nil, claim.Name, nil, nil
 		}
 		claimName := status.ClaimName
+		bound := status.Source == kitchenv1alpha1.VolumeBind
+		// A volume mounted ReadOnlyMany is read-only wherever it is
+		// mounted; production's own included, since that is what the claim
+		// asked for.
+		readOnly := status.AccessMode == string(corev1.ReadOnlyMany)
 		if isPreview {
 			switch mode := contract.PreviewMode(claim.Status.PreviewMode); {
 			case mode.Isolated():
@@ -97,9 +115,14 @@ func (r *EnvironmentReconciler) volumeMountsFor(
 					return nil, claim.Name, nil, nil
 				}
 			case mode == contract.PreviewShared:
-				// Production's own volume. The API refuses this choice for
-				// a volume, so it is reachable only by an object written
+				// Production's own volume. For a bound volume that is the
+				// declared answer and the preview mounts it **read-only**:
+				// a preview of an application whose data is the point of it
+				// reads exactly what production reads, and can change none
+				// of it. For a provisioned volume the API refuses the
+				// choice, so it is reachable only by an object written
 				// another way; it is honoured rather than second-guessed.
+				readOnly = readOnly || bound
 			case mode == contract.PreviewNone:
 				unmounted = append(unmounted, claim.Name+": "+claim.Status.PreviewReason)
 				continue
@@ -108,11 +131,13 @@ func (r *EnvironmentReconciler) volumeMountsFor(
 			}
 		}
 		mounts = append(mounts, mountedVolume{
-			claim:      claim.Name,
-			process:    status.Process,
-			claimName:  claimName,
-			mountPath:  status.MountPath,
-			attachOnce: status.AccessMode != string(corev1.ReadWriteMany),
+			claim:     claim.Name,
+			process:   status.Process,
+			claimName: claimName,
+			mountPath: status.MountPath,
+			attachOnce: status.AccessMode != string(corev1.ReadWriteMany) &&
+				status.AccessMode != string(corev1.ReadOnlyMany),
+			readOnly: readOnly,
 		})
 	}
 	// A stable order, so the pod spec does not differ between reconciles
@@ -157,10 +182,17 @@ func podVolumes(mounts []mountedVolume) ([]corev1.Volume, []corev1.VolumeMount) 
 		volumes = append(volumes, corev1.Volume{
 			Name: name,
 			VolumeSource: corev1.VolumeSource{
-				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: mount.claimName},
+				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+					ClaimName: mount.claimName,
+					ReadOnly:  mount.readOnly,
+				},
 			},
 		})
-		volumeMounts = append(volumeMounts, corev1.VolumeMount{Name: name, MountPath: mount.mountPath})
+		volumeMounts = append(volumeMounts, corev1.VolumeMount{
+			Name:      name,
+			MountPath: mount.mountPath,
+			ReadOnly:  mount.readOnly,
+		})
 	}
 	return volumes, volumeMounts
 }

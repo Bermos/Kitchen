@@ -759,3 +759,106 @@ func TestFilesRefuseToShadowASecretFile(t *testing.T) {
 		t.Errorf("message %q does not say why", err)
 	}
 }
+
+// A commit declares the volumes it needs, and nothing about how they are
+// made. The declaration is what the build holds against the project's
+// claims, so what has to survive the parse is the claim's name, the process
+// and the mount path — and the two opinions the file may hold about the
+// claim it names.
+func TestVolumesTravelWithTheCommit(t *testing.T) {
+	config, err := Parse([]byte(`{
+	  "volumes": [
+	    {"name": "config", "process": "web", "mountPath": "/config"},
+	    {"name": "media", "process": "web", "mountPath": "/media",
+	     "source": "bind", "accessMode": "ReadOnlyMany"}
+	  ]
+	}`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(config.Volumes) != 2 {
+		t.Fatalf("volumes = %+v, want both", config.Volumes)
+	}
+	if config.Volumes[0].Source != "" || config.Volumes[0].AccessMode != "" {
+		t.Errorf("a declaration that held no opinion gained one: %+v", config.Volumes[0])
+	}
+	if config.Volumes[1].Source != kitchenv1alpha1.VolumeBind ||
+		config.Volumes[1].AccessMode != "ReadOnlyMany" || config.Volumes[1].MountPath != "/media" {
+		t.Errorf("the declaration did not survive the parse: %+v", config.Volumes[1])
+	}
+	if !slices.Contains(config.Declares(), "volumes.media") || !config.DeclaresVolume("config") {
+		t.Errorf("the file does not say it declared its volumes: %v", config.Declares())
+	}
+}
+
+// The one thing this file may not do is ask for storage. Each refusal names
+// the field, because "unknown field" would be a true answer that explains
+// nothing about why a committed file may not choose a disk.
+func TestVolumesRefusals(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		file     string
+		mentions string
+	}{
+		{
+			name:     "asking for a size",
+			file:     `{"volumes": [{"name": "d", "process": "web", "mountPath": "/d", "size": "10Gi"}]}`,
+			mentions: "sets size",
+		},
+		{
+			name:     "asking for a class",
+			file:     `{"volumes": [{"name": "d", "process": "web", "mountPath": "/d", "storageClass": "fast"}]}`,
+			mentions: "sets storageClass",
+		},
+		{
+			// The whole reason: a file anybody who can open a pull request
+			// may write must not be able to mount somebody's export into
+			// its own preview.
+			name: "naming somebody's existing volume",
+			file: `{"volumes": [{"name": "d", "process": "web", "mountPath": "/d",
+			        "bind": {"persistentVolume": "nas"}}]}`,
+			mentions: "sets bind",
+		},
+		{
+			name:     "no claim named",
+			file:     `{"volumes": [{"process": "web", "mountPath": "/d"}]}`,
+			mentions: "names none",
+		},
+		{
+			name:     "no process",
+			file:     `{"volumes": [{"name": "d", "mountPath": "/d"}]}`,
+			mentions: "no process",
+		},
+		{
+			name:     "no mount path",
+			file:     `{"volumes": [{"name": "d", "process": "web"}]}`,
+			mentions: "no mountPath",
+		},
+		{
+			name: "one claim declared twice",
+			file: `{"volumes": [{"name": "d", "process": "web", "mountPath": "/d"},
+			        {"name": "d", "process": "web", "mountPath": "/e"}]}`,
+			mentions: "declared twice",
+		},
+		{
+			name:     "a source that is neither",
+			file:     `{"volumes": [{"name": "d", "process": "web", "mountPath": "/d", "source": "borrow"}]}`,
+			mentions: "which is neither",
+		},
+		{
+			name:     "an access mode that is none of the three",
+			file:     `{"volumes": [{"name": "d", "process": "web", "mountPath": "/d", "accessMode": "WriteOnly"}]}`,
+			mentions: "which is not one of",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Parse([]byte(tc.file))
+			if !errors.Is(err, ErrInvalid) {
+				t.Fatalf("err = %v, want the file refused", err)
+			}
+			if !strings.Contains(err.Error(), tc.mentions) {
+				t.Errorf("message %q does not say what is wrong (%s)", err, tc.mentions)
+			}
+		})
+	}
+}

@@ -318,6 +318,51 @@ for the same reason a variable may not shadow a bound one.
 They are frozen into the release with everything else, so a rollback restores
 the file that release ran with.
 
+### `volumes`
+
+The persistent volumes this commit needs: which [resource
+claim](api/claims.md), mounted where, by which process.
+
+```json
+{
+  "volumes": [
+    { "name": "config", "process": "web", "mountPath": "/config" },
+    { "name": "media", "process": "web", "mountPath": "/media",
+      "source": "bind", "accessMode": "ReadOnlyMany" }
+  ]
+}
+```
+
+**This is the one entry that declares a requirement and never makes one.**
+Everything else on this page describes the code and the file may set it. A
+volume claim is the project asking the platform for storage — and for
+`source: bind`, for storage the platform did not create and does not own —
+which is the project's standing rather than a fact about the commit. A file
+that could make one would let a pull request mount somebody's NAS export into
+its own preview, which is [No credential, ever](#what-it-cannot-set) wearing a
+different hat. So `size`, `storageClass` and `bind` are refused here **by
+name**, rather than arriving as an unknown field: they are the first things
+somebody reaches for, and "unknown field" would be a true answer that explains
+nothing.
+
+What the file declares, the build checks against the project's claims, and
+each disagreement fails the build with what to change:
+
+| The file says | The build says |
+|---|---|
+| a claim the project does not have | the claim to make, and the volume claims the project does have |
+| a `process` or `mountPath` the claim disagrees with | both, side by side |
+| a `source` the claim disagrees with | both — a commit written against twelve terabytes of existing media is not the same application as one handed a fresh empty disk |
+| an `accessMode` the claim disagrees with | both — read-only and read-write are the difference between an application that works and one that fails on its first write |
+
+`source` and `accessMode` are optional and declare no opinion when left out.
+The middle row is the failure this is actually for: the code writes to `/data`,
+the claim mounts `/var/data`, and everything deploys green until the first
+restart takes the data with it.
+
+Make the claim in the dashboard or with `kitchen api POST /claims`, and name
+it here.
+
 ## What it cannot set
 
 The file lives in a repository, and **a preview builds a commit from a pull
@@ -351,6 +396,12 @@ the project's standing in the platform.
   rather than a fact about the code, and the declaration would be a claim a
   pull request got to make. A secret file is declared in the dashboard or with
   `kitchen files set --secret`.
+- **No asking for storage.** [`volumes`](#volumes) declares the volumes the
+  code needs and the build checks them; it cannot ask for one to be cut, and
+  it cannot name somebody's existing volume — `size`, `storageClass` and
+  `bind` are refused by name. Which disk a project is given, and whose
+  existing data it may mount, is the project's standing, and a file that could
+  say it would let a pull request mount a NAS export into its own preview.
 - **Not the root directory**, for the reason in [Where it goes](#where-it-goes).
 - **Not the git connection, the repository, the production branch or the
   registry.** A file cannot say which repository it is in.
@@ -364,7 +415,9 @@ be a setting such a project could never make.
 [Workloads](api/processes.md#a-project-with-no-repository-declares-all-of-this-here)
 maps the two onto each other field by field. The traffic runs the other way
 once: `build.rootDirectory` is the API's and not the file's, for the reason in
-[Where it goes](#where-it-goes).
+[Where it goes](#where-it-goes). And [`volumes`](#volumes) sets nothing at
+all — it declares what the code needs and the build holds it against the
+claims `POST /claims` made, which is the route behind it.
 
 ## What a bad file does
 

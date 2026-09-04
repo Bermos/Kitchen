@@ -111,6 +111,9 @@ func (volumeContract) reconcile(
 	if err := volumeProcessOf(project, req.Process); err != nil {
 		return r.failed(ctx, claim, "ProcessUnknown", err)
 	}
+	if req.Bound() {
+		return r.reconcileBoundVolume(ctx, claim, project, req)
+	}
 	class, err := r.storageClassFor(ctx, req.StorageClass)
 	if err != nil {
 		var refusal *storageClassRefusal
@@ -155,6 +158,7 @@ func (volumeContract) reconcile(
 	status := &kitchenv1alpha1.ClaimVolumeStatus{
 		Process:          req.Process,
 		MountPath:        req.MountPath,
+		Source:           kitchenv1alpha1.VolumeProvision,
 		StorageClass:     class.Name,
 		AccessMode:       string(mode),
 		AccessModeReason: why,
@@ -174,6 +178,7 @@ func (volumeContract) reconcile(
 			req.MountPath, req.Process),
 		map[string]any{
 			"type":           claim.Spec.Type,
+			"source":         string(kitchenv1alpha1.VolumeProvision),
 			"process":        req.Process,
 			"mountPath":      req.MountPath,
 			"size":           req.Size,
@@ -201,6 +206,9 @@ func (volumeContract) reconcile(
 // namespace, where a claim of the same name finds it again; and should the
 // namespace go with the project, the PersistentVolume behind it has already
 // been made to survive that (see retainVolume).
+//
+// A bound volume has no policy at all: it was there before the claim and the
+// platform neither made it nor owns it, so teardown unmounts and stops.
 func (volumeContract) finalize(
 	ctx context.Context,
 	r *ResourceClaimReconciler,
@@ -213,6 +221,15 @@ func (volumeContract) finalize(
 				return err
 			}
 		}
+	}
+	// A bound volume is not the platform's, and teardown says so: the
+	// PersistentVolumeClaim the platform created to reach it goes, and
+	// nothing else — never the PersistentVolume, never a claim somebody
+	// else put in the namespace, and never the data. deletionPolicy Delete
+	// is refused on a bound claim at the door and again at reconcile, so
+	// there is no policy that reaches past this line.
+	if volumeRequirements(claim).Bound() {
+		return r.deleteBoundVolumeClaim(ctx, claim, appNS)
 	}
 	if claim.Spec.DeletionPolicy != kitchenv1alpha1.ClaimDelete {
 		return nil
@@ -234,13 +251,31 @@ func (volumeContract) finalize(
 // takes — the two vocabularies kept apart for the reason claimRequirements
 // keeps the database's.
 func volumeRequirements(claim *kitchenv1alpha1.ResourceClaim) volume.Requirements {
-	cfg := claim.Volume()
-	return volume.Requirements{
+	return volumeRequirementsOf(claim.Volume())
+}
+
+// volumeRequirementsOf is the same translation over a config the API is
+// still holding, so that the door and the reconciler refuse the same shapes
+// in the same words.
+func volumeRequirementsOf(cfg kitchenv1alpha1.VolumeConfig) volume.Requirements {
+	req := volume.Requirements{
 		Process:      cfg.Process,
+		Source:       volume.Source(cfg.Source),
 		Size:         cfg.Size,
 		StorageClass: cfg.StorageClass,
 		MountPath:    cfg.MountPath,
 	}
+	if req.Source == "" {
+		req.Source = volume.SourceProvision
+	}
+	if cfg.Bind != nil {
+		req.Bind = volume.Binding{
+			PersistentVolume:      cfg.Bind.PersistentVolume,
+			PersistentVolumeClaim: cfg.Bind.PersistentVolumeClaim,
+			AccessMode:            corev1.PersistentVolumeAccessMode(cfg.Bind.AccessMode),
+		}
+	}
+	return req
 }
 
 // volumeProcessOf refuses a process the project does not have. The web

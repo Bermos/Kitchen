@@ -43,6 +43,7 @@ import (
 	"errors"
 	"fmt"
 	"path"
+	"slices"
 	"sort"
 	"strings"
 
@@ -58,6 +59,18 @@ import (
 // preview mode: the cluster's StorageClass, since there is no Connection
 // whose provider could say instead.
 const ProviderName = "storageClass"
+
+// BoundProviderName is the other provider of a volume claim: a volume that
+// already exists, which the platform mounts and never cuts.
+//
+// It is a second provider rather than a flag on the first because
+// everything a provider declares differs between them — what a preview
+// gets, what deleting the claim may do, whether there is a size to ask for
+// — and a declaration is what the dashboard shows and the docs matrix
+// renders before any claim exists. A reader choosing between "cut me a
+// disk" and "mount the NAS" is choosing between two providers, and the
+// catalogue says so.
+const BoundProviderName = "boundVolume"
 
 const (
 	// ReadWriteManyAnnotation on a StorageClass is an operator's word about
@@ -92,23 +105,97 @@ var readWriteManyProvisioners = []string{
 	"cephfs.csi.ceph.com",
 }
 
+// Source is where a volume claim's volume comes from. It is declared on the
+// claim rather than inferred from which fields are set: "the claim has a
+// bind block, so it must mean bind" is a guess, and a guess about whether
+// the platform is about to cut a new disk or reach for twelve terabytes
+// somebody already has is the wrong kind of guess.
+type Source string
+
+const (
+	// SourceProvision cuts a new PersistentVolumeClaim from a StorageClass:
+	// the whole of what a volume claim was when it arrived.
+	SourceProvision Source = "provision"
+	// SourceBind mounts a volume that already exists — a PersistentVolume
+	// an operator wrote for an NFS export or a CSI volume, or a
+	// PersistentVolumeClaim already sitting in the project's application
+	// namespace. The platform provisions nothing and destroys nothing.
+	SourceBind Source = "bind"
+)
+
+// Sources is every source, in the order the docs list them.
+var Sources = []Source{SourceProvision, SourceBind}
+
+// Binding is the volume a claim binds when its source is bind: which volume,
+// and how it is mounted.
+type Binding struct {
+	// PersistentVolume names a cluster PersistentVolume to bind. Exactly
+	// one of this and PersistentVolumeClaim is set.
+	PersistentVolume string
+	// PersistentVolumeClaim names an existing PersistentVolumeClaim in the
+	// project's own application namespace — one somebody put there, or one
+	// an earlier life of the project left behind.
+	//
+	// It is the project's namespace and no other, because that is the only
+	// namespace whose claims its pods can mount: a PersistentVolumeClaim is
+	// namespaced and a pod may only name one of its own. A volume that
+	// lives somewhere else is reached by naming the PersistentVolume behind
+	// it, which is cluster-scoped and is what an export is anyway.
+	PersistentVolumeClaim string
+	// AccessMode is how this project mounts the volume — declared, not
+	// read off the volume, because "what the volume can do" and "what this
+	// project may do with it" are different questions and only the second
+	// one decides whether another project may write it.
+	AccessMode corev1.PersistentVolumeAccessMode
+}
+
+// AccessModes are the three modes a bound volume may be declared with, in
+// the order the docs list them.
+var AccessModes = []corev1.PersistentVolumeAccessMode{
+	corev1.ReadOnlyMany, corev1.ReadWriteOnce, corev1.ReadWriteMany,
+}
+
+// Writes reports whether a mode lets the process that mounts the volume
+// change what is on it. It is the whole of the two-projects-one-volume
+// rule: any number of projects may read one volume, and one may write it.
+func Writes(mode corev1.PersistentVolumeAccessMode) bool {
+	return mode == corev1.ReadWriteOnce || mode == corev1.ReadWriteMany
+}
+
+// AttachesOnce reports whether a volume mounted this way can be attached to
+// one pod at a time — which is what caps the process at one replica and
+// deploys it by recreation. ReadOnlyMany and ReadWriteMany both lift it.
+func AttachesOnce(mode corev1.PersistentVolumeAccessMode) bool {
+	return mode != corev1.ReadWriteMany && mode != corev1.ReadOnlyMany
+}
+
 // Requirements is what a volume claim asks for, read off its config: which
-// process mounts the volume, where, and what it has to be.
+// process mounts the volume, where, and what it has to be — or, for a bound
+// volume, which volume it already is.
 type Requirements struct {
 	// Process is the project's process that mounts the volume — "web" for
 	// the web process, or a named process.
 	Process string
-	// Size is a Kubernetes quantity: "10Gi".
+	// Source is provision or bind. Empty is provision, which is what every
+	// claim written before binding existed meant.
+	Source Source
+	// Size is a Kubernetes quantity: "10Gi". Provisioned volumes only.
 	Size string
 	// StorageClass the volume is cut from; empty is the cluster's default.
+	// Provisioned volumes only.
 	StorageClass string
 	// MountPath is where the volume appears in the process's container.
 	MountPath string
+	// Bind is the volume a bound claim mounts.
+	Bind Binding
 }
+
+// Bound reports whether the claim mounts a volume that already exists.
+func (r Requirements) Bound() bool { return r.Source == SourceBind }
 
 // Validate checks the shape of the requirements — and only the shape.
 // Whether the process exists is the project's answer, and whether the class
-// exists and what it supports is the cluster's; both land on the claim.
+// or the volume exists is the cluster's; all of them land on the claim.
 func (r Requirements) Validate() error {
 	if r.Process == "" {
 		return errors.New("volume.process is required: it names the one process that mounts the volume — " +
@@ -119,22 +206,8 @@ func (r Requirements) Validate() error {
 		return fmt.Errorf("volume.process must be a process name — lowercase letters, digits and '-' (got %q)",
 			r.Process)
 	}
-	if r.Size == "" {
-		return errors.New("volume.size is required: a Kubernetes quantity such as \"10Gi\". A volume has no " +
-			"sensible default size, and one that was defaulted is the one that fills up first")
-	}
-	quantity, err := resource.ParseQuantity(r.Size)
-	if err != nil {
-		return fmt.Errorf("volume.size is a Kubernetes quantity — \"10Gi\" (got %q): %w", r.Size, err)
-	}
-	if quantity.Sign() <= 0 {
-		return fmt.Errorf("volume.size must be more than nothing (got %q)", r.Size)
-	}
-	if r.StorageClass != "" {
-		if errs := validation.IsDNS1123Subdomain(r.StorageClass); len(errs) > 0 {
-			return fmt.Errorf("volume.storageClass must be a StorageClass name (got %q): %s", r.StorageClass,
-				strings.Join(errs, "; "))
-		}
+	if err := r.validateSource(); err != nil {
+		return err
 	}
 	if r.MountPath == "" {
 		return errors.New("volume.mountPath is required: the absolute path inside the container the volume " +
@@ -145,6 +218,116 @@ func (r Requirements) Validate() error {
 			"mounting over the root would hide the image's own filesystem", r.MountPath)
 	}
 	return nil
+}
+
+// validateSource checks the half of the requirements that differs between
+// the two sources, and — first — that each source was given only its own
+// fields. A size on a bound volume is not a harmless extra: it reads as a
+// disk about to be cut at that size, and nothing is about to be cut.
+func (r Requirements) validateSource() error {
+	switch r.Source {
+	case "", SourceProvision:
+		if r.Bind != (Binding{}) {
+			return fmt.Errorf("volume.bind is refused on a %s volume: it names a volume that already exists, "+
+				"and this claim is asking the platform to cut a new one. Set volume.source: %s to mount the "+
+				"volume it names, or take volume.bind off", SourceProvision, SourceBind)
+		}
+		if r.Size == "" {
+			return errors.New("volume.size is required: a Kubernetes quantity such as \"10Gi\". A volume has " +
+				"no sensible default size, and one that was defaulted is the one that fills up first")
+		}
+		quantity, err := resource.ParseQuantity(r.Size)
+		if err != nil {
+			return fmt.Errorf("volume.size is a Kubernetes quantity — \"10Gi\" (got %q): %w", r.Size, err)
+		}
+		if quantity.Sign() <= 0 {
+			return fmt.Errorf("volume.size must be more than nothing (got %q)", r.Size)
+		}
+		if r.StorageClass != "" {
+			if errs := validation.IsDNS1123Subdomain(r.StorageClass); len(errs) > 0 {
+				return fmt.Errorf("volume.storageClass must be a StorageClass name (got %q): %s",
+					r.StorageClass, strings.Join(errs, "; "))
+			}
+		}
+		return nil
+	case SourceBind:
+		if r.Size != "" {
+			return fmt.Errorf("volume.size is refused on a %s volume: the volume already exists and the "+
+				"platform is not provisioning it, so a size here would be a number nothing reads. Its "+
+				"capacity is whatever it was made with, and the claim reports it", SourceBind)
+		}
+		if r.StorageClass != "" {
+			return fmt.Errorf("volume.storageClass is refused on a %s volume: a class is what a volume is cut "+
+				"from, and this one was cut before the claim existed. The claim reports the class the volume "+
+				"carries, if it carries one", SourceBind)
+		}
+		return r.Bind.validate()
+	}
+	return fmt.Errorf("volume.source must be %s (got %q): %s cuts a new volume from a StorageClass, %s mounts "+
+		"one that already exists", joinSources(), r.Source, SourceProvision, SourceBind)
+}
+
+// validate checks the bind block: exactly one volume named, and an access
+// mode that was written down.
+func (b Binding) validate() error {
+	named := 0
+	if b.PersistentVolume != "" {
+		named++
+	}
+	if b.PersistentVolumeClaim != "" {
+		named++
+	}
+	switch named {
+	case 0:
+		return fmt.Errorf("volume.bind names no volume: set bind.persistentVolume to the PersistentVolume the "+
+			"volume is (an NFS export or a CSI volume an operator wrote), or bind.persistentVolumeClaim to a "+
+			"PersistentVolumeClaim already in this project's namespace. A %s volume mounts one that exists "+
+			"and creates none", SourceBind)
+	case 1:
+	default:
+		return errors.New("volume.bind names both a persistentVolume and a persistentVolumeClaim: name one. " +
+			"A PersistentVolumeClaim already names the volume behind it, so the two together can only agree " +
+			"or contradict each other")
+	}
+	for _, name := range []struct{ field, value string }{
+		{"bind.persistentVolume", b.PersistentVolume},
+		{"bind.persistentVolumeClaim", b.PersistentVolumeClaim},
+	} {
+		if name.value == "" {
+			continue
+		}
+		if errs := validation.IsDNS1123Subdomain(name.value); len(errs) > 0 {
+			return fmt.Errorf("volume.%s must be a Kubernetes object name (got %q): %s", name.field, name.value,
+				strings.Join(errs, "; "))
+		}
+	}
+	if b.AccessMode == "" {
+		return fmt.Errorf("volume.bind.accessMode is required: it says how this project mounts the volume — "+
+			"%s to read it, %s to write it as the only pod that has it, %s to write it alongside others. It "+
+			"is declared rather than read off the volume because what the volume can do and what this "+
+			"project may do with it are different questions", corev1.ReadOnlyMany, corev1.ReadWriteOnce,
+			corev1.ReadWriteMany)
+	}
+	if !slices.Contains(AccessModes, b.AccessMode) {
+		return fmt.Errorf("volume.bind.accessMode must be one of %s (got %q)", joinModes(), b.AccessMode)
+	}
+	return nil
+}
+
+func joinSources() string {
+	names := make([]string, 0, len(Sources))
+	for _, source := range Sources {
+		names = append(names, string(source))
+	}
+	return strings.Join(names, " or ")
+}
+
+func joinModes() string {
+	names := make([]string, 0, len(AccessModes))
+	for _, mode := range AccessModes {
+		names = append(names, string(mode))
+	}
+	return strings.Join(names, ", ")
 }
 
 // Declaration is what the StorageClass provider says about the volumes it
@@ -175,6 +358,72 @@ var Declaration = contract.Declaration{
 		"would leave the new pod waiting in Multi-Attach for a volume the old pod never releases. " +
 		"Every deploy of that process has a gap in serving; a StorageClass detected to support " +
 		"ReadWriteMany lifts both",
+}
+
+// BoundDeclaration is what the other provider says: the volume already
+// exists, so there is nothing to cut, nothing to copy and nothing the
+// platform may destroy.
+//
+// **What a preview gets is the one thing this had to decide.** A fresh,
+// empty volume is what the provisioning provider gives a preview, and it is
+// exactly wrong here: an existing volume is usually the whole point of the
+// application — a preview of a media server with an empty media directory
+// is a preview of nothing. So a preview mounts the same volume, read-only,
+// and that is a default rather than a choice to opt into because a
+// read-only mount can neither take the volume from production nor change
+// what is on it, which is what the refusal on `shared` exists for
+// (SharedIsReadOnly). Where the claim's own access mode is ReadWriteOnce
+// the volume attaches to one pod at a time and production has it: previews
+// get nothing, and the claim says so.
+//
+// ForcesRecreate is declared true because the conservative answer is the
+// right one to show before a claim exists — the claim's declared access
+// mode is what actually decides, and the reconciler writes that over this.
+var BoundDeclaration = contract.Declaration{
+	Preview: contract.PreviewShared,
+	PreviewNote: "the same volume, mounted read-only: a preview of an application whose data is the point of " +
+		"it reads exactly what production reads and cannot change any of it. A ReadWriteOnce volume gives " +
+		"previews nothing instead — production has it, and it attaches to one pod at a time",
+	SharedIsReadOnly: true,
+	IdleNote: "the volume is not the platform's to park: it existed before the claim and outlives it, and an " +
+		"idle preview mounting it read-only costs nothing either way",
+	ForcesRecreate: true,
+	WorkloadNote: "a volume mounted ReadWriteOnce attaches to one pod at a time, so the process mounting it " +
+		"runs one replica and is deployed by stopping the old pod before starting the new one. The claim " +
+		"declares its own access mode, and ReadOnlyMany or ReadWriteMany lifts both",
+}
+
+// VolumeIdentity is what a PersistentVolume actually points at, as a string
+// two claims can be compared on: the CSI driver and volume handle, the NFS
+// server and export, the SMB share, and so on down to the volume's own name
+// where the platform cannot see inside it.
+//
+// It exists for one rule. Two projects mounting one export do it through
+// two PersistentVolumes — a PersistentVolume binds to exactly one claim, so
+// there is no other way — and comparing the names would report two
+// unrelated volumes where the storage underneath is the same twelve
+// terabytes. What the claim has to know is whether somebody else is writing
+// where this claim is about to write, and that is a question about the
+// storage, not about the object in front of it.
+func VolumeIdentity(pv *corev1.PersistentVolume) string {
+	if pv == nil {
+		return ""
+	}
+	switch source := pv.Spec.PersistentVolumeSource; {
+	case source.CSI != nil:
+		return fmt.Sprintf("csi://%s/%s", source.CSI.Driver, source.CSI.VolumeHandle)
+	case source.NFS != nil:
+		return fmt.Sprintf("nfs://%s%s", source.NFS.Server, path.Clean("/"+source.NFS.Path))
+	case source.ISCSI != nil:
+		return fmt.Sprintf("iscsi://%s/%s/%d", source.ISCSI.TargetPortal, source.ISCSI.IQN, source.ISCSI.Lun)
+	case source.FC != nil:
+		return fmt.Sprintf("fc://%s", strings.Join(source.FC.TargetWWNs, ","))
+	case source.HostPath != nil:
+		return "hostPath://" + path.Clean(source.HostPath.Path)
+	case source.Local != nil:
+		return "local://" + path.Clean(source.Local.Path)
+	}
+	return "persistentVolume://" + pv.Name
 }
 
 // AccessMode is what volumes from a StorageClass can be attached as, and

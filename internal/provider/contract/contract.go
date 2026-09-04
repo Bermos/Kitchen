@@ -120,4 +120,20 @@ type Declaration struct {
 	// WorkloadNote is the sentence behind either of the two flags above,
 	// empty when neither is set.
 	WorkloadNote string
+
+	// SharedIsReadOnly says that what a preview shares here, it cannot
+	// write: the provider hands a preview the production resource with no
+	// way to change it.
+	//
+	// It exists because the two refusals that guard PreviewShared —
+	// "a preview reading production data is never a default" and "a
+	// resource that attaches to one pod at a time would be taken from
+	// production" — are both about a preview *taking* or *changing*
+	// production's resource. A volume the platform did not provision,
+	// mounted read-only, does neither: every reader gets what production
+	// reads and none of them can write it, which is the whole of what an
+	// existing export shared between projects is for. A provider that sets
+	// this may declare shared as its default mode; one that does not may
+	// not.
+	SharedIsReadOnly bool
 }

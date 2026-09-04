@@ -21,10 +21,13 @@ import (
 	"errors"
 	"fmt"
 	"path"
+	"sort"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
@@ -327,6 +330,16 @@ func (r *BuildReconciler) readConfig(
 		return nil, nil
 	}
 
+	// The volumes the file declares are a requirement rather than a
+	// request, so this is where they are met: a declaration with no claim
+	// behind it, or one the claim contradicts, fails the build before
+	// anything is scheduled — the same finality as any other wrong line in
+	// the file, and for the same reason. It cannot come right on its own.
+	if err := r.checkDeclaredVolumes(ctx, config, project); err != nil {
+		res, updateErr := r.fail(ctx, build, project, reasonConfigInvalid, err.Error())
+		return &res, updateErr
+	}
+
 	build.Status.Config = config
 	logf.FromContext(ctx).Info("build read the commit's own configuration",
 		"build", build.Name, "project", project.Name, "file", config.Path, "declares", config.Declares())
@@ -334,4 +347,94 @@ func (r *BuildReconciler) readConfig(
 		return &ctrl.Result{}, err
 	}
 	return nil, nil
+}
+
+// checkDeclaredVolumes holds the commit's `volumes` against the project's
+// resource claims.
+//
+// The file cannot make a claim — see [v1alpha1.RepoConfig] for why the one
+// thing in that file that would reach outside the code is the one thing it
+// may not do — so what it declares is checked instead. Three things are
+// worth checking and each fails the build with what to change:
+//
+//   - **A claim that is not there.** The commit expects a volume the project
+//     never claimed; deploying would run the application with its data
+//     directory inside the container, where the next restart takes it.
+//   - **A mount path or a process that disagrees.** This is the failure the
+//     declaration is actually for: the code writes to /data, the claim mounts
+//     /var/data, and everything is green until the first restart.
+//   - **A source or an access mode that disagrees**, where the file said
+//     which. A commit written against twelve terabytes of existing media is
+//     not the same application as one handed a fresh empty disk, and
+//     read-only and read-write are the difference between working and failing
+//     on the first write.
+func (r *BuildReconciler) checkDeclaredVolumes(
+	ctx context.Context,
+	config *kitchenv1alpha1.RepoConfig,
+	project *kitchenv1alpha1.Project,
+) error {
+	if config == nil || len(config.Volumes) == 0 {
+		return nil
+	}
+	claims := &kitchenv1alpha1.ResourceClaimList{}
+	if err := r.List(ctx, claims, client.InNamespace(project.Namespace)); err != nil {
+		return err
+	}
+	byName := map[string]*kitchenv1alpha1.ResourceClaim{}
+	names := make([]string, 0, len(claims.Items))
+	for i := range claims.Items {
+		claim := &claims.Items[i]
+		if claim.Spec.ProjectRef.Name != project.Name || claim.Spec.Type != kitchenv1alpha1.ClaimTypeVolume {
+			continue
+		}
+		byName[claim.Name] = claim
+		names = append(names, claim.Name)
+	}
+	sort.Strings(names)
+
+	for _, declared := range config.Volumes {
+		claim, ok := byName[declared.Name]
+		if !ok {
+			has := "this project has no volume claims"
+			if len(names) > 0 {
+				has = "this project's volume claims are " + strings.Join(names, ", ")
+			}
+			return fmt.Errorf("%s declares the volume %q, and %s. A volume claim is the project asking the "+
+				"platform for storage, which a committed file cannot do on its own: make the claim in the "+
+				"dashboard or with `kitchen api POST /claims`, and this build will find it",
+				kitchenv1alpha1.RepoConfigFileName, declared.Name, has)
+		}
+		cfg := claim.Volume()
+		if cfg.Process != declared.Process || cfg.MountPath != declared.MountPath {
+			return fmt.Errorf("%s declares the volume %q mounted at %s by process %s, and the claim mounts it "+
+				"at %s by process %s. The commit and the claim have to agree about where the application "+
+				"writes, or the application writes into its container and loses it at the next restart",
+				kitchenv1alpha1.RepoConfigFileName, declared.Name, declared.MountPath, declared.Process,
+				cfg.MountPath, cfg.Process)
+		}
+		source := cfg.Source
+		if source == "" {
+			source = kitchenv1alpha1.VolumeProvision
+		}
+		if declared.Source != "" && declared.Source != source {
+			return fmt.Errorf("%s declares the volume %q as %s, and the claim is %s. A commit written against "+
+				"a volume that already holds data is not the same application as one handed a fresh empty "+
+				"disk", kitchenv1alpha1.RepoConfigFileName, declared.Name, declared.Source, source)
+		}
+		if declared.AccessMode == "" {
+			continue
+		}
+		mode := declared.AccessMode
+		switch {
+		case cfg.Bind != nil && cfg.Bind.AccessMode != mode:
+			return fmt.Errorf("%s declares the volume %q mounted %s, and the claim mounts it %s. Read-only and "+
+				"read-write are the difference between an application that works and one that fails on its "+
+				"first write", kitchenv1alpha1.RepoConfigFileName, declared.Name, mode, cfg.Bind.AccessMode)
+		case cfg.Bind == nil && mode == string(corev1.ReadOnlyMany):
+			return fmt.Errorf("%s declares the volume %q mounted %s, and the claim provisions a volume of the "+
+				"project's own, which is always writable. A read-only mount is what binding an existing "+
+				"volume is for", kitchenv1alpha1.RepoConfigFileName, declared.Name, mode)
+		}
+	}
+	return nil
 }

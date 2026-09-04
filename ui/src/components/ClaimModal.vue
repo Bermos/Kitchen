@@ -1,6 +1,16 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { api, DATA_CLASSES, type ClaimProvider, type ClaimType, type Connection, type NewClaim } from "../lib/api";
+import {
+  api,
+  DATA_CLASSES,
+  type BindableVolume,
+  type BindableVolumes,
+  type ClaimProvider,
+  type ClaimType,
+  type Connection,
+  type NewClaim,
+} from "../lib/api";
+import OperatorOnly from "./OperatorOnly.vue";
 import { DESTRUCTIVE_POLICY, destroysDataRefusal, mayDestroyData } from "../lib/claims";
 import { connectionChoices, noteFor, selectableChoices, type ConnectionChoice } from "../lib/connections";
 import { callerFor } from "../lib/me";
@@ -63,7 +73,7 @@ const typeOptions = [
   { label: "postgres — a database from a connection", value: "postgres" },
   { label: "objectStore — a bucket from a connection", value: "objectStore" },
   { label: "oidcClient — single sign-on from the platform", value: "oidcClient" },
-  { label: "volume — a persistent disk mounted into one process", value: "volume" },
+  { label: "volume — a persistent disk mounted into one process, cut new or already there", value: "volume" },
   { label: "inngest — durable background work from Inngest Cloud", value: "inngest" },
   { label: "redis — a cache or a queue from a connection", value: "redis" },
 ];
@@ -174,6 +184,110 @@ const processOptions = computed(() => [
   ...(props.processes ?? []).map((process) => ({ label: process, value: process })),
 ]);
 
+// The other half of what a persistent workload is: the data that was already
+// there. "provision" cuts a new disk, "bind" mounts one that existed before
+// the cluster did — a share on the network storage, something somebody
+// attached by hand. It is asked here rather than worked out from which
+// fields were filled in, because the difference between cutting a disk and
+// reaching for twelve terabytes somebody already has is not a thing to
+// guess at, and the API refuses each source the other's fields.
+const VOLUME_PROVIDERS: Record<string, string> = { provision: "storageClass", bind: "boundVolume" };
+const volSource = ref("provision");
+const isBoundVolume = computed(() => isVolume.value && volSource.value === "bind");
+const volSourceOptions = [
+  { label: "provision — cut a new, empty disk for this project", value: "provision" },
+  { label: "bind — mount storage that already exists, and holds data", value: "bind" },
+];
+
+// What is actually there to bind, read when the form opens. A bound volume
+// is *named*, and a name typed from memory is the failure this list removes.
+const bindable = ref<BindableVolumes>({ persistentVolumes: [], persistentVolumeClaims: [] });
+const bindableLoaded = ref(false);
+// "volume:<name>" or "claim:<name>" — the two vocabularies kept apart, since
+// one is the storage itself and the other is this project's own handle on it.
+const volBind = ref("");
+const volAccessMode = ref("ReadOnlyMany");
+
+async function loadBindableVolumes() {
+  bindableLoaded.value = false;
+  try {
+    bindable.value = await api.claimVolumes();
+  } catch {
+    bindable.value = { persistentVolumes: [], persistentVolumeClaims: [] };
+  } finally {
+    bindableLoaded.value = true;
+  }
+}
+
+/** Every volume that can be bound, with what it holds and — where one cannot
+ * be — why. A volume nothing can mount is listed disabled rather than left
+ * out: a name somebody was told to use must not simply fail to appear. */
+const bindOptions = computed(() => [
+  ...bindable.value.persistentVolumes.map((entry) => ({
+    label: [entry.name, entry.capacity, entry.note ?? (entry.heldBy?.length ? `shared with ${entry.heldBy.join(", ")}` : "")]
+      .filter(Boolean)
+      .join(" — "),
+    value: `volume:${entry.name}`,
+    disabled: !entry.readable && !entry.writable,
+  })),
+  ...bindable.value.persistentVolumeClaims
+    .filter((entry) => entry.project === props.project)
+    .map((entry) => ({
+      label: [entry.name, entry.capacity, entry.managedByKitchen ? "made by the platform for another claim" : ""]
+        .filter(Boolean)
+        .join(" — "),
+      value: `claim:${entry.name}`,
+      disabled: false,
+    })),
+]);
+
+/** The volume the picker is on, where it is one of the cluster's own. */
+const chosenVolume = computed<BindableVolume | undefined>(() =>
+  bindable.value.persistentVolumes.find((entry) => `volume:${entry.name}` === volBind.value),
+);
+
+/** How this project may mount what it chose. Read-only is always offered
+ * where the volume can be read at all — any number of projects may hold one
+ * volume that way. Writing is offered only where nothing else is already
+ * writing the same storage: two projects writing one filesystem is one
+ * project's deploy breaking another's, and the API refuses the second. */
+const accessModeOptions = computed(() => {
+  const chosen = chosenVolume.value;
+  const offers = chosen?.accessModes ?? ["ReadOnlyMany", "ReadWriteOnce", "ReadWriteMany"];
+  const options = [
+    {
+      label: "ReadOnlyMany — read it; every copy of the process, and every preview, may",
+      value: "ReadOnlyMany",
+      disabled: chosen ? !chosen.readable : false,
+    },
+    {
+      label: "ReadWriteOnce — write it, as the only copy that has it",
+      value: "ReadWriteOnce",
+      disabled: chosen ? !chosen.writable || !offers.includes("ReadWriteOnce") : false,
+    },
+    {
+      label: "ReadWriteMany — write it alongside other copies",
+      value: "ReadWriteMany",
+      disabled: chosen ? !chosen.writable || !offers.includes("ReadWriteMany") : false,
+    },
+  ];
+  return options;
+});
+
+// A mode that has just become unavailable — the volume changed under the
+// picker — is let go rather than submitted and refused.
+watch(accessModeOptions, (options) => {
+  if (options.find((option) => option.value === volAccessMode.value)?.disabled) {
+    volAccessMode.value = options.find((option) => !option.disabled)?.value ?? "ReadOnlyMany";
+  }
+});
+
+/** What this claim costs the process that mounts it, in the one sentence
+ * that differs between the two sources. A volume attached to one pod at a
+ * time caps the process at one copy and puts a gap in every deploy;
+ * ReadOnlyMany and ReadWriteMany both lift it. */
+const attachesOnce = computed(() => !isBoundVolume.value || volAccessMode.value === "ReadWriteOnce");
+
 // The majors CloudNativePG publishes images for, newest first. Empty takes the
 // platform's own default, which is what most claims want.
 const versionOptions = [
@@ -213,25 +327,49 @@ const destroyRefusal = computed(() =>
 const policyOptions = computed(() => [
   { label: `Retain — keep the ${resourceNoun.value} when the claim is deleted`, value: "Retain" },
   {
-    label: `Delete — destroy the ${resourceNoun.value} and its data with the claim`,
+    label: isBoundVolume.value
+      ? `Delete — refused here: this ${resourceNoun.value} is not the platform's to destroy`
+      : `Delete — destroy the ${resourceNoun.value} and its data with the claim`,
     value: DESTRUCTIVE_POLICY,
-    disabled: !mayDestroy.value,
+    // The volume existed before the claim and the platform neither made it
+    // nor owns it, so there is no policy that may destroy it — deleting the
+    // claim unmounts it and leaves every byte where it is. The API refuses
+    // the request; the form does not offer it.
+    disabled: !mayDestroy.value || isBoundVolume.value,
   },
 ]);
 
 // A developer who had the option open and lost it — the role arriving after
-// the form did — must not be left holding a choice the API will refuse.
-watch(mayDestroy, (may) => {
-  if (!may && deletionPolicy.value === DESTRUCTIVE_POLICY) deletionPolicy.value = "Retain";
+// the form did, or the source moving to one where nothing may be destroyed —
+// must not be left holding a choice the API will refuse.
+watch([mayDestroy, isBoundVolume], () => {
+  if ((!mayDestroy.value || isBoundVolume.value) && deletionPolicy.value === DESTRUCTIVE_POLICY) {
+    deletionPolicy.value = "Retain";
+  }
 });
 
-/** The volume block as the API takes it. */
+/** The volume block as the API takes it. Each source sends its own fields
+ * and none of the other's: the API refuses a size on a volume it is not
+ * about to cut, because a number nothing reads reads as a disk about to be
+ * made at it. */
 function volumeRequest() {
+  const common = { process: volProcess.value, mountPath: volMountPath.value.trim() };
+  if (!isBoundVolume.value) {
+    return {
+      ...common,
+      source: "provision",
+      size: volSize.value.trim(),
+      ...(volStorageClass.value.trim() ? { storageClass: volStorageClass.value.trim() } : {}),
+    };
+  }
+  const [kind, target] = [volBind.value.slice(0, volBind.value.indexOf(":")), volBind.value.slice(volBind.value.indexOf(":") + 1)];
   return {
-    process: volProcess.value,
-    size: volSize.value.trim(),
-    mountPath: volMountPath.value.trim(),
-    ...(volStorageClass.value.trim() ? { storageClass: volStorageClass.value.trim() } : {}),
+    ...common,
+    source: "bind",
+    bind: {
+      ...(kind === "claim" ? { persistentVolumeClaim: target } : { persistentVolume: target }),
+      accessMode: volAccessMode.value,
+    },
   };
 }
 
@@ -255,6 +393,13 @@ async function loadClaimTypes() {
 const declaration = computed<ClaimProvider | undefined>(() => {
   const claimType = claimTypes.value.find((entry) => entry.type === type.value);
   if (!claimType) return undefined;
+  // A volume has two providers and the claim's own source picks between
+  // them, since nothing else can: cutting a disk and mounting one somebody
+  // already has declare opposite things about previews, and reading the
+  // first would judge one against the other's rules.
+  if (isVolume.value) {
+    return claimType.providers.find((entry) => entry.provider === VOLUME_PROVIDERS[volSource.value]);
+  }
   if (!claimType.capability) return claimType.providers[0];
   const provider = providerOf.value[connection.value];
   return claimType.providers.find((entry) => entry.provider === provider);
@@ -278,16 +423,27 @@ const PREVIEW_LABELS: Record<string, string> = {
 const previewOptions = computed(() => {
   const declared = declaration.value;
   if (!declared) return [];
-  return declared.previewChoices.map((mode) => ({
-    label: `${mode} — ${mode === declared.previewMode ? declared.previewNote : PREVIEW_LABELS[mode] ?? mode}`,
-    value: mode,
-  }));
+  return declared.previewChoices
+    // A volume mounted as the only copy that has it is production's while
+    // production is running, so a preview sharing it would take it away.
+    // The API refuses the choice; the form does not offer it.
+    .filter((mode) => !(mode === "shared" && isBoundVolume.value && attachesOnce.value))
+    .map((mode) => ({
+      label: `${mode} — ${mode === declared.previewMode ? declared.previewNote : PREVIEW_LABELS[mode] ?? mode}`,
+      value: mode,
+    }));
 });
 
-watch(declaration, (declared) => {
+watch([declaration, previewOptions], () => {
+  const declared = declaration.value;
   if (!declared) return;
-  const defaultMode = declared.previewMode === "shared" && holdsData.value ? "none" : declared.previewMode;
-  if (!declared.previewChoices.includes(previewMode.value)) previewMode.value = defaultMode;
+  // A provider that declares shared for a type that holds data preselects
+  // nothing — that choice is made by name or not at all — unless what it
+  // shares cannot be written, which takes nothing from production.
+  const shareIsATaking = declared.previewMode === "shared" && holdsData.value && !declared.sharedIsReadOnly;
+  const offered = previewOptions.value.map((option) => option.value);
+  const defaultMode = shareIsATaking || !offered.includes(declared.previewMode) ? "none" : declared.previewMode;
+  if (!offered.includes(previewMode.value)) previewMode.value = defaultMode;
 });
 
 // Every connection is listed and the ones that cannot provision the chosen
@@ -359,18 +515,33 @@ watch(open, (value) => {
   volMountPath.value = "";
   volSize.value = "";
   volStorageClass.value = "";
+  volSource.value = "provision";
+  volBind.value = "";
+  volAccessMode.value = "ReadOnlyMany";
   redisUsage.value = "cache";
   redisMaxMemory.value = "";
   redisVersion.value = "";
   inngestApp.value = "";
   inngestEnvironment.value = "";
+  bindable.value = { persistentVolumes: [], persistentVolumeClaims: [] };
+  bindableLoaded.value = false;
   void loadConnections();
   void loadClaimTypes();
+});
+
+// What is there to bind is read the moment somebody asks to bind something,
+// and not before: it is a read across the cluster's storage, and the four
+// claim types that never bind anything have no use for it.
+watch(isBoundVolume, (bound) => {
+  if (bound && !bindableLoaded.value) void loadBindableVolumes();
 });
 
 const ready = computed(() => {
   if (!name.value) return false;
   if (isOIDC.value) return true;
+  if (isBoundVolume.value) {
+    return Boolean(volProcess.value && volMountPath.value.trim() && volBind.value && volAccessMode.value);
+  }
   if (isVolume.value) return Boolean(volProcess.value && volSize.value.trim() && volMountPath.value.trim());
   return Boolean(connection.value);
 });
@@ -524,10 +695,22 @@ async function save() {
             and it survives every deploy and restart of that process.
           </p>
 
+          <UFormField
+            label="Where the storage comes from"
+            help="Provision cuts a new, empty disk. Bind mounts storage that already exists and already holds
+              data — a share on the network storage, something attached by hand before this platform was installed.
+              Binding provisions nothing and destroys nothing."
+          >
+            <USelect v-model="volSource" :items="volSourceOptions" class="w-full" />
+          </UFormField>
+
           <!-- The cost, stated where the claim is made and not only in the
                docs: the same sentence the "Never run two at once" switch
-               says about a singleton, because it is the same trade. -->
+               says about a singleton, because it is the same trade. It is
+               the access mode that decides it, so a volume read by many
+               copies at once does not say it. -->
           <UAlert
+            v-if="attachesOnce"
             color="warning"
             variant="subtle"
             icon="i-lucide-triangle-alert"
@@ -535,7 +718,7 @@ async function save() {
             description="A volume can be attached to one copy of a process at a time. Deploys stop the old copy before
               starting the new one — a rolling deploy would leave the new copy waiting for a disk the old one never
               lets go of — so there is a gap in serving on every deploy, and the replica count of that process is fixed
-              at 1. A storage class the platform detects to support shared access lifts both, and the claim says which
+              at 1. Storage the platform finds to support shared access lifts both, and the claim says which
               it found."
           />
 
@@ -548,8 +731,8 @@ async function save() {
             </UFormField>
           </div>
 
-          <div class="grid gap-4 sm:grid-cols-2">
-            <UFormField label="Size" help="A Kubernetes quantity. Set when the volume is created; it is not shrunk." required>
+          <div v-if="!isBoundVolume" class="grid gap-4 sm:grid-cols-2">
+            <UFormField label="Size" help="A quantity such as 10Gi. Set when the volume is created; it is not shrunk." required>
               <UInput v-model="volSize" placeholder="10Gi" class="w-full font-mono" />
             </UFormField>
             <UFormField label="Storage class" help="Empty takes the platform's default.">
@@ -557,9 +740,56 @@ async function save() {
             </UFormField>
           </div>
 
+          <template v-else>
+            <UFormField
+              label="Which storage"
+              help="What the platform can already see. Storage nothing may mount is listed with the reason rather
+                than left out, so a name somebody gave you never simply fails to appear."
+              required
+            >
+              <USelect
+                v-model="volBind"
+                :items="bindOptions"
+                :disabled="!bindOptions.length"
+                :placeholder="bindableLoaded && !bindOptions.length ? 'There is none to bind' : 'Select the storage to mount'"
+                class="w-full"
+              />
+              <OperatorOnly>
+                <p v-if="chosenVolume" class="mt-1 text-xs text-muted">
+                  PersistentVolume {{ chosenVolume.name }}<template v-if="chosenVolume.storageClass">, storageClass
+                  {{ chosenVolume.storageClass }}</template><template v-if="chosenVolume.identity">, {{ chosenVolume.identity }}</template
+                  ><template v-if="chosenVolume.phase">, {{ chosenVolume.phase }}</template>. A PersistentVolumeClaim
+                  of this project's own namespace is bound by name instead; one of another project's cannot be, because
+                  a pod only mounts its own.
+                </p>
+              </OperatorOnly>
+            </UFormField>
+
+            <UFormField
+              label="This project mounts it"
+              help="Declared, not read off the storage: what the storage can do and what this project may do with it
+                are different questions, and only the second decides whether another project may write it. Any number
+                of projects may read one volume; exactly one may write it, and the second writer is refused naming
+                the first."
+              required
+            >
+              <USelect v-model="volAccessMode" :items="accessModeOptions" class="w-full" />
+              <p v-if="chosenVolume?.note" class="mt-1 text-xs text-muted">{{ chosenVolume.note }}.</p>
+              <p v-else-if="chosenVolume?.heldBy?.length" class="mt-1 text-xs text-muted">
+                Already held by {{ chosenVolume.heldBy.join(", ") }}.
+              </p>
+            </UFormField>
+          </template>
+
           <UFormField
             label="Previews get"
-            help="A fresh, empty volume of the same size for each preview, torn down with it — never production's own, which the process could not share."
+            :help="
+              isBoundVolume
+                ? attachesOnce
+                  ? 'Nothing: this storage attaches to one copy at a time and production has it, so a preview mounting it would take it away.'
+                  : 'The same storage, read-only — a preview of an application whose data is the point of it reads exactly what production reads, and can change none of it.'
+                : 'A fresh, empty volume of the same size for each preview, torn down with it — never production\'s own, which the process could not share.'
+            "
           >
             <USelect
               v-model="previewMode"
@@ -572,10 +802,14 @@ async function save() {
 
           <UFormField
             label="On claim deletion"
-            help="Retain is the default: deleting a claim must not be able to destroy the data on a production volume. A retained volume outlives the project, and a claim of the same name binds to it again. Preview volumes are always cleaned up."
+            :help="
+              isBoundVolume
+                ? 'There is no choice here: this storage existed before the claim and the platform neither made it nor owns it, so deleting the claim unmounts it and leaves every byte where it is.'
+                : 'Retain is the default: deleting a claim must not be able to destroy the data on a production volume. A retained volume outlives the project, and a claim of the same name binds to it again. Preview volumes are always cleaned up.'
+            "
           >
             <USelect v-model="deletionPolicy" :items="policyOptions" class="w-full" />
-            <p v-if="destroyRefusal" class="mt-1 text-xs text-muted">{{ destroyRefusal }}.</p>
+            <p v-if="destroyRefusal && !isBoundVolume" class="mt-1 text-xs text-muted">{{ destroyRefusal }}.</p>
           </UFormField>
         </template>
 

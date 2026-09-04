@@ -316,8 +316,9 @@ name against `internal/api/policy.go`, so a route that moves fails them too.
 | GET | `/domains/{name}` | One domain, verification instructions included | `viewer` |
 | DELETE | `/domains/{name}` | Detach it; the operator removes its certificate | `developer` |
 | GET | `/claim-types` | What can be claimed: every claim type, and what each provider that fulfils it declares about previews, idling and deploys | any account |
+| GET | `/claim-volumes` | What a volume claim could bind: the cluster's existing volumes, what each offers, who already holds it, and whether a new claim could write it | any account — filtered |
 | GET | `/claims` | Every resource claim. `?project=` filters | any account — filtered |
-| POST | `/claims` | Ask for a provisioned resource: a database, a bucket or a cache from a connection — optionally naming what it has to be, and what previews get — an OAuth client from the platform's identity provider, a persistent volume mounted into one of the project's processes, or the keys a worker connects to Inngest with | `developer` † |
+| POST | `/claims` | Ask for a provisioned resource: a database, a bucket or a cache from a connection — optionally naming what it has to be, and what previews get — an OAuth client from the platform's identity provider, a persistent volume mounted into one of the project's processes — cut fresh, or an existing one the platform did not create — or the keys a worker connects to Inngest with | `developer` † |
 | GET | `/claims/{name}` | One claim | `viewer` |
 | DELETE | `/claims/{name}` | Delete it — what happens to the data is its `deletionPolicy`'s call; an OAuth client is always deregistered, and an Inngest app's preview environments are archived | `developer` † |
 | GET | `/claims/{name}/recoveries` | How far back this claim's provider can reconstruct its data, and the copies already recovered | `viewer` |
