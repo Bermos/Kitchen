@@ -1353,6 +1353,22 @@ func (r *BuildReconciler) succeed(
 		return r.fail(ctx, build, project, reasonConfigInvalid, err.Error())
 	}
 
+	// A posture that cannot be honoured against the images this unit actually
+	// runs is refused here, at the one moment the platform holds both halves:
+	// the images, resolved to digests and with their own `USER` read off
+	// their configs, and the settings the Release is about to freeze (#393).
+	//
+	// It is refused *now* rather than at the pod, because the pod's refusal is
+	// invisible — a container status the kubelet writes and nothing else
+	// carries — and because a Release nothing can deploy is not a release. It
+	// is not refused at the API, either: `runAsNonRoot` without `runAsUser` is
+	// exactly right for an image whose USER is a uid, and a 400 for that
+	// project would refuse a request that would have worked.
+	if unverifiable := unverifiableImages(snapshot.Runtime.Security, build.Artifacts()); len(unverifiable) > 0 {
+		return r.fail(ctx, build, project, reasonImageUserUnverifiable,
+			unverifiableImagesMessage(unverifiable))
+	}
+
 	// The workload images resolved and attested above are frozen onto the
 	// Release beside the snapshot, because the two answer different halves of
 	// one question: the snapshot says what each workload *is*, and they say

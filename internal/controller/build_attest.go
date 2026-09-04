@@ -141,6 +141,18 @@ func (r *BuildReconciler) attestBuild(
 		return status
 	}
 	status.Digest = digest
+	// The image's own user, read with the credential the build pushed under
+	// and before anything about attestation is decided: it is not evidence,
+	// it is the fact a Release is refused on when `runAsNonRoot` cannot be
+	// verified against it (#393), and an installation that signs nothing
+	// needs it exactly as much as one that signs everything.
+	if dockerConfig, err := r.targetDockerConfig(ctx, target); err == nil {
+		status.User = r.imageUser(ctx, dockerConfig, target.Registry.Server,
+			attestation.ArtifactRef(repository, digest))
+	} else {
+		logf.FromContext(ctx).V(1).Info("the registry credential could not be read for the image's user",
+			"build", build.Name, "image", image, "cause", err.Error())
+	}
 
 	kitchen := &kitchenv1alpha1.Kitchen{}
 	if err := r.Get(ctx, types.NamespacedName{Name: KitchenSingletonName}, kitchen); err != nil {
@@ -281,6 +293,22 @@ func (r *BuildReconciler) sign(
 
 // attester resolves how to talk to the registry the build pushed to.
 func (r *BuildReconciler) attester(ctx context.Context, target buildTarget) (ArtifactAttester, error) {
+	dockerConfig, err := r.targetDockerConfig(ctx, target)
+	if err != nil {
+		return nil, err
+	}
+	factory := r.Attesters
+	if factory == nil {
+		factory = defaultAttester
+	}
+	return factory(dockerConfig, target.Registry.Server)
+}
+
+// targetDockerConfig is the credential the build pushed under, which is the
+// one every later question about the artifact is asked with: an answer the
+// platform could get where the build could not push would be about somebody
+// else's image.
+func (r *BuildReconciler) targetDockerConfig(ctx context.Context, target buildTarget) ([]byte, error) {
 	secret := &corev1.Secret{}
 	key := types.NamespacedName{
 		Namespace: target.Connection.Namespace,
@@ -289,11 +317,7 @@ func (r *BuildReconciler) attester(ctx context.Context, target buildTarget) (Art
 	if err := r.Get(ctx, key, secret); err != nil {
 		return nil, fmt.Errorf("the registry credential could not be read: %w", err)
 	}
-	factory := r.Attesters
-	if factory == nil {
-		factory = defaultAttester
-	}
-	return factory(secret.Data[corev1.DockerConfigJsonKey], target.Registry.Server)
+	return secret.Data[corev1.DockerConfigJsonKey], nil
 }
 
 // buildRecord is the predicate: what Kitchen knows about how the artifact came

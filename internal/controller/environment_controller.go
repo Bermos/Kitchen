@@ -1273,16 +1273,27 @@ func (r *EnvironmentReconciler) updateStatus(
 		// would only ever be noise on them.
 		meta.RemoveStatusCondition(&env.Status.Conditions, condPreviewProtected)
 	}
-	// A workload that cannot start under the posture it asked for says so
-	// here, in the kubelet's own words plus the constraints it was started
-	// with. Without it the only account of a container the kubelet refused
-	// is on a pod nobody looks at, and of one that starts and dies, nothing
-	// at all beyond CrashLoopBackOff.
-	reason, refusal := "", ""
-	if !available {
-		reason, refusal = r.startFailure(ctx, env, appNS, release.Spec.ConfigSnapshot.Runtime.Security)
-	}
+	// A workload that cannot start says so here, in the kubelet's own words
+	// plus the constraints it was started with. Without it the only account
+	// of a container the kubelet refused is on a pod nobody looks at, and of
+	// one that starts and dies, nothing at all beyond CrashLoopBackOff.
+	//
+	// It is asked whether or not the web Deployment is available, because a
+	// refused *worker* is refused while the URL answers perfectly well — and
+	// a release rolling out behind pods still serving the last one is exactly
+	// where a refusal would otherwise go unmentioned (#393).
+	reason, refusal, refused := r.startFailure(
+		ctx, env, appNS, release.Spec.ConfigSnapshot.Runtime.Security, available)
+	env.Status.Refusal = refused
 	switch {
+	case refused != nil:
+		// Degraded, not Deploying: nothing here is going to change on its
+		// own, and Degraded is what the git deployment status reports as a
+		// failure and what the dashboard paints red. It is the same verdict
+		// a failed deploy task gets, for the same reason.
+		env.Status.Phase = kitchenv1alpha1.EnvironmentDegraded
+		setCond(condWorkloadAvailable, metav1.ConditionFalse, reason, refusal)
+		setCond(condReady, metav1.ConditionFalse, reason, refusal)
 	case available:
 		setCond(condWorkloadAvailable, metav1.ConditionTrue, "DeploymentAvailable", "workload is available")
 		setCond(condReady, metav1.ConditionTrue, "Reconciled", "environment is live")
@@ -1300,7 +1311,7 @@ func (r *EnvironmentReconciler) updateStatus(
 	if err := r.Status().Update(ctx, env); err != nil {
 		return ctrl.Result{}, err
 	}
-	if !available {
+	if !available || refused != nil {
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 	return ctrl.Result{}, nil
@@ -1520,6 +1531,16 @@ func (r *EnvironmentReconciler) awaitingDeployTasks(
 
 	if err := r.Status().Update(ctx, env); err != nil {
 		return ctrl.Result{}, err
+	}
+	// After the verdict is written down, and only then. A refused run's Job
+	// is still holding a pod the kubelet will not start, and nothing else in
+	// the platform ends it: the next release would find it there, and with
+	// `kubectl delete job` the only way out, which is precisely what #391
+	// was. Deleting it first would risk a lost status update leaving a run
+	// recorded as running with no Job behind it — which starts the migration
+	// again.
+	for _, name := range tasks.refusedJobs {
+		r.deleteRefusedJob(ctx, appNamespace(env.Spec.ProjectRef.Name), name)
 	}
 	if tasks.failed {
 		// Nothing about a failed run changes on its own. The next move is a

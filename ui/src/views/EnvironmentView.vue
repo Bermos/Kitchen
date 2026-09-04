@@ -225,6 +225,16 @@ const logStreamer = (query: LogQuery, onLine: (line: LogLine) => void, signal: A
 function historyLabel(reason: string): { label: string; tone: "neutral" | "warning" } {
   return reason === "rolledBack" ? { label: "Rolled back", tone: "warning" } : { label: "Superseded", tone: "neutral" };
 }
+// Where to go and look, for the reader who can: the pod carrying the refusal
+// and the container of it the kubelet named. It is one line rather than a
+// table because there is only ever one — the refusal is of the pod spec, so
+// every replica carries the same one.
+const refusalDetail = computed(() => {
+  const refusal = environment.value?.refusal;
+  if (!refusal) return "";
+  return [refusal.pod, refusal.container, refusal.reason].filter(Boolean).join(" · ");
+});
+
 function historyBy(entry: { reason: string; by?: string }): string {
   if (!entry.by) return "—";
   return entry.reason === "promoted" ? `build ${entry.by}` : entry.by;
@@ -249,6 +259,26 @@ function historyBy(entry: { reason: string; by?: string }): string {
           (blockedPromotion.message ?? '')
         "
       />
+      <!-- A container of this environment that the kubelet would not create.
+           It is as loud as a blocked promotion and for the same reason:
+           nothing here changes on its own, the environment is not going to
+           start, and the sentence underneath is the whole diagnosis — it names
+           the setting and the image. Before this it existed only as a
+           container status nobody without cluster access could read (#393). -->
+      <div v-if="environment.refusal" class="space-y-1">
+        <UAlert
+          color="error"
+          variant="soft"
+          icon="i-lucide-octagon-x"
+          :title="`${environment.refusal.workload || 'This environment'} could not be started`"
+          :description="environment.refusal.message"
+        />
+        <OperatorOnly>
+          <p class="text-xs text-dimmed font-mono">
+            {{ refusalDetail }}
+          </p>
+        </OperatorOnly>
+      </div>
       <!-- A standing break-glass exception is shown as loudly as a blocked
            promotion, and for as long as it stands: this environment's bar is
            waived, on two people's word, until the stated moment. -->

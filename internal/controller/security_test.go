@@ -146,13 +146,24 @@ func TestAContainerRefusedUnderThePostureIsReportedInWords(t *testing.T) {
 		Waiting: &corev1.ContainerStateWaiting{Reason: "CreateContainerConfigError", Message: kubelet},
 	})
 
-	reason, message := r.startFailure(context.Background(), env, securityTestNamespace,
-		&kitchenv1alpha1.SecuritySpec{RunAsNonRoot: true})
+	reason, message, refused := r.startFailure(context.Background(), env, securityTestNamespace,
+		&kitchenv1alpha1.SecuritySpec{RunAsNonRoot: true}, false)
 	if reason != reasonContainerRefused {
 		t.Fatalf("want the refusal reported as %s, got %q", reasonContainerRefused, reason)
 	}
 	if !strings.Contains(message, kubelet) || !strings.Contains(message, "it must not run as root") {
 		t.Fatalf("the message names neither the kubelet's reason nor the constraint: %q", message)
+	}
+	if !strings.Contains(message, "could not be started") {
+		t.Fatalf("the message is not in the vocabulary of whoever deployed it: %q", message)
+	}
+	// The operator's half: which pod is carrying it, recorded on the status
+	// rather than said in the sentence a developer reads.
+	if refused == nil || refused.Pod != "shop-production-abc" || refused.Container != AppContainerName {
+		t.Fatalf("the refusal does not say where to look: %+v", refused)
+	}
+	if refused.Workload != kitchenv1alpha1.WebProcessName || refused.Reason != "CreateContainerConfigError" {
+		t.Fatalf("the refusal does not say what was refused: %+v", refused)
 	}
 }
 
@@ -164,8 +175,8 @@ func TestACrashLoopUnderADeclaredPostureNamesThePosture(t *testing.T) {
 	state := corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: reasonCrashLoop}}
 	r, env := securityReconcilerWithPod(t, state)
 
-	reason, message := r.startFailure(context.Background(), env, securityTestNamespace,
-		&kitchenv1alpha1.SecuritySpec{ReadOnlyRootFilesystem: true})
+	reason, message, _ := r.startFailure(context.Background(), env, securityTestNamespace,
+		&kitchenv1alpha1.SecuritySpec{ReadOnlyRootFilesystem: true}, false)
 	if reason != reasonRestartingUnderPosture {
 		t.Fatalf("want the crash loop attributed to the posture, got %q", reason)
 	}
@@ -173,8 +184,16 @@ func TestACrashLoopUnderADeclaredPostureNamesThePosture(t *testing.T) {
 		t.Fatalf("the message does not name the constraint in force: %q", message)
 	}
 
-	if reason, _ := r.startFailure(context.Background(), env, securityTestNamespace, nil); reason != "" {
+	if reason, _, _ := r.startFailure(context.Background(), env, securityTestNamespace, nil, false); reason != "" {
 		t.Fatalf("a crash loop under no posture is not the posture's, got %q", reason)
+	}
+
+	// Nor is it the environment's while the web process is available: a
+	// container that has started is not one the kubelet refused, and the
+	// guess is only worth making about a workload somebody is waiting on.
+	if reason, _, _ := r.startFailure(context.Background(), env, securityTestNamespace,
+		&kitchenv1alpha1.SecuritySpec{ReadOnlyRootFilesystem: true}, true); reason != "" {
+		t.Fatalf("a crash loop behind a working URL is not a start failure, got %q", reason)
 	}
 }
 
@@ -185,8 +204,8 @@ func TestAPodStillStartingIsNotAFailure(t *testing.T) {
 		Waiting: &corev1.ContainerStateWaiting{Reason: "ContainerCreating"},
 	})
 
-	reason, message := r.startFailure(context.Background(), env, securityTestNamespace,
-		&kitchenv1alpha1.SecuritySpec{ReadOnlyRootFilesystem: true})
+	reason, message, _ := r.startFailure(context.Background(), env, securityTestNamespace,
+		&kitchenv1alpha1.SecuritySpec{ReadOnlyRootFilesystem: true}, false)
 	if reason != "" || message != "" {
 		t.Fatalf("a pod on its way up is not a refusal: %q / %q", reason, message)
 	}

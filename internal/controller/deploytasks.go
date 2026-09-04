@@ -108,6 +108,13 @@ type deployTaskOutcome struct {
 	// is blocked.
 	reason  string
 	message string
+
+	// refusedJobs are the Jobs of runs this pass ended because the kubelet
+	// would not create their containers. They are deleted once the verdict
+	// has been written down and not before — see awaitingDeployTasks — so
+	// that a status write that loses a conflict cannot leave a run recorded
+	// as running with no Job behind it.
+	refusedJobs []string
 }
 
 // DeployTaskRunName is the Job one run of one deploy task is: the workload
@@ -229,7 +236,7 @@ func (r *EnvironmentReconciler) advanceDeployTask(
 	// recorded, no record at all, or a record cleared by a retry — is a deploy
 	// this task has not run for.
 	if status.Release == task.release.Name && status.LastRun != nil {
-		run, found, err := r.observeRun(ctx, task.appNS, status.LastRun.Name)
+		run, found, err := r.observeTaskRun(ctx, task.appNS, status.LastRun.Name, out)
 		switch {
 		case err != nil:
 			return err
@@ -258,7 +265,7 @@ func (r *EnvironmentReconciler) advanceDeployTask(
 	// another one is the failure mode this feature exists to prevent — not a
 	// tidier version of it. The wait is bounded by that run's own timeout.
 	if status.LastRun != nil && status.LastRun.Phase == kitchenv1alpha1.RunRunning {
-		run, found, err := r.observeRun(ctx, task.appNS, status.LastRun.Name)
+		run, found, err := r.observeTaskRun(ctx, task.appNS, status.LastRun.Name, out)
 		if err != nil {
 			return err
 		}
@@ -294,11 +301,23 @@ func (r *EnvironmentReconciler) recordTaskVerdict(
 		// it is the last one the release is applied.
 	case kitchenv1alpha1.RunFailed:
 		out.blocked, out.failed = true, true
-		out.reason = "TaskFailed"
+		out.reason = reasonTaskFailed
 		out.message = fmt.Sprintf(
 			"%s failed before this release could take traffic, so nothing was deployed and %s is still "+
 				"serving what it was. Run %s: %s",
 			task.process.Name, task.env.Name, status.LastRun.Name, taskFailureDetail(status.LastRun))
+		if status.LastRun.Refused {
+			// A refused run is failed under its own reason, because it is a
+			// different fault with a different fix: nothing ran, so there is
+			// nothing to undo, and what has to change is the spec the kubelet
+			// would not accept rather than the program. The kubelet's own
+			// sentence is the message; it names the field and the image.
+			out.reason = reasonTaskRefused
+			out.message = fmt.Sprintf(
+				"%s could not be started, so nothing of this release was deployed and %s is still serving "+
+					"what it was. Run %s: %s",
+				task.process.Name, task.env.Name, status.LastRun.Name, taskFailureDetail(status.LastRun))
+		}
 	default:
 		out.blocked = true
 		out.reason = "TaskRunning"
@@ -383,6 +402,47 @@ func (r *EnvironmentReconciler) startDeployTask(
 			task.process.Name, task.release.Name),
 	})
 	return r.pruneTaskRuns(ctx, task.appNS, task.env.Name, task.process.Name, name)
+}
+
+// The two terminal reasons a blocked deploy carries. They are apart because
+// the two failures are: a task that ran and failed may have left half its work
+// behind, and a task the kubelet refused ran nothing at all (#391).
+const (
+	reasonTaskFailed  = "TaskFailed"
+	reasonTaskRefused = "TaskRefused"
+)
+
+// observeTaskRun reads the run this deploy is waiting on, and ends it if its
+// pod is one the kubelet will never start.
+//
+// It is where #391 lands for a deploy task. `CreateContainerConfigError` is
+// not a Job failure: the kubelet retries the same doomed spec, the Job counts
+// no failure, and the condition on the environment says a task "is running"
+// for as long as somebody leaves it there. Reading the pod is what tells a
+// slow migration from a refused one, and the two are answered differently —
+// the first is waited for, the second is failed with the reason.
+//
+// The Job is not deleted here. It is added to the outcome and deleted after
+// the verdict is written, so that a lost status update cannot leave a run
+// recorded as running with nothing behind it — the ordering build_stall.go
+// takes for the same reason.
+func (r *EnvironmentReconciler) observeTaskRun(
+	ctx context.Context,
+	appNS, name string,
+	out *deployTaskOutcome,
+) (kitchenv1alpha1.ProcessRun, bool, error) {
+	run, found, err := r.observeRun(ctx, appNS, name)
+	if err != nil || !found {
+		return run, found, err
+	}
+	refused, err := r.refuseRun(ctx, appNS, &run)
+	if err != nil {
+		return run, found, err
+	}
+	if refused {
+		out.refusedJobs = append(out.refusedJobs, run.Name)
+	}
+	return run, found, nil
 }
 
 // observeRun reads one Job back as a run. found=false means the Job is not

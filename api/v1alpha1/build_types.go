@@ -325,6 +325,26 @@ type ArtifactStatus struct {
 	// +optional
 	Digest string `json:"digest,omitempty"`
 
+	// User is the `USER` the image's own config declares — `node`,
+	// `nonroot:nonroot`, `1001`, or empty for an image that declares none
+	// and so runs as root (#393).
+	//
+	// It is recorded because `runAsNonRoot` cannot be honoured without it.
+	// That setting makes the kubelet *verify* the image does not run as
+	// root, and it can only do that against a uid: a name is resolved inside
+	// the image, where the kubelet cannot look, so a container that asked
+	// for the platform's own recommended posture with `USER node` is refused
+	// before it starts. Reading it here — at the one moment the platform is
+	// already talking to the registry about this digest — is what lets the
+	// Release be refused with the name it found instead of the pod being
+	// refused with nobody watching.
+	//
+	// Empty means "not read", not "root": an installation whose registry
+	// could not be reached for the config records nothing rather than a
+	// guess, and everything downstream treats the absence as unknown.
+	// +optional
+	User string `json:"user,omitempty"`
+
 	// SourceType says where this artifact's evidence comes from, which is a
 	// different question from who signed it and a different one again from
 	// who made each claim (`Evidence[].Source`).

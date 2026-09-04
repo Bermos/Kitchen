@@ -285,6 +285,44 @@ Previews only: the production environment is the project, torn down with it
 and never on its own, so asking is a `400`. Answers `202` while the finalizer
 works.
 
+## When a workload will not start
+
+Some containers never start, and the kubelet is the only thing that knows why.
+`CreateContainerConfigError`, `InvalidImageName`, `ErrImageNeverPull`, and an
+image pull that has been failing for ten minutes are all refusals of the pod
+*spec*: nothing about waiting changes them, no Deployment condition carries
+them, and before #393 the only account of one was a container status on a pod
+nobody without cluster access could read.
+
+`GET /environments/{name}` now carries it. `Ready` and `WorkloadAvailable` go
+`False` with reason `ContainerRefused` and the kubelet's own sentence — which
+names the field and the image, and is the whole diagnosis — and the phase is
+`Degraded`, because nothing here is going to change on its own:
+
+```json
+{"name": "shop-production", "phase": "Degraded",
+ "refusal": {"workload": "worker", "pod": "shop-production-worker-7d9f-x2k",
+   "container": "app", "reason": "CreateContainerConfigError",
+   "message": "the container of worker could not be started: CreateContainerConfigError: container has runAsNonRoot and image has non-numeric user (node), cannot verify user is non-root"},
+ "conditions": [{"type": "Ready", "status": "False", "reason": "ContainerRefused",
+   "message": "the container of worker could not be started: …"}]}
+```
+
+`message` is what a developer reads and is on the condition too; `pod` and
+`container` are where an operator goes and look, which is why they are their
+own fields rather than more words in the sentence — the dashboard shows them
+behind operator mode. One refused pod is the whole answer: the refusal is of
+the pod spec, so every replica of that workload carries the same one, with the
+same fix.
+
+It covers **every** workload the environment keeps running — the web process,
+the workers, the services — and is reported whether or not the URL is
+answering: a refused worker is refused while production serves perfectly well.
+A *run's* pod is not here. A deploy task's refusal fails the task itself, with
+`DeployTasksComplete=False` and reason `TaskRefused` (see
+[Workloads](processes.md)); a scheduled run's is on its own row and in the
+activity feed.
+
 ## What an environment is running
 
 An `Environment`'s phase says whether it is live. `GET

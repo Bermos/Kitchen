@@ -1358,6 +1358,21 @@ export interface Environment {
   history?: ReleaseHistoryEntry[];
   createdAt: string;
   conditions?: Condition[];
+  /** A container of this environment the kubelet would not create. The
+   * message is what a developer reads — the kubelet's own sentence, which
+   * names the field and the image; the rest is the operator's half and is
+   * rendered behind the mode gate. */
+  refusal?: WorkloadRefusal;
+}
+
+/** The kubelet's refusal of one of an environment's workloads. */
+export interface WorkloadRefusal {
+  /** Which workload was refused: `web`, or the process's own name. */
+  workload?: string;
+  pod?: string;
+  container?: string;
+  reason?: string;
+  message?: string;
 }
 
 /** One attestation as an eligibility answer counts it: what kind of claim,

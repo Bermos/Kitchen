@@ -393,8 +393,62 @@ type EnvironmentStatus struct {
 	// +optional
 	Idle bool `json:"idle,omitempty"`
 
+	// Refusal is the workload of this environment whose container the kubelet
+	// will not create, and what it said about it (#391, #393).
+	//
+	// It is the operator's half of a fault the developer reads as a
+	// condition: which pod carries the refusal, and which container of it.
+	// The condition says what happened in the words of whoever deployed the
+	// thing; this says where to go and look, and is what the dashboard shows
+	// behind operator mode.
+	//
+	// Absent is the normal state and means what it says: no pod of this
+	// environment's long-running workloads is waiting under a reason it can
+	// never leave. A run's pod is never here — a deploy task's refusal is on
+	// its own row and gates the deploy, and a scheduled run's is on its row
+	// and in the activity feed.
+	// +optional
+	Refusal *WorkloadRefusalStatus `json:"refusal,omitempty"`
+
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+// WorkloadRefusalStatus is one container of an environment that the kubelet
+// refused to create, as the platform observed it.
+//
+// Every field is somebody else's word, kept verbatim. The message in
+// particular is the kubelet's own — "container has runAsNonRoot and image has
+// non-numeric user (node), cannot verify user is non-root" — because it names
+// the field and the image, which is the whole diagnosis and more than anything
+// above it knows.
+type WorkloadRefusalStatus struct {
+	// Workload is which of the unit's workloads was refused, in the name the
+	// project wrote: `web` for the web process, the process's own name
+	// otherwise.
+	// +optional
+	Workload string `json:"workload,omitempty"`
+
+	// Pod is the pod carrying the refusal. One of them is the whole
+	// diagnosis: the refusal is of the pod *spec*, so every replica of that
+	// workload is refused for the same reason and with the same fix.
+	// +optional
+	Pod string `json:"pod,omitempty"`
+
+	// Container is the container the kubelet would not create, which is the
+	// application's own except where an init container was refused first.
+	// +optional
+	Container string `json:"container,omitempty"`
+
+	// Reason is the kubelet's waiting reason: `CreateContainerConfigError`,
+	// `InvalidImageName`, `ImagePullBackOff` once it has persisted, and the
+	// rest of the list in the operator's pod_refusal.go.
+	// +optional
+	Reason string `json:"reason,omitempty"`
+
+	// Message is what the kubelet said, with its reason in front.
+	// +optional
+	Message string `json:"message,omitempty"`
 }
 
 // FindProcessStatus returns this Environment's status for the named process,

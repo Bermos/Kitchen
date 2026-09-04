@@ -531,6 +531,66 @@ var _ = Describe("Environment Controller", func() {
 			Expect(k8sClient.Update(ctx, project)).To(Succeed())
 		})
 
+		// #393: the refusal existed only as a container status on a pod. The
+		// dashboard showed Deploying, the conditions said nothing, and
+		// `GET /environments/{name}` said nothing — for a fault that was never
+		// going to clear.
+		It("says on the environment when the kubelet will not start a workload", func() {
+			const kubelet = "container has runAsNonRoot and image has non-numeric user (node), " +
+				"cannot verify user is non-root"
+			reconcileOnce()
+			reconcileOnce()
+
+			By("having the kubelet refuse the web process's container")
+			pod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      envName + "-7d9f-abcde",
+					Namespace: appNS,
+					Labels:    webLabels(map[string]string{labelEnvironment: envName}),
+				},
+				Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: AppContainerName, Image: image}}},
+			}
+			Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+			DeferCleanup(func() {
+				Expect(client.IgnoreNotFound(
+					k8sClient.Delete(ctx, pod, client.GracePeriodSeconds(0)))).To(Succeed())
+			})
+			pod.Status = corev1.PodStatus{
+				Phase: corev1.PodPending,
+				ContainerStatuses: []corev1.ContainerStatus{{
+					Name: AppContainerName,
+					State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{
+						Reason: "CreateContainerConfigError", Message: kubelet,
+					}},
+				}},
+			}
+			Expect(k8sClient.Status().Update(ctx, pod)).To(Succeed())
+			reconcileOnce()
+
+			By("carrying the kubelet's own sentence onto the environment")
+			env := &kitchenv1alpha1.Environment{}
+			Expect(k8sClient.Get(ctx, envKey, env)).To(Succeed())
+			Expect(env.Status.Phase).To(Equal(kitchenv1alpha1.EnvironmentDegraded),
+				"a workload that can never start is not a workload that is still deploying")
+			ready := meta.FindStatusCondition(env.Status.Conditions, condReady)
+			Expect(ready.Status).To(Equal(metav1.ConditionFalse))
+			Expect(ready.Reason).To(Equal(reasonContainerRefused))
+			Expect(ready.Message).To(ContainSubstring(kubelet))
+			Expect(ready.Message).To(ContainSubstring("could not be started"))
+
+			By("recording where to look, which is the operator's half of it")
+			Expect(env.Status.Refusal).NotTo(BeNil())
+			Expect(env.Status.Refusal.Pod).To(Equal(pod.Name))
+			Expect(env.Status.Refusal.Workload).To(Equal(kitchenv1alpha1.WebProcessName))
+			Expect(env.Status.Refusal.Reason).To(Equal("CreateContainerConfigError"))
+
+			By("clearing it once the pod is not refused any more")
+			Expect(k8sClient.Delete(ctx, pod, client.GracePeriodSeconds(0))).To(Succeed())
+			reconcileOnce()
+			Expect(k8sClient.Get(ctx, envKey, env)).To(Succeed())
+			Expect(env.Status.Refusal).To(BeNil())
+		})
+
 		It("cleans up children when the environment is deleted", func() {
 			reconcileOnce()
 			reconcileOnce()

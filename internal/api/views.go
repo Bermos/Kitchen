@@ -1151,6 +1151,22 @@ type environmentView struct {
 	History     []releaseHistoryView `json:"history,omitempty"`
 	CreatedAt   time.Time            `json:"createdAt"`
 	Conditions  []conditionView      `json:"conditions,omitempty"`
+	// Refusal is a container of this environment the kubelet will not create.
+	// The conditions carry the sentence a developer reads; this carries the
+	// pod behind it, which is the operator's half and is why it is a field
+	// rather than more words in the message (#393).
+	Refusal *refusalView `json:"refusal,omitempty"`
+}
+
+// refusalView is the kubelet's refusal of one of this environment's
+// workloads, as the operator's half of it: which workload, which pod, which
+// container, and what was said.
+type refusalView struct {
+	Workload  string `json:"workload,omitempty"`
+	Pod       string `json:"pod,omitempty"`
+	Container string `json:"container,omitempty"`
+	Reason    string `json:"reason,omitempty"`
+	Message   string `json:"message,omitempty"`
 }
 
 func newEnvironmentView(env *kitchenv1alpha1.Environment) environmentView {
@@ -1174,6 +1190,15 @@ func newEnvironmentView(env *kitchenv1alpha1.Environment) environmentView {
 	}
 	if preview := env.Spec.Preview; preview != nil {
 		view.Preview = &previewView{PullRequest: preview.PullRequest, Branch: preview.Branch}
+	}
+	if refusal := env.Status.Refusal; refusal != nil {
+		view.Refusal = &refusalView{
+			Workload:  refusal.Workload,
+			Pod:       refusal.Pod,
+			Container: refusal.Container,
+			Reason:    refusal.Reason,
+			Message:   refusal.Message,
+		}
 	}
 	for _, entry := range env.Status.History {
 		view.History = append(view.History, releaseHistoryView{

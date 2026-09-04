@@ -1090,6 +1090,26 @@ spec:
                         format: int32
                         type: integer
                     type: object
+                  user:
+                    description: |-
+                      User is the `USER` the image's own config declares — `node`,
+                      `nonroot:nonroot`, `1001`, or empty for an image that declares none
+                      and so runs as root (#393).
+
+                      It is recorded because `runAsNonRoot` cannot be honoured without it.
+                      That setting makes the kubelet *verify* the image does not run as
+                      root, and it can only do that against a uid: a name is resolved inside
+                      the image, where the kubelet cannot look, so a container that asked
+                      for the platform's own recommended posture with `USER node` is refused
+                      before it starts. Reading it here — at the one moment the platform is
+                      already talking to the registry about this digest — is what lets the
+                      Release be refused with the name it found instead of the pod being
+                      refused with nobody watching.
+
+                      Empty means "not read", not "root": an installation whose registry
+                      could not be reached for the config records nothing rather than a
+                      guess, and everything downstream treats the absence as unknown.
+                    type: string
                 type: object
               cache:
                 description: |-
@@ -2920,6 +2940,26 @@ spec:
                               format: int32
                               type: integer
                           type: object
+                        user:
+                          description: |-
+                            User is the `USER` the image's own config declares — `node`,
+                            `nonroot:nonroot`, `1001`, or empty for an image that declares none
+                            and so runs as root (#393).
+
+                            It is recorded because `runAsNonRoot` cannot be honoured without it.
+                            That setting makes the kubelet *verify* the image does not run as
+                            root, and it can only do that against a uid: a name is resolved inside
+                            the image, where the kubelet cannot look, so a container that asked
+                            for the platform's own recommended posture with `USER node` is refused
+                            before it starts. Reading it here — at the one moment the platform is
+                            already talking to the registry about this digest — is what lets the
+                            Release be refused with the name it found instead of the pod being
+                            refused with nobody watching.
+
+                            Empty means "not read", not "root": an installation whose registry
+                            could not be reached for the config records nothing rather than a
+                            guess, and everything downstream treats the absence as unknown.
+                          type: string
                       type: object
                     detectedFramework:
                       description: |-
@@ -3946,6 +3986,18 @@ spec:
                           - Succeeded
                           - Failed
                           type: string
+                        refused:
+                          description: |-
+                            Refused says this run failed because the kubelet would not create its
+                            container at all — the run never started, as opposed to starting and
+                            exiting non-zero (#391).
+
+                            It is a fact worth keeping apart from an ordinary failure because the
+                            two ask for different things. A migration that ran and failed may have
+                            left half a schema behind; one that was refused ran nothing, so there
+                            is nothing to undo and the fix is in the spec rather than in the
+                            program. The reason and the kubelet's own sentence are in Message.
+                          type: boolean
                         startedAt:
                           format: date-time
                           type: string
@@ -3990,6 +4042,18 @@ spec:
                           - Succeeded
                           - Failed
                           type: string
+                        refused:
+                          description: |-
+                            Refused says this run failed because the kubelet would not create its
+                            container at all — the run never started, as opposed to starting and
+                            exiting non-zero (#391).
+
+                            It is a fact worth keeping apart from an ordinary failure because the
+                            two ask for different things. A migration that ran and failed may have
+                            left half a schema behind; one that was refused ran nothing, so there
+                            is nothing to undo and the fix is in the spec rather than in the
+                            program. The reason and the kubelet's own sentence are in Message.
+                          type: boolean
                         startedAt:
                           format: date-time
                           type: string
@@ -4087,6 +4151,51 @@ spec:
                 x-kubernetes-list-map-keys:
                 - name
                 x-kubernetes-list-type: map
+              refusal:
+                description: |-
+                  Refusal is the workload of this environment whose container the kubelet
+                  will not create, and what it said about it (#391, #393).
+
+                  It is the operator's half of a fault the developer reads as a
+                  condition: which pod carries the refusal, and which container of it.
+                  The condition says what happened in the words of whoever deployed the
+                  thing; this says where to go and look, and is what the dashboard shows
+                  behind operator mode.
+
+                  Absent is the normal state and means what it says: no pod of this
+                  environment's long-running workloads is waiting under a reason it can
+                  never leave. A run's pod is never here — a deploy task's refusal is on
+                  its own row and gates the deploy, and a scheduled run's is on its row
+                  and in the activity feed.
+                properties:
+                  container:
+                    description: |-
+                      Container is the container the kubelet would not create, which is the
+                      application's own except where an init container was refused first.
+                    type: string
+                  message:
+                    description: Message is what the kubelet said, with its reason
+                      in front.
+                    type: string
+                  pod:
+                    description: |-
+                      Pod is the pod carrying the refusal. One of them is the whole
+                      diagnosis: the refusal is of the pod *spec*, so every replica of that
+                      workload is refused for the same reason and with the same fix.
+                    type: string
+                  reason:
+                    description: |-
+                      Reason is the kubelet's waiting reason: `CreateContainerConfigError`,
+                      `InvalidImageName`, `ImagePullBackOff` once it has persisted, and the
+                      rest of the list in the operator's pod_refusal.go.
+                    type: string
+                  workload:
+                    description: |-
+                      Workload is which of the unit's workloads was refused, in the name the
+                      project wrote: `web` for the web process, the process's own name
+                      otherwise.
+                    type: string
+                type: object
               rescan:
                 description: |-
                   Rescan is where the continuous re-evaluation pass (#134) keeps its

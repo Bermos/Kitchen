@@ -345,6 +345,80 @@ var _ = Describe("Workers and scheduled jobs", func() {
 			"a run is found by the process it belongs to without walking back through its owner")
 	})
 
+	// The cron half of #391. Nothing is gated on a scheduled run, which is why
+	// it is the quieter case — and why it is the one that disappears: a
+	// wedged run under the default `Forbid` is a schedule that never fires
+	// again and says nothing at all.
+	It("fails a scheduled run whose pod the kubelet will not start, and unwedges the schedule", func() {
+		const kubelet = "container has runAsNonRoot and image has non-numeric user (node), " +
+			"cannot verify user is non-root"
+		environment(prodName, kitchenv1alpha1.EnvironmentProduction)
+
+		By("having a run in flight whose container is refused")
+		runName := prodName + "-nightly-29387520"
+		run := &batchv1.Job{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: runName, Namespace: appNS,
+				Labels: map[string]string{labelEnvironment: prodName, labelProcess: "nightly"},
+			},
+			Spec: batchv1.JobSpec{
+				BackoffLimit: ptr.To(int32(0)),
+				Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{
+					RestartPolicy: corev1.RestartPolicyNever,
+					Containers:    []corev1.Container{{Name: AppContainerName, Image: image}},
+				}},
+			},
+		}
+		Expect(k8sClient.Create(ctx, run)).To(Succeed())
+		pod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: runName + "-abcde", Namespace: appNS,
+				Labels: map[string]string{"job-name": runName, labelEnvironment: prodName},
+			},
+			Spec: corev1.PodSpec{
+				RestartPolicy: corev1.RestartPolicyNever,
+				Containers:    []corev1.Container{{Name: AppContainerName, Image: image}},
+			},
+		}
+		Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+		DeferCleanup(func() {
+			Expect(client.IgnoreNotFound(
+				k8sClient.Delete(ctx, pod, client.GracePeriodSeconds(0)))).To(Succeed())
+		})
+		pod.Status = corev1.PodStatus{
+			Phase: corev1.PodPending,
+			ContainerStatuses: []corev1.ContainerStatus{{
+				Name: AppContainerName,
+				State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{
+					Reason: "CreateContainerConfigError", Message: kubelet,
+				}},
+			}},
+		}
+		Expect(k8sClient.Status().Update(ctx, pod)).To(Succeed())
+
+		By("recording it as a failure with the kubelet's own sentence")
+		env := reconcileAgain(prodName)
+		nightly := env.FindProcessStatus("nightly")
+		Expect(nightly.LastRun).NotTo(BeNil())
+		Expect(nightly.LastRun.Name).To(Equal(runName))
+		Expect(nightly.LastRun.Phase).To(Equal(kitchenv1alpha1.RunFailed))
+		Expect(nightly.LastRun.Refused).To(BeTrue(),
+			"a run that never started is not a run that ran and failed")
+		Expect(nightly.LastRun.Message).To(ContainSubstring(kubelet))
+		Expect(nightly.LastFailure.Name).To(Equal(runName))
+
+		By("taking the wedged run with it, so the schedule fires again")
+		Eventually(func() bool {
+			err := k8sClient.Get(ctx, types.NamespacedName{Name: runName, Namespace: appNS}, &batchv1.Job{})
+			return errors.IsNotFound(err)
+		}).Should(BeTrue())
+
+		By("gating nothing on it: the environment is still running what it runs")
+		_, found := deployment(prodName)
+		Expect(found).To(BeTrue())
+		Expect(env.Status.Phase).NotTo(Equal(kitchenv1alpha1.EnvironmentDegraded))
+	})
+
 	It("defaults a scheduled job's timeout and concurrency rather than leaving them open", func() {
 		declare([]kitchenv1alpha1.ProcessSpec{{
 			Name: "nightly", Type: kitchenv1alpha1.ProcessCron, Schedule: "0 3 * * *",

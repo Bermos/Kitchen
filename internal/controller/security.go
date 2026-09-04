@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/utils/ptr"
@@ -143,15 +144,17 @@ func applySecurityContext(
 	container.SecurityContext = containerSecurityContext(security)
 }
 
-// startFailure is why an environment's pods are not up, when the pods
-// themselves know and nothing else does. It answers a condition reason and a
-// sentence, or two empty strings for an environment that is simply still
-// rolling out — the ordinary case on every deploy.
+// startFailure is why an environment's workloads are not up, when the pods
+// themselves know and nothing else does. It answers a condition reason, a
+// sentence, and the refusal to record on the status — or nothing at all for an
+// environment that is simply still rolling out, which is the ordinary case on
+// every deploy.
 //
-// A tightened posture fails in two ways, and neither of them reaches the
+// A workload fails to start in two ways, and neither of them reaches the
 // Deployment. A container the kubelet will not create — an image that would
-// run as root under `runAsNonRoot`, a uid it cannot resolve — waits for ever
-// in `CreateContainerConfigError`, with the explanation only on the pod. A
+// run as root under `runAsNonRoot`, a uid it cannot resolve, a reference that
+// does not parse, an image that will not pull — waits for ever in a reason
+// pod_refusal.go calls terminal, with the explanation only on the pod. A
 // container that starts and then cannot write to its own filesystem exits,
 // restarts, exits again, and reports `CrashLoopBackOff`, which is the symptom
 // three layers down from the cause.
@@ -168,38 +171,101 @@ func applySecurityContext(
 // because a container the kubelet refused outright is worth a sentence
 // either way; the second is reported only under a declared posture, since
 // "it keeps exiting" on its own is what the logs are for.
+//
+// # Every workload, not only the web process
+//
+// The refusal is looked for across everything the environment keeps running —
+// the web pods, the workers, the services — because #393's application was
+// four workloads under one posture and the platform said nothing about any of
+// them. What is deliberately *not* here is a pod that belongs to a Job: a
+// deploy task's run is failed by its own guard and gates the deploy on itself
+// (#391), and a scheduled run's is failed on its own row and in the activity
+// feed. Neither is the environment's health, and an environment reported
+// Degraded because last night's cron pod was refused would be the schedule's
+// failure wearing the application's clothes.
+//
+// The crash loop stays the web process's alone, and only while the Deployment
+// is unavailable: it is a guess about a cause, and a guess made about a worker
+// nobody is waiting on is noise.
 func (r *EnvironmentReconciler) startFailure(
 	ctx context.Context,
 	env *kitchenv1alpha1.Environment,
 	appNS string,
 	security *kitchenv1alpha1.SecuritySpec,
-) (reason, message string) {
+	// webAvailable says the web Deployment has its replicas. The refusal is
+	// looked for either way — a refused worker is a refused worker while the
+	// URL answers — and the crash-loop guess is not.
+	webAvailable bool,
+) (reason, message string, refused *kitchenv1alpha1.WorkloadRefusalStatus) {
 	log := ctrl.LoggerFrom(ctx)
 
 	pods := &corev1.PodList{}
-	if err := r.List(ctx, pods, client.InNamespace(appNS), client.MatchingLabels(webLabels(map[string]string{
+	if err := r.List(ctx, pods, client.InNamespace(appNS), client.MatchingLabels(map[string]string{
 		labelEnvironment: env.Name,
-	}))); err != nil {
-		// The environment is already being reported as unavailable; failing
-		// to explain why is not itself a failure.
-		log.V(1).Info("listing the environment's pods to explain a stalled rollout", "error", err)
-		return "", ""
+	})); err != nil {
+		// The environment is already being reported as it is; failing to
+		// explain it is not itself a failure.
+		log.V(1).Info("listing the environment's pods to explain a workload that has not started", "error", err)
+		return "", "", nil
 	}
 
 	declared := security.Declared()
+	now := time.Now()
 	for i := range pods.Items {
-		state, found := appContainerState(&pods.Items[i])
+		pod := &pods.Items[i]
+		if podRunsAJob(pod) {
+			continue
+		}
+		if refusal, found := refusalOf(pod, now); found {
+			refused = &kitchenv1alpha1.WorkloadRefusalStatus{
+				Workload:  workloadOfPod(pod),
+				Pod:       refusal.Pod,
+				Container: refusal.Container,
+				Reason:    refusal.Reason,
+				Message:   refusal.Sentence(),
+			}
+			return reasonContainerRefused,
+				refusalMessage(refused.Workload, refusal.Sentence(), declared),
+				refused
+		}
+	}
+	if webAvailable {
+		return "", "", nil
+	}
+	for i := range pods.Items {
+		pod := &pods.Items[i]
+		if podRunsAJob(pod) || pod.Labels[LabelComponent] != ComponentWeb {
+			continue
+		}
+		state, found := appContainerState(pod)
 		if !found || state.Waiting == nil {
 			continue
 		}
-		switch {
-		case configErrorReasons[state.Waiting.Reason]:
-			return reasonContainerRefused, refusalMessage(state.Waiting.Message, declared)
-		case len(declared) > 0 && state.Waiting.Reason == reasonCrashLoop:
-			return reasonRestartingUnderPosture, refusalMessage(crashLoopUnderPosture, declared)
+		if len(declared) > 0 && state.Waiting.Reason == reasonCrashLoop {
+			return reasonRestartingUnderPosture,
+				refusalMessage(kitchenv1alpha1.WebProcessName, crashLoopUnderPosture, declared), nil
 		}
 	}
-	return "", ""
+	return "", "", nil
+}
+
+// podRunsAJob reports whether a pod is one run of something rather than a
+// workload that keeps running. The job-controller's own label is what says so,
+// and it is on the pods of a deploy task and a scheduled run alike.
+func podRunsAJob(pod *corev1.Pod) bool {
+	_, found := pod.Labels["job-name"]
+	return found
+}
+
+// workloadOfPod is which of the unit's workloads a pod belongs to, in the name
+// the project wrote and the dashboard shows. The web process carries no
+// process label — its workload is the environment's own name — so it is the
+// answer when there is nothing else to read.
+func workloadOfPod(pod *corev1.Pod) string {
+	if name := pod.Labels[labelProcess]; name != "" {
+		return name
+	}
+	return kitchenv1alpha1.WebProcessName
 }
 
 const (
@@ -220,15 +286,6 @@ const (
 	crashLoopUnderPosture = "the container starts and exits repeatedly"
 )
 
-// configErrorReasons are the waiting reasons that mean the kubelet refused to
-// create the container at all. A security context it cannot satisfy is one of
-// the few things that produces them, and the message it leaves is the
-// specific one — "container has runAsNonRoot and image will run as root".
-var configErrorReasons = map[string]bool{
-	"CreateContainerConfigError": true,
-	"CreateContainerError":       true,
-}
-
 // appContainerState is the state of the container the application runs in,
 // which is the only one of an application pod's containers this reconciler
 // writes.
@@ -241,18 +298,26 @@ func appContainerState(pod *corev1.Pod) (corev1.ContainerState, bool) {
 	return corev1.ContainerState{}, false
 }
 
-// refusalMessage is the kubelet's account of the failure plus the posture the
-// workload was started under, which is the half the kubelet cannot know.
-func refusalMessage(kubelet string, declared []string) string {
+// refusalMessage is the kubelet's account of the failure, whose workload it
+// is about, and the posture the workload was started under — which is the half
+// the kubelet cannot know.
+//
+// It opens in the developer's vocabulary rather than the cluster's, because
+// the screen this reaches is a developer's: "the container could not be
+// started" is what happened, and `CreateContainerConfigError` is the name
+// Kubernetes gives it. The name is still there — it is in front of the
+// kubelet's own sentence — for whoever is going to search for it.
+func refusalMessage(workload, kubelet string, declared []string) string {
 	kubelet = strings.TrimSpace(kubelet)
 	if kubelet == "" {
-		kubelet = "the container did not start"
+		kubelet = "the kubelet gave no reason"
 	}
+	message := fmt.Sprintf("the container of %s could not be started: %s", workload, kubelet)
 	if len(declared) == 0 {
-		return kubelet
+		return message
 	}
 	return fmt.Sprintf(
 		"%s. This project declares a security posture and the workload runs under it: %s. "+
 			"Change it in the project's settings (spec.runtime.security), or in kitchen.json, and redeploy",
-		kubelet, strings.Join(declared, "; "))
+		message, strings.Join(declared, "; "))
 }
