@@ -29,7 +29,12 @@ interface Discovery {
 // browser: a second tab is not a second trip through the identity provider,
 // and signing out of one signs out of all of them. The deliberate cost is that
 // a refresh token now outlives the tab that obtained it — bounded by rotation,
-// by revoking it on sign-out, and by the provider's refresh-token lifetime.
+// by revoking it on sign-out, by the provider's refresh-token lifetime, and by
+// the Content-Security-Policy the operator serves the dashboard under, which
+// is what keeps a script that could read this key from running here at all
+// (`internal/ui/ui.go`, docs/AUTH.md "Browser hardening"). Getting it out of
+// script's reach altogether means an httpOnly cookie and a token exchange
+// behind the operator, which is issue #370 rather than a change here.
 //
 // The in-flight sign-in stays in sessionStorage, where it belongs: one redirect
 // round trip, owned by the tab that started it, and meaningless to any other.

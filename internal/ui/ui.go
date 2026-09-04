@@ -26,7 +26,9 @@ import (
 	"encoding/json"
 	"io/fs"
 	"net/http"
+	"net/url"
 	"path"
+	"slices"
 	"strings"
 
 	"github.com/Bermos/Kitchen/internal/version"
@@ -67,6 +69,93 @@ const placeholder = `<!doctype html>
 Build it with <code>make ui-build</code> (or use the released image), or run the UI
 separately with <code>cd ui &amp;&amp; npm run dev</code>.</p></div>`
 
+// permissionsPolicy switches off the powerful features the dashboard has no
+// use for. It is a list of denials rather than an allowlist: a feature nobody
+// asks for costs nothing to refuse, and a screen that one day wants the
+// clipboard or fullscreen is not on it.
+const permissionsPolicy = "accelerometer=(), camera=(), display-capture=(), geolocation=(), " +
+	"gyroscope=(), magnetometer=(), microphone=(), midi=(), payment=(), usb=(), " +
+	"xr-spatial-tracking=()"
+
+// hstsMaxAge is a year, the value the header is only worth setting at. It goes
+// out with includeSubDomains and without preload: preload is a submission to a
+// list baked into browsers and an undertaking about a domain Kitchen does not
+// own, which is the installation's decision to make rather than ours.
+const hstsMaxAge = "max-age=31536000; includeSubDomains"
+
+// contentSecurityPolicy is the policy the dashboard is served under, built
+// around what it is about to be told to talk to.
+//
+// The dashboard is a Vite build: one module script and one stylesheet, both
+// fingerprinted under assets/, no inline script, no CDN, and its icons and
+// fonts are bundled precisely so nothing is fetched from the internet at
+// runtime. So `default-src 'self'` costs it nothing and `connect-src` can name
+// its three destinations exactly — itself, the API and the identity provider,
+// the last two read off the same Config that is served at /config.json rather
+// than spelled out a second time here.
+//
+// `style-src` is the one relaxation, and it is a real need rather than a
+// hedge: the colour-mode switch suppresses its own transition by inserting a
+// <style> element for the duration of the swap, which `'self'` alone refuses.
+func contentSecurityPolicy(cfg Config) string {
+	connect := []string{"'self'"}
+	for _, configured := range []string{cfg.APIURL, cfg.Issuer} {
+		if origin := originOf(configured); origin != "" && !slices.Contains(connect, origin) {
+			connect = append(connect, origin)
+		}
+	}
+	return strings.Join([]string{
+		"default-src 'self'",
+		"script-src 'self'",
+		"style-src 'self' 'unsafe-inline'",
+		"img-src 'self' data:",
+		"font-src 'self'",
+		"connect-src " + strings.Join(connect, " "),
+		"frame-ancestors 'none'",
+		"base-uri 'none'",
+		"form-action 'self'",
+	}, "; ")
+}
+
+// originOf reduces a configured URL to the scheme://host a CSP source list
+// names. Anything that is not an absolute http(s) URL — an empty field on an
+// installation that has not been configured yet, or a value nobody validated —
+// yields nothing rather than a source expression, since a malformed one would
+// be dropped by the browser along with the rest of the directive.
+func originOf(configured string) string {
+	parsed, err := url.Parse(configured)
+	if err != nil || parsed.Host == "" {
+		return ""
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return ""
+	}
+	return parsed.Scheme + "://" + parsed.Host
+}
+
+// setSecurityHeaders writes the browser-side hardening onto every dashboard
+// response — the app shell, its assets and /config.json alike, since all three
+// are the same origin and an omission on any one of them is an omission.
+//
+// Strict-Transport-Security is the only conditional one, and the condition is
+// the platform's own scheme rather than the request's: the operator is reached
+// through the shared Gateway, which terminates TLS, so a request arriving here
+// is plain HTTP whatever the outside world sees. `tls.mode: none` publishes
+// http:// URLs (TLSMode.Scheme()), and pinning HSTS on a host that has no
+// certificate would lock the installation out of its own dashboard.
+func setSecurityHeaders(header http.Header, cfg Config) {
+	header.Set("Content-Security-Policy", contentSecurityPolicy(cfg))
+	header.Set("X-Content-Type-Options", "nosniff")
+	// frame-ancestors above says the same thing to anything from the last
+	// decade; this is for what does not read it.
+	header.Set("X-Frame-Options", "DENY")
+	header.Set("Referrer-Policy", "no-referrer")
+	header.Set("Permissions-Policy", permissionsPolicy)
+	if strings.HasPrefix(cfg.APIURL, "https://") {
+		header.Set("Strict-Transport-Security", hstsMaxAge)
+	}
+}
+
 // Handler serves the dashboard: static assets, /config.json, and the SPA
 // fallback that makes deep links like /projects/shop land in index.html.
 // config is resolved per request so pointing the platform at another issuer
@@ -81,14 +170,25 @@ func Handler(config func(ctx context.Context) (Config, error)) http.Handler {
 	fileServer := http.FileServerFS(dist)
 
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		// The config is resolved for every response, not only for
+		// /config.json, because the policy names the origins the dashboard
+		// is about to be told to talk to. A resolver that cannot answer yet
+		// leaves the zero Config, whose policy is 'self' and nothing else —
+		// the stricter of the two, and an installation with no singleton is
+		// serving no sign-in for it to get in the way of.
+		cfg, cfgErr := config(req.Context())
+		if cfgErr != nil {
+			cfg = Config{}
+		}
+		setSecurityHeaders(w.Header(), cfg)
+
 		if req.Method != http.MethodGet && req.Method != http.MethodHead {
 			http.Error(w, "the dashboard only serves GET", http.StatusMethodNotAllowed)
 			return
 		}
 
 		if req.URL.Path == "/config.json" {
-			cfg, err := config(req.Context())
-			if err != nil {
+			if cfgErr != nil {
 				http.Error(w, "the platform is not configured yet", http.StatusServiceUnavailable)
 				return
 			}

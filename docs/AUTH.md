@@ -697,6 +697,7 @@ project.
 | Changing a registered client | RFC 7592 where the issuer has it, Kitchen's own prefix otherwise | The shipped provider plugin implements registration and not management; a federated issuer keeps its clients and loses the maintenance, reported on the claim |
 | API tokens for CI | better-auth's api-key plugin, exchanged for a JWT at the issuer | The plugin already holds the operator's credential; the operator stays stateless and revocation stays in one place |
 | Dashboard sessions | Rotating refresh tokens (`offline_access`), one per browser in `localStorage` | Renewal that needs no redirect and no framing of the login page; rotation is what makes browser storage defensible |
+| Dashboard browser hardening | A CSP the operator serves, with `connect-src` derived from `/config.json` | The origin holding the refresh token is the thing worth being strict about; deriving the origins keeps one issuer in one place |
 | Account management | The dashboard calls the issuer directly, with the issuer's session cookie | A password must never pass through the operator, and the endpoints are mounted and session-gated already |
 | Preview protection | An in-path gate the routes pass through | Gateway API has no external-auth filter, and Cilium exposes none of Envoy's |
 | Gate's OAuth client | One client, one redirect URI, registered by the operator | Previews come and go without touching the client |
@@ -890,7 +891,67 @@ outside:
   the dashboard to steal than the old per-tab access token was. What bounds it:
   rotation makes a stolen copy detectable the moment both are used, the
   dashboard revokes the token on sign-out rather than leaving it valid, and a
-  week is the longest it is worth anything.
+  week is the longest it is worth anything. The fourth bound is the policy the
+  dashboard is served under, below.
+
+### Browser hardening (settled)
+
+The refresh token above is readable by any script that runs on the dashboard's
+origin, so what may run there is the thing worth being strict about.
+`internal/ui/ui.go` sets the headers on every response it serves — the app
+shell, its assets and `/config.json` alike, because a policy sent on the shell
+alone is a policy that applies to one page rather than to the origin:
+
+```
+Content-Security-Policy: default-src 'self'; script-src 'self';
+  style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self';
+  connect-src 'self' <apiURL> <issuer>; frame-ancestors 'none';
+  base-uri 'none'; form-action 'self'
+X-Content-Type-Options: nosniff
+X-Frame-Options: DENY
+Referrer-Policy: no-referrer
+Permissions-Policy: <the powerful features, all denied>
+Strict-Transport-Security: max-age=31536000; includeSubDomains   (https only)
+```
+
+Four things about it that are decisions rather than boilerplate:
+
+- **`connect-src` is derived, not written down twice.** The two origins it
+  names are the `apiURL` and `issuer` of the same `Config` that is served at
+  `/config.json`, reduced to scheme and host — so pointing the platform at
+  another identity provider moves the policy with it, and an installation
+  serving both from one host names it once.
+- **`'unsafe-inline'` is in `style-src` and nowhere else.** It is a real need:
+  the colour-mode switch suppresses its own transition by inserting a `<style>`
+  element for the duration of the swap. Scripts get no such relaxation — the
+  Vite build emits one module script and one stylesheet, both fingerprinted
+  under `assets/`, and the dashboard bundles its icons and fonts precisely so
+  that nothing is fetched from the internet at runtime. `default-src 'self'`
+  therefore costs it nothing, and blocks the exfiltration half of an XSS.
+- **`frame-ancestors 'none'` is what the confirm-by-typing screens rely on.**
+  Deleting a project and changing a membership are guarded by typing a name,
+  which is a guard against a mistake and not against a frame someone else
+  drew around it. `X-Frame-Options` says the same to anything that does not
+  read the policy.
+- **HSTS follows `tls.mode`, not the request.** The operator sits behind the
+  shared Gateway, which terminates TLS, so a request arriving at it is plain
+  HTTP whatever the outside world sees; the scheme is read off the published
+  API URL (`TLSMode.Scheme()`). In `tls.mode: none` the header is not sent at
+  all, because pinning HSTS on a host that has no certificate would lock the
+  installation out of its own dashboard.
+
+**The refresh token stays in `localStorage`, and the policy is the mitigation.**
+The alternative — holding it in memory and syncing tabs over a
+`BroadcastChannel` — trades a real property for a partial gain: it would end
+one session per browser, so a reload becomes a trip through the identity
+provider and a second tab becomes a second one, while the token remains
+readable by any script that is already running, which is the same script the
+policy exists to keep out. Moving it out of script's reach at all means an
+httpOnly cookie, which means the code exchange and the renewal move behind the
+operator — a backend-for-frontend, a change to what a session *is* rather than
+to where a string is kept, and one that has to be designed with the other open
+question about credentials (#349). That is issue #370; this is what holds until
+it lands.
 
 ### Managing an account (settled)
 
