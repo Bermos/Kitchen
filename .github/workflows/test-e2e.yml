@@ -495,12 +495,32 @@ jobs:
             }
           done
 
+          # `kubectl exec deploy/<name>` resolves a pod through the
+          # Deployment's own selector, and the web Deployment's selector is
+          # the environment label alone — a Deployment's selector is
+          # immutable, so it can never be narrowed to the component label.
+          # Every pod an environment materializes carries the environment
+          # label, the api workload's included, so that selector matches both
+          # workloads and which of them kubectl picks is a coin toss. The web
+          # pods are named by the component label the environment's Service
+          # selects on, and a ready one of those is what every probe below
+          # asks for.
+          web_pod() { # web_pod <environment>
+            kubectl -n "${APP_NS}" get pod \
+              -l "kitchen.bermos.dev/environment=$1,kitchen.bermos.dev/component=web" \
+              -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' \
+              | awk '$2 == "True" { print $1; exit }'
+          }
+
           # And the stages. Neither image can be asked what it was built from
           # any other way — which is the whole reason this is a cluster test:
           # the assertion is about the artifact, and BuildKit shipping the
           # file's last stage regardless would be a green build every time.
-          web_stage="$(kubectl -n "${APP_NS}" exec "deploy/${PROJECT}-production" \
+          web_stage="$(kubectl -n "${APP_NS}" exec "$(web_pod "${PROJECT}-production")" \
             -- wget -q -O - http://127.0.0.1:8080/stage.txt)"
+          # The api workload's Deployment is addressed by name: its selector
+          # names the process as well as the environment, so it can only
+          # resolve to a pod of this workload.
           api_stage="$(kubectl -n "${APP_NS}" exec "deploy/${PROJECT}-production-api" \
             -- wget -q -O - http://127.0.0.1:9000/stage.txt)"
           echo "the web process runs the ${web_stage} stage; the api workload runs ${api_stage}"
@@ -555,6 +575,16 @@ jobs:
             }
           done
 
+          # The environment's web pod by the label that names it, never
+          # `deploy/<name>`: the web Deployment's selector is the environment
+          # label alone and so matches the api workload's pod too.
+          web_pod() { # web_pod <environment>
+            kubectl -n "${APP_NS}" get pod \
+              -l "kitchen.bermos.dev/environment=$1,kitchen.bermos.dev/component=web" \
+              -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' \
+              | awk '$2 == "True" { print $1; exit }'
+          }
+
           address() {
             kubectl -n "${APP_NS}" get deploy "$1" \
               -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="KITCHEN_SERVICE_API")].value}'
@@ -589,8 +619,8 @@ jobs:
           # every check above, so each web process is made to actually fetch
           # from the address it was handed — and the answer says which pod
           # served it, which is the whole claim.
-          reached() {
-            kubectl -n "${APP_NS}" exec "deploy/$1" \
+          reached() { # reached <environment>
+            kubectl -n "${APP_NS}" exec "$(web_pod "$1")" \
               -- sh -c 'wget -q -O - "$KITCHEN_SERVICE_API/host.txt"' 2>/dev/null || true
           }
           preview_served="$(reached "${PROJECT}-pr-1")"
@@ -612,7 +642,7 @@ jobs:
               exit 1
               ;;
           esac
-          role="$(kubectl -n "${APP_NS}" exec "deploy/${PROJECT}-pr-1" \
+          role="$(kubectl -n "${APP_NS}" exec "$(web_pod "${PROJECT}-pr-1")" \
             -- sh -c 'wget -q -O - "$KITCHEN_SERVICE_API/process.txt"' 2>/dev/null || true)"
           [ "${role}" = api ] || {
             echo "::error::the address resolved to a workload that says it is '${role}'"
@@ -658,9 +688,44 @@ jobs:
                   timeout: 2m
           EOF
           }
+          # The environment's web pod by the label that names it, never
+          # `deploy/<name>`: the web Deployment's selector is the environment
+          # label alone — immutable, so it can never carry the component
+          # label — and every pod the environment materializes carries the
+          # environment label, so `deploy/${PROJECT}-production` also resolves
+          # to the api workload's pod, which listens on 9000 and answers this
+          # probe with nothing.
+          web_pod() { # web_pod <environment>
+            kubectl -n "${APP_NS}" get pod \
+              -l "kitchen.bermos.dev/environment=$1,kitchen.bermos.dev/component=web" \
+              -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' \
+              | awk '$2 == "True" { print $1; exit }'
+          }
           deployed() {
-            kubectl -n "${APP_NS}" exec "deploy/${PROJECT}-production" \
+            # Tolerant of a kubectl that answers nothing, exactly as the
+            # `wget` below is: this is polled in a loop, and a blip is a
+            # reason to ask again rather than to end the job.
+            pod="$(web_pod "${PROJECT}-production" || true)"
+            [ -n "${pod}" ] || return 0
+            kubectl -n "${APP_NS}" exec "${pod}" \
               -- wget -q -O - http://127.0.0.1:8080/release.txt 2>/dev/null || true
+          }
+          # "Served the wrong release" and "answered nothing at all" are
+          # different faults — a release that never rolled, against a probe
+          # that never reached the application — and the log has to tell them
+          # apart without a second run to find out which it was.
+          serving_says() { # serving_says <what deployed() returned>
+            if [ -n "$1" ]; then
+              printf "production serves '%s'" "$1"
+              return
+            fi
+            pod="$(web_pod "${PROJECT}-production" || true)"
+            if [ -n "${pod}" ]; then
+              printf "production's web pod %s answered nothing on 127.0.0.1:8080/release.txt" \
+                "${pod}"
+            else
+              printf "production has no ready web pod to ask"
+            fi
           }
           point_at() {
             kubectl -n kitchen-system patch environment "${PROJECT}-production" \
@@ -669,7 +734,8 @@ jobs:
 
           serving="$(deployed)"
           [ "${serving}" = one ] || {
-            echo "::error::production is serving release '${serving}' before any of this"
+            echo "::error::before any of this, $(serving_says "${serving}")"
+            kubectl -n "${APP_NS}" get pods -o wide --show-labels
             exit 1
           }
 
@@ -696,8 +762,9 @@ jobs:
           # before it is still the one taking traffic.
           serving="$(deployed)"
           [ "${serving}" = one ] || {
-            echo "::error::a deploy whose task failed still moved traffic: production" \
-                 "serves '${serving}'"
+            echo "::error::a deploy whose task failed still moved traffic:" \
+                 "$(serving_says "${serving}")"
+            kubectl -n "${APP_NS}" get pods -o wide --show-labels
             exit 1
           }
           label="$(kubectl -n "${APP_NS}" get deploy "${PROJECT}-production" \
@@ -716,10 +783,11 @@ jobs:
           done
           serving="$(deployed)"
           [ "${serving}" = three ] || {
-            echo "::error::a deploy whose task succeeded never took traffic: production" \
-                 "serves '${serving}'"
+            echo "::error::a deploy whose task succeeded never took traffic:" \
+                 "$(serving_says "${serving}")"
             kubectl -n kitchen-system get environment "${PROJECT}-production" -o yaml
             kubectl -n "${APP_NS}" get jobs
+            kubectl -n "${APP_NS}" get pods -o wide --show-labels
             exit 1
           }
           for _ in $(seq 24); do
