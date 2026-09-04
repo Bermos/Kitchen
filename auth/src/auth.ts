@@ -9,7 +9,7 @@ import type { Pool } from "pg";
 
 import { allowedOrigins, platformClients, type Config } from "./config.js";
 import { isServiceAccount } from "./identity.js";
-import { guardKeySession } from "./keyscope.js";
+import { guardKeyIssuance, guardKeySession } from "./keyscope.js";
 import { log } from "./log.js";
 
 export const LOGIN_PATH = "/login";
@@ -99,18 +99,21 @@ function guardResourceIndicator(config: Config) {
  * Everything that runs in front of every endpoint, in one hook because
  * better-auth's options take one.
  *
- * They are two questions asked in the order they can be answered. *May this
+ * They are three questions asked in the order they can be answered. *May this
  * credential be here at all* comes first and is settled from the request
- * alone (src/keyscope.ts); *may this client ask for this audience* is about
- * one endpoint's body. A guard added later belongs in this list rather than
- * inside one of them.
+ * alone (src/keyscope.ts); *may anyone mint a key here* is the same file's
+ * answer for every caller, a person's browser session included; *may this
+ * client ask for this audience* is about one endpoint's body. A guard added
+ * later belongs in this list rather than inside one of them.
  */
 function guards(config: Config): BetterAuthOptions["hooks"] {
 	const keySession = guardKeySession(config);
+	const keyIssuance = guardKeyIssuance(config);
 	const resourceIndicator = guardResourceIndicator(config);
 	return {
 		before: createAuthMiddleware(async (ctx) => {
 			await keySession(ctx);
+			await keyIssuance(ctx);
 			await resourceIndicator(ctx);
 		}),
 	};
@@ -294,6 +297,14 @@ export function authOptions(config: Config, database: Pool): BetterAuthOptions {
 			// it becoming one is `guardKeySession` above — a key reaches the
 			// token exchange and its own session, and the operator's own
 			// credential reaches everything (src/keyscope.ts).
+			//
+			// The plugin's own key endpoints are refused to everyone but that
+			// credential, by `guardKeyIssuance` in the same file. They are
+			// mounted because the plugin mounts them; a key Kitchen knows
+			// about comes from `POST /projects/{name}/keys`, which gives it a
+			// machine account to own it. One minted here would carry the
+			// caller's own subject instead, and nothing in Kitchen could list
+			// or revoke it (issue #357).
 			apiKey({
 				enableSessionForAPIKeys: true,
 				// The plugin's default budget (10 requests a day) is meant to be

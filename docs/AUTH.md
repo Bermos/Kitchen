@@ -606,6 +606,23 @@ header — the operator's credential is told from a CI key by the presented
 value, which is a comparison rather than a query, because the chart seeds the
 key and the account that owns it as a pair.
 
+**A key is issued by Kitchen, and never at the issuer.** The api-key plugin
+mounts key endpoints of its own — `/api-key/create`, `/list`, `/get`, `/update`
+and `/delete` — and they are refused to every caller but the service
+credential, by the same function of a path. The rule above already kept a *key*
+out of them; this is the other direction, because those endpoints are behind a
+session and **a signed-in person's browser is one** (issue #357). A key minted
+there would have `referenceId` pointing at that person's own account, so it
+would be a long-lived credential carrying their subject and every role they
+hold, on every project — the exact thing a machine account exists to prevent —
+and nothing in Kitchen could see it: `GET /kitchen/keys` lists machine
+accounts, the project's members list shows grants, and neither the dashboard
+nor the API offers the plugin's own listing or revocation. So the invariant is
+stated rather than left to nobody happening to post there: **a key comes from
+`POST /projects/{name}/keys` and belongs to a machine account, or it does not
+exist.** A platform-scoped key (#349) needs no exception to it — that key would
+be issued through the platform's own path too.
+
 **Registering an OAuth client is the service account's, and nobody else's.**
 That is the other half, and it is stated where the provider asks:
 `clientPrivileges` admits the service account for every client action —
