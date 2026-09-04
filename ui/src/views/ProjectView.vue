@@ -288,6 +288,11 @@ const settings = reactive({
   runAsNonRoot: false,
   runAsUser: 0,
   runAsGroup: 0,
+  // The gid that owns the volumes the workloads mount, and when the kubelet
+  // applies it. Empty policy is Kubernetes' own default, and it is sent only
+  // alongside a group id because that is the only time it applies.
+  fsGroup: 0,
+  fsGroupChangePolicy: "",
   readOnlyRootFilesystem: false,
   allowPrivilegeEscalation: false,
   // One capability per line, the same shape the argument fields take: a list
@@ -363,6 +368,13 @@ const dataClassOptions = [
   ...DATA_CLASSES.map((value) => ({ label: value, value: value as string })),
 ];
 
+// When the kubelet applies the volume ownership. Empty is Kubernetes' own
+// default, which is what a project that has not thought about it should get.
+const fsGroupChangePolicyOptions = [
+  { label: "Always (every start)", value: "" },
+  { label: "OnRootMismatch", value: "OnRootMismatch" },
+];
+
 const criticalityOptions = [
   { label: "undesignated", value: "" },
   ...CRITICALITIES.map((value) => ({ label: value, value: value as string })),
@@ -393,6 +405,8 @@ function loadSettings(from: Project) {
   settings.runAsNonRoot = from.security?.runAsNonRoot ?? false;
   settings.runAsUser = from.security?.runAsUser ?? 0;
   settings.runAsGroup = from.security?.runAsGroup ?? 0;
+  settings.fsGroup = from.security?.fsGroup ?? 0;
+  settings.fsGroupChangePolicy = from.security?.fsGroupChangePolicy ?? "";
   settings.readOnlyRootFilesystem = from.security?.readOnlyRootFilesystem ?? false;
   settings.allowPrivilegeEscalation = from.security?.allowPrivilegeEscalation ?? false;
   settings.dropCapabilities = wordLines(from.security?.dropCapabilities);
@@ -449,6 +463,11 @@ async function saveSettings() {
         runAsNonRoot: settings.runAsNonRoot,
         runAsUser: settings.runAsUser,
         runAsGroup: settings.runAsGroup,
+        fsGroup: settings.fsGroup,
+        // The policy applies only where there is a group to apply, and the
+        // API refuses one without it — so an emptied group id takes the
+        // policy with it rather than making the whole save fail.
+        fsGroupChangePolicy: settings.fsGroup > 0 ? settings.fsGroupChangePolicy : "",
         readOnlyRootFilesystem: settings.readOnlyRootFilesystem,
         allowPrivilegeEscalation: settings.allowPrivilegeEscalation,
         dropCapabilities: wordsOf(settings.dropCapabilities),
@@ -1370,7 +1389,8 @@ function host(url?: string): string {
                 own seccomp profile, and no privilege escalation. The rest is a tightening an application asks for,
                 because an image that writes into its own filesystem or runs as root is ordinary and would break
                 under a default that assumed otherwise. A workload that cannot start under what it asked for says so
-                on its environment, naming the constraint.
+                on its environment, naming the constraint. The volume group is the one that goes the other way: a
+                workload running as anybody but root needs it to be able to write the volume it was given.
               </p>
             </div>
             <USwitch
@@ -1405,6 +1425,31 @@ function host(url?: string): string {
                   min="0"
                   placeholder="the image's"
                   class="w-full font-mono"
+                />
+              </UFormField>
+            </div>
+            <div class="grid gap-4 sm:grid-cols-2">
+              <UFormField
+                label="Volume group ID"
+                help="The gid that owns the volumes this project mounts. A new volume comes up owned by root, so a workload running as anybody else cannot write it — it starts, looks healthy, and fails on its first write. 0 leaves the volume's own ownership alone."
+              >
+                <UInput
+                  v-model.number="settings.fsGroup"
+                  type="number"
+                  min="0"
+                  placeholder="the volume's"
+                  class="w-full font-mono"
+                />
+              </UFormField>
+              <UFormField
+                label="Apply ownership"
+                help="When that ownership is applied. Always walks the whole volume on every start, which on a large one is slow; OnRootMismatch skips the walk when the volume's own root already matches, at the price of a subtree left by a previous user staying unwritable. It needs a volume group ID."
+              >
+                <USelect
+                  v-model="settings.fsGroupChangePolicy"
+                  :items="fsGroupChangePolicyOptions"
+                  :disabled="!settings.fsGroup"
+                  class="w-full"
                 />
               </UFormField>
             </div>

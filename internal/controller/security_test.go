@@ -21,11 +21,13 @@ import (
 	"strings"
 	"testing"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
@@ -53,6 +55,11 @@ func TestAProjectThatDeclaresNothingGetsThePlatformsPosture(t *testing.T) {
 	}
 	if pod.RunAsNonRoot != nil || pod.RunAsUser != nil || pod.RunAsGroup != nil {
 		t.Fatalf("nothing about who the image runs as is the platform's to decide: %+v", pod)
+	}
+	// Nor who owns the volumes it is given: a project that says nothing gets
+	// no fsGroup, exactly as before the field existed.
+	if pod.FSGroup != nil || pod.FSGroupChangePolicy != nil {
+		t.Fatalf("the ownership of a volume is the project's to declare, not the platform's: %+v", pod)
 	}
 
 	container := containerSecurityContext(nil)
@@ -105,7 +112,10 @@ func TestADeclaredPostureReachesTheContainer(t *testing.T) {
 // A constraint withdrawn has to leave the workload, which is why the posture
 // is written whole every reconcile rather than only where it was asked for.
 func TestAWithdrawnPostureIsTakenOffTheWorkload(t *testing.T) {
-	pod := corev1.PodSpec{SecurityContext: &corev1.PodSecurityContext{RunAsUser: ptr.To(int64(1001))}}
+	pod := corev1.PodSpec{SecurityContext: &corev1.PodSecurityContext{
+		RunAsUser: ptr.To(int64(1001)),
+		FSGroup:   ptr.To(int64(1001)),
+	}}
 	container := corev1.Container{SecurityContext: &corev1.SecurityContext{
 		ReadOnlyRootFilesystem: ptr.To(true),
 		Capabilities:           &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
@@ -115,6 +125,9 @@ func TestAWithdrawnPostureIsTakenOffTheWorkload(t *testing.T) {
 
 	if pod.SecurityContext.RunAsUser != nil {
 		t.Fatalf("the withdrawn uid stayed on the pod: %+v", pod.SecurityContext)
+	}
+	if pod.SecurityContext.FSGroup != nil {
+		t.Fatalf("the withdrawn volume group stayed on the pod: %+v", pod.SecurityContext)
 	}
 	if ptr.Deref(container.SecurityContext.ReadOnlyRootFilesystem, false) {
 		t.Fatal("the withdrawn read-only root filesystem stayed on the container")
@@ -209,4 +222,159 @@ func securityReconcilerWithPod(t *testing.T, state corev1.ContainerState) (
 	}
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(env, pod).Build()
 	return &EnvironmentReconciler{Client: c, Scheme: scheme}, env
+}
+
+// The volume group (#347). A freshly provisioned volume comes up owned by
+// root, so a workload that declared a user of its own is handed one it cannot
+// write — it starts, reads as healthy, and fails on its first write. These
+// pin the three things that stops:
+//
+//   - the declared group reaches the pod that mounts the volume, for every
+//     workload an environment materializes and not only the web process;
+//   - the change policy is written only where there is a group to apply, and
+//     never on the platform's own initiative;
+//   - and both leave the workload when the declaration does, which the
+//     withdrawal test above covers alongside the rest of the posture.
+
+// A non-root workload handed a volume can write it: the gid the project
+// declared is on the pod the claim is mounted into, for every shape of
+// workload the environment materializes.
+func TestTheVolumeGroupReachesEveryWorkloadThatMountsAClaim(t *testing.T) {
+	security := &kitchenv1alpha1.SecuritySpec{
+		RunAsNonRoot:        true,
+		RunAsUser:           1001,
+		RunAsGroup:          1001,
+		FSGroup:             1001,
+		FSGroupChangePolicy: kitchenv1alpha1.FSGroupChangeOnRootMismatch,
+	}
+	release := &kitchenv1alpha1.Release{
+		ObjectMeta: metav1.ObjectMeta{Name: "shop-rel-1", Namespace: "kitchen-system"},
+		Spec: kitchenv1alpha1.ReleaseSpec{
+			Image: "registry.example.com/shop@sha256:abc",
+			ConfigSnapshot: kitchenv1alpha1.ConfigSnapshot{
+				Runtime: kitchenv1alpha1.RuntimeSpec{Security: security},
+			},
+		},
+	}
+	project := &kitchenv1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: "shop", Namespace: "kitchen-system"},
+		Spec: kitchenv1alpha1.ProjectSpec{
+			Registry: kitchenv1alpha1.RegistrySpec{
+				ConnectionRef: kitchenv1alpha1.LocalObjectReference{Name: "harbor"},
+			},
+		},
+	}
+	// The claim the workload is given, mounted where it asked for it.
+	mounts := []mountedVolume{{
+		claim:     "shop-data",
+		claimName: "shop-data-production",
+		mountPath: "/data",
+	}}
+
+	// The four shapes that go through the process pod: a worker, a service,
+	// a scheduled run and a task that runs once per deploy.
+	for name, process := range map[string]kitchenv1alpha1.ProcessSpec{
+		"worker":  {Name: "worker", Type: kitchenv1alpha1.ProcessWorker},
+		"service": {Name: "api", Type: kitchenv1alpha1.ProcessService, Port: 8080},
+		"cron":    {Name: "nightly", Type: kitchenv1alpha1.ProcessCron, Schedule: "0 3 * * *"},
+		"task":    {Name: "migrate", Type: kitchenv1alpha1.ProcessTask},
+	} {
+		t.Run(name, func(t *testing.T) {
+			spec := processPodSpec(release, project, nil, process, mounts)
+			assertVolumeIsWritable(t, spec)
+		})
+	}
+
+	// And the web process, which is built by the reconciler rather than by
+	// processPodSpec — the one place the two could come to disagree.
+	t.Run("web", func(t *testing.T) {
+		env := &kitchenv1alpha1.Environment{
+			ObjectMeta: metav1.ObjectMeta{Name: "shop-production", Namespace: "kitchen-system"},
+			Spec: kitchenv1alpha1.EnvironmentSpec{
+				Type:       kitchenv1alpha1.EnvironmentProduction,
+				ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: "shop"},
+			},
+		}
+		scheme := runtime.NewScheme()
+		if err := clientgoscheme.AddToScheme(scheme); err != nil {
+			t.Fatal(err)
+		}
+		if err := kitchenv1alpha1.AddToScheme(scheme); err != nil {
+			t.Fatal(err)
+		}
+		r := &EnvironmentReconciler{
+			Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(env).Build(),
+			Scheme: scheme,
+		}
+		labels := map[string]string{labelEnvironment: env.Name}
+		if err := r.applyDeployment(context.Background(), env, release, project,
+			securityTestNamespace, labels, nil, 1, false, false, mounts); err != nil {
+			t.Fatal(err)
+		}
+		deploy := &appsv1.Deployment{}
+		if err := r.Get(context.Background(), client.ObjectKey{
+			Name: env.Name, Namespace: securityTestNamespace,
+		}, deploy); err != nil {
+			t.Fatal(err)
+		}
+		assertVolumeIsWritable(t, deploy.Spec.Template.Spec)
+	})
+}
+
+// assertVolumeIsWritable is the two halves that have to meet: the volume is
+// mounted, and the pod carries the group the kubelet chowns it to before the
+// container starts.
+func assertVolumeIsWritable(t *testing.T, spec corev1.PodSpec) {
+	t.Helper()
+	if len(spec.Volumes) != 1 || spec.Volumes[0].PersistentVolumeClaim == nil {
+		t.Fatalf("the claim is not mounted, so there is nothing to own: %+v", spec.Volumes)
+	}
+	if spec.SecurityContext == nil {
+		t.Fatal("the workload has no pod security context at all")
+	}
+	if ptr.Deref(spec.SecurityContext.FSGroup, 0) != 1001 {
+		t.Fatalf("a workload running as 1001 was handed a volume owned by somebody else: %+v",
+			spec.SecurityContext)
+	}
+	if spec.SecurityContext.FSGroupChangePolicy == nil ||
+		*spec.SecurityContext.FSGroupChangePolicy != corev1.FSGroupChangeOnRootMismatch {
+		t.Fatalf("the declared change policy did not reach the pod: %+v", spec.SecurityContext)
+	}
+}
+
+// The change policy is Kubernetes' to default, not the platform's: an unset
+// policy is left unset rather than written as `Always`, and a policy without
+// a group to apply is nothing the kubelet ever reads.
+func TestTheChangePolicyIsWrittenOnlyBesideAGroup(t *testing.T) {
+	pod := podSecurityContext(&kitchenv1alpha1.SecuritySpec{FSGroup: 1001})
+	if ptr.Deref(pod.FSGroup, 0) != 1001 {
+		t.Fatalf("the declared group did not reach the pod: %+v", pod)
+	}
+	if pod.FSGroupChangePolicy != nil {
+		t.Fatalf("an unset policy is Kubernetes' default, not a declaration to write: %+v", pod)
+	}
+
+	// Admission and the API both refuse this pair; it can still only ever
+	// mean what an unset group means.
+	alone := podSecurityContext(&kitchenv1alpha1.SecuritySpec{
+		FSGroupChangePolicy: kitchenv1alpha1.FSGroupChangeOnRootMismatch,
+	})
+	if alone.FSGroup != nil || alone.FSGroupChangePolicy != nil {
+		t.Fatalf("a policy with no group to apply reached the pod: %+v", alone)
+	}
+}
+
+// The posture in words carries it too, which is what the environment's
+// condition and the release's config diff both read.
+func TestTheVolumeGroupIsNamedInTheDeclaredPosture(t *testing.T) {
+	declared := (&kitchenv1alpha1.SecuritySpec{
+		FSGroup:             1001,
+		FSGroupChangePolicy: kitchenv1alpha1.FSGroupChangeOnRootMismatch,
+	}).Declared()
+	if len(declared) != 1 || !strings.Contains(declared[0], "gid 1001") {
+		t.Fatalf("want the volume ownership named in the posture, got %v", declared)
+	}
+	if !strings.Contains(declared[0], "root does not already match") {
+		t.Fatalf("want the change policy named beside it, got %v", declared)
+	}
 }

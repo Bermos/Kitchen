@@ -133,6 +133,16 @@
           "minimum": 0,
           "description": "The gid the containers run as. 0 is the image's own, as for runAsUser."
         },
+        "fsGroup": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "The gid that owns the volumes mounted into the containers. A freshly provisioned volume comes up owned by root, so a workload running as anybody else is handed one it cannot write; the kubelet chowns it to this gid before the container starts. 0 is the volume's own ownership left alone."
+        },
+        "fsGroupChangePolicy": {
+          "type": "string",
+          "enum": ["Always", "OnRootMismatch"],
+          "description": "When that ownership is applied. Left out it is Kubernetes' default, Always, which walks the whole volume on every start; OnRootMismatch skips the walk when the volume's own root already matches, which is what a large persistent volume wants — at the price of a subtree left behind by a previous uid staying unwritable. It needs an fsGroup to apply and is refused without one."
+        },
         "readOnlyRootFilesystem": {
           "type": "boolean",
           "description": "Mount the container's own filesystem read only. An application that writes to a path it did not declare fails on the write rather than on the next node it lands on."

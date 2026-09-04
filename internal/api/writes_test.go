@@ -164,6 +164,55 @@ func TestPatchingAProjectsSecurityPosture(t *testing.T) {
 	}
 }
 
+// The gid that owns the volumes a non-root workload is given (#347), through
+// the settings body that already carries the rest of the posture.
+func TestPatchingAProjectsVolumeGroup(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+
+	recorder := h.do(t, http.MethodPatch, "/api/v1/projects/shop", `{
+		"security": {"runAsUser": 1001, "fsGroup": 1001,
+		             "fsGroupChangePolicy": "OnRootMismatch"}
+	}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	view := decode[projectView](t, recorder)
+	if view.Security == nil || view.Security.FSGroup != 1001 ||
+		view.Security.FSGroupChangePolicy != "OnRootMismatch" {
+		t.Fatalf("the volume group did not echo: %+v", view.Security)
+	}
+
+	stored := &kitchenv1alpha1.Project{}
+	if err := h.server.get(context.Background(), "shop", stored); err != nil {
+		t.Fatal(err)
+	}
+	security := stored.Spec.Runtime.Security
+	if security == nil || security.FSGroup != 1001 ||
+		security.FSGroupChangePolicy != kitchenv1alpha1.FSGroupChangeOnRootMismatch {
+		t.Fatalf("the volume group did not stick: %+v", stored.Spec.Runtime)
+	}
+
+	// A gid is a gid: there is no negative one, and the refusal says what 0
+	// means rather than leaving the caller to guess.
+	recorder = h.do(t, http.MethodPatch, "/api/v1/projects/shop", `{"security": {"fsGroup": -1}}`)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("want 400 for a negative gid, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+
+	// The change policy is when an ownership is applied, so it is refused
+	// without an ownership to apply rather than stored doing nothing.
+	recorder = h.do(t, http.MethodPatch, "/api/v1/projects/shop",
+		`{"security": {"fsGroupChangePolicy": "OnRootMismatch"}}`)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("want 400 for a policy with no group, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	recorder = h.do(t, http.MethodPatch, "/api/v1/projects/shop",
+		`{"security": {"fsGroup": 1001, "fsGroupChangePolicy": "Sometimes"}}`)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("want 400 for a policy that is not one, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestPatchingAProjectsEnvVars(t *testing.T) {
 	h := newHarness(t, nil, fixtures()...)
 

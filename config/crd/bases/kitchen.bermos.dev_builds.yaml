@@ -1058,6 +1058,45 @@ spec:
                               type: string
                             type: array
                             x-kubernetes-list-type: atomic
+                          fsGroup:
+                            description: |-
+                              FSGroup is the supplementary group the volumes mounted into the
+                              containers are owned by. A freshly provisioned PersistentVolume comes
+                              up owned by `root:root`, so a workload that asked to run as anybody
+                              else is handed a volume it cannot write — it starts, reads as
+                              healthy, and fails on its first write. The kubelet chowns the volume
+                              to this gid before the container starts, which is the only thing that
+                              makes the two features — this posture and a volume claim — work
+                              together.
+
+                              It is a pod-level field, not a container-level one, so it lands
+                              beside RunAsNonRoot rather than in the per-container context. Zero is
+                              the same reading RunAsUser's is: the volume's own ownership left
+                              alone, not a request to own it as gid 0.
+                            format: int64
+                            minimum: 0
+                            type: integer
+                          fsGroupChangePolicy:
+                            description: |-
+                              FSGroupChangePolicy is when the kubelet does that chown. Left alone
+                              it is Kubernetes' own default, `Always`, which walks the whole volume
+                              on every start — correct, and on a large volume slow enough to be the
+                              reason a pod takes minutes to come up. `OnRootMismatch` skips the
+                              walk when the volume's own root already has the right ownership,
+                              which is what a workload with a big persistent volume reaches for.
+
+                              The default is deliberately not moved: `OnRootMismatch` looks only at
+                              the top of the volume, so a subtree left behind by a previous uid
+                              stays unwritable and the failure arrives long after the change that
+                              caused it. That is a trade a project makes knowingly, not one the
+                              platform makes for it.
+
+                              It is meaningless without FSGroup and refused without one, rather
+                              than stored as a setting that does nothing.
+                            enum:
+                            - Always
+                            - OnRootMismatch
+                            type: string
                           readOnlyRootFilesystem:
                             description: |-
                               ReadOnlyRootFilesystem mounts the container's own filesystem read

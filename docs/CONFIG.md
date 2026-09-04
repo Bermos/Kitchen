@@ -143,6 +143,8 @@ is the commit that should declare it.
     "security": {
       "runAsNonRoot": true,
       "runAsUser": 1001,
+      "runAsGroup": 1001,
+      "fsGroup": 1001,
       "readOnlyRootFilesystem": true,
       "dropCapabilities": ["ALL"]
     }
@@ -164,6 +166,24 @@ three that would, `readOnlyRootFilesystem`, `runAsNonRoot` and
 `dropCapabilities`, are asked for here instead. `allowPrivilegeEscalation`
 goes the other way: it is the one thing the platform tightens, and setting it
 puts back the setuid binary an image needs.
+
+`fsGroup` is the one that goes with a volume rather than with the image. A
+freshly provisioned volume comes up owned by `root:root`, so a workload that
+declared `runAsUser: 1001` is handed one it cannot write: it starts, reads as
+healthy, and fails on its first write. `fsGroup` is the gid the kubelet chowns
+the volume to before the container starts, and it is what makes a non-root
+workload and a volume claim work together at all. `0` is the volume's own
+ownership left alone, the reading `runAsUser`'s zero has.
+
+`fsGroupChangePolicy` is when that chown happens, and the default is
+deliberately Kubernetes' own — `Always`, which walks the whole volume every
+time a pod starts. `OnRootMismatch` skips the walk when the volume's own root
+already has the right ownership, which is what turns a minutes-long start on a
+large volume into a fast one; the price is that a subtree left behind by a
+previous uid stays unwritable, and the failure arrives long after the change
+that caused it. That is a trade a project makes knowingly, so the platform
+does not make it for one. It needs an `fsGroup` to apply and is refused
+without one.
 
 A workload that cannot start under what it asked for says so on its
 environment, naming the constraints in force, rather than sitting in

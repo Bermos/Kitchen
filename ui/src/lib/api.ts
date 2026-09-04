@@ -104,6 +104,10 @@ export interface Security {
    * running as uid 0 and must not read like it. */
   runAsUser?: number;
   runAsGroup?: number;
+  /** The gid that owns the volumes the workloads mount, and when the kubelet
+   * applies it. Absent when the volumes keep their own ownership. */
+  fsGroup?: number;
+  fsGroupChangePolicy?: string;
   readOnlyRootFilesystem: boolean;
   allowPrivilegeEscalation: boolean;
   dropCapabilities?: string[];
@@ -120,6 +124,10 @@ export interface SecuritySettings {
   runAsNonRoot?: boolean;
   runAsUser?: number;
   runAsGroup?: number;
+  fsGroup?: number;
+  /** "Always" or "OnRootMismatch". It needs an fsGroup to apply and is
+   * refused without one. */
+  fsGroupChangePolicy?: string;
   readOnlyRootFilesystem?: boolean;
   allowPrivilegeEscalation?: boolean;
   dropCapabilities?: string[];

@@ -48,7 +48,8 @@ import (
 // has to lose it, which an assignment that only ever tightened would never do.
 
 // podSecurityContext is the pod half of the posture: who the containers run
-// as, and the seccomp profile they run under.
+// as, what owns the volumes they are given, and the seccomp profile they run
+// under.
 //
 // The seccomp profile is the platform's default rather than the project's,
 // and it is `RuntimeDefault` for every workload. It is the one hardening a
@@ -73,6 +74,22 @@ func podSecurityContext(security *kitchenv1alpha1.SecuritySpec) *corev1.PodSecur
 	}
 	if security.RunAsGroup > 0 {
 		context.RunAsGroup = ptr.To(security.RunAsGroup)
+	}
+	// The gid the kubelet chowns mounted volumes to before the container
+	// starts. Zero is the volume's own ownership left alone, the reading
+	// RunAsUser's zero already has — and the reason the field exists at all
+	// is that a freshly provisioned volume comes up owned by root, so a
+	// workload running as anybody else is handed one it cannot write.
+	//
+	// The change policy is written only alongside a group, because that is
+	// the only time the kubelet reads it, and an unset policy is left unset
+	// rather than written as Kubernetes' default: writing `Always` would be
+	// the platform declaring the recursive chown a project never asked for.
+	if security.FSGroup > 0 {
+		context.FSGroup = ptr.To(security.FSGroup)
+		if security.FSGroupChangePolicy != "" {
+			context.FSGroupChangePolicy = ptr.To(corev1.PodFSGroupChangePolicy(security.FSGroupChangePolicy))
+		}
 	}
 	return context
 }
