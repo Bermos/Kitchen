@@ -3,6 +3,7 @@ import { computed, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { api, CRITICALITIES, DATA_CLASSES, type Claim, type Project, type Release } from "../lib/api";
 import { buildFailureLine } from "../lib/builds";
+import { deletionGatedByName, destroysData, destroysDataRefusal, mayDestroyData } from "../lib/claims";
 import { duration, shortImage, shortSHA, timeAgo } from "../lib/format";
 import { callerFor } from "../lib/me";
 import { may } from "../lib/policy";
@@ -630,11 +631,32 @@ function claimDeletionWarning(claim: Claim): string {
     : `This claim's policy is Retain: the ${claim.type} database and its data are kept at ${claim.connection}, but the platform forgets it — preview branches and the binding secrets are removed, and environments referencing it will fail to deploy until the variable is removed.`;
 }
 
+// Destroying the data is the admin's, not the developer's (#320): the API
+// refuses a Delete-policy claim's deletion below admin, so the row does not
+// offer a button the refusal is waiting behind — it says why instead, in the
+// same words.
+function claimDeleteRefusal(claim: Claim): string | undefined {
+  if (!destroysData(claim)) return undefined;
+  return destroysDataRefusal(caller.value, "deleting a claim that destroys what it provisioned");
+}
+const mayUnclaimData = computed(() => mayDestroyData(caller.value));
+
 const claimToDelete = ref<Claim | null>(null);
+// A claim whose policy is Delete takes its data with it, so the confirmation
+// is the one project deletion uses: typing the name. A click can be a slip,
+// the name cannot.
+const claimConfirmation = ref("");
+const claimDeleteGated = computed(() => deletionGatedByName(claimToDelete.value));
+const claimDeleteReady = computed(
+  () => !claimDeleteGated.value || claimConfirmation.value === claimToDelete.value?.name,
+);
+watch(claimToDelete, () => {
+  claimConfirmation.value = "";
+});
 const deletingClaim = ref(false);
 async function deleteClaim() {
   const claim = claimToDelete.value;
-  if (!claim || deletingClaim.value) return;
+  if (!claim || deletingClaim.value || !claimDeleteReady.value) return;
   deletingClaim.value = true;
   try {
     await api.deleteClaim(claim.name);
@@ -1033,7 +1055,12 @@ function host(url?: string): string {
       <!-- Resources: provisioned claims (databases, OIDC clients, …) bound to this project. -->
       <div v-else-if="tab === 'resources'" class="space-y-3">
         <div v-if="mayClaim" class="flex justify-end">
-          <ClaimModal :project="project.name" :processes="project.processes?.map((p) => p.name)" @saved="refresh">
+          <ClaimModal
+            :project="project.name"
+            :role="project.role"
+            :processes="project.processes?.map((p) => p.name)"
+            @saved="refresh"
+          >
             <UButton icon="i-lucide-plus" size="sm">New claim</UButton>
           </ClaimModal>
         </div>
@@ -1143,7 +1170,7 @@ function host(url?: string): string {
                 <td class="px-3 py-2 text-right text-xs text-muted whitespace-nowrap">{{ timeAgo(claim.createdAt) }}</td>
                 <td class="px-3 py-2 text-right whitespace-nowrap">
                   <UButton
-                    v-if="mayUnclaim"
+                    v-if="mayUnclaim && (!destroysData(claim) || mayUnclaimData)"
                     color="neutral"
                     variant="subtle"
                     size="xs"
@@ -1152,6 +1179,9 @@ function host(url?: string): string {
                   >
                     Delete
                   </UButton>
+                  <span v-else-if="mayUnclaim" class="text-xs text-muted" :title="claimDeleteRefusal(claim)">
+                    admin only
+                  </span>
                 </td>
               </tr>
               <!-- Why a claim was refused, in the provider's own words. A
@@ -1649,17 +1679,32 @@ function host(url?: string): string {
     </UModal>
 
     <!-- Claim deletion confirmation: explicit about what the deletionPolicy
-         does to the data, which is the whole difference between the two. -->
+         does to the data, which is the whole difference between the two. A
+         Delete policy destroys it, so that half is confirmed by typing the
+         claim's name — the same gate deleting the project has. -->
     <UModal
       :open="claimToDelete !== null"
       :title="`Delete claim ${claimToDelete?.name}?`"
       :description="claimToDelete ? claimDeletionWarning(claimToDelete) : ''"
       @update:open="(open: boolean) => { if (!open) claimToDelete = null; }"
     >
+      <template v-if="claimDeleteGated" #body>
+        <UInput
+          v-model="claimConfirmation"
+          :placeholder="`Type ${claimToDelete?.name} to confirm`"
+          class="w-full font-mono"
+        />
+      </template>
       <template #footer>
         <div class="flex justify-end gap-2 w-full">
           <UButton color="neutral" variant="subtle" @click="claimToDelete = null">Cancel</UButton>
-          <UButton color="error" :loading="deletingClaim" icon="i-lucide-trash-2" @click="deleteClaim">
+          <UButton
+            color="error"
+            :disabled="!claimDeleteReady"
+            :loading="deletingClaim"
+            icon="i-lucide-trash-2"
+            @click="deleteClaim"
+          >
             {{ claimToDelete?.deletionPolicy === "Delete" ? "Delete claim and data" : "Delete claim, keep data" }}
           </UButton>
         </div>

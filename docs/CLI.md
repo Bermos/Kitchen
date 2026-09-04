@@ -1249,7 +1249,14 @@ cannot write it carries on and exchanges every time.
   /claims` carries it. So are `objectStore`, `inngest` and `redis`, which
   between them added five claim types to that route and not one route — which
   is the point of a claim type being a row in a table rather than a surface of
-  its own. `kitchen env set --from-claim` already reads any of their bindings
+  its own. Requiring `admin` for `deletionPolicy: Delete` is the same decision
+  once more, and the cheapest kind of it: it added no route, renamed none, and
+  left both rows' own requirements where they were — so `kitchen api POST
+  /claims` and `kitchen api DELETE /claims/{name}` reach both ends of it, and
+  the API's `403` naming the field and the role it wants is printed as it
+  stands, through the one error shape every command already answers with. A
+  flag would only be a way to spell a role the caller either holds or does not.
+  `kitchen env set --from-claim` already reads any of their bindings
   by name, and it did not have to learn what a bucket or a queue is to do it.
   Asking for a database with an extension is one line as it is:
 

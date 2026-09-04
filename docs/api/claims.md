@@ -28,8 +28,9 @@ type's fields rather than having them ignored:
 **`postgres`** asks a Connection with the `database` capability to provision a
 database. `deletionPolicy` (`Retain`, the default, or `Delete`) decides what
 deleting the claim later does to the provisioned database — `Retain` is the
-default because destroying data has to be asked for, never implied. What a
-preview environment gets is the provider's declaration, below, unless the
+default because destroying data has to be asked for, never implied, and
+`Delete` is [the admin's to ask for](#destroying-the-data-is-the-admins). What
+a preview environment gets is the provider's declaration, below, unless the
 claim says otherwise with `previewMode`.
 
 `postgres` is the block that says *which* Postgres, because "Postgres" is not
@@ -513,6 +514,45 @@ still in it.
 The CLI reaches all of this through `kitchen api`, as for every claim type;
 no command creates a claim.
 
+## Destroying the data is the admin's
+
+Claiming a resource and taking one away are the developer's: both rows in the
+[route table](../API.md#endpoints) ask for `developer`, and that requirement is
+a **floor**. One thing above it is the `admin`'s, and it is the only condition
+on this API that depends on a request's body rather than on its route:
+
+| What | Requires |
+|---|---|
+| `POST /claims` with `deletionPolicy: Retain`, or without the field | `developer` |
+| `POST /claims` with `deletionPolicy: Delete` | `admin` |
+| `DELETE /claims/{name}` on a claim whose policy is `Retain`, or which has none | `developer` |
+| `DELETE /claims/{name}` on a claim whose policy is `Delete` | `admin` |
+
+`Delete` is the policy that destroys what was provisioned: the database and
+its volumes, every version of every object in the bucket, the cache instance
+and the disk under it. There is no undo, and no snapshot the platform took on
+the way past — so it sits with the role that may delete the whole project the
+data belongs to, and the day job stays the developer's. An operator holds
+`admin` on every project and is unaffected.
+
+The refusal names the field and the role, like every other on this API:
+
+```json
+{"error": "you have developer on shop; deleting a claim that destroys its database needs admin: deletionPolicy Delete destroys the provisioned resource and the data on it, and there is no undo"}
+```
+
+Nothing about it is a route of its own, so nothing about it is generated into
+the dashboard's copy of the policy table. The dashboard states the same rule
+itself (`ui/src/lib/claims.ts`): a developer is offered the `Delete` option
+disabled with that sentence under it, and a `Delete`-policy claim's deletion is
+confirmed by typing the claim's name, which is the gate deleting a project has
+for the same reason. `kitchen api` carries both requests from a terminal and
+prints the `403` as it stands; no command creates or deletes a claim.
+
+A type that provisions no data — `oidcClient` — takes no `deletionPolicy` at
+all, and deleting one stays the developer's: what it holds is permission to
+sign people in, and that must not outlive the claim.
+
 ## Rebinding a retained resource
 
 `deletionPolicy: Retain` is the default for every type that provisions data,
@@ -649,5 +689,7 @@ declared mode instead, and `previewMode: shared` restores what it had.
 Deleting a claim answers `202`: the operator's finalizer still has branches,
 preview buckets, binding secrets, the registered client, the branch
 environments to archive and — under `Delete` — the database or the bucket
-itself to remove.
+itself to remove. Deleting a `Delete`-policy claim asks for `admin` rather
+than `developer`, because that last item is the data
+([above](#destroying-the-data-is-the-admins)).
 

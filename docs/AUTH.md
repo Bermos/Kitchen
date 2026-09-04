@@ -458,7 +458,7 @@ whoever can claim that address at the issuer.
 |---|---|
 | `/platform/*`, `PATCH /settings`, `/connections/{name}` (bar its repository listing and its preflight) and every connection write, `/updates`, `GET /environments/{name}/objects`, `GET /compliance`, `GET /audit/verify` | `operator` |
 | `GET /settings` | `operator` — it carries the base domain, the issuer, the gateway address and the operator list itself |
-| `DELETE /projects/{name}`, the project's own settings, membership and key writes | project `admin` |
+| `DELETE /projects/{name}`, the project's own settings, membership and key writes, and `deletionPolicy: Delete` on a claim — asking for it, and deleting a claim that carries it | project `admin` |
 | Builds and cancellations, releases, environment variables, the project's own secrets, environments, domains, claims | project `developer` |
 | Projects, builds, releases, environments, logs, metrics, requests, diagnostics, signals, traces, and a project's members and keys | project `viewer` |
 | `POST /projects`, `GET /connections/{name}/repositories`, `POST /connections/{name}/detect` | any account a person signs in as — see [Machine accounts](#machine-accounts) |
@@ -475,7 +475,7 @@ admin's** — so they are two routes (`PATCH /projects/{name}/env` and `PATCH
 members list is the viewer's and only the writes are the admin's; a project's
 CI keys are the same list with its non-human half shown, and go with it.
 
-Four rules go with that table:
+Five rules go with that table:
 
 - **A whole route is the unit of authorization.** Filtering a response body by
   role is the exception, and there are exactly two. `GET /status` is the
@@ -499,6 +499,20 @@ Four rules go with that table:
   directory, where the connection is a GitHub App across one. Their whole
   justification is that a project cannot be created without them, and since
   creating a project is `any person` a CI key has no form left to fill in.
+- **A route's listed requirement is a floor.** A condition that depends on the
+  *body* of one request cannot be a row of a table whose unit is a route, so it
+  is checked in the handler above the row's role and refused with a `403`
+  naming the field and the role it wants. There is exactly one, and it is the
+  reason the admin row above mentions a field:
+  `deletionPolicy: Delete` on a claim destroys the provisioned resource and
+  everything on it — the CNPG Cluster and its volumes, every object version in
+  the bucket, the Valkey StatefulSet and its disk — and destroying data is
+  segregated from the day job, so asking for that policy and deleting a claim
+  that already carries it are `admin`'s while claiming and unclaiming stay
+  `developer`'s. The dashboard reads the same rule from `ui/src/lib/claims.ts`
+  rather than from the generated table, since the table cannot state it, and it
+  gates the confirmation on typing the claim's name the way project deletion
+  does. A second such condition is written here or it does not exist.
 - **A field withheld by role is absent, never zeroed.** The dashboard has to be
   able to tell "no tunnel is configured" from "you are not allowed to know", and
   an empty component survey reads as a healthy platform running nothing.
