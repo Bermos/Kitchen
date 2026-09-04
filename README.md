@@ -25,6 +25,9 @@ under it is for whoever runs the installation, or works on Kitchen itself.
 - [`kitchen.json`](docs/CONFIG.md) — a project's build and runtime settings,
   committed beside the code they describe, and the short list of what a file in a
   repository is deliberately not allowed to decide
+- [Software that ships as a Helm chart](docs/HELM-CHARTS.md) — Kitchen installs no
+  charts, so here is the translation: what a chart's objects are in Kitchen's
+  vocabulary, one worked chart-to-project, and what the platform refuses
 - [Kitchen for agents](docs/AGENTS.md) — the same ground for a coding agent
   working in an application repository: the machine-readable surfaces, the
   output and exit-code contract, and what not to do
