@@ -9,8 +9,8 @@ type: application
 # same line as the value. The chart version and the appVersion are deliberately
 # the same number: one release publishes the chart and the images it deploys,
 # and `helm package` in the publish workflow stamps that number over both.
-version: 0.23.1 # x-release-please-version
-appVersion: "0.23.1" # x-release-please-version
+version: 0.24.0 # x-release-please-version
+appVersion: "0.24.0" # x-release-please-version
 kubeVersion: ">=1.30.0-0"
 # cert-manager is part of the platform, not a prerequisite: Kitchen owns the
 # cluster it is installed into. Its CRDs are templates rather than crds/ files,
