@@ -483,7 +483,8 @@ kind: Connection
 metadata:
   name: github-main
 spec:
-  provider: github                      # github | gitlab | gitea | dockerRegistry | neon | cnpg | s3 | inngest
+  provider: github                      # github | gitlab | gitea | dockerRegistry | neon | cnpg | s3
+                                        # | inngest | inngestSelfHosted | valkey | redis
   credentialsSecretRef: { name: github-app-creds }   # synced from Infisical
   config:
     appId: "12345"
@@ -538,17 +539,40 @@ key pair (S3 and R2, which have no such API). The seeded one for the bundled
 store additionally carries `inCluster: true`, which is what refuses a
 publicly readable bucket: there is no public to read it.
 `inngest` (capability `backgroundJobs`) is an Inngest Cloud account an
-`inngest` claim reads its keys from.
+`inngest` claim reads its keys from, and `inngestSelfHosted` is the same
+capability served by an Inngest this cluster runs: one server per claim and
+one per preview, which is what gives a preview an event stream of its own.
+Its `config` is the operator's defaults for every claim through it — all of it
+optional:
 
-**`cnpg` is the one provider with no credential**, and so the one whose
-`credentialsSecretRef` may be left out: it provisions with the operator's own
-service account, into the cluster Kitchen is installed in, and there is
-nothing for anybody to store or rotate. A CEL rule on the spec keeps that the
-exception — every other provider is still refused without one, and a `cnpg`
-connection naming one is refused for naming a credential nothing reads. Its
-`Connected` condition is a fact about this cluster rather than about a remote
-API: true when `postgresql.cnpg.io` is served, false with the install
-instruction when it is not.
+```yaml
+spec:
+  provider: inngestSelfHosted
+  config:
+    namespace: kitchen-inngest          # where the servers run
+    image: inngest/inngest:v1.44.0      # what they run; the default is pinned in
+                                        # internal/provider/inngest/selfhosted.go, and bumping it
+                                        # means checking Inngest's release notes for the
+                                        # persistence flags the provisioner sets
+    storageSize: 1Gi                    # the volume behind a preview's embedded store
+    storageClass: fast-ssd              # default: the cluster's own default StorageClass
+```
+
+Production's server keeps its state in a CloudNativePG `Cluster` and a Valkey
+of its own, provisioned through the same providers a `postgres` and a `redis`
+claim go through; a preview's keeps its own on that volume. See
+[docs/api/claims.md](api/claims.md) for what a claim through each of the two
+providers binds, and for what deleting one destroys.
+
+**`cnpg`, `valkey` and `inngestSelfHosted` are the providers with no
+credential**, and so the ones whose `credentialsSecretRef` may be left out:
+they provision with the operator's own service account, into the cluster
+Kitchen is installed in, and there is nothing for anybody to store or rotate.
+A CEL rule on the spec keeps that the exception — every other provider is
+still refused without one, and one of these naming a credential is refused for
+naming something nothing reads. `cnpg`'s `Connected` condition is a fact about
+this cluster rather than about a remote API: true when `postgresql.cnpg.io` is
+served, false with the install instruction when it is not.
 
 Its `config` is the operator's own defaults for every claim through it, and
 the whole of it is optional:

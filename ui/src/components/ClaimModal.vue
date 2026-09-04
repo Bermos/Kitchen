@@ -130,10 +130,23 @@ function redisRequest() {
 
 // The inngest half. The app ID is the one thing the application has to
 // match — its Inngest client is created with it — and the environment is
-// where production's events go; previews get a branch environment each
-// whatever is written here. Connect is the only mode, and it is not asked.
+// where production's events go; previews get one of their own whatever is
+// written here.
+//
+// The mode is asked because the two are not interchangeable and only one of
+// them is available through any given connection: connect works everywhere
+// and costs the project its scale to zero, serve keeps it and needs an
+// Inngest the platform runs itself. The connection's provider is the
+// operator's to see and not this form's, so the choice is offered and the
+// API refuses the pair it cannot serve, saying which connection would.
+const inngestModes = [
+  { label: "connect — the worker dials Inngest and holds the connection", value: "connect" },
+  { label: "serve — Inngest calls the application (a self-hosted server only)", value: "serve" },
+];
 const inngestApp = ref("");
 const inngestEnvironment = ref("");
+const inngestMode = ref("connect");
+const inngestServePath = ref("");
 
 /** The inngest block as the API takes it, or nothing when every default is
  * taken. */
@@ -141,6 +154,8 @@ function inngestRequest() {
   const inngest = {
     ...(inngestApp.value.trim() ? { app: inngestApp.value.trim() } : {}),
     ...(inngestEnvironment.value.trim() ? { environment: inngestEnvironment.value.trim() } : {}),
+    ...(inngestMode.value !== "connect" ? { mode: inngestMode.value } : {}),
+    ...(inngestServePath.value.trim() ? { servePath: inngestServePath.value.trim() } : {}),
   };
   return Object.keys(inngest).length ? inngest : undefined;
 }
@@ -523,6 +538,8 @@ watch(open, (value) => {
   redisVersion.value = "";
   inngestApp.value = "";
   inngestEnvironment.value = "";
+  inngestMode.value = "connect";
+  inngestServePath.value = "";
   bindable.value = { persistentVolumes: [], persistentVolumeClaims: [] };
   bindableLoaded.value = false;
   void loadConnections();
@@ -860,11 +877,13 @@ async function save() {
           <template v-if="isInngest">
             <p class="text-xs text-muted">
               The claim's secret holds <span class="font-mono">INNGEST_EVENT_KEY</span>,
-              <span class="font-mono">INNGEST_SIGNING_KEY</span>, <span class="font-mono">INNGEST_ENV</span> and
-              <span class="font-mono">INNGEST_BASE_URL</span>, read from the Inngest account — the platform creates
-              no keys, because Inngest's API cannot. The process holding the worker connects out to Inngest with
-              them; in a preview, <span class="font-mono">INNGEST_ENV</span> names a branch environment of the
-              preview's own. Reference them from the project's environment variables.
+              <span class="font-mono">INNGEST_SIGNING_KEY</span>, <span class="font-mono">INNGEST_ENV</span>,
+              <span class="font-mono">INNGEST_BASE_URL</span>, <span class="font-mono">INNGEST_DEV</span> and
+              <span class="font-mono">INNGEST_CONNECT_GATEWAY_URL</span>. Reference them from the project's
+              environment variables. Through an Inngest Cloud connection they are read from the account — the
+              platform creates no keys, because Inngest's API cannot — and a preview binds a branch environment
+              of its own. Through a connection the platform runs itself, they are the keys and the address of an
+              Inngest server of this claim's own, and a preview gets a whole server of its own.
             </p>
             <div class="grid gap-4 sm:grid-cols-2">
               <UFormField
@@ -875,15 +894,31 @@ async function save() {
               </UFormField>
               <UFormField
                 label="Inngest environment"
-                help="Where production's events go: production, or a custom environment from the Inngest dashboard. Previews get branch environments regardless."
+                help="Where production's events go: production, or a custom environment from the Inngest dashboard. Previews get one of their own regardless. Refused by a connection the platform runs itself, which has no environments."
               >
                 <UInput v-model="inngestEnvironment" placeholder="production" class="w-full font-mono" />
               </UFormField>
+              <UFormField
+                label="How they reach each other"
+                help="Connect works through any connection and costs the whole project its scale to zero, because a worker holding a connection never idles. Serve needs an Inngest this platform runs, and keeps it."
+              >
+                <USelect v-model="inngestMode" :items="inngestModes" class="w-full" />
+              </UFormField>
+              <UFormField
+                v-if="inngestMode === 'serve'"
+                label="Serve path"
+                help="Where the application mounts its Inngest handler. Empty means /api/inngest. The platform composes the URL out of each environment's own address and this."
+              >
+                <UInput v-model="inngestServePath" placeholder="/api/inngest" class="w-full font-mono" />
+              </UFormField>
             </div>
             <p class="text-xs text-muted">
-              Deleting this claim removes the binding and archives the preview branch environments; the app and
-              the keys stay at Inngest. The environment's event key has to exist already — a claim against an
-              environment without one fails saying where to create it.
+              Through an Inngest Cloud connection, deleting this claim removes the binding and archives the
+              preview branch environments; the app and the keys stay at Inngest, and the environment's event key
+              has to exist already — a claim against an environment without one fails saying where to create it.
+              Through a connection the platform runs itself, deleting the claim <strong>destroys</strong> the
+              server, the Postgres and the queue behind it, and every event and function run they hold: this type
+              takes no deletion policy, because there is no third party holding any of it.
             </p>
           </template>
 

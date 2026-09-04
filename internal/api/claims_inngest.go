@@ -30,9 +30,15 @@ import (
 
 // The inngest half of the claim API: durable background work from Inngest,
 // through a backgroundJobs-capable Connection. The block names the app, the
-// Inngest environment production binds to, and the mode — and only connect
-// is a mode the platform provisions, so anything else is refused here with
-// the reason, before there is a claim to fail.
+// Inngest environment production binds to, the mode and — in serve mode —
+// where the application's handler is mounted.
+//
+// Two of those depend on which Inngest the connection is, and both are
+// refused here rather than left to fail on the claim: serve mode against
+// Inngest Cloud, whose call would come from the internet and meet a
+// protected preview's gate, and an Inngest environment by name against a
+// self-hosted server, which has no environments — a preview there gets a
+// server of its own instead.
 
 // inngestClaimShaper is the claimShaper for type inngest.
 type inngestClaimShaper struct{}
@@ -53,14 +59,17 @@ func (inngestClaimShaper) config(
 	w http.ResponseWriter,
 	body *createClaimRequest,
 	_ *kitchenv1alpha1.Project,
+	provider string,
 ) (*runtime.RawExtension, bool) {
 	if body.Inngest == nil {
 		return nil, true
 	}
+	selfHosted := provider == inngest.ProviderSelfHosted
 	cfg := kitchenv1alpha1.InngestConfig{
 		App:         strings.TrimSpace(body.Inngest.App),
 		Environment: strings.TrimSpace(body.Inngest.Environment),
 		Mode:        strings.TrimSpace(body.Inngest.Mode),
+		ServePath:   strings.TrimSpace(body.Inngest.ServePath),
 	}
 	if cfg.App != "" {
 		if errs := validation.IsDNS1123Subdomain(cfg.App); len(errs) > 0 {
@@ -74,13 +83,32 @@ func (inngestClaimShaper) config(
 			"in the Inngest dashboard — in at most 64 characters and no whitespace (got %q)", body.Inngest.Environment)
 		return nil, false
 	}
-	if cfg.Mode != "" && cfg.Mode != inngest.ModeConnect {
-		badRequest(w, "inngest.mode must be connect (got %q): the worker holds an outbound connection to Inngest, "+
-			"which is what works behind a protected preview's gate. In serve mode Inngest would call the "+
-			"application over HTTP and meet a login page, so the platform does not provision it", body.Inngest.Mode)
+	if cfg.Environment != "" && cfg.Environment != kitchenv1alpha1.InngestDefaultEnvironment && selfHosted {
+		badRequest(w, "inngest.environment is refused through a %s connection (got %q): a self-hosted server has "+
+			"no environments to select — that is what Inngest Cloud's branch environments are, and it is why a "+
+			"preview here gets a server of its own instead", inngest.ProviderSelfHosted, body.Inngest.Environment)
 		return nil, false
 	}
-	if cfg.App == "" && cfg.Environment == "" && cfg.Mode == "" {
+	switch {
+	case cfg.Mode == "" || cfg.Mode == inngest.ModeConnect:
+	case cfg.Mode == inngest.ModeServe && selfHosted:
+	case cfg.Mode == inngest.ModeServe:
+		badRequest(w, "inngest.mode serve is refused through a %s connection: Inngest Cloud would call the "+
+			"application over HTTP from the internet, which a protected preview answers with a login page. "+
+			"Use connect, where the worker dials out — or claim through a %s connection, whose server is in "+
+			"this cluster and calls the environment's own URL", inngest.ProviderCloud, inngest.ProviderSelfHosted)
+		return nil, false
+	default:
+		badRequest(w, "inngest.mode must be %s (got %q): how the worker and Inngest reach each other",
+			strings.Join(kitchenv1alpha1.InngestModes, " or "), body.Inngest.Mode)
+		return nil, false
+	}
+	if cfg.ServePath != "" && !strings.HasPrefix(cfg.ServePath, "/") {
+		badRequest(w, "inngest.servePath is where the application's Inngest handler is mounted and starts with "+
+			"a '/' (got %q), e.g. %s", body.Inngest.ServePath, kitchenv1alpha1.InngestDefaultServePath)
+		return nil, false
+	}
+	if cfg.App == "" && cfg.Environment == "" && cfg.Mode == "" && cfg.ServePath == "" {
 		return nil, true
 	}
 	raw, err := json.Marshal(struct {
@@ -99,10 +127,26 @@ func (inngestClaimShaper) config(
 // does have an answer to.
 func (inngestClaimShaper) view(claim *kitchenv1alpha1.ResourceClaim, view *claimView) {
 	cfg := claim.Inngest()
-	view.Inngest = &claimInngestView{App: cfg.App, Environment: cfg.Environment, Mode: cfg.Mode}
+	view.Inngest = &claimInngestView{
+		App:         cfg.App,
+		Environment: cfg.Environment,
+		Mode:        cfg.Mode,
+		ServePath:   cfg.ServePath,
+	}
 }
 
-func (inngestClaimShaper) deletionOutcome(*kitchenv1alpha1.ResourceClaim) string {
+// deletionOutcome says what goes, and the two providers differ in the whole
+// of it: at Inngest Cloud nothing the platform could destroy is involved,
+// and a self-hosted server is a workload this platform runs, so it goes with
+// the claim. The claim's own instance id is what tells them apart — a
+// self-hosted one is a namespaced object name, Cloud's is the app ID — which
+// is the only handle a deleted claim's view has.
+func (inngestClaimShaper) deletionOutcome(claim *kitchenv1alpha1.ResourceClaim) string {
+	if claim != nil && strings.Contains(claim.Status.InstanceID, "/") {
+		return "the binding is removed and the Inngest server this claim's environments use — with the " +
+			"Postgres and the queue behind it, and every event and function run they hold — is destroyed " +
+			"with the claim"
+	}
 	return "the binding is removed and the preview branch environments are archived; the app record and the " +
 		"environment's keys stay at Inngest"
 }
@@ -114,6 +158,9 @@ type claimInngestView struct {
 	App string `json:"app"`
 	// Environment is the Inngest environment production binds to.
 	Environment string `json:"environment"`
-	// Mode is how the worker reaches Inngest: connect.
+	// Mode is how the worker and Inngest reach each other: connect or serve.
 	Mode string `json:"mode"`
+	// ServePath is where the application's Inngest handler is mounted, for
+	// a claim in serve mode.
+	ServePath string `json:"servePath"`
 }

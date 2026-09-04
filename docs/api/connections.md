@@ -22,10 +22,11 @@ operator stores it in a Secret it manages, and every response is the same
 credential-free view `GET` answers.
 
 The providers are `github`, `gitlab`, `gitea`, `dockerRegistry`, `neon`,
-`cnpg`, `s3`, `inngest`, `valkey` and `redis`. **`cnpg` and `valkey` are the two with no
-credential at all** — they provision into this cluster with the operator's own
-service account, so there is nothing to store, nothing to rotate, and a
-`credential` sent for either is refused rather than kept and never read:
+`cnpg`, `s3`, `inngest`, `inngestSelfHosted`, `valkey` and `redis`. **`cnpg`,
+`valkey` and `inngestSelfHosted` are the three with no credential at all** —
+they provision into this cluster with the operator's own service account, so
+there is nothing to store, nothing to rotate, and a `credential` sent for any
+of them is refused rather than kept and never read:
 
 ```sh
 curl -sS -X POST -H "authorization: Bearer $TOKEN" \
@@ -182,6 +183,33 @@ one environment reads nothing in the others, and previews need the branch
 environments. It is validated with `GET /account`, and the connection reports
 the `backgroundJobs` capability.
 
+An `inngestSelfHosted` connection is [Inngest run by the platform
+itself](https://www.inngest.com/docs/self-hosting): one server per claim in
+this cluster, one more per preview environment, under the operator's own
+account — so it takes no credential, and the platform mints each server's
+event key and signing key itself rather than reading anybody's. Production's
+server keeps its history in a CloudNativePG database of its own and its queue
+in a Valkey of its own, provisioned exactly as a `postgres` and a `redis`
+claim are; a preview's uses Inngest's own embedded store on a volume, which is
+one pod instead of three for an environment that is parked most of the time.
+So CloudNativePG has to be installed and the cluster needs a default
+StorageClass, and a claim that finds neither fails as a claim rather than as a
+connection. Its `config` is optional and is the operator's defaults for every
+claim through it:
+
+| Field | Default | What it does |
+|---|---|---|
+| `namespace` | `kitchen-inngest` | Where the servers run. Deliberately not a project's application namespace, which is deleted with its project |
+| `image` | the pinned `inngest/inngest` tag | What the servers run. Pinned in code for the reason every catalogue in this repository is pinned: what the platform runs is what the platform knows how to operate. Bumping it means reading Inngest's release notes for the persistence flags the provisioner sets |
+| `storageSize` | `1Gi` | The volume behind a preview's embedded store |
+| `storageClass` | the cluster's default | The same volume's class |
+
+Testing it asks nothing of a provider, because there is none to ask: it is
+accepted, and the claims through it report what they found. It reports the
+`backgroundJobs` capability, like the Cloud one — the operator matches on
+capabilities, never on provider names, which is why a second Inngest provider
+cost the claim nothing.
+
 A `valkey` connection is the in-cluster cache: the operator runs one Valkey per
 claim through it, under its own service account, so it takes no credential.
 Its `config` is optional and is the operator's defaults for every claim through
@@ -302,7 +330,7 @@ who still has a repository to name:
 
 | Answer | What it means |
 |---|---|
-| `"supported": false` | The provider has no listing behind it — today, that means `dockerRegistry`, `neon`, `inngest`, `valkey`, `redis`, `gitlab`, or `gitea`. `message` says which |
+| `"supported": false` | The provider has no listing behind it — today, that means `dockerRegistry`, `neon`, `inngest`, `inngestSelfHosted`, `valkey`, `redis`, `gitlab`, or `gitea`. `message` says which |
 | `"truncated": true` | The credential can see more than the listing carries. It stops at 500, most recently pushed first |
 | `502` | The provider refused or could not be reached; the body carries its own words — a token that has expired says so here |
 

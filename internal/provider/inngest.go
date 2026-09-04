@@ -23,6 +23,24 @@ import (
 	"net/http"
 )
 
+// InngestSelfHostedProbe answers for the third provider that is not
+// somewhere else: the platform runs an Inngest server per claim in the
+// cluster it was installed in, with the operator's own account.
+//
+// There is nothing to reach and no credential to check, and saying so is the
+// honest answer rather than a hollow one — the same answer, for the same
+// reason, that the in-cluster cache provider gives. What could fail here
+// fails per claim: a cluster with no CloudNativePG cannot give production's
+// server its database, and that fails on the claim, where the message can
+// name the claim that asked.
+type InngestSelfHostedProbe struct{}
+
+// Probe reports that the platform runs Inngest itself.
+func (p *InngestSelfHostedProbe) Probe(context.Context) Result {
+	return accepted("the platform runs an Inngest server per claim in this cluster, with the operator's own " +
+		"account; this connection holds no credential")
+}
+
 // InngestProbe checks an Inngest Cloud API key by asking for the account it
 // belongs to. APIURL is overridable (for tests) via the Connection config's
 // "apiUrl" field.

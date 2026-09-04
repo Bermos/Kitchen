@@ -23,6 +23,7 @@ import (
 	"testing"
 
 	"github.com/Bermos/Kitchen/internal/provider/inngest/inngesttest"
+	"github.com/Bermos/Kitchen/internal/provider/naming"
 )
 
 func cloudAgainstFake(t *testing.T) (*Cloud, *inngesttest.CloudServer) {
@@ -37,7 +38,7 @@ func cloudAgainstFake(t *testing.T) (*Cloud, *inngesttest.CloudServer) {
 func TestProvisionReadsProductionsKeys(t *testing.T) {
 	cloud, fake := cloudAgainstFake(t)
 
-	instance, err := cloud.Provision(context.Background(), Requirements{App: "shop-worker"})
+	instance, err := cloud.Provision(context.Background(), naming.Resource{}, Requirements{App: "shop-worker"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +70,7 @@ func TestProvisionReadsACustomEnvironmentsOwnKeys(t *testing.T) {
 	cloud, fake := cloudAgainstFake(t)
 	fake.AddEnvironment("staging", "signkey-staging", "evkey-staging")
 
-	instance, err := cloud.Provision(context.Background(), Requirements{App: "shop-worker", Environment: "staging"})
+	instance, err := cloud.Provision(context.Background(), naming.Resource{}, Requirements{App: "shop-worker", Environment: "staging"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +88,7 @@ func TestProvisionRefusesAnEnvironmentWithoutAnEventKey(t *testing.T) {
 	cloud, fake := cloudAgainstFake(t)
 	fake.RemoveEventKeys("production")
 
-	_, err := cloud.Provision(context.Background(), Requirements{App: "shop-worker"})
+	_, err := cloud.Provision(context.Background(), naming.Resource{}, Requirements{App: "shop-worker"})
 	if !errors.Is(err, ErrUnsatisfiable) {
 		t.Fatalf("want ErrUnsatisfiable, got %v", err)
 	}
@@ -98,7 +99,7 @@ func TestProvisionRefusesAnEnvironmentWithoutAnEventKey(t *testing.T) {
 
 func TestProvisionRefusesServeMode(t *testing.T) {
 	cloud, _ := cloudAgainstFake(t)
-	_, err := cloud.Provision(context.Background(), Requirements{App: "shop-worker", Mode: "serve"})
+	_, err := cloud.Provision(context.Background(), naming.Resource{}, Requirements{App: "shop-worker", Mode: "serve"})
 	if !errors.Is(err, ErrUnsatisfiable) || !strings.Contains(err.Error(), "login page") {
 		t.Fatalf("serve mode must be refused with the reason, got %v", err)
 	}
@@ -106,7 +107,7 @@ func TestProvisionRefusesServeMode(t *testing.T) {
 
 func TestProvisionRefusesAnEnvironmentTheKeyCannotRead(t *testing.T) {
 	cloud, _ := cloudAgainstFake(t)
-	_, err := cloud.Provision(context.Background(), Requirements{App: "shop-worker", Environment: "nowhere"})
+	_, err := cloud.Provision(context.Background(), naming.Resource{}, Requirements{App: "shop-worker", Environment: "nowhere"})
 	if err == nil || strings.Contains(err.Error(), "sk-inn-api-test") {
 		t.Fatalf("want an error that does not leak the key, got %v", err)
 	}
@@ -119,7 +120,7 @@ func TestBranchLifecycle(t *testing.T) {
 	cloud, fake := cloudAgainstFake(t)
 	ctx := context.Background()
 
-	branch, err := cloud.CreateBranch(ctx, "shop-pr-7")
+	branch, err := cloud.CreateBranch(ctx, "", "shop-pr-7", Requirements{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +133,7 @@ func TestBranchLifecycle(t *testing.T) {
 		t.Fatalf("unexpected branch binding: %+v", branch.Binding)
 	}
 
-	again, err := cloud.CreateBranch(ctx, "shop-pr-7")
+	again, err := cloud.CreateBranch(ctx, "", "shop-pr-7", Requirements{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,23 +141,23 @@ func TestBranchLifecycle(t *testing.T) {
 		t.Fatalf("a second CreateBranch made a second environment: %q then %q", branch.ID, again.ID)
 	}
 
-	if err := cloud.DeleteBranch(ctx, branch.ID); err != nil {
+	if err := cloud.DeleteBranch(ctx, "", branch.ID); err != nil {
 		t.Fatal(err)
 	}
 	if env := fake.EnvNamed("shop-pr-7"); env == nil || !env.Archived {
 		t.Fatalf("deleting a branch archives its environment rather than deleting it: %+v", env)
 	}
 	// Archiving an archived environment, or one that is gone, is not an error.
-	if err := cloud.DeleteBranch(ctx, branch.ID); err != nil {
+	if err := cloud.DeleteBranch(ctx, "", branch.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := cloud.DeleteBranch(ctx, "env-nowhere"); err != nil {
+	if err := cloud.DeleteBranch(ctx, "", "env-nowhere"); err != nil {
 		t.Fatal(err)
 	}
 
 	// A preview reopened — or one Inngest auto-archived after three quiet
 	// days — gets its environment back rather than a second one.
-	back, err := cloud.CreateBranch(ctx, "shop-pr-7")
+	back, err := cloud.CreateBranch(ctx, "", "shop-pr-7", Requirements{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +198,7 @@ func TestProviderErrorsCarryTheAPIsDiagnostic(t *testing.T) {
 	cloud, fake := cloudAgainstFake(t)
 	fake.FailWith("keys are locked")
 
-	_, err := cloud.Provision(context.Background(), Requirements{App: "shop-worker"})
+	_, err := cloud.Provision(context.Background(), naming.Resource{}, Requirements{App: "shop-worker"})
 	if err == nil {
 		t.Fatal("want an error")
 	}

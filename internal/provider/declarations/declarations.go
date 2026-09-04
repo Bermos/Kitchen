@@ -112,7 +112,7 @@ func providersOf(claimType string) []string {
 	case kitchenv1alpha1.ClaimTypeVolume:
 		return []string{volume.ProviderName, volume.BoundProviderName}
 	case kitchenv1alpha1.ClaimTypeInngest:
-		return []string{inngest.ProviderCloud}
+		return []string{inngest.ProviderCloud, inngest.ProviderSelfHosted}
 	case kitchenv1alpha1.ClaimTypeRedis:
 		return []string{cache.ProviderValkey, cache.ProviderRedis}
 	}

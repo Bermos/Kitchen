@@ -160,10 +160,10 @@ func (s *Server) requireConnection(
 	w http.ResponseWriter,
 	field, name string,
 	capability kitchenv1alpha1.Capability,
-) bool {
+) (*kitchenv1alpha1.Connection, bool) {
 	if name == "" {
 		badRequest(w, "%s is required: the name of a Connection with the %s capability", field, capability)
-		return false
+		return nil, false
 	}
 	conn := &kitchenv1alpha1.Connection{}
 	if err := s.get(ctx, name, conn); err != nil {
@@ -172,18 +172,18 @@ func (s *Server) requireConnection(
 		} else {
 			s.writeError(w, err)
 		}
-		return false
+		return nil, false
 	}
 	if len(conn.Status.Capabilities) == 0 {
-		return true
+		return conn, true
 	}
 	for _, c := range conn.Status.Capabilities {
 		if c == capability {
-			return true
+			return conn, true
 		}
 	}
 	badRequest(w, "connection %q does not provide the %s capability", name, capability)
-	return false
+	return nil, false
 }
 
 // projectSource settles which kind of project is being created, answering the
@@ -231,10 +231,11 @@ func (s *Server) projectSource(
 		}
 		// The pull credential, where one was named. A public image needs
 		// none, which is why an empty connection is not an error here.
-		if image.ConnectionRef != nil &&
-			!s.requireConnection(ctx, w, "image.connection", image.ConnectionRef.Name,
-				kitchenv1alpha1.CapabilityImageStore) {
-			return kitchenv1alpha1.ProjectSourceSpec{}, false
+		if image.ConnectionRef != nil {
+			if _, ok := s.requireConnection(ctx, w, "image.connection", image.ConnectionRef.Name,
+				kitchenv1alpha1.CapabilityImageStore); !ok {
+				return kitchenv1alpha1.ProjectSourceSpec{}, false
+			}
 		}
 		return kitchenv1alpha1.ProjectSourceSpec{Image: image}, true
 	}
@@ -243,10 +244,12 @@ func (s *Server) projectSource(
 		badRequest(w, "repo must be the provider's owner/name form (got %q)", body.Repo)
 		return kitchenv1alpha1.ProjectSourceSpec{}, false
 	}
-	if !s.requireConnection(ctx, w, "connection", body.Connection, kitchenv1alpha1.CapabilityGitSource) {
+	if _, ok := s.requireConnection(ctx, w, "connection", body.Connection,
+		kitchenv1alpha1.CapabilityGitSource); !ok {
 		return kitchenv1alpha1.ProjectSourceSpec{}, false
 	}
-	if !s.requireConnection(ctx, w, "registry", body.Registry, kitchenv1alpha1.CapabilityImageStore) {
+	if _, ok := s.requireConnection(ctx, w, "registry", body.Registry,
+		kitchenv1alpha1.CapabilityImageStore); !ok {
 		return kitchenv1alpha1.ProjectSourceSpec{}, false
 	}
 	branch := body.ProductionBranch

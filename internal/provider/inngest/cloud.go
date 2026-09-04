@@ -24,6 +24,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+
+	"github.com/Bermos/Kitchen/internal/provider/naming"
 )
 
 // DefaultCloudAPIURL is Inngest Cloud's management API, v2 —
@@ -70,15 +72,19 @@ type cloudPage struct {
 }
 
 // Provision reads the binding of the claim's production environment. It
-// creates nothing: the app registers itself when its worker first connects,
-// and the keys are the environment's own. A mode other than connect is
-// refused, and so is an environment with no event key — the API cannot mint
-// one, and the message says where to.
-func (c *Cloud) Provision(ctx context.Context, req Requirements) (Instance, error) {
+// creates nothing — the app registers itself when its worker first connects,
+// and the keys are the environment's own — so the claim's naming.Resource is
+// nothing to it: there is no object here for the platform to name.
+//
+// A mode other than connect is refused, and so is an environment with no
+// event key — the API cannot mint one, and the message says where to.
+func (c *Cloud) Provision(ctx context.Context, _ naming.Resource, req Requirements) (Instance, error) {
 	if req.Mode != "" && req.Mode != ModeConnect {
-		return Instance{}, fmt.Errorf("%w: mode %q is not provisioned — only connect is, where the worker "+
-			"dials out to Inngest. In serve mode Inngest calls the application over HTTP, which a protected "+
-			"preview answers with a login page; drop the mode or set it to connect", ErrUnsatisfiable, req.Mode)
+		return Instance{}, fmt.Errorf("%w: mode %q is not provisioned through Inngest Cloud — only connect is, "+
+			"where the worker dials out to Inngest. In serve mode Inngest calls the application over HTTP from "+
+			"the internet, which a protected preview answers with a login page; set the mode to connect, or "+
+			"claim through a %s connection, whose server is in this cluster and may be served",
+			ErrUnsatisfiable, req.Mode, ProviderSelfHosted)
 	}
 	environment := req.Environment
 	if environment == "" {
@@ -91,13 +97,19 @@ func (c *Cloud) Provision(ctx context.Context, req Requirements) (Instance, erro
 	// Production's keys select their own environment; INNGEST_ENV stays
 	// empty so that the SDK sends no environment header it does not need.
 	binding.Env = ""
-	return Instance{ID: req.App, Environment: environment, Binding: binding}, nil
+	return Instance{
+		ID:          req.App,
+		Environment: environment,
+		Binding:     binding,
+		Reason:      "KeysRead",
+		Message:     fmt.Sprintf("binding read for app %s in Inngest environment %s", req.App, environment),
+	}, nil
 }
 
 // CreateBranch finds the branch environment of the given name — unarchiving
 // it if Inngest's auto-archive got there first — or creates it, and reads the
 // binding that selects it: the account's shared branch keys plus INNGEST_ENV.
-func (c *Cloud) CreateBranch(ctx context.Context, name string) (Branch, error) {
+func (c *Cloud) CreateBranch(ctx context.Context, _, name string, _ Requirements) (Branch, error) {
 	env, err := c.findEnv(ctx, name)
 	if err != nil {
 		return Branch{}, err
@@ -140,7 +152,7 @@ func (c *Cloud) CreateBranch(ctx context.Context, name string) (Branch, error) {
 // DeleteBranch archives the environment. Archiving is what the API offers
 // and it is the right verb: it stops the environment's functions triggering
 // and deletes nothing, so a preview reopened later finds its history.
-func (c *Cloud) DeleteBranch(ctx context.Context, branchID string) error {
+func (c *Cloud) DeleteBranch(ctx context.Context, _, branchID string) error {
 	err := c.setArchived(ctx, branchID, true)
 	if err != nil && !isCloudStatus(err, http.StatusNotFound) {
 		return err
