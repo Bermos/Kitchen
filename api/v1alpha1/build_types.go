@@ -168,6 +168,17 @@ const (
 	BuildCancelled BuildPhase = "Cancelled"
 )
 
+// ArtifactSourceType is where an artifact's evidence came from — see
+// ArtifactStatus.SourceType for why it is an enum with one value.
+type ArtifactSourceType string
+
+const (
+	// ArtifactSourceBuilt is an artifact this platform built: its evidence
+	// is the build's own, harvested from the builder and countersigned, plus
+	// what the reconciler asserts about the build it orchestrated.
+	ArtifactSourceBuilt ArtifactSourceType = "built"
+)
+
 // ArtifactStatus identifies what a build produced and records whether the
 // platform managed to attest it.
 //
@@ -190,6 +201,23 @@ type ArtifactStatus struct {
 	// where the platform has an image it cannot make claims about.
 	// +optional
 	Digest string `json:"digest,omitempty"`
+
+	// SourceType says where this artifact's evidence comes from, which is a
+	// different question from who signed it and a different one again from
+	// who made each claim (`Evidence[].Source`).
+	//
+	// It has one value today and that is the point: every artifact Kitchen
+	// holds evidence about is an artifact Kitchen built, so the enum reads
+	// `built` everywhere and says so explicitly rather than by silence. An
+	// artifact the platform did not build carries evidence of a different
+	// kind — a vendor's own assertions, or the platform's observations of
+	// something it only pulled — and the reader has to be able to tell them
+	// apart *without* knowing which release of Kitchen wrote the field. So
+	// the enum exists now, with one value, and gains values rather than
+	// gaining a shape.
+	// +kubebuilder:validation:Enum=built
+	// +optional
+	SourceType ArtifactSourceType `json:"sourceType,omitempty"`
 
 	// AttestedAt is when the platform attached its own build record to the
 	// digest.
@@ -304,6 +332,19 @@ type VEXStatus struct {
 	// because a row nothing can be matched back to is not an index.
 	// +optional
 	DocumentID string `json:"documentID,omitempty"`
+
+	// Workload is which of the unit's artifacts this document is about,
+	// empty for the web process's — which is every document a
+	// single-workload project has ever filed.
+	//
+	// A VEX statement suppresses a finding on *an image*, and a unit ships
+	// several: "this CVE does not apply" said about the API says nothing
+	// about the worker, which may not even carry the package. The row is
+	// keyed by document and workload together for that reason — the same
+	// document may be filed about two artifacts and each filing is its own
+	// assertion.
+	// +optional
+	Workload string `json:"workload,omitempty"`
 
 	// Author is the document's declared author, per OpenVEX. Where a
 	// statement named its own supplier, that supplier is the author of that
@@ -712,6 +753,26 @@ type WorkloadBuildStatus struct {
 	// +optional
 	DetectedFramework string `json:"detectedFramework,omitempty"`
 
+	// Artifact is what this workload's build produced, identified by content,
+	// and what the platform has asserted about it.
+	//
+	// It is the same shape as the Build's own `status.artifact` because it is
+	// the same thing about a different image: a unit of five workloads ships
+	// five artifacts, and evidence that described one of them while the
+	// Release deployed all five would be a compliance surface reporting
+	// success over four images it never looked at (#300).
+	// +optional
+	Artifact *ArtifactStatus `json:"artifact,omitempty"`
+
+	// Gates is what each quality gate did over *this workload's* artifact.
+	// A gate is a claim about an image, so a unit of several images runs
+	// each gate once per image and records each run against the image it
+	// ran over — the Build's own `status.gates` being the web process's.
+	// +optional
+	// +listType=map
+	// +listMapKey=name
+	Gates []QualityGateStatus `json:"gates,omitempty"`
+
 	// Message explains a workload that did not build. It is empty for one
 	// that did.
 	// +optional
@@ -761,6 +822,156 @@ func (b *Build) PullRequestNumber() *int32 {
 	}
 	pullRequest := int32(number)
 	return &pullRequest
+}
+
+// BuildArtifact is one image of a unit, with the workload it belongs to.
+//
+// It is the shape everything that has to act on *every* artifact of a build
+// iterates: attaching evidence, running a gate, reading a set back out of the
+// registry, and deciding whether the Release those images make up is attested
+// at all. Before #300 each of those read `status.artifact` alone, which for a
+// unit of five workloads described one image and said nothing about four.
+// +kubebuilder:object:generate=false
+type BuildArtifact struct {
+	// Workload is which workload's image this is, empty for the web
+	// process's — the project's own image, whose evidence is exactly what it
+	// was before a unit could be more than one thing.
+	Workload string
+
+	// Artifact is the evidence record itself. It is never nil in what
+	// Artifacts answers.
+	Artifact *ArtifactStatus
+}
+
+// Name is what a message calls this artifact: the workload's own name, and
+// `web` for the project's own image — which is the name the process list, the
+// Release's `ImageFor` and the dashboard all already use for it.
+func (a BuildArtifact) Name() string {
+	if a.Workload == "" {
+		return WebProcessName
+	}
+	return a.Workload
+}
+
+// Attested reports whether the platform got its own build record onto this
+// artifact's digest.
+func (a BuildArtifact) Attested() bool {
+	return a.Artifact != nil && a.Artifact.AttestedAt != nil
+}
+
+// Artifacts is every image this build produced that there is an evidence
+// record for, the web process's first and the workloads' in the order the
+// Build recorded them.
+//
+// A workload that has not pushed yet, or whose build failed, has no artifact
+// and so no entry — it is not an artifact missing evidence, it is not an
+// artifact. What it is not allowed to be is *invisible*: a Build is over only
+// once every workload pushed, so a succeeded Build with a workload absent
+// from this list is a workload whose digest could not be read, and
+// ArtifactsWithoutEvidence is what says so.
+func (b *Build) Artifacts() []BuildArtifact {
+	artifacts := make([]BuildArtifact, 0, len(b.Status.Workloads)+1)
+	if b.Status.Artifact != nil {
+		artifacts = append(artifacts, BuildArtifact{Artifact: b.Status.Artifact})
+	}
+	for i := range b.Status.Workloads {
+		if b.Status.Workloads[i].Artifact == nil {
+			continue
+		}
+		artifacts = append(artifacts, BuildArtifact{
+			Workload: b.Status.Workloads[i].Name,
+			Artifact: b.Status.Workloads[i].Artifact,
+		})
+	}
+	return artifacts
+}
+
+// ArtifactFor is one workload's evidence record — the web process's for the
+// empty name — or nil where that workload produced none.
+func (b *Build) ArtifactFor(workload string) *ArtifactStatus {
+	if workload == "" || workload == WebProcessName {
+		return b.Status.Artifact
+	}
+	for i := range b.Status.Workloads {
+		if b.Status.Workloads[i].Name == workload {
+			return b.Status.Workloads[i].Artifact
+		}
+	}
+	return nil
+}
+
+// ArtifactsWithoutEvidence names every image of this unit that carries no
+// signed evidence, in the order Artifacts lists them.
+//
+// This is the Release-level answer, and it is deliberately per artifact
+// rather than a boolean: a unit is attested when *every* image it deploys is,
+// and a unit that is not has to be able to say which image is missing. The
+// two ways to be missing are one answer here — a workload that pushed and
+// could not be attested, and a workload the Build has no artifact record for
+// at all — because from the outside they are the same fact: nothing signed
+// describes an image this release deploys.
+func (b *Build) ArtifactsWithoutEvidence() []string {
+	missing := []string{}
+	if b.Status.Artifact == nil || b.Status.Artifact.AttestedAt == nil {
+		missing = append(missing, WebProcessName)
+	}
+	for i := range b.Status.Workloads {
+		workload := &b.Status.Workloads[i]
+		if workload.Phase == BuildFailed {
+			// A workload that did not build ships no image, so there is no
+			// artifact for evidence to be missing from. The Build's own
+			// failure is what says so.
+			continue
+		}
+		if workload.Artifact == nil || workload.Artifact.AttestedAt == nil {
+			missing = append(missing, workload.Name)
+		}
+	}
+	return missing
+}
+
+// FullyAttested is whether every image this unit deploys carries the
+// platform's signed build record — the one question a Release-level
+// compliance answer asks.
+func (b *Build) FullyAttested() bool {
+	return len(b.ArtifactsWithoutEvidence()) == 0
+}
+
+// ImageOf is the digest reference one workload was built to — the web
+// process's for the empty name, which is `status.image` and always has been.
+func (b *Build) ImageOf(workload string) string {
+	if workload == "" || workload == WebProcessName {
+		return b.Status.Image
+	}
+	for i := range b.Status.Workloads {
+		if b.Status.Workloads[i].Name == workload {
+			return b.Status.Workloads[i].Image
+		}
+	}
+	return ""
+}
+
+// GatesFor is where one image's quality gate rows live: the Build's own list
+// for the web process — which is where every gate result this platform has
+// ever recorded is — and the workload's row for anything else.
+//
+// It answers a pointer because both the reconciler and the API write into it,
+// and two implementations of "which list does this gate result belong in"
+// would eventually put a result about the API into the worker's row.
+//
+// A workload the Build has never heard of gets a scratch slice: a lost gate
+// row is a smaller failure than a nil dereference, and every caller reaches
+// this through an artifact read off the Build's own list.
+func (b *Build) GatesFor(workload string) *[]QualityGateStatus {
+	if workload == "" || workload == WebProcessName {
+		return &b.Status.Gates
+	}
+	for i := range b.Status.Workloads {
+		if b.Status.Workloads[i].Name == workload {
+			return &b.Status.Workloads[i].Gates
+		}
+	}
+	return &[]QualityGateStatus{}
 }
 
 // +kubebuilder:object:root=true

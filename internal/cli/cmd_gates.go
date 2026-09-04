@@ -90,24 +90,28 @@ attestation, which "kitchen attestations" reads out of the registry.`),
 			if err != nil {
 				return err
 			}
-			answer := list[gate]{Items: found.Gates}
+			// Every image the commit produced, not the project's own alone: a
+			// gate is a claim about an image and a unit ships several, so a
+			// listing that showed one image's runs would read as the unit's.
+			runs := gateRuns(found)
+			answer := list[gateRun]{Items: runs}
 			return r.printer().document(answer, func(s tui.Styles) string {
-				if len(found.Gates) == 0 {
+				if len(runs) == 0 {
 					return "No gates have run over this artifact.\n"
 				}
-				rows := make([][]string, 0, len(found.Gates))
-				for _, ran := range found.Gates {
+				rows := make([][]string, 0, len(runs))
+				for _, run := range runs {
 					signed := "not signed"
-					if ran.Attested {
+					if run.Attested {
 						signed = "signed"
 					}
-					reported := ran.Source
-					if ran.ReportedBy != "" {
-						reported += " (" + ran.ReportedBy + ")"
+					reported := run.Source
+					if run.ReportedBy != "" {
+						reported += " (" + run.ReportedBy + ")"
 					}
-					rows = append(rows, []string{ran.Name, ran.Phase, reported, signed})
+					rows = append(rows, []string{run.Workload, run.Name, run.Phase, reported, signed})
 				}
-				return s.Table([]string{"GATE", "PHASE", "REPORTED", "EVIDENCE"}, rows)
+				return s.Table([]string{"IMAGE", "GATE", "PHASE", "REPORTED", "EVIDENCE"}, rows)
 			})
 		}),
 	}
@@ -120,8 +124,24 @@ attestation, which "kitchen attestations" reads out of the registry.`),
 	})
 }
 
+// gateRuns is every gate run of one commit, each naming the image it ran
+// over. A single-workload project answers exactly what it answered before,
+// with `web` in front of it.
+func gateRuns(found *build) []gateRun {
+	runs := make([]gateRun, 0, len(found.Gates))
+	for _, ran := range found.Gates {
+		runs = append(runs, gateRun{Workload: "web", gate: ran})
+	}
+	for _, workload := range found.Workloads {
+		for _, ran := range workload.Gates {
+			runs = append(runs, gateRun{Workload: workload.Name, gate: ran})
+		}
+	}
+	return runs
+}
+
 func newGatesSubmitCommand(r *Runtime) *cobra.Command {
-	var gateName, version, format, findings string
+	var gateName, version, format, findings, workload string
 
 	cmd := &cobra.Command{
 		Use:   "submit <build>",
@@ -143,7 +163,11 @@ tell the difference.
 
 Do not pass a scanner the flag that makes it exit non-zero on findings. A
 result is a set of facts; whether they are disqualifying is decided at
-promotion.`),
+promotion.
+
+A commit that builds more than one image produces one artifact per workload,
+and a result is a claim about one image. --workload names which it ran over;
+without it the result is recorded against the project's own image.`),
 		Args: cobra.ExactArgs(1),
 		RunE: run(func(cmd *cobra.Command, args []string) error {
 			if gateName == "" {
@@ -168,6 +192,7 @@ promotion.`),
 
 			submission := gateSubmission{
 				Gate:     gateName,
+				Workload: workload,
 				Version:  version,
 				Format:   format,
 				Findings: json.RawMessage(body),
@@ -190,6 +215,8 @@ promotion.`),
 	cmd.Flags().StringVar(&format, "format", "", "the shape of the findings, e.g. trivy-json or sarif")
 	cmd.Flags().StringVar(&findings, "findings", "",
 		"the gate's output: the JSON itself, @file, or - for stdin")
+	cmd.Flags().StringVar(&workload, "workload", "",
+		"which image of the unit the gate ran over, e.g. api — the project's own image by default")
 
 	return describe(cmd, meta{
 		Calls:  []string{"POST /api/v1/builds/{name}/gates"},

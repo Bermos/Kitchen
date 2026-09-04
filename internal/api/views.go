@@ -458,7 +458,16 @@ type buildWorkloadView struct {
 	// is the project's image; a unit is several directories and can have
 	// several answers.
 	DetectedFramework string `json:"detectedFramework,omitempty"`
-	Message           string `json:"message,omitempty"`
+	// Artifact is what this workload's build produced, by content, and
+	// whether the platform managed to attest it — the same shape and the
+	// same meaning as the build's own `artifact`, about this image. Absent
+	// on a workload that never pushed one.
+	Artifact *artifactView `json:"artifact,omitempty"`
+	// Gates is what each quality gate did over *this workload's* artifact. A
+	// gate is a claim about an image, so a unit runs each gate once per image
+	// and each run is recorded against the image it ran over.
+	Gates   []gateView `json:"gates,omitempty"`
+	Message string     `json:"message,omitempty"`
 }
 
 func buildWorkloadViews(workloads []kitchenv1alpha1.WorkloadBuildStatus) []buildWorkloadView {
@@ -472,6 +481,8 @@ func buildWorkloadViews(workloads []kitchenv1alpha1.WorkloadBuildStatus) []build
 			Job:               workload.Job,
 			DockerfileTarget:  workload.DockerfileTarget,
 			DetectedFramework: workload.DetectedFramework,
+			Artifact:          newArtifactView(workload.Artifact),
+			Gates:             gateViews(workload.Gates),
 			Message:           workload.Message,
 		})
 	}
@@ -659,8 +670,19 @@ func gateViews(gates []kitchenv1alpha1.QualityGateStatus) []gateView {
 // the registry against the digest, and the attestations endpoint is where it
 // is read from.
 type artifactView struct {
-	Repository string     `json:"repository,omitempty"`
-	Digest     string     `json:"digest,omitempty"`
+	// Workload is which image of the unit this is — `web` for the project's
+	// own. It is set where an artifact is listed among the unit's others and
+	// absent where the surrounding object already says which image it is:
+	// the build's own `artifact`, and each row of `workloads`.
+	Workload   string `json:"workload,omitempty"`
+	Repository string `json:"repository,omitempty"`
+	Digest     string `json:"digest,omitempty"`
+	// SourceType is where this artifact's evidence came from. It reads
+	// `built` on everything the platform holds evidence about today, and it
+	// is published rather than implied so that a reader can tell a built
+	// artifact from one of another kind without knowing which release of
+	// Kitchen wrote it.
+	SourceType string     `json:"sourceType,omitempty"`
 	Attested   bool       `json:"attested"`
 	AttestedAt *time.Time `json:"attestedAt,omitempty"`
 	KeyID      string     `json:"keyID,omitempty"`
@@ -708,6 +730,7 @@ func newArtifactView(artifact *kitchenv1alpha1.ArtifactStatus) *artifactView {
 	view := &artifactView{
 		Repository: artifact.Repository,
 		Digest:     artifact.Digest,
+		SourceType: string(artifact.SourceType),
 		Attested:   artifact.AttestedAt != nil,
 		KeyID:      artifact.KeyID,
 		Message:    artifact.Message,
@@ -767,6 +790,60 @@ type releaseView struct {
 	Workloads    []workloadImageView `json:"workloads,omitempty"`
 	Environments []string            `json:"environments,omitempty"`
 	CreatedAt    time.Time           `json:"createdAt"`
+	// Attestation is the unit's own compliance answer: whether every image
+	// this release deploys carries signed evidence, and which images do not
+	// when some do. It is on the single release read and not on a listing,
+	// because answering it means reading the build that produced the release.
+	Attestation *unitAttestationView `json:"attestation,omitempty"`
+}
+
+// unitAttestationView is the Release-level answer to "is this attested",
+// which is per artifact and never a single flag standing in for several.
+//
+// A release deploys one image per workload of the unit, and a unit of five
+// workloads used to ship with provenance and an SBOM for the web process and
+// nothing at all for the other four — with nothing saying so, which is a
+// compliance surface reporting success over what it never looked at. So
+// `attested` is true only when *every* artifact is, and `missing` names the
+// ones that are not.
+type unitAttestationView struct {
+	// Attested is whether every image this release deploys carries the
+	// platform's signed build record.
+	Attested bool `json:"attested"`
+	// Artifacts is one entry per image, the web process's first, each with
+	// its own digest, its own evidence index and its own source type.
+	Artifacts []artifactView `json:"artifacts"`
+	// Missing names every image with no signed evidence, by workload —
+	// `web` for the project's own. Empty exactly when `attested` is true.
+	Missing []string `json:"missing,omitempty"`
+	// Caveat says why the answer is weaker than it looks: the build that
+	// produced this release has been pruned, so there is no evidence index
+	// left to read. It is not the same as an unattested release, and saying
+	// which of the two it is matters.
+	Caveat string `json:"caveat,omitempty"`
+}
+
+// newUnitAttestationView is the release-level answer, read off the build that
+// produced the release. A nil build is a build that has been pruned.
+func newUnitAttestationView(build *kitchenv1alpha1.Build) *unitAttestationView {
+	if build == nil {
+		return &unitAttestationView{
+			Caveat: "the build that produced this release is gone, " +
+				"so the evidence index it carried cannot be read — the evidence itself " +
+				"is still in the registry, attached to the digests above",
+		}
+	}
+	view := &unitAttestationView{
+		Attested:  build.FullyAttested(),
+		Artifacts: []artifactView{},
+		Missing:   build.ArtifactsWithoutEvidence(),
+	}
+	for _, artifact := range build.Artifacts() {
+		entry := newArtifactView(artifact.Artifact)
+		entry.Workload = artifact.Name()
+		view.Artifacts = append(view.Artifacts, *entry)
+	}
+	return view
 }
 
 // workloadImageView is one workload's frozen image within a release.
@@ -835,6 +912,11 @@ type eligibilityEvidenceView struct {
 	// attached — present, but nobody's claim about who made it.
 	Source   string `json:"source,omitempty"`
 	Verified bool   `json:"verified"`
+	// Workload is which image of the unit this evidence is attached to,
+	// `web` for the project's own. A release deploys one image per workload
+	// and each is attested in its own right, so a list that did not say
+	// which would read as one artifact carrying five SBOMs.
+	Workload string `json:"workload,omitempty"`
 }
 
 type environmentView struct {

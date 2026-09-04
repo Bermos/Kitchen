@@ -68,6 +68,8 @@ statement counts at all, and how old a statement may be.`),
 }
 
 func newVEXListCommand(r *Runtime) *cobra.Command {
+	var workload string
+
 	cmd := &cobra.Command{
 		Use:   "list <build>",
 		Short: "The artifact's VEX statements, beside the findings they modify",
@@ -79,7 +81,11 @@ A suppressed finding is still a finding and is still listed, with the
 statement suppressing it, who authored it and who submitted it. A statement
 that has expired, that was never justified from the enumeration, or whose
 signature no key this platform holds accepted is listed too, and marked — the
-point of the view is that nothing here is applied silently.`),
+point of the view is that nothing here is applied silently.
+
+A statement suppresses a finding on an image, and a commit that builds more
+than one image has one artifact per workload. --workload names which to read;
+without it you get the project's own image.`),
 		Args: cobra.ExactArgs(1),
 		RunE: run(func(cmd *cobra.Command, args []string) error {
 			client, err := r.client()
@@ -89,7 +95,7 @@ point of the view is that nothing here is applied silently.`),
 			ctx, cancel := r.context(commandContext(cmd))
 			defer cancel()
 
-			answer, err := client.vex(ctx, args[0])
+			answer, err := client.vex(ctx, args[0], workload)
 			if err != nil {
 				return err
 			}
@@ -98,12 +104,18 @@ point of the view is that nothing here is applied silently.`),
 			})
 		}),
 	}
+	cmd.Flags().StringVar(&workload, "workload", "",
+		"which image of the unit to read, e.g. api — the project's own image by default")
 
 	return describe(cmd, meta{
-		Calls:    []string{"GET /api/v1/builds/{name}/vex"},
-		Output:   output{Mode: outputDocument, Kind: "vexAnswer"},
-		Needs:    needs{Auth: true},
-		Examples: []example{{"What has been asserted about an artifact", "kitchen vex list shop-bld-7 --json"}},
+		Calls:  []string{"GET /api/v1/builds/{name}/vex"},
+		Output: output{Mode: outputDocument, Kind: "vexAnswer"},
+		Needs:  needs{Auth: true},
+		Examples: []example{
+			{"What has been asserted about an artifact", "kitchen vex list shop-bld-7 --json"},
+			{"What has been asserted about one workload's image",
+				"kitchen vex list shop-bld-7 --workload worker --json"},
+		},
 	})
 }
 
@@ -172,7 +184,7 @@ func vexState(statement vexStatement) string {
 }
 
 func newVEXSubmitCommand(r *Runtime) *cobra.Command {
-	var document string
+	var document, workload string
 
 	cmd := &cobra.Command{
 		Use:   "submit <build>",
@@ -217,7 +229,10 @@ nearer to approving a break-glass exception than to reporting a scan.`),
 			ctx, cancel := r.context(commandContext(cmd))
 			defer cancel()
 
-			accepted, err := client.submitVEX(ctx, args[0], vexSubmission{Document: json.RawMessage(body)})
+			accepted, err := client.submitVEX(ctx, args[0], vexSubmission{
+				Document: json.RawMessage(body),
+				Workload: workload,
+			})
 			if err != nil {
 				return err
 			}
@@ -230,6 +245,8 @@ nearer to approving a break-glass exception than to reporting a scan.`),
 	}
 	cmd.Flags().StringVar(&document, "document", "",
 		"the OpenVEX document: the JSON itself, @file, or - for stdin")
+	cmd.Flags().StringVar(&workload, "workload", "",
+		"which image of the unit the assertion is about, e.g. worker — the project's own image by default")
 
 	return describe(cmd, meta{
 		Calls:  []string{"POST /api/v1/builds/{name}/vex"},
@@ -238,6 +255,8 @@ nearer to approving a break-glass exception than to reporting a scan.`),
 		Examples: []example{
 			{"Attach a VEX document the security team wrote",
 				"kitchen vex submit shop-bld-7 --document @not-affected.openvex.json"},
+			{"Assert about one workload's image",
+				"kitchen vex submit shop-bld-7 --workload worker --document @not-affected.openvex.json"},
 		},
 	})
 }

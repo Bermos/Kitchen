@@ -341,9 +341,17 @@ quietly contradict §5.1's whole argument, which is that the evidence does not
 need Kitchen. It is also the performance decision: nothing here fans out one
 registry round trip per artifact per predicate.
 
+**One row per image, not one per release.** A commit that builds several
+images produces one artifact per workload, each attested about its own digest
+and each with its own gates and its own exploitability assertions — so a
+release of a five-workload unit is five rows here, told apart by `workload`. A
+single row per release would be an index of one image presented as the index
+of what was deployed.
+
 | Field | What it is | Satisfies |
 |---|---|---|
 | `release`, `build`, `image` | Which artifact | GR-B1 |
+| `workload` | Which image of the unit this row indexes, absent for the project's own. `gates` and `vex` on a row are that image's and never the unit's | GR-B1, GR-D1 |
 | `repository`, `digest` | Where it lives and what it is, by content | GR-D1 |
 | `attestedAt`, `keyID` | When the platform attached its own build record, and under which key | GR-D1 |
 | `evidence[].predicateType` | What is attached: SLSA's URI for provenance, SPDX's or CycloneDX's for a bill of materials, one of Kitchen's own for a claim no standard covers | GR-B1, GR-D1 |
@@ -352,7 +360,7 @@ registry round trip per artifact per predicate.
 | `gates[].name`, `phase`, `finishedAt`, `message` | What each quality gate did — which is not the same question as what it found; what it found is in its attestation. A gate that ran and could not be attested is worth telling apart from one that never ran | GR-D4 |
 | `gates[].source`, `reportedBy`, `predicateType`, `attested` | `platform` for a gate Kitchen ran, `external` for one ingested from an application's own CI, with the identity that submitted it and where its findings were signed | GR-D4, GR-E5 |
 | `vex[].author`, `submittedBy`, `submittedAt`, `statements`, `digest` | The OpenVEX documents somebody attached. The document names its own author; the authenticated identity that handed it to the platform is a second and different fact | GR-D4 |
-| `newestScan.decisionID`, `scannedAt`, `dataSnapshot`, `verdict`, `environment` | What the platform's own policy last concluded — the newest re-evaluation, not a list. An artifact is judged on its newest scan (`policy.NewestVulnerabilityScan`), so the pack says what the policy says | GR-D4, GR-F2 |
+| `newestScan.decisionID`, `scannedAt`, `dataSnapshot`, `verdict`, `environment` | What the platform's own policy last concluded — the newest re-evaluation, not a list. An artifact is judged on its newest scan (`policy.NewestVulnerabilityScan`), so the pack says what the policy says. On the project's own image's row alone: the rescan sweep scans the release's image, and claiming its findings for a workload would attribute them to an image nothing scanned | GR-D4, GR-F2 |
 | `environments[]` | Where this artifact is running now | GR-B1 |
 | `fetch` | The `cosign` command that pulls the evidence itself | GR-I4 |
 | `message` | Why an artifact carries nothing — no digest, or a build no longer in the cluster | GR-L1 |

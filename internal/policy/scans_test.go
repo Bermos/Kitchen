@@ -63,7 +63,7 @@ func TestOnlyTheNewestScanReachesThePolicy(t *testing.T) {
 		scanEvidence("sha256:"+strings.Repeat("2", 64), "2026-08-09T09:00:00Z", `[]`),
 	}}
 
-	evidence := EvidenceFrom(set, nil)
+	evidence := EvidenceFrom("", set, nil)
 	if len(evidence) != 1 {
 		t.Fatalf("two scans of one artifact are one claim, got %d entries", len(evidence))
 	}
@@ -79,7 +79,7 @@ func TestOnlyTheNewestScanReachesThePolicy(t *testing.T) {
 	// finding the *newest* scan reports fires.
 	set.Attestations[1] = scanEvidence(
 		"sha256:"+strings.Repeat("2", 64), "2026-08-09T09:00:00Z", criticalFinding("CVE-2026-9"))
-	input.Evidence = EvidenceFrom(set, nil)
+	input.Evidence = EvidenceFrom("", set, nil)
 	result := evaluate(t, input)
 	if len(result.Fired) != 1 || !strings.Contains(result.Fired[0].Message, "CVE-2026-9") {
 		t.Fatalf("the newest scan's own finding did not fire: %+v", result.Fired)
@@ -99,7 +99,7 @@ func TestNothingButTheVulnerabilityScanIsCollapsed(t *testing.T) {
 		}
 	}
 	set := attestation.EvidenceSet{Attestations: []attestation.Evidence{gate("a"), gate("b")}}
-	if evidence := EvidenceFrom(set, nil); len(evidence) != 2 {
+	if evidence := EvidenceFrom("", set, nil); len(evidence) != 2 {
 		t.Fatalf("two gate results are two claims, got %d entries", len(evidence))
 	}
 }
@@ -138,7 +138,7 @@ func TestOneScanMaterializesExactlyAsItAlwaysDid(t *testing.T) {
 	before := minimalInput(KindPromotion)
 	before.Evidence = unchanged
 	after := minimalInput(KindPromotion)
-	after.Evidence = EvidenceFrom(set, nil)
+	after.Evidence = EvidenceFrom("", set, nil)
 
 	wanted, err := before.Digest()
 	if err != nil {

@@ -280,7 +280,7 @@ give.
 | `kitchen promotions` | What promotions were asked for and what became of them | `GET /projects/{name}/promotions`, `GET /promotions/{name}` |
 | `kitchen projects` | The projects this account can see, with its role on each | `GET /projects` |
 | `kitchen builds` | The project's builds, newest first, why the failed ones failed and why a running one is not moving | `GET /projects/{name}/builds` |
-| `kitchen attestations` | The signed evidence attached to a build's artifact | `GET /builds/{name}/attestations` |
+| `kitchen attestations` | The signed evidence attached to one image a build produced (`--workload`) | `GET /builds/{name}/attestations` |
 | `kitchen gates list/submit` | What ran over an artifact, and submitting a result from elsewhere | `GET /builds/{name}`, `POST /builds/{name}/gates` |
 | `kitchen vex list/submit` | What has been asserted about an artifact's findings applying here, and asserting it | `GET /builds/{name}/vex`, `POST /builds/{name}/vex` |
 | `kitchen decisions list/show/replay` | The stored policy decisions, and re-running one from its stored inputs | `GET /decisions`, `GET /decisions/{id}`, `POST /decisions/{id}/replay` |
@@ -766,8 +766,16 @@ the audit record — an emergency move should have one.
 
 ```sh
 kitchen attestations shop-bld-7
+kitchen attestations shop-bld-7 --workload api
 kitchen attestations shop-bld-7 --json | jq '.attestations[].predicateType'
 ```
+
+**A commit that builds more than one image has one artifact per workload**,
+each attested about its own digest, so this reads one of them. Without
+`--workload` you get the project's own image — the only one a single-workload
+project has, and what this command has always printed. `kitchen api GET
+/releases/shop-rel-42` answers the release-level question instead: whether
+*every* image the release deploys is attested, and which are not.
 
 Everything it prints is read out of the registry, keyed to the artifact's
 content digest through OCI referrers rather than out of a Kitchen table — so
@@ -790,6 +798,8 @@ and the two print differently on purpose.
 ```sh
 kitchen gates list shop-bld-7
 trivy image --format json shop:latest | kitchen gates submit shop-bld-7 --gate trivy --findings -
+trivy image --format json shop-api:latest |
+  kitchen gates submit shop-bld-7 --gate trivy --workload api --findings -
 ```
 
 `Completed` means the gate ran, whatever it found; `Failed` means it did not run
@@ -797,17 +807,28 @@ and nothing is known either way. Neither says whether the findings were
 acceptable — that is decided at promotion, against the environment being
 deployed to.
 
+A gate is a claim about an **image**, so `list` prints one row per gate per
+image the commit produced, with `IMAGE` naming which — `web` for the project's
+own. `submit --workload` says which image a result from elsewhere ran over; a
+result about one image is recorded against that image and nothing else.
+
 ### Exploitability
 
 ```sh
 kitchen vex list shop-bld-7
-kitchen vex submit shop-bld-7 --document @not-affected.openvex.json
+kitchen vex list shop-bld-7 --workload worker
+kitchen vex submit shop-bld-7 --workload worker --document @not-affected.openvex.json
 ```
 
 A scanner says what was found; an OpenVEX statement says whether it applies
 here — the component is not present, the vulnerable code is not in the execute
 path, a mitigation already covers it. Without it, a daily rescan of a real
 dependency tree reports enough that people stop reading it.
+
+A statement is about an **image**, so `--workload` names which one. "This CVE
+does not apply" said about the API is not a claim about the worker, which may
+not carry the package at all; without the flag both commands mean the
+project's own image.
 
 `list` prints every finding beside the statement covering it, its
 justification, its author, who submitted it, and one word for what the platform

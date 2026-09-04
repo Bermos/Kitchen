@@ -411,3 +411,108 @@ func failGateJob(t *testing.T, r *BuildReconciler, build *kitchenv1alpha1.Build,
 		t.Fatal(err)
 	}
 }
+
+// A unit is several images, and a gate is a claim about an image. So each
+// gate runs once per image of the unit, and the run that fails says which
+// image it failed on (#300) — "the gate did not run" beside four workloads
+// that did is not an answer.
+func TestGatesRunOverEveryImageOfAUnitAndNameTheOneThatFailed(t *testing.T) {
+	reconciler, _, build := gateFixtures(t)
+	build.Status.Workloads = []kitchenv1alpha1.WorkloadBuildStatus{{
+		Name:       "worker",
+		Phase:      kitchenv1alpha1.BuildSucceeded,
+		Repository: "registry.example.com/kitchen/shop-worker",
+		Image:      "registry.example.com/kitchen/shop-worker@" + gateArtifactDigest,
+		Artifact: &kitchenv1alpha1.ArtifactStatus{
+			Repository: "registry.example.com/kitchen/shop-worker",
+			Digest:     gateArtifactDigest,
+			SourceType: kitchenv1alpha1.ArtifactSourceBuilt,
+		},
+	}}
+
+	if _, err := reconciler.reconcileGates(context.Background(), build); err != nil {
+		t.Fatal(err)
+	}
+
+	jobs := &batchv1.JobList{}
+	if err := reconciler.List(context.Background(), jobs, client.InNamespace(appNamespace("shop"))); err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs.Items) != 2 {
+		t.Fatalf("a unit of two images ran %d gate jobs, want one per image", len(jobs.Items))
+	}
+	// Each Job is given its own image, or one of them scanned the other's.
+	scanned := map[string]bool{}
+	for _, job := range jobs.Items {
+		for _, env := range job.Spec.Template.Spec.InitContainers[0].Env {
+			if env.Name == "KITCHEN_ARTIFACT" {
+				scanned[env.Value] = true
+			}
+		}
+	}
+	for _, want := range []string{
+		"registry.example.com/kitchen/shop@" + gateArtifactDigest,
+		"registry.example.com/kitchen/shop-worker@" + gateArtifactDigest,
+	} {
+		if !scanned[want] {
+			t.Errorf("no gate ran over %s — an image of the unit was never scanned", want)
+		}
+	}
+
+	// The worker's scanner dies. The row is the worker's own, and it says so.
+	workerJob := &batchv1.Job{}
+	key := types.NamespacedName{
+		Namespace: appNamespace("shop"), Name: gateJobNameFor(build.Name, "trivy", "worker"),
+	}
+	if err := reconciler.Get(context.Background(), key, workerJob); err != nil {
+		t.Fatalf("the worker's gate job was not created under its own name: %v", err)
+	}
+	workerJob.Status.Conditions = []batchv1.JobCondition{{
+		Type: batchv1.JobFailed, Status: corev1.ConditionTrue, Message: "the scanner exited 137",
+	}}
+	if err := reconciler.Status().Update(context.Background(), workerJob); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reconciler.reconcileGates(context.Background(), build); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(build.Status.Workloads[0].Gates) != 1 {
+		t.Fatalf("the worker's gate was not recorded against the worker: %+v", build.Status.Workloads[0].Gates)
+	}
+	failed := build.Status.Workloads[0].Gates[0]
+	if failed.Phase != kitchenv1alpha1.GateFailed {
+		t.Errorf("the worker's gate reads %s, want Failed", failed.Phase)
+	}
+	if !strings.Contains(failed.Message, "worker") {
+		t.Errorf("the failure does not name the workload it failed on: %q", failed.Message)
+	}
+	// And the project's own image is untouched by the worker's failure.
+	for _, gate := range build.Status.Gates {
+		if gate.Phase == kitchenv1alpha1.GateFailed {
+			t.Errorf("the worker's failure was recorded against the project's own image: %+v", gate)
+		}
+	}
+}
+
+// A project of one workload records exactly what it recorded before: one Job
+// under the name it always had, one row on `status.gates`, and a message with
+// no workload in it.
+func TestASingleImageUnitGatesExactlyAsItDid(t *testing.T) {
+	reconciler, _, build := gateFixtures(t)
+
+	if _, err := reconciler.reconcileGates(context.Background(), build); err != nil {
+		t.Fatal(err)
+	}
+	failGateJob(t, reconciler, build, "trivy")
+	if _, err := reconciler.reconcileGates(context.Background(), build); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(build.Status.Gates) != 1 {
+		t.Fatalf("recorded %d gate rows, want 1", len(build.Status.Gates))
+	}
+	if got := build.Status.Gates[0].Message; got != "the gate did not run: the scanner exited 137" {
+		t.Errorf("the message changed for a single-image project: %q", got)
+	}
+}

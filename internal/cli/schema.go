@@ -378,8 +378,9 @@ var publishedShapes = map[string]struct {
 		"kept — which outlasts the run itself", processRun{}},
 	"processRunList": {"A scheduled job's recent runs, newest first. Only what the cluster " +
 		"still holds: the platform keeps the last few and collects the rest", list[processRun]{}},
-	"gateList": {"The quality gates that ran over an artifact. Completed means the gate ran, " +
-		"whatever it found; Failed means it did not run", list[gate]{}},
+	"gateList": {"The quality gate runs of one commit, one row per gate per image the commit " +
+		"produced — `workload` says which, `web` for the project's own. Completed means the gate " +
+		"ran, whatever it found; Failed means it did not run", list[gateRun]{}},
 	"gateAccepted": {"Where a submitted gate result was attached, and whose word it is recorded as",
 		gateAccepted{}},
 	"vexAnswer": {"The OpenVEX statements attached to an artifact, joined to the vulnerability-scan " +
@@ -388,9 +389,10 @@ var publishedShapes = map[string]struct {
 		vexAnswer{}},
 	"vexAccepted": {"Where a submitted OpenVEX document was attached, who authored it and who " +
 		"submitted it", vexAccepted{}},
-	"evidenceSet": {"The signed evidence attached to an artifact, read out of the registry. " +
-		"`verified` false with attestations present means signatures were not checked, " +
-		"not that they failed", evidenceSet{}},
+	"evidenceSet": {"The signed evidence attached to one image of a unit, read out of the " +
+		"registry — `--workload` names which, the project's own by default. `verified` false " +
+		"with attestations present means signatures were not checked, not that they failed",
+		evidenceSet{}},
 	"decision": {"One stored policy decision, with the bundle digest, input digest and full " +
 		"input it can be replayed from. Verdict is allowed, allowed-with-exception or blocked", decision{}},
 	"decisionList": {"A list of stored decisions, newest first", list[decision]{}},

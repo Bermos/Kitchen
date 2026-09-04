@@ -164,15 +164,20 @@ func (s *Server) buildAttestations(w http.ResponseWriter, req *http.Request) {
 		s.writeError(w, err)
 		return
 	}
-	artifact := build.Status.Artifact
-	if artifact == nil || artifact.Digest == "" {
-		// A build with no artifact digest is not an error and not an empty
-		// evidence set either — it is a build nothing can be said about, and
-		// saying which of the two it is matters.
-		writeJSON(w, http.StatusConflict, errorBody{Error: "this build produced no artifact digest, " +
-			"so there is nothing evidence could be attached to"})
+	// Which image of the unit to read. Absent is the project's own, which is
+	// what this endpoint has always answered and the only image a
+	// single-workload project has; a unit's other artifacts are asked for by
+	// name, each carrying its own evidence against its own digest (#300).
+	//
+	// A build with no artifact digest is not an error and not an empty
+	// evidence set either — it is a build nothing can be said about, and
+	// saying which of the two it is matters.
+	subject, refusal := requestedArtifact(build, req.URL.Query().Get("workload"), "evidence could be attached to")
+	if refusal != nil {
+		writeJSON(w, refusal.status, errorBody{Error: refusal.message})
 		return
 	}
+	artifact := subject.Artifact
 
 	reader, err := s.evidenceFor(ctx, build)
 	if err != nil {

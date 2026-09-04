@@ -83,6 +83,30 @@ func defaultAttester(dockerConfig []byte, server string) (ArtifactAttester, erro
 	return &attestation.Store{Auth: auth}, nil
 }
 
+// artifactSubject is one image of a unit as the attestation path sees it:
+// which workload it belongs to, how it was built, and what was pushed.
+//
+// A commit produces one image per workload that declares a build of its own
+// (#271), and every one of them is deployed by the Release. So every one of
+// them is attested, each about its own digest — the web process's exactly as
+// it always was, which is what keeps a single-workload project's evidence
+// byte-for-byte what it was before this existed.
+type artifactSubject struct {
+	// Workload is the workload whose image this is, empty for the web
+	// process's. It reaches the build record only when it is set, so the
+	// predicate a single-image project signs is unchanged.
+	Workload string
+
+	// Strategy is how *this* image was built. A unit's workloads do not
+	// share one: a monorepo whose API is a Dockerfile and whose worker is
+	// buildpacks has two answers, and a record that repeated the project's
+	// own for both would be a claim about the wrong build.
+	Strategy kitchenv1alpha1.BuildStrategy
+
+	// Image is what the builder reported it pushed, by digest.
+	Image string
+}
+
 // attestBuild signs Kitchen's build record and attaches it to the image
 // digest, returning what to publish on the Build's status.
 //
@@ -94,10 +118,17 @@ func (r *BuildReconciler) attestBuild(
 	build *kitchenv1alpha1.Build,
 	project *kitchenv1alpha1.Project,
 	target buildTarget,
-	image string,
+	subject artifactSubject,
 ) *kitchenv1alpha1.ArtifactStatus {
+	image := subject.Image
 	repository, digest, byDigest := strings.Cut(image, "@")
-	status := &kitchenv1alpha1.ArtifactStatus{Repository: repository}
+	status := &kitchenv1alpha1.ArtifactStatus{
+		Repository: repository,
+		// Everything here is an artifact this platform built. The field says
+		// so rather than leaving a reader to infer it from the absence of
+		// anything else — see ArtifactStatus.SourceType.
+		SourceType: kitchenv1alpha1.ArtifactSourceBuilt,
+	}
 	if !byDigest {
 		status.Message = "the builder pushed an image but reported no digest, so there is nothing to attach evidence to"
 		return status
@@ -158,7 +189,7 @@ func (r *BuildReconciler) attestBuild(
 	// The platform's own claim first, so that an artifact whose builder said
 	// nothing still carries an account of where it came from.
 	statement, err := attestation.NewStatement(
-		repository, digest, attestation.PredicateBuildRecord, buildRecord(build, project, target))
+		repository, digest, attestation.PredicateBuildRecord, buildRecord(build, project, target, subject))
 	if err != nil {
 		status.Message = err.Error()
 		return status
@@ -266,11 +297,24 @@ func (r *BuildReconciler) attester(ctx context.Context, target buildTarget) (Art
 // decided; the times are the Job's. There is no claim here about what the
 // builder did with any of it — that is provenance, and it has to come from the
 // builder.
+//
+// Two keys are the *subject's* rather than the unit's, and both are written
+// only for a workload's own image: `workload`, naming which image of the unit
+// this record is about, and `strategy` and `framework`, which a unit does not
+// have one of. The web process's record is therefore character for character
+// what it was before a commit could produce more than one image — which is
+// the point, since re-signing every artifact already shipped is exactly what
+// this change is not.
 func buildRecord(
 	build *kitchenv1alpha1.Build,
 	project *kitchenv1alpha1.Project,
 	target buildTarget,
+	subject artifactSubject,
 ) map[string]any {
+	strategy := target.Strategy
+	if subject.Workload != "" && subject.Strategy != "" {
+		strategy = subject.Strategy
+	}
 	record := map[string]any{
 		"project": project.Name,
 		"build":   build.Name,
@@ -279,13 +323,16 @@ func buildRecord(
 			"commit":     build.Spec.Git.SHA,
 			"branch":     build.Spec.Git.Branch,
 		},
-		"strategy": string(target.Strategy),
+		"strategy": string(strategy),
 		"builder": map[string]any{
 			"platform": "kitchen",
 			"version":  version.Version,
 		},
 	}
-	if framework := build.Status.DetectedFramework; framework != "" {
+	if subject.Workload != "" {
+		record["workload"] = subject.Workload
+	}
+	if framework := subjectFramework(build, subject); framework != "" {
 		record["framework"] = framework
 	}
 	if pullRequest := build.PullRequestNumber(); pullRequest != nil {
@@ -300,4 +347,24 @@ func buildRecord(
 		record["finishedAt"] = build.Status.CompletedAt.UTC().Format(time.RFC3339)
 	}
 	return record
+}
+
+// subjectFramework is what detection made of the directory *this* image was
+// built from: the workload's own answer for a workload, and the Build's for
+// the web process.
+//
+// A unit is several directories, so `status.detectedFramework` is the
+// project's own image and nothing else's — a record that repeated it for a
+// Python worker beside a Next.js front end would be asserting something the
+// platform never detected.
+func subjectFramework(build *kitchenv1alpha1.Build, subject artifactSubject) string {
+	if subject.Workload == "" {
+		return build.Status.DetectedFramework
+	}
+	for i := range build.Status.Workloads {
+		if build.Status.Workloads[i].Name == subject.Workload {
+			return build.Status.Workloads[i].DetectedFramework
+		}
+	}
+	return ""
 }

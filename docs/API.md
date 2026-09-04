@@ -196,12 +196,12 @@ name against `internal/api/policy.go`, so a route that moves fails them too.
 | GET | `/builds/{name}` | One build | `viewer` |
 | POST | `/builds/{name}/cancel` | Stop it — the Build stays, phase `Cancelled` | `developer` |
 | GET | `/builds/{name}/logs` | That build's output | `viewer` |
-| GET | `/builds/{name}/attestations` | The signed evidence attached to that build's artifact | `viewer` |
-| POST | `/builds/{name}/gates` | Submit a quality gate result produced elsewhere | `developer` |
-| GET | `/builds/{name}/vex` | The artifact's OpenVEX statements, joined to the findings they modify | `viewer` |
-| POST | `/builds/{name}/vex` | Attach an OpenVEX document to that build's artifact | `admin` |
+| GET | `/builds/{name}/attestations` | The signed evidence attached to one image the build produced. `?workload=` names which; without it, the project's own | `viewer` |
+| POST | `/builds/{name}/gates` | Submit a quality gate result produced elsewhere. `workload` in the body names which image it ran over | `developer` |
+| GET | `/builds/{name}/vex` | One image's OpenVEX statements, joined to the findings they modify. `?workload=` names which | `viewer` |
+| POST | `/builds/{name}/vex` | Attach an OpenVEX document to one image of that build's unit | `admin` |
 | GET | `/releases` | Every release. `?project=` filters | any account — filtered |
-| GET | `/releases/{name}` | One release | `viewer` |
+| GET | `/releases/{name}` | One release, with the unit's per-artifact attestation answer | `viewer` |
 | GET | `/releases/{name}/config-diff` | What moving to this release would change about the configuration another one is running with. `?against=` names that other release, and is required | `viewer` |
 | GET | `/projects/{name}/promotions` | That project's promotions, newest first. `?environment=`, `?release=`, `?phase=` | `viewer` |
 | POST | `/projects/{name}/promotions` | Ask for a release to land on an environment; the policy decides | `developer` |

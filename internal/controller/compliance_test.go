@@ -257,7 +257,7 @@ func TestAttestBuildSignsAndAttachesTheBuildRecord(t *testing.T) {
 	reconciler, attester, build, project, target := attestFixtures(t)
 	image := "registry.example.com/shop@sha256:" + strings.Repeat("a", 64)
 
-	status := reconciler.attestBuild(context.Background(), build, project, target, image)
+	status := reconciler.attestBuild(context.Background(), build, project, target, artifactSubject{Strategy: target.Strategy, Image: image})
 	if status == nil {
 		t.Fatal("no artifact status was produced")
 	}
@@ -296,7 +296,7 @@ func TestAttestBuildSignsAndAttachesTheBuildRecord(t *testing.T) {
 func TestAttestBuildSaysSoWhenThereIsNoDigest(t *testing.T) {
 	reconciler, attester, build, project, target := attestFixtures(t)
 
-	status := reconciler.attestBuild(context.Background(), build, project, target, "registry.example.com/shop:abc123")
+	status := reconciler.attestBuild(context.Background(), build, project, target, artifactSubject{Strategy: target.Strategy, Image: "registry.example.com/shop:abc123"})
 	if status.Digest != "" {
 		t.Errorf("a tag reference produced a digest: %q", status.Digest)
 	}
@@ -315,7 +315,7 @@ func TestAttestBuildRecordsAFailureWithoutLosingTheArtifact(t *testing.T) {
 	attester.err = errors.New("the registry refused the referrers write")
 	image := "registry.example.com/shop@sha256:" + strings.Repeat("a", 64)
 
-	status := reconciler.attestBuild(context.Background(), build, project, target, image)
+	status := reconciler.attestBuild(context.Background(), build, project, target, artifactSubject{Strategy: target.Strategy, Image: image})
 	if status.Digest == "" {
 		t.Error("a failed attestation lost the artifact's identity")
 	}
@@ -340,7 +340,7 @@ func TestAttestBuildDoesNothingWhenAttestationIsOff(t *testing.T) {
 	}
 
 	image := "registry.example.com/shop@sha256:" + strings.Repeat("a", 64)
-	status := reconciler.attestBuild(context.Background(), build, project, target, image)
+	status := reconciler.attestBuild(context.Background(), build, project, target, artifactSubject{Strategy: target.Strategy, Image: image})
 	if status.Digest == "" {
 		t.Error("turning attestation off also lost the artifact's identity, which is not the same setting")
 	}
@@ -370,7 +370,7 @@ func TestAttestBuildCountersignsWhatTheBuilderProduced(t *testing.T) {
 	// What BuildKit reports when it attests: the index, not the image.
 	index := "registry.example.com/shop@sha256:" + strings.Repeat("9", 64)
 
-	status := reconciler.attestBuild(context.Background(), build, project, target, index)
+	status := reconciler.attestBuild(context.Background(), build, project, target, artifactSubject{Strategy: target.Strategy, Image: index})
 	if status.Message != "" {
 		t.Fatalf("attesting reported %q", status.Message)
 	}
@@ -433,7 +433,7 @@ func TestAttestBuildKeepsTheBuildRecordWhenTheBuilderSaidNothing(t *testing.T) {
 	reconciler, _, build, project, target := attestFixtures(t)
 	image := "registry.example.com/shop@sha256:" + strings.Repeat("a", 64)
 
-	status := reconciler.attestBuild(context.Background(), build, project, target, image)
+	status := reconciler.attestBuild(context.Background(), build, project, target, artifactSubject{Strategy: target.Strategy, Image: image})
 	if status.Message != "" {
 		t.Fatalf("attesting reported %q", status.Message)
 	}
@@ -453,7 +453,7 @@ func TestAttestBuildSurvivesAnUnreadableBuilderAttestation(t *testing.T) {
 	attester.harvestErr = errors.New("the registry closed the connection")
 	image := "registry.example.com/shop@sha256:" + strings.Repeat("a", 64)
 
-	status := reconciler.attestBuild(context.Background(), build, project, target, image)
+	status := reconciler.attestBuild(context.Background(), build, project, target, artifactSubject{Strategy: target.Strategy, Image: image})
 	if status.Digest != "sha256:"+strings.Repeat("a", 64) {
 		t.Errorf("the artifact lost its identity: %+v", status)
 	}
