@@ -285,13 +285,19 @@ func previewsRefusalFor(name string, source kitchenv1alpha1.ProjectSourceSpec) s
 }
 
 // repositorySettingRefusal is the same shape of answer for the other settings
-// that belong to a repository: the production branch, and the review
-// requirement made against it.
-func repositorySettingRefusal(project *kitchenv1alpha1.Project) string {
+// that belong to a repository: the production branch and the review
+// requirement made against it, and the four that say how a commit becomes an
+// image.
+//
+// They are refused rather than ignored, which is the rule the whole of
+// [patchProjectRequest] is written to: a build strategy stored on a project
+// that builds nothing is a setting that reads back and does nothing, and the
+// person who set it goes looking for what it changed. `settings` names the
+// ones the request carried, as the sentence says them.
+func repositorySettingRefusal(project *kitchenv1alpha1.Project, settings string) string {
 	return fmt.Sprintf(
-		"a production branch and a pull request requirement are a repository's settings, and %q has no "+
-			"repository: its source is the image %s",
-		project.Name, project.Spec.Source.ImageSource().Reference())
+		"%s, and %q has no repository: its source is the image %s",
+		settings, project.Name, project.Spec.Source.ImageSource().Reference())
 }
 
 func (s *Server) createProject(w http.ResponseWriter, req *http.Request) {
@@ -913,6 +919,69 @@ func applyProjectBuildAndRuntime(project *kitchenv1alpha1.Project, body patchPro
 	return nil
 }
 
+// refusedWorkloadBuiltFromNoRepository answers the request when a workload
+// declares a build and the project has no repository to build it from, and
+// reports whether it did.
+//
+// It is the one cross-field rule a workload's own spec cannot state — `image`
+// and `build` exclude each other there, and neither knows what the project's
+// source is — so the CRD carries it as a CEL rule and this carries it as a
+// sentence, the way the singleton pair does: a caller who asked for the wrong
+// one of two answers is told which one is available here rather than handed
+// CEL.
+func refusedWorkloadBuiltFromNoRepository(
+	w http.ResponseWriter, project *kitchenv1alpha1.Project, processes []kitchenv1alpha1.ProcessSpec,
+) bool {
+	if project.Spec.Source.HasRepository() {
+		return false
+	}
+	for _, workload := range processes {
+		if workload.Build == nil {
+			continue
+		}
+		badRequest(w, "workload %q is built from the repository, and %q has no repository: "+
+			"its source is the image %s, so every workload of it runs an image somebody else "+
+			"built — give %q an `image` instead of a `build`",
+			workload.Name, project.Name, project.Spec.Source.ImageSource().Reference(), workload.Name)
+		return true
+	}
+	return false
+}
+
+// refusedRepositorySettings answers the request itself when it carries a
+// setting only a repository has and the project has none, and reports whether
+// it did.
+//
+// They are refused rather than ignored: a production branch that read back as
+// the empty string on a project with no branch, or a build strategy stored on
+// a project that builds nothing, is a setting somebody would go looking for
+// the effect of.
+func refusedRepositorySettings(
+	w http.ResponseWriter, project *kitchenv1alpha1.Project, body patchProjectRequest,
+) bool {
+	if project.Spec.Source.HasRepository() {
+		return false
+	}
+	if body.ProductionBranch != nil || body.RequirePullRequest != nil {
+		badRequest(w, "%s", repositorySettingRefusal(project,
+			"a production branch and a pull request requirement are a repository's settings"))
+		return true
+	}
+	// The four that say how a commit becomes an image. A project whose source
+	// is an image builds nothing, so there is no commit for a strategy to be
+	// chosen for and no directory of anything for a build root to name — the
+	// workloads of such a project each name the image they run, which is
+	// `processes`.
+	if body.BuildStrategy != nil || body.DockerfilePath != nil ||
+		body.DockerfileTarget != nil || body.RootDirectory != nil {
+		badRequest(w, "%s", repositorySettingRefusal(project,
+			"a build strategy, a Dockerfile, a Dockerfile stage and a root directory are a "+
+				"repository's settings, and this project builds nothing"))
+		return true
+	}
+	return false
+}
+
 func (s *Server) patchProject(w http.ResponseWriter, req *http.Request) {
 	ctx := req.Context()
 
@@ -934,15 +1003,8 @@ func (s *Server) patchProject(w http.ResponseWriter, req *http.Request) {
 	}
 
 	patch := client.MergeFrom(project.DeepCopy())
-	// The three settings below are the repository's, and a project whose
-	// source is an image has none. They are refused rather than ignored: a
-	// production branch that read back as the empty string on a project with
-	// no branch is a setting somebody would go looking for.
-	if body.ProductionBranch != nil || body.RequirePullRequest != nil {
-		if !project.Spec.Source.HasRepository() {
-			badRequest(w, "%s", repositorySettingRefusal(project))
-			return
-		}
+	if refusedRepositorySettings(w, project, body) {
+		return
 	}
 	if body.ProductionBranch != nil {
 		branch := strings.TrimSpace(*body.ProductionBranch)
@@ -981,6 +1043,9 @@ func (s *Server) patchProject(w http.ResponseWriter, req *http.Request) {
 		processes, err := processesFromRequest(*body.Processes)
 		if err != nil {
 			badRequest(w, "%s", err.Error())
+			return
+		}
+		if refusedWorkloadBuiltFromNoRepository(w, project, processes) {
 			return
 		}
 		project.Spec.Processes = processes

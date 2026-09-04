@@ -110,6 +110,11 @@ type project struct {
 	LatestBuild           string      `json:"latestBuild,omitempty"`
 	CreatedAt             time.Time   `json:"createdAt"`
 	Conditions            []condition `json:"conditions,omitempty"`
+	// Processes is what the project declares it runs besides its web process,
+	// as it declares it now. What an environment is actually running is its
+	// release's list, on GET /environments/{name}/processes — this is the
+	// declaration `processes set` reads to rewrite one entry of.
+	Processes []process `json:"processes,omitempty"`
 }
 
 // connection is one of the platform's Connections as somebody choosing one
@@ -908,7 +913,35 @@ func (e *environment) degradedReason() string {
 type processBuild struct {
 	Strategy       string `json:"strategy"`
 	DockerfilePath string `json:"dockerfilePath,omitempty"`
-	RootDirectory  string `json:"rootDirectory,omitempty"`
+	// DockerfileTarget is the stage of that Dockerfile this workload ships,
+	// absent where it names none and the project's own stage stands in.
+	DockerfileTarget string `json:"dockerfileTarget,omitempty"`
+	RootDirectory    string `json:"rootDirectory,omitempty"`
+}
+
+// imageSource is an image this platform did not build, as a workload or a
+// project declares it. The credential is a Connection's name and never the
+// credential itself — no read on this API answers one.
+type imageSource struct {
+	Repository string `json:"repository"`
+	Tag        string `json:"tag,omitempty"`
+	Digest     string `json:"digest,omitempty"`
+	Connection string `json:"connection,omitempty"`
+	// Reference is the two of them as one string, derived by the platform so
+	// that this CLI and the dashboard cannot spell it differently.
+	Reference string `json:"reference,omitempty"`
+}
+
+// processHealth is a workload's health check with its timings resolved. It is
+// read to be shown and to be sent back unchanged: `processes set` rewrites one
+// workload of a list and returns the rest as they came.
+type processHealth struct {
+	Path                    string `json:"path,omitempty"`
+	Port                    int32  `json:"port,omitempty"`
+	PeriodSeconds           int32  `json:"periodSeconds,omitempty"`
+	TimeoutSeconds          int32  `json:"timeoutSeconds,omitempty"`
+	FailureThreshold        int32  `json:"failureThreshold,omitempty"`
+	StartupFailureThreshold int32  `json:"startupFailureThreshold,omitempty"`
 }
 
 type process struct {
@@ -919,9 +952,13 @@ type process struct {
 	Schedule string   `json:"schedule,omitempty"`
 	// ConcurrencyPolicy and Timeout are a scheduled job's; Replicas and
 	// ReadyReplicas are a worker's declared and actual counts.
+	//
+	// Replicas is a pointer because zero is a count somebody chose — a
+	// workload declared and parked — and `processes set` sends the list back
+	// as it read it.
 	ConcurrencyPolicy string `json:"concurrencyPolicy,omitempty"`
 	Timeout           string `json:"timeout,omitempty"`
-	Replicas          int32  `json:"replicas,omitempty"`
+	Replicas          *int32 `json:"replicas,omitempty"`
 	ReadyReplicas     int32  `json:"readyReplicas,omitempty"`
 	// Singleton is a worker two of which must never run at once: its deploys
 	// stop the old pod before starting the new one instead of overlapping the
@@ -942,6 +979,18 @@ type process struct {
 	// workload that runs the project's image with another command.
 	Image string        `json:"image,omitempty"`
 	Build *processBuild `json:"build,omitempty"`
+	// ImageSource is what the workload declares when its image is one the
+	// platform did not build. `Image` above is what the release resolved that
+	// to; the two differ exactly when the tag has moved since.
+	ImageSource *imageSource `json:"imageSource,omitempty"`
+	// Health is the workload's own health check, absent for one that declared
+	// none — a worker is probed only where it asked to be.
+	Health *processHealth `json:"health,omitempty"`
+	// Previews is what the workload *declared* about preview environments,
+	// absent where it declared nothing and takes its type's default: off for a
+	// worker and a scheduled job, on for a service and a task. What this
+	// environment does with it is Suspended below.
+	Previews *bool `json:"previews,omitempty"`
 	// Suspended is a process this environment declares and does not run: a
 	// preview whose process was not opted in. Reason says so in a sentence.
 	Suspended bool   `json:"suspended,omitempty"`
@@ -961,6 +1010,77 @@ type process struct {
 	// a schedule whose last run failed, a deploy task that failed — so that
 	// this CLI and the dashboard cannot disagree about what red means.
 	Healthy bool `json:"healthy"`
+}
+
+// processWrite is one workload as the settings PATCH takes it, which is not
+// quite how one reads back: the view carries what the platform resolved and
+// what the environment is doing, and the route refuses a field it has never
+// heard of. So the two are separate types and [declaredProcessWrites] is the
+// one conversion between them.
+type processWrite struct {
+	Name              string         `json:"name"`
+	Type              string         `json:"type"`
+	Command           []string       `json:"command,omitempty"`
+	Args              []string       `json:"args,omitempty"`
+	Port              int32          `json:"port,omitempty"`
+	Build             *processBuild  `json:"build,omitempty"`
+	Image             *imageWrite    `json:"image,omitempty"`
+	Replicas          *int32         `json:"replicas,omitempty"`
+	Singleton         bool           `json:"singleton,omitempty"`
+	CPU               string         `json:"cpu,omitempty"`
+	Memory            string         `json:"memory,omitempty"`
+	Schedule          string         `json:"schedule,omitempty"`
+	ConcurrencyPolicy string         `json:"concurrencyPolicy,omitempty"`
+	Timeout           string         `json:"timeout,omitempty"`
+	Previews          *bool          `json:"previews,omitempty"`
+	Health            *processHealth `json:"health,omitempty"`
+}
+
+// imageWrite is a vendored image as the route takes it. It is imageSource
+// without the derived `reference`, which the platform composes and would
+// refuse to be told.
+type imageWrite struct {
+	Repository string `json:"repository"`
+	Tag        string `json:"tag,omitempty"`
+	Digest     string `json:"digest,omitempty"`
+	Connection string `json:"connection,omitempty"`
+}
+
+// declaredProcessWrites is the project's declared list as the route takes it
+// back. It is what makes a one-workload change possible against a route that
+// replaces the whole list: everything this command is not touching goes back
+// exactly as it was read.
+func declaredProcessWrites(declared []process) []processWrite {
+	writes := make([]processWrite, 0, len(declared))
+	for _, workload := range declared {
+		write := processWrite{
+			Name:              workload.Name,
+			Type:              workload.Type,
+			Command:           workload.Command,
+			Args:              workload.Args,
+			Port:              workload.Port,
+			Build:             workload.Build,
+			Replicas:          workload.Replicas,
+			Singleton:         workload.Singleton,
+			CPU:               workload.CPU,
+			Memory:            workload.Memory,
+			Schedule:          workload.Schedule,
+			ConcurrencyPolicy: workload.ConcurrencyPolicy,
+			Timeout:           workload.Timeout,
+			Previews:          workload.Previews,
+			Health:            workload.Health,
+		}
+		if source := workload.ImageSource; source != nil {
+			write.Image = &imageWrite{
+				Repository: source.Repository,
+				Tag:        source.Tag,
+				Digest:     source.Digest,
+				Connection: source.Connection,
+			}
+		}
+		writes = append(writes, write)
+	}
+	return writes
 }
 
 // processRun is one firing of a scheduled job, or a deploy task's one run per
@@ -1110,6 +1230,16 @@ func (c *client) createProject(ctx context.Context, body newProject) (*project, 
 // setEnv replaces a project's whole variable list. The API keeps the value of
 // any variable this body leaves a `value` off, which is what lets the CLI send
 // the list back without ever having read a value.
+// setProcesses replaces the project's declared workload list. The route
+// replaces it wholesale, which is why the caller sends every workload back and
+// not only the one it changed.
+func (c *client) setProcesses(ctx context.Context, name string, processes []processWrite) (*project, error) {
+	answer := &project{}
+	body := map[string]any{"processes": processes}
+	return answer, c.do(ctx, "changing "+name+"'s workloads",
+		http.MethodPatch, "/projects/"+name, nil, body, answer)
+}
+
 func (c *client) setEnv(ctx context.Context, name string, env []envVarWrite) (*project, error) {
 	answer := &project{}
 	body := map[string]any{"env": env}

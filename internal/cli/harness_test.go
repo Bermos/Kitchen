@@ -205,7 +205,7 @@ func (p *platform) serve(w http.ResponseWriter, req *http.Request) {
 	case strings.HasSuffix(path, "/env") && req.Method == http.MethodPatch:
 		p.patchEnv(w, body)
 	case strings.HasPrefix(path, "/projects/"):
-		p.answerProject(w)
+		p.answerProject(w, req, body)
 	case strings.HasSuffix(path, "/logs"):
 		p.answerLogs(w, req)
 	case strings.HasPrefix(path, "/builds/"):
@@ -425,12 +425,58 @@ func (p *platform) readEnvironments() []environment {
 	return p.environmentSteps[at]
 }
 
-func (p *platform) answerProject(w http.ResponseWriter) {
+// answerProject reads the project, and writes it: the settings PATCH answers
+// the project too, so the two are one handler rather than two cases in a
+// switch that is already the longest thing in this file.
+func (p *platform) answerProject(w http.ResponseWriter, req *http.Request, body []byte) {
 	if p.project == nil {
 		writeAnswer(w, http.StatusNotFound, errorBody{Error: "no such project"})
 		return
 	}
+	if req.Method == http.MethodPatch {
+		p.patchProject(body)
+	}
 	writeAnswer(w, http.StatusOK, p.project)
+}
+
+// patchProject is the settings write, and the only part of it any test needs:
+// the workload list, which the route replaces wholesale. It stores what it was
+// sent and answers the project, the way the real route does — so a test can
+// assert both what the CLI put on the wire and what it printed afterwards.
+func (p *platform) patchProject(body []byte) {
+	asked := struct {
+		Processes *[]processWrite `json:"processes"`
+	}{}
+	_ = json.Unmarshal(body, &asked)
+	if asked.Processes != nil {
+		declared := make([]process, 0, len(*asked.Processes))
+		for _, workload := range *asked.Processes {
+			declared = append(declared, process{
+				Name: workload.Name, Type: workload.Type,
+				Command: workload.Command, Args: workload.Args,
+				Port: workload.Port, Build: workload.Build,
+				Replicas: workload.Replicas, Singleton: workload.Singleton,
+				CPU: workload.CPU, Memory: workload.Memory,
+				Schedule: workload.Schedule, ConcurrencyPolicy: workload.ConcurrencyPolicy,
+				Timeout: workload.Timeout, Previews: workload.Previews,
+				Health: workload.Health, Healthy: true,
+			})
+			if image := workload.Image; image != nil {
+				reference := image.Repository
+				switch {
+				case image.Digest != "":
+					reference += "@" + image.Digest
+				case image.Tag != "":
+					reference += ":" + image.Tag
+				}
+				declared[len(declared)-1].ImageSource = &imageSource{
+					Repository: image.Repository, Tag: image.Tag, Digest: image.Digest,
+					Connection: image.Connection, Reference: reference,
+				}
+			}
+		}
+		p.project.Processes = declared
+	}
 }
 
 func (p *platform) answerEnvironment(w http.ResponseWriter, name string) {

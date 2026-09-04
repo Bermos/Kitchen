@@ -100,10 +100,28 @@ type processView struct {
 	ImageSource *imageSourceView `json:"imageSource,omitempty"`
 	// ConcurrencyPolicy and Timeout are a scheduled process's; Replicas is a
 	// worker's declared count and ReadyReplicas what is actually up.
+	//
+	// Replicas is a pointer because zero is a count somebody chose: a
+	// workload declared and parked, which is how one is turned off without
+	// losing its command. As a plain int with `omitempty` it read back as
+	// absent, and a client that edited the list and sent it back — the
+	// dashboard's workloads editor, `kitchen processes set` — turned every
+	// parked workload back on. It is [projectView.Replicas]'s reasoning, one
+	// level down.
 	ConcurrencyPolicy string `json:"concurrencyPolicy,omitempty"`
 	Timeout           string `json:"timeout,omitempty"`
-	Replicas          int32  `json:"replicas,omitempty"`
+	Replicas          *int32 `json:"replicas,omitempty"`
 	ReadyReplicas     int32  `json:"readyReplicas,omitempty"`
+	// Previews is what this workload *declared* about preview environments,
+	// absent where it declared nothing and takes the default for its type —
+	// off for a worker and a scheduled job, on for a service and a task.
+	//
+	// It is the declaration rather than the resolved answer for the reason
+	// Replicas is a pointer: a client that reads the list to edit it has to
+	// be able to send back what it did not touch. What an environment
+	// actually does with it is `suspended` below, which is the resolved
+	// answer and is a fact about that environment.
+	Previews *bool `json:"previews,omitempty"`
 	// Singleton is a worker two of which must never run at once, so its
 	// deploys stop the old pod before starting the new one. It is reported
 	// because it is the difference between a rollout that overlaps two
@@ -242,6 +260,7 @@ func newProcessView(
 		Port:        process.Port,
 		Build:       newProcessBuildView(process.Build),
 		ImageSource: newImageSourceView(process.Image),
+		Previews:    process.Previews,
 		Healthy:     true,
 	}
 	switch {
@@ -254,7 +273,7 @@ func newProcessView(
 		// the one number somebody watching a stuck deploy wants.
 		view.Timeout = (time.Duration(process.TimeoutSeconds()) * time.Second).String()
 	default:
-		view.Replicas = process.ReplicaCount()
+		view.Replicas = ptr.To(process.ReplicaCount())
 		view.Singleton = process.Singleton
 	}
 	if quantity, ok := process.Resources.Limits[corev1.ResourceCPU]; ok {
@@ -290,7 +309,7 @@ func newProcessView(
 		view.Healthy = status.LastRun == nil || status.LastRun.Phase != kitchenv1alpha1.RunFailed
 	default:
 		view.ReadyReplicas = status.ReadyReplicas
-		view.Replicas = status.Replicas
+		view.Replicas = ptr.To(status.Replicas)
 		view.Healthy = status.Replicas == 0 || status.ReadyReplicas > 0
 	}
 	return view
