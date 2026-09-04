@@ -19,6 +19,7 @@ package database
 import (
 	"context"
 	"errors"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -178,6 +179,28 @@ func TestProvisionBindsOnceTheClusterIsServing(t *testing.T) {
 	}
 	if instance.Binding.Password != "s3cr#t/pass" {
 		t.Fatalf("password %q", instance.Binding.Password)
+	}
+}
+
+// libpq's default is `prefer`, which negotiates TLS and falls back to
+// plaintext without saying so — on a cluster with no network policy that is
+// every application's credentials and every row on the wire between two
+// namespaces. CloudNativePG serves TLS on every cluster it creates, so the
+// binding asks for it.
+func TestTheBindingRequiresTLS(t *testing.T) {
+	cnpg := cnpgAgainstFakeCluster(t, readyCluster(), appSecret("kitchen-shop-db"))
+
+	instance, err := cnpg.Provision(context.Background(), shopDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	parsed, err := url.Parse(instance.Binding.URL)
+	if err != nil {
+		t.Fatalf("connection URL %q does not parse: %v", instance.Binding.URL, err)
+	}
+	if mode := parsed.Query().Get("sslmode"); mode != "require" {
+		t.Fatalf("sslmode %q, want require (URL %q)", mode, instance.Binding.URL)
 	}
 }
 
