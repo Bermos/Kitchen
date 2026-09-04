@@ -1513,7 +1513,13 @@ cannot write it carries on and exchanges every time.
   /claims` carries it. So are `objectStore`, `inngest` and `redis`, which
   between them added five claim types to that route and not one route — which
   is the point of a claim type being a row in a table rather than a surface of
-  its own. Requiring `admin` for `deletionPolicy: Delete` is the same decision
+  its own. The self-hosted Inngest provider is the same decision once more and
+  the clearest case of it: it added a Connection provider and a second
+  provisioner behind an existing claim type, so `POST /claims` gained one
+  optional field (`inngest.servePath`) and one more accepted value for another
+  (`inngest.mode: serve`), `POST /connections` gained a provider whose
+  `credential` is omitted, and no route was added or renamed. `kitchen api`
+  reaches both. Requiring `admin` for `deletionPolicy: Delete` is the same decision
   once more, and the cheapest kind of it: it added no route, renamed none, and
   left both rows' own requirements where they were — so `kitchen api POST
   /claims` and `kitchen api DELETE /claims/{name}` reach both ends of it, and

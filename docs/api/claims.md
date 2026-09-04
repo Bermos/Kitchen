@@ -369,10 +369,13 @@ one case that really does resolve on its own, and that one waits
 /claim-volumes`](#what-a-volume-claim-could-bind), so that a name is chosen
 rather than typed from memory.
 
-**`inngest`** asks a Connection with the `backgroundJobs` capability — an
-Inngest Cloud API key — for the keys a worker connects to Inngest with, so
-that the application gets retries, sleeps, fan-out, concurrency limits and
-cron without supervising any of it:
+**`inngest`** asks a Connection with the `backgroundJobs` capability for the
+keys and the address an application reaches Inngest at, so that it gets
+retries, sleeps, fan-out, concurrency limits and cron without supervising any
+of it. Two providers answer it, and which one the connection is decides
+almost everything below: **`inngest`** is an Inngest Cloud account, reached
+with an API key; **`inngestSelfHosted`** is an Inngest this platform runs, one
+server for the claim and one for every preview.
 
 ```sh
 curl -sS -X POST -H "authorization: Bearer $TOKEN" \
@@ -384,23 +387,30 @@ curl -sS -X POST -H "authorization: Bearer $TOKEN" \
 | Field | Default | What it does |
 |---|---|---|
 | `inngest.app` | the claim's name | The app ID the application's Inngest client is created with (`new Inngest({ id })`). The claim reports on it; it cannot set it |
-| `inngest.environment` | `production` | The Inngest environment production binds to — `production`, or a custom environment created in the Inngest dashboard. Previews never bind to it |
-| `inngest.mode` | `connect` | How the worker reaches Inngest. `connect` is the only value; `serve` is refused, saying why |
+| `inngest.environment` | `production` | The Inngest environment production binds to — `production`, or a custom environment created in the Inngest dashboard. Previews never bind to it. **Refused** through `inngestSelfHosted`, which has no environments: a preview there gets a server of its own instead |
+| `inngest.mode` | `connect` | How the worker and Inngest reach each other. `connect` works through either provider; `serve` is refused through `inngest` — Inngest Cloud's call would come from the internet and meet a protected preview's login page — and provisioned through `inngestSelfHosted`, whose server is in this cluster |
+| `inngest.servePath` | `/api/inngest` | Serve mode only: where the application mounts its Inngest handler. The platform composes the URL the server calls out of each environment's own address and this path |
 
-The binding is four keys, spelled as the variables the Inngest SDKs read so
+The binding is six keys, spelled as the variables the Inngest SDKs read so
 that `fromResourceClaim` names the key and the application reads a variable
-of the same name: `INNGEST_EVENT_KEY`, `INNGEST_SIGNING_KEY`, `INNGEST_ENV`
-and `INNGEST_BASE_URL`. `INNGEST_ENV` is empty for production and names the
-preview's branch environment in a preview; `INNGEST_BASE_URL` is empty on
-Inngest Cloud on purpose — the SDKs use it for the event API and the REST API
-alike, and Cloud serves those from two hosts (`inn.gs` and
-`api.inngest.com`), so setting it to either would misroute the other. A
-self-hosted Inngest, which is not this provider, is what would set it. Bind
-all four through `Project.spec.env`, and today that reaches every process of
+of the same name: `INNGEST_EVENT_KEY`, `INNGEST_SIGNING_KEY`, `INNGEST_ENV`,
+`INNGEST_BASE_URL`, `INNGEST_DEV` and `INNGEST_CONNECT_GATEWAY_URL`. What is
+in them depends on the provider:
+
+| Key | Through `inngest` (Cloud) | Through `inngestSelfHosted` |
+|---|---|---|
+| `INNGEST_EVENT_KEY`, `INNGEST_SIGNING_KEY` | read from the account, per environment; the platform mints neither, because the API cannot | minted by the platform for that server alone, because it is that server that checks them |
+| `INNGEST_ENV` | empty for production, the preview's branch environment in a preview | always empty: there are no environments to select, which is why a preview gets a whole server |
+| `INNGEST_BASE_URL` | empty **on purpose** — the SDKs use it for the event API and the REST API alike, and Cloud serves those from two hosts (`inn.gs` and `api.inngest.com`), so setting it to either would misroute the other | the server's own in-cluster address, `http://<server>.kitchen-inngest.svc:8288`, which serves both |
+| `INNGEST_DEV` | empty; unset is cloud mode already | `0` — cloud mode with the base URL pointed here, which is what [the self-hosting guide](https://www.inngest.com/docs/self-hosting) says to set, and what keeps signature verification on |
+| `INNGEST_CONNECT_GATEWAY_URL` | empty; the SDK discovers Cloud's gateway itself | `ws://<server>.kitchen-inngest.svc:8289/v0/connect`. It is the one key here that is **not** an SDK variable: the SDKs take the gateway as `gatewayUrl` in code (`connect({ gatewayUrl })`), and a self-hosted gateway is on a port nothing could otherwise guess |
+
+Bind them through `Project.spec.env`, and today that reaches every process of
 the project — there is no per-process environment yet (#271), so the web
-process carries the keys as well as the worker that uses them. It takes no
-`deletionPolicy`: an Inngest app holds no data the platform could destroy
-(see below).
+process carries the keys as well as the worker that uses them. The type takes
+no `deletionPolicy`: there is nothing here a third party is holding for a
+policy to choose about, and what deleting the claim does under each provider
+is [below](#what-deleting-an-inngest-claim-does).
 
 *What the provider does, and what it cannot.* This type is shaped by five
 facts about Inngest Cloud, established against its documentation and its
@@ -473,12 +483,88 @@ counts rather than checks: the claim's `ConnectWorkers` condition carries
 the number of environments reading the binding and the numbers above, and
 the account's billing page is where the cap is.
 
-**What deleting the claim does.** The binding secrets go and the preview
-branch environments are archived. The app record stays at Inngest until
-somebody archives it in the dashboard, the keys are the account's, and
-event and run history live at Inngest under the account's own retention —
-nothing the platform could destroy, which is why the type refuses a
-`deletionPolicy`.
+*The self-hosted provider, and the tenancy answer.* `inngestSelfHosted` runs
+[the Inngest binary](https://www.inngest.com/docs/self-hosting) — every one of
+Inngest's services in one image — in the cluster Kitchen was installed into,
+under the operator's own account. It holds no credential for the same reason
+`cnpg` and `valkey` hold none.
+
+**A server per environment is the answer to the question #268 left open.**
+Two previews registering functions on the same event name into one server
+means an event from one can trigger a function in the other: app naming
+namespaces the apps, it does not namespace the event stream. Cloud solves
+that with branch environments; a self-hosted server has no environments at
+all, so the only boundary left is the process. A preview therefore gets an
+Inngest of its own — its own event stream, its own function set, its own run
+history, its own keys — which dissolves the question rather than documenting
+it. The cost is bounded by what v0.30.0 shipped: the server parks with its
+preview and comes back on wake, and the project's preview ceiling caps how
+many can exist at once. An installation that would rather have one server for
+everything asks for `previewMode: shared`, and reads the paragraph above about
+what shared means.
+
+**Storage is two shapes, and a preview's is not production's.** Production's
+server gets what the Inngest docs ask for — an external Postgres for the
+system data and the history, an external Redis for the queue and the run
+state — and gets them from the two in-cluster providers the platform already
+has: a CloudNativePG `Cluster` and a Valkey, provisioned through the same code
+paths a `postgres` and a `redis` claim go through, the Valkey as a `queue`
+because what is in it is function runs nobody can recompute. **A preview's
+server uses Inngest's own embedded store instead** — SQLite and the in-memory
+Redis, on a PersistentVolumeClaim of its own. That is one pod per preview
+rather than three, on the single-node clusters this platform is built for, for
+an environment that is parked most of the time and holds nothing anybody has
+to keep. It is the one respect in which a preview's Inngest is not
+production's shape, and it is stated here rather than discovered. It follows
+that CloudNativePG has to be installed and the cluster needs a default
+StorageClass; a claim that finds neither fails as a claim, naming what is in
+the way.
+
+**Serve mode is what a server in this cluster makes possible.** In connect
+mode the worker dials the server's gateway and holds the connection, which
+never crosses the interceptor — so the claim declares `keepsPodsRunning` and
+the whole project keeps its pods, exactly as it does against Cloud. In serve
+mode the server calls the application at the environment's own URL: the call
+crosses the interceptor, which wakes an idle environment, so a serve binding
+declares `keepsPodsRunning: false` and the project keeps its scale to zero.
+The platform composes that URL out of each environment's published address
+and `inngest.servePath`, tells the server to poll it, and rolls the server
+when the address moves — an application cannot write a preview's hostname
+down, since it carries a pull request number nothing in the repository has
+heard of. The two things serve mode does not do: a **protected** preview
+answers the server's call with a login page, so a protected preview wants
+connect; and an environment that has not been published yet tells the server
+nothing until the reconcile after it is.
+
+**What the claim can and cannot report.** A self-hosted server publishes no
+app inventory this operator could read, so the `AppConnected` condition is
+`Unknown` with reason `NotReported` and says where the answer is: the
+server's own dashboard, at the binding's `INNGEST_BASE_URL`. The
+`ConnectWorkers` condition counts environments against Inngest's connection
+cap through Cloud, and through a self-hosted server in serve mode says there
+is no cap to count against.
+
+**The image is pinned in code**, next to the port numbers the binding is
+built from, the way `internal/controller/addon_keda.go` pins its chart pair —
+what the platform runs is what the platform knows how to operate. An
+installation overrides it on the connection (`config.image`), and bumping the
+default means reading Inngest's release notes for the persistence flags the
+provisioner sets; [CRDS.md](../CRDS.md#connection-namespaced-kitchen-system)
+says what the connection's config takes.
+
+**What deleting an inngest claim does.** Through an Inngest Cloud connection:
+the binding secrets go and the preview branch environments are archived. The
+app record stays at Inngest until somebody archives it in the dashboard, the
+keys are the account's, and event and run history live at Inngest under the
+account's own retention — nothing the platform could destroy, which is why the
+type refuses a `deletionPolicy`.
+
+Through a self-hosted connection the same refusal means the opposite thing:
+**every one of those objects is one this platform created for this claim**, so
+deleting the claim destroys the server, the Postgres and the queue behind it,
+and every event and function run they hold. There is no `Retain` here, and
+that is worth knowing before deleting a claim in front of a queue that still
+has work in it.
 
 **`redis`** asks a Connection with the `cache` capability for somewhere to
 put what an application can afford to recompute, or work it cannot afford to
@@ -885,7 +971,10 @@ claim, and the Deployment's strategy is set — and the claim's answer carries
 them so the screen can say so before the claim is made. The `inngest` type
 is the first to declare `keepsPodsRunning`, and since scale to zero is a
 project-level policy the cost is the whole project's: the project settings
-say so, next to the switch that would otherwise decide it.
+say so, next to the switch that would otherwise decide it. It is also the
+first type where a claim overrides its provider's declaration: the flag is
+a property of *connect*, not of Inngest, so a claim in `mode: serve` through
+a self-hosted server declares `false` and keeps the project's scale to zero.
 
 **And what an idle preview does to it** (`canIdle`, `idleReason`). A preview
 environment that scales to zero takes its dedicated backing services down with
@@ -986,6 +1075,7 @@ with the body above.
 | `volume` | `storageClass` | `fresh` — a new, empty volume of the same size and class, never a copy of production's: the preview declares provenance synthetic | unaffected | **stays as it is** — a PersistentVolumeClaim is storage and no compute, so there is nothing to park: an idle preview's volume costs its capacity and nothing else | **recreate, with downtime** — a ReadWriteOnce volume attaches to one pod at a time, so the process mounting it runs one replica and is deployed by stopping the old pod before starting the new one — a rolling update would leave the new pod waiting in Multi-Attach for a volume the old pod never releases. Every deploy of that process has a gap in serving; a StorageClass detected to support ReadWriteMany lifts both |
 | `volume` | `boundVolume` | `shared` — the same volume, mounted read-only: a preview of an application whose data is the point of it reads exactly what production reads and cannot change any of it. A ReadWriteOnce volume gives previews nothing instead — production has it, and it attaches to one pod at a time | unaffected | **stays as it is** — the volume is not the platform's to park: it existed before the claim and outlives it, and an idle preview mounting it read-only costs nothing either way | **recreate, with downtime** — a volume mounted ReadWriteOnce attaches to one pod at a time, so the process mounting it runs one replica and is deployed by stopping the old pod before starting the new one. The claim declares its own access mode, and ReadOnlyMany or ReadWriteMany lifts both |
 | `inngest` | `inngest` | `branch` — an Inngest branch environment of the preview's own — its own event stream, function set and run history, empty rather than a copy of production's, selected by INNGEST_ENV on the account's shared branch keys; archived, not deleted, when the preview goes | **blocked** — a connect worker holds an outbound WebSocket to Inngest's gateway that never crosses the interceptor, so nothing can tell when it is idle — and scale to zero is a project-level policy, so every environment of the project keeps its pods, previews included | **stays as it is** — the branch environment is Inngest's to run and this platform has no lever on it; the worker that reads it never idles either, for the reason beside this one | unaffected |
+| `inngest` | `inngestSelfHosted` | `fresh` — an Inngest server of the preview's own, run in this cluster — its own event stream, function set and run history, empty rather than a copy of production's, on its own storage; created with the preview and destroyed with it, which is what keeps one pull request's events from triggering another's functions | **blocked** — in connect mode, where the worker holds an outbound WebSocket to the server's gateway that never crosses the interceptor — and scale to zero is a project-level policy, so every environment of the project keeps its pods. A claim in serve mode declares otherwise: the server is in this cluster and calls the environment's own URL, so the call crosses the interceptor and wakes it, and the project keeps its scale to zero | **parks with it** — the preview's server is scaled to no pods with it and back up on wake; the volume its runs and its queue are on survives the park, so a preview that wakes finds the work it left | unaffected |
 | `redis` | `valkey` | `fresh` — a new, empty instance of the preview's own, configured like production's and torn down with the preview: the branch declares provenance synthetic | unaffected | **parks with it** — a preview's instance is scaled to no pods with it and back up on wake; a queue's volume survives the park, and a cache holds nothing it cannot recompute | unaffected |
 | `redis` | `redis` | `fresh` — a logical database of the preview's own at the same server, allocated to it alone and handed back when the preview closes: the branch declares provenance synthetic — it never holds production's keys, though a server the platform does not run cannot be emptied, so a database is handed out again only once every untouched one is gone | unaffected | **stays as it is** — a logical database at a server this platform does not run: there is no process of the preview's own to park, and the server stays up for every other claim on it | unaffected |
 <!-- end generated -->
@@ -1007,9 +1097,12 @@ provider's declarations about the workload. All of it is on the claim's
 status too, which is what a preview's workload, the policy engine and the
 screen act on.
 
-A preview of an `inngest` claim binds the account's shared branch keys with
-`INNGEST_ENV` naming its own branch environment, which is what routes its
-events and functions apart from every other preview's.
+A preview of an `inngest` claim through an Inngest Cloud connection binds the
+account's shared branch keys with `INNGEST_ENV` naming its own branch
+environment, which is what routes its events and functions apart from every
+other preview's. Through a self-hosted connection it binds a whole server of
+its own — its own address and its own keys — because a self-hosted Inngest has
+no environments to route with.
 
 A preview of a claim whose mode is `none` deploys **without the variables
 read from it**, and its `ClaimsBound` condition says which claim and why,

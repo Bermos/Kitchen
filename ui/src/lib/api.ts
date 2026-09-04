@@ -1982,12 +1982,14 @@ export interface ClaimObjectStore {
 
 /** What an inngest claim binds, as GET /claims answers it with the
  * defaults filled in: the Inngest app ID the worker connects as, the Inngest
- * environment production reads, and the mode — connect, the only one the
- * platform provisions. */
+ * environment production reads, the mode — connect anywhere, serve only
+ * through an Inngest the platform runs itself — and, in serve mode, where
+ * the application mounts its handler. */
 export interface ClaimInngest {
   app: string;
   environment: string;
   mode: string;
+  servePath: string;
 }
 
 /** What a redis claim asked its instance to be. `usage` is the one that
@@ -2202,7 +2204,9 @@ export interface NewClaim {
   };
   /** inngest only: the app ID the worker connects as (empty takes the
    * claim's name), the Inngest environment production reads (empty means
-   * production), and the mode — connect is the only one provisioned. */
+   * production, and a self-hosted server refuses it — it has none), the
+   * mode (connect, or serve through a self-hosted server) and the serve
+   * path. */
   inngest?: Partial<ClaimInngest>;
   /** Classify the data the resource will hold. May not exceed the project's
    * class; refused in an unclassified project (classify the project first). */

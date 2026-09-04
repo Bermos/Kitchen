@@ -33,6 +33,7 @@ const providers = [
   { label: "CloudNativePG — Postgres the platform runs itself", value: "cnpg" },
   { label: "S3-compatible object store — MinIO, AWS S3, Cloudflare R2", value: "s3" },
   { label: "Inngest Cloud — durable background work", value: "inngest" },
+  { label: "Inngest — durable background work, run by the platform itself", value: "inngestSelfHosted" },
   { label: "Valkey — a cache the platform runs itself", value: "valkey" },
   { label: "Redis — a cache or queue somewhere else: Upstash, ElastiCache, Aiven", value: "redis" },
 ];
@@ -61,11 +62,12 @@ const secretAccessKey = ref("");
 // encrypted.
 const redisURL = ref("");
 
-// The two providers with nothing to store: CloudNativePG and the in-cluster
-// Valkey provision with the operator's own account, so there is no
-// credential, no field for one, and a credential sent anyway is refused
-// rather than kept and never read.
-const needsCredential = computed(() => provider.value !== "cnpg" && provider.value !== "valkey");
+// The three providers with nothing to store: CloudNativePG, the in-cluster
+// Valkey and the self-hosted Inngest all provision with the operator's own
+// account, so there is no credential, no field for one, and a credential
+// sent anyway is refused rather than kept and never read.
+const credentialLess = ["cnpg", "valkey", "inngestSelfHosted"];
+const needsCredential = computed(() => !credentialLess.includes(provider.value));
 const isS3 = computed(() => provider.value === "s3");
 const isRedis = computed(() => provider.value === "redis");
 const usesToken = computed(

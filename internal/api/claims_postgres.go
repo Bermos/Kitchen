@@ -53,6 +53,7 @@ func (postgresClaimShaper) config(
 	w http.ResponseWriter,
 	body *createClaimRequest,
 	_ *kitchenv1alpha1.Project,
+	_ string,
 ) (*runtime.RawExtension, bool) {
 	postgres, ok := validPostgresConfig(w, body.Postgres)
 	if !ok {

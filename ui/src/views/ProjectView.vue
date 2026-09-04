@@ -669,8 +669,14 @@ function claimRequirements(claim: Claim): string[] {
   }
   if (claim.inngest) {
     // What the worker connects as and where: the app ID is the thing the
-    // application has to match, so it is the badge.
-    return [`app ${claim.inngest.app}`, claim.inngest.environment];
+    // application has to match, so it is the badge. The mode is beside it
+    // when it is not the usual one, because serve and connect are opposite
+    // answers to "what holds this environment up".
+    return [
+      `app ${claim.inngest.app}`,
+      claim.inngest.environment,
+      ...(claim.inngest.mode && claim.inngest.mode !== "connect" ? [claim.inngest.mode] : []),
+    ];
   }
   const postgres = claim.postgres;
   if (postgres) {

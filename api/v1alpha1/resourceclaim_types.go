@@ -68,8 +68,10 @@ const (
 	// ClaimTypeInngest is an Inngest app: durable background work — retries,
 	// sleeps, fan-out, concurrency limits and cron — run by Inngest, with
 	// the application's worker holding an outbound connection to it. The
-	// claim binds the keys a worker connects with, read from the Inngest
-	// account behind a backgroundJobs-capable Connection.
+	// claim binds the keys a worker reaches Inngest with, read from the
+	// Inngest Cloud account behind a backgroundJobs-capable Connection — or
+	// minted for a server of the claim's own, run in this cluster, when the
+	// Connection is the self-hosted provider.
 	ClaimTypeInngest = "inngest"
 
 	// ClaimTypeRedis is a Redis-speaking cache or queue from a
@@ -124,12 +126,17 @@ var ClaimTypes = []ClaimType{
 	{Name: ClaimTypeOIDCClient, Resource: "OAuth client"},
 	{Name: ClaimTypeObjectStore, Capability: CapabilityObjectStore, Resource: "bucket", HoldsData: true},
 	{Name: ClaimTypeVolume, Resource: "volume", HoldsData: true},
-	// An Inngest app holds no data the platform could destroy: event history
-	// and function runs live at Inngest under the account's own retention,
-	// the keys are the account's, and a preview's branch environment is
-	// archived rather than deleted — archiving deletes nothing there. So
-	// deleting the claim always takes back only what the platform put into
-	// the world, and deletionPolicy has nothing to say.
+	// An Inngest app holds nothing at a provider the platform is merely
+	// borrowing: at Inngest Cloud the event history and the function runs
+	// live under the account's own retention, the keys are the account's,
+	// and a preview's branch environment is archived rather than deleted.
+	// Self-hosted, everything the claim reads is a workload this platform
+	// created for it. Either way deleting the claim takes back exactly what
+	// the platform put into the world — nothing at Cloud, and the whole
+	// server self-hosted, with the Postgres and the queue behind it — so
+	// deletionPolicy has nothing to choose between. What that means for a
+	// self-hosted claim is said where the claim is deleted, and in
+	// docs/api/claims.md.
 	{Name: ClaimTypeInngest, Capability: CapabilityBackgroundJobs, Resource: "Inngest app"},
 	{Name: ClaimTypeRedis, Capability: CapabilityCache, Resource: "cache", HoldsData: true},
 }
@@ -660,19 +667,48 @@ type InngestConfig struct {
 	// +optional
 	Environment string `json:"environment,omitempty"`
 
-	// Mode is how the worker reaches Inngest. `connect` — the only mode the
-	// platform provisions — has the worker hold an outbound WebSocket to
-	// Inngest's gateway, which is what makes a protected preview work and
-	// what stops the project idling. `serve`, where Inngest calls the
-	// application over HTTP, is refused: the call would meet the preview
-	// gate and get a login page, and the sync it needs would have the
-	// platform hand Inngest a URL per deploy. Empty means connect.
+	// Mode is how the worker reaches Inngest. `connect` has the worker hold
+	// an outbound WebSocket to Inngest's gateway, which is what makes a
+	// protected preview work and what stops the project idling — every pod
+	// holding one never crosses the interceptor, so nothing can tell when it
+	// is idle. `serve`, where Inngest calls the application over HTTP, is
+	// refused against Inngest Cloud: the call comes from the internet, meets
+	// the preview gate and gets a login page. It is allowed against a
+	// self-hosted server, which is in this cluster and calls the
+	// environment's own URL — the call crosses the interceptor, which is the
+	// interceptor doing exactly what it exists for, so a serve binding holds
+	// no pods up and the project keeps its scale to zero. Empty means
+	// connect.
 	// +optional
 	Mode string `json:"mode,omitempty"`
+
+	// ServePath is where the application's Inngest handler is mounted, for
+	// a claim in serve mode: `/api/inngest` unless the application put it
+	// somewhere else. The platform composes the URL the server calls out of
+	// the environment's own URL and this path — the environment half is not
+	// something anybody can write down, since a preview's hostname carries a
+	// pull request number nothing in the repository has heard of. It is
+	// ignored in connect mode, where nothing calls in.
+	// +optional
+	ServePath string `json:"servePath,omitempty"`
 }
 
-// InngestModeConnect is the one mode an inngest claim is provisioned in.
+// InngestDefaultServePath is where every SDK mounts its serve handler unless
+// the application says otherwise.
+const InngestDefaultServePath = "/api/inngest"
+
+// InngestModeConnect is the mode every provider serves: the worker dials out
+// and holds the connection.
 const InngestModeConnect = "connect"
+
+// InngestModeServe is the mode only a self-hosted server serves: Inngest
+// calls the application over HTTP. It is refused against Inngest Cloud,
+// whose call would come from the internet and meet the preview gate.
+const InngestModeServe = "serve"
+
+// InngestModes is every mode a claim may name, in the order a refusal lists
+// them.
+var InngestModes = []string{InngestModeConnect, InngestModeServe}
 
 // InngestDefaultEnvironment is the Inngest environment production binds to
 // when the claim names none.
@@ -698,6 +734,9 @@ func (c *ResourceClaim) Inngest() InngestConfig {
 	}
 	if out.Mode == "" {
 		out.Mode = InngestModeConnect
+	}
+	if out.ServePath == "" {
+		out.ServePath = InngestDefaultServePath
 	}
 	return out
 }

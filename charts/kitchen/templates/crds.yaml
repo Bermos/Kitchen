@@ -3155,6 +3155,7 @@ spec:
                 - cnpg
                 - s3
                 - inngest
+                - inngestSelfHosted
                 - valkey
                 - redis
                 type: string
@@ -3169,7 +3170,7 @@ spec:
                 Secret holding the credential of a '' + self.provider + '' connection.
                 Only a provider that provisions into this cluster with the account
                 the operator itself holds (cnpg) goes without one.'''
-              rule: self.provider in ['cnpg', 'valkey'] || (has(self.credentialsSecretRef)
+              rule: self.provider in ['cnpg', 'valkey', 'inngestSelfHosted'] || (has(self.credentialsSecretRef)
                 && has(self.credentialsSecretRef.name) && size(self.credentialsSecretRef.name)
                 > 0)
             - message: 'this provider takes no credentialsSecretRef: it provisions
@@ -3179,9 +3180,9 @@ spec:
                 credentialsSecretRef: it provisions into this cluster with the account
                 the operator itself holds, and a Secret here would name a credential
                 nothing reads.'''
-              rule: '!(self.provider in [''cnpg'', ''valkey'']) || !has(self.credentialsSecretRef)
-                || !has(self.credentialsSecretRef.name) || size(self.credentialsSecretRef.name)
-                == 0'
+              rule: '!(self.provider in [''cnpg'', ''valkey'', ''inngestSelfHosted''])
+                || !has(self.credentialsSecretRef) || !has(self.credentialsSecretRef.name)
+                || size(self.credentialsSecretRef.name) == 0'
           status:
             description: ConnectionStatus defines the observed state of a Connection.
             properties:

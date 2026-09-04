@@ -26,9 +26,10 @@ import (
 // It is a type of its own rather than a LocalObjectReference because it is
 // the one reference in the API that may legitimately name nothing: the cnpg
 // provider provisions into the cluster Kitchen is installed in, with the
-// operator's own account, and so has no credential for anybody to store. The
-// CEL rule on ConnectionSpec is what keeps that the exception rather than a
-// hole — every other provider is still refused without one.
+// operator's own account, and so has no credential for anybody to store —
+// as do valkey and inngestSelfHosted, which are the same shape. The CEL rule
+// on ConnectionSpec is what keeps that the exception rather than a hole —
+// every other provider is still refused without one.
 type CredentialsReference struct {
 	// +optional
 	Name string `json:"name,omitempty"`
@@ -39,7 +40,7 @@ type CredentialsReference struct {
 // installed in with the operator's own account. It is what the two rules on
 // ConnectionSpec are written against; the set in the markers is held to this
 // one by a test, since a marker cannot read a Go value.
-var ConnectionProvidersWithoutCredential = []string{"cnpg", "valkey"}
+var ConnectionProvidersWithoutCredential = []string{"cnpg", "valkey", "inngestSelfHosted"}
 
 // ProviderNeedsCredential reports whether a provider has a credential to
 // store at all. It is what lets the reconciler and the API stop looking for
@@ -56,11 +57,11 @@ func ProviderNeedsCredential(provider string) bool {
 
 // ConnectionSpec defines a plugin instance: a link to an external system such
 // as a git provider, an image registry, or a database provisioner.
-// +kubebuilder:validation:XValidation:rule="self.provider in ['cnpg', 'valkey'] || (has(self.credentialsSecretRef) && has(self.credentialsSecretRef.name) && size(self.credentialsSecretRef.name) > 0)",message="credentialsSecretRef is required: it names the Secret holding this provider's credential. Only a provider that provisions into this cluster with the operator's own account goes without one.",messageExpression="'credentialsSecretRef is required: it names the Secret holding the credential of a ' + self.provider + ' connection. Only a provider that provisions into this cluster with the account the operator itself holds (cnpg) goes without one.'"
-// +kubebuilder:validation:XValidation:rule="!(self.provider in ['cnpg', 'valkey']) || !has(self.credentialsSecretRef) || !has(self.credentialsSecretRef.name) || size(self.credentialsSecretRef.name) == 0",message="this provider takes no credentialsSecretRef: it provisions into this cluster with the operator's own account, and a Secret here would name a credential nothing reads.",messageExpression="'a ' + self.provider + ' connection takes no credentialsSecretRef: it provisions into this cluster with the account the operator itself holds, and a Secret here would name a credential nothing reads.'"
+// +kubebuilder:validation:XValidation:rule="self.provider in ['cnpg', 'valkey', 'inngestSelfHosted'] || (has(self.credentialsSecretRef) && has(self.credentialsSecretRef.name) && size(self.credentialsSecretRef.name) > 0)",message="credentialsSecretRef is required: it names the Secret holding this provider's credential. Only a provider that provisions into this cluster with the operator's own account goes without one.",messageExpression="'credentialsSecretRef is required: it names the Secret holding the credential of a ' + self.provider + ' connection. Only a provider that provisions into this cluster with the account the operator itself holds (cnpg) goes without one.'"
+// +kubebuilder:validation:XValidation:rule="!(self.provider in ['cnpg', 'valkey', 'inngestSelfHosted']) || !has(self.credentialsSecretRef) || !has(self.credentialsSecretRef.name) || size(self.credentialsSecretRef.name) == 0",message="this provider takes no credentialsSecretRef: it provisions into this cluster with the operator's own account, and a Secret here would name a credential nothing reads.",messageExpression="'a ' + self.provider + ' connection takes no credentialsSecretRef: it provisions into this cluster with the account the operator itself holds, and a Secret here would name a credential nothing reads.'"
 type ConnectionSpec struct {
 	// Provider selects the plugin implementation.
-	// +kubebuilder:validation:Enum=github;gitlab;gitea;dockerRegistry;neon;cnpg;s3;inngest;valkey;redis
+	// +kubebuilder:validation:Enum=github;gitlab;gitea;dockerRegistry;neon;cnpg;s3;inngest;inngestSelfHosted;valkey;redis
 	Provider string `json:"provider"`
 
 	// Secret holding the provider credentials (typically synced from

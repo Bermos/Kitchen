@@ -33,11 +33,27 @@ limitations under the License.
 // stream and function set each, share the account's one branch key pair, and
 // are selected by the INNGEST_ENV variable the binding carries.
 //
-// Only connect mode is provisioned (https://www.inngest.com/docs/setup/connect).
-// In serve mode Inngest calls the application over HTTP, which meets the
-// preview gate and gets a login page; in connect mode the worker dials out,
-// which works behind the gate and — the cost — never crosses the interceptor,
-// so nothing reading this claim scales to zero. The Declaration says so.
+// Two providers ship, and they differ in who runs Inngest:
+//
+//   - Inngest Cloud, above: the platform reads the account's keys and gives
+//     each preview a branch environment.
+//   - A server of the claim's own, run in this cluster (selfhosted.go). There
+//     the platform mints the keys, because it is the server that checks them,
+//     and a preview gets a *server* of its own rather than an environment
+//     inside one — which is the answer to the tenancy question #268 left
+//     open: a self-hosted Inngest has no environments to separate two
+//     previews' event streams with, so nothing separates them but running two
+//     servers.
+//
+// Against Cloud only connect mode is provisioned
+// (https://www.inngest.com/docs/setup/connect). In serve mode Inngest calls
+// the application over HTTP, which — from the internet — meets the preview
+// gate and gets a login page; in connect mode the worker dials out, which
+// works behind the gate and, the cost, never crosses the interceptor, so
+// nothing reading such a claim scales to zero. A self-hosted server is in
+// this cluster and calls the environment's own URL, so serve is allowed
+// there and a serve binding holds no pods up. The Declarations say so, and
+// the claim's status says which of the two it got.
 package inngest
 
 import (
@@ -46,8 +62,11 @@ import (
 	"errors"
 	"fmt"
 
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/provider/contract"
+	"github.com/Bermos/Kitchen/internal/provider/naming"
 )
 
 // ErrUnsupportedProvider is returned by Default for providers without an
@@ -85,8 +104,25 @@ const (
 	// KeyBaseURL is where the worker reaches Inngest. Empty on Inngest Cloud
 	// on purpose: the SDKs use it for the event API and the REST API alike,
 	// and Cloud serves those from two different hosts, so setting it to
-	// either would misroute the other. A self-hosted server sets it.
+	// either would misroute the other. A self-hosted server sets it — it
+	// serves both from one address, which is what makes the variable usable
+	// at all (https://www.inngest.com/docs/self-hosting).
 	KeyBaseURL = "INNGEST_BASE_URL"
+	// KeyDev is INNGEST_DEV, which the SDKs read as "which Inngest is this":
+	// 0 is cloud mode, where signatures are verified. A self-hosted server
+	// is reached in cloud mode with INNGEST_BASE_URL pointed at it, which is
+	// exactly what the self-hosting guide says to set, so the self-hosted
+	// binding carries "0" and Cloud's carries nothing — unset is cloud mode
+	// already.
+	KeyDev = "INNGEST_DEV"
+	// KeyConnectGatewayURL is the address of the connect gateway, and it is
+	// the one key here that is not an SDK variable: the SDKs take the
+	// gateway as `gatewayUrl` in code (`connect({ gatewayUrl })`), and a
+	// self-hosted gateway is on a port of its own — 8289 — that nothing
+	// could otherwise guess. It is spelled in the family's style so that it
+	// sits beside the others in `fromResourceClaim`, and it is empty on
+	// Inngest Cloud, whose SDKs discover the gateway themselves.
+	KeyConnectGatewayURL = "INNGEST_CONNECT_GATEWAY_URL"
 )
 
 // Binding is everything a worker needs to connect to Inngest for one
@@ -95,10 +131,18 @@ type Binding struct {
 	EventKey   string
 	SigningKey string
 	// Env is the INNGEST_ENV value: a branch environment's name, empty for
-	// production.
+	// production and empty throughout on a self-hosted server, which has no
+	// environments — a preview gets a server instead.
 	Env string
 	// BaseURL is INNGEST_BASE_URL: empty for Inngest Cloud.
 	BaseURL string
+	// Dev is INNGEST_DEV: "0" against a self-hosted server, empty for
+	// Inngest Cloud.
+	Dev string
+	// ConnectGatewayURL is where a connect worker's WebSocket goes, for a
+	// server whose gateway is not where the SDK would look. Empty for
+	// Inngest Cloud.
+	ConnectGatewayURL string
 }
 
 // SecretData is the binding as the claim's Secret carries it. Every key is
@@ -107,15 +151,21 @@ type Binding struct {
 // unset.
 func (b Binding) SecretData() map[string][]byte {
 	return map[string][]byte{
-		KeyEventKey:   []byte(b.EventKey),
-		KeySigningKey: []byte(b.SigningKey),
-		KeyEnv:        []byte(b.Env),
-		KeyBaseURL:    []byte(b.BaseURL),
+		KeyEventKey:          []byte(b.EventKey),
+		KeySigningKey:        []byte(b.SigningKey),
+		KeyEnv:               []byte(b.Env),
+		KeyBaseURL:           []byte(b.BaseURL),
+		KeyDev:               []byte(b.Dev),
+		KeyConnectGatewayURL: []byte(b.ConnectGatewayURL),
 	}
 }
 
-// ModeConnect is the one mode a Provisioner serves: the worker dials out.
+// ModeConnect is the mode every provisioner serves: the worker dials out.
 const ModeConnect = kitchenv1alpha1.InngestModeConnect
+
+// ModeServe is the mode only a self-hosted server serves: Inngest calls the
+// application over HTTP.
+const ModeServe = kitchenv1alpha1.InngestModeServe
 
 // DefaultEnvironment is the Inngest environment production binds to when the
 // claim names none.
@@ -133,25 +183,50 @@ type Requirements struct {
 	// Environment is the Inngest environment production binds to. Empty
 	// means DefaultEnvironment.
 	Environment string
-	// Mode is ModeConnect or empty. Anything else is refused.
+	// Mode is ModeConnect or ModeServe, or empty for connect. A provisioner
+	// that does not serve the mode refuses it — with ErrUnsatisfiable and a
+	// sentence saying which one it does serve — before it binds anything.
 	Mode string
+	// ServeURL is where Inngest calls the application in serve mode: the URL
+	// of the environment this binding is for, plus the claim's serve path.
+	//
+	// It is the platform's to work out rather than the claim's to state —
+	// a preview's hostname carries a pull request number nothing in the
+	// repository has heard of — and it is empty in connect mode, and while
+	// an environment has no URL yet. A provisioner that has no server to
+	// tell ignores it.
+	ServeURL string
 }
 
 // Instance is the production binding of one app.
 type Instance struct {
-	// ID is what the claim records as its instance: the app ID, which is
-	// what the other operations look the app up under.
+	// ID is what the claim records as its instance: the app ID at Inngest
+	// Cloud, the namespaced name of the server for a self-hosted one. It is
+	// what the other operations address it by.
 	ID string
-	// Environment is the Inngest environment the binding selects.
+	// Name is what the provider calls the thing it made, recorded on the
+	// claim so that a resource provisioned under one naming rule keeps its
+	// name when the rule changes (internal/provider/naming). Empty at
+	// Inngest Cloud, which the platform names nothing at.
+	Name string
+	// Environment is the Inngest environment the binding selects. Empty for
+	// a self-hosted server, which has none.
 	Environment string
 	Binding     Binding
+	// Reason and Message are the provider's own words for the claim's
+	// Provisioned condition: the two providers do very different things —
+	// one reads keys, the other runs a server — and a condition that said
+	// the same about both would be true of neither.
+	Reason  string
+	Message string
 }
 
-// Branch is one preview's own Inngest environment and the binding that
-// selects it.
+// Branch is what one preview environment gets of its own: a branch
+// environment at Inngest Cloud, a server of its own when the platform runs
+// Inngest itself, and the binding that reaches it.
 type Branch struct {
-	// ID is the environment's ID at the provider, opaque; what archiving
-	// addresses.
+	// ID is the branch's identifier at the provider, opaque; what archiving
+	// or teardown addresses.
 	ID      string
 	Binding Binding
 }
@@ -179,40 +254,117 @@ type App struct {
 // Provisioner is an Inngest provider bound to one Connection.
 //
 // Provision and CreateBranch are idempotent by name — a branch environment
-// that exists is found (and unarchived) rather than created twice — and
-// DeleteBranch treats already-absent as success. There is no Deprovision:
-// nothing an app claim binds is the platform's to destroy. The keys are the
-// account's, the app record is the application's, and archiving a branch
-// environment deletes nothing at Inngest.
+// that exists is found (and unarchived) rather than created twice, a server
+// that is there is bound rather than made again — and DeleteBranch treats
+// already-absent as success.
 type Provisioner interface {
-	// Provision reads the binding for the claim's production environment,
-	// refusing — ErrUnsatisfiable — what it cannot serve as asked.
-	Provision(ctx context.Context, req Requirements) (Instance, error)
-	// CreateBranch finds or creates the branch environment of the given
-	// name, unarchives it if the provider archived it, and reads its
-	// binding.
-	CreateBranch(ctx context.Context, name string) (Branch, error)
-	// DeleteBranch archives a branch environment; already gone is fine.
-	DeleteBranch(ctx context.Context, branchID string) error
+	// Provision binds the claim's production Inngest, refusing —
+	// ErrUnsatisfiable — what it cannot serve as asked. The resource is what
+	// a provisioner that has something to name names it from; one that
+	// creates nothing ignores it.
+	Provision(ctx context.Context, res naming.Resource, req Requirements) (Instance, error)
+	// CreateBranch finds or creates what the named preview environment gets
+	// of its own, beside the claim's own instance, and reads its binding.
+	// The requirements are that preview's — the same mode and app as the
+	// claim, and the preview's own ServeURL.
+	CreateBranch(ctx context.Context, instanceID, name string, req Requirements) (Branch, error)
+	// DeleteBranch takes it back; already gone is fine.
+	DeleteBranch(ctx context.Context, instanceID, branchID string) error
+}
+
+// AppReporter is a Provisioner that can be asked whether a worker has
+// connected as the claim's app, and what its last sync did.
+//
+// It is an optional interface because it is a real difference between the
+// two implementations rather than a method one of them has to fake: Inngest
+// Cloud's v2 API answers GET /apps/{id}, and a self-hosted server publishes
+// no app inventory the platform could read — its own dashboard, at the
+// binding's INNGEST_BASE_URL, is where the apps and their functions are.
+// A claim through a provider that does not report says so on its
+// AppConnected condition rather than reporting a guess.
+type AppReporter interface {
+	Provisioner
 	// App reports on the claim's app in the given environment.
 	App(ctx context.Context, environment, appID string) (App, error)
 }
 
-// Options is what a Provisioner is built from.
+// Deprovisioner is a Provisioner with something of its own to destroy when
+// the claim goes.
+//
+// Inngest Cloud has nothing: the keys are the account's, the app record is
+// the application's, and archiving a branch environment deletes nothing
+// there. A self-hosted server is a workload this platform created, and it —
+// with the Postgres and the queue behind it — is destroyed with the claim.
+// The claim type holds no deletionPolicy for exactly that reason: there is
+// no third party holding anything for the policy to choose about.
+type Deprovisioner interface {
+	Provisioner
+	// Deprovision destroys the claim's own instance and everything under it.
+	Deprovision(ctx context.Context, instanceID string) error
+}
+
+// IdlingProvisioner is a Provisioner that can park a preview's own resource
+// while the preview environment reading it is parked, and bring it back when
+// the preview wakes (#294) — the same optional interface, for the same
+// reason, that internal/provider/cache and internal/provider/database have.
+//
+// Both operations are idempotent and tolerant of absence: parking something
+// already parked, or waking something already awake, is success, and so is
+// either against a branch that is no longer there.
+type IdlingProvisioner interface {
+	Provisioner
+	// IdleBranch takes a preview's own Inngest down to no compute. What it
+	// has run is on the volume behind it and is untouched: this is a park,
+	// not a teardown.
+	IdleBranch(ctx context.Context, branchID string) error
+	// WakeBranch brings it back. It returns when the server has been asked
+	// for, not when it is serving — the claim's own readiness path is what
+	// reports that.
+	WakeBranch(ctx context.Context, branchID string) error
+}
+
+// Options is what a Provisioner is built from. It is a struct rather than an
+// argument list because the two implementations need different halves of
+// it: Inngest Cloud needs an API key and never touches the cluster, and the
+// self-hosted one is the other way round.
 type Options struct {
 	// Connection the claim provisions through.
 	Connection *kitchenv1alpha1.Connection
 	// Token from the Connection's credentials secret: an Inngest API key.
+	// Empty for the self-hosted provider, which has no credential because it
+	// runs the server itself.
 	Token string
+	// Cluster is the platform's own cluster. Nil for a provider that never
+	// touches it; the self-hosted one is refused without it.
+	Cluster client.Client
+	// Namespace the self-hosted provisioner runs its servers in.
+	Namespace string
+	// Postgres and Cache are where a self-hosted server keeps its state.
+	// They are the platform's own in-cluster provisioners — a CloudNativePG
+	// Cluster and a Valkey — resolved by NewSelfHosted when they are nil,
+	// and injected by tests.
+	Postgres PostgresProvisioner
+	Cache    CacheProvisioner
 }
 
 // Factory builds a Provisioner for a Connection.
 type Factory func(opts Options) (Provisioner, error)
 
-// ProviderCloud is the Connection provider name for Inngest Cloud — the one
-// implementation that ships. A self-hosted Inngest is a different provider
-// with a different tenancy story, and is not this one.
+// ProviderCloud is the Connection provider name for Inngest Cloud.
 const ProviderCloud = "inngest"
+
+// ProviderSelfHosted is the Connection provider name for an Inngest this
+// cluster runs: one server per claim, and one per preview.
+//
+// It is a provider of its own rather than a mode on the one above, because
+// everything a Connection *is* differs between the two. Inngest Cloud is an
+// account reached with an API key; this holds no credential at all — it
+// provisions with the operator's own account, the way cnpg and valkey do,
+// and the CRD's credential rule is written against that set. A declaration
+// is per provider too, and these two declare opposite things about previews
+// and about idling. A mode inside one provider's config could express
+// neither.
+const ProviderSelfHosted = "inngestSelfHosted"
 
 // Declarations is what each Inngest provider says about itself before it
 // has bound anything, written next to Default so that a provider and its
@@ -229,6 +381,22 @@ var Declarations = map[string]contract.Declaration{
 		WorkloadNote: "a connect worker holds an outbound WebSocket to Inngest's gateway that never crosses " +
 			"the interceptor, so nothing can tell when it is idle — and scale to zero is a project-level " +
 			"policy, so every environment of the project keeps its pods, previews included",
+	},
+	ProviderSelfHosted: {
+		Preview: contract.PreviewFresh,
+		PreviewNote: "an Inngest server of the preview's own, run in this cluster — its own event stream, " +
+			"function set and run history, empty rather than a copy of production's, on its own storage; " +
+			"created with the preview and destroyed with it, which is what keeps one pull request's events " +
+			"from triggering another's functions",
+		CanIdle: true,
+		IdleNote: "the preview's server is scaled to no pods with it and back up on wake; the volume its runs " +
+			"and its queue are on survives the park, so a preview that wakes finds the work it left",
+		KeepsPodsRunning: true,
+		WorkloadNote: "in connect mode, where the worker holds an outbound WebSocket to the server's gateway " +
+			"that never crosses the interceptor — and scale to zero is a project-level policy, so every " +
+			"environment of the project keeps its pods. A claim in serve mode declares otherwise: the server " +
+			"is in this cluster and calls the environment's own URL, so the call crosses the interceptor and " +
+			"wakes it, and the project keeps its scale to zero",
 	},
 }
 
@@ -250,6 +418,8 @@ func Default(opts Options) (Provisioner, error) {
 			}
 		}
 		return &Cloud{APIURL: apiURL, Token: opts.Token}, nil
+	case ProviderSelfHosted:
+		return NewSelfHosted(opts)
 	default:
 		return nil, fmt.Errorf("%w: %s", ErrUnsupportedProvider, conn.Spec.Provider)
 	}

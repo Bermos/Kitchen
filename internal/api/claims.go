@@ -283,11 +283,15 @@ type claimShaper interface {
 	// config validates the type's fields and answers spec.config as the
 	// reconciler will read it, nil when nothing was asked. project is the
 	// one the claim is for, for a type whose request names something of
-	// the project's. ok=false means a refusal has already been written.
+	// the project's; provider is the Connection's, empty for a type the
+	// platform provisions itself, for the one thing a request can ask that
+	// only some providers of a type can give. ok=false means a refusal has
+	// already been written.
 	config(
 		w http.ResponseWriter,
 		body *createClaimRequest,
 		project *kitchenv1alpha1.Project,
+		provider string,
 	) (config *runtime.RawExtension, ok bool)
 
 	// view fills the type's own fields of the claim's view.
@@ -369,10 +373,13 @@ func (s *Server) claimShape(
 	}
 
 	var ref *kitchenv1alpha1.LocalObjectReference
+	provider := ""
 	if claimType.TakesConnection() {
-		if !s.requireConnection(ctx, w, "connection", body.Connection, claimType.Capability) {
+		conn, ok := s.requireConnection(ctx, w, "connection", body.Connection, claimType.Capability)
+		if !ok {
 			return nil, nil, false
 		}
+		provider = conn.Spec.Provider
 		ref = &kitchenv1alpha1.LocalObjectReference{Name: body.Connection}
 	} else if body.Connection != "" {
 		badRequest(w, "%s claim takes no connection: the platform provisions %s itself, and there is no "+
@@ -380,7 +387,7 @@ func (s *Server) claimShape(
 		return nil, nil, false
 	}
 
-	config, ok := shaper.config(w, body, project)
+	config, ok := shaper.config(w, body, project, provider)
 	if !ok {
 		return nil, nil, false
 	}

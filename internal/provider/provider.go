@@ -35,6 +35,7 @@ import (
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/provider/cache"
+	"github.com/Bermos/Kitchen/internal/provider/inngest"
 	"github.com/Bermos/Kitchen/internal/provider/objectstore"
 )
 
@@ -169,7 +170,7 @@ func Capabilities(providerName string) []kitchenv1alpha1.Capability {
 		return []kitchenv1alpha1.Capability{kitchenv1alpha1.CapabilityDatabase}
 	case objectstore.ProviderS3:
 		return []kitchenv1alpha1.Capability{kitchenv1alpha1.CapabilityObjectStore}
-	case "inngest":
+	case inngest.ProviderCloud, inngest.ProviderSelfHosted:
 		return []kitchenv1alpha1.Capability{kitchenv1alpha1.CapabilityBackgroundJobs}
 	case cache.ProviderValkey, cache.ProviderRedis:
 		return []kitchenv1alpha1.Capability{kitchenv1alpha1.CapabilityCache}

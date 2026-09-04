@@ -120,10 +120,22 @@ func TestTheCatalogueDeclaresInngest(t *testing.T) {
 		if view.Capability != "backgroundJobs" || view.HoldsData || view.Resource != "Inngest app" {
 			t.Fatalf("inngest is a backgroundJobs type that holds no data: %+v", view)
 		}
-		if len(view.Providers) != 1 || view.Providers[0].Provider != inngest.ProviderCloud ||
+		if len(view.Providers) != 2 || view.Providers[0].Provider != inngest.ProviderCloud ||
 			view.Providers[0].PreviewMode != string(contract.PreviewBranch) || !view.Providers[0].KeepsPodsRunning ||
+			view.Providers[0].CanIdle ||
 			!strings.Contains(view.Providers[0].WorkloadNote, "every environment of the project") {
-			t.Fatalf("Inngest Cloud branches previews and holds every environment's pods up: %+v", view.Providers)
+			t.Fatalf("Inngest Cloud branches previews, holds every environment's pods up and parks nothing: %+v",
+				view.Providers)
+		}
+		// The self-hosted provider gives a preview a server of its own —
+		// which is the whole of the tenancy answer — and parks it with the
+		// preview, which is what bounds the cost of having done so.
+		if view.Providers[1].Provider != inngest.ProviderSelfHosted ||
+			view.Providers[1].PreviewMode != string(contract.PreviewFresh) ||
+			!view.Providers[1].CanIdle || !view.Providers[1].KeepsPodsRunning ||
+			!strings.Contains(view.Providers[1].PreviewNote, "server of the preview's own") {
+			t.Fatalf("a self-hosted Inngest gives a preview a server of its own and parks it: %+v",
+				view.Providers)
 		}
 		return
 	}
@@ -146,5 +158,14 @@ func TestDeletingAnInngestClaimSaysWhatStays(t *testing.T) {
 	if outcome := (inngestClaimShaper{}).deletionOutcome(nil); !strings.Contains(outcome, "archived") ||
 		!strings.Contains(outcome, "stay at Inngest") {
 		t.Fatalf("the outcome must say the branches are archived and the app stays: %q", outcome)
+	}
+	// A self-hosted claim's server is this platform's own workload, and the
+	// sentence has to say that deleting the claim destroys it: the type
+	// carries no deletionPolicy, so this is the only warning there is.
+	selfHosted := &kitchenv1alpha1.ResourceClaim{}
+	selfHosted.Status.InstanceID = "kitchen-inngest/kitchen-shop-jobs"
+	if outcome := (inngestClaimShaper{}).deletionOutcome(selfHosted); !strings.Contains(outcome, "destroyed") ||
+		!strings.Contains(outcome, "Postgres") {
+		t.Fatalf("the outcome must say a self-hosted server and its storage are destroyed: %q", outcome)
 	}
 }

@@ -62,6 +62,7 @@ func (oidcClaimShaper) config(
 	w http.ResponseWriter,
 	body *createClaimRequest,
 	_ *kitchenv1alpha1.Project,
+	_ string,
 ) (*runtime.RawExtension, bool) {
 	cfg := kitchenv1alpha1.OIDCClientConfig{}
 	for _, path := range body.CallbackPaths {

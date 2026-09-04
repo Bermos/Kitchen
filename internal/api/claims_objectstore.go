@@ -50,6 +50,7 @@ func (objectStoreClaimShaper) config(
 	w http.ResponseWriter,
 	body *createClaimRequest,
 	_ *kitchenv1alpha1.Project,
+	_ string,
 ) (*runtime.RawExtension, bool) {
 	cfg, ok := validObjectStoreConfig(w, body.ObjectStore)
 	if !ok {

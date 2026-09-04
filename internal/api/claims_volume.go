@@ -89,6 +89,7 @@ func (volumeClaimShaper) config(
 	w http.ResponseWriter,
 	body *createClaimRequest,
 	project *kitchenv1alpha1.Project,
+	_ string,
 ) (*runtime.RawExtension, bool) {
 	if body.Volume == nil {
 		badRequest(w, "volume is required on a volume claim: which process mounts it (\"%s\", or one of the "+

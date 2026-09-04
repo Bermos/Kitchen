@@ -50,6 +50,7 @@ func (redisClaimShaper) config(
 	w http.ResponseWriter,
 	body *createClaimRequest,
 	_ *kitchenv1alpha1.Project,
+	_ string,
 ) (*runtime.RawExtension, bool) {
 	redis, ok := validRedisConfig(w, body.Redis)
 	if !ok {

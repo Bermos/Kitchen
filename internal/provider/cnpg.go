@@ -28,6 +28,7 @@ import (
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/provider/cache"
+	"github.com/Bermos/Kitchen/internal/provider/inngest"
 )
 
 // ProviderCNPG is the one provider that is not somewhere else. It provisions
@@ -89,18 +90,25 @@ func WithCluster(reader client.Reader) Factory {
 			return &CNPGProbe{Reader: reader}, nil
 		case cache.ProviderValkey:
 			return &ValkeyProbe{}, nil
+		case inngest.ProviderSelfHosted:
+			return &InngestSelfHostedProbe{}, nil
 		}
 		return Default(conn, creds)
 	}
 }
 
 // ThirdParty reports whether a provider is somebody else. Every one is except
-// cnpg and valkey, which provision into the cluster the platform is installed
-// in — so a resilience register that listed either among the third parties a
-// function depends on would be naming the platform as its own supplier, which
-// is both wrong and the sort of wrong an auditor notices.
+// cnpg, valkey and inngestSelfHosted, which provision into the cluster the
+// platform is installed in — so a resilience register that listed one of them
+// among the third parties a function depends on would be naming the platform
+// as its own supplier, which is both wrong and the sort of wrong an auditor
+// notices.
 func ThirdParty(providerName string) bool {
-	return providerName != ProviderCNPG && providerName != cache.ProviderValkey
+	switch providerName {
+	case ProviderCNPG, cache.ProviderValkey, inngest.ProviderSelfHosted:
+		return false
+	}
+	return true
 }
 
 // NeedsCredentials reports whether a provider has a credential to store at

@@ -40,6 +40,7 @@ import (
 	"github.com/Bermos/Kitchen/internal/gitprovider"
 	"github.com/Bermos/Kitchen/internal/provider"
 	"github.com/Bermos/Kitchen/internal/provider/cache"
+	"github.com/Bermos/Kitchen/internal/provider/inngest"
 	"github.com/Bermos/Kitchen/internal/provider/objectstore"
 )
 
@@ -106,17 +107,19 @@ var tokenProviders = map[string]bool{
 
 // knownProviders is every provider the API accepts, credential or not, and
 // providerNames is the same list for the refusal message. cnpg is in neither
-// map above because it stores nothing; s3 takes an access key pair.
+// map above because it stores nothing — nor are valkey and inngestSelfHosted,
+// for the same reason; s3 takes an access key pair.
 var knownProviders = map[string]bool{
 	"github": true, "gitlab": true, "gitea": true,
 	registryProvider: true, "neon": true, provider.ProviderCNPG: true,
-	objectstore.ProviderS3: true, "inngest": true,
+	objectstore.ProviderS3: true, inngest.ProviderCloud: true, inngest.ProviderSelfHosted: true,
 	cache.ProviderValkey: true, cache.ProviderRedis: true,
 }
 
 var providerNames = []string{
 	"github", "gitlab", "gitea", registryProvider, "neon", provider.ProviderCNPG,
-	objectstore.ProviderS3, "inngest", cache.ProviderValkey, cache.ProviderRedis,
+	objectstore.ProviderS3, inngest.ProviderCloud, inngest.ProviderSelfHosted,
+	cache.ProviderValkey, cache.ProviderRedis,
 }
 
 const registryProvider = "dockerRegistry"

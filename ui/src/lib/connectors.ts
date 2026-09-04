@@ -95,6 +95,17 @@ export function providerGuidance(provider: string, apiUrl?: string): ProviderGui
         ],
         link: { href: "https://app.inngest.com/settings/api-keys", label: "API keys in the Inngest dashboard" },
       };
+    case "inngestSelfHosted":
+      return {
+        tokenLabel: "No credential",
+        purpose:
+          "Kitchen runs an Inngest server for each claim here on the platform, with the operator's own identity — and one more for every preview environment, so a pull request's events never reach production's functions. There is no account to open and no credential to store or rotate: the platform mints the server's event key and signing key itself.",
+        permissions: [
+          "CloudNativePG has to be running, and the cluster needs a default StorageClass: production's server keeps its history in a Postgres of its own and its queue in a Valkey of its own, both provisioned the way a postgres and a redis claim are. A preview's server uses Inngest's own embedded store on a volume instead — one pod rather than three, for an environment that is parked most of the time.",
+          "Testing this connection asks nothing of a provider, because there is none to ask: what could fail here fails on the claim, where the message can name the claim that asked.",
+        ],
+        link: { href: "https://www.inngest.com/docs/self-hosting", label: "Self-hosting Inngest" },
+      };
     case "cnpg":
       return {
         tokenLabel: "No credential",
