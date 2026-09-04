@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.30.0](https://github.com/Bermos/Kitchen/compare/v0.29.0...v0.30.0) (2026-09-04)
+
+
+### Features
+
+* **claims:** bound preview environments, and idle their infrastructure with them ([#386](https://github.com/Bermos/Kitchen/issues/386)) ([938f01a](https://github.com/Bermos/Kitchen/commit/938f01abeace6ead48f48aabce3c66ca01cfeee8)), closes [#294](https://github.com/Bermos/Kitchen/issues/294)
+* **claims:** recover a claim's data to a moment, where the provider can ([#385](https://github.com/Bermos/Kitchen/issues/385)) ([b3caaba](https://github.com/Bermos/Kitchen/commit/b3caaba610b1ecf9dcfa2c776227eb9d52d2c85b))
+
+
+### Bug fixes
+
+* **api:** bound the repository preflight to what the connection lists ([#389](https://github.com/Bermos/Kitchen/issues/389)) ([2824ed1](https://github.com/Bermos/Kitchen/commit/2824ed1d99b6e4c636eb0525daabe354283a53cb)), closes [#331](https://github.com/Bermos/Kitchen/issues/331)
+* **auth:** refuse the api-key plugin's endpoints to everyone but the platform ([#388](https://github.com/Bermos/Kitchen/issues/388)) ([06ed1df](https://github.com/Bermos/Kitchen/commit/06ed1dff976ae6f539f438fe0e833dffa7822495)), closes [#357](https://github.com/Bermos/Kitchen/issues/357)
+* **cli:** let the link file choose an installation, never introduce one ([#387](https://github.com/Bermos/Kitchen/issues/387)) ([51b09f0](https://github.com/Bermos/Kitchen/commit/51b09f0e3dc602dd6f6b07313572375ae680c6f6)), closes [#317](https://github.com/Bermos/Kitchen/issues/317)
+
 ## [0.29.0](https://github.com/Bermos/Kitchen/compare/v0.28.0...v0.29.0) (2026-09-04)
 
 
