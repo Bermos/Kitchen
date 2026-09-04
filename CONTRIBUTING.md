@@ -193,6 +193,24 @@ push, once for the pull request. Nothing was learned the second time. A branch
 is covered by its pull request; a tag is covered by the `main` run of the
 commit it points at.
 
+### One job reports and does not gate
+
+The Lint workflow runs `govulncheck ./...` alongside golangci-lint, and it is
+the one job here marked `continue-on-error`. What it reports is a fact about
+the world on the day it ran rather than a fact about the branch: the Go
+vulnerability database moves on its own schedule, so a blocking job would turn
+a pull request red — and hold a release — for an advisory published between two
+pushes, which nobody on that branch can fix. It writes its finding to the run's
+step summary instead, where it is read without opening a log, and the branch
+that *introduces* a reachable advisory still shows it next to the diff that
+brought it in.
+
+Run the same scan locally before bumping a module:
+
+```sh
+go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
+```
+
 ### The four kind jobs run once per change
 
 Chart install on kind, E2E on kind, Several workloads on kind and Gateway L7
