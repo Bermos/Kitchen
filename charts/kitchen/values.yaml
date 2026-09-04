@@ -285,6 +285,15 @@ kitchen:
       # front-end build of any size peaks, and well short of what a
       # single-node cluster can lose without noticing.
       memory: 4Gi
+    # -- How long one build may run before the platform ends it and the commit
+    # reports a failed build, in minutes. It is the ceiling in time that
+    # `resources` is in capacity, and it is a setting because "far past
+    # anything this platform is meant to build" is not every installation's
+    # hour: a cold-cache monorepo, a Rust workspace or a buildpacks build on a
+    # small node can legitimately take longer. `0` is no deadline at all. It
+    # reaches a build as the Job's `activeDeadlineSeconds`, which is immutable
+    # once the Job exists, so a change reaches builds started after it.
+    timeoutMinutes: 60
     # -- How many releases each project keeps. Every successful build leaves
     # one behind; older ones are pruned, except any an environment still
     # references. `0` keeps every release forever.

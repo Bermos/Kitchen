@@ -366,6 +366,37 @@ type BuildsSpec struct {
 	// +optional
 	Resources BuildResourcesSpec `json:"resources,omitempty"`
 
+	// TimeoutMinutes is the longest one build may run before the platform
+	// ends it. It is the ceiling in time that Resources is in capacity, and
+	// it exists for the same reason the job needs an end at all: a build
+	// that hangs where the reconciler cannot see it — a builder waiting on a
+	// registry that never answers — otherwise occupies a build slot forever.
+	//
+	// An hour is far past anything this platform is meant to build, which is
+	// the point: it is a backstop, not a time budget. It is a setting because
+	// "meant to" was doing the work in that sentence — a cold-cache monorepo,
+	// a Rust workspace or a buildpacks build on a small node can legitimately
+	// take longer, and an installation that knows that has to be able to say
+	// so.
+	//
+	// 0 is no deadline at all, which is the installation that would rather
+	// end a runaway build by hand than lose an hour's work to a number.
+	//
+	// It is a pointer because that zero is a setting: an int32 with
+	// `omitempty` serializes 0 as an absent field, so the default would be
+	// applied back over it and clearing the deadline would be unsayable —
+	// through a merge patch it would arrive as a deletion. Unset is the
+	// default, which is also what an installation that predates the field
+	// gets.
+	//
+	// It reaches a build as the Job's activeDeadlineSeconds, which is
+	// immutable once a Job exists: changing this affects builds started
+	// after the change, never the one in flight.
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:default=60
+	// +optional
+	TimeoutMinutes *int32 `json:"timeoutMinutes,omitempty"`
+
 	// ReleaseRetention is how many Releases each Project keeps. Every
 	// successful build leaves one behind, so without a bound a busy project
 	// accumulates them — and the images they point at — forever.

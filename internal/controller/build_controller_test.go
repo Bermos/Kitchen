@@ -163,6 +163,17 @@ var _ = Describe("Build Controller", func() {
 			Expect(k8sClient.Update(ctx, kitchen)).To(Succeed())
 		}
 
+		// The platform's build deadline, the same way: written onto the
+		// singleton the specs share rather than into the fixture, so nothing
+		// that does not care about it reads a different platform object.
+		setBuildTimeout := func(minutes int32) {
+			GinkgoHelper()
+			kitchen := &kitchenv1alpha1.Kitchen{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: KitchenSingletonName}, kitchen)).To(Succeed())
+			kitchen.Spec.Builds.TimeoutMinutes = ptr.To(minutes)
+			Expect(k8sClient.Update(ctx, kitchen)).To(Succeed())
+		}
+
 		createFailedBuildPod := func(exitCode int32, reason string) {
 			pod := &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
@@ -1662,6 +1673,42 @@ var _ = Describe("Build Controller", func() {
 			Expect(resources.Limits.Memory().String()).To(Equal("2Gi"))
 			Expect(resources.Requests.Cpu().String()).To(Equal("1"))
 			Expect(resources.Requests.Memory().String()).To(Equal("2Gi"))
+		})
+
+		// The ceiling in time is the operator's too, and it reaches the Job
+		// the job controller enforces it from. Sixty minutes is the CRD's
+		// default, so the singleton the fixture creates already carries it.
+		It("gives the build job the platform's deadline", func() {
+			reconcileOnce()
+
+			job := &batchv1.Job{}
+			Expect(k8sClient.Get(ctx, jobKey, job)).To(Succeed())
+			Expect(job.Spec.ActiveDeadlineSeconds).NotTo(BeNil())
+			Expect(*job.Spec.ActiveDeadlineSeconds).To(Equal(int64(DefaultBuildTimeoutMinutes * 60)))
+		})
+
+		It("takes the deadline an installation sets for itself", func() {
+			setBuildTimeout(180)
+
+			reconcileOnce()
+
+			job := &batchv1.Job{}
+			Expect(k8sClient.Get(ctx, jobKey, job)).To(Succeed())
+			Expect(job.Spec.ActiveDeadlineSeconds).NotTo(BeNil())
+			Expect(*job.Spec.ActiveDeadlineSeconds).To(Equal(int64(3 * 60 * 60)))
+		})
+
+		// Zero is a setting rather than an absent one: the installation that
+		// would rather end a runaway build by hand than lose a long one to a
+		// number. The Job then carries no deadline at all.
+		It("gives a build no deadline when the platform clears it", func() {
+			setBuildTimeout(0)
+
+			reconcileOnce()
+
+			job := &batchv1.Job{}
+			Expect(k8sClient.Get(ctx, jobKey, job)).To(Succeed())
+			Expect(job.Spec.ActiveDeadlineSeconds).To(BeNil())
 		})
 
 		// The failure this whole ceiling exists to be able to report: not a

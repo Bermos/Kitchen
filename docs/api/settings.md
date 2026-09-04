@@ -15,7 +15,7 @@ operators are**:
 
 ```json
 {"baseDomain": "apps.example.com", "buildConcurrency": 2, "buildCPU": "2", "buildMemory": "4Gi",
- "logRetentionDays": 30, "operators": [{"subject": "user_01H8X…", "email": "anna@example.com"}]}
+ "buildTimeoutMinutes": 60, "logRetentionDays": 30, "operators": [{"subject": "user_01H8X…", "email": "anna@example.com"}]}
 ```
 
 `operators` is `spec.access.operators`, the list every `operator` requirement
@@ -34,7 +34,7 @@ The field carries no `omitempty` for exactly that reason.
 
 ```json
 {"buildStrategy": "auto", "buildConcurrency": 2, "buildCPU": "2", "buildMemory": "4Gi",
- "logRetentionDays": 30, "operators": [{"email": "anna@example.com"}, {"subject": "user_01H8X…"}]}
+ "buildTimeoutMinutes": 60, "logRetentionDays": 30, "operators": [{"email": "anna@example.com"}, {"subject": "user_01H8X…"}]}
 ```
 
 Fields left out stay as they are, `operators` included — a settings patch that
@@ -91,6 +91,17 @@ as [a build failure naming it](./builds.md#a-build-that-ran-out-of-memory).
 The ceiling is the operator's and not a project's, which is why it is here and
 not in `kitchen.json`: a project that could raise its own build ceiling would be
 a project that could evict its neighbours.
+
+**`buildTimeoutMinutes` is the ceiling in time.** It is
+`spec.builds.timeoutMinutes`: how long one build may run before the platform
+ends it and the commit reports [a build that ran out of
+time](./builds.md#a-build-that-ran-out-of-time). The default is 60 minutes, far
+past anything the platform is meant to build, because the point of it is that a
+build has an end at all rather than that it has a budget — and it is a setting
+because an installation whose builds are legitimately slower has no other way to
+say so. `0` is no deadline at all; a negative number is a `400`. A change
+reaches builds started after it: the deadline is the Job's own
+`activeDeadlineSeconds`, and a Job's is immutable once it exists.
 
 Everything else on the singleton — the base domain, the issuer, the ingress —
 shapes URLs and credentials the platform has already handed out, so changing

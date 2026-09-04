@@ -1821,6 +1821,11 @@ export interface Settings {
    * old to carry one, which is a different thing. */
   buildCPU?: string;
   buildMemory?: string;
+  /** `spec.builds.timeoutMinutes`: how long one build may run before the
+   * platform ends it. Always sent, since 0 is a setting — no deadline at all —
+   * rather than an absent value. A change reaches builds started after it: the
+   * deadline is the Job's, and a Job's is immutable once it exists. */
+  buildTimeoutMinutes: number;
   /** Releases a project keeps; 0 keeps every one. Always sent, since 0 is a
    * setting rather than an absent value. */
   releaseRetention: number;
@@ -3740,7 +3745,13 @@ export const api = {
     changes: Partial<
       Pick<
         Settings,
-        "buildStrategy" | "buildConcurrency" | "buildCPU" | "buildMemory" | "releaseRetention" | "logRetentionDays"
+        | "buildStrategy"
+        | "buildConcurrency"
+        | "buildCPU"
+        | "buildMemory"
+        | "buildTimeoutMinutes"
+        | "releaseRetention"
+        | "logRetentionDays"
       >
     > & { operators?: OperatorWrite[] },
   ) =>

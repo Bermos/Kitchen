@@ -92,6 +92,13 @@ spec:
                                         # is killed and fails saying so. Either may be empty for no
                                         # ceiling. It is the operator's, not a project's: one that could
                                         # raise its own could evict its neighbours.
+    timeoutMinutes: 60                  # the ceiling in time the resources above are in capacity: how long
+                                        # one build may run before the job controller ends it and the build
+                                        # fails with DeadlineExceeded. An hour is far past anything the
+                                        # platform is meant to build — raise it where a cold-cache monorepo
+                                        # or a small node legitimately takes longer, 0 for no deadline. A
+                                        # change reaches builds started after it: a Job's deadline is
+                                        # immutable once it exists.
     cache:
       enabled: true                     # reuse layers between builds, in the registry the project pushes to
       mode: max                         # max | min — how much of a BuildKit build is kept

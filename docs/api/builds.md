@@ -341,6 +341,26 @@ The ceiling is `spec.builds.resources` on the `Kitchen` object — `buildCPU` an
 operator's, not a project's. A project that could raise its own would be a
 project that could evict its neighbours.
 
+### A build that ran out of time
+
+`DeadlineExceeded` is the other ending nothing about the commit caused. It is
+the Kubernetes job controller's word for a Job that was still active when its
+`activeDeadlineSeconds` passed, and what decides that number is
+`spec.builds.timeoutMinutes` on the `Kitchen` object — `buildTimeoutMinutes` on
+[`PATCH /settings`](./settings.md#settings), 60 minutes by default.
+
+An hour is far past anything the platform is meant to build, which is the point
+of it: the deadline exists so that a build has an end at all — a builder waiting
+on a registry that never answers would otherwise hold a build slot forever — and
+not as a time budget. Where an installation's builds legitimately take longer,
+a cold-cache monorepo or a Rust workspace on a small node, raising the setting
+is the answer; `0` clears the deadline entirely, which leaves ending a runaway
+build to whoever notices it.
+
+A change reaches builds started after it. The deadline belongs to the Job, and a
+Job's is immutable once it exists, so the build in flight keeps the number it
+was created with.
+
 ## A build that says Running and is not moving
 
 A build whose Job has never created a pod carries a `Stalled` condition:

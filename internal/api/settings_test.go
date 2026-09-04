@@ -181,6 +181,54 @@ func TestClearingTheBuildCeilingIsAllowedAndDeliberate(t *testing.T) {
 	}
 }
 
+// The ceiling in time is set from the same screen, and its zero is a setting
+// rather than an absent one: an installation may say its builds have no
+// deadline, and saying so has to survive the round trip.
+func TestChangingTheBuildTimeout(t *testing.T) {
+	h := newHarness(t, nil)
+
+	// A singleton that names no deadline reports the one a build would
+	// actually get, not an empty box.
+	if body := decode[settingsView](t, h.do(t, http.MethodGet, settingsPath, "")); body.BuildTimeoutMinutes !=
+		controller.DefaultBuildTimeoutMinutes {
+		t.Fatalf("want the platform's own default reported, got %d", body.BuildTimeoutMinutes)
+	}
+
+	recorder := h.do(t, http.MethodPatch, settingsPath, `{"buildTimeoutMinutes": 180}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if body := decode[settingsView](t, recorder); body.BuildTimeoutMinutes != 180 {
+		t.Fatalf("the answer does not carry the deadline: %+v", body)
+	}
+
+	kitchen := &kitchenv1alpha1.Kitchen{}
+	if err := h.server.Client.Get(context.Background(),
+		types.NamespacedName{Name: controller.KitchenSingletonName}, kitchen); err != nil {
+		t.Fatal(err)
+	}
+	if kitchen.Spec.Builds.TimeoutMinutes == nil || *kitchen.Spec.Builds.TimeoutMinutes != 180 {
+		t.Fatalf("the singleton was not updated: %+v", kitchen.Spec.Builds)
+	}
+
+	// Zero is written, not omitted: the field is a pointer precisely so that
+	// "no deadline" is a thing the object can say.
+	if recorder := h.do(t, http.MethodPatch, settingsPath,
+		`{"buildTimeoutMinutes": 0}`); recorder.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if err := h.server.Client.Get(context.Background(),
+		types.NamespacedName{Name: controller.KitchenSingletonName}, kitchen); err != nil {
+		t.Fatal(err)
+	}
+	if kitchen.Spec.Builds.TimeoutMinutes == nil || *kitchen.Spec.Builds.TimeoutMinutes != 0 {
+		t.Fatalf("the deadline was not cleared: %+v", kitchen.Spec.Builds)
+	}
+	if body := decode[settingsView](t, h.do(t, http.MethodGet, settingsPath, "")); body.BuildTimeoutMinutes != 0 {
+		t.Fatalf("a cleared deadline is not reported as one: %+v", body)
+	}
+}
+
 func TestChangingTheSettingsRejectsNonsense(t *testing.T) {
 	h := newHarness(t, nil)
 
@@ -193,6 +241,8 @@ func TestChangingTheSettingsRejectsNonsense(t *testing.T) {
 		"a ceiling that is not a quantity": `{"buildMemory": "lots"}`,
 		// Not "no ceiling" — a build that cannot start.
 		"a ceiling of nothing": `{"buildCPU": "0"}`,
+		// 0 is no deadline; below it is nothing at all.
+		"a negative build timeout": `{"buildTimeoutMinutes": -1}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			recorder := h.do(t, http.MethodPatch, settingsPath, body)
