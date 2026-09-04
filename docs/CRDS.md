@@ -424,6 +424,28 @@ status:
   capabilities: [gitSource, statusChecks]
 ```
 
+A `redis` connection's status carries one more thing, because a server
+somebody else runs has a finite pool of logical databases and every claim
+through the connection draws from it:
+
+```yaml
+status:
+  cache:
+    databases:                          # which claim holds which logical database
+      - { database: 1, holder: kitchen-my-shop-cache }
+      - { database: 2, holder: kitchen-my-shop-cache/my-shop-pr-41 }
+      - { database: 3, holder: "" }     # handed out before and given back
+```
+
+It is the allocation itself and not a report of one: a claim's database is
+read back from here on every reconcile, which is what keeps it the same one,
+and a claim finding every database held is refused rather than put in one
+somebody else is using. Database 0 is never allocated — every binding made
+before the platform allocated databases selected it, and the claims that were
+bound then keep it. See
+[docs/api/claims.md](api/claims.md#creating-a-claim) for what a logical
+database does and does not separate.
+
 The Connection the operator seeds for the bundled registry is an ordinary one:
 `dockerRegistry`, with `config.url` naming the host it publishes and a
 credential the platform wrote and never reads back. Nothing downstream treats

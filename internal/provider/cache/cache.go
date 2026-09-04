@@ -35,13 +35,22 @@ limitations under the License.
 //   - An external server behind a redis Connection: Upstash, ElastiCache,
 //     Aiven, or the Valkey a team already runs.
 //
-// One instance per claim, never a logical database number or a key prefix
-// inside a shared server. A database number is not an isolation boundary —
-// one tenant's FLUSHALL empties another's, there is no per-tenant memory
-// limit, and keyspaces collide — and the requirement that matters here
-// cannot be satisfied in a shared server at all: maxmemory-policy is
-// server-wide, so one instance cannot offer noeviction to a queue and
-// allkeys-lru to a cache.
+// The in-cluster provisioner gives one instance per claim, never a logical
+// database number or a key prefix inside a shared server. A database number
+// is not an isolation boundary — one tenant's FLUSHALL empties another's,
+// there is no per-tenant memory limit, and keyspaces collide — and the
+// requirement that matters here cannot be satisfied in a shared server at
+// all: maxmemory-policy is server-wide, so one instance cannot offer
+// noeviction to a queue and allkeys-lru to a cache.
+//
+// At a server somebody else runs there is no choice: nobody can ask another
+// team's Redis for a second process, so the external provisioner hands out
+// logical databases — one per claim and one per preview, allocated and
+// recorded rather than hashed out of a name, and refused when the server has
+// none left. What that buys is written down where a person choosing a
+// connection reads it (docs/api/claims.md): the separation is logical and
+// not cryptographic, because every claim through one Connection is handed
+// the same password.
 package cache
 
 import (
@@ -126,6 +135,13 @@ type Binding struct {
 	Host     string
 	Port     string
 	Password string
+	// Database is the logical database the binding selects, as a number in
+	// a string: "0" at an instance of the claim's own, the one allocated to
+	// this claim at a server shared with other claims. It is in the URL as
+	// well; it is a field of its own because a client given the host, the
+	// port and the password alone connects to database 0, which at a shared
+	// server is somebody else's keyspace.
+	Database string
 	// TLS says whether the connection is encrypted — "true" or "false" as
 	// the Secret carries it. An application that assumes wrong fails to
 	// connect at all, which is the good failure, but it should not have to
@@ -139,6 +155,7 @@ const (
 	BindingKeyHost     = "host"
 	BindingKeyPort     = "port"
 	BindingKeyPassword = "password"
+	BindingKeyDatabase = "database"
 	BindingKeyTLS      = "tls"
 )
 
@@ -148,11 +165,16 @@ func (b Binding) Data() map[string][]byte {
 	if b.TLS {
 		tls = "true"
 	}
+	database := b.Database
+	if database == "" {
+		database = "0"
+	}
 	return map[string][]byte{
 		BindingKeyURL:      []byte(b.URL),
 		BindingKeyHost:     []byte(b.Host),
 		BindingKeyPort:     []byte(b.Port),
 		BindingKeyPassword: []byte(b.Password),
+		BindingKeyDatabase: []byte(database),
 		BindingKeyTLS:      []byte(tls),
 	}
 }
@@ -267,8 +289,10 @@ var Declarations = map[string]contract.Declaration{
 	},
 	ProviderRedis: {
 		Preview: contract.PreviewFresh,
-		PreviewNote: "a new, empty keyspace of the preview's own at the same server, torn down with the " +
-			"preview: the branch declares provenance synthetic",
+		PreviewNote: "a logical database of the preview's own at the same server, allocated to it alone and " +
+			"handed back when the preview closes: the branch declares provenance synthetic — it never holds " +
+			"production's keys, though a server the platform does not run cannot be emptied, so a database is " +
+			"handed out again only once every untouched one is gone",
 	},
 }
 

@@ -398,9 +398,14 @@ curl -sS -X POST -H "authorization: Bearer $TOKEN" \
   https://kitchen.apps.example.com/api/v1/claims
 ```
 
-The binding carries `url`, `host`, `port`, `password` and `tls`. `url` is the
-single-string form every client library takes; `tls` says whether the
-connection is encrypted, which an application should not have to guess.
+The binding carries `url`, `host`, `port`, `password`, `database` and `tls`.
+`url` is the single-string form every client library takes; `tls` says whether
+the connection is encrypted, which an application should not have to guess;
+`database` is the logical database the binding selects, which is `0` at an
+instance of the claim's own and the claim's allocated one at a shared server
+(see below). A client handed the host, the port and the password alone
+connects to database 0, which is why the number is a key and not only a
+component of the URL.
 
 **`usage` is the field this type exists for**, and it is the one that is
 expensive to get wrong. A cache and a queue are opposite configurations of
@@ -447,12 +452,52 @@ claim asking for something else is refused. A connection that does not say
 refuses any claim that names a usage at all. `maxMemory` and `version` are
 the server's own and are refused outright.
 
-A preview gets a fresh, empty instance from `valkey` and a fresh, empty
-**logical database at the same server** from `redis`. Both declare
-`synthetic`, because what the preview gets is empty either way — but they are
-not equally isolated, and the difference is worth knowing: a database number
-keeps the preview from reading production's keys and does not keep a
-`FLUSHALL` on either side from emptying both.
+**Each claim through it holds a logical database of its own.** It is
+allocated when the claim binds and recorded on the Connection
+(`status.cache.databases`), so a claim gets the same database on every
+reconcile and two claims are never put in one — the number is a record, not a
+hash of the claim's name.
+
+**What a database separates, and what it does not.** It keeps one project's
+keys out of another project's `KEYS`, `SCAN` and `FLUSHDB`, and that is the
+whole of it. It is not a credential boundary: every claim through one
+Connection is handed the **same password**, so any of them can `SELECT`
+another's database, and a `FLUSHALL` from any of them empties every one. The
+separation is logical, not cryptographic, and there is no per-claim memory
+limit behind it either. A claim that needs the other kind — work that cannot
+be lost, anything under a compliance regime, two projects that must not be
+able to reach each other at all — belongs on a `valkey` connection, which
+gives every claim an instance, a password and a limit of its own.
+
+**A server has a finite number of databases, and running out is a refusal.**
+Redis serves 16 unless it was configured otherwise; a Connection whose server
+serves another number says so (`"config": {"databases": 64}`). When every one
+is held, the next claim fails with the constraint named on its `Ready`
+condition — and the next preview on the claim's preview-branches condition,
+the claim itself staying bound — rather than being put in a database somebody
+else is using. Deleting a claim under `Delete`, or closing a preview, hands
+its database back.
+
+**Database 0 is never allocated, and that is the upgrade rule.** Every
+binding this provider made before it allocated databases selected `<url>/0`,
+so a claim bound then keeps it — its data is in there, and nothing moves —
+and no new claim is ever put in with it. Claims bound after the upgrade each
+get a database of their own. An installation that wants the older bindings
+separated as well recreates those claims (their keys are still at `<url>/0`
+until somebody moves or drops them), or moves the projects to a `valkey`
+connection.
+
+A preview gets a fresh, empty instance from `valkey` and a **logical database
+of its own at the same server** from `redis`, allocated out of the same pool
+as the claims — so two live previews of one claim cannot collide, which the
+number they used to be given could. Both declare `synthetic`, and the
+difference between them is worth knowing: a database keeps the preview from
+reading production's keys and does not keep a `FLUSHALL` on either side from
+emptying both. Closing a preview at an external server hands the database
+back but does not empty it — the platform does not run that server and will
+not flush somebody else's keyspace — so a database that has been used is
+handed out again only once every untouched one is gone, and a preview that
+must start empty whatever happens belongs on a `valkey` connection.
 
 `deletionPolicy: Retain` (the default) keeps the instance and everything in
 it; `Delete` destroys both, and for a queue that is somebody's unfinished
@@ -461,7 +506,9 @@ rebound only by a claim of the same name in the same project
 ([Rebinding a retained resource](#rebinding-a-retained-resource)). Preview
 instances are torn down with their previews under either policy. At an external server the
 platform destroys nothing on the way out: the keyspace is the server's, and
-emptying somebody else's database is not the platform's to do.
+emptying somebody else's database is not the platform's to do — under
+`Delete` the database goes back into the connection's pool with the keys
+still in it.
 
 The CLI reaches all of this through `kitchen api`, as for every claim type;
 no command creates a claim.
@@ -563,7 +610,7 @@ with the body above.
 | `volume` | `storageClass` | `fresh` — a new, empty volume of the same size and class, never a copy of production's: the preview declares provenance synthetic | unaffected | **recreate, with downtime** — a ReadWriteOnce volume attaches to one pod at a time, so the process mounting it runs one replica and is deployed by stopping the old pod before starting the new one — a rolling update would leave the new pod waiting in Multi-Attach for a volume the old pod never releases. Every deploy of that process has a gap in serving; a StorageClass detected to support ReadWriteMany lifts both |
 | `inngest` | `inngest` | `branch` — an Inngest branch environment of the preview's own — its own event stream, function set and run history, empty rather than a copy of production's, selected by INNGEST_ENV on the account's shared branch keys; archived, not deleted, when the preview goes | **blocked** — a connect worker holds an outbound WebSocket to Inngest's gateway that never crosses the interceptor, so nothing can tell when it is idle — and scale to zero is a project-level policy, so every environment of the project keeps its pods, previews included | unaffected |
 | `redis` | `valkey` | `fresh` — a new, empty instance of the preview's own, configured like production's and torn down with the preview: the branch declares provenance synthetic | unaffected | unaffected |
-| `redis` | `redis` | `fresh` — a new, empty keyspace of the preview's own at the same server, torn down with the preview: the branch declares provenance synthetic | unaffected | unaffected |
+| `redis` | `redis` | `fresh` — a logical database of the preview's own at the same server, allocated to it alone and handed back when the preview closes: the branch declares provenance synthetic — it never holds production's keys, though a server the platform does not run cannot be emptied, so a database is handed out again only once every untouched one is gone | unaffected | unaffected |
 <!-- end generated -->
 
 ### Choosing on the claim

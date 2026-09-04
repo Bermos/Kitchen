@@ -654,6 +654,10 @@ func (v *Valkey) binding(name, password string) Binding {
 		Host:     host,
 		Port:     port,
 		Password: password,
+		// An instance of the claim's own is a server of the claim's own, so
+		// there is nothing to allocate: everything lands in database 0, and
+		// nothing else is in there.
+		Database: "0",
 		// In-cluster and unencrypted: the platform's own network is the
 		// boundary, the way it is for every other in-cluster address the
 		// platform hands out.

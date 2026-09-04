@@ -21,7 +21,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
+
+	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/Bermos/Kitchen/internal/provider/naming"
 )
@@ -31,18 +34,21 @@ import (
 // already has.
 //
 // It provisions nothing. What it does is give each claim a keyspace of its
-// own at that server — a logical database number — and refuse what the
-// server cannot honour.
+// own at that server — a logical database, allocated to that claim and
+// written down on the Connection — and refuse what the server cannot
+// honour.
 //
-// **That refusal is the whole of this provider's design.** A database number
-// is not an isolation boundary and this package says so at length, which is
-// why the in-cluster provider does not use one; here there is no choice,
-// because nobody can ask somebody else's Redis for another process. So the
-// honesty has to go somewhere else: the operator states on the Connection
-// what the server is configured for, and a claim asking for something else
-// is refused rather than bound to a server that will not behave the way the
-// claim assumed. A claim that would be handed an evicting server for a queue
-// never binds.
+// **The allocation and the refusal are the whole of this provider's
+// design.** A logical database is not much of a boundary and this package
+// says so at length, which is why the in-cluster provider does not use one;
+// here there is no choice, because nobody can ask somebody else's Redis for
+// another process. So what can be got right is got right: two claims never
+// land on one database, an allocation survives every reconcile because it is
+// a record rather than a hash of the name, and a server with nothing left is
+// told so rather than quietly sharing database 0. What cannot be got right
+// is said plainly instead — every claim through one Connection is handed the
+// same password, so the separation is logical and not cryptographic, and
+// docs/api/claims.md says which claims should not rely on it.
 type External struct {
 	// URL of the server, from the Connection's credentials Secret.
 	URL string
@@ -54,6 +60,12 @@ type External struct {
 	// claim beyond the last one is refused rather than bound to a keyspace
 	// the server will reject on first use.
 	Databases int
+	// Ledger is where the allocations are kept, so that a database handed to
+	// one claim is not handed to another.
+	Ledger DatabaseLedger
+	// ConnectionName is what the Connection is called, for the refusals a
+	// person reads.
+	ConnectionName string
 }
 
 // DefaultExternalDatabases is what a Redis serves unless it was configured
@@ -80,8 +92,21 @@ func NewExternal(opts Options) (*External, error) {
 	if _, err := url.Parse(opts.URL); err != nil {
 		return nil, fmt.Errorf("the %s connection's url is not a URL: %w", ProviderRedis, err)
 	}
+	conn := opts.Connection
+	if conn == nil {
+		return nil, fmt.Errorf("a %s provisioner is built from a connection and was given none", ProviderRedis)
+	}
+	// The allocations live on the Connection's status, so this provider
+	// needs the platform's own cluster even though it provisions nothing at
+	// the server. Without it there is nowhere to record which claim holds
+	// which database, and a provider that cannot record one would fall back
+	// to sharing database 0 — which is the bug this exists to close.
+	if opts.Cluster == nil {
+		return nil, fmt.Errorf("a %s provisioner records each claim's logical database on its connection and was "+
+			"given no client to do it with", ProviderRedis)
+	}
 	cfg := externalConfig{}
-	if conn := opts.Connection; conn != nil && conn.Spec.Config != nil && len(conn.Spec.Config.Raw) > 0 {
+	if conn.Spec.Config != nil && len(conn.Spec.Config.Raw) > 0 {
 		if err := json.Unmarshal(conn.Spec.Config.Raw, &cfg); err != nil {
 			return nil, fmt.Errorf("invalid %s config: %w", ProviderRedis, err)
 		}
@@ -90,10 +115,19 @@ func NewExternal(opts Options) (*External, error) {
 	if databases <= 0 {
 		databases = DefaultExternalDatabases
 	}
-	return &External{URL: opts.URL, Usage: Usage(cfg.Usage), Databases: databases}, nil
+	return &External{
+		URL:            opts.URL,
+		Usage:          Usage(cfg.Usage),
+		Databases:      databases,
+		ConnectionName: conn.Name,
+		Ledger: &connectionLedger{
+			client: opts.Cluster,
+			key:    types.NamespacedName{Namespace: conn.Namespace, Name: conn.Name},
+		},
+	}, nil
 }
 
-// Provision hands over the server's own keyspace.
+// Provision hands over a keyspace at the server.
 func (e *External) Provision(ctx context.Context, res naming.Resource) (Instance, error) {
 	return e.ProvisionWith(ctx, res, Requirements{})
 }
@@ -103,7 +137,7 @@ func (e *External) Provision(ctx context.Context, res naming.Resource) (Instance
 //
 // There is nothing at the server to look a name up against — this provider
 // creates nothing, so nothing of another project's can be adopted here — and
-// the name is only what the keyspace is recorded under.
+// the name is what the claim's database is recorded under.
 func (e *External) ProvisionWith(ctx context.Context, res naming.Resource, req Requirements) (Instance, error) {
 	if err := e.satisfies(req); err != nil {
 		return Instance{}, err
@@ -112,39 +146,65 @@ func (e *External) ProvisionWith(ctx context.Context, res naming.Resource, req R
 	if err != nil {
 		return Instance{}, err
 	}
-	return e.instance(name, 0, req)
+	// A claim that is already bound was bound to database 0, because that is
+	// what every binding this provider made before it allocated anything
+	// selected. It keeps it: moving a bound claim's keyspace would hand the
+	// application an empty one and leave its data where nothing reads it.
+	bound := res.Name != "" || res.Unqualified
+	database, err := e.database(ctx, name, bound)
+	if err != nil {
+		return Instance{}, err
+	}
+	return e.instance(name, database)
 }
 
-// CreateBranch gives a preview its own logical database at the same server.
+// CreateBranch gives a preview a logical database of its own at the same
+// server, allocated from the same record as every claim's — so no two live
+// previews, and no preview and claim, are ever handed one database between
+// them.
 //
 // It is a weaker boundary than the in-cluster provider's separate process
 // and this package does not pretend otherwise: the preview cannot see
 // production's keys, and a FLUSHALL from either empties both. The
-// declaration says `fresh` because what the preview gets is empty; what it
-// does not say is isolated, and the docs are explicit about the difference.
-func (e *External) CreateBranch(_ context.Context, instanceID, name string) (Branch, error) {
-	database := e.databaseFor(name)
-	if database >= e.Databases {
-		return Branch{}, fmt.Errorf("%w: this server offers %d logical databases and every one is spoken for; "+
-			"a preview of this claim has nowhere to go. Point the claim at a %s connection, which gives every "+
-			"preview an instance of its own", ErrUnsatisfiable, e.Databases, ProviderValkey)
+// declaration says `fresh` because what the preview gets is a database of
+// its own; what it does not say is isolated, and the docs are explicit about
+// the difference.
+func (e *External) CreateBranch(ctx context.Context, instanceID, name string) (Branch, error) {
+	holder := branchHolder(instanceID, name)
+	database, err := e.database(ctx, holder, false)
+	if err != nil {
+		return Branch{}, err
 	}
-	instance, err := e.instance(instanceID+"/"+name, database, Requirements{})
+	instance, err := e.instance(holder, database)
 	if err != nil {
 		return Branch{}, err
 	}
 	return Branch{ID: instance.ID, Binding: instance.Binding, Provenance: ProvenanceSynthetic}, nil
 }
 
-// Deprovision does nothing at a server the platform does not run: the
+// Deprovision destroys nothing at a server the platform does not run: the
 // keyspace is the server's, and emptying somebody else's database on the way
 // out is not this provider's to do. The claim's binding Secret goes, which
-// is what the platform owns.
-func (e *External) Deprovision(context.Context, string) error { return nil }
+// is what the platform owns, and the database goes back into the pool —
+// this is deletionPolicy Delete, which is the policy that says the data is
+// finished with.
+func (e *External) Deprovision(ctx context.Context, instanceID string) error {
+	return e.release(ctx, instanceID)
+}
 
-// DeleteBranch is the same: the preview's binding goes with the preview, and
-// what is in the server's database stays until somebody says otherwise.
-func (e *External) DeleteBranch(context.Context, string, string) error { return nil }
+// DeleteBranch gives the preview's database back, so that fifty previews
+// over a month do not exhaust a server with sixteen databases. What is in it
+// stays: the platform cannot empty a server it does not run, which is why a
+// database that has never been handed out is preferred to one that has.
+func (e *External) DeleteBranch(ctx context.Context, _, branchID string) error {
+	return e.release(ctx, branchID)
+}
+
+// branchHolder is what a preview's database is recorded under, and the ID
+// its branch is addressed by afterwards.
+func branchHolder(instanceID, environment string) string {
+	return instanceID + "/" + environment
+}
 
 // satisfies is the refusal this provider exists for.
 func (e *External) satisfies(req Requirements) error {
@@ -173,13 +233,135 @@ func (e *External) satisfies(req Requirements) error {
 	return nil
 }
 
+// database is the logical database this holder has, allocating one when it
+// has none. It is the same number on every reconcile because it is read back
+// out of the record rather than worked out again.
+func (e *External) database(ctx context.Context, holder string, bound bool) (int, error) {
+	if e.Ledger == nil {
+		return 0, fmt.Errorf("this %s provisioner has nowhere to record which database %q holds", ProviderRedis, holder)
+	}
+	database := 0
+	err := e.Ledger.Update(ctx, func(holdings []DatabaseHolding) ([]DatabaseHolding, bool, error) {
+		if held, ok := heldBy(holdings, holder); ok {
+			database = held
+			return holdings, false, nil
+		}
+		allocated, updated, err := e.allocate(holdings, holder, bound)
+		if err != nil {
+			return nil, false, err
+		}
+		database = allocated
+		return updated, true, nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return database, nil
+}
+
+// release gives a holder's database back, keeping the row: the database has
+// been used, the platform cannot empty it, and allocate prefers one that
+// never has been.
+func (e *External) release(ctx context.Context, holder string) error {
+	if e.Ledger == nil {
+		return nil
+	}
+	return e.Ledger.Update(ctx, func(holdings []DatabaseHolding) ([]DatabaseHolding, bool, error) {
+		changed := false
+		for i := range holdings {
+			if holdings[i].Holder == holder {
+				holdings[i].Holder = ""
+				changed = true
+			}
+		}
+		return holdings, changed, nil
+	})
+}
+
+// allocate picks this holder's database out of what is left, and answers the
+// record with the allocation in it.
+//
+// Database 0 is never picked. Every binding this provider made before it
+// allocated anything selected it, and a claim that has not been reconciled
+// since is still using it without anything here saying so — so it belongs to
+// them, and a claim that was already bound is put back on it rather than
+// moved.
+//
+// Of what is left, a database nothing has ever held is preferred to one that
+// has been given back. The platform cannot empty a database at a server it
+// does not run, so a reused one still holds whatever the last holder left in
+// it; taking the untouched ones first is what keeps a preview from
+// inheriting a previous preview's keys for as long as the server has a
+// database to spare.
+func (e *External) allocate(holdings []DatabaseHolding, holder string, bound bool) (int, []DatabaseHolding, error) {
+	if bound {
+		return LegacyDatabase, append(holdings, DatabaseHolding{Database: LegacyDatabase, Holder: holder}), nil
+	}
+
+	seen := map[int]bool{}
+	held := map[int]bool{}
+	for _, holding := range holdings {
+		seen[holding.Database] = true
+		if holding.Holder != "" {
+			held[holding.Database] = true
+		}
+	}
+	for database := FirstAllocatableDatabase; database < e.Databases; database++ {
+		if !seen[database] {
+			return database, append(holdings, DatabaseHolding{Database: database, Holder: holder}), nil
+		}
+	}
+	for database := FirstAllocatableDatabase; database < e.Databases; database++ {
+		if !held[database] {
+			for i := range holdings {
+				if holdings[i].Database == database && holdings[i].Holder == "" {
+					holdings[i].Holder = holder
+					return database, holdings, nil
+				}
+			}
+		}
+	}
+	return 0, nil, e.exhausted()
+}
+
+// exhausted is the refusal that replaced sharing database 0 with whoever was
+// there first. It names the constraint, because the number of databases a
+// server serves is the operator's to change and nobody guesses it.
+func (e *External) exhausted() error {
+	if e.Databases <= FirstAllocatableDatabase {
+		return fmt.Errorf("%w: connection %q says its server offers %d logical database(s), and database %d is "+
+			"never allocated — every binding made before Kitchen gave each claim one of its own selected it. "+
+			"Set `databases` on the connection to what the server actually serves (a Redis serves %d unless it "+
+			"was configured otherwise), or claim through a %s connection, which gives every claim an instance "+
+			"of its own", ErrUnsatisfiable, e.ConnectionName, e.Databases, LegacyDatabase,
+			DefaultExternalDatabases, ProviderValkey)
+	}
+	return fmt.Errorf("%w: connection %q reaches a server with %d logical databases and databases %d-%d are all "+
+		"held; database %d is never allocated, because every binding made before Kitchen gave each claim one of "+
+		"its own selected it. Raise `databases` on the connection if the server serves more (a Redis serves %d "+
+		"unless it was configured otherwise), delete a claim or a preview that no longer needs one, or claim "+
+		"through a %s connection, which gives every claim an instance of its own",
+		ErrUnsatisfiable, e.ConnectionName, e.Databases, FirstAllocatableDatabase, e.Databases-1, LegacyDatabase,
+		DefaultExternalDatabases, ProviderValkey)
+}
+
+// heldBy is the database this holder already has.
+func heldBy(holdings []DatabaseHolding, holder string) (int, bool) {
+	for _, holding := range holdings {
+		if holding.Holder == holder {
+			return holding.Database, true
+		}
+	}
+	return 0, false
+}
+
 // instance is the server's address with a logical database selected.
-func (e *External) instance(name string, database int, _ Requirements) (Instance, error) {
+func (e *External) instance(name string, database int) (Instance, error) {
 	parsed, err := url.Parse(e.URL)
 	if err != nil {
 		return Instance{}, err
 	}
-	parsed.Path = "/" + fmt.Sprint(database)
+	parsed.Path = "/" + strconv.Itoa(database)
 	password := ""
 	if parsed.User != nil {
 		password, _ = parsed.User.Password()
@@ -196,24 +378,11 @@ func (e *External) instance(name string, database int, _ Requirements) (Instance
 			Host:     parsed.Hostname(),
 			Port:     port,
 			Password: password,
+			Database: strconv.Itoa(database),
 			TLS:      parsed.Scheme == "rediss",
 		},
 		// The server is somebody's production server as far as the platform
 		// knows, and it declares nothing it cannot vouch for.
 		Provenance: ProvenanceProduction,
 	}, nil
-}
-
-// databaseFor picks a logical database for a preview, deterministically, so
-// that a preview reconciled twice gets the same one. Database 0 is the
-// claim's own, so previews start at 1.
-func (e *External) databaseFor(name string) int {
-	if e.Databases <= 1 {
-		return e.Databases
-	}
-	sum := 0
-	for _, b := range []byte(name) {
-		sum = (sum*31 + int(b)) % (e.Databases - 1)
-	}
-	return sum + 1
 }
