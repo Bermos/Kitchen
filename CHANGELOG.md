@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.25.0](https://github.com/Bermos/Kitchen/compare/v0.24.0...v0.25.0) (2026-09-04)
+
+
+### Features
+
+* **compliance:** a unit's evidence describes every image it ships ([#353](https://github.com/Bermos/Kitchen/issues/353)) ([5f1a3a4](https://github.com/Bermos/Kitchen/commit/5f1a3a49441aeaa0bccf90224d66df90e637bd4c)), closes [#300](https://github.com/Bermos/Kitchen/issues/300)
+* **compliance:** answer how a commit arrived on GitLab and Gitea ([#351](https://github.com/Bermos/Kitchen/issues/351)) ([f52e152](https://github.com/Bermos/Kitchen/commit/f52e152cfc2de029e1a9271452b8067e44953def))
+* **operator:** an installation whose builds are legitimately slow can say so ([#343](https://github.com/Bermos/Kitchen/issues/343)) ([e020aea](https://github.com/Bermos/Kitchen/commit/e020aea47f3ad91a9af09c320ce87cb99c6e6d11)), closes [#223](https://github.com/Bermos/Kitchen/issues/223)
+
+
+### Bug fixes
+
+* **claims:** give every claim through a redis connection a database of its own ([#344](https://github.com/Bermos/Kitchen/issues/344)) ([be8815c](https://github.com/Bermos/Kitchen/commit/be8815cb4dae8ad0480e7027a584f632ea84ca31))
+* **cli:** the platform commands say they are the dashboard's, and why ([#352](https://github.com/Bermos/Kitchen/issues/352)) ([316d853](https://github.com/Bermos/Kitchen/commit/316d8532fa1f3b9f9e96ada82d009256e83cb0ae))
+
+
+### Documentation
+
+* **spikes:** render five real charts and report what Kitchen cannot express ([#342](https://github.com/Bermos/Kitchen/issues/342)) ([d62bfd4](https://github.com/Bermos/Kitchen/commit/d62bfd4255310ab4365d8df1fa4d87e844429c3b))
+
 ## [0.24.0](https://github.com/Bermos/Kitchen/compare/v0.23.1...v0.24.0) (2026-09-03)
 
 
