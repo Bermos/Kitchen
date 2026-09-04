@@ -160,6 +160,15 @@ jobs:
       - name: Clone the code
         uses: actions/checkout@v4
 
+      # Not the runner's own helm, which is a 3.x. The chart carries the
+      # namespace it installs into as a template and relies on Helm adopting
+      # the bare one `--create-namespace` makes first; Helm 3 does not adopt at
+      # all, so the install dies with `namespaces "kitchen-system" already
+      # exists` before it applies anything. Every other job that installs this
+      # chart takes its helm from here for the same reason.
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
 
