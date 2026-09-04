@@ -310,3 +310,8 @@ func (i inngestBranchOps) createBranch(ctx context.Context, _, name string) (cla
 func (i inngestBranchOps) deleteBranch(ctx context.Context, _, branchID string) error {
 	return i.DeleteBranch(ctx, branchID)
 }
+
+// idler is nil: the branch environment is Inngest's to run, and the connect
+// worker reading it never idles either — which the claim already says
+// through KeepsPodsRunning.
+func (inngestBranchOps) idler() claimIdler { return nil }

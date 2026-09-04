@@ -257,6 +257,37 @@ var _ = Describe("Scale to zero", func() {
 			"reconciling a parked environment must not wake it up")
 	})
 
+	// status.idle is the signal a claim's preview infrastructure parks and
+	// wakes on (#294), so it has to mean "parked" and not "allowed to park":
+	// the ScaleToZero condition already answers the second question.
+	It("says on the Environment when it is actually parked, not merely allowed to be", func() {
+		reconcileOnce()
+		reconcileOnce()
+
+		env := &kitchenv1alpha1.Environment{}
+		Expect(k8sClient.Get(ctx, envKey, env)).To(Succeed())
+		Expect(env.Status.Idle).To(BeFalse(), "allowed to park is not parked")
+
+		By("letting KEDA park the workload")
+		deploy := &appsv1.Deployment{}
+		Expect(k8sClient.Get(ctx, childKey, deploy)).To(Succeed())
+		deploy.Spec.Replicas = ptr.To(int32(0))
+		Expect(k8sClient.Update(ctx, deploy)).To(Succeed())
+
+		reconcileOnce()
+		Expect(k8sClient.Get(ctx, envKey, env)).To(Succeed())
+		Expect(env.Status.Idle).To(BeTrue(), "the autoscaler took it to zero, so it is idle")
+
+		By("waking it again")
+		Expect(k8sClient.Get(ctx, childKey, deploy)).To(Succeed())
+		deploy.Spec.Replicas = ptr.To(int32(1))
+		Expect(k8sClient.Update(ctx, deploy)).To(Succeed())
+
+		reconcileOnce()
+		Expect(k8sClient.Get(ctx, envKey, env)).To(Succeed())
+		Expect(env.Status.Idle).To(BeFalse())
+	})
+
 	It("keeps production on its own replicas, and idles it when asked", func() {
 		env := &kitchenv1alpha1.Environment{}
 		Expect(k8sClient.Get(ctx, envKey, env)).To(Succeed())

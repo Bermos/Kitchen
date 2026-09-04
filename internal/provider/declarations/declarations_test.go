@@ -53,6 +53,13 @@ func TestEveryProviderDeclares(t *testing.T) {
 		if (d.KeepsPodsRunning || d.ForcesRecreate) && d.WorkloadNote == "" {
 			t.Errorf("%s via %s constrains the workload without saying why", d.Type, d.Provider)
 		}
+		// Both answers to "does a preview's own resource park with the
+		// preview" need a sentence: one has to say what survives the park,
+		// the other has to say why an open pull request keeps paying for it.
+		if d.IdleNote == "" {
+			t.Errorf("%s via %s says nothing about what an idle preview does to what it provisioned",
+				d.Type, d.Provider)
+		}
 		if _, ok := kitchenv1alpha1.LookupClaimType(d.Type); !ok {
 			t.Errorf("%q is declared for and is not a claim type", d.Type)
 		}
@@ -76,9 +83,15 @@ func TestTheTwoShippedProvidersDeclareWhatTheIssueSays(t *testing.T) {
 	if !ok || neon.Preview != contract.PreviewBranch {
 		t.Errorf("Neon branches production for a preview; it declares %q", neon.Preview)
 	}
+	if neon.CanIdle {
+		t.Error("Neon suspends its own compute; the platform must not claim to park it")
+	}
 	cnpg, ok := Lookup(kitchenv1alpha1.ClaimTypePostgres, database.ProviderCNPG)
 	if !ok || cnpg.Preview != contract.PreviewFresh {
 		t.Errorf("CloudNativePG gives a preview a fresh, empty database; it declares %q", cnpg.Preview)
+	}
+	if !cnpg.CanIdle {
+		t.Error("a CloudNativePG preview Cluster hibernates with its preview; the declaration should say so")
 	}
 	oidc, ok := Lookup(kitchenv1alpha1.ClaimTypeOIDCClient, oidcclient.ProviderName)
 	if !ok || oidc.Preview != contract.PreviewShared {

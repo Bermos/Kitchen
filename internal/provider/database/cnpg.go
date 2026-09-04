@@ -19,6 +19,7 @@ package database
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -81,6 +82,16 @@ const (
 	// clusterLabel is what cnpg puts on the pods of one Cluster; reading it
 	// is how the primary's node — and so the residency — is found.
 	clusterLabel = "cnpg.io/cluster"
+
+	// hibernationAnnotation is CloudNativePG's declarative hibernation: "on"
+	// stops every instance of a Cluster and leaves its PersistentVolumeClaims
+	// alone, "off" starts them again from those volumes. It is how a preview's
+	// database parks with its preview (#294) — a Cluster's instance count has
+	// a floor of one, so hibernation is the operator's supported way of
+	// saying zero.
+	hibernationAnnotation = "cnpg.io/hibernation"
+	hibernationOn         = "on"
+	hibernationOff        = "off"
 
 	// regionLabel and zoneLabel are the standard topology labels. Residency
 	// is *reported*, never declared, so what a node happens to say about
@@ -256,6 +267,60 @@ func (c *CNPG) Deprovision(ctx context.Context, instanceID string) error {
 // does.
 func (c *CNPG) DeleteBranch(ctx context.Context, _, branchID string) error {
 	return c.deleteCluster(ctx, branchID)
+}
+
+// IdleBranch hibernates a preview's Cluster: CloudNativePG's own declarative
+// hibernation, which stops every instance and leaves the PersistentVolumeClaims
+// exactly where they are. A preview that wakes finds the database it left.
+//
+// It is the annotation rather than `spec.instances: 0` because a Cluster's
+// instance count has a floor of one — asking for zero is refused at admission,
+// and asking the operator to hibernate is the supported way to say the same
+// thing.
+func (c *CNPG) IdleBranch(ctx context.Context, branchID string) error {
+	return c.hibernate(ctx, branchID, hibernationOn)
+}
+
+// WakeBranch takes the hibernation back off. CloudNativePG starts the
+// instances again from the volumes it left; this returns as soon as the
+// Cluster has been asked, and the claim's own readiness path reports when it
+// is serving.
+func (c *CNPG) WakeBranch(ctx context.Context, branchID string) error {
+	return c.hibernate(ctx, branchID, hibernationOff)
+}
+
+// hibernate writes the hibernation annotation, treating a Cluster that is
+// already in the wanted state as done and one that is gone — or a cluster no
+// longer serving cnpg at all — as nothing to do. A park must never be able to
+// wedge a reconcile: the worst case is a preview that keeps running, which is
+// what the platform did before this existed.
+func (c *CNPG) hibernate(ctx context.Context, branchID, state string) error {
+	if strings.TrimSpace(branchID) == "" {
+		return nil
+	}
+	cluster, err := c.cluster(ctx, branchID)
+	if err != nil {
+		if apierrors.IsNotFound(err) || errors.Is(err, ErrUnsatisfiable) {
+			return nil
+		}
+		return err
+	}
+	annotations := cluster.GetAnnotations()
+	if annotations[hibernationAnnotation] == state {
+		return nil
+	}
+	if annotations == nil {
+		annotations = map[string]string{}
+	}
+	annotations[hibernationAnnotation] = state
+	cluster.SetAnnotations(annotations)
+	if err := c.Client.Update(ctx, cluster); err != nil {
+		if apierrors.IsNotFound(err) || meta.IsNoMatchError(err) {
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 // ensureCluster creates the Cluster if it is not there and waits for it to be

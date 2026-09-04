@@ -360,6 +360,15 @@ kitchen:
     # `0` turns the poll off, for an installation that would rather move a
     # vendored image by hand. The floor under anything else is one minute.
     imagePollInterval: 10m
+  previews:
+    # -- How many preview environments one project may have live at once. A
+    # pull request that would exceed it gets no preview: the request is told
+    # so with a commit status and a comment naming this setting, rather than
+    # a preview that starts and lets the node sort it out. Production
+    # environments and anything promoted are never counted — the ephemeral
+    # half is where a project with claims multiplies. A project may set its
+    # own ceiling (`spec.previews.max`), and `0` here is no ceiling at all.
+    maxPerProject: 5
   appNamespaces:
     # -- Pod Security level enforced on the namespace each project's builds
     # and workloads run in. Written by the operator as the `enforce`, `audit`

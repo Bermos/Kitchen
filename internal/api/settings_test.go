@@ -229,6 +229,52 @@ func TestChangingTheBuildTimeout(t *testing.T) {
 	}
 }
 
+// The preview ceiling is the build ceiling's sibling and is read the same
+// way: a singleton that names none reports the one a project would actually
+// get, and 0 is a setting the object can say rather than an absent field.
+func TestThePreviewCeilingIsReadAndWrittenLikeTheBuildCeiling(t *testing.T) {
+	h := newHarness(t, nil)
+
+	if body := decode[settingsView](t, h.do(t, http.MethodGet, settingsPath, "")); body.PreviewsMaxPerProject !=
+		kitchenv1alpha1.DefaultPreviewsPerProject {
+		t.Fatalf("want the platform's own default reported, got %d", body.PreviewsMaxPerProject)
+	}
+
+	recorder := h.do(t, http.MethodPatch, settingsPath, `{"previewsMaxPerProject": 3}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if body := decode[settingsView](t, recorder); body.PreviewsMaxPerProject != 3 {
+		t.Fatalf("the answer does not carry the ceiling: %+v", body)
+	}
+
+	kitchen := &kitchenv1alpha1.Kitchen{}
+	if err := h.server.Client.Get(context.Background(),
+		types.NamespacedName{Name: controller.KitchenSingletonName}, kitchen); err != nil {
+		t.Fatal(err)
+	}
+	if kitchen.Spec.Previews.MaxPerProject == nil || *kitchen.Spec.Previews.MaxPerProject != 3 {
+		t.Fatalf("the singleton was not updated: %+v", kitchen.Spec.Previews)
+	}
+
+	// Zero is written, not omitted: an installation with room to spare has to
+	// be able to say its previews are unbounded.
+	if recorder := h.do(t, http.MethodPatch, settingsPath,
+		`{"previewsMaxPerProject": 0}`); recorder.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if err := h.server.Client.Get(context.Background(),
+		types.NamespacedName{Name: controller.KitchenSingletonName}, kitchen); err != nil {
+		t.Fatal(err)
+	}
+	if kitchen.Spec.Previews.MaxPerProject == nil || *kitchen.Spec.Previews.MaxPerProject != 0 {
+		t.Fatalf("the ceiling was not cleared: %+v", kitchen.Spec.Previews)
+	}
+	if body := decode[settingsView](t, h.do(t, http.MethodGet, settingsPath, "")); body.PreviewsMaxPerProject != 0 {
+		t.Fatalf("a cleared ceiling is not reported as one: %+v", body)
+	}
+}
+
 func TestChangingTheSettingsRejectsNonsense(t *testing.T) {
 	h := newHarness(t, nil)
 
@@ -243,6 +289,8 @@ func TestChangingTheSettingsRejectsNonsense(t *testing.T) {
 		"a ceiling of nothing": `{"buildCPU": "0"}`,
 		// 0 is no deadline; below it is nothing at all.
 		"a negative build timeout": `{"buildTimeoutMinutes": -1}`,
+		// 0 is no preview ceiling; below it is nothing at all.
+		"a negative preview ceiling": `{"previewsMaxPerProject": -1}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			recorder := h.do(t, http.MethodPatch, settingsPath, body)

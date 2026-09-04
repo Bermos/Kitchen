@@ -15,7 +15,8 @@ operators are**:
 
 ```json
 {"baseDomain": "apps.example.com", "buildConcurrency": 2, "buildCPU": "2", "buildMemory": "4Gi",
- "buildTimeoutMinutes": 60, "logRetentionDays": 30, "operators": [{"subject": "user_01H8X…", "email": "anna@example.com"}]}
+ "buildTimeoutMinutes": 60, "previewsMaxPerProject": 5, "logRetentionDays": 30,
+ "operators": [{"subject": "user_01H8X…", "email": "anna@example.com"}]}
 ```
 
 `operators` is `spec.access.operators`, the list every `operator` requirement
@@ -34,7 +35,8 @@ The field carries no `omitempty` for exactly that reason.
 
 ```json
 {"buildStrategy": "auto", "buildConcurrency": 2, "buildCPU": "2", "buildMemory": "4Gi",
- "buildTimeoutMinutes": 60, "logRetentionDays": 30, "operators": [{"email": "anna@example.com"}, {"subject": "user_01H8X…"}]}
+ "buildTimeoutMinutes": 60, "previewsMaxPerProject": 5, "logRetentionDays": 30,
+ "operators": [{"email": "anna@example.com"}, {"subject": "user_01H8X…"}]}
 ```
 
 It also carries **the scheduled backup's ordinary settings** —
@@ -113,6 +115,32 @@ because an installation whose builds are legitimately slower has no other way to
 say so. `0` is no deadline at all; a negative number is a `400`. A change
 reaches builds started after it: the deadline is the Job's own
 `activeDeadlineSeconds`, and a Job's is immutable once it exists.
+
+**`previewsMaxPerProject` is the ceiling on previews**, and it is here rather
+than anywhere else because it is the build ceiling's sibling: the other
+statement about how much of this cluster a project may take by pushing. It is
+`spec.previews.maxPerProject` — how many preview environments one project may
+have live at once.
+
+A pull request that would exceed it **gets no preview**. It is told so on the
+request rather than left to find out: a commit status under its own context
+(`kitchen/<project>/preview`, beside the build's rather than over it, because
+the build succeeded) and the preview comment, written under the marker a
+preview would have used so that the preview this request gets later rewrites it
+in place. The project records it too, on `previewCapacity` in
+[the project view](./projects.md#the-preview-ceiling).
+
+Production environments and anything promoted are never counted: the ceiling is
+on the ephemeral half, because the ephemeral half is what multiplies — a
+project with a database claim and a cache claim materializes two backing
+deployments per preview. Five is the default, which is a single-node cluster's
+number; `0` is no ceiling at all, and a negative number is a `400`.
+
+**Nothing is queued.** A refused pull request gets its preview on its next push,
+once another preview has closed and freed a slot. A queue would have the
+platform deploy a commit nobody asked it to deploy, minutes or days after the
+push. A project may set its own ceiling with
+[`previewsMax`](./projects.md#the-preview-ceiling), which overrides this one.
 
 Everything else on the singleton — the base domain, the issuer, the ingress —
 shapes URLs and credentials the platform has already handed out, so changing

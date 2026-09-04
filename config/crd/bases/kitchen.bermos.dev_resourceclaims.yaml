@@ -231,6 +231,16 @@ spec:
                     id:
                       description: ID is the provider-side branch identifier.
                       type: string
+                    idle:
+                      description: |-
+                        Idle says this branch is parked because the preview reading it is:
+                        the provider has been asked to take it down to no compute, and will
+                        be asked to bring it back when the preview wakes (#294).
+
+                        The data is untouched either way — idling a branch is not deleting
+                        it, and a preview that wakes finds what it left. A provider whose
+                        declaration says it cannot idle never sets this.
+                      type: boolean
                     provenance:
                       description: |-
                         Provenance is the provider's declaration of what this branch's data
@@ -255,6 +265,18 @@ spec:
                   - secretName
                   type: object
                 type: array
+              canIdle:
+                description: |-
+                  CanIdle is the provider's declaration that a preview's own resource
+                  parks when the preview does: the platform asks it for no compute while
+                  the environment is idle and asks for it back on wake, so an open pull
+                  request nobody is looking at costs storage rather than a running
+                  database (#294).
+
+                  False is the honest answer for a provider with nothing to park — a
+                  bucket, an OAuth client — and for one that parks itself. The reason
+                  beside it says which.
+                type: boolean
               conditions:
                 items:
                   description: Condition contains details for one aspect of the current
@@ -333,6 +355,13 @@ spec:
                   on every deploy. The environment reconciler reads it and sets the
                   strategy.
                 type: boolean
+              idleReason:
+                description: |-
+                  IdleReason is the provider's own sentence about the field above: what
+                  it does when a preview idles, or why it does nothing. It is what the
+                  claim's screen and `kitchen` show, so that "this preview's database is
+                  still running" is a statement somebody can read rather than infer.
+                type: string
               instanceID:
                 description: |-
                   InstanceID is the provider-side identifier of the provisioned resource,

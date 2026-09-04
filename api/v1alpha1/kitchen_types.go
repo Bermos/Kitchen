@@ -342,6 +342,58 @@ type AppNamespacesSpec struct {
 	PodSecurity PodSecurityLevel `json:"podSecurity,omitempty"`
 }
 
+// PlatformPreviewsSpec is what the platform allows a project's pull requests
+// to take from the cluster.
+//
+// Every other appetite the platform has is bounded: a build by
+// `builds.concurrency` times `builds.resources`, an application by what its
+// project declares. A preview environment was bounded by nothing — a project
+// with `c` claims and `e` open pull requests materializes `c × e` deployments
+// of backing infrastructure, and `e` is a number nobody chose. This is where
+// somebody chooses it.
+type PlatformPreviewsSpec struct {
+	// MaxPerProject is how many preview Environments one Project may have
+	// live at once. A pull request that would exceed it gets no preview: a
+	// commit status and the preview comment say so and name this field,
+	// which is the whole point — the alternative is a preview that succeeds
+	// and lets the node sort it out.
+	//
+	// Production environments and anything promoted are never counted: the
+	// ceiling is on the ephemeral half, because the ephemeral half is what
+	// multiplies.
+	//
+	// Five is the default because Kitchen is built for single-node clusters,
+	// where five previews of a project with a database and a cache claim is
+	// already ten backing deployments. `0` is no ceiling at all, which is
+	// the installation with room to spare saying so.
+	//
+	// It is a pointer because that zero is a setting: an int32 with
+	// `omitempty` serializes 0 as an absent field, so the default would be
+	// applied back over it and clearing the ceiling would be unsayable.
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:default=5
+	// +optional
+	MaxPerProject *int32 `json:"maxPerProject,omitempty"`
+}
+
+// DefaultPreviewsPerProject is the ceiling a project gets when the singleton
+// names none — the compiled-in twin of the CRD default, which an installation
+// written before the field existed does not carry.
+const DefaultPreviewsPerProject = int32(5)
+
+// EffectiveMaxPerProject is the platform's ceiling as a reader should apply
+// it: the setting, or the compiled default where the singleton predates the
+// field. 0 is no ceiling.
+func (s PlatformPreviewsSpec) EffectiveMaxPerProject() int32 {
+	if s.MaxPerProject == nil {
+		return DefaultPreviewsPerProject
+	}
+	if *s.MaxPerProject < 0 {
+		return 0
+	}
+	return *s.MaxPerProject
+}
+
 // BuildsSpec configures platform-wide build defaults.
 type BuildsSpec struct {
 	// +kubebuilder:default=auto
@@ -860,6 +912,21 @@ type KitchenSpec struct {
 
 	// +optional
 	Builds BuildsSpec `json:"builds,omitempty"`
+
+	// Previews is the platform's ceiling on preview environments, which is
+	// the one resource dimension a pull request moves without anybody
+	// choosing a number (#294).
+	//
+	// It sits beside Builds deliberately: the two are the same kind of
+	// statement — how much of this cluster a project may take by pushing —
+	// and reading either on its own answers half the question.
+	//
+	// The empty-object default is what gives an installation that predates
+	// the field a ceiling at all: structural defaulting only descends into
+	// objects that are present.
+	// +kubebuilder:default={}
+	// +optional
+	Previews PlatformPreviewsSpec `json:"previews,omitempty"`
 
 	// AppNamespaces configures the namespaces the operator creates for
 	// projects. The empty-object default is what gives an installation

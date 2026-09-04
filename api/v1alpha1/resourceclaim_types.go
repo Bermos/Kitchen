@@ -723,6 +723,16 @@ type ClaimBranch struct {
 	// +kubebuilder:validation:Enum=production;masked;synthetic
 	// +optional
 	Provenance string `json:"provenance,omitempty"`
+
+	// Idle says this branch is parked because the preview reading it is:
+	// the provider has been asked to take it down to no compute, and will
+	// be asked to bring it back when the preview wakes (#294).
+	//
+	// The data is untouched either way — idling a branch is not deleting
+	// it, and a preview that wakes finds what it left. A provider whose
+	// declaration says it cannot idle never sets this.
+	// +optional
+	Idle bool `json:"idle,omitempty"`
 }
 
 // ClaimVolumeStatus is what a volume claim materialized: the
@@ -1017,6 +1027,25 @@ type ResourceClaimStatus struct {
 	// environment reconciler reads it and says so on the environment.
 	// +optional
 	KeepsPodsRunning bool `json:"keepsPodsRunning,omitempty"`
+
+	// CanIdle is the provider's declaration that a preview's own resource
+	// parks when the preview does: the platform asks it for no compute while
+	// the environment is idle and asks for it back on wake, so an open pull
+	// request nobody is looking at costs storage rather than a running
+	// database (#294).
+	//
+	// False is the honest answer for a provider with nothing to park — a
+	// bucket, an OAuth client — and for one that parks itself. The reason
+	// beside it says which.
+	// +optional
+	CanIdle bool `json:"canIdle,omitempty"`
+
+	// IdleReason is the provider's own sentence about the field above: what
+	// it does when a preview idles, or why it does nothing. It is what the
+	// claim's screen and `kitchen` show, so that "this preview's database is
+	// still running" is a statement somebody can read rather than infer.
+	// +optional
+	IdleReason string `json:"idleReason,omitempty"`
 
 	// ForcesRecreate is the provider's declaration that what it provisions
 	// can be attached to one pod at a time, so the workload reading it is

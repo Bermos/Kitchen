@@ -247,6 +247,11 @@ func (b bucketBrancher) deleteBranch(ctx context.Context, instanceID, branchID s
 	return b.provisioner.DeleteBranch(ctx, instanceID, branchID)
 }
 
+// idler is nil: a bucket is storage and no compute, so an idle preview's
+// bucket already costs only what its objects cost. The claim's status says
+// so in the provider's own words.
+func (bucketBrancher) idler() claimIdler { return nil }
+
 // bucketProvisionerFor builds the object store provisioner for a
 // Connection, reading its access key pair from its credentials secret. The
 // pair never appears in any status, log line or error this controller

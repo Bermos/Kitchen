@@ -46,4 +46,6 @@ var Declaration = contract.Declaration{
 	Preview: contract.PreviewShared,
 	PreviewNote: "every environment signs in through the project's one client; the operator keeps " +
 		"its redirect list in step as previews come and go, and a client holds no data",
+	IdleNote: "an OAuth client is a record at the issuer and runs nothing, so an idle preview parks " +
+		"nothing here — and the client is the project's, shared by every environment",
 }

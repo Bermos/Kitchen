@@ -214,6 +214,31 @@ type Provisioner interface {
 	DeleteBranch(ctx context.Context, instanceID, branchID string) error
 }
 
+// IdlingProvisioner is a Provisioner that can park a preview's own resource
+// while the preview environment reading it is parked, and bring it back when
+// the preview wakes (#294).
+//
+// It is an optional interface for the reason CapableProvisioner is one: it is
+// a real difference between implementations rather than a method every one of
+// them has to fake. A provider that cannot park declares CanIdle false and is
+// never asked; the claim's status says so in the provider's own words.
+//
+// Both operations are idempotent and tolerant of absence: idling something
+// already idle, or waking something already awake, is success, and so is
+// either against a branch that is no longer there — the reconcile that
+// notices it is gone is the one that tears it down.
+type IdlingProvisioner interface {
+	Provisioner
+	// IdleBranch takes a preview's own resource down to no compute. The
+	// data behind it is untouched: this is a park, not a teardown.
+	IdleBranch(ctx context.Context, branchID string) error
+	// WakeBranch brings it back. It returns when the resource has been asked
+	// for, not when it is serving — the claim's own readiness path is what
+	// reports that, and blocking a reconcile on a database starting up would
+	// hold every other claim of the project behind it.
+	WakeBranch(ctx context.Context, branchID string) error
+}
+
 // Requirements are what a claim asks of its database beyond a name: which
 // Postgres it wants, what the application will call for once it is up, and
 // how much room it needs. They come off the claim's spec.config, which is why
@@ -361,11 +386,16 @@ var Declarations = map[string]contract.Declaration{
 		Preview: contract.PreviewBranch,
 		PreviewNote: "a copy-on-write branch of production's data under its own address — cheap, " +
 			"and production-derived: the branch declares provenance production",
+		IdleNote: "Neon suspends a branch's compute itself once it goes quiet and resumes it on the next " +
+			"connection, so the platform has nothing to ask for and asks for nothing",
 	},
 	ProviderCNPG: {
 		Preview: contract.PreviewFresh,
 		PreviewNote: "a new, empty database with the same version, extensions and storage, never a " +
 			"copy of production: the branch declares provenance synthetic",
+		CanIdle: true,
+		IdleNote: "a preview's Cluster is hibernated with it — the pods go, the volume and everything on " +
+			"it stay — and is woken by the same signal that wakes the application",
 	},
 }
 

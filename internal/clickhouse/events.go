@@ -36,14 +36,18 @@ const (
 	EventReleasePruned     = "release.pruned"
 	EventPreviewCreated    = "preview.created"
 	EventPreviewRemoved    = "preview.removed"
-	EventClaimBound        = "claim.bound"
-	EventClaimFailed       = "claim.failed"
-	EventClaimCreated      = "claim.created"
-	EventClaimDeleted      = "claim.deleted"
-	EventProjectCreated    = "project.created"
-	EventProjectDeleted    = "project.deleted"
-	EventDomainAttached    = "domain.attached"
-	EventDomainRemoved     = "domain.removed"
+	// A preview the platform declined to create because the project is at
+	// its ceiling (#294). It is in the feed because the absence of a preview
+	// is otherwise only visible on the pull request that asked for one.
+	EventPreviewRefused = "preview.refused"
+	EventClaimBound     = "claim.bound"
+	EventClaimFailed    = "claim.failed"
+	EventClaimCreated   = "claim.created"
+	EventClaimDeleted   = "claim.deleted"
+	EventProjectCreated = "project.created"
+	EventProjectDeleted = "project.deleted"
+	EventDomainAttached = "domain.attached"
+	EventDomainRemoved  = "domain.removed"
 
 	// One run of a scheduled process. Both outcomes are in the feed rather
 	// than only the failure, because "it ran at 03:00 and took nine seconds"

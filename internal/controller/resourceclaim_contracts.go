@@ -117,7 +117,27 @@ func declare(claim *kitchenv1alpha1.ResourceClaim, claimType kitchenv1alpha1.Cla
 	claim.Status.PreviewReason = reason
 	claim.Status.KeepsPodsRunning = declaration.KeepsPodsRunning
 	claim.Status.ForcesRecreate = declaration.ForcesRecreate
+	claim.Status.CanIdle, claim.Status.IdleReason = resolveIdling(declaration, mode)
 	return mode
+}
+
+// resolveIdling is what an idle preview does to this claim, which is the
+// provider's declaration read against the preview mode actually in force.
+//
+// A provider that can park still parks nothing for a claim whose previews get
+// no resource of their own: `shared` binds production's, which an idle preview
+// must never be able to take down, and `none` binds nothing at all. Saying
+// "parks with the preview" there would be a claim advertising a saving it
+// never makes.
+func resolveIdling(declaration contract.Declaration, mode contract.PreviewMode) (bool, string) {
+	if declaration.CanIdle && mode.Isolated() {
+		return true, declaration.IdleNote
+	}
+	if declaration.CanIdle {
+		return false, fmt.Sprintf("previews bind %s rather than a resource of their own, so an idle preview "+
+			"parks nothing: there is only production's, and it keeps running", mode)
+	}
+	return false, declaration.IdleNote
 }
 
 func resolvePreviewMode(

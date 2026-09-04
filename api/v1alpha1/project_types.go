@@ -203,10 +203,42 @@ type PreviewsSpec struct {
 	// +optional
 	Protected *bool `json:"protected,omitempty"`
 
+	// Max is this Project's own ceiling on live preview Environments,
+	// overriding the platform's `spec.previews.maxPerProject`. A pull
+	// request that would exceed it gets no preview, and says so on the
+	// request rather than on the node (#294).
+	//
+	// Unset inherits the platform's, which is what almost every project
+	// should do: the ceiling is a fact about the cluster, and a project
+	// raising its own is a project taking room from its neighbours. It is
+	// here because "almost" is doing real work in that sentence — the one
+	// project a platform exists for, with twelve reviewers and no claims, is
+	// exactly the project whose ceiling should differ from the estate's.
+	//
+	// `0` is no ceiling at all for this project. Nil is the platform's, and
+	// the two are told apart by the pointer for the reason every other
+	// clearable number here is a pointer: an int32 with `omitempty`
+	// serializes 0 as an absent field.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	Max *int32 `json:"max,omitempty"`
+
 	// Grace period before a preview Environment is torn down after its
 	// pull request closes.
 	// +optional
 	TTLAfterClosed *metav1.Duration `json:"ttlAfterClosed,omitempty"`
+}
+
+// MaxOrPlatform is the ceiling in force for this Project: its own where it
+// has one, the platform's otherwise. 0 is no ceiling.
+func (p PreviewsSpec) MaxOrPlatform(platform int32) int32 {
+	if p.Max == nil {
+		return platform
+	}
+	if *p.Max < 0 {
+		return 0
+	}
+	return *p.Max
 }
 
 // IsEnabled reports whether this Project gets preview environments. Previews
@@ -632,6 +664,101 @@ type ProjectStatus struct {
 	// interval for a week.
 	// +optional
 	ImagePoll *ImagePollStatus `json:"imagePoll,omitempty"`
+
+	// Previews is what the preview ceiling (#294) is doing to this project:
+	// how many previews are live, what the ceiling in force is, and which
+	// pull requests were refused one while the project sat at it.
+	//
+	// It is on the status because a refusal that only exists as a comment on
+	// a pull request is a refusal the dashboard, the CLI and the next person
+	// to ask "why has this request no preview" cannot see.
+	// +optional
+	Previews *PreviewCapacityStatus `json:"previews,omitempty"`
+}
+
+// PreviewCapacityStatus is the project's preview ceiling as the platform last
+// measured it.
+type PreviewCapacityStatus struct {
+	// Live is how many preview Environments of this project exist and are
+	// not being torn down. Production and promoted environments are not
+	// counted — the ceiling is on the ephemeral half.
+	Live int32 `json:"live"`
+
+	// Max is the ceiling in force: the project's own `spec.previews.max`, or
+	// the platform's `spec.previews.maxPerProject`. `0` is no ceiling.
+	Max int32 `json:"max"`
+
+	// Refused are the pull requests that asked for a preview while the
+	// project was at its ceiling, oldest first.
+	//
+	// It is a record, not a queue. Nothing here is retried on a timer: a
+	// refused request gets its preview on its next push, once a slot has
+	// been freed by another preview closing. A queue would have the platform
+	// deploy a commit nobody asked it to deploy, minutes or days after the
+	// push, which is worse than the wait.
+	// +optional
+	// +kubebuilder:validation:MaxItems=20
+	Refused []RefusedPreview `json:"refused,omitempty"`
+}
+
+// RefusedPreview is one pull request that was refused a preview environment.
+type RefusedPreview struct {
+	// PullRequest is the request's number at the git provider.
+	PullRequest int32 `json:"pullRequest"`
+
+	// Commit is the revision that was refused, so that a push after the
+	// refusal is visibly a different one.
+	// +optional
+	Commit string `json:"commit,omitempty"`
+
+	// At is when the refusal was recorded, refreshed on every push that is
+	// refused again.
+	At metav1.Time `json:"at"`
+}
+
+// MaxRefusedPreviews bounds the record above. Twenty is far past a
+// single-node cluster's plausible backlog, and the bound exists so that a
+// project left at its ceiling for a month cannot grow its own status without
+// end.
+const MaxRefusedPreviews = 20
+
+// RecordRefusedPreview puts a pull request on the refusal list, or refreshes
+// the entry it already has. It reports whether anything changed, so a
+// reconcile that refuses the same commit twice writes no status.
+//
+// The oldest entry is dropped when the list is full: a refusal nobody has
+// pushed to in twenty requests' time has been overtaken, and the record is
+// there to explain the previews that are missing now.
+func (s *PreviewCapacityStatus) RecordRefusedPreview(pullRequest int32, commit string, at metav1.Time) bool {
+	for i := range s.Refused {
+		if s.Refused[i].PullRequest != pullRequest {
+			continue
+		}
+		if s.Refused[i].Commit == commit {
+			return false
+		}
+		s.Refused[i].Commit = commit
+		s.Refused[i].At = at
+		return true
+	}
+	s.Refused = append(s.Refused, RefusedPreview{PullRequest: pullRequest, Commit: commit, At: at})
+	if len(s.Refused) > MaxRefusedPreviews {
+		s.Refused = s.Refused[len(s.Refused)-MaxRefusedPreviews:]
+	}
+	return true
+}
+
+// ClearRefusedPreview takes a pull request off the refusal list — it got its
+// preview after all — and reports whether it was on it.
+func (s *PreviewCapacityStatus) ClearRefusedPreview(pullRequest int32) bool {
+	for i := range s.Refused {
+		if s.Refused[i].PullRequest != pullRequest {
+			continue
+		}
+		s.Refused = append(s.Refused[:i], s.Refused[i+1:]...)
+		return true
+	}
+	return false
 }
 
 // ImagePollStatus is the digest poll's own record for one project.

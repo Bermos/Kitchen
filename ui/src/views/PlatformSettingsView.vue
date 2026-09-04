@@ -43,6 +43,10 @@ const buildMemory = ref<string>("");
 // deadline at all — and not an empty box.
 const buildTimeout = ref<number>(60);
 const releaseRetention = ref<number>(10);
+// How many preview environments one project may have live at once. 0 is a
+// setting — no ceiling at all — and not an empty box, the same way the build
+// timeout's 0 is.
+const previewsMax = ref<number>(5);
 const retention = ref<number>(30);
 
 watch(settings, (value) => {
@@ -53,6 +57,7 @@ watch(settings, (value) => {
   buildMemory.value = value.buildMemory ?? "";
   buildTimeout.value = value.buildTimeoutMinutes ?? 60;
   releaseRetention.value = value.releaseRetention ?? 10;
+  previewsMax.value = value.previewsMaxPerProject ?? 5;
   retention.value = value.logRetentionDays ?? 30;
 });
 
@@ -66,6 +71,7 @@ const dirty = computed(() => {
     buildMemory.value !== (s.buildMemory ?? "") ||
     buildTimeout.value !== (s.buildTimeoutMinutes ?? 60) ||
     releaseRetention.value !== (s.releaseRetention ?? 10) ||
+    previewsMax.value !== (s.previewsMaxPerProject ?? 5) ||
     retention.value !== (s.logRetentionDays ?? 30)
   );
 });
@@ -73,6 +79,16 @@ const dirty = computed(() => {
 /** What the platform's builds can take from the cluster: the ceiling times the
  *  concurrency. It is the sentence the two settings only mean together, which
  *  is why it is on the screen rather than left to be worked out. */
+/** The preview ceiling in the same voice as the build footprint: the two are
+ *  the platform's two statements about what a push may take, and this one has
+ *  no arithmetic to show, only what happens at the ceiling. */
+const previewCeiling = computed(() => {
+  if (previewsMax.value <= 0) {
+    return "No ceiling: a project has as many previews as it has open pull requests, and each one costs a copy of every backing service it claims.";
+  }
+  return `At most ${previewsMax.value} live previews per project. A pull request past it gets a commit status and a comment instead of an environment, and its preview on the next push after a slot frees.`;
+});
+
 const buildFootprint = computed(() => {
   const ceiling = [buildCPU.value.trim(), buildMemory.value.trim()].filter(Boolean).join(" + ");
   if (!ceiling) {
@@ -92,6 +108,7 @@ async function save() {
       buildMemory: buildMemory.value.trim(),
       buildTimeoutMinutes: buildTimeout.value,
       releaseRetention: releaseRetention.value,
+      previewsMaxPerProject: previewsMax.value,
       logRetentionDays: retention.value,
     });
     toast.add({ title: "Settings saved", color: "success", icon: "i-lucide-check" });
@@ -170,7 +187,7 @@ const strategies = [
           <OperatorsPanel :settings="settings" @saved="refresh" />
 
           <div class="rounded-md border border-default px-5 py-4 space-y-4">
-            <h2 class="text-sm font-medium text-highlighted">Builds and telemetry</h2>
+            <h2 class="text-sm font-medium text-highlighted">Builds, previews and telemetry</h2>
             <div class="grid gap-4 sm:grid-cols-2">
               <UFormField label="Default build strategy" help="Projects can override this per repository.">
                 <USelect v-model="strategy" :items="strategies" class="w-full" />
@@ -209,6 +226,15 @@ const strategies = [
               >
                 <UInputNumber v-model="releaseRetention" :min="0" :max="500" class="w-40" />
               </UFormField>
+              <!-- The preview ceiling sits with the build ceiling because
+                   the two are the same statement about different things: how
+                   much of this cluster a project may take by pushing. -->
+              <UFormField
+                label="Preview environments per project"
+                help="How many previews one project may have live at once. A pull request past the ceiling is told so on the request rather than started. 0 means no ceiling."
+              >
+                <UInputNumber v-model="previewsMax" :min="0" :max="100" class="w-40" />
+              </UFormField>
               <UFormField
                 label="Default telemetry retention (days)"
                 help="The number every telemetry class inherits. Setting a class in the retention panel overrides it for that class."
@@ -217,6 +243,7 @@ const strategies = [
               </UFormField>
             </div>
             <p class="text-xs text-muted">{{ buildFootprint }}</p>
+            <p class="text-xs text-muted">{{ previewCeiling }}</p>
             <div class="flex justify-end">
               <UButton :disabled="!dirty" :loading="saving" icon="i-lucide-save" @click="save">Save changes</UButton>
             </div>

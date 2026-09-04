@@ -487,11 +487,18 @@ type patchProjectRequest struct {
 	// provider cannot say arrived through a reviewed pull request. It is an
 	// admin's setting because it is a decision about how the project is run,
 	// not about a deploy.
-	RequirePullRequest *bool   `json:"requirePullRequest,omitempty"`
-	Previews           *bool   `json:"previews,omitempty"`
-	PreviewsProtected  *bool   `json:"previewsProtected,omitempty"`
-	BuildStrategy      *string `json:"buildStrategy,omitempty"`
-	DockerfilePath     *string `json:"dockerfilePath,omitempty"`
+	RequirePullRequest *bool `json:"requirePullRequest,omitempty"`
+	Previews           *bool `json:"previews,omitempty"`
+	PreviewsProtected  *bool `json:"previewsProtected,omitempty"`
+	// PreviewsMax is this project's own ceiling on live preview
+	// environments, overriding the platform's `previewsMaxPerProject`
+	// (#294). `0` is no ceiling for this project, and a **negative** number
+	// clears the override so the project takes the platform's again — the
+	// same shape as an empty string clearing a text setting, since 0 is a
+	// setting here and cannot also mean "unset".
+	PreviewsMax    *int32  `json:"previewsMax,omitempty"`
+	BuildStrategy  *string `json:"buildStrategy,omitempty"`
+	DockerfilePath *string `json:"dockerfilePath,omitempty"`
 	// DockerfileTarget is the stage of a multi-stage Dockerfile to ship; an
 	// empty string clears it, which is the file's last stage again.
 	DockerfileTarget *string `json:"dockerfileTarget,omitempty"`
@@ -852,6 +859,42 @@ func applyResource(resources *corev1.ResourceRequirements, name corev1.ResourceN
 // sequence past what gocyclo will read. Nothing here touches the cluster or
 // the caller — it edits the object in place and hands back the refusal for
 // patchProject to write, so the handler keeps every response in one place.
+// applyProjectPreviews writes the three preview settings — whether pull
+// requests get an environment, whether it is gated behind platform login, and
+// how many of them may be live at once. It answers false when it has already
+// written a refusal.
+//
+// It is a function of its own rather than three blocks in patchProject
+// because the three belong together and patchProject is already at the
+// complexity the linter allows.
+func applyProjectPreviews(
+	w http.ResponseWriter,
+	project *kitchenv1alpha1.Project,
+	body patchProjectRequest,
+) bool {
+	if body.Previews != nil {
+		if *body.Previews && !project.Spec.Source.HasRepository() {
+			badRequest(w, "%s", previewsRefusal(project))
+			return false
+		}
+		project.Spec.Previews.Enabled = body.Previews
+	}
+	if body.PreviewsProtected != nil {
+		project.Spec.Previews.Protected = body.PreviewsProtected
+	}
+	if body.PreviewsMax != nil {
+		// A negative number clears the project's own ceiling, so it takes the
+		// platform's again: 0 is a setting here — no ceiling for this project
+		// — and cannot also mean "unset".
+		if *body.PreviewsMax < 0 {
+			project.Spec.Previews.Max = nil
+		} else {
+			project.Spec.Previews.Max = body.PreviewsMax
+		}
+	}
+	return true
+}
+
 func applyProjectBuildAndRuntime(project *kitchenv1alpha1.Project, body patchProjectRequest) error {
 	if body.BuildStrategy != nil {
 		strategy := kitchenv1alpha1.BuildStrategy(strings.TrimSpace(*body.BuildStrategy))
@@ -1055,15 +1098,8 @@ func (s *Server) patchProject(w http.ResponseWriter, req *http.Request) {
 	if body.RequirePullRequest != nil {
 		project.Spec.Source.Git.RequirePullRequest = *body.RequirePullRequest
 	}
-	if body.Previews != nil {
-		if *body.Previews && !project.Spec.Source.HasRepository() {
-			badRequest(w, "%s", previewsRefusal(project))
-			return
-		}
-		project.Spec.Previews.Enabled = body.Previews
-	}
-	if body.PreviewsProtected != nil {
-		project.Spec.Previews.Protected = body.PreviewsProtected
+	if !applyProjectPreviews(w, project, body) {
+		return
 	}
 	if err := applyProjectBuildAndRuntime(project, body); err != nil {
 		badRequest(w, "%s", err.Error())
@@ -2085,6 +2121,7 @@ func changedProjectFields(body patchProjectRequest, continuity continuityChange)
 		{"productionBranch", body.ProductionBranch != nil},
 		{"previews", body.Previews != nil},
 		{"previewsProtected", body.PreviewsProtected != nil},
+		{"previewsMax", body.PreviewsMax != nil},
 		{"buildStrategy", body.BuildStrategy != nil},
 		{"dockerfilePath", body.DockerfilePath != nil},
 		{"dockerfileTarget", body.DockerfileTarget != nil},

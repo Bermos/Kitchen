@@ -593,3 +593,56 @@ func TestABoundClaimKeepsItsDatabaseAcrossReconciles(t *testing.T) {
 		t.Fatalf("the bound database moved from %q to %q", first.ID, second.ID)
 	}
 }
+
+// A preview's Cluster parks with its preview and comes back on wake. The
+// mechanism is CloudNativePG's own declarative hibernation, which is the only
+// way to say zero: a Cluster's instance count has a floor of one.
+func TestCNPGHibernatesAPreviewsClusterAndBringsItBack(t *testing.T) {
+	branch := namedCluster("kitchen-shop-db-pr-41", shopProject)
+	cnpg := cnpgAgainstFakeCluster(t, branch, appSecret("kitchen-shop-db-pr-41"))
+	id := testDatabaseNamespace + "/kitchen-shop-db-pr-41"
+
+	if err := cnpg.IdleBranch(context.Background(), id); err != nil {
+		t.Fatalf("idling: %v", err)
+	}
+	if got := getCluster(t, cnpg, "kitchen-shop-db-pr-41").GetAnnotations()[hibernationAnnotation]; got != hibernationOn {
+		t.Fatalf("the preview's cluster is not hibernated: %q", got)
+	}
+
+	// Idling twice writes nothing new and is not an error: the reconcile that
+	// notices a parked preview runs again every time anything moves.
+	if err := cnpg.IdleBranch(context.Background(), id); err != nil {
+		t.Fatalf("idling an idle cluster: %v", err)
+	}
+
+	if err := cnpg.WakeBranch(context.Background(), id); err != nil {
+		t.Fatalf("waking: %v", err)
+	}
+	if got := getCluster(t, cnpg, "kitchen-shop-db-pr-41").GetAnnotations()[hibernationAnnotation]; got != hibernationOff {
+		t.Fatalf("the preview's cluster was not woken: %q", got)
+	}
+}
+
+// Parking must never wedge a reconcile. A branch that is already gone — torn
+// down by the preview closing between two passes — is nothing to do, not an
+// error to retry forever.
+func TestCNPGParkingAClusterThatIsGoneIsNothingToDo(t *testing.T) {
+	cnpg := cnpgAgainstFakeCluster(t)
+	for _, id := range []string{"", testDatabaseNamespace + "/kitchen-shop-db-pr-99"} {
+		if err := cnpg.IdleBranch(context.Background(), id); err != nil {
+			t.Fatalf("idling %q: %v", id, err)
+		}
+		if err := cnpg.WakeBranch(context.Background(), id); err != nil {
+			t.Fatalf("waking %q: %v", id, err)
+		}
+	}
+}
+
+// The interface is what the claim reconciler type-asserts on, so a
+// provisioner that stopped satisfying it would silently stop parking.
+func TestCNPGIsAnIdlingProvisioner(t *testing.T) {
+	var _ IdlingProvisioner = &CNPG{}
+	if _, ok := any(&Neon{}).(IdlingProvisioner); ok {
+		t.Error("Neon suspends its own compute; it must not claim to be asked")
+	}
+}

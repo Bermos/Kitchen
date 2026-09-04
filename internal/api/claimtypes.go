@@ -66,6 +66,12 @@ type claimProviderView struct {
 	KeepsPodsRunning bool   `json:"keepsPodsRunning,omitempty"`
 	ForcesRecreate   bool   `json:"forcesRecreate,omitempty"`
 	WorkloadNote     string `json:"workloadNote,omitempty"`
+	// CanIdle says a preview's own resource parks when the preview parks and
+	// comes back on wake; IdleNote is the provider's sentence about it, and
+	// is answered either way — a provider that parks nothing has to say why
+	// an open pull request keeps paying for it.
+	CanIdle  bool   `json:"canIdle,omitempty"`
+	IdleNote string `json:"idleNote,omitempty"`
 }
 
 func (s *Server) listClaimTypes(w http.ResponseWriter, _ *http.Request) {
@@ -94,6 +100,8 @@ func claimTypeViews() []claimTypeView {
 				KeepsPodsRunning: d.KeepsPodsRunning,
 				ForcesRecreate:   d.ForcesRecreate,
 				WorkloadNote:     d.WorkloadNote,
+				CanIdle:          d.CanIdle,
+				IdleNote:         d.IdleNote,
 			})
 		}
 		views = append(views, view)

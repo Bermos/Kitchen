@@ -167,6 +167,8 @@ var Declaration = contract.Declaration{
 	Preview: contract.PreviewFresh,
 	PreviewNote: "a new, empty volume of the same size and class, never a copy of production's: the preview " +
 		"declares provenance synthetic",
+	IdleNote: "a PersistentVolumeClaim is storage and no compute, so there is nothing to park: an idle " +
+		"preview's volume costs its capacity and nothing else",
 	ForcesRecreate: true,
 	WorkloadNote: "a ReadWriteOnce volume attaches to one pod at a time, so the process mounting it runs one " +
 		"replica and is deployed by stopping the old pod before starting the new one — a rolling update " +

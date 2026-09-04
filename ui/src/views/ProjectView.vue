@@ -313,6 +313,10 @@ const settings = reactive({
   requirePullRequest: false,
   previews: true,
   previewsProtected: true,
+  // The project's own ceiling on live previews. -1 is "inherit the
+  // platform's", which is what the API takes a negative number to mean, and 0
+  // is a ceiling this project has cleared — the two cannot be the same value.
+  previewsMax: -1,
   buildStrategy: "auto",
   dockerfilePath: "",
   dockerfileTarget: "",
@@ -436,6 +440,36 @@ const fsGroupChangePolicyOptions = [
   { label: "OnRootMismatch", value: "OnRootMismatch" },
 ];
 
+/** Whether this project sets its own preview ceiling, as a switch over the
+ *  one field that carries both answers: a negative number is "take the
+ *  platform's", 0 is "no ceiling for this project", and the two cannot share a
+ *  value. Turning it on starts from whatever ceiling the project is under. */
+const previewsMaxOwn = computed({
+  get: () => settings.previewsMax >= 0,
+  set: (own: boolean) => {
+    settings.previewsMax = own ? (project.value?.previewCapacity?.max ?? 5) : -1;
+  },
+});
+
+/** The ceiling in a sentence: what is live against it, and what is waiting on
+ *  it. It is on the screen because a preview that never appeared is otherwise
+ *  only visible on the pull request that asked for one. */
+const previewCeilingLine = computed(() => {
+  const capacity = project.value?.previewCapacity;
+  if (!capacity || capacity.max <= 0) {
+    return "No ceiling: every open pull request gets a preview, and each one costs a copy of every backing service this project claims.";
+  }
+  const waiting = capacity.refused?.length ?? 0;
+  const head = `${capacity.live} of ${capacity.max} previews live.`;
+  if (!waiting) return `${head} A pull request past the ceiling is told so on the request rather than started.`;
+  const numbers = (capacity.refused ?? []).map((r) => `#${r.pullRequest}`).join(", ");
+  return `${head} Waiting on a slot: ${numbers}. Nothing is queued — each gets its preview on its next push once one is free.`;
+});
+
+/** The pull requests currently refused a preview. Empty is the ordinary case
+ *  and shows nothing. */
+const refusedPreviews = computed(() => project.value?.previewCapacity?.refused ?? []);
+
 const criticalityOptions = [
   { label: "undesignated", value: "" },
   ...CRITICALITIES.map((value) => ({ label: value, value: value as string })),
@@ -446,6 +480,7 @@ function loadSettings(from: Project) {
   settings.requirePullRequest = from.requirePullRequest;
   settings.previews = from.previews;
   settings.previewsProtected = from.previewsProtected;
+  settings.previewsMax = from.previewsMax ?? -1;
   settings.buildStrategy = from.buildStrategy || "auto";
   settings.dockerfilePath = from.dockerfilePath ?? "";
   settings.dockerfileTarget = from.dockerfileTarget ?? "";
@@ -498,6 +533,7 @@ async function saveSettings() {
             requirePullRequest: settings.requirePullRequest,
             previews: settings.previews,
             previewsProtected: settings.previewsProtected,
+            previewsMax: settings.previewsMax,
             buildStrategy: settings.buildStrategy,
             dockerfilePath: settings.dockerfilePath,
             dockerfileTarget: settings.dockerfileTarget,
@@ -955,6 +991,17 @@ function host(url?: string): string {
 
       <!-- Previews: the pull request as the unit, its builds underneath. -->
       <div v-else-if="tab === 'previews'" class="space-y-3">
+        <!-- A pull request that was refused a preview has no environment to
+             appear in the list below, so the ceiling says so here. Without
+             it the only account of a missing preview is on the request. -->
+        <UAlert
+          v-if="refusedPreviews.length"
+          color="warning"
+          variant="subtle"
+          icon="i-lucide-gauge"
+          title="At the preview ceiling"
+          :description="previewCeilingLine"
+        />
         <div v-if="previews.length" class="flex justify-end">
           <UFieldGroup size="xs">
             <UButton
@@ -1189,6 +1236,20 @@ function host(url?: string): string {
                   <UBadge v-if="claim.keepsPodsRunning" color="warning" variant="subtle" size="sm" class="ml-1">
                     no scale to zero
                   </UBadge>
+                  <!-- What an idle preview costs, in the provider's own words
+                       on hover. Both answers are shown: "still running" is the
+                       one that is otherwise invisible until the node notices,
+                       and it is the reason the badge exists at all. -->
+                  <UBadge
+                    v-if="claim.idleReason && !claim.keepsPodsRunning"
+                    :color="claim.canIdle ? 'neutral' : 'warning'"
+                    variant="subtle"
+                    size="sm"
+                    class="ml-1"
+                    :title="claim.idleReason"
+                  >
+                    idle preview: {{ claim.canIdle ? "parks with it" : "keeps running" }}
+                  </UBadge>
                   <UBadge v-if="claim.forcesRecreate" color="warning" variant="subtle" size="sm" class="ml-1">
                     downtime on deploy
                   </UBadge>
@@ -1405,6 +1466,23 @@ function host(url?: string): string {
               label="Protect previews"
               description="Previews sit behind platform login instead of being public."
             />
+            <!-- The ceiling on how many of them may be live at once. It is
+                 the platform's number unless this project says otherwise,
+                 which is why the switch comes before the field. -->
+            <USwitch
+              v-model="previewsMaxOwn"
+              :disabled="!settings.previews"
+              label="Own preview ceiling"
+              description="Set how many previews this project may have live at once, instead of taking the platform's."
+            />
+            <UFormField
+              v-if="previewsMaxOwn"
+              label="Live previews at once"
+              help="A pull request past this gets a commit status and a comment instead of an environment, and its preview on the next push after a slot frees. 0 means no ceiling for this project."
+            >
+              <UInputNumber v-model="settings.previewsMax" :min="0" :max="100" class="w-40" />
+            </UFormField>
+            <p v-if="settings.previews" class="text-xs text-muted">{{ previewCeilingLine }}</p>
           </div>
 
           <div v-if="builtHere" class="rounded-md border border-default bg-muted p-5 space-y-4">

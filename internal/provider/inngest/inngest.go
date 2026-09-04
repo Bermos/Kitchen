@@ -223,6 +223,8 @@ var Declarations = map[string]contract.Declaration{
 		PreviewNote: "an Inngest branch environment of the preview's own — its own event stream, function " +
 			"set and run history, empty rather than a copy of production's, selected by INNGEST_ENV on " +
 			"the account's shared branch keys; archived, not deleted, when the preview goes",
+		IdleNote: "the branch environment is Inngest's to run and this platform has no lever on it; the " +
+			"worker that reads it never idles either, for the reason beside this one",
 		KeepsPodsRunning: true,
 		WorkloadNote: "a connect worker holds an outbound WebSocket to Inngest's gateway that never crosses " +
 			"the interceptor, so nothing can tell when it is idle — and scale to zero is a project-level " +

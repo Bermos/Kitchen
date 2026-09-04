@@ -21,7 +21,9 @@ Kitchen is a self-hosted platform that turns `git push` into a running URL. A
 **release** is that image frozen together with the configuration it was built
 with; an **environment** is a release running somewhere with a URL. Production
 is the environment the default branch deploys to; every pull request gets a
-**preview** environment of its own.
+**preview** environment of its own, up to the ceiling the platform sets on how
+many of them one project may have live at once — a request past it is told so
+on the request and gets its preview on its next push once a slot is free.
 
 The cluster underneath is not part of the interface. There is no `kubectl`
 step in any workflow, no manifest to write and no namespace to name — if you

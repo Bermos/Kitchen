@@ -381,6 +381,18 @@ type EnvironmentStatus struct {
 	// +listMapKey=name
 	Processes []ProcessStatus `json:"processes,omitempty"`
 
+	// Idle says this Environment is parked: it is allowed to scale to zero,
+	// and the autoscaler has taken its web Deployment to no pods at all.
+	//
+	// It is observed, not decided. The ScaleToZero condition says the
+	// environment *may* idle; this says it *is* idling, which is a different
+	// question and the one the claim reconciler acts on — a preview nobody
+	// has visited takes its dedicated backing services down with it (#294),
+	// and this field is the signal it does that on. The Deployment watch is
+	// what refreshes it, so the transition costs no polling.
+	// +optional
+	Idle bool `json:"idle,omitempty"`
+
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }

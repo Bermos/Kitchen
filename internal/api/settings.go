@@ -68,9 +68,21 @@ type settingsView struct {
 	BuildTimeoutMinutes int32 `json:"buildTimeoutMinutes"`
 	// No omitempty: 0 is a setting here — keep every release — not an absent
 	// one, and the dashboard has to be able to tell the two apart.
-	ReleaseRetention int32  `json:"releaseRetention"`
-	LogRetentionDays int32  `json:"logRetentionDays,omitempty"`
-	GatewayAddress   string `json:"gatewayAddress,omitempty"`
+	ReleaseRetention int32 `json:"releaseRetention"`
+	// PreviewsMaxPerProject is `spec.previews.maxPerProject`: how many
+	// preview environments one project may have live at once (#294). It is
+	// beside the build ceiling because it is the same kind of statement —
+	// how much of this cluster a project may take by pushing — and a pull
+	// request was the one appetite nothing bounded.
+	//
+	// It is reported as a project would actually get it, so a singleton that
+	// predates the field reads as the operator's own default rather than as
+	// an empty box. No omitempty for the reason the build ceiling carries
+	// none: 0 is a setting here — no ceiling at all — and a dashboard has to
+	// be able to tell it from an API too old to have the field.
+	PreviewsMaxPerProject int32  `json:"previewsMaxPerProject"`
+	LogRetentionDays      int32  `json:"logRetentionDays,omitempty"`
+	GatewayAddress        string `json:"gatewayAddress,omitempty"`
 	// PublicAddresses is `spec.ingress.publicAddresses`: where the internet
 	// reaches this platform, when a router forwards to the Gateway from an
 	// address the cluster never sees. It is here beside the Gateway's own
@@ -130,22 +142,23 @@ func operatorViews(operators []kitchenv1alpha1.AccessSubject) []operatorView {
 
 func newSettingsView(kitchen *kitchenv1alpha1.Kitchen) settingsView {
 	view := settingsView{
-		BaseDomain:          kitchen.Spec.BaseDomain,
-		APIExternalURL:      externalURL(kitchen),
-		GatewayClassName:    kitchen.Spec.Ingress.GatewayClassName,
-		AuthEnabled:         kitchen.Spec.Auth.Enabled,
-		BuildStrategy:       string(kitchen.Spec.Builds.DefaultStrategy),
-		BuildConcurrency:    kitchen.Spec.Builds.Concurrency,
-		BuildCPU:            kitchen.Spec.Builds.Resources.CPU,
-		BuildMemory:         kitchen.Spec.Builds.Resources.Memory,
-		BuildTimeoutMinutes: buildTimeoutMinutes(kitchen),
-		ReleaseRetention:    kitchen.Spec.Builds.ReleaseRetention,
-		LogRetentionDays:    kitchen.Spec.Observability.ClickHouse.RetentionDays,
-		GatewayAddress:      kitchen.Status.GatewayAddress,
-		PublicAddresses:     kitchen.Spec.Ingress.PublicAddresses,
-		Backup:              newBackupScheduleView(kitchen),
-		Conditions:          conditionViews(kitchen.Status.Conditions),
-		Operators:           operatorViews(kitchen.Spec.Access.Operators),
+		BaseDomain:            kitchen.Spec.BaseDomain,
+		APIExternalURL:        externalURL(kitchen),
+		GatewayClassName:      kitchen.Spec.Ingress.GatewayClassName,
+		AuthEnabled:           kitchen.Spec.Auth.Enabled,
+		BuildStrategy:         string(kitchen.Spec.Builds.DefaultStrategy),
+		BuildConcurrency:      kitchen.Spec.Builds.Concurrency,
+		BuildCPU:              kitchen.Spec.Builds.Resources.CPU,
+		BuildMemory:           kitchen.Spec.Builds.Resources.Memory,
+		BuildTimeoutMinutes:   buildTimeoutMinutes(kitchen),
+		ReleaseRetention:      kitchen.Spec.Builds.ReleaseRetention,
+		PreviewsMaxPerProject: kitchen.Spec.Previews.EffectiveMaxPerProject(),
+		LogRetentionDays:      kitchen.Spec.Observability.ClickHouse.RetentionDays,
+		GatewayAddress:        kitchen.Status.GatewayAddress,
+		PublicAddresses:       kitchen.Spec.Ingress.PublicAddresses,
+		Backup:                newBackupScheduleView(kitchen),
+		Conditions:            conditionViews(kitchen.Status.Conditions),
+		Operators:             operatorViews(kitchen.Spec.Access.Operators),
 	}
 	if cfg, err := issuerFor(kitchen); err == nil {
 		view.AuthHost = cfg.issuer
@@ -200,6 +213,11 @@ type patchSettingsRequest struct {
 	BuildTimeoutMinutes *int32 `json:"buildTimeoutMinutes"`
 	ReleaseRetention    *int32 `json:"releaseRetention"`
 	LogRetentionDays    *int32 `json:"logRetentionDays"`
+	// PreviewsMaxPerProject is how many preview environments one project may
+	// have live at once. A pointer for the reason the build deadline is one:
+	// 0 is the installation that has decided previews are unbounded, and a
+	// request that does not mention the field must not be able to clear it.
+	PreviewsMaxPerProject *int32 `json:"previewsMaxPerProject"`
 	// BackupSchedule, BackupSuspend, BackupKeepLast and BackupKeepDays are
 	// the scheduled backup's ordinary settings: when it runs, whether it is
 	// paused, and how much of the destination survives a prune. The
@@ -295,6 +313,18 @@ func (s *Server) patchSettings(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 		kitchen.Spec.Builds.ReleaseRetention = *body.ReleaseRetention
+	}
+	if body.PreviewsMaxPerProject != nil {
+		// Zero is a setting here and not a mistake: an installation with room
+		// to spare can say its previews are unbounded, which is what every
+		// installation had before this field existed. Negative is not a
+		// setting.
+		if *body.PreviewsMaxPerProject < 0 {
+			badRequest(w, "previewsMaxPerProject cannot be negative (got %d); 0 is no ceiling at all",
+				*body.PreviewsMaxPerProject)
+			return
+		}
+		kitchen.Spec.Previews.MaxPerProject = body.PreviewsMaxPerProject
 	}
 	if body.LogRetentionDays != nil {
 		if *body.LogRetentionDays < 1 {
@@ -560,6 +590,7 @@ func changedSettingsFields(body patchSettingsRequest) []string {
 		{"buildMemory", body.BuildMemory != nil},
 		{"buildTimeoutMinutes", body.BuildTimeoutMinutes != nil},
 		{"releaseRetention", body.ReleaseRetention != nil},
+		{"previewsMaxPerProject", body.PreviewsMaxPerProject != nil},
 		{"logRetentionDays", body.LogRetentionDays != nil},
 		{"backupSchedule", body.BackupSchedule != nil},
 		{"backupSuspend", body.BackupSuspend != nil},

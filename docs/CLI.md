@@ -870,6 +870,34 @@ workloads, `kitchen env set` for the variables, and
 [a project with no repository declares all of this here](api/processes.md#a-project-with-no-repository-declares-all-of-this-here)
 maps the file field by field onto them.
 
+### The preview ceiling
+
+A project may have only so many preview environments live at once, because a
+pull request is a running environment and a project with claims materializes a
+backing service per claim per preview. The number is the platform's
+(`previewsMaxPerProject`), and a project may set its own; a pull request past
+it gets a commit status and a comment naming the setting instead of an
+environment, and its preview on its next push once a slot is free.
+
+**Neither number has a command, and that is a decision rather than a gap.**
+The platform's is the operator's and is on the platform settings screen, where
+the build ceiling it resembles already is — and no credential `kitchen login`
+can store holds the operator role (see [The platform commands are the dashboard's for
+now](#the-platform-commands-are-the-dashboards-for-now)). A project's own is a rare, deliberate
+write of the same kind as its criticality. Both go through `kitchen api`:
+
+```sh
+kitchen api GET /projects/shop                       # previewsMax, and previewCapacity
+kitchen api PATCH /projects/shop --data '{"previewsMax":3}'
+kitchen api PATCH /projects/shop --data '{"previewsMax":-1}'   # back to the platform's
+kitchen api PATCH /settings --data '{"previewsMaxPerProject":5}'
+```
+
+`previewCapacity` on the project is what the platform last measured: `live`,
+`max`, and the pull requests `refused` a preview while the project sat at the
+ceiling, oldest first. Nothing is queued — each gets its preview on its next
+push.
+
 ### Rolling back
 
 Rollback is not a special operation: a `Release` is an immutable snapshot of an

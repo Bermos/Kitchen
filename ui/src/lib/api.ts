@@ -206,6 +206,13 @@ export interface Project {
   requirePullRequest: boolean;
   previews: boolean;
   previewsProtected: boolean;
+  /** This project's own ceiling on live preview environments. Absent means it
+   * takes the platform's (`previewsMaxPerProject` on `/settings`); `0` is no
+   * ceiling for this project. */
+  previewsMax?: number;
+  /** The ceiling as the operator last measured it, absent until a reconcile
+   * has looked. */
+  previewCapacity?: PreviewCapacity;
   buildStrategy?: string;
   dockerfilePath?: string;
   /** The stage of a multi-stage Dockerfile this project ships. Absent is the
@@ -322,6 +329,11 @@ export interface ProjectSettings {
   requirePullRequest?: boolean;
   previews?: boolean;
   previewsProtected?: boolean;
+  /** This project's own ceiling on live preview environments. `0` is no
+   * ceiling for this project; a **negative** number clears the override, so
+   * the project takes the platform's again — 0 is a setting here and cannot
+   * also mean "unset". */
+  previewsMax?: number;
   buildStrategy?: string;
   dockerfilePath?: string;
   /** The stage of a multi-stage Dockerfile to ship; an empty string clears it,
@@ -1958,6 +1970,13 @@ export interface Claim {
    * recreation with a gap in serving. Absent means neither. */
   keepsPodsRunning?: boolean;
   forcesRecreate?: boolean;
+  /** What an idle preview does to this claim: whether the preview's own
+   * resource parks with the preview and comes back on wake, and the
+   * provider's own sentence about it. The reason is answered either way — a
+   * provider that parks nothing has to say why an open pull request keeps
+   * paying for it. */
+  canIdle?: boolean;
+  idleReason?: string;
   /** What a redis claim asked its instance to be. Absent when it asked for
    * nothing in particular. */
   redis?: ClaimRedis;
@@ -2060,6 +2079,10 @@ export interface ClaimProvider {
   keepsPodsRunning?: boolean;
   forcesRecreate?: boolean;
   workloadNote?: string;
+  /** Whether a preview's own resource parks when the preview parks, and the
+   * provider's sentence about it — answered either way. */
+  canIdle?: boolean;
+  idleNote?: string;
 }
 
 /** One kind of claim the platform admits, with every provider that can
@@ -2114,6 +2137,22 @@ export interface NewClaim {
   redis?: ClaimRedis;
 }
 
+/** What the preview ceiling is doing to one project: how many previews are
+ * live, the ceiling in force (`0` is none), and the pull requests refused one
+ * while the project sat at it. Nothing is queued — each refused request gets
+ * its preview on its next push once a slot is free. */
+export interface PreviewCapacity {
+  live: number;
+  max: number;
+  refused?: RefusedPreview[];
+}
+
+export interface RefusedPreview {
+  pullRequest: number;
+  commit?: string;
+  at: string;
+}
+
 export interface Settings {
   baseDomain: string;
   apiExternalURL?: string;
@@ -2138,6 +2177,14 @@ export interface Settings {
   /** Releases a project keeps; 0 keeps every one. Always sent, since 0 is a
    * setting rather than an absent value. */
   releaseRetention: number;
+  /** `spec.previews.maxPerProject`: preview environments one project may have
+   * live at once. It is the build ceiling's sibling — the other statement
+   * about what a project may take from this cluster by pushing — and a pull
+   * request past it gets a commit status and a comment rather than an
+   * environment. Production and anything promoted are never counted. Always
+   * sent, since 0 is a setting — no ceiling at all — rather than an absent
+   * value, and it is reported as a project would actually get it. */
+  previewsMaxPerProject: number;
   logRetentionDays?: number;
   gatewayAddress?: string;
   /** `spec.ingress.publicAddresses`: where the internet reaches the platform,
@@ -4210,6 +4257,7 @@ export const api = {
         | "buildMemory"
         | "buildTimeoutMinutes"
         | "releaseRetention"
+        | "previewsMaxPerProject"
         | "logRetentionDays"
       >
     > & {
