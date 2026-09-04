@@ -375,6 +375,52 @@ only be vendored; declaring a `build` there is refused, since there is no
 repository to build from — see
 [a project whose software this platform did not build](projects.md#a-project-whose-software-this-platform-did-not-build).
 
+### A project with no repository declares all of this here
+
+A repository declares its workloads in [`kitchen.json`](../CONFIG.md), read
+at the build root of every commit. **A project whose source is an image has no
+repository, so it has no file** — and this route is not a fallback for it, it
+is the whole of how its unit is declared. The same is true of the dashboard's
+workloads editor and of `kitchen processes set`; #299 filed no command for
+declaring workloads because the file was the real surface, and that reasoning
+ends where the file does.
+
+Nothing `kitchen.json` can say is file-only. Every field of it has a route,
+and they are these three:
+
+| `kitchen.json` | Over the API |
+| --- | --- |
+| `build.strategy`, `build.dockerfilePath`, `build.dockerfileTarget` | `buildStrategy`, `dockerfilePath`, `dockerfileTarget` on [`PATCH /projects/{name}`](projects.md#changing-a-projects-settings) — a project with no repository builds nothing, so all three are refused there |
+| `runtime.port`, `replicas`, `singleton`, `notRequestDriven`, `command`, `args`, `previewArgs`, `resources.cpu`, `resources.memory`, `health`, `security` | the fields of the same names on `PATCH /projects/{name}` |
+| `env`, `previewEnv` | `value` and `previewValue` on [`PATCH /projects/{name}/env`](projects.md#changing-a-projects-environment-variables), which also takes the references a committed file may not: a variable in a repository is public by construction |
+| `processes` | `processes` on `PATCH /projects/{name}` — the list above, field for field, validated by the same code (`internal/appconfig`) so the file and the route cannot disagree about what a workload is |
+
+The traffic goes the other way once. **`build.rootDirectory` is the one setting
+the API takes and the file may not**: it is how the platform found the file, so
+a file that moved it would have to be read before it could say where to read
+it. A project with no repository has no build root to name either way.
+
+**A project that has a repository is unaffected, and the file still wins.** The
+API does not refuse a `processes` write on one — refusing it would leave the
+dashboard's editor dark for the projects that most often want a fifth worker
+added in a hurry — but the file is read at every build and its `processes`
+replace the project's wholesale, so a write here holds only until the next
+build. That is exactly what `build.strategy` and `runtime.port` already do, it
+is what `GET /builds/{name}`'s `config.declares` reports, and it is what the
+dashboard says above the form: *the repository has taken this over*. Change the
+file instead.
+
+**The list reads back the way it is written**, which is what lets a client edit
+one workload without losing the others. Two fields carry that on their own:
+
+- `replicas` is reported even when it is `0`, because zero is a count somebody
+  chose — a workload declared and parked — and an omitted zero would have every
+  editor turn it back on.
+- `previews` is reported as the workload *declared* it, and is absent where it
+  declared nothing and takes its type's default. What an environment does with
+  it is `suspended` on that environment's own listing, which is a different
+  question.
+
 ### Reaching one workload from another
 
 A service is the only workload anything addresses, and it is addressed from
@@ -676,9 +722,21 @@ kitchen logs --run shop-production-nightly-report-29387520 --follow
 kitchen processes --json | jq '.items[] | select(.address) | {name, address}'
 ```
 
-Declaring the list has no command of its own: it is a list of records with
-commands, schedules and resources in it, and a flag-shaped spelling of that
-would be worse than the JSON body. `kitchen api` carries it:
+Declaring one is `kitchen processes set`, which reads the list, changes the
+workload it names, and sends the rest back as they came:
+
+```sh
+kitchen processes set worker --type worker --command node --command worker.js --replicas 2
+kitchen processes set api --type service --port 8080 --build-root services/api
+kitchen processes set cache --type service --port 6379 --image docker.io/library/redis:7.4
+kitchen processes set nightly --type cron --schedule "0 3 * * *" --timeout 30m
+kitchen processes set worker --replicas 0          # declared and parked
+kitchen processes rm nightly --yes
+```
+
+Declaring *all* of them at once has no command, and deliberately: a list of
+records with commands, schedules and resources in it has no flag-shaped
+spelling worth having, so `kitchen api` carries that.
 
 ```sh
 kitchen api PATCH /projects/shop --data @processes.json

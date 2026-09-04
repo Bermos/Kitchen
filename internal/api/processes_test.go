@@ -367,7 +367,7 @@ func TestReadingWhatAnEnvironmentRuns(t *testing.T) {
 	}
 
 	worker := body.Items[0]
-	if worker.Name != "worker" || worker.Type != "worker" || worker.Replicas != 2 {
+	if worker.Name != "worker" || worker.Type != "worker" || ptr.Deref(worker.Replicas, 0) != 2 {
 		t.Fatalf("the worker did not come back whole: %+v", worker)
 	}
 	nightly := body.Items[1]

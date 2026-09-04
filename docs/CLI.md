@@ -272,7 +272,7 @@ give.
 | `kitchen deploy` | Build this commit and follow the deploy | `POST /projects/{name}/builds` and the follow |
 | `kitchen cancel` | Stop a build that is still running | `POST /builds/{name}/cancel` |
 | `kitchen logs` | An environment's or a build's logs, `--follow` to tail | `GET /environments/{name}/logs`, `GET /builds/{name}/logs` |
-| `kitchen processes` | The workloads an environment runs besides its web process, and (`runs`, `run`) one workload's run history and running it now — a scheduled job off its schedule, or a deploy task again | `GET /environments/{name}/processes`, `GET`/`POST /environments/{name}/processes/{process}/runs` |
+| `kitchen processes` | The workloads an environment runs besides its web process; (`runs`, `run`) one workload's run history and running it now — a scheduled job off its schedule, or a deploy task again; (`set`, `rm`) declaring one workload of the project and taking one off | `GET /environments/{name}/processes`, `GET`/`POST /environments/{name}/processes/{process}/runs`, `GET`/`PATCH /projects/{name}` |
 | `kitchen env list/set/rm` | The project's environment variables | `PATCH /projects/{name}/env` |
 | `kitchen secret list/set/rm` | The project's own secrets — credentials the platform did not mint | `GET /projects/{name}/secrets`, `PUT`/`DELETE /projects/{name}/secrets/{secret}` |
 | `kitchen rollback` | Put an environment back on an earlier release, saying what that changes first | `GET /releases/{name}/config-diff`, `PATCH /environments/{name}` |
@@ -570,10 +570,28 @@ and `_PORT` beside it:
 kitchen processes --json | jq '.items[] | select(.address) | {name, address}'
 ```
 
-Declaring the list has no command of its own. It is a list of records with
-commands, schedules, ports, builds and resources in it, and a flag-shaped
-spelling would be worse than the JSON body — so it goes through `kitchen api`,
-alongside the rest of the project's settings:
+Declaring the list takes two forms, and which to reach for is a question about
+how many workloads are being written at once.
+
+**One at a time**, `kitchen processes set` names the workload and changes it:
+the project is read, that entry is added or edited, and the whole list goes
+back with every other workload exactly as it came.
+
+```sh
+kitchen processes set worker --type worker --command node --command worker.js --replicas 2
+kitchen processes set api --type service --port 8080 --build-root services/api
+kitchen processes set nightly --type cron --schedule "0 3 * * *" --timeout 30m
+kitchen processes set worker --replicas 0          # declared and parked
+kitchen processes rm nightly --yes
+```
+
+`--command` and `--arg` are exec form — one word per occurrence, never a shell
+line, so an argument with a space in it is one `--arg`. `--previews` takes
+`yes`, `no` or `default`, which is how a declaration is taken back off.
+
+**All of them at once**, the JSON body is still the honest form: a list of
+records with commands, schedules, ports, builds and resources in it has no
+flag-shaped spelling worth having, and `kitchen api` sends one.
 
 ```sh
 kitchen api PATCH /projects/shop --data '{"processes":[
@@ -583,6 +601,13 @@ kitchen api PATCH /projects/shop --data '{"processes":[
   {"name":"nightly-report","type":"cron","schedule":"0 3 * * *","command":["node","report.js"]}
 ]}'
 ```
+
+Both write the same route and both replace the whole list. On a project **with
+a repository** `kitchen.json` still wins: it is read at every build and its
+`processes` replace the project's, so a change made from here holds until the
+next build — [the settings the repository keeps](#the-settings-the-repository-keeps)
+is the whole of that rule. On a project **with no repository** there is no file,
+and these are the only route there is.
 
 A `task` is where a schema migration goes: it runs once per deploy however many
 copies of the other workloads there are, several of them run in the order they
@@ -732,6 +757,14 @@ be given a literal value in the file, and that is settled against the project,
 not against the file. The build says so; this does not.
 
 [docs/CONFIG.md](CONFIG.md) is what the file may and may not say.
+
+**A project with no repository has no file**, so none of this applies to it and
+nothing about it is unsayable: everything `kitchen.json` can declare has a
+route, and the three that carry it are `kitchen processes set` for the
+workloads, `kitchen env set` for the variables, and
+`kitchen api PATCH /projects/{name}` for the runtime —
+[a project with no repository declares all of this here](api/processes.md#a-project-with-no-repository-declares-all-of-this-here)
+maps the file field by field onto them.
 
 ### Rolling back
 
@@ -1272,8 +1305,9 @@ cannot write it carries on and exchanges every time.
 | When `Degraded` counts as refused | Only once it has settled: it holds, and no condition says work is in flight | A phase is what the last reconcile left behind, so a retry reads `Degraded` for a moment before the platform looks at the new release. Stopping at the first `Degraded` would report that as a failure — and stopping at none of them is the hole this closes |
 | Credentials on the command line | `--api-key-file` and `--api-key-stdin` preferred, `--api-key` documented as visible in the process list | The convenient spelling should not be the one that leaks |
 | A project whose software this platform did not build | No command; `kitchen api POST /projects` with an `image` instead of a `repo` | `kitchen projects create` is a command about *this checkout*: it links a directory to a project, takes the repository and the name from it, and preflights the layout. A project with no repository is not created from a checkout at all — there is nothing to link and nothing to detect — so it is a different flow with none of the command's reasons behind it. The whole body is three keys, and the dashboard's new-project dialog carries it |
-| A workload's vendored image | No command; the process list already goes through `kitchen api PATCH /projects/{name}` | It is one more key on a record that already has no flag-shaped spelling worth having; a workload declares `image` where another declares `build`, in the same list |
-| A project's settings | No command; `kitchen api PATCH /projects/{name}` | One JSON body written occasionally by an admin — a port, a replica count, a health check, a security posture, a process list, arguments, a classification, the Dockerfile stage to ship (which `projects create` does carry, since the first build starts with the project). A flag per field would be a second surface to keep in step with the first, and a list of records with commands and schedules in it has no flag-shaped spelling worth having |
+| A workload's vendored image | `kitchen processes set <name> --image <ref>`, and `kitchen api` for a whole list | It is one more key on a record; `--image` and `--image-connection` set it on the one workload named, and a list of six workloads is still a JSON body |
+| Declaring workloads at all | `kitchen processes set` and `kitchen processes rm`, one workload at a time | [#299](https://github.com/Bermos/Kitchen/issues/299) filed no command for this because `kitchen.json` was the real surface and `kitchen api` carried the rest. That reasoning holds exactly as long as there is a file: a project whose source is an image has no repository and no file, so the API, the dashboard and this command are not a fallback for it — they are the only route, and "reachable through `kitchen api`" is a lower bar than the platform sets for anything done routinely ([#310](https://github.com/Bermos/Kitchen/issues/310)). The objection is answered rather than ignored: nothing here composes a *list* of records on a command line |
+| A project's settings | No command; `kitchen api PATCH /projects/{name}` | One JSON body written occasionally by an admin — a port, a replica count, a health check, a security posture, arguments, a classification, the Dockerfile stage to ship (which `projects create` does carry, since the first build starts with the project). A flag per field would be a second surface to keep in step with the first, and a list of records with commands and schedules in it has no flag-shaped spelling worth having |
 | The platform commands | Declared the dashboard's for now, in `--help`, in `kitchen schema` and in a refusal that names the screen | A key is a role on one project and those routes need the operator role, so no credential this CLI can store runs them — and `kitchen api` carries the same token, so it is no way round a *role*. Shipping them published and silently unrunnable was the state [#208](https://github.com/Bermos/Kitchen/issues/208) found; a platform-scoped key is the real answer and is [#349](https://github.com/Bermos/Kitchen/issues/349), designed with [#318](https://github.com/Bermos/Kitchen/issues/318) because both decide what a key is |
 | Account management | No command, and none possible | Changing a password, or ending a session, is done at the identity provider against its session cookie — and this CLI holds a key, never a session. It is not an endpoint `kitchen api` reaches either, because that reaches the operator API and these are not on it ([AUTH.md](AUTH.md), "Managing an account") |
 

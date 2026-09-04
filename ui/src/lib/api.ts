@@ -314,6 +314,11 @@ export interface ProjectSettings {
   /** Declare that the workload does work nobody asked for, which turns
    * idling off for every environment of the project. */
   notRequestDriven?: boolean;
+  /** Replace the project's declared workloads wholesale — its workers, its
+   * scheduled jobs, the services the rest of the unit talks to; `[]` removes
+   * them all. It is the same decision as the replica count and the resources,
+   * so it is the same route and the same role. */
+  processes?: ProcessWrite[];
   /** Reclassify the project's data; "" removes the classification. Always
    * allowed — environments rated below the new class read as non-compliant
    * in the inventory and at promotion, rather than the correction being
@@ -1332,6 +1337,11 @@ export interface Process {
    * declared none: unlike the web process, a worker is probed only where it
    * asked to be. */
   health?: Health;
+  /** What this workload *declared* about preview environments, absent where it
+   * declared nothing and takes its type's default — off for a worker and a
+   * scheduled job, on for a service and a task. What an environment does with
+   * it is `suspended`, which is a fact about that environment. */
+  previews?: boolean;
   workload?: string;
   suspended?: boolean;
   reason?: string;
@@ -1344,6 +1354,42 @@ export interface Process {
    * before it is still serving. */
   deploy?: string;
   healthy: boolean;
+}
+
+/** One workload as the settings PATCH takes it, which is not how one reads
+ * back: `Process` above carries what the platform resolved and what the
+ * environment is doing with it, and the route refuses a field it has never
+ * heard of. `processWrites` in `lib/workloads.ts` is the one conversion. */
+export interface ProcessWrite {
+  name: string;
+  type: string;
+  command?: string[];
+  args?: string[];
+  port?: number;
+  build?: ProcessBuild;
+  image?: ImageWrite;
+  /** How many copies. `0` is a workload declared and parked, which is why this
+   * is sent even when it is zero. */
+  replicas?: number;
+  singleton?: boolean;
+  cpu?: string;
+  memory?: string;
+  schedule?: string;
+  concurrencyPolicy?: string;
+  timeout?: string;
+  /** Whether it runs in preview environments. Left out to take its type's own
+   * default, which is what an absent declaration means. */
+  previews?: boolean;
+  health?: HealthSettings;
+}
+
+/** A vendored image as the route takes it: `ImageSource` without the derived
+ * `reference`, which the platform composes and would refuse to be told. */
+export interface ImageWrite {
+  repository: string;
+  tag?: string;
+  digest?: string;
+  connection?: string;
 }
 
 /** One workload's own build: which directory of the repository it is, and how

@@ -16,6 +16,7 @@ import CommitBodyToggle from "../components/CommitBodyToggle.vue";
 import ConditionsTable from "../components/ConditionsTable.vue";
 import EnvVarsPanel from "../components/EnvVarsPanel.vue";
 import ProjectSecretsPanel from "../components/ProjectSecretsPanel.vue";
+import ProjectWorkloadsPanel from "../components/ProjectWorkloadsPanel.vue";
 import EnvironmentCard from "../components/EnvironmentCard.vue";
 import KeysPanel from "../components/KeysPanel.vue";
 import MembersPanel from "../components/MembersPanel.vue";
@@ -1637,6 +1638,20 @@ function host(url?: string): string {
             <UButton type="submit" :loading="savingSettings" icon="i-lucide-check">Save settings</UButton>
           </div>
         </form>
+
+        <!-- What the project runs besides its web process. It is its own
+             section with its own Save because it is a list of records rather
+             than a field of the form above — and it is the whole of how a
+             project with no repository describes its unit, which is why it is
+             here rather than read-only somewhere (#310). -->
+        <ProjectWorkloadsPanel
+          :project="project.name"
+          :role="project.role"
+          :processes="project.processes"
+          :built-here="builtHere"
+          :declared-in="declaredInRepo('processes') ? repoConfig?.path : undefined"
+          @saved="refresh"
+        />
 
         <!-- Deleting is the admin's alone, and it is on the admin's own tab —
              but it is named separately from the settings above it, because

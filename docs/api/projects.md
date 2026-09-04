@@ -52,9 +52,16 @@ account at all.
 
 Everything a repository needs is refused rather than ignored on such a
 project, here and on the settings PATCH: `registry`, `connection`,
-`productionBranch` and `previews`. A `400` naming the field is the answer,
-because each of them would otherwise read back as a setting that took and do
-nothing.
+`productionBranch`, `requirePullRequest`, `previews`, and the four that say
+how a commit becomes an image — `buildStrategy`, `dockerfilePath`,
+`dockerfileTarget` and `rootDirectory`. A `400` naming the field is the
+answer, because each of them would otherwise read back as a setting that took
+and do nothing.
+
+What such a project *does* declare is everything else: its runtime, its
+variables and its workloads, each of which a repository would have put in
+`kitchen.json` and this one has nowhere to put — see
+[a project with no repository declares all of this here](processes.md#a-project-with-no-repository-declares-all-of-this-here).
 
 **Previews are refused in words.** They are environments for pull requests and
 this project has no repository to open one against, so `{"previews": true}` is
@@ -178,7 +185,8 @@ optional and absent ones keep their value:
 an empty string clears one. `rootDirectory`, `dockerfilePath` and
 `dockerfileTarget` mean here exactly what they mean on the create above — the
 build root, a path relative to it, and the stage of that file to ship — and are
-refused with a `400` for the same reasons. An empty `dockerfileTarget` clears
+refused with a `400` for the same reasons, and on a project that builds
+nothing for one more. An empty `dockerfileTarget` clears
 the target, which is the file's last stage again. The
 repository and the two connections are deliberately not editable: rebinding a
 project to another repository is a different project.

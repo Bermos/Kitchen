@@ -35,17 +35,18 @@ import (
 // release's processes. A project-shaped answer would describe something that
 // may not be running anywhere.
 //
-// Declaring them is deliberately not here. The list is a project setting
-// alongside the port and the replica count, written through
-// PATCH /projects/{name}, and a flag-shaped spelling of a list of records with
-// commands, schedules and resources in it would be worse than the JSON body:
-// `kitchen api PATCH /projects/shop --data @processes.json` is the honest
-// form, and it is in the examples below so that nobody has to work it out.
+// Declaring them is `processes set` and `processes rm`, in cmd_processes_set.go
+// — one workload at a time, against the project rather than against an
+// environment, because the declaration is the project's. Declaring the *whole*
+// list at once still has no command: a flag-shaped spelling of a list of
+// records with commands, schedules and resources in it would be worse than
+// `kitchen api PATCH /projects/shop --data @processes.json`, which is in the
+// examples below so that nobody has to work it out.
 //
-// The same decision covers the rest of that body — the health check, the
-// command and arguments, the singleton and not-request-driven declarations.
-// docs/CLI.md records it in the decisions table rather than leaving it to be
-// inferred from the absence of a command.
+// That split is the decision #310 asked for, and docs/CLI.md records it in the
+// decisions table. The rest of the settings body — the health check, the
+// command and arguments, the singleton and not-request-driven declarations —
+// is still `kitchen api`'s.
 
 func newProcessesCommand(r *Runtime) *cobra.Command {
 	var environmentName string
@@ -78,7 +79,15 @@ scheduled job run in previews only if they were opted in, and a service runs
 unless it was opted out. That default is what makes a preview of a several-
 workload unit the whole unit rather than a quarter of it.
 
-Changing the list is a project setting, written with the rest of them:
+Changing one is "kitchen processes set", which is a project setting rather than
+an environment's — the declaration is the project's, and an environment runs
+whatever its release declared:
+
+  kitchen processes set worker --type worker --command node --command worker.js
+  kitchen processes rm nightly-report --yes
+
+All of them at once is still the JSON body, because a list of records has no
+flag-shaped spelling worth having:
 
   kitchen api PATCH /projects/shop --data '{"processes":[
     {"name":"migrate","type":"task","command":["npm","run","migrate"],"timeout":"10m"},
@@ -150,7 +159,8 @@ release — what is running keeps its own workloads until something builds.`),
 	}
 	cmd.Flags().StringVarP(&environmentName, "environment", "e", "",
 		"the environment to read. The default is the project's production environment")
-	cmd.AddCommand(newProcessRunsCommand(r), newProcessRunCommand(r))
+	cmd.AddCommand(newProcessRunsCommand(r), newProcessRunCommand(r),
+		newProcessSetCommand(r), newProcessRemoveCommand(r))
 
 	return describe(cmd, meta{
 		Calls: []string{
@@ -416,11 +426,24 @@ func processState(s tui.Styles, p process) string {
 			return s.Warn.Render("running")
 		}
 		return s.OK.Render("scheduled")
-	case p.ReadyReplicas < p.Replicas:
-		return s.Bad.Render(strconv.Itoa(int(p.ReadyReplicas)) + "/" + strconv.Itoa(int(p.Replicas)) + " ready")
 	default:
-		return s.OK.Render(strconv.Itoa(int(p.ReadyReplicas)) + "/" + strconv.Itoa(int(p.Replicas)) + " ready")
+		want := replicaCount(p)
+		ready := strconv.Itoa(int(p.ReadyReplicas)) + "/" + strconv.Itoa(int(want)) + " ready"
+		if p.ReadyReplicas < want {
+			return s.Bad.Render(ready)
+		}
+		return s.OK.Render(ready)
 	}
+}
+
+// replicaCount is how many copies a workload asks for, zero where it asks for
+// none — a workload declared and parked, which is a count somebody chose and
+// not an absent one.
+func replicaCount(p process) int32 {
+	if p.Replicas == nil {
+		return 0
+	}
+	return *p.Replicas
 }
 
 // processNote is the last thing that happened to a scheduled process, the

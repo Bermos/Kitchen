@@ -297,6 +297,17 @@ the project's standing in the platform.
 - **Not the git connection, the repository, the production branch or the
   registry.** A file cannot say which repository it is in.
 
+**Nothing here is file-*only*, and that is deliberate.** Everything this file
+can set has a route as well — the build settings and the runtime on
+`PATCH /projects/{name}`, the variables on `PATCH /projects/{name}/env`, the
+workloads on `processes` — because a project whose source is an image has no
+repository, so it has no file, and a setting reachable only from a file would
+be a setting such a project could never make.
+[Workloads](api/processes.md#a-project-with-no-repository-declares-all-of-this-here)
+maps the two onto each other field by field. The traffic runs the other way
+once: `build.rootDirectory` is the API's and not the file's, for the reason in
+[Where it goes](#where-it-goes).
+
 ## What a bad file does
 
 It **fails the build**, with the line to fix, and it fails it before anything
