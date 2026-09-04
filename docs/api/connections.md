@@ -114,7 +114,12 @@ a hook is a maintainer's right. Gitea takes an access token with
 `write:repository`, held by an owner or administrator of the repository.
 
 Both report `gitSource` and `statusChecks`, so the build's check and the
-preview's comment are posted back as GitHub's are. Two things they do not do:
+preview's comment are posted back as GitHub's are, and both can say how a commit
+reached a branch — the merge or pull request it arrived through and the
+approvals that still stood when it merged — which is what a project's
+`requirePullRequest` asks of its connection
+([COMPLIANCE.md §8](../COMPLIANCE.md#8-how-the-change-was-reviewed-issue-129)).
+Two things they do not do:
 Gitea keeps no deployment record — it has no such API, and GitLab's has no way
 to retire one, so a removed preview is announced in the comment alone — and
 neither enumerates repositories, so the repository is typed as `owner/name`

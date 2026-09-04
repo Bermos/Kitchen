@@ -16,7 +16,11 @@ limitations under the License.
 
 package gitprovider
 
-import "context"
+import (
+	"context"
+	"sort"
+	"strings"
+)
 
 // How a commit came to be on the branch it is on: who wrote it, who agreed to
 // it, and whether anybody did.
@@ -87,10 +91,10 @@ type ChangeProvenance struct {
 	// dismissed and superseded ones already dropped.
 	Approvals []Approval
 
-	// Provider names who asserted all of this — `github`, `gitlab`. It is
-	// carried into the attestation because the platform did not witness any
-	// of it: it is repeating a third party's claim, and evidence that hides
-	// whose claim it is repeating is evidence about nothing.
+	// Provider names who asserted all of this — `github`, `gitlab`, `gitea`.
+	// It is carried into the attestation because the platform did not witness
+	// any of it: it is repeating a third party's claim, and evidence that
+	// hides whose claim it is repeating is evidence about nothing.
 	Provider string
 }
 
@@ -141,4 +145,89 @@ type ChangeReader interface {
 func Change(provider Provider) (ChangeReader, bool) {
 	reader, ok := provider.(ChangeReader)
 	return reader, ok
+}
+
+// stateApproved is the word GitHub and Gitea both spell an approving review
+// with. GitLab has no equivalent: an approval there is an entry in a list of
+// approvals rather than a review carrying a state.
+const stateApproved = "APPROVED"
+
+// reviewVerdict is one review a provider left in its history, reduced to the
+// three things the standing-approval rule turns on: who left it, when, and
+// whether it was an approval.
+//
+// It exists because GitHub and Gitea keep the same kind of record in two
+// vocabularies — `CHANGES_REQUESTED` against `REQUEST_CHANGES`, a dismissal
+// that rewrites the state against a dismissal that sets a flag beside it — and
+// the reduction over that record is identical and subtle enough that it should
+// have one implementation. Each provider translates its own history into these
+// and nothing else; what "still stands" means is decided here, once.
+//
+// GitLab has no such history to translate: its approvals are a resource that
+// holds only the ones still standing, so it builds Approval values directly.
+type reviewVerdict struct {
+	// Reviewer is the provider's identity for whoever left it.
+	Reviewer string
+	// SubmittedAt is when, verbatim from the provider. Providers report it in
+	// RFC 3339 with a `Z`, which orders lexicographically — so it is compared
+	// as a string rather than parsed, and a provider that reports nothing
+	// sorts as the oldest rather than failing.
+	SubmittedAt string
+	// Approved is whether this verdict was an approval that still stands. A
+	// verdict that is not one is still the reviewer's newest word, and that
+	// is the whole reason a dismissed review is passed in rather than
+	// dropped: it is what supersedes the approval before it.
+	Approved bool
+}
+
+// standingApprovals reduces every verdict a provider recorded to the approvals
+// that still stand: the newest per reviewer, and only where that newest one is
+// an approval.
+//
+// The reduction is the substance. A provider returns the full history, so a
+// reviewer who approved and then requested changes appears twice, and an
+// approval a later push dismissed is still in the list. Counting either would
+// produce evidence that a change was approved when the approval had been
+// withdrawn before it merged — which is a worse outcome than having no
+// evidence, because somebody would rely on it.
+func standingApprovals(verdicts []reviewVerdict, author string) []Approval {
+	latest := map[string]reviewVerdict{}
+	for _, verdict := range verdicts {
+		if verdict.Reviewer == "" {
+			continue
+		}
+		held, seen := latest[verdict.Reviewer]
+		if !seen || verdict.SubmittedAt >= held.SubmittedAt {
+			latest[verdict.Reviewer] = verdict
+		}
+	}
+
+	reviewers := make([]string, 0, len(latest))
+	for reviewer := range latest {
+		reviewers = append(reviewers, reviewer)
+	}
+	// Stable order, so that two reads of the same request produce the same
+	// evidence and a diff of two attestations means something.
+	sort.Strings(reviewers)
+
+	approvals := []Approval{}
+	for _, reviewer := range reviewers {
+		verdict := latest[reviewer]
+		if !verdict.Approved {
+			continue
+		}
+		approvals = append(approvals, Approval{
+			Reviewer:     reviewer,
+			SubmittedAt:  verdict.SubmittedAt,
+			SelfApproval: isAuthor(reviewer, author),
+		})
+	}
+	return approvals
+}
+
+// isAuthor reports whether an approver is the change's own author. Providers
+// are inconsistent about the case they echo a username in, and none of the
+// three treats case as part of an identity.
+func isAuthor(reviewer, author string) bool {
+	return author != "" && strings.EqualFold(reviewer, author)
 }

@@ -20,7 +20,6 @@ import (
 	"context"
 	"net/http"
 	"net/url"
-	"sort"
 	"strconv"
 	"strings"
 )
@@ -98,7 +97,7 @@ func (g *GitHub) CommitProvenance(ctx context.Context, repo, sha string) (Change
 		}
 		return ChangeProvenance{}, err
 	}
-	provenance.Approvals = standingApprovals(reviews, provenance.Author)
+	provenance.Approvals = standingApprovals(githubVerdicts(reviews), provenance.Author)
 	return provenance, nil
 }
 
@@ -118,54 +117,27 @@ func mergedPull(pulls []githubPullSummary) (githubPullSummary, bool) {
 	return githubPullSummary{}, false
 }
 
-// standingApprovals reduces every review ever left to the ones that still
-// stand: the newest per reviewer, and only where that newest one is an
-// approval.
+// githubVerdicts translates GitHub's review history into the vocabulary
+// standingApprovals reduces, which is where "still stands" is decided.
 //
-// The reduction is the substance. GitHub returns the full history, so a
-// reviewer who approved and then requested changes appears twice, and an
-// approval a later push dismissed is still in the list with its state changed
-// to DISMISSED. Counting either would produce evidence that a change was
-// approved when the approval had been withdrawn before it merged — which is a
-// worse outcome than having no evidence, because somebody would rely on it.
-func standingApprovals(reviews []githubReview, author string) []Approval {
-	latest := map[string]githubReview{}
+// Two GitHub facts are applied here and nowhere else. A dismissed review is
+// still in the list with its state rewritten to DISMISSED, so it arrives as
+// the reviewer's newest word and not as an approval — which is exactly what
+// supersedes the approval before it. A COMMENTED review leaves the previous
+// verdict standing, so it is dropped rather than treated as the newest word.
+func githubVerdicts(reviews []githubReview) []reviewVerdict {
+	verdicts := make([]reviewVerdict, 0, len(reviews))
 	for _, review := range reviews {
-		// COMMENTED reviews leave the previous verdict standing on GitHub, so
-		// they are skipped rather than treated as the newest word.
 		if strings.EqualFold(review.State, "COMMENTED") {
 			continue
 		}
-		if review.User.Login == "" {
-			continue
-		}
-		held, seen := latest[review.User.Login]
-		if !seen || review.SubmittedAt >= held.SubmittedAt {
-			latest[review.User.Login] = review
-		}
-	}
-
-	reviewers := make([]string, 0, len(latest))
-	for reviewer := range latest {
-		reviewers = append(reviewers, reviewer)
-	}
-	// Stable order, so that two reads of the same request produce the same
-	// evidence and a diff of two attestations means something.
-	sort.Strings(reviewers)
-
-	approvals := []Approval{}
-	for _, reviewer := range reviewers {
-		review := latest[reviewer]
-		if !strings.EqualFold(review.State, "APPROVED") {
-			continue
-		}
-		approvals = append(approvals, Approval{
-			Reviewer:     reviewer,
-			SubmittedAt:  review.SubmittedAt,
-			SelfApproval: author != "" && strings.EqualFold(reviewer, author),
+		verdicts = append(verdicts, reviewVerdict{
+			Reviewer:    review.User.Login,
+			SubmittedAt: review.SubmittedAt,
+			Approved:    strings.EqualFold(review.State, stateApproved),
 		})
 	}
-	return approvals
+	return verdicts
 }
 
 // repoPath escapes an owner/name pair for a URL path.

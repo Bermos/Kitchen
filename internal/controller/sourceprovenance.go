@@ -361,10 +361,12 @@ func exemptionTransition(
 // provider, false when there is nothing to ask.
 //
 // It is a capability like the others: a provider can be a source without being
-// able to answer this, and GitLab and Gitea are exactly that today — real
-// providers, carrying pushes, merge requests and status back, with no
-// CommitProvenance on them yet. Where a Connection cannot answer, the platform
-// says so rather than assuming. docs/COMPLIANCE.md §8.8 says what that leaves.
+// able to answer this. All three git providers answer it now — GitHub, GitLab
+// and Gitea, each against its own forge's association and approvals endpoints
+// (docs/COMPLIANCE.md §8.2) — so what resolves nothing here is a Connection
+// whose credential cannot be read, one whose provider is not a git provider at
+// all, or a forge added later that has not implemented it yet. Where a
+// Connection cannot answer, the platform says so rather than assuming.
 func (r *BuildReconciler) changeReaderFor(
 	ctx context.Context, project *kitchenv1alpha1.Project,
 ) (gitprovider.ChangeReader, bool) {
