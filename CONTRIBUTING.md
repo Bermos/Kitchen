@@ -193,10 +193,10 @@ push, once for the pull request. Nothing was learned the second time. A branch
 is covered by its pull request; a tag is covered by the `main` run of the
 commit it points at.
 
-### The three kind jobs run once per change
+### The four kind jobs run once per change
 
-Chart install on kind, E2E on kind and Gateway L7 flows on kind cost twelve to
-fourteen minutes each. They are gated to `pull_request` events, and skipped on
+Chart install on kind, E2E on kind, Several workloads on kind and Gateway L7
+flows on kind cost twelve to fourteen minutes each. They are gated to `pull_request` events, and skipped on
 the push to `main` that merges one, because that run was checking a tree that
 had already passed:
 
@@ -212,7 +212,7 @@ had already passed:
   branch protection setting, not a file in this tree, and worth turning on only
   if two pull requests actually start breaking `main` together.
 
-The workflows still trigger on `main`; only those three jobs are skipped there.
+The workflows still trigger on `main`; only those four jobs are skipped there.
 The cheap jobs alongside them — and Tests, Lint, Dashboard and Auth service in
 full — keep running, because an Actions cache is readable by the branch that
 wrote it, that branch's base, and the default branch. `main`'s runs are the
@@ -222,9 +222,10 @@ every pull request cold, kind jobs included.
 ### And only when they have something to check
 
 They are also skipped on a pull request that cannot have changed what they
-prove. Each of the three has a `changes` job in front of it that runs
-`hack/changed-paths.sh <profile>` over the diff against the base branch and
-answers `run=true` or `run=false`; the kind job's `if:` reads it.
+prove. Each workflow that carries one has a `changes` job in front of it that
+runs `hack/changed-paths.sh <profile>` over the diff against the base branch
+and answers `run=true` or `run=false`; the kind job's `if:` reads it. There are
+three profiles for four jobs — the two in the E2E workflow share one.
 
 The script holds a list of what each profile may **ignore**, never a list of
 what it needs. A path nobody has classified runs the job, so adding a directory
@@ -237,15 +238,20 @@ What that means in practice:
   Kitchen and what it tests is the platform's CNI. Only its scripts, its
   fixtures and the two workflows that pin Cilium's version can change the
   answer, so everything else is ignorable there.
-- **The E2E job skips chart-only, dashboard-only and CLI-only changes.**
-  `make test-e2e` runs the operator's suite against kind; it installs no chart
-  and runs no auth service.
+- **The E2E jobs skip dashboard-only and CLI-only changes.** `make test-e2e`
+  runs the operator's suite against kind, and Several workloads on kind
+  installs the chart and deploys a project of several workloads through a real
+  build — so a chart change runs them, and neither runs the auth service.
+- **Several workloads on kind does not run for a pull request from a fork.**
+  The build it drives fetches this repository at the pull request's head
+  commit, and a fork's head commit is not in this repository. Its `if:` says
+  so.
 - **The chart install job skips dashboard-only and CLI-only changes.** The CLI
   holds no kubeconfig and is not installed by the chart. The dashboard reaches
   that job only through the image build, and a dashboard that does not build
   fails the Dashboard workflow's `npm run build` in forty seconds — a required
   check of its own.
-- **The release pull request runs all three regardless.** Its `if:` says so
+- **The release pull request runs all of them regardless.** Its `if:` says so
   explicitly. Its tree is what gets tagged and published, so it is the one
   place where "nothing relevant changed" is not a good enough answer. Nothing
   else gates it either: release-please opens it as `github-actions[bot]`, so
