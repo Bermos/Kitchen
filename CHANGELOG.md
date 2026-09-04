@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.31.0](https://github.com/Bermos/Kitchen/compare/v0.30.0...v0.31.0) (2026-09-04)
+
+
+### Features
+
+* **claims:** bind a volume the platform did not create, and say who may write it ([#397](https://github.com/Bermos/Kitchen/issues/397)) ([d3d1482](https://github.com/Bermos/Kitchen/commit/d3d1482f2e4457161e910088ebed582fdd610bb8)), closes [#346](https://github.com/Bermos/Kitchen/issues/346)
+* **notifications:** tell somebody when a deploy lands or breaks ([#395](https://github.com/Bermos/Kitchen/issues/395)) ([4418b2e](https://github.com/Bermos/Kitchen/commit/4418b2e1cc55f47dbe0019b741337daa8e5c5010)), closes [#77](https://github.com/Bermos/Kitchen/issues/77)
+
 ## [0.30.0](https://github.com/Bermos/Kitchen/compare/v0.29.0...v0.30.0) (2026-09-04)
 
 
