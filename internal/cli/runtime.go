@@ -18,10 +18,15 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"path/filepath"
 	"strings"
 	"time"
+
+	"golang.org/x/net/publicsuffix"
 
 	"github.com/Bermos/Kitchen/internal/cli/tui"
 )
@@ -131,6 +136,10 @@ func (r *Runtime) link() (*link, string, error) {
 //
 // Every one of the four is spelled out in the failure, because "which
 // platform" is the one question a caller with no context cannot guess at.
+//
+// The link file is the one of the four that anybody who can commit to the
+// repository writes, so it only ever *chooses* an installation — see
+// allowLinked.
 func (r *Runtime) apiURL() (string, error) {
 	if r.base != "" {
 		return r.base, nil
@@ -142,10 +151,14 @@ func (r *Runtime) apiURL() (string, error) {
 			return r.base, nil
 		}
 	}
-	if linked, _, err := r.link(); err != nil {
+	if linked, dir, err := r.link(); err != nil {
 		return "", err
 	} else if linked != nil && linked.API != "" {
-		r.base = normalizeAPI(linked.API)
+		base := normalizeAPI(linked.API)
+		if err := r.allowLinked(base, dir); err != nil {
+			return "", err
+		}
+		r.base = base
 		return r.base, nil
 	}
 	stored, _, err := r.credentials()
@@ -159,6 +172,69 @@ func (r *Runtime) apiURL() (string, error) {
 	return "", fail(codeUsage, "no Kitchen installation to talk to").
 		withHint("pass --api https://kitchen.<your-domain>, set KITCHEN_API, " +
 			"run `kitchen login --api …`, or run `kitchen link` in this directory")
+}
+
+// allowLinked decides whether the link file may point this command at base.
+//
+// `.kitchen/project.json` is committed — that is the whole reason it exists —
+// which makes it the one input to this CLI that anybody who can push to the
+// repository writes, including a fork's pull request. A file that could name
+// any host would therefore choose where a credential goes: the API key would
+// be offered as `x-api-key` to whatever issuer that host's /config.json names,
+// and KITCHEN_TOKEN would travel to it as a bearer. So the link file may
+// **choose among the installations this machine already knows** — the ones
+// `kitchen login` stored — and may never introduce a new one.
+//
+// A host that is not one of them is refused while there is a credential in the
+// environment to lose, and offered to a person who is there to look at it.
+// Which installation this is remains something the caller can always say
+// outright, with --api or KITCHEN_API, and that is what CI should do.
+func (r *Runtime) allowLinked(base, dir string) error {
+	stored, _, err := r.credentials()
+	if err != nil {
+		return err
+	}
+	if _, known := stored.Installations[base]; known {
+		return nil
+	}
+
+	path := filepath.Join(dir, linkDir, linkFile)
+	refusal := failf(codeUsage, "%s names an installation this machine has not signed in to: %s", path, base)
+	if credential := r.environmentCredential(); credential != "" {
+		return refusal.withHint("the link file is committed, so it may choose between installations " +
+			"`kitchen login` has stored but not introduce one while " + credential + " is set — a commit " +
+			"could otherwise send that credential to a host of its own choosing. Say which installation " +
+			"this is with --api " + base + " or KITCHEN_API (CI should always set it), or run " +
+			"`kitchen login --api " + base + "` on a machine that trusts it")
+	}
+	if r.noInput || !r.StdinTerminal {
+		return refusal.withHint("pass --api " + base + ", set KITCHEN_API, or run " +
+			"`kitchen login --api " + base + "` — a committed link file may choose between installations " +
+			"this machine has signed in to, and not introduce one")
+	}
+
+	answer, err := ask(r, fmt.Sprintf("%s wants to talk to %s, which this machine has not signed in to. "+
+		"Trust it? [y/N]", path, base), "--api")
+	if err != nil {
+		return err
+	}
+	if !affirmative(answer) {
+		return refusal.withHint("pass --api " + base + " or run `kitchen login --api " + base + "` to accept " +
+			"that installation")
+	}
+	return nil
+}
+
+// environmentCredential names the credential the environment is carrying, and
+// is empty when it carries none. It is a name rather than a value because it
+// is only ever read to say in a sentence what is at stake.
+func (r *Runtime) environmentCredential() string {
+	for _, name := range []string{"KITCHEN_TOKEN", "KITCHEN_API_KEY"} {
+		if r.env(name) != "" {
+			return name
+		}
+	}
+	return ""
 }
 
 // normalizeAPI accepts what a person will actually type — a bare hostname, a
@@ -265,6 +341,13 @@ func (r *Runtime) bearer(ctx context.Context) (string, error) {
 
 // issuerFor is where this installation's tokens come from: what login recorded,
 // or what /config.json says — the same public document the dashboard reads.
+//
+// The key is sent to whatever this answers, so an issuer that has not been
+// pinned by `kitchen login` is taken from that document only when it is on the
+// API's own site. An installation federated to an identity provider somewhere
+// else is a real thing (the operator may spell out a whole URL), and it is
+// signed in to once with --api naming the platform — which pins the issuer,
+// after which this never asks the document again.
 func (r *Runtime) issuerFor(ctx context.Context, base string, current *installation) (string, error) {
 	if current != nil && current.Issuer != "" {
 		return current.Issuer, nil
@@ -280,7 +363,50 @@ func (r *Runtime) issuerFor(ctx context.Context, base string, current *installat
 			withHint("an installation running with auth.enabled=false answers 401 on every endpoint; " +
 				"there is nothing for the CLI to sign in to")
 	}
+	if !sameSite(base, config.Issuer) {
+		return "", failf(codeUnauthenticated, "%s names an identity provider on another site: %s",
+			base+configPath, config.Issuer).
+			withHint("the API key is handed to the issuer, so the CLI will not take an off-site one out of " +
+				"an unauthenticated document. Run `kitchen login --api " + base + "`, which records this " +
+				"installation's issuer once and uses the recorded one from then on")
+	}
 	return config.Issuer, nil
+}
+
+// sameSite reports whether an issuer is on the API's own site: the same host,
+// or another name under its registrable domain — auth.example.com for an API
+// on kitchen.example.com, which is where the chart puts it by default.
+//
+// Registrable is the public suffix list's answer rather than "the last two
+// labels", so example.co.uk is a site and co.uk is not one.
+func sameSite(base, issuer string) bool {
+	left, right := hostOf(base), hostOf(issuer)
+	if left == "" || right == "" {
+		return false
+	}
+	if left == right {
+		return true
+	}
+	leftSite, err := publicsuffix.EffectiveTLDPlusOne(left)
+	if err != nil {
+		return false
+	}
+	rightSite, err := publicsuffix.EffectiveTLDPlusOne(right)
+	if err != nil {
+		return false
+	}
+	return leftSite == rightSite
+}
+
+// hostOf is a URL's hostname, lowercased and without its port. Anything that
+// does not parse as a URL with a host has none, which every caller reads as
+// "not the same site".
+func hostOf(value string) string {
+	parsed, err := url.Parse(value)
+	if err != nil {
+		return ""
+	}
+	return strings.ToLower(parsed.Hostname())
 }
 
 // expiring reports whether a cached token is gone or about to be. The minute

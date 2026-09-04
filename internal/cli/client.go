@@ -420,12 +420,26 @@ func (c *client) discover(ctx context.Context) (*platformConfig, error) {
 	return config, nil
 }
 
+// redirectRefused is the redirect the key exchange would not follow. It is a
+// type rather than a message because net/http wraps whatever CheckRedirect
+// returns in a *url.Error, so both the fact and the host it was pointed at are
+// only recoverable through the chain.
+type redirectRefused struct{ to string }
+
+func (e *redirectRefused) Error() string { return "refused to follow a redirect to " + e.to }
+
 // exchange turns an API key into the short-lived token the API accepts.
 //
 // The key belongs to the identity provider and is exchanged there, exactly as
 // docs/API.md documents for CI: the operator never sees it, so a leaked key is
 // revoked in one place and the CLI holds nothing the platform has to be told
 // about.
+//
+// **The one request that carries the key follows no redirect.** net/http drops
+// an `Authorization` header when a redirect crosses to another host, but it
+// knows nothing about `x-api-key` and carries it wherever it is sent — so the
+// exchange refuses a redirect outright rather than handing the key to a host
+// the platform's own configuration never named.
 func exchange(ctx context.Context, httpClient *http.Client, issuer, key string) (string, error) {
 	endpoint := strings.TrimRight(issuer, "/") + "/token"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
@@ -436,7 +450,22 @@ func exchange(ctx context.Context, httpClient *http.Client, issuer, key string) 
 	req.Header.Set("accept", "application/json")
 	req.Header.Set("user-agent", "kitchen-cli/"+version.Version)
 
-	res, err := httpClient.Do(req)
+	// A copy of the process's client, so the connection pool is still shared
+	// and only this request refuses to be sent somewhere else.
+	noRedirects := *httpClient
+	noRedirects.CheckRedirect = func(req *http.Request, _ []*http.Request) error {
+		return &redirectRefused{to: req.URL.Redacted()}
+	}
+
+	res, err := noRedirects.Do(req)
+	var refused *redirectRefused
+	if errors.As(err, &refused) {
+		return "", failf(codeUnauthenticated, "%s answered a redirect to %s, which the request carrying "+
+			"the API key will not follow", endpoint, refused.to).
+			withHint("the key travels in a header a redirect would carry to another host, so the CLI " +
+				"refuses one. Check that this installation's issuer is the URL its /config.json names, " +
+				"and that nothing is redirecting it")
+	}
 	if err != nil {
 		return "", unreachable(err, issuer).doing("exchanging the API key for a token")
 	}

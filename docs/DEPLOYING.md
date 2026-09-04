@@ -321,7 +321,10 @@ compile". It exits `12` for the third answer: the build succeeded and the
 environment refused the release — a deploy task that failed, most often — so
 what was serving before it still is.
 
-In CI, skip `login` and set `KITCHEN_API_KEY`.
+In CI, skip `login` and set `KITCHEN_API` and `KITCHEN_API_KEY`. Naming the
+installation is not optional there: the committed link file may choose between
+installations a machine has signed in to, and a CI runner has signed in to
+none — [the CLI](CLI.md#linking-a-directory) says why.
 
 `.kitchen/project.json` holds no credential and is meant to be committed:
 everybody working on the repository deploys the same project.

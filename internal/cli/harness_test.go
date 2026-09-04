@@ -29,6 +29,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -128,6 +129,14 @@ type platform struct {
 	// refuse answers every API call with this status and message when set.
 	refuseStatus  int
 	refuseMessage string
+
+	// issuerOverride is the issuer /config.json names, when a test wants one
+	// that is not this platform's own — an identity provider on somebody
+	// else's site, which the CLI will not take a key to unasked.
+	issuerOverride string
+	// issuerRedirect makes the token endpoint answer a redirect to it, which
+	// is the one answer the key exchange refuses to follow.
+	issuerRedirect string
 }
 
 // recorded is one request the fake platform saw.
@@ -147,6 +156,10 @@ func newPlatform(t *testing.T) *platform {
 	p.issuer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		if req.URL.Path != "/token" {
 			http.NotFound(w, req)
+			return
+		}
+		if p.issuerRedirect != "" {
+			http.Redirect(w, req, p.issuerRedirect, http.StatusFound)
 			return
 		}
 		if req.Header.Get("x-api-key") == "" {
@@ -172,9 +185,7 @@ func (p *platform) serve(w http.ResponseWriter, req *http.Request) {
 	p.mutex.Unlock()
 
 	if req.URL.Path == configPath {
-		writeAnswer(w, http.StatusOK, platformConfig{
-			Issuer: p.issuer.URL, ClientID: "kitchen-ui", APIURL: p.server.URL, Version: "test",
-		})
+		p.answerConfig(w)
 		return
 	}
 	if p.refuseStatus != 0 {
@@ -232,6 +243,18 @@ func (p *platform) serve(w http.ResponseWriter, req *http.Request) {
 	default:
 		writeAnswer(w, http.StatusNotFound, errorBody{Error: "no such endpoint: " + path})
 	}
+}
+
+// answerConfig is the public configuration document, which needs no
+// credential — and names the issuer the CLI would hand an API key to.
+func (p *platform) answerConfig(w http.ResponseWriter) {
+	issuer := p.issuer.URL
+	if p.issuerOverride != "" {
+		issuer = p.issuerOverride
+	}
+	writeAnswer(w, http.StatusOK, platformConfig{
+		Issuer: issuer, ClientID: "kitchen-ui", APIURL: p.server.URL, Version: "test",
+	})
 }
 
 // answerProjectSetup carries the directory the create command walks — the
@@ -755,6 +778,44 @@ func (p *platform) sent(method, suffix string) []recorded {
 	return found
 }
 
+// sink is a host nothing should ever talk to. It answers anything asked of it
+// with a token, so a test that finds no request on it has proved the CLI
+// refused *before* sending a credential rather than merely failing after.
+type sink struct {
+	server *httptest.Server
+	asked  atomic.Int64
+}
+
+func newSink(t *testing.T) *sink {
+	t.Helper()
+	s := &sink{}
+	s.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		s.asked.Add(1)
+		writeAnswer(w, http.StatusOK, map[string]string{"token": "a-token-from-the-attacker"})
+	}))
+	t.Cleanup(s.server.Close)
+	return s
+}
+
+// url is the host a link file or a redirect would name.
+func (s *sink) url() string { return s.server.URL }
+
+// untouched fails the test when anything was sent to it.
+func (s *sink) untouched(t *testing.T) {
+	t.Helper()
+	if asked := s.asked.Load(); asked != 0 {
+		t.Fatalf("%d requests reached a host the CLI was never signed in to", asked)
+	}
+}
+
+// forget drops the requests recorded so far, so a test can assert about the
+// command it is testing rather than about the sign-in that set it up.
+func (p *platform) forget() {
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
+	p.requests = nil
+}
+
 // harness runs command lines against a fake platform with a temporary home.
 type harness struct {
 	t        *testing.T
@@ -809,6 +870,21 @@ func (h *harness) run(args ...string) int {
 		},
 	}
 	return Execute(context.Background(), runtime, args)
+}
+
+// signIn stores a credential for the fake platform, the way `kitchen login`
+// does on a laptop. It is what makes the fake platform an installation this
+// machine *knows*, which is the difference between a link file choosing one
+// and a link file introducing one.
+func (h *harness) signIn() { h.signInTo(h.platform.server.URL) }
+
+// signInTo is the same for an installation that is not the harness's own,
+// which is how a test gets a machine that knows two of them.
+func (h *harness) signInTo(base string) {
+	h.t.Helper()
+	if code := h.run("login", "--api", base, "--api-key", "a-key", "--json"); code != exitOK {
+		h.t.Fatalf("login to %s: exit %d, stderr: %s", base, code, h.stderr.String())
+	}
 }
 
 // answer decodes stdout as one JSON document.
