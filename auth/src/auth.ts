@@ -8,6 +8,8 @@ import { sso } from "@better-auth/sso";
 import type { Pool } from "pg";
 
 import { allowedOrigins, platformClients, type Config } from "./config.js";
+import { isServiceAccount } from "./identity.js";
+import { guardKeySession } from "./keyscope.js";
 import { log } from "./log.js";
 
 export const LOGIN_PATH = "/login";
@@ -63,34 +65,53 @@ function requestingClient(body: Record<string, unknown>, authorization: string |
  * exactly what it got before — an ID token, an opaque access token, and
  * `/oauth2/userinfo`.
  */
-function guardResourceIndicator(config: Config): BetterAuthOptions["hooks"] {
+function guardResourceIndicator(config: Config) {
 	const platform = platformClients(config);
+	return async (ctx: { path: string; body?: unknown; request?: Request }): Promise<void> => {
+		if (ctx.path !== TOKEN_PATH) {
+			return;
+		}
+		const body: Record<string, unknown> =
+			ctx.body && typeof ctx.body === "object" ? (ctx.body as Record<string, unknown>) : {};
+		const resource = typeof body.resource === "string" ? body.resource.trim() : "";
+		if (!resource) {
+			return;
+		}
+		const clientId = requestingClient(body, ctx.request?.headers.get("authorization") ?? null);
+		if (clientId && platform.has(clientId)) {
+			return;
+		}
+		log.warn("refused a resource indicator to a client that is not the platform's own", {
+			clientId: clientId || "(none)",
+			resource,
+		});
+		throw new APIError("BAD_REQUEST", {
+			error: "invalid_target",
+			error_description:
+				"this client may not request a token for another resource: the resource indicator is " +
+				"the platform's own clients' alone, and a token for the Kitchen API is not something " +
+				"an application may be granted on a person's behalf",
+		});
+	};
+}
+
+/**
+ * Everything that runs in front of every endpoint, in one hook because
+ * better-auth's options take one.
+ *
+ * They are two questions asked in the order they can be answered. *May this
+ * credential be here at all* comes first and is settled from the request
+ * alone (src/keyscope.ts); *may this client ask for this audience* is about
+ * one endpoint's body. A guard added later belongs in this list rather than
+ * inside one of them.
+ */
+function guards(config: Config): BetterAuthOptions["hooks"] {
+	const keySession = guardKeySession(config);
+	const resourceIndicator = guardResourceIndicator(config);
 	return {
 		before: createAuthMiddleware(async (ctx) => {
-			if (ctx.path !== TOKEN_PATH) {
-				return;
-			}
-			const body: Record<string, unknown> =
-				ctx.body && typeof ctx.body === "object" ? (ctx.body as Record<string, unknown>) : {};
-			const resource = typeof body.resource === "string" ? body.resource.trim() : "";
-			if (!resource) {
-				return;
-			}
-			const clientId = requestingClient(body, ctx.request?.headers.get("authorization") ?? null);
-			if (clientId && platform.has(clientId)) {
-				return;
-			}
-			log.warn("refused a resource indicator to a client that is not the platform's own", {
-				clientId: clientId || "(none)",
-				resource,
-			});
-			throw new APIError("BAD_REQUEST", {
-				error: "invalid_target",
-				error_description:
-					"this client may not request a token for another resource: the resource indicator is " +
-					"the platform's own clients' alone, and a token for the Kitchen API is not something " +
-					"an application may be granted on a person's behalf",
-			});
+			await keySession(ctx);
+			await resourceIndicator(ctx);
 		}),
 	};
 }
@@ -121,10 +142,11 @@ export function authOptions(config: Config, database: Pool): BetterAuthOptions {
 		// issuer alone was enough only while nothing but the issuer's own pages
 		// posted here.
 		trustedOrigins: [...allowedOrigins(config)],
-		// Who may ask for a token for another resource — the operator API
-		// above all. It runs ahead of the provider's own token endpoint, which
-		// is where `resource` is read.
-		hooks: guardResourceIndicator(config),
+		// What a credential may reach here at all, and who may ask for a token
+		// for another resource — the operator API above all. Both run ahead of
+		// the endpoint they guard, and ahead of every plugin's own hooks, which
+		// better-auth runs after the options'.
+		hooks: guards(config),
 		session: {
 			// No freshness window. better-auth guards `/list-sessions` on a session
 			// created within the last day by default, and nothing in Kitchen can
@@ -164,11 +186,35 @@ export function authOptions(config: Config, database: Pool): BetterAuthOptions {
 				loginPage: LOGIN_PATH,
 				consentPage: CONSENT_PATH,
 				scopes: [...SCOPES],
-				// Clients are registered by the operator (and by admins), never
-				// anonymously: registration requires a session, which the
-				// operator gets from its API key.
+				// Clients are registered by the operator and by nobody else:
+				// registration requires a session, which the operator gets
+				// from its API key, and `clientPrivileges` below decides whose
+				// session that may be.
 				allowDynamicClientRegistration: true,
 				allowUnauthenticatedClientRegistration: false,
+				// Who may register or manage an OAuth client: the service
+				// account, and only it.
+				//
+				// The plugin asks this at the one chokepoint every client
+				// mutation goes through — create, read, update, delete, list
+				// and rotate alike — so it is the whole of the answer rather
+				// than a check on one route. It is set because "registration
+				// requires a session" turned out to be a much wider door than
+				// it reads as: `enableSessionForAPIKeys` makes every CI key a
+				// session, so any key could register a confidential client
+				// with redirects of its choosing and the `client_credentials`
+				// grant, and the operator's `/kitchen/clients` — which manages
+				// only what the operator itself registered — could not even
+				// see it (issue #318).
+				//
+				// It refuses a signed-in administrator too. Registering a
+				// client is not something a person does here: an application's
+				// client is `ResourceClaim` type `oidcClient`, which the
+				// operator registers and then keeps in step with the project's
+				// environments, and the dashboard's own client is seeded
+				// (src/seed.ts). A client a person registered by hand would be
+				// one nothing maintains.
+				clientPrivileges: ({ user }) => isServiceAccount(config, user?.email),
 				// The audiences a client may ask for a token for
 				// (`resource=`), and nothing else — an unconstrained list is
 				// the audience-confusion problem GHSA-p2fr-6hmx-4528 warns
@@ -240,9 +286,14 @@ export function authOptions(config: Config, database: Pool): BetterAuthOptions {
 			passkey({ rpID, rpName: "Kitchen", origin: config.baseURL }),
 			twoFactor({ issuer: "Kitchen" }),
 			// CI credentials and the operator's own service credential. Keys
-			// stand in for a session so a machine can call the same endpoints a
-			// signed-in administrator can — that is how the operator registers
-			// OAuth clients.
+			// stand in for a session so that a machine has an identity at all:
+			// what `GET /token` mints is a token for the account the key
+			// belongs to.
+			//
+			// That session is *not* a signed-in administrator, and what stops
+			// it becoming one is `guardKeySession` above — a key reaches the
+			// token exchange and its own session, and the operator's own
+			// credential reaches everything (src/keyscope.ts).
 			apiKey({
 				enableSessionForAPIKeys: true,
 				// The plugin's default budget (10 requests a day) is meant to be
