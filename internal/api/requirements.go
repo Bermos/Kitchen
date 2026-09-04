@@ -469,6 +469,13 @@ func (s *Server) eligibilityInput(
 	}
 	at := time.Now().UTC()
 	input := policy.MaterializeInput(policy.KindEligibility, at, project, env, release, build, evidence, claims)
+	// The caller is the requester the preview is about. A promotion this
+	// person asked for would carry their name, so a preview that left it out
+	// would answer the four-eyes question over a vendored digest for nobody
+	// — and tell them a move was allowed that their own request would be
+	// refused for (#309).
+	caller, _ := CallerFrom(ctx)
+	input.RequestedBy = callerName(caller)
 	// Active exceptions join the input through the one listing the promotion
 	// reconciler consults (ActiveExceptionsFor), judged at the same clock the
 	// input carries — which is what keeps the preview's verdict the verdict a
@@ -623,7 +630,7 @@ func (s *Server) materializeEvidence(
 			})
 		}
 
-		set, err := s.artifactEvidence(ctx, build, subject.Artifact)
+		set, err := s.artifactEvidence(ctx, build, subject.Workload, subject.Artifact)
 		if err != nil {
 			// The index without the registry: types and sources, no
 			// predicates, nothing verified.
@@ -700,9 +707,10 @@ func pluralArtifacts(count int, one, many string) string {
 func (s *Server) artifactEvidence(
 	ctx context.Context,
 	build *kitchenv1alpha1.Build,
+	workload string,
 	artifact *kitchenv1alpha1.ArtifactStatus,
 ) (attestation.EvidenceSet, error) {
-	reader, err := s.evidenceFor(ctx, build)
+	reader, err := s.evidenceFor(ctx, build, workload)
 	if err != nil {
 		return attestation.EvidenceSet{}, err
 	}

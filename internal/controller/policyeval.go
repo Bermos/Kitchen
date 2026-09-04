@@ -113,6 +113,13 @@ type EvaluationRequest struct {
 	// a second opinion rather than the same evaluation.)
 	DataSnapshot string
 
+	// RequestedBy is who is asking for this move, empty where nobody is: a
+	// scheduled rescan asks on nobody's behalf. It reaches the input for the
+	// four-eyes rule over vendored software — the identity that admitted a
+	// digest may not be the identity that promotes it (#309) — and for
+	// nothing else.
+	RequestedBy string
+
 	// Kitchen is the platform singleton, for the signing key the evidence is
 	// verified against. May be nil.
 	Kitchen *kitchenv1alpha1.Kitchen
@@ -165,6 +172,7 @@ func (e *PolicyEvaluator) Evaluate(
 		// still recorded, with an empty bundle and no rules evaluated.
 		input := policy.MaterializeInput(req.Kind, req.At, req.Project, env, release, build, nil, claims)
 		input.DataSnapshot = req.DataSnapshot
+		input.RequestedBy = req.RequestedBy
 		return PolicyEvaluation{
 			Input:  input,
 			Result: policy.Result{Verdict: policy.VerdictAllowed, Fired: []policy.FiredRule{}},
@@ -199,6 +207,7 @@ func (e *PolicyEvaluator) Evaluate(
 	input := policy.MaterializeInput(req.Kind, req.At, req.Project, env, release, build, evidence, claims)
 	input.Exceptions = exceptions
 	input.DataSnapshot = req.DataSnapshot
+	input.RequestedBy = req.RequestedBy
 	// The ingested OpenVEX statements (#135) are already on input.VEX: they
 	// are set by MaterializeInput, because they are a projection of the
 	// evidence set it was handed rather than a listing it would have to go
@@ -295,16 +304,22 @@ func (e *PolicyEvaluator) materializeEvidence(
 		return policy.IndexedEvidence(build), nil
 	}
 
-	reader, err := e.evidenceReader(ctx, project)
-	if err != nil {
-		return nil, err
-	}
 	verifiers := []attestation.Verifier{}
 	if key, err := SigningKeyFor(ctx, e.Client, kitchen); err == nil && key != nil {
 		verifiers = append(verifiers, key)
 	}
 	evidence := []policy.Evidence{}
 	for _, artifact := range artifacts {
+		// The reader is resolved per artifact rather than per project,
+		// because a unit's images do not all live in one registry: a
+		// vendored image's evidence is attached where the vendor publishes
+		// it, and reading it with the credential the platform pushes its own
+		// builds under would be asking the wrong registry with the wrong
+		// account (#309).
+		reader, err := e.evidenceReader(ctx, project, artifact)
+		if err != nil {
+			return nil, err
+		}
 		ref := artifact.Artifact.Repository + "@" + artifact.Artifact.Digest
 		set, err := reader.Evidence(ctx, ref, verifiers...)
 		if err != nil {
@@ -316,13 +331,35 @@ func (e *PolicyEvaluator) materializeEvidence(
 	return evidence, nil
 }
 
-// evidenceReader resolves the registry the project's artifacts live in — the
-// same resolution the DecisionRecorder's attester makes, for the read.
+// evidenceReader resolves the registry one artifact lives in — for an image
+// the platform built, the same resolution the DecisionRecorder's attester
+// makes, for the read.
+//
+// A vendored artifact takes the other branch: its evidence is beside it in
+// the vendor's own repository, read with the credential the image is pulled
+// with, or anonymously where a public image needs none. A project that
+// vendors everything has no registry Connection at all — it pushes nothing —
+// so resolving through one would fail on a configuration that is correct.
 func (e *PolicyEvaluator) evidenceReader(
-	ctx context.Context, project *kitchenv1alpha1.Project,
+	ctx context.Context, project *kitchenv1alpha1.Project, artifact kitchenv1alpha1.BuildArtifact,
 ) (EvidenceSetReader, error) {
 	if project == nil {
 		return nil, fmt.Errorf("the artifact's registry cannot be resolved without the project")
+	}
+	factory := e.EvidenceReaders
+	if factory == nil {
+		factory = defaultEvidenceSetReader
+	}
+	if artifact.Vendored() {
+		source, err := vendoredSourceFor(project, artifact.Workload)
+		if err != nil {
+			return nil, err
+		}
+		dockerConfig, err := e.pullCredential(ctx, source)
+		if err != nil {
+			return nil, err
+		}
+		return factory(dockerConfig, registryServerOf(source.Repository))
 	}
 	connection := &kitchenv1alpha1.Connection{}
 	if err := e.Client.Get(ctx, types.NamespacedName{
@@ -339,9 +376,28 @@ func (e *PolicyEvaluator) evidenceReader(
 	if err := e.Client.Get(ctx, key, secret); err != nil {
 		return nil, fmt.Errorf("the registry credential could not be read: %w", err)
 	}
-	factory := e.EvidenceReaders
-	if factory == nil {
-		factory = defaultEvidenceSetReader
-	}
 	return factory(secret.Data[corev1.DockerConfigJsonKey], registry.Server)
+}
+
+// pullCredential is the docker config a vendored image is pulled with, empty
+// for the anonymous pull a public image wants.
+func (e *PolicyEvaluator) pullCredential(
+	ctx context.Context, source kitchenv1alpha1.ImageSourceSpec,
+) ([]byte, error) {
+	name := source.PullConnection()
+	if name == "" {
+		return nil, nil
+	}
+	connection := &kitchenv1alpha1.Connection{}
+	if err := e.Client.Get(ctx, types.NamespacedName{
+		Namespace: PlatformNamespace, Name: name,
+	}, connection); err != nil {
+		return nil, err
+	}
+	secret := &corev1.Secret{}
+	key := types.NamespacedName{Namespace: PlatformNamespace, Name: connection.Spec.CredentialsSecretRef.Name}
+	if err := e.Client.Get(ctx, key, secret); err != nil {
+		return nil, fmt.Errorf("the pull credential could not be read: %w", err)
+	}
+	return secret.Data[corev1.DockerConfigJsonKey], nil
 }

@@ -568,6 +568,16 @@ type auditPackArtifact struct {
 	AttestedAt *time.Time `json:"attestedAt,omitempty"`
 	KeyID      string     `json:"keyID,omitempty"`
 
+	// SourceType is `built` for an image this platform produced and
+	// `vendored` for one it only pulled (#309). It is a word on every row
+	// rather than an inference from the presence of `upstream`, so that a
+	// pack read by somebody who has never seen a vendored row still reads.
+	SourceType string `json:"sourceType,omitempty"`
+	// Upstream is the outsourcing record: where a vendored image came from,
+	// who admitted it onto this platform and when, and what became of the
+	// vendor's own signature. Absent on a built row.
+	Upstream *auditPackUpstream `json:"upstream,omitempty"`
+
 	Evidence []auditPackEvidence `json:"evidence"`
 	Gates    []auditPackGate     `json:"gates,omitempty"`
 	VEX      []auditPackVEX      `json:"vex,omitempty"`
@@ -590,10 +600,34 @@ type auditPackArtifact struct {
 type auditPackEvidence struct {
 	PredicateType string `json:"predicateType"`
 	Manifest      string `json:"manifest,omitempty"`
-	// Source is `builder` for a claim the build process made and the
-	// platform countersigned, `platform` for one the reconciler made alone.
-	// The signature cannot tell them apart, and the difference matters.
+	// Source is who made the claim: `builder` for one the build process made
+	// and the platform countersigned, `platform` for one the reconciler made
+	// alone, `vendor-asserted` for one a publisher attached to a digest this
+	// platform did not build, and `platform-observed` for one the platform
+	// worked out about an image it only pulled. The signature cannot tell
+	// them apart, and the difference matters.
 	Source string `json:"source,omitempty"`
+}
+
+// auditPackUpstream is the outsourcing record for one vendored image: the
+// answer to "where did this come from, and who let it in".
+//
+// It is the half of a vendored artifact's evidence that no vendor can supply.
+// An upstream can say what it built; only this installation can say that on a
+// given date a named person pointed a named project at that digest — which is
+// the first thing an examiner asks a vendored estate.
+type auditPackUpstream struct {
+	Reference  string     `json:"reference,omitempty"`
+	Repository string     `json:"repository,omitempty"`
+	AdmittedBy string     `json:"admittedBy,omitempty"`
+	AdmittedAt *time.Time `json:"admittedAt,omitempty"`
+	// Signature is `verified`, `unverifiable` or `none`. The third is an
+	// unsigned image, which is what most published images are and is a fact
+	// rather than a finding.
+	Signature          string `json:"signature,omitempty"`
+	SignatureIdentity  string `json:"signatureIdentity,omitempty"`
+	SignatureMessage   string `json:"signatureMessage,omitempty"`
+	VendorAttestations int32  `json:"vendorAttestations,omitempty"`
 }
 
 type auditPackGate struct {

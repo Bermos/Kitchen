@@ -92,6 +92,62 @@ type AttestationSpec struct {
 	// which are claims the reconciler cannot make on its own.
 	// +optional
 	Build BuildAttestationSpec `json:"build,omitempty"`
+
+	// Vendored is the evidence produced about artifacts the platform did not
+	// build (#309), which is a different question from Build in every
+	// respect: there is no builder to ask.
+	// +optional
+	Vendored VendoredAttestationSpec `json:"vendored,omitempty"`
+}
+
+// VendoredAttestationSpec configures what the platform does about an artifact
+// somebody else published.
+//
+// It has one knob because there is one decision. Harvesting what the vendor
+// attached, checking it describes the digest being deployed, countersigning
+// it, and recording who admitted the digest are all free — they read a
+// registry the platform is already pulling from and cost no compute — so none
+// of them is optional. Generating a bill of materials over an image the
+// platform did not build is not free: it pulls the whole artifact into a
+// scanner pod in the application's namespace.
+type VendoredAttestationSpec struct {
+	// SBOM generates a bill of materials over a vendored digest **where the
+	// vendor published none**, and attests it as the platform's own
+	// observation rather than as the vendor's claim.
+	//
+	// It never replaces a vendor's own: a bill of materials the publisher
+	// stands behind is the better evidence, and a generated one beside it
+	// would be a second answer to one question. It is on by default because
+	// an artifact with no bill of materials cannot be rescanned at all — the
+	// continuous re-evaluation pass matches an SBOM against today's
+	// vulnerability database, so an artifact without one is one nobody ever
+	// looks inside again.
+	// +kubebuilder:default=true
+	// +optional
+	SBOM bool `json:"sbom"`
+
+	// SBOMGenerator is the image that produces it: a scanner pointed at the
+	// artifact, writing SPDX or CycloneDX to a file. It is **not** the
+	// builder-side generator above — that one speaks BuildKit's scanner
+	// protocol and runs inside a build, and this one is an ordinary
+	// container run over a digest — which is why it is its own setting
+	// rather than a reuse of one word for two tools.
+	//
+	// Empty uses a pinned default, pinned for the reason the other one is:
+	// evidence about an artifact should not change because somebody else's
+	// tag moved overnight.
+	// +optional
+	SBOMGenerator string `json:"sbomGenerator,omitempty"`
+
+	// TimeoutSeconds bounds one generation. A vendored image can be large
+	// and the pod pulls all of it, so this is generous by default; a run
+	// that overruns is recorded as a generation that did not happen, which
+	// is a different fact from an artifact with no bill of materials to
+	// generate one from.
+	// +kubebuilder:validation:Minimum=60
+	// +kubebuilder:default=1800
+	// +optional
+	TimeoutSeconds int32 `json:"timeoutSeconds,omitempty"`
 }
 
 // BuildAttestationSpec configures the evidence the *builder* produces, as

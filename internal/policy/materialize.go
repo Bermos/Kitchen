@@ -108,8 +108,39 @@ func MaterializeInput(
 			Commit: build.Spec.Git.SHA,
 			Branch: build.Spec.Git.Branch,
 		}
+		input.Release.Vendored = VendoredFacts(build)
 	}
 	return input
+}
+
+// VendoredFacts is every image of a unit that somebody else built, as the
+// rules see it (#309).
+//
+// It answers nil rather than an empty slice for a release of images the
+// platform built, so the field is omitted from the canonical encoding
+// entirely and every input that existed before this field encodes to exactly
+// the bytes it did. That is not a nicety: the input digest is the
+// reproduction contract every stored decision cites.
+func VendoredFacts(build *kitchenv1alpha1.Build) []VendoredArtifact {
+	vendored := build.VendoredArtifacts()
+	if len(vendored) == 0 {
+		return nil
+	}
+	facts := make([]VendoredArtifact, 0, len(vendored))
+	for _, artifact := range vendored {
+		fact := VendoredArtifact{
+			Workload: artifact.Workload,
+			Digest:   artifact.Artifact.Digest,
+		}
+		if upstream := artifact.Artifact.Upstream; upstream != nil {
+			fact.Reference = upstream.Reference
+			fact.AdmittedBy = upstream.AdmittedBy
+			fact.Signature = string(upstream.Signature.Result)
+			fact.SignatureIdentity = upstream.Signature.Identity
+		}
+		facts = append(facts, fact)
+	}
+	return facts
 }
 
 // ClaimFacts materializes a project's resource claims for one environment:

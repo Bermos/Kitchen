@@ -148,6 +148,14 @@ spec:
         provenance: true                # ask the builder how it built it — SLSA, from BuildKit
         sbom: true                      # ask the builder what is in it; pulls a scanner every build
         sbomGenerator: ""               # unset: a pinned syft scanner, emitting SPDX 2.3
+      vendored:                         # evidence about artifacts the platform did not build
+        sbom: true                      # generate one where the vendor published none, and attest
+                                        # it as the platform's own observation. Off means a
+                                        # vendored image no rescan can ever look inside
+        sbomGenerator: ""               # unset: a pinned syft, run over the digest. Not the
+                                        # builder-side generator above — that one speaks
+                                        # BuildKit's scanner protocol and cannot run standalone
+        timeoutSeconds: 1800            # one generation; a vendored image can be large
     machineIdentities:                  # exempt from a project's pull request requirement;
       - renovate[bot]                   # every use of the exemption is an audit record
       - release-please[bot]
@@ -574,6 +582,11 @@ spec:
     #   tag: "2026.9.1"                 # a tag or a digest; both means "this tag, and still this content"
     #   digest: sha256:…
     #   connectionRef: { name: ghcr }   # what it is *pulled* with; omit for a public image
+    #   signature:                      # whose signature on this image is acceptable
+    #     publicKeyRef: { name: ha-cosign }   # a Secret holding `public.pem`; the only thing
+    #                                         # that can make the result `verified`
+    #     identity: releases@home-assistant.io  # the signer the signature must name
+    #     issuer: https://token.actions.githubusercontent.com
   build:
     strategy: auto                      # auto takes the Kitchen default; dockerfile | buildpacks decide here
     dockerfilePath: Dockerfile          # when strategy: dockerfile; relative to rootDirectory,
@@ -681,6 +694,7 @@ spec:
         repository: docker.io/library/redis
         tag: "7.4"                      # a tag or a digest, as above
         # connectionRef: { name: ghcr } # what it is pulled with; omit for a public image
+        # signature: { identity: … }    # whose signature is acceptable; see source.image above
     - name: nightly-report              # a batch/v1 CronJob; one firing is a run
       type: cron
       schedule: "0 3 * * *"             # five fields, read in UTC
@@ -742,7 +756,22 @@ previews quietly never appearing. Its `initialBuildRef` is an **acquisition**:
 a Build with no commit, which resolves the digest the image reference names,
 freezes it onto a Release and runs no builder. Nothing fakes a commit — the
 Build names no SHA and no branch, so the commit-shaped policy rules stay inert
-rather than being satisfied by a substitute.
+rather than being satisfied by a substitute, and an environment that requires
+one refuses the artifact saying which rule and why
+([COMPLIANCE.md §18.6](COMPLIANCE.md)).
+
+What such a Build *does* carry is `status.artifact.upstream`: the reference the
+image was taken from, the digest it resolved to, who admitted it onto this
+platform and when, and what became of the vendor's own signature — `verified`
+against the key `source.image.signature` names, `unverifiable` with a reason,
+or `none`, which means the vendor publishes no signature and is a fact rather
+than a failure. Beside it, `status.artifact.evidence` indexes what the vendor
+published about the digest (`source: vendor-asserted`, restated and
+countersigned) and what the platform observed about an image it only pulled
+(`source: platform-observed`, which includes a bill of materials generated
+where the vendor supplied none). `status.artifact.observedSBOM` says what
+became of that generation. The whole model is [COMPLIANCE.md
+§18](COMPLIANCE.md).
 
 **What moves it afterwards is the digest poll.** A vendored project has no
 push to react to, so the platform asks: one registry manifest HEAD per watched

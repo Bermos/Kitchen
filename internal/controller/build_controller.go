@@ -349,6 +349,32 @@ func (r *BuildReconciler) projectFor(
 }
 
 // Reconcile drives a Build from Queued through a BuildKit Job to a Release.
+// reconcileFinished is everything that still happens to a build that is over:
+// a preview owed to a pull request the platform heard about late, the quality
+// gates, and the bill of materials generated for a vendored artifact whose
+// publisher supplied none (#309).
+//
+// The two that produce evidence are asked for their own next visit, and the
+// sooner of the two is the one taken — a gate polled every ten seconds must
+// not have its requeue pushed out by a scanner that is happy to be looked at
+// in a minute.
+func (r *BuildReconciler) reconcileFinished(
+	ctx context.Context, build *kitchenv1alpha1.Build,
+) (ctrl.Result, error) {
+	if err := r.adoptLatePreview(ctx, build); err != nil {
+		return ctrl.Result{}, err
+	}
+	observed, err := r.reconcileObservedSBOMs(ctx, build)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	gated, err := r.reconcileGates(ctx, build)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	return soonestOf(observed, gated), nil
+}
+
 func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
@@ -364,13 +390,12 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		// happen to a finished build. One is a pull request the platform was
 		// told about after this build ended, which is a preview environment
 		// owed to a release that already exists. The other is the evidence
-		// that accretes onto the artifact afterwards: the quality gates, which
-		// run over something that already exists and hold nothing up by taking
-		// their time.
-		if err := r.adoptLatePreview(ctx, build); err != nil {
-			return ctrl.Result{}, err
-		}
-		return r.reconcileGates(ctx, build)
+		// that accretes onto the artifact afterwards: the quality gates, and
+		// the bill of materials the platform generates for a vendored
+		// artifact whose publisher supplied none (#309). Both run over
+		// something that already exists and hold nothing up by taking their
+		// time.
+		return r.reconcileFinished(ctx, build)
 	}
 
 	project, stop, err := r.projectFor(ctx, build)
@@ -1286,9 +1311,11 @@ func (r *BuildReconciler) succeed(
 		image = attestation.ArtifactRef(artifact.Repository, artifact.Digest)
 	}
 	workloadImages = r.attestWorkloads(ctx, build, project, target, outcomes, workloadImages)
-	// Appended after attestation rather than before it: nothing here built
-	// these, so there is nothing of the platform's to attach to them. What a
-	// vendor published about them is #309's question.
+	// Appended after attestation rather than through it: nothing here built
+	// these, so the platform has no build record to make about them. Their
+	// evidence is a different set of claims — what the vendor published, what
+	// the platform observed, and the adoption itself — and it was assembled
+	// by `vendoredWorkloads` above, in vendored_attest.go (#309).
 	workloadImages = append(workloadImages, vendored...)
 	build.Status.Workloads = append(build.Status.Workloads, vendoredRows...)
 

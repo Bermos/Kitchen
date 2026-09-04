@@ -29,6 +29,11 @@ function label(kind: string): string {
   return labels[kind] ?? labels.other;
 }
 
+/** Whether this is an image somebody else built. It is shown before the
+ *  evidence chips rather than among them, because it is not evidence: it is
+ *  what kind of evidence the rest of the row can be. */
+const vendored = computed(() => props.artifact?.sourceType === "vendored");
+
 /** One chip per kind, rather than one per attestation: a gate that ran four
  *  times is four attestations and one answer to "what is attached". */
 const kinds = computed(() => {
@@ -43,6 +48,14 @@ const kinds = computed(() => {
 
 <template>
   <div v-if="artifact?.digest" class="flex items-center gap-1.5 flex-wrap">
+    <UBadge
+      v-if="vendored"
+      color="info"
+      variant="subtle"
+      size="sm"
+      :title="artifact.upstream?.reference ? 'from ' + artifact.upstream.reference : 'built by somebody else'"
+      >vendored</UBadge
+    >
     <UBadge v-if="artifact.attested" color="success" variant="subtle" size="sm">attested</UBadge>
     <UBadge v-else color="neutral" variant="subtle" size="sm">no evidence</UBadge>
     <UBadge v-for="kind in kinds" :key="kind" color="neutral" variant="subtle" size="sm">{{ kind }}</UBadge>

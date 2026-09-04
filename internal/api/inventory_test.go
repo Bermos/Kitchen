@@ -156,3 +156,97 @@ func TestTheInventoryIsFilteredToTheCallersProjects(t *testing.T) {
 		}
 	}
 }
+
+// The outsourcing half (#309): every image running here that somebody else
+// built, with where it came from and who admitted it.
+//
+// It is keyed off the deployed release rather than off the project's
+// declaration, because a declaration says what is wanted and a Release says
+// what is running — and it is the second one the list is made against.
+func TestTheInventoryNamesEveryVendoredImageRunningAndWhoAdmittedIt(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+
+	build := &kitchenv1alpha1.Build{}
+	if err := h.server.Client.Get(context.Background(),
+		types.NamespacedName{Namespace: testNamespace, Name: testBuild}, build); err != nil {
+		t.Fatal(err)
+	}
+	build.Status.Artifact = &kitchenv1alpha1.ArtifactStatus{
+		Repository: "ghcr.io/vendor/app",
+		Digest:     "sha256:" + strings.Repeat("1", 64),
+		SourceType: kitchenv1alpha1.ArtifactSourceVendored,
+		Upstream: &kitchenv1alpha1.UpstreamArtifactStatus{
+			Reference:  "ghcr.io/vendor/app:2026.9.1",
+			Repository: "ghcr.io/vendor/app",
+			AdmittedBy: "ana@example.com",
+			Signature: kitchenv1alpha1.UpstreamSignatureStatus{
+				Result: kitchenv1alpha1.UpstreamSignatureVerified,
+			},
+		},
+	}
+	// A sidecar this platform did build, in the same unit: a mixed unit is
+	// not wholly outsourced and the answer must not read as though it were.
+	build.Status.Workloads = []kitchenv1alpha1.WorkloadBuildStatus{{
+		Name:       "api",
+		Phase:      kitchenv1alpha1.BuildSucceeded,
+		Repository: "registry.example.com/shop-api",
+		Image:      "registry.example.com/shop-api@sha256:" + strings.Repeat("b", 64),
+		Artifact: &kitchenv1alpha1.ArtifactStatus{
+			Repository: "registry.example.com/shop-api",
+			Digest:     "sha256:" + strings.Repeat("b", 64),
+			SourceType: kitchenv1alpha1.ArtifactSourceBuilt,
+		},
+	}}
+	if err := h.server.Client.Status().Update(context.Background(), build); err != nil {
+		t.Fatal(err)
+	}
+
+	recorder := h.do(t, http.MethodGet, "/api/v1/compliance/inventory", "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	body := decode[inventoryBody](t, recorder)
+
+	vendored := []inventoryItemView{}
+	for _, item := range body.Items {
+		if item.Kind == "vendoredImage" {
+			vendored = append(vendored, item)
+		}
+	}
+	if len(vendored) != 1 {
+		t.Fatalf("the inventory lists %d outsourced images, want the one that is: %+v", len(vendored), vendored)
+	}
+	row := vendored[0]
+	// The row names the environment and which of its images, because a unit
+	// ships several and a row naming only the project would describe a mixed
+	// unit as wholly outsourced.
+	if row.Name != testEnvironment+"/web" {
+		t.Errorf("the outsourced image is listed as %q", row.Name)
+	}
+	if row.Upstream != "ghcr.io/vendor/app:2026.9.1" {
+		t.Errorf("the row says it came from %q", row.Upstream)
+	}
+	if row.Digest != "sha256:"+strings.Repeat("1", 64) {
+		t.Errorf("the row resolves to %q", row.Digest)
+	}
+	if row.AdmittedBy != "ana@example.com" {
+		t.Errorf("the row says %q admitted it", row.AdmittedBy)
+	}
+	if row.Signature != string(kitchenv1alpha1.UpstreamSignatureVerified) {
+		t.Errorf("the row records the signature as %q", row.Signature)
+	}
+	// The environment's own facts, because an image has none of its own and
+	// "unclassified" beside a component handling confidential data would be
+	// answering a different question.
+	if row.DataClass == "" || row.Residency == "" {
+		t.Errorf("the row leaves a data fact blank: %+v", row)
+	}
+	// And an environment's own row is still there: this is a second kind of
+	// row, not a replacement for the classification half.
+	for _, item := range body.Items {
+		if item.Kind == "environment" && item.Name == testEnvironment {
+			return
+		}
+	}
+	t.Error("the environment's own classification row was lost")
+}

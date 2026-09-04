@@ -255,6 +255,28 @@ type evidenceSet struct {
 	Subject      string     `json:"subject"`
 	Verified     bool       `json:"verified"`
 	Attestations []evidence `json:"attestations"`
+	// SourceType is `built` for an artifact this platform produced and
+	// `vendored` for one it only pulled. Sources says who made each claim,
+	// by predicate type: `builder` or `platform` for a built artifact,
+	// `vendor-asserted` or `platform-observed` for a vendored one.
+	SourceType string            `json:"sourceType,omitempty"`
+	Sources    map[string]string `json:"sources,omitempty"`
+	// Upstream is where a vendored artifact came from and what became of the
+	// vendor's own signature on it. Absent for a built artifact.
+	Upstream *upstreamEvidence `json:"upstream,omitempty"`
+}
+
+// upstreamEvidence is the adoption record of an artifact somebody else built.
+type upstreamEvidence struct {
+	Reference  string `json:"reference,omitempty"`
+	AdmittedBy string `json:"admittedBy,omitempty"`
+	AdmittedAt string `json:"admittedAt,omitempty"`
+	// Signature is `verified`, `unverifiable` or `none`. The third is an
+	// unsigned image, which is what most of what a vendor publishes is, and
+	// it is a fact rather than a failure.
+	Signature         string `json:"signature,omitempty"`
+	SignatureIdentity string `json:"signatureIdentity,omitempty"`
+	SignatureMessage  string `json:"signatureMessage,omitempty"`
 }
 
 type evidence struct {

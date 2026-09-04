@@ -180,11 +180,19 @@ envelopes answer "cosign download attestation" and "cosign verify-attestation"
 with this platform out of the loop, which is the point of storing them there,
 and the reason an installation that stops using Kitchen keeps its evidence.
 
-Each attestation says who made the claim it carries. The platform's build
-record is the reconciler's account of a build it orchestrated; provenance and
-the bill of materials come from the builder itself and are countersigned. The
-signature on all of them is the platform's, so the signature cannot tell them
-apart.
+Each attestation says who made the claim it carries, in the CLAIM column. For
+an artifact the platform built: the build record is the reconciler's account
+of a build it orchestrated, and provenance and the bill of materials come from
+the builder itself and are countersigned. For one it did not build:
+"vendor-asserted" is what the publisher attached to the digest, restated and
+countersigned, and "platform-observed" is what the platform worked out about
+an image it only pulled. The signature on all of them is the platform's, so
+the signature cannot tell them apart — which is why the column exists.
+
+An artifact the platform did not build is headed by where it came from, who
+admitted it onto this installation, and what became of the vendor's own
+signature: verified, unverifiable, or "the vendor publishes no signature",
+which is the ordinary state of most published images and not a failure.
 
 "verified" means a signature was accepted by a key this platform holds. A set
 read where the platform holds no key reports itself as a listing rather than a
@@ -210,8 +218,9 @@ the workloads a commit produced.`),
 				return err
 			}
 			return r.printer().document(set, func(s tui.Styles) string {
+				preamble := artifactOrigin(set)
 				if len(set.Attestations) == 0 {
-					return "Nothing is attached to this artifact. It is real and what runs from it is " +
+					return preamble + "Nothing is attached to this artifact. It is real and what runs from it is " +
 						"honest about what it is — what it cannot do is satisfy a policy that requires evidence.\n"
 				}
 				rows := make([][]string, 0, len(set.Attestations))
@@ -223,11 +232,16 @@ the workloads a commit produced.`),
 					case set.Verified:
 						checked = "not signed by a key this platform holds"
 					}
+					claim := set.Sources[found.PredicateType]
+					if claim == "" {
+						claim = "attached by something else"
+					}
 					rows = append(rows, []string{
-						found.PredicateType, checked, short(found.Digest),
+						found.PredicateType, claim, checked, short(found.Digest),
 					})
 				}
-				return s.Table([]string{"PREDICATE", "SIGNATURE", "ENVELOPE"}, rows)
+				return preamble +
+					s.Table([]string{"PREDICATE", "CLAIM", "SIGNATURE", "ENVELOPE"}, rows)
 			})
 		}),
 	}
@@ -455,4 +469,44 @@ func renderEnvironments(s tui.Styles, environments []environment) string {
 		rows = append(rows, []string{e.Name, e.Type, s.Phase(e.Phase), e.Release, s.Accent.Render(e.URL)})
 	}
 	return s.Table([]string{"NAME", "TYPE", "PHASE", "RELEASE", "URL"}, rows)
+}
+
+// artifactOrigin heads the evidence table for an artifact the platform did
+// not build: where it came from, who admitted it, and what became of the
+// vendor's own signature.
+//
+// It is a preamble rather than four more columns because it is one fact about
+// the artifact rather than a fact about each attestation — and because it is
+// empty for every artifact the platform built, which is most of them.
+func artifactOrigin(set *evidenceSet) string {
+	if set == nil || set.Upstream == nil {
+		return ""
+	}
+	lines := []string{"Upstream: " + set.Upstream.Reference}
+	if set.Upstream.AdmittedBy != "" {
+		admitted := "Admitted by " + set.Upstream.AdmittedBy
+		if set.Upstream.AdmittedAt != "" {
+			admitted += " on " + set.Upstream.AdmittedAt
+		}
+		lines = append(lines, admitted)
+	}
+	switch set.Upstream.Signature {
+	case "verified":
+		signature := "Upstream signature: verified"
+		if set.Upstream.SignatureIdentity != "" {
+			signature += " against " + set.Upstream.SignatureIdentity
+		}
+		lines = append(lines, signature)
+	case "none":
+		lines = append(lines, "Upstream signature: the vendor publishes none, which is a fact and not a failure")
+	case "":
+		lines = append(lines, "Upstream signature: not established")
+	default:
+		signature := "Upstream signature: unverifiable"
+		if set.Upstream.SignatureMessage != "" {
+			signature += " — " + set.Upstream.SignatureMessage
+		}
+		lines = append(lines, signature)
+	}
+	return strings.Join(lines, "\n") + "\n\n"
 }

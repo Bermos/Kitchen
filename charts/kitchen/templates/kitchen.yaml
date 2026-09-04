@@ -211,6 +211,16 @@ spec:
         {{- with .Values.kitchen.compliance.attestation.build.sbomGenerator }}
         sbomGenerator: {{ . | quote }}
         {{- end }}
+      # What the platform works out for itself about an image it did not
+      # build. There is no builder to ask, so a bill of materials is
+      # generated over the digest and attested as an observation rather than
+      # as the vendor's claim.
+      vendored:
+        sbom: {{ .Values.kitchen.compliance.attestation.vendored.sbom }}
+        {{- with .Values.kitchen.compliance.attestation.vendored.sbomGenerator }}
+        sbomGenerator: {{ . | quote }}
+        {{- end }}
+        timeoutSeconds: {{ int .Values.kitchen.compliance.attestation.vendored.timeoutSeconds }}
     {{- with .Values.kitchen.compliance.machineIdentities }}
     # Accounts exempt from a project's pull request requirement. Naming them is
     # what makes the exemption auditable rather than merely configured.

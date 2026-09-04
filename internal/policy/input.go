@@ -86,6 +86,22 @@ type Input struct {
 	// a scanner's vulnerability database identifier — so a decision can say
 	// what the world knew when it was made.
 	DataSnapshot string `json:"dataSnapshot,omitempty"`
+	// RequestedBy is the identity asking for this move: an account for a
+	// manual promotion, a controller identity for one the pipeline asked
+	// for, and **empty where nobody is asking** — a scheduled rescan is not
+	// a request by anyone.
+	//
+	// It is here for one rule, `digest-approved-by-someone-else`, which is
+	// the four-eyes control for software nobody here wrote: the person who
+	// admitted a vendored digest onto this platform must not be the person
+	// moving it into an environment. That question has two identities in it
+	// and only one of them is a property of the artifact, which is why the
+	// other one has to be part of the input.
+	//
+	// Like Exceptions, it is set by the caller after materializing rather
+	// than in MaterializeInput: who is asking is the caller's own knowledge
+	// and not a fact read off any object here.
+	RequestedBy string `json:"requestedBy,omitempty"`
 }
 
 // ProjectFacts is what the engine knows about the project.
@@ -134,6 +150,44 @@ type ReleaseFacts struct {
 	// the build. The signed pull-request-approval attestation in Evidence is
 	// the claim rules judge; this is the index of it.
 	Source map[string]any `json:"source,omitempty"`
+	// Vendored is one entry per image of this release that somebody else
+	// built (#309), and **absent entirely for a release of images the
+	// platform built** — which is what keeps the canonical encoding of every
+	// input that existed before this field byte for byte what it was.
+	//
+	// It is a list rather than a flag because a unit can be half vendored:
+	// an upstream image as one workload and a sidecar built from a
+	// repository as another, in one Release. A rule that asked "is this
+	// vendored" of such a unit would have to answer for both halves at once;
+	// asking it of each artifact names the workload in the refusal.
+	Vendored []VendoredArtifact `json:"vendored,omitempty"`
+}
+
+// VendoredArtifact is one image of a release that the platform did not build,
+// as the rules see it: where it came from, who admitted it, and what became of
+// the vendor's own signature.
+//
+// It is materialized from the Build's own record of the adoption rather than
+// from evidence attached in a registry, and that is deliberate. A vendor's
+// registry does not accept writes from its readers, so an image pulled from a
+// public one carries no attached evidence at all — and the two questions a
+// vendored artifact can actually answer, "who brought this in" and "did the
+// signature check out", are answerable about it anyway.
+type VendoredArtifact struct {
+	// Workload is which image of the unit this is, empty for the project's
+	// own — which for a wholly vendored project is the only one.
+	Workload string `json:"workload,omitempty"`
+	// Reference is the upstream reference as the project declared it,
+	// usually a tag; Digest is what it resolved to.
+	Reference string `json:"reference,omitempty"`
+	Digest    string `json:"digest,omitempty"`
+	// AdmittedBy is who brought this digest onto the platform.
+	AdmittedBy string `json:"admittedBy,omitempty"`
+	// Signature is `verified`, `unverifiable` or `none` — the third being
+	// the ordinary unsigned image and not a failure — and SignatureIdentity
+	// the identity it was required to name, where one was required.
+	Signature         string `json:"signature,omitempty"`
+	SignatureIdentity string `json:"signatureIdentity,omitempty"`
 }
 
 // BuildFacts identifies the build that produced the artifact.

@@ -17,6 +17,7 @@ limitations under the License.
 package api
 
 import (
+	"context"
 	"net/http"
 	"sort"
 	"time"
@@ -43,6 +44,14 @@ import (
 //     provisioned data derives from.
 //   - "unknown": no residency is declared or reported anywhere along the
 //     fallback chain.
+//
+// Since #309 it also carries the **outsourcing** half: every image running
+// here that somebody else built, with the upstream reference it was taken
+// from, the digest that reference resolved to, and who admitted it onto this
+// platform. Determining that an outsourcing is *material* is the
+// institution's judgement and stays theirs (§3); what a platform can supply
+// is the list it is made against, and a vendored image running in production
+// is the clearest entry that list has.
 
 const (
 	inventoryUnclassified = "unclassified"
@@ -59,6 +68,16 @@ type inventoryItemView struct {
 	Name      string `json:"name"`
 	Type      string `json:"type"`
 	DataClass string `json:"dataClass"`
+	// Upstream, Digest, AdmittedBy and Signature are the outsourcing facts,
+	// on `vendoredImage` rows alone: where the image came from, what the
+	// reference resolved to, who brought it onto this platform, and what
+	// became of the vendor's own signature. Empty on every other kind of
+	// row, which is why they are omitted rather than worded — an environment
+	// has no upstream, and "unknown" would suggest it might.
+	Upstream   string `json:"upstream,omitempty"`
+	Digest     string `json:"digest,omitempty"`
+	AdmittedBy string `json:"admittedBy,omitempty"`
+	Signature  string `json:"signature,omitempty"`
 	// Provenance is what the item's data derives from. Claims only — an
 	// environment's data story is its claims' — and "undeclared" when the
 	// provider said nothing.
@@ -122,6 +141,13 @@ func (s *Server) complianceInventory(w http.ResponseWriter, req *http.Request) {
 			Residency: orWord(residency, inventoryUnknown),
 		})
 	}
+	// The outsourcing rows: what each environment is actually running that
+	// this platform did not build. They are keyed off the deployed release
+	// rather than off the project's declaration, because a declaration says
+	// what is wanted and a Release says what is running — and it is the
+	// second one an auditor is asking about.
+	items = append(items, s.vendoredInventory(ctx, environments.Items, scope, defaultResidency)...)
+
 	for i := range claims.Items {
 		claim := &claims.Items[i]
 		if !scope.allows(claim.Spec.ProjectRef.Name) {
@@ -160,6 +186,86 @@ func (s *Server) complianceInventory(w http.ResponseWriter, req *http.Request) {
 		DefaultResidency: defaultResidency,
 		Items:            items,
 	})
+}
+
+// vendoredInventory is one row per image running in an environment that
+// somebody else built.
+//
+// It walks environment → release → build because that is where the adoption
+// record is: the Build is still the object an acquisition is recorded as
+// (#306), so `status.artifact.upstream` is the one place that says which
+// upstream reference this digest came from and who admitted it. A degraded
+// read — a pruned build, a release that is gone — drops the row rather than
+// inventing one, and the environment's own row is still there saying
+// something runs here.
+func (s *Server) vendoredInventory(
+	ctx context.Context,
+	environments []kitchenv1alpha1.Environment,
+	scope projectScope,
+	defaultResidency string,
+) []inventoryItemView {
+	releases := &kitchenv1alpha1.ReleaseList{}
+	if err := s.Client.List(ctx, releases, client.InNamespace(s.Namespace)); err != nil {
+		return nil
+	}
+	builds := &kitchenv1alpha1.BuildList{}
+	if err := s.Client.List(ctx, builds, client.InNamespace(s.Namespace)); err != nil {
+		return nil
+	}
+	releaseByName := map[string]*kitchenv1alpha1.Release{}
+	for i := range releases.Items {
+		releaseByName[releases.Items[i].Name] = &releases.Items[i]
+	}
+	buildByName := map[string]*kitchenv1alpha1.Build{}
+	for i := range builds.Items {
+		buildByName[builds.Items[i].Name] = &builds.Items[i]
+	}
+
+	rows := []inventoryItemView{}
+	for i := range environments {
+		env := &environments[i]
+		if !scope.allows(env.Spec.ProjectRef.Name) || env.Spec.ReleaseRef.Name == "" {
+			continue
+		}
+		release, held := releaseByName[env.Spec.ReleaseRef.Name]
+		if !held {
+			continue
+		}
+		build, held := buildByName[release.Spec.BuildRef.Name]
+		if !held {
+			continue
+		}
+		residency := env.Spec.Residency
+		if residency == "" {
+			residency = defaultResidency
+		}
+		for _, artifact := range build.VendoredArtifacts() {
+			row := inventoryItemView{
+				Kind:    "vendoredImage",
+				Project: env.Spec.ProjectRef.Name,
+				// The environment and which of its images: a unit ships
+				// several and a row that named only the project would
+				// describe a mixed unit as wholly outsourced.
+				Name: env.Name + "/" + artifact.Name(),
+				Type: "image",
+				// An image's data facts are the environment's it runs in:
+				// nothing is declared about an image, and an outsourcing
+				// inventory that said "unclassified" beside a component
+				// handling confidential data would be answering the wrong
+				// question.
+				DataClass: orWord(string(env.Spec.DataClass), inventoryUnclassified),
+				Residency: orWord(residency, inventoryUnknown),
+				Digest:    artifact.Artifact.Digest,
+			}
+			if upstream := artifact.Artifact.Upstream; upstream != nil {
+				row.Upstream = upstream.Reference
+				row.AdmittedBy = orWord(upstream.AdmittedBy, inventoryUnknown)
+				row.Signature = orWord(string(upstream.Signature.Result), inventoryUnknown)
+			}
+			rows = append(rows, row)
+		}
+	}
+	return rows
 }
 
 // orWord answers the value, or the stated absence.

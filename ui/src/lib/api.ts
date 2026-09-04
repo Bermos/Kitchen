@@ -558,10 +558,18 @@ export interface Artifact {
   workload?: string;
   repository?: string;
   digest?: string;
-  /** Where this artifact's evidence came from. `built` on everything the
-   *  platform holds evidence about today, published rather than implied so a
-   *  reader need not infer it from the absence of anything else. */
-  sourceType?: "built";
+  /** Where this artifact's evidence came from. `built` is an image this
+   *  platform produced; `vendored` is one it only pulled, whose evidence is
+   *  the vendor's own assertions and the platform's observations of
+   *  something it never compiled. Published rather than implied so a reader
+   *  need not infer it from the absence of anything else. */
+  sourceType?: "built" | "vendored";
+  /** Where a vendored artifact came from and what became of the vendor's own
+   *  signature on it. Absent for a built artifact, which has no upstream. */
+  upstream?: UpstreamArtifact;
+  /** What became of the platform's own attempt to describe a vendored
+   *  image's contents, where it had to make one. */
+  observedSBOM?: ObservedSBOM;
   attested: boolean;
   attestedAt?: string;
   keyID?: string;
@@ -570,6 +578,36 @@ export interface Artifact {
    *  evidence itself still comes from `attestations()`. */
   evidence?: ArtifactEvidence[];
   /** Why an artifact is unattested, when it is. */
+  message?: string;
+}
+
+/** The adoption of an image somebody else built: where it came from, who
+ *  admitted it onto this installation, and what became of the vendor's own
+ *  signature.
+ *
+ *  `signature` is a word rather than a boolean because there are three
+ *  answers and only two of them are about a check: "none" means the vendor
+ *  publishes no signature, which is the ordinary state of most published
+ *  images and not a failure. */
+export interface UpstreamArtifact {
+  reference?: string;
+  repository?: string;
+  admittedBy?: string;
+  admittedAt?: string;
+  signature?: "verified" | "unverifiable" | "none";
+  signatureIdentity?: string;
+  signatureMessage?: string;
+  signatures?: number;
+  vendorAttestations?: number;
+}
+
+/** The platform's own bill-of-materials run over a vendored digest. Failed
+ *  means the generator did not run — which is a different fact from an image
+ *  with nothing in it. */
+export interface ObservedSBOM {
+  phase?: string;
+  generator?: string;
+  predicateType?: string;
   message?: string;
 }
 
@@ -723,7 +761,7 @@ export interface Compliance {
  *  words, not blanks — "unclassified", "undeclared", "unknown" — so an export
  *  cannot leave an empty cell open to a generous reading. */
 export interface InventoryItem {
-  kind: "environment" | "claim";
+  kind: "environment" | "claim" | "vendoredImage";
   project: string;
   name: string;
   type: string;
@@ -732,6 +770,16 @@ export interface InventoryItem {
    *  masked, synthetic, or "undeclared" when the provider said nothing. */
   provenance?: string;
   residency: string;
+  /** `vendoredImage` rows only: the outsourcing facts. Where the image came
+   *  from, what that reference resolved to, who admitted it onto this
+   *  platform, and what became of the vendor's own signature — `verified`,
+   *  `unverifiable`, or `none`, which is an unsigned image and a fact rather
+   *  than a failure. Absent on every other kind of row, because an
+   *  environment has no upstream and a worded absence would suggest it might. */
+  upstream?: string;
+  digest?: string;
+  admittedBy?: string;
+  signature?: string;
 }
 
 /** The whole classification inventory in one request, exportable as it is.

@@ -810,6 +810,28 @@ func packOneArtifact(
 	row.Digest = artifact.Digest
 	row.KeyID = artifact.KeyID
 	row.Message = artifact.Message
+	// An artifact recorded before the source type existed reads `built`,
+	// which is what every artifact this platform held before there was
+	// anything else to be.
+	row.SourceType = string(kitchenv1alpha1.ArtifactSourceBuilt)
+	if artifact.SourceType != "" {
+		row.SourceType = string(artifact.SourceType)
+	}
+	if upstream := artifact.Upstream; upstream != nil {
+		row.Upstream = &auditPackUpstream{
+			Reference:          upstream.Reference,
+			Repository:         upstream.Repository,
+			AdmittedBy:         upstream.AdmittedBy,
+			Signature:          string(upstream.Signature.Result),
+			SignatureIdentity:  upstream.Signature.Identity,
+			SignatureMessage:   upstream.Signature.Message,
+			VendorAttestations: upstream.VendorAttestations,
+		}
+		if at := upstream.AdmittedAt; at != nil {
+			admitted := at.Time.UTC()
+			row.Upstream.AdmittedAt = &admitted
+		}
+	}
 	if at := artifact.AttestedAt; at != nil {
 		attested := at.Time.UTC()
 		row.AttestedAt = &attested

@@ -179,7 +179,7 @@ func (s *Server) listVEX(w http.ResponseWriter, req *http.Request) {
 	}
 	artifact := subject.Artifact
 
-	set, err := s.artifactEvidence(ctx, build, artifact)
+	set, err := s.artifactEvidence(ctx, build, subject.Workload, artifact)
 	if err != nil {
 		s.log().Error(err, "reading an artifact's evidence failed", "build", build.Name)
 		writeJSON(w, http.StatusBadGateway, errorBody{
@@ -487,7 +487,7 @@ func (s *Server) submitVEX(w http.ResponseWriter, req *http.Request) {
 		s.writeError(w, err)
 		return
 	}
-	writer, err := s.evidenceFor(ctx, build)
+	writer, err := s.evidenceFor(ctx, build, subject.Workload)
 	if err != nil {
 		s.writeError(w, err)
 		return

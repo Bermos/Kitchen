@@ -279,8 +279,13 @@ func (r *PromotionReconciler) evaluate(
 ) (policy.Input, policy.Result, policy.Bundle, string, string, error) {
 	at := time.Now().UTC()
 	evaluation, err := r.evaluator(promotion).Evaluate(ctx, EvaluationRequest{
-		Kind:        policy.KindPromotion,
-		At:          at,
+		Kind: policy.KindPromotion,
+		At:   at,
+		// Who is asking. It is read off the Promotion rather than off the
+		// caller because the Promotion is the record of the request, and the
+		// four-eyes rule over a vendored digest has to compare the identity
+		// that moved it with the identity that admitted it (#309).
+		RequestedBy: promotion.Spec.RequestedBy,
 		Kitchen:     kitchen,
 		Project:     project,
 		Environment: env,

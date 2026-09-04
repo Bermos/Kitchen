@@ -409,6 +409,27 @@ kitchen:
         # and evidence about an artifact should not change because somebody
         # else's tag moved overnight.
         sbomGenerator: ""
+      vendored:
+        # -- Generate a bill of materials for an image the platform did not
+        # build, where the vendor published none, and attest it as the
+        # platform's own observation rather than as the vendor's claim. It
+        # never replaces a vendor's own — the publisher's is better evidence.
+        # On by default because an artifact with no bill of materials is one
+        # no rescan can ever look inside: the continuous re-evaluation pass
+        # matches an SBOM against today's vulnerability database, so an
+        # artifact without one is never opened again.
+        sbom: true
+        # -- The image that generates it: a scanner pointed at the digest,
+        # writing SPDX or CycloneDX to a file. It is **not** the builder-side
+        # generator above — that one speaks BuildKit's scanner protocol and
+        # runs inside a build, and this one is an ordinary container run over
+        # a digest. Empty uses a pinned default.
+        sbomGenerator: ""
+        # -- Seconds one generation may take. A vendored image can be large
+        # and the pod pulls all of it, so this is generous; a run that
+        # overruns is recorded as a generation that did not happen, which is
+        # a different fact from an image with nothing in it.
+        timeoutSeconds: 1800
     # -- Quality gates run over every artifact the platform builds. Each is a
     # pod: an image somebody else wrote, pointed at the artifact, writing what
     # it found to `$(KITCHEN_FINDINGS)`. Kitchen signs the result and attaches

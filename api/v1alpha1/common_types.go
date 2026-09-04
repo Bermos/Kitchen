@@ -693,6 +693,72 @@ type ImageSourceSpec struct {
 	// requiring one would be a Connection somebody had to invent.
 	// +optional
 	ConnectionRef *LocalObjectReference `json:"connectionRef,omitempty"`
+
+	// Signature is whose signature on this image the platform should check,
+	// and against what.
+	//
+	// Absent means the platform still *looks* — whether a vendor signs at all
+	// is a fact worth recording either way — and records what it found
+	// without being able to say it is the right signer's. See
+	// ImageSignatureSpec, and UpstreamSignatureResult for the three answers.
+	//
+	// It can also be declared once on the pulling Connection, which is where
+	// it belongs when a whole registry is one vendor's; what is written here
+	// wins for this image.
+	// +optional
+	Signature *ImageSignatureSpec `json:"signature,omitempty"`
+}
+
+// ImageSignatureSpec says whose signature on a vendored image is acceptable.
+//
+// A signature nobody named an expected signer for proves that *somebody*
+// signed the image, which is close to worthless: anyone can sign anything. So
+// the platform records "a signature is attached and nothing here says whose
+// it should be" as **unverifiable** rather than as verified, and this is how
+// an installation stops that being the answer.
+type ImageSignatureSpec struct {
+	// PublicKeyRef names a Secret in the platform namespace holding the
+	// vendor's public key under `public.pem` — the same spelling the
+	// platform's own signing key uses, so an operator learns one convention.
+	//
+	// It is what makes a `verified` result possible. Key-based verification
+	// is complete on its own: the bytes either check out under that key or
+	// they do not, and the platform needs no trust root, no transparency log
+	// and no network to say which.
+	// +optional
+	PublicKeyRef *LocalObjectReference `json:"publicKeyRef,omitempty"`
+
+	// Identity is the signer the signature must additionally name — a
+	// keyless signature's certificate subject, `releases@example.com` or a
+	// workflow URI. Matched exactly and case-insensitively, never as a
+	// pattern.
+	//
+	// **On its own it cannot produce a `verified` result**, and that is a
+	// deliberate refusal rather than a gap: a certificate embedded in a
+	// signature is a claim by whoever wrote the certificate, and Kitchen
+	// holds no Fulcio root to chain it to. An identity with no key beside it
+	// therefore reads `unverifiable`, saying so. Naming it is still worth
+	// doing — the fact travels into the adoption attestation, and the
+	// platform will not call a signature verified that names somebody else.
+	// +kubebuilder:validation:MaxLength=255
+	// +optional
+	Identity string `json:"identity,omitempty"`
+
+	// Issuer is the OIDC issuer that identity was certified by
+	// (`https://token.actions.githubusercontent.com`). It narrows Identity
+	// and means nothing without one.
+	// +kubebuilder:validation:MaxLength=255
+	// +optional
+	Issuer string `json:"issuer,omitempty"`
+}
+
+// SignatureIdentity is the identity this image's signature must name, empty
+// where none is required.
+func (i ImageSourceSpec) SignatureIdentity() string {
+	if i.Signature == nil {
+		return ""
+	}
+	return i.Signature.Identity
 }
 
 // Reference is the image reference to run: the digest where one is pinned,

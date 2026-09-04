@@ -154,6 +154,35 @@ type stubAttester struct {
 	// the digest its report named.
 	blobs   map[string][]byte
 	blobErr error
+
+	// vendored is what somebody else published on the digest, and
+	// signatures what they signed it with (#309). Zero values are the
+	// ordinary vendored image: nothing published, nothing signed.
+	vendored     []attestation.Statement
+	vendorErr    error
+	signatures   []attestation.UpstreamSignature
+	signatureErr error
+	// vendorKeyIDs records the platform key id VendorStatements was asked to
+	// skip, so a test can assert the platform's own restatements are not
+	// harvested back.
+	vendorKeyIDs []string
+}
+
+func (s *stubAttester) VendorStatements(
+	_ context.Context, _, platformKeyID string,
+) (attestation.VendorEvidence, error) {
+	s.vendorKeyIDs = append(s.vendorKeyIDs, platformKeyID)
+	if s.vendorErr != nil {
+		return attestation.VendorEvidence{}, s.vendorErr
+	}
+	return attestation.VendorEvidence{Statements: s.vendored}, nil
+}
+
+func (s *stubAttester) Signatures(_ context.Context, _ string) ([]attestation.UpstreamSignature, error) {
+	if s.signatureErr != nil {
+		return nil, s.signatureErr
+	}
+	return s.signatures, nil
 }
 
 func (s *stubAttester) Attach(

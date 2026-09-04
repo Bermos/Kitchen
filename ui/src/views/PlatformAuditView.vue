@@ -432,15 +432,17 @@ const truncated = computed(() => {
     <CriticalityPanel />
 
     <!-- The classification inventory: every environment and claim with its
-         class, its data's provenance and its location, in one request. The
-         absences are words — unclassified, undeclared, unknown — because a
-         blank cell in an export invites a generous reading. -->
+         class, its data's provenance and its location, in one request, and
+         beside them every image running here that this platform did not
+         build. The absences are words — unclassified, undeclared, unknown —
+         because a blank cell in an export invites a generous reading. -->
     <div class="space-y-2">
       <div class="flex items-start justify-between gap-4 flex-wrap">
         <div>
           <h2 class="text-sm font-medium text-highlighted">Data classification inventory</h2>
           <p class="text-xs text-muted mt-0.5">
-            Where every environment's and claim's data stands: class, provenance, location.
+            Where every environment's and claim's data stands: class, provenance, location — and
+            every image running here that somebody else built, with who admitted it.
             <template v-if="inventory.data.value?.defaultResidency">
               Platform residency (declared): {{ inventory.data.value.defaultResidency }}.
             </template>
@@ -474,6 +476,7 @@ const truncated = computed(() => {
               <th class="px-3 py-1 font-medium">Class</th>
               <th class="px-3 py-1 font-medium">Provenance</th>
               <th class="px-3 py-1 font-medium">Residency</th>
+              <th class="px-3 py-1 font-medium">Upstream</th>
             </tr>
           </thead>
           <tbody>
@@ -498,9 +501,26 @@ const truncated = computed(() => {
               <td class="px-3 py-1" :class="item.residency === 'unknown' ? 'text-dimmed' : 'text-toned'">
                 {{ item.residency }}
               </td>
+              <!-- The outsourcing facts, on the rows that have them. An
+                   unsigned upstream is said in words, because "none" means
+                   the vendor publishes no signature and that is the ordinary
+                   state of most published images rather than a failed
+                   check. -->
+              <td class="px-3 py-1">
+                <span v-if="!item.upstream" class="text-dimmed">—</span>
+                <div v-else class="space-y-0.5">
+                  <div class="font-mono text-toned">{{ item.upstream }}</div>
+                  <div class="text-dimmed">
+                    admitted by {{ item.admittedBy }} ·
+                    <span v-if="item.signature === 'verified'" class="text-success">signature verified</span>
+                    <span v-else-if="item.signature === 'none'">vendor publishes no signature</span>
+                    <span v-else class="text-warning">signature {{ item.signature }}</span>
+                  </div>
+                </div>
+              </td>
             </tr>
             <tr v-if="inventory.data.value && inventory.data.value.items.length === 0">
-              <td colspan="6" class="px-3 py-2 text-center text-dimmed">Nothing to classify yet.</td>
+              <td colspan="7" class="px-3 py-2 text-center text-dimmed">Nothing to classify yet.</td>
             </tr>
           </tbody>
         </table>

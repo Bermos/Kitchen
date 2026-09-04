@@ -105,12 +105,15 @@ func TestTheDefaultBundleNamesItsRules(t *testing.T) {
 	want := []string{
 		"data-provenance-preview",
 		"dataclass-le-environment",
+		"digest-approved-by-someone-else",
 		"max-severity",
 		"no-self-approval",
 		"require-gate",
 		"require-independent-review",
 		"require-provenance",
+		"require-pull-request",
 		"require-sbom",
+		"upstream-signature-verified",
 	}
 	if len(rules) != len(want) {
 		t.Fatalf("the default bundle lists %v, want %v", rules, want)

@@ -63,10 +63,12 @@ import (
 //   - **Nothing fakes a commit.** The Build names no SHA and no branch, so
 //     the three commit-shaped rules of the default bundle stay inert rather
 //     than being satisfied by a substitute (#306, #309).
-//   - **Nothing is attested.** An acquired artifact carries whatever the
-//     vendor published and nothing the platform has signed, which is #309's
-//     question and not this one's. It deploys; what it cannot do is satisfy
-//     a policy that requires evidence.
+//   - **Nothing is built, so nothing is claimed about a build.** What an
+//     acquired artifact does carry, since #309, is what the vendor published
+//     about the digest, what the platform observed of an image it only
+//     pulled, and the record of the adoption itself — assembled in
+//     vendored_attest.go and indexed on `status.artifact` beside a built
+//     artifact's evidence, under source types that keep the three apart.
 
 // ImageResolver answers what digest an image reference names.
 //
@@ -209,6 +211,18 @@ func (r *BuildReconciler) acquire(
 	build.Status.Workloads = rows
 	build.Status.Acquisition.Image = web
 	build.Status.Acquisition.ResolvedAt = build.Status.CompletedAt
+
+	// The evidence, before the Release exists: the promotion that follows
+	// evaluates the environment's bar over what is attached to the digest,
+	// and an artifact attested after it was judged would have been judged as
+	// carrying nothing (#309).
+	build.Status.Artifact = r.attestAcquired(ctx, build, project, vendoredSubject{
+		Source: declared,
+		// The reference this Build actually followed, which is the pinned
+		// one where a poll resolved the tag before the Build existed.
+		Reference: reference,
+		Image:     web,
+	})
 
 	if err := r.Audit.Record(ctx, audit.Transition{
 		Object:      build,
@@ -496,6 +510,17 @@ func (r *BuildReconciler) vendoredWorkloads(
 			Reference:  workload.Image.Reference(),
 			Phase:      kitchenv1alpha1.BuildSucceeded,
 			Image:      image,
+			// Each vendored workload is an artifact in its own right and
+			// carries its own evidence against its own digest (#300): a unit
+			// whose sidecar is a vendor's image and whose web process is
+			// another vendor's has two adoptions, two upstreams and two
+			// signature facts, and one record for both would describe
+			// neither.
+			Artifact: r.attestAcquired(ctx, build, project, vendoredSubject{
+				Workload: workload.Name,
+				Source:   *workload.Image,
+				Image:    image,
+			}),
 		})
 	}
 	return images, rows, nil

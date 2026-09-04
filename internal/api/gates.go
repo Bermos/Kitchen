@@ -170,7 +170,7 @@ func (s *Server) submitGate(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	writer, err := s.evidenceFor(ctx, build)
+	writer, err := s.evidenceFor(ctx, build, subjectArtifact.Workload)
 	if err != nil {
 		s.writeError(w, err)
 		return
