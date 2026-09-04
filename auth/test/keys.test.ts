@@ -24,7 +24,7 @@ describe("CI keys", () => {
 	let kitchen: Harness;
 
 	const asOperator = (path: string, init: RequestInit = {}) =>
-		kitchen.fetch(path, { ...init, headers: { ...init.headers, "x-api-key": kitchen.serviceKey } });
+		kitchen.internal(path, { ...init, headers: { ...init.headers, "x-api-key": kitchen.serviceKey } });
 
 	const issue = async (project: string, name: string): Promise<IssuedProjectKey> => {
 		const response = await asOperator("/kitchen/keys", {
@@ -167,15 +167,15 @@ describe("CI keys", () => {
 	});
 
 	it("answers only the operator's own credential", async () => {
-		assert.equal((await kitchen.fetch("/kitchen/keys?project=shop")).status, 401);
+		assert.equal((await kitchen.internal("/kitchen/keys?project=shop")).status, 401);
 
 		const issued = await issue("shop", "nightly");
-		const asKey = await kitchen.fetch("/kitchen/keys?project=shop", {
+		const asKey = await kitchen.internal("/kitchen/keys?project=shop", {
 			headers: { "x-api-key": issued.key },
 		});
 		assert.equal(asKey.status, 403, "a CI key is a valid credential belonging to somebody else");
 
-		const stranger = await kitchen.fetch("/kitchen/keys?project=shop", {
+		const stranger = await kitchen.internal("/kitchen/keys?project=shop", {
 			headers: { "x-api-key": randomBytes(32).toString("hex") },
 		});
 		assert.equal(stranger.status, 401);

@@ -1,0 +1,34 @@
+{{- if .Values.auth.enabled }}
+# The identity provider's private listener: the operator's `/kitchen` prefix,
+# and nothing else.
+#
+# It is a second Service so that the published one has exactly one port and no
+# HTTPRoute can name the wrong one. The route in templates/auth/httproute.yaml
+# sends `PathPrefix /` of the issuer's hostname at that Service — which is how
+# the prefix came to be answering the internet, on a surface that enumerates
+# accounts, mints CI keys for any project and rewrites an OAuth client's
+# redirect list on the strength of one header. Nothing references this Service
+# from outside the cluster, and the published listener answers 404 under the
+# prefix.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "kitchen.authInternalFullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kitchen.labels" . | nindent 4 }}
+    app.kubernetes.io/component: auth
+  {{- with .Values.auth.internalService.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "kitchen.authSelectorLabels" . | nindent 4 }}
+  ports:
+    - name: internal
+      port: {{ .Values.auth.internalService.port }}
+      targetPort: internal
+      protocol: TCP
+{{- end }}

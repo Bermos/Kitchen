@@ -143,13 +143,57 @@ func TestRegisterReportsRefusal(t *testing.T) {
 	}
 }
 
+// TestTheDirectoryIsAskedSomewhereElse: the two addresses are two listeners,
+// and the client has to keep them apart.
+//
+// The published listener answers the whole of OpenID Connect and a 404 under
+// `/kitchen`; the private one answers `/kitchen` and a 404 for everything
+// else. Sending a directory call to the published address does not fail
+// loudly — the 404 is read as ErrNoDirectory, "this issuer is federated",
+// which is what the operator would then report while the account directory
+// sat one port away.
+func TestTheDirectoryIsAskedSomewhereElse(t *testing.T) {
+	issuer := newIssuerServer(t)
+	directory := newDirectoryServer(t, anna)
+
+	cfg := Config{
+		Issuer:       publicIssuer,
+		BaseURL:      issuer.URL,
+		DirectoryURL: directory.URL,
+		ServiceKey:   testServiceKey,
+	}
+	client := New(cfg).WithHTTPClient(issuer.Client())
+
+	// Registration is OpenID Connect: discovery, then the endpoint the
+	// document names. It goes to the published listener.
+	if _, err := client.Register(context.Background(), ClientRegistration{Name: "gate"}); err != nil {
+		t.Fatalf("registering against the published listener: %v", err)
+	}
+	if issuer.registerRequest.apiKey != testServiceKey {
+		t.Error("the registration did not reach the published listener")
+	}
+
+	// The account directory is not, and goes to the private one.
+	accounts, err := client.Accounts(context.Background())
+	if err != nil {
+		t.Fatalf("listing the accounts against the private listener: %v", err)
+	}
+	if len(accounts) != 1 || accounts[0].Subject != anna.Subject {
+		t.Fatalf("the directory answered %+v", accounts)
+	}
+	if directory.request.apiKey != testServiceKey {
+		t.Error("the directory call did not reach the private listener")
+	}
+}
+
 func TestConfigFromSecret(t *testing.T) {
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: "kitchen-auth", Namespace: "kitchen-system"},
 		Data: map[string][]byte{
-			SecretKeyIssuer:      []byte(publicIssuer + "/"),
-			SecretKeyServiceKey:  []byte("service-key"),
-			SecretKeyInternalURL: []byte("http://kitchen-auth.kitchen-system.svc:80"),
+			SecretKeyIssuer:       []byte(publicIssuer + "/"),
+			SecretKeyServiceKey:   []byte("service-key"),
+			SecretKeyInternalURL:  []byte("http://kitchen-auth.kitchen-system.svc:80"),
+			SecretKeyDirectoryURL: []byte("http://kitchen-auth-internal.kitchen-system.svc:80/"),
 		},
 	}
 	cfg, err := ConfigFromSecret(secret)
@@ -162,15 +206,32 @@ func TestConfigFromSecret(t *testing.T) {
 	if cfg.BaseURL != "http://kitchen-auth.kitchen-system.svc:80" {
 		t.Fatalf("the internal address is %q", cfg.BaseURL)
 	}
+	if cfg.DirectoryURL != "http://kitchen-auth-internal.kitchen-system.svc:80" {
+		t.Fatalf("the directory address is %q", cfg.DirectoryURL)
+	}
 
-	// Without an internal address, the issuer is reached at its own URL.
+	// An installation upgraded from a chart that served the /kitchen prefix
+	// on the published listener has no directoryURL yet. It reaches the
+	// prefix where it always did, until the new Deployment's secret arrives.
+	delete(secret.Data, SecretKeyDirectoryURL)
+	cfg, err = ConfigFromSecret(secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DirectoryURL != cfg.BaseURL {
+		t.Fatalf("without a directory address the prefix is reached at %q", cfg.DirectoryURL)
+	}
+
+	// Without an internal address, the issuer is reached at its own URL —
+	// and so is the directory, which a federated issuer does not serve at
+	// all.
 	delete(secret.Data, SecretKeyInternalURL)
 	cfg, err = ConfigFromSecret(secret)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.BaseURL != cfg.Issuer {
-		t.Fatalf("the issuer is reached at %q", cfg.BaseURL)
+	if cfg.BaseURL != cfg.Issuer || cfg.DirectoryURL != cfg.Issuer {
+		t.Fatalf("the issuer is reached at %q and its directory at %q", cfg.BaseURL, cfg.DirectoryURL)
 	}
 
 	// And a secret with nothing usable in it names what is missing.

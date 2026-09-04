@@ -137,7 +137,7 @@ func (c *Client) UpdateClient(ctx context.Context, handle ClientHandle, want Cli
 	if err != nil {
 		return err
 	}
-	_, err = c.callDirectory(ctx, http.MethodPut, c.cfg.BaseURL+ClientsPath, body, what)
+	_, err = c.callDirectory(ctx, http.MethodPut, c.cfg.DirectoryURL+ClientsPath, body, what)
 	if errors.Is(err, errDirectoryNotFound) {
 		return fmt.Errorf("%s: %w", what, ErrNoClientManagement)
 	}
@@ -163,7 +163,7 @@ func (c *Client) DeleteClient(ctx context.Context, handle ClientHandle) error {
 		return err
 	}
 
-	endpoint := c.cfg.BaseURL + ClientsPath + "?" + url.Values{"clientId": []string{handle.ID}}.Encode()
+	endpoint := c.cfg.DirectoryURL + ClientsPath + "?" + url.Values{"clientId": []string{handle.ID}}.Encode()
 	_, err := c.callDirectory(ctx, http.MethodDelete, endpoint, nil, what)
 	if errors.Is(err, errDirectoryNotFound) {
 		// The prefix answers 404 both for a client that is not there and for

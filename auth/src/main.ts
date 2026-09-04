@@ -21,12 +21,23 @@ async function main(): Promise<void> {
 		log.info("waiting for the first administrator", { url: `${config.baseURL}/bootstrap?token=<token>` });
 	}
 
-	const server = createServer(auth, config, pool);
+	// Two listeners, because only one of them is published. The chart routes
+	// the issuer's hostname at the public port; the operator's `/kitchen`
+	// prefix is served on the private one, which no HTTPRoute names.
+	const server = createServer(auth, config, pool, "public");
+	const internal = createServer(auth, config, pool, "private");
 	await new Promise<void>((resolve) => server.listen(config.port, resolve));
-	log.info("listening", { port: config.port, issuer: config.baseURL, github: Boolean(config.github) });
+	await new Promise<void>((resolve) => internal.listen(config.internalPort, resolve));
+	log.info("listening", {
+		port: config.port,
+		internalPort: config.internalPort,
+		issuer: config.baseURL,
+		github: Boolean(config.github),
+	});
 
 	const shutdown = (signal: string) => {
 		log.info("shutting down", { signal });
+		internal.close();
 		server.close(() => {
 			void pool.end().finally(() => process.exit(0));
 		});

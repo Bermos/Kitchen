@@ -19,8 +19,27 @@ export interface UIClientConfig {
 }
 
 export interface Config {
-	/** Port the HTTP server binds to. */
+	/** Port the public HTTP server binds to. */
 	port: number;
+	/**
+	 * Port the private listener binds to. It serves the operator's `/kitchen`
+	 * prefix and nothing else; the public listener answers 404 there.
+	 *
+	 * The two are separate ports because only one of them is published. The
+	 * chart routes `PathPrefix /` of the issuer's hostname at the public
+	 * Service, so anything the public listener answers is answered to the
+	 * internet — and the prefix mints CI keys, enumerates accounts and
+	 * rewrites redirect lists on the strength of one header. It is reached
+	 * over a second ClusterIP Service the HTTPRoute never names.
+	 */
+	internalPort: number;
+	/**
+	 * Requests a single source address may make into the `/kitchen` prefix
+	 * per minute, or 0 for no limit. It is the platform's own limiter: the
+	 * prefix is Kitchen's rather than better-auth's, so better-auth's rate
+	 * limiting never sees it.
+	 */
+	kitchenRatePerMinute: number;
 	/** Public issuer URL, e.g. https://auth.apps.example.com. */
 	baseURL: string;
 	/** Signing secret for sessions, tokens and the OAuth query signature. */
@@ -176,6 +195,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 
 	const config: Config = {
 		port: collect(() => number(env, "PORT", 8080), 8080),
+		internalPort: collect(() => number(env, "KITCHEN_AUTH_INTERNAL_PORT", 8081), 8081),
+		kitchenRatePerMinute: collect(() => number(env, "KITCHEN_AUTH_INTERNAL_RATE_LIMIT", 300), 300),
 		baseURL: baseURL.replace(/\/$/, ""),
 		secret,
 		databaseURL,
@@ -206,6 +227,18 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 	}
 	if (config.bootstrapToken && config.bootstrapToken.length < 16) {
 		problems.push("KITCHEN_AUTH_BOOTSTRAP_TOKEN must be at least 16 characters");
+	}
+	// One port cannot be both published and private. Sharing them would put
+	// the operator's prefix back on the hostname the Gateway serves, which is
+	// the whole of what the split exists to prevent.
+	if (config.internalPort === config.port) {
+		problems.push(
+			"KITCHEN_AUTH_INTERNAL_PORT must differ from PORT: the private /kitchen prefix is served on a " +
+				"port the public HTTPRoute does not reference",
+		);
+	}
+	if (config.internalPort === 0) {
+		problems.push("KITCHEN_AUTH_INTERNAL_PORT must be a port to listen on: the /kitchen prefix has no other home");
 	}
 
 	if (problems.length > 0) {
