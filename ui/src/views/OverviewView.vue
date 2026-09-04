@@ -4,6 +4,7 @@ import { useRoute, useRouter } from "vue-router";
 import { api, type Build, type Environment, type PlatformEvent, type ProjectTraffic } from "../lib/api";
 import { buildFailureLine } from "../lib/builds";
 import { compactCount, formatSeconds, timeAgo } from "../lib/format";
+import { clockTime, staleNotice, useFreshness } from "../lib/freshness";
 import { callerFor } from "../lib/me";
 import { refusal } from "../lib/policy";
 import { statusDetail, unhealthyConditions, type Tone } from "../lib/status";
@@ -46,6 +47,9 @@ const { data, error, loading, refresh } = useAsync(() =>
 );
 const metrics = useAsync(() => api.metricsOverview());
 const activity = useAsync(() => api.events({ limit: 20 }));
+// How old this screen is, and the reader's hold on it: every fetch above
+// reports into it and the header renders it.
+const freshness = useFreshness();
 usePoll(() => void refresh(), 15000, () => true);
 usePoll(() => void metrics.refresh(), 60000, () => true);
 usePoll(() => void activity.refresh(), 15000, () => true);
@@ -85,6 +89,24 @@ const kpis = computed(() => {
   ];
 });
 
+// The tiles as they are rendered: the numbers, or `—` in their place once the
+// store behind them has stopped answering.
+//
+// This is the case the screen used to get wrong. `useAsync` keeps the last
+// good answer, so numbers from twenty minutes ago rendered exactly like
+// numbers from four seconds ago. Once the store has missed polls for longer
+// than its own interval the values go — the same distinction the traffic
+// tiles already make between "measured zero" and "not measured", along the
+// time axis — and the banner above them names the real age. The labels stay:
+// the strip is still the shape of the answer, it just no longer has one.
+const tiles = computed(() => {
+  const rows = kpis.value;
+  if (!rows) return null;
+  if (!metrics.stale.value) return rows;
+  const from = `from ${clockTime(metrics.updatedAt.value)}`;
+  return rows.map((tile) => ({ ...tile, value: "—", points: [] as number[], detail: from }));
+});
+
 const trafficByProject = computed(() => {
   const rows = new Map<string, ProjectTraffic>();
   for (const entry of metrics.data.value?.projects ?? []) rows.set(entry.project, entry);
@@ -121,6 +143,26 @@ function eventTone(event: PlatformEvent): string {
   if (event.type === "release.rolledBack") return "text-warning";
   return "text-muted";
 }
+
+// What the feed is doing, in its own words. A held feed is the one place a
+// pause is worth spelling out in entries rather than in sources: "3 changes
+// waiting" in the header is true of the whole screen, and this says how much
+// of it is activity nobody has seen yet.
+const newerEntries = computed(() => {
+  const held = activity.pending.value;
+  const shown = activity.data.value ?? [];
+  if (!held) return 0;
+  const newest = shown[0]?.timestamp;
+  if (!newest) return held.length;
+  return held.filter((event) => event.timestamp > newest).length;
+});
+const activityMode = computed(() => {
+  if (freshness.paused.value) {
+    return newerEntries.value > 0 ? `held — ${newerEntries.value} newer entries queued` : "held";
+  }
+  if (activity.stale.value) return `not answering — from ${clockTime(activity.updatedAt.value)}`;
+  return "streaming";
+});
 
 const filter = ref<"all" | "production" | "previews" | "failing">("all");
 
@@ -190,7 +232,7 @@ function host(url?: string): string {
 
 <template>
   <div class="space-y-6">
-    <PageHeader title="Overview">
+    <PageHeader :freshness="freshness" title="Overview">
       <template #description>
         Every project you can see, what is serving production, and what the platform has been doing lately.
       </template>
@@ -221,10 +263,19 @@ function host(url?: string): string {
 
     <UAlert v-if="error" color="error" variant="soft" icon="i-lucide-triangle-alert" :title="error" />
 
+    <!-- Numbers that have stopped being true say so, and say from when. -->
+    <UAlert
+      v-if="metrics.stale.value"
+      color="warning"
+      variant="soft"
+      icon="i-lucide-clock-alert"
+      :title="staleNotice('the metrics store', metrics.failures.value, metrics.updatedAt.value)"
+    />
+
     <!-- The KPI strip only renders once the metrics endpoint answered; an
          installation without a telemetry store simply has no numbers row. -->
-    <div v-if="kpis" class="grid grid-cols-2 lg:grid-cols-4 gap-3">
-      <div v-for="kpi in kpis" :key="kpi.label" class="rounded-md border border-default px-3 sm:px-4 py-3">
+    <div v-if="tiles" class="grid grid-cols-2 lg:grid-cols-4 gap-3">
+      <div v-for="kpi in tiles" :key="kpi.label" class="rounded-md border border-default px-3 sm:px-4 py-3">
         <p class="text-xs text-muted truncate" :title="kpi.label">{{ kpi.label }}</p>
         <div class="flex items-end justify-between gap-3 mt-1">
           <span class="text-lg sm:text-xl font-semibold text-highlighted tabular-nums truncate">{{ kpi.value }}</span>
@@ -347,7 +398,7 @@ function host(url?: string): string {
     <div v-if="activity.data.value?.length" class="rounded-md border border-default">
       <div class="px-4 py-2.5 border-b border-default bg-muted flex items-center justify-between">
         <h2 class="text-sm font-medium text-muted">Recent activity</h2>
-        <span class="text-[11px] text-dimmed">from the platform's event feed</span>
+        <span class="text-[11px] text-dimmed">{{ activityMode }}</span>
       </div>
       <ul class="divide-y divide-muted">
         <li v-for="(event, i) in activity.data.value" :key="i" class="px-4 py-2 flex items-center gap-3 text-sm">

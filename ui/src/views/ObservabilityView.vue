@@ -12,6 +12,7 @@ import {
   type SavedQuery,
 } from "../lib/api";
 import { compactCount, formatBytes } from "../lib/format";
+import { useFreshness } from "../lib/freshness";
 import { clausesOf, hasClause, isEditable, removeClause, toggleClause, type Clause } from "../lib/logquery";
 import { operatorMode } from "../lib/mode";
 import { useAsync, usePoll } from "../lib/useAsync";
@@ -121,6 +122,9 @@ function toQueryWithCluster(): string {
 // and logged in the last 24 hours, per hour. Traffic rows read "—" until the
 // flow pipeline is configured.
 const metrics = useAsync(() => api.metricsOverview());
+// How old this screen is, and the reader's hold on it: every fetch above
+// reports into it and the header renders it.
+const freshness = useFreshness();
 usePoll(() => void metrics.refresh(), 60000, () => true);
 const headline = computed(() => {
   const m = metrics.data.value;
@@ -448,7 +452,7 @@ const placeholder = computed(() =>
 
 <template>
   <div class="space-y-6">
-    <PageHeader title="Observability">
+    <PageHeader :freshness="freshness" title="Observability">
       <template #description>
         ClickHouse<template v-if="settings.data.value?.logRetentionDays">
           · {{ settings.data.value.logRetentionDays }} day retention</template

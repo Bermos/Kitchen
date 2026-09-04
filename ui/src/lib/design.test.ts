@@ -249,6 +249,59 @@ describe("the page frame", () => {
   });
 });
 
+describe("the freshness control", () => {
+  /** Whether an element binds a prop, statically or with `v-bind`. */
+  function binds(node: Node, name: string): boolean {
+    return (node.props ?? []).some(
+      (p) =>
+        (p.type === ATTRIBUTE && p.name === name) ||
+        (p.type === DIRECTIVE && p.name === "bind" && p.arg?.content === name),
+    );
+  }
+
+  // A screen that polls is a screen whose data moves on its own, and every one
+  // of them owes the reader the same three things: how old this is, a way to
+  // hold it still while they read, and an admission when a source has stopped
+  // answering. `PageHeader` renders all three from the object; a view only has
+  // to hand it over. docs/UI.md, "The freshness control", is the reasoning.
+  const polled = views.filter((v) => !STANDALONE.has(v.name) && /\busePoll\(/.test(v.source));
+
+  it("is on every screen that polls", () => {
+    expect(polled.length, "the dashboard polls; if nothing does, this rule has lost its subject").toBeGreaterThan(0);
+  });
+
+  it.each(polled)("$name says how old it is", (view) => {
+    const headers: Node[] = [];
+    walk(templateOf(view), (node) => {
+      if (node.tag === "PageHeader") headers.push(node);
+    });
+    for (const header of headers) {
+      expect(
+        binds(header, "freshness"),
+        `${view.name}: a screen that polls hands PageHeader its freshness — :freshness="freshness" from useFreshness()`,
+      ).toBe(true);
+    }
+    expect(
+      /\buseFreshness\(/.test(view.source),
+      `${view.name}: the object comes from useFreshness(), so that the panels inside the screen age it too`,
+    ).toBe(true);
+  });
+
+  it("is placed by the header and nowhere else", () => {
+    const offenders = everything
+      .filter((file) => file.name !== "PageHeader.vue" && file.name !== "FreshnessControl.vue")
+      .filter((file) => {
+        let found = false;
+        walk(templateOf(file), (node) => {
+          if (node.tag === "FreshnessControl") found = true;
+        });
+        return found;
+      })
+      .map((file) => file.name);
+    expect(offenders, "one screen, one age, in the one place every screen puts it").toEqual([]);
+  });
+});
+
 describe("the heading scale", () => {
   const SCALE: Record<string, { size: string; weight: string }> = {
     h2: { size: "text-sm", weight: "font-medium" },

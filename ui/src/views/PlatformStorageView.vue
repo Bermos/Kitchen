@@ -3,6 +3,7 @@ import { computed } from "vue";
 import { useRoute } from "vue-router";
 import { api } from "../lib/api";
 import { compactCount, formatBytes, formatDurationSeconds, timeAgo } from "../lib/format";
+import { useFreshness } from "../lib/freshness";
 import { FLOWS_LOST_FIRING, flowsUnderReporting, formatFraction } from "../lib/platform";
 import { useAsync, usePoll } from "../lib/useAsync";
 import FillBar from "../components/FillBar.vue";
@@ -29,6 +30,9 @@ const namespace = computed(() => (route.query.namespace as string) || "");
 const claim = computed(() => (route.query.claim as string) || "");
 
 const { data, error, loading, refresh } = useAsync(() => api.platformStorage());
+// How old this screen is, and the reader's hold on it: every fetch above
+// reports into it and the header renders it.
+const freshness = useFreshness();
 usePoll(() => void refresh(), 60_000, () => true);
 
 const volumes = computed(() => data.value?.items ?? []);
@@ -57,7 +61,7 @@ function highlighted(volume: { namespace: string; name: string }): boolean {
 
 <template>
   <div class="space-y-6">
-    <PageHeader title="Storage" :breadcrumb="[{ label: 'Platform', to: '/platform' }, { label: 'Storage' }]">
+    <PageHeader :freshness="freshness" title="Storage" :breadcrumb="[{ label: 'Platform', to: '/platform' }, { label: 'Storage' }]">
       <template #description>
         Every volume on the platform and what mounts it, plus the telemetry store's own disk.
       </template>

@@ -3,6 +3,7 @@ import { computed, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { api, type PlatformNode } from "../lib/api";
 import { formatBytes, formatCores, formatMemory, timeAgo, uptime } from "../lib/format";
+import { useFreshness } from "../lib/freshness";
 import { freshness, latestObserved, formatFraction, nodePressure, NODE_SATURATION_FRACTION } from "../lib/platform";
 import { useAsync, usePoll } from "../lib/useAsync";
 import FillBar from "../components/FillBar.vue";
@@ -33,6 +34,10 @@ const node = computed(() => (route.query.node as string) || "");
 
 const { data, error, loading, refresh } = useAsync(() => api.platformNodes({ node: node.value || undefined }));
 watch(node, () => void refresh());
+// How old this screen is, and the reader's hold on it: every fetch above
+// reports into it and the header renders it. Named for the screen because
+// `freshness()` here is a node's telemetry, which is a different question.
+const screenFreshness = useFreshness();
 usePoll(() => void refresh(), 30_000, () => true);
 
 // The collection layer's own side of the same question, read separately: a
@@ -96,7 +101,11 @@ function fullest(item: PlatformNode) {
 
 <template>
   <div class="space-y-6">
-    <PageHeader title="Nodes" :breadcrumb="[{ label: 'Platform', to: '/platform' }, { label: 'Nodes' }]">
+    <PageHeader
+      :freshness="screenFreshness"
+      title="Nodes"
+      :breadcrumb="[{ label: 'Platform', to: '/platform' }, { label: 'Nodes' }]"
+    >
       <template #description>
         What the cluster is made of — and, in the last column, which of its machines the platform is still hearing from.
       </template>

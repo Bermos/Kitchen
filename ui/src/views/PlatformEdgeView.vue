@@ -3,6 +3,7 @@ import { computed, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 import { api, type Certificate } from "../lib/api";
 import { compactCount, timeAgo } from "../lib/format";
+import { useFreshness } from "../lib/freshness";
 import { certificateTrouble } from "../lib/platform";
 import { formatLatency, formatPercent, formatRate, type SignalTile } from "../lib/requests";
 import { useAsync, usePoll } from "../lib/useAsync";
@@ -46,6 +47,9 @@ function reload() {
   void refresh();
 }
 watch(rangeMinutes, reload);
+// How old this screen is, and the reader's hold on it: every fetch above
+// reports into it and the header renders it.
+const freshness = useFreshness();
 usePoll(reload, 60_000, () => true);
 
 const traffic = computed(() => data.value?.requests);
@@ -101,7 +105,7 @@ function expiry(certificate: Certificate): string {
 
 <template>
   <div class="space-y-6">
-    <PageHeader title="Edge" :breadcrumb="[{ label: 'Platform', to: '/platform' }, { label: 'Edge' }]">
+    <PageHeader :freshness="freshness" title="Edge" :breadcrumb="[{ label: 'Platform', to: '/platform' }, { label: 'Edge' }]">
       <template #description>
         Everything that entered the platform, across every project — and the Gateway, the tunnel and the certificates it
         entered through.

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { api } from "../lib/api";
+import { useFreshness } from "../lib/freshness";
 import { healthStrip } from "../lib/platform";
 import { useAsync, usePoll } from "../lib/useAsync";
 import FindingList from "../components/FindingList.vue";
@@ -25,6 +26,10 @@ const ingest = useAsync(() => api.platformIngest());
 const storage = useAsync(() => api.platformStorage());
 const edge = useAsync(() => api.platformEdge());
 const signals = useAsync(() => api.platformSignals());
+
+// How old this screen is, and the reader's hold on it: every fetch above
+// reports into it and the header renders it.
+const freshness = useFreshness();
 
 // The strip's sources are cheap reads of informer caches and one store query
 // each; the catalogue is thirty-six rules over a whole snapshot, so it is asked
@@ -69,7 +74,7 @@ const sections = [
 
 <template>
   <div class="space-y-6">
-    <PageHeader title="Platform">
+    <PageHeader :freshness="freshness" title="Platform">
       <template #description>
         The cluster as the operator sees it, across every project — and everything currently wrong with it, worst first.
       </template>

@@ -2,6 +2,7 @@ import { createRouter, createWebHistory } from "vue-router";
 import { isAuthenticated } from "./lib/auth";
 import { callerFor, forgetMe, loadMe } from "./lib/me";
 import { may, type Route as PolicyRoute } from "./lib/policy";
+import { resetScreenFreshness } from "./lib/freshness";
 
 declare module "vue-router" {
   interface RouteMeta {
@@ -177,4 +178,12 @@ router.beforeEach(async (to) => {
     return { name: "overview", query: { denied: to.fullPath } };
   }
   return true;
+});
+
+// Freshness is per screen, and this is what makes it so: a pause held while
+// somebody read one screen is not a pause they asked for on the next.
+// `lib/freshness.ts` says why that is the right scope, and why the screen's
+// sources are left to leave with their own component rather than cleared here.
+router.afterEach(() => {
+  resetScreenFreshness();
 });

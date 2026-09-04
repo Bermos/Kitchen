@@ -50,16 +50,24 @@ const sidebarHidden = computed(() => (!wide.value && !sidebarOpen.value) || unde
 
 // One inventory fetch feeds the sidebar: the project list, the counts next to
 // the nav items, and the preview count on each project row.
-const inventory = useAsync(async () => {
-  const [projects, environments, builds] = await Promise.all([api.projects(), api.environments(), api.builds()]);
-  return { projects, environments, builds };
-});
+//
+// The shell's two pollers are outside the screen's freshness (`screen: false`)
+// on both halves: the sidebar is navigation rather than something being read,
+// so it neither ages the screen the reader is looking at nor stops when they
+// pause it. See docs/UI.md, "The freshness control".
+const inventory = useAsync(
+  async () => {
+    const [projects, environments, builds] = await Promise.all([api.projects(), api.environments(), api.builds()]);
+    return { projects, environments, builds };
+  },
+  { screen: false },
+);
 // The platform as it is running, for the status bar at the foot of the
 // sidebar. It is one request rather than four: cluster, tunnel, build queue
 // and gateway all come off /status.
-const status = useAsync(() => api.status());
-usePoll(() => void inventory.refresh(), 30000, () => true);
-usePoll(() => void status.refresh(), 30000, () => true);
+const status = useAsync(() => api.status(), { screen: false });
+usePoll(() => void inventory.refresh(), 30000, () => true, { screen: false });
+usePoll(() => void status.refresh(), 30000, () => true, { screen: false });
 
 const projects = computed(() => inventory.data.value?.projects ?? []);
 

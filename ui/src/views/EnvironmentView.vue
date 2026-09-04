@@ -11,6 +11,7 @@ import {
   type WorkloadPod,
 } from "../lib/api";
 import { shortImage, timeAgo, uptime } from "../lib/format";
+import { useFreshness } from "../lib/freshness";
 import { callerFor } from "../lib/me";
 import { operatorMode } from "../lib/mode";
 import { may } from "../lib/policy";
@@ -94,6 +95,9 @@ const caller = computed(() => callerFor(data.value?.project.role, data.value?.en
 const mayDeploy = computed(() => may("PATCH /api/v1/environments/{name}", caller.value));
 const mayDeleteEnvironment = computed(() => may("DELETE /api/v1/environments/{name}", caller.value));
 const moving = computed(() => environment.value?.phase === "Deploying" || environment.value?.phase === "Pending");
+// How old this screen is, and the reader's hold on it: every fetch above
+// reports into it and the header renders it.
+const freshness = useFreshness();
 usePoll(() => void refresh(), 5000, () => moving.value);
 
 // What is running, fetched apart from the environment itself: a workload read
@@ -251,6 +255,7 @@ function historyBy(entry: { reason: string; by?: string }): string {
         "
       />
       <PageHeader
+        :freshness="freshness"
         :title="environment.name"
         :breadcrumb="[
           { label: 'Overview', to: '/' },

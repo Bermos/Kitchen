@@ -3,6 +3,7 @@ import { computed, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { api, type K8sEvent, type PlatformEventQuery } from "../lib/api";
 import { compactCount, timeAgo } from "../lib/format";
+import { useFreshness } from "../lib/freshness";
 import { useAsync, usePoll } from "../lib/useAsync";
 import PageHeader from "../components/PageHeader.vue";
 
@@ -73,6 +74,9 @@ watch(
     if (path.startsWith("/platform/events")) void refresh();
   },
 );
+// How old this screen is, and the reader's hold on it: every fetch above
+// reports into it and the header renders it.
+const freshness = useFreshness();
 usePoll(() => void refresh(), 30_000, () => true);
 
 const events = computed(() => data.value?.items ?? []);
@@ -123,7 +127,7 @@ function environmentOf(event: K8sEvent) {
 
 <template>
   <div class="space-y-6">
-    <PageHeader title="Events" :breadcrumb="[{ label: 'Platform', to: '/platform' }, { label: 'Events' }]">
+    <PageHeader :freshness="freshness" title="Events" :breadcrumb="[{ label: 'Platform', to: '/platform' }, { label: 'Events' }]">
       <template #description>
         The cluster's warnings, kept past the hour Kubernetes keeps them — so “what happened at 03:00” has an answer.
       </template>
