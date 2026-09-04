@@ -81,6 +81,10 @@ const project = computed(() => data.value?.project);
 // opinion about who may redeploy.
 const caller = computed(() => callerFor(project.value?.role, name.value));
 const mayBuild = computed(() => may("POST /api/v1/projects/{name}/builds", caller.value));
+// Acquiring an image somebody else built is admin's where a rebuild is a
+// developer's, and it is a different route, so it gets its own answer from
+// the same table rather than sharing the one above.
+const mayAcquire = computed(() => may("POST /api/v1/projects/{name}/acquisitions", caller.value));
 const mayDeploy = computed(() => may("PATCH /api/v1/environments/{name}", caller.value));
 const mayClaim = computed(() => may("POST /api/v1/claims", caller.value));
 const mayUnclaim = computed(() => may("DELETE /api/v1/claims/{name}", caller.value));
@@ -184,6 +188,33 @@ async function redeploy() {
     });
   } finally {
     redeploying.value = false;
+  }
+}
+
+// Acquire: the vendored equivalent of a redeploy. A project with no repository
+// has no commit to rebuild, and what moves it is a new digest under the tag it
+// follows — which the platform asks about on an interval and this asks about
+// now, for somebody who has just published upstream and would rather not wait.
+const acquiring = ref(false);
+async function acquire() {
+  acquiring.value = true;
+  try {
+    const build = await api.acquire(name.value);
+    toast.add({
+      title: `Acquisition ${build.name} queued`,
+      description: "The registry is being asked what this tag names now.",
+      color: "success",
+      icon: "i-lucide-package-search",
+    });
+    await refresh();
+  } catch (err) {
+    toast.add({
+      title: "Acquisition failed",
+      description: err instanceof Error ? err.message : String(err),
+      color: "error",
+    });
+  } finally {
+    acquiring.value = false;
   }
 }
 
@@ -739,7 +770,7 @@ function host(url?: string): string {
         </template>
         <template #actions>
           <UButton
-            v-if="mayBuild"
+            v-if="builtHere && mayBuild"
             color="neutral"
             variant="subtle"
             size="sm"
@@ -748,6 +779,20 @@ function host(url?: string): string {
             @click="redeploy"
           >
             Redeploy
+          </UButton>
+          <!-- A project with no repository has no commit to rebuild, so the
+               button that moves it is the other one: ask the registry what
+               the tag it follows names now, and take it. -->
+          <UButton
+            v-if="vendoredImage && mayAcquire"
+            color="neutral"
+            variant="subtle"
+            size="sm"
+            icon="i-lucide-package-search"
+            :loading="acquiring"
+            @click="acquire"
+          >
+            Check for a new digest
           </UButton>
           <UButton
             v-if="production?.url"
@@ -1277,6 +1322,17 @@ function host(url?: string): string {
               This project's web process runs an image this platform did not build. There is no repository, so
               there is nothing to build, nowhere to push and no pull request to preview — the workloads below
               may still declare images of their own, and they deploy and roll back with this one as one unit.
+            </p>
+            <p class="text-xs text-toned max-w-3xl">
+              <template v-if="vendoredImage.digest">
+                This image is pinned to a digest, so nothing moves it: the platform never asks the registry
+                about it, and a new version arrives when somebody changes the digest here.
+              </template>
+              <template v-else>
+                The platform asks the registry on an interval whether this tag still names the digest it
+                acquired. A new one is a build with no builder — it resolves the digest, releases it and
+                deploys it — and rolling it back is the ordinary rollback.
+              </template>
             </p>
             <dl class="grid grid-cols-[10rem_1fr] gap-x-4 gap-y-1 text-xs">
               <dt class="text-dimmed">Repository</dt>

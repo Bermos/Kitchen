@@ -193,6 +193,7 @@ name against `internal/api/policy.go`, so a route that moves fails them too.
 | DELETE | `/projects/{name}` | Delete it, and everything derived from it | `admin` |
 | GET | `/projects/{name}/builds` | That project's builds, newest first | `viewer` |
 | POST | `/projects/{name}/builds` | Build a commit — a rebuild | `developer` |
+| POST | `/projects/{name}/acquisitions` | Take a new digest of the image a project runs — "check now", or `{"digest": "sha256:…"}` for one exactly. `202`, and the Build that carries it. Refused on a project built from a repository, which is moved by a commit | `admin` |
 | GET | `/projects/{name}/releases` | That project's releases, newest first | `viewer` |
 | GET | `/projects/{name}/environments` | That project's environments | `viewer` |
 | GET | `/projects/{name}/audit-pack` | One project's whole compliance answer for one half-open window, signed and byte-reproducible: inventory, change log with author and approver, promotions and their decisions with reproduction inputs, the evidence index per artifact, exceptions, recertification cycles, drift, the audit log's slice and every signed statement carried whole. `?from=` and `?to=` are required; `?format=` is `json`, `dsse` or `html` | `operator` |

@@ -24,6 +24,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -144,6 +145,14 @@ var _ = Describe("Kitchen scheduled backup", func() {
 	}
 
 	BeforeEach(func() {
+		// The CronJob is written into the platform namespace, and ginkgo
+		// shuffles the top-level containers: whichever spec happens to run
+		// first has to create it rather than inherit it from a neighbour that
+		// ran earlier this time and may not next time.
+		Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, &corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{Name: PlatformNamespace},
+		}))).To(Succeed())
+
 		reconciler = &KitchenReconciler{
 			Client:               k8sClient,
 			Scheme:               k8sClient.Scheme(),

@@ -1624,6 +1624,32 @@ spec:
                   - type
                   type: object
                 type: array
+              imagePoll:
+                description: |-
+                  ImagePoll is what the digest poll last did for this project (#308):
+                  when it last asked the registry whether a watched tag had moved, and
+                  what stopped it where something did.
+
+                  It is on the status rather than held in the operator's memory for two
+                  reasons, and the second is the one that matters. The interval survives
+                  a restart, so an operator rolled out at noon does not re-ask every
+                  registry the estate follows at the same instant. And a poll that
+                  cannot read a registry says so *here*, once, which is what keeps a
+                  registry that stays down from producing one failed Build every
+                  interval for a week.
+                properties:
+                  lastPolledAt:
+                    description: LastPolledAt is when the registry was last asked.
+                    format: date-time
+                    type: string
+                  message:
+                    description: |-
+                      Message explains a poll that could not ask — a registry that would not
+                      answer, a pull credential that could not be read. It is cleared by the
+                      next poll that could, and while it is set the platform has already
+                      produced the one failed Build that says so.
+                    type: string
+                type: object
               initialBuildRef:
                 description: |-
                   InitialBuildRef is the Build the platform created for the project

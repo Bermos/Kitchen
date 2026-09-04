@@ -156,10 +156,72 @@ type GitRevision struct {
 	PullRequest *int32 `json:"pullRequest,omitempty"`
 }
 
+// AcquisitionTrigger says what asked for an acquisition, which is the
+// question "why did this environment change" starts with.
+//
+// It is on the spec rather than on the status because it is a fact about the
+// event that created the Build, not about what the Build then found: a
+// digest the platform took because a tag moved and a digest an operator
+// named are the same resolution with two different reasons behind them, and
+// months later the reason is the half nothing else records.
+// +kubebuilder:validation:Enum=seed;poll;request
+type AcquisitionTrigger string
+
+const (
+	// AcquisitionSeeded is the project's own first acquisition: the image it
+	// was created naming, so that connecting software deploys it.
+	AcquisitionSeeded AcquisitionTrigger = "seed"
+
+	// AcquisitionPolled is the digest poll finding that a watched tag has
+	// moved. It is the vendored equivalent of a push (#308).
+	AcquisitionPolled AcquisitionTrigger = "poll"
+
+	// AcquisitionRequested is somebody asking for one: "check now", or "take
+	// this exact digest".
+	AcquisitionRequested AcquisitionTrigger = "request"
+)
+
+// AcquisitionSpec is what a Build with no commit acquires (#308).
+//
+// It is the source union's second member: a Build names a commit, or it names
+// an image reference to acquire, and the spec is immutable either way. What it
+// carries beyond the project's own declaration is a *pin* — the digest the
+// thing that created this Build had already resolved — so that a Build created
+// because a tag moved takes the digest that moved it rather than whatever the
+// tag names by the time the reconciler looks.
+type AcquisitionSpec struct {
+	// Reference is the image reference this acquisition was created for, as
+	// the project declared it at that moment — `ghcr.io/vendor/app:stable`.
+	//
+	// It is recorded rather than re-read because the project's declaration
+	// moves and an acquisition does not: a Build months old should read as
+	// the reference it actually followed, not as the one the project names
+	// today.
+	// +kubebuilder:validation:MaxLength=512
+	// +optional
+	Reference string `json:"reference,omitempty"`
+
+	// Digest pins the exact content this acquisition takes.
+	//
+	// Empty means "whatever the reference names when this is reconciled",
+	// which is what a project's own first acquisition wants. Set is what the
+	// poll writes — it has already asked the registry, so re-asking could
+	// only produce a different answer than the one that made this Build
+	// exist — and what "take this exact digest" means.
+	// +kubebuilder:validation:Pattern=`^sha256:[a-f0-9]{64}$`
+	// +optional
+	Digest string `json:"digest,omitempty"`
+
+	// Trigger is what asked for this acquisition.
+	// +optional
+	Trigger AcquisitionTrigger `json:"trigger,omitempty"`
+}
+
 // BuildSpec defines one build execution for one commit. Builds are immutable:
 // a rebuild is a new Build object.
 // +kubebuilder:validation:XValidation:rule="self == oldSelf",message="Build spec is immutable"
 // +kubebuilder:validation:XValidation:rule="!has(self.git) || (!has(self.git.sha) && !has(self.git.branch)) || (has(self.git.sha) && size(self.git.sha) >= 7 && has(self.git.branch) && size(self.git.branch) > 0)",message="a build of a repository names the commit it builds: a SHA of at least seven characters and the branch it is on. A build that names neither is the acquisition of an image somebody else built, and it names no commit at all."
+// +kubebuilder:validation:XValidation:rule="!has(self.acquire) || !has(self.git) || (!has(self.git.sha) && !has(self.git.branch))",message="a build of a commit builds it: `acquire` belongs to a Build that names no commit, which is the acquisition of an image somebody else built"
 type BuildSpec struct {
 	ProjectRef LocalObjectReference `json:"projectRef"`
 
@@ -174,6 +236,33 @@ type BuildSpec struct {
 	// asks [Build.FromRepository] first.
 	// +optional
 	Git GitRevision `json:"git,omitempty"`
+
+	// Acquire is the image this Build acquires, for a Build that names no
+	// commit. Absent on an acquisition means the project's own declaration,
+	// resolved when the reconciler gets to it — which is what the project's
+	// first acquisition was before there was anything else to create one.
+	// +optional
+	Acquire *AcquisitionSpec `json:"acquire,omitempty"`
+}
+
+// AcquisitionReference is the reference this Build was created to acquire,
+// empty for a Build that names a commit or one created before the field
+// existed. Nil-safe on the spec's pointer, which is the whole reason it is a
+// method rather than a field read.
+func (b *Build) AcquisitionReference() string {
+	if b.Spec.Acquire == nil {
+		return ""
+	}
+	return b.Spec.Acquire.Reference
+}
+
+// AcquisitionTriggeredBy is what asked for this acquisition, empty where
+// nothing said.
+func (b *Build) AcquisitionTriggeredBy() AcquisitionTrigger {
+	if b.Spec.Acquire == nil {
+		return ""
+	}
+	return b.Spec.Acquire.Trigger
 }
 
 // FromRepository reports whether this Build has a commit behind it: a build
@@ -273,6 +362,50 @@ type ArtifactStatus struct {
 	// will ever let move, which is where that fact is meant to bite.
 	// +optional
 	Message string `json:"message,omitempty"`
+}
+
+// AcquisitionStatus is what one acquisition resolved, from which reference,
+// and when.
+//
+// The three facts are recorded together because separately they answer
+// nothing. A digest with no reference cannot say what was being followed; a
+// reference with no digest cannot say what arrived; and neither with no time
+// cannot be lined up against the environment that changed. Together they are
+// the acquisition's whole answer to the question a commit answers for a build
+// — and, with Previous, they say what the platform left as well as what it
+// took, which is the fact a rollback is chosen from.
+type AcquisitionStatus struct {
+	// Reference is what was followed, as the project declared it —
+	// `ghcr.io/vendor/app:stable`, or a digest for a reference that was
+	// already pinned.
+	// +optional
+	Reference string `json:"reference,omitempty"`
+
+	// Image is what it resolved to, always by digest.
+	// +optional
+	Image string `json:"image,omitempty"`
+
+	// Previous is the image this acquisition replaced: what the project's
+	// last acquisition resolved to. Empty for the first acquisition of a
+	// project, which replaced nothing.
+	// +optional
+	Previous string `json:"previous,omitempty"`
+
+	// Trigger is what asked for this acquisition, copied from the spec so
+	// that a reader of the outcome does not have to go and read the request.
+	// +optional
+	Trigger AcquisitionTrigger `json:"trigger,omitempty"`
+
+	// Pinned is whether the reference named a digest rather than a tag. A
+	// pinned reference is a project opting out of ever moving: the poll does
+	// not follow it, and the only thing that changes it is somebody changing
+	// the project.
+	// +optional
+	Pinned bool `json:"pinned,omitempty"`
+
+	// ResolvedAt is when the registry was asked.
+	// +optional
+	ResolvedAt *metav1.Time `json:"resolvedAt,omitempty"`
 }
 
 // BuildCacheStatus is what the layer cache did for one build, which is the
@@ -654,6 +787,15 @@ type BuildStatus struct {
 	// +optional
 	Artifact *ArtifactStatus `json:"artifact,omitempty"`
 
+	// Acquisition is what this Build resolved, from which reference, and
+	// when — the acquisition's answer to "why did this environment change",
+	// asked months later (#308).
+	//
+	// It is absent on a build of a commit, whose answer to that question is
+	// the commit.
+	// +optional
+	Acquisition *AcquisitionStatus `json:"acquisition,omitempty"`
+
 	// Workloads is one row per workload of the unit that was built in its
 	// own right — the monorepo case #271 exists for. The web process is not
 	// among them: its image is `status.image` and always has been.
@@ -755,9 +897,16 @@ type WorkloadBuildStatus struct {
 	// +optional
 	Image string `json:"image,omitempty"`
 
-	// Repository is where the image was pushed, without a tag or digest.
+	// Repository is where the image was pushed, without a tag or digest —
+	// or, for a workload nothing here built, where it was pulled from.
 	// +optional
 	Repository string `json:"repository,omitempty"`
+
+	// Reference is what this workload's image was acquired from, as the
+	// project declared it: `docker.io/library/redis:7.4`. Empty for a
+	// workload this platform built, which was acquired from nothing.
+	// +optional
+	Reference string `json:"reference,omitempty"`
 
 	// DockerfileTarget is the stage of this workload's Dockerfile its build
 	// was told to produce, empty for the file's last stage. It is recorded

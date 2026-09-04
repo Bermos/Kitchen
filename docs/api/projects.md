@@ -75,12 +75,12 @@ running a builder — so `status.artifact`, the evidence index, the quality
 gates, the audit chain, the build screens and the CLI keep working unchanged.
 Nothing fakes a commit: the Build names no SHA and no branch.
 
-**Which version runs is set here and not moved from here yet.** The settings
-PATCH changes a project's settings, and which image it runs is not one of
-them: what makes a second version of a vendored image arrive — a tag that has
-moved, and the Build that follows it — is
-[#308](https://github.com/Bermos/Kitchen/issues/308). Until it lands, a
-vendored project runs the version it was created with.
+**What moves it afterwards is a new digest under the tag it follows.** The
+settings PATCH changes a project's settings, and which image it runs is not
+one of them. The platform asks the registry on an interval whether the tag
+still names the digest it acquired, and takes a new one where it does not —
+see [acquiring a new digest](#acquiring-a-new-digest) below, which is also how
+to ask now.
 
 **A unit may mix the two.** A project built from a repository can carry a
 workload that runs an upstream image, declared on the workload rather than on
@@ -441,6 +441,52 @@ route of their own and never read back. That is what a credential should be
 rather than a literal `value`: the project's configuration then holds a
 reference, and rotating the credential is one write that touches no
 configuration at all.
+
+## Acquiring a new digest
+
+```sh
+curl -sS -X POST -H "authorization: Bearer $TOKEN" \
+  https://kitchen.apps.example.com/api/v1/projects/home-assistant/acquisitions
+```
+
+The vendored equivalent of a rebuild, for a project with no commit to name. An
+empty body means "ask the registry what the tag this project follows names
+now, and take it". Naming a digest takes exactly that one:
+
+```json
+{"digest": "sha256:1f0c…"}
+```
+
+Answers `202` with the Build that will carry it — an *acquisition*: a Build
+that resolves the digest, freezes it onto a Release and runs no builder. What
+it resolved, from which reference, when, and what it replaced is on that
+Build's `status.acquisition`, which is what
+[the builds page](builds.md#a-build-that-acquired-an-image) is about.
+
+**`admin`, where a rebuild is a `developer`'s.** A rebuild runs the commit the
+project already has through the same builder. An acquisition takes a new
+artifact from a third party's registry onto this platform, and the body may
+name the digest outright — which is a decision about where the software comes
+from rather than about running the build of it again.
+
+Two refusals, both `400` and both saying which:
+
+- A project **built from a repository** acquires nothing; what moves it is a
+  commit, so the answer names `POST /projects/{name}/builds`.
+- A `digest` that is not `sha256:` and sixty-four hex digits. The registry
+  vocabulary has one spelling of a manifest digest, and guessing which
+  algorithm a bare hex string meant is not the API's to do.
+
+**Nothing here is needed for the ordinary case.** The platform polls: one
+registry manifest HEAD per watched reference per
+`Kitchen.spec.builds.imagePollInterval` (ten minutes by default), and an
+acquisition where a tag has moved. This route is for the impatient and for a
+vendor's own pipeline, which knows the digest it has just published and would
+rather say so than be discovered.
+
+**A project pinned to a digest is never polled**, and this route still works
+on it: pinning means the platform will not move the project on its own, not
+that it refuses to be moved.
 
 ## Who is on a project
 

@@ -698,6 +698,43 @@ spec:
               BuildSpec defines one build execution for one commit. Builds are immutable:
               a rebuild is a new Build object.
             properties:
+              acquire:
+                description: |-
+                  Acquire is the image this Build acquires, for a Build that names no
+                  commit. Absent on an acquisition means the project's own declaration,
+                  resolved when the reconciler gets to it — which is what the project's
+                  first acquisition was before there was anything else to create one.
+                properties:
+                  digest:
+                    description: |-
+                      Digest pins the exact content this acquisition takes.
+
+                      Empty means "whatever the reference names when this is reconciled",
+                      which is what a project's own first acquisition wants. Set is what the
+                      poll writes — it has already asked the registry, so re-asking could
+                      only produce a different answer than the one that made this Build
+                      exist — and what "take this exact digest" means.
+                    pattern: ^sha256:[a-f0-9]{64}$
+                    type: string
+                  reference:
+                    description: |-
+                      Reference is the image reference this acquisition was created for, as
+                      the project declared it at that moment — `ghcr.io/vendor/app:stable`.
+
+                      It is recorded rather than re-read because the project's declaration
+                      moves and an acquisition does not: a Build months old should read as
+                      the reference it actually followed, not as the one the project names
+                      today.
+                    maxLength: 512
+                    type: string
+                  trigger:
+                    description: Trigger is what asked for this acquisition.
+                    enum:
+                    - seed
+                    - poll
+                    - request
+                    type: string
+                type: object
               git:
                 description: |-
                   Git is the commit this Build builds, empty for a project whose source
@@ -764,9 +801,59 @@ spec:
               rule: '!has(self.git) || (!has(self.git.sha) && !has(self.git.branch))
                 || (has(self.git.sha) && size(self.git.sha) >= 7 && has(self.git.branch)
                 && size(self.git.branch) > 0)'
+            - message: 'a build of a commit builds it: `acquire` belongs to a Build
+                that names no commit, which is the acquisition of an image somebody
+                else built'
+              rule: '!has(self.acquire) || !has(self.git) || (!has(self.git.sha) &&
+                !has(self.git.branch))'
           status:
             description: BuildStatus defines the observed state of a Build.
             properties:
+              acquisition:
+                description: |-
+                  Acquisition is what this Build resolved, from which reference, and
+                  when — the acquisition's answer to "why did this environment change",
+                  asked months later (#308).
+
+                  It is absent on a build of a commit, whose answer to that question is
+                  the commit.
+                properties:
+                  image:
+                    description: Image is what it resolved to, always by digest.
+                    type: string
+                  pinned:
+                    description: |-
+                      Pinned is whether the reference named a digest rather than a tag. A
+                      pinned reference is a project opting out of ever moving: the poll does
+                      not follow it, and the only thing that changes it is somebody changing
+                      the project.
+                    type: boolean
+                  previous:
+                    description: |-
+                      Previous is the image this acquisition replaced: what the project's
+                      last acquisition resolved to. Empty for the first acquisition of a
+                      project, which replaced nothing.
+                    type: string
+                  reference:
+                    description: |-
+                      Reference is what was followed, as the project declared it —
+                      `ghcr.io/vendor/app:stable`, or a digest for a reference that was
+                      already pinned.
+                    type: string
+                  resolvedAt:
+                    description: ResolvedAt is when the registry was asked.
+                    format: date-time
+                    type: string
+                  trigger:
+                    description: |-
+                      Trigger is what asked for this acquisition, copied from the spec so
+                      that a reader of the outcome does not have to go and read the request.
+                    enum:
+                    - seed
+                    - poll
+                    - request
+                    type: string
+                type: object
               artifact:
                 description: |-
                   Artifact is what the build produced, identified by content rather than
@@ -2465,9 +2552,16 @@ spec:
                       - Failed
                       - Cancelled
                       type: string
+                    reference:
+                      description: |-
+                        Reference is what this workload's image was acquired from, as the
+                        project declared it: `docker.io/library/redis:7.4`. Empty for a
+                        workload this platform built, which was acquired from nothing.
+                      type: string
                     repository:
-                      description: Repository is where the image was pushed, without
-                        a tag or digest.
+                      description: |-
+                        Repository is where the image was pushed, without a tag or digest —
+                        or, for a workload nothing here built, where it was pulled from.
                       type: string
                   required:
                   - name
@@ -4338,6 +4432,31 @@ spec:
                     - auto
                     - dockerfile
                     - buildpacks
+                    type: string
+                  imagePollInterval:
+                    default: 10m
+                    description: |-
+                      ImagePollInterval is how often the platform asks whether a watched tag
+                      has moved (#308).
+
+                      A project whose software this platform did not build has no push to
+                      react to: what corresponds to one is a new digest under the tag it
+                      follows, and nothing would ever notice that without asking. So the
+                      platform asks, and this is how often — one registry manifest HEAD per
+                      watched reference, never a pull, so the cost of the question is a
+                      request and a few hundred bytes rather than an image.
+
+                      Ten minutes is the default because that is well inside how quickly
+                      anybody expects a vendored update to arrive and far outside anything a
+                      registry would call traffic. A reference pinned to a digest is not
+                      polled at all, whatever this says: pinning is how a project opts out.
+
+                      `0` turns the poll off entirely, which is the installation that would
+                      rather move a vendored image by hand — through the acquire route or by
+                      changing the project — than have the platform move it. It is a
+                      pointer for the reason BuildsSpec.TimeoutMinutes is one: that zero is
+                      a setting, and a duration serialized as an absent field would have the
+                      default applied back over it.
                     type: string
                   releaseRetention:
                     default: 10
@@ -7894,6 +8013,32 @@ spec:
                   - type
                   type: object
                 type: array
+              imagePoll:
+                description: |-
+                  ImagePoll is what the digest poll last did for this project (#308):
+                  when it last asked the registry whether a watched tag had moved, and
+                  what stopped it where something did.
+
+                  It is on the status rather than held in the operator's memory for two
+                  reasons, and the second is the one that matters. The interval survives
+                  a restart, so an operator rolled out at noon does not re-ask every
+                  registry the estate follows at the same instant. And a poll that
+                  cannot read a registry says so *here*, once, which is what keeps a
+                  registry that stays down from producing one failed Build every
+                  interval for a week.
+                properties:
+                  lastPolledAt:
+                    description: LastPolledAt is when the registry was last asked.
+                    format: date-time
+                    type: string
+                  message:
+                    description: |-
+                      Message explains a poll that could not ask — a registry that would not
+                      answer, a pull credential that could not be read. It is cleared by the
+                      next poll that could, and while it is set the platform has already
+                      produced the one failed Build that says so.
+                    type: string
+                type: object
               initialBuildRef:
                 description: |-
                   InitialBuildRef is the Build the platform created for the project

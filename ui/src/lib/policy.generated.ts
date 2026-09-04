@@ -66,6 +66,7 @@ export type Route =
   | "DELETE /api/v1/projects/{name}"
   | "GET /api/v1/projects/{name}/builds"
   | "POST /api/v1/projects/{name}/builds"
+  | "POST /api/v1/projects/{name}/acquisitions"
   | "GET /api/v1/projects/{name}/releases"
   | "GET /api/v1/projects/{name}/environments"
   | "GET /api/v1/projects/{name}/audit-pack"
@@ -205,6 +206,7 @@ export const POLICY: Readonly<Record<Route, Requirement>> = {
   "DELETE /api/v1/projects/{name}": { kind: "projectRole", role: "admin", doing: "deleting a project" },
   "GET /api/v1/projects/{name}/builds": { kind: "projectRole", role: "viewer", doing: "reading a project's builds" },
   "POST /api/v1/projects/{name}/builds": { kind: "projectRole", role: "developer", doing: "starting a build" },
+  "POST /api/v1/projects/{name}/acquisitions": { kind: "projectRole", role: "admin", doing: "acquiring an image" },
   "GET /api/v1/projects/{name}/releases": { kind: "projectRole", role: "viewer", doing: "reading a project's releases" },
   "GET /api/v1/projects/{name}/environments": { kind: "projectRole", role: "viewer", doing: "reading a project's environments" },
   "GET /api/v1/projects/{name}/audit-pack": { kind: "operator", doing: "exporting a project's audit pack" },

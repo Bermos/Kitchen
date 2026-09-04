@@ -473,6 +473,51 @@ type buildView struct {
 	// the build as a whole is waiting on, and a row that Failed is why the
 	// build did.
 	Workloads []buildWorkloadView `json:"workloads,omitempty"`
+
+	// Acquisition is what this build resolved, from which reference, when,
+	// and what it replaced — for a Build that acquired an image somebody
+	// else built rather than building one. Absent on a build of a commit,
+	// whose answer to all four is the commit.
+	Acquisition *acquisitionView `json:"acquisition,omitempty"`
+}
+
+// acquisitionView is a Build with no commit, explaining itself.
+//
+// It exists to answer "why did this environment change" for software this
+// platform did not build. A commit answers that question by being a commit;
+// an acquisition has to say what it followed, what it found, when it looked,
+// what it replaced, and what made it look.
+type acquisitionView struct {
+	// Reference is what was followed, as the project declared it.
+	Reference string `json:"reference,omitempty"`
+	// Image is what it resolved to, always by digest.
+	Image string `json:"image,omitempty"`
+	// Previous is the image this one replaced, absent for a project's first.
+	Previous string `json:"previous,omitempty"`
+	// Trigger is what asked: `seed`, `poll` or `request`.
+	Trigger string `json:"trigger,omitempty"`
+	// Pinned is whether the project named a digest rather than a tag, which
+	// is how a project says it does not want to be moved.
+	Pinned bool `json:"pinned,omitempty"`
+	// ResolvedAt is when the registry was asked.
+	ResolvedAt *time.Time `json:"resolvedAt,omitempty"`
+}
+
+func newAcquisitionView(status *kitchenv1alpha1.AcquisitionStatus) *acquisitionView {
+	if status == nil {
+		return nil
+	}
+	view := &acquisitionView{
+		Reference: status.Reference,
+		Image:     status.Image,
+		Previous:  status.Previous,
+		Trigger:   string(status.Trigger),
+		Pinned:    status.Pinned,
+	}
+	if at := status.ResolvedAt; at != nil {
+		view.ResolvedAt = &at.Time
+	}
+	return view
 }
 
 // buildWorkloadView is one workload's own build within one commit's.
@@ -481,7 +526,10 @@ type buildWorkloadView struct {
 	Phase      string `json:"phase,omitempty"`
 	Image      string `json:"image,omitempty"`
 	Repository string `json:"repository,omitempty"`
-	Job        string `json:"job,omitempty"`
+	// Reference is what this workload's image was acquired from, as the
+	// project declared it. Absent for a workload this platform built.
+	Reference string `json:"reference,omitempty"`
+	Job       string `json:"job,omitempty"`
 	// DockerfileTarget is the stage this workload's build was told to
 	// produce, absent for its file's last stage. It is the row's counterpart
 	// of the build's own `dockerfileTarget`, and it is here for the same
@@ -514,6 +562,7 @@ func buildWorkloadViews(workloads []kitchenv1alpha1.WorkloadBuildStatus) []build
 			Phase:             string(workload.Phase),
 			Image:             workload.Image,
 			Repository:        workload.Repository,
+			Reference:         workload.Reference,
 			Job:               workload.Job,
 			DockerfileTarget:  workload.DockerfileTarget,
 			DetectedFramework: workload.DetectedFramework,
@@ -802,6 +851,7 @@ func newBuildView(build *kitchenv1alpha1.Build) buildView {
 		Source:            newSourceView(build.Status.Source),
 		Failure:           newBuildFailureView(build.Status.Failure),
 		Workloads:         buildWorkloadViews(build.Status.Workloads),
+		Acquisition:       newAcquisitionView(build.Status.Acquisition),
 		CreatedAt:         build.CreationTimestamp.Time,
 		Conditions:        conditionViews(build.Status.Conditions),
 	}

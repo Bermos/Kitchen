@@ -235,6 +235,22 @@ const failedCondition = computed(() =>
   build.value?.conditions?.find((c) => c.type === "Ready" && c.status === "False"),
 );
 
+/** Why this acquisition happened, in a sentence rather than as the enum the
+ *  API carries. The three answers are the three things that can create one,
+ *  and months later the reason is the half nothing else records. */
+const acquisitionTrigger = computed(() => {
+  switch (build.value?.acquisition?.trigger) {
+    case "poll":
+      return "the tag this project follows moved";
+    case "request":
+      return "somebody asked for it";
+    case "seed":
+      return "the project was created, so what it names was acquired";
+    default:
+      return "unrecorded";
+  }
+});
+
 const logFetcher = (query: LogQuery) => api.buildLogs(name.value, query);
 const logStreamer = (query: LogQuery, onLine: (line: LogLine) => void, signal: AbortSignal) =>
   api.streamBuildLogs(name.value, query, onLine, signal);
@@ -260,7 +276,7 @@ const logRunLabels = computed<Record<string, string>>(() => {
     <UAlert v-if="error" color="error" variant="soft" icon="i-lucide-triangle-alert" :title="error" />
     <template v-else-if="build">
       <PageHeader
-        :title="build.git.message || build.name"
+        :title="build.git.message || build.acquisition?.reference || build.name"
         :breadcrumb="[
           { label: 'Overview', to: '/' },
           { label: build.project, to: { name: 'project', params: { name: build.project } } },
@@ -271,8 +287,13 @@ const logRunLabels = computed<Record<string, string>>(() => {
           <PhaseBadge :phase="build.phase" />
         </template>
         <template #meta>
-          <span class="font-mono">{{ shortSHA(build.git.sha) }}</span>
-          <span class="font-mono">{{ build.git.branch }}</span>
+          <!-- A build of a commit says which commit; an acquisition has none
+               and says what it followed instead. Nothing fakes a commit, so
+               the fields a vendored build has no answer for are absent rather
+               than empty. -->
+          <span v-if="build.git.sha" class="font-mono">{{ shortSHA(build.git.sha) }}</span>
+          <span v-if="build.git.branch" class="font-mono">{{ build.git.branch }}</span>
+          <span v-else-if="build.acquisition?.reference" class="font-mono">{{ build.acquisition.reference }}</span>
           <span v-if="build.git.pullRequest" class="font-mono">#{{ build.git.pullRequest }}</span>
           <span v-if="build.git.author" class="font-mono">{{ build.git.author }}</span>
           <span v-if="build.detectedFramework" class="font-mono">{{ build.detectedFramework }}, detected</span>
@@ -390,6 +411,33 @@ const logRunLabels = computed<Record<string, string>>(() => {
             </tbody>
           </table>
         </div>
+      </div>
+
+      <!-- What an acquisition resolved, from which reference, and when — the
+           answer to "why did this environment change" for software this
+           platform did not build, which for every other build is the commit.
+           It names what it replaced as well as what it took, because a digest
+           on its own says nothing about the move. -->
+      <div v-if="build.acquisition" class="rounded-md border border-default px-5 py-4 space-y-3">
+        <p class="text-xs text-muted">Acquired, not built</p>
+        <dl class="grid grid-cols-[10rem_1fr] gap-x-4 gap-y-1 text-xs">
+          <dt class="text-dimmed">Followed</dt>
+          <dd class="font-mono text-toned break-all">{{ build.acquisition.reference }}</dd>
+          <template v-if="build.acquisition.image">
+            <dt class="text-dimmed">Resolved to</dt>
+            <dd class="font-mono text-toned break-all">{{ build.acquisition.image }}</dd>
+          </template>
+          <template v-if="build.acquisition.previous">
+            <dt class="text-dimmed">Replaced</dt>
+            <dd class="font-mono text-toned break-all">{{ build.acquisition.previous }}</dd>
+          </template>
+          <template v-if="build.acquisition.resolvedAt">
+            <dt class="text-dimmed">Asked at</dt>
+            <dd class="text-toned">{{ new Date(build.acquisition.resolvedAt).toLocaleString() }}</dd>
+          </template>
+          <dt class="text-dimmed">Because</dt>
+          <dd class="text-toned">{{ acquisitionTrigger }}</dd>
+        </dl>
       </div>
 
       <!-- What the commit said about itself, under the subject in the header.

@@ -103,6 +103,12 @@ spec:
       enabled: true                     # reuse layers between builds, in the registry the project pushes to
       mode: max                         # max | min — how much of a BuildKit build is kept
       scope: project                    # project | branch — what two builds share to reuse each other's layers
+    imagePollInterval: 10m              # how often the platform asks whether a watched tag has moved — the
+                                        # event that corresponds to a push, for a project whose software this
+                                        # platform did not build. One registry manifest HEAD per watched
+                                        # reference, never a pull. A reference pinned to a digest is never
+                                        # asked about; pinning is how a project opts out of moving. 0 is off,
+                                        # and anything else has a floor of one minute
   appNamespaces:
     podSecurity: privileged             # privileged | baseline | restricted — the Pod Security level the
                                         # operator labels every kitchen-<project> namespace with. Set rather
@@ -691,6 +697,11 @@ status:
   latestBuildRef: { name: my-shop-bld-8f3a2c1 }
   initialBuildRef: { name: my-shop-bld-8f3a2c1 }   # the build the platform made
                                         # itself, once, when the project was new
+  imagePoll:                            # the digest poll's own record, for a project with
+    lastPolledAt: ...                   # vendored references. Absent for everything else
+    message: ""                         # why the registry could not be asked, when it could not.
+                                        # It is also what keeps a registry that stays down to one
+                                        # failed acquisition rather than one every interval
 ```
 
 `initialBuildRef` is what makes a new project deploy without waiting for a
@@ -709,6 +720,16 @@ a Build with no commit, which resolves the digest the image reference names,
 freezes it onto a Release and runs no builder. Nothing fakes a commit — the
 Build names no SHA and no branch, so the commit-shaped policy rules stay inert
 rather than being satisfied by a substitute.
+
+**What moves it afterwards is the digest poll.** A vendored project has no
+push to react to, so the platform asks: one registry manifest HEAD per watched
+reference per `Kitchen.spec.builds.imagePollInterval`, compared against what
+this project's last acquisition resolved, and a new acquisition where they
+differ. A reference pinned to a digest is asked nothing at all — that is how a
+project says it does not want to be moved — and `POST
+/projects/{name}/acquisitions` asks now, optionally naming the digest to take.
+`status.imagePoll` is the pass's own record, and the whole of the state it
+keeps: what each reference resolved to lives on the Build that took it.
 
 A unit may mix the two: a project built from a repository can carry a workload
 that runs an upstream image (`processes[].image` above). They ship in one
@@ -949,8 +970,21 @@ spec:
     message: "Add checkout flow"        # branch, or neither: half a commit is refused at
     author: bermos                      # admission, and nothing fakes one
     pullRequest: 42                     # unset for direct pushes
+  acquire:                              # the other member of the same union: what a Build with no commit
+    reference: ghcr.io/vendor/app:stable  # takes. The reference as the project declared it when this was
+    digest: sha256:cd34...              # created, and the digest to take — set by the poll, which has
+    trigger: poll                       # already asked, and by "take exactly this". Empty digest is
+                                        # "whatever the reference names now", which is the seeding's case.
+                                        # trigger: seed | poll | request
 status:
   phase: Succeeded                      # Queued | Running | Succeeded | Failed | Cancelled
+  acquisition:                          # what an acquisition resolved, from where and when. Absent on a
+    reference: ghcr.io/vendor/app:stable  # build of a commit, whose answer to all of this is the commit
+    image: ghcr.io/vendor/app@sha256:cd34...
+    previous: ghcr.io/vendor/app@sha256:ab12...   # what it replaced; empty for a project's first
+    trigger: poll                       # what asked for it
+    pinned: false                       # whether the project named a digest rather than a tag
+    resolvedAt: ...                     # when the registry was asked
   detectedFramework: nextjs
   dockerfileTarget: web                 # the stage this build was told to produce, as it was told
                                         # it: unset for the file's last stage, and never recomputed
@@ -1009,6 +1043,25 @@ status:
 Reconcile: run a build job in the project namespace, push to the registry Connection,
 post a status check back on the commit, and on success **create a Release**.
 Retention: keep the last N Builds per project (configurable).
+
+**A Build with no commit runs no builder.** A project whose source is an image is
+deployed by an *acquisition*: the reconciler resolves what each of the unit's
+references names, freezes the digests onto a Release and hands it to the same
+promotion a build hands one to. The Build object stays because everything downstream
+of it — `status.artifact`, the evidence index, the quality gates, the audit chain, the
+build screens and the CLI — keys on a Build, and `status.acquisition` is what makes it
+answerable months later: what was followed, what arrived, what it replaced, and what
+asked.
+
+Three things create one. The project's own first reconcile seeds one, so that
+connecting software deploys it. The **digest poll** creates one when a watched tag
+stops naming the digest that was acquired — a manifest HEAD per watched reference per
+`Kitchen.spec.builds.imagePollInterval`, never a pull, and never at all for a
+reference pinned to a digest. And `POST /projects/{name}/acquisitions` creates one on
+demand, optionally naming the digest to take. A registry that cannot be read is an
+acquisition that **fails saying so**, once — the project's `status.imagePoll.message`
+is the record that it has already been said — and what is already running goes on
+running.
 
 Which job that is comes from the strategy. `dockerfile` runs **BuildKit** on the
 repository's own Dockerfile, with the commit as a git context BuildKit fetches itself.
