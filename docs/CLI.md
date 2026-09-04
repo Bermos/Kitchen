@@ -379,6 +379,13 @@ answer:
  "path": "/home/anna/shop/.kitchen/project.json"}
 ```
 
+A preflight that cannot run is a warning and not a refusal — it is advice
+about the repository, and the platform being unable to give any is no reason to
+withhold a project. A repository the connection does not list is one such case:
+the preflight answers `403` there, because reading a repository's contents
+through the platform's credential is bounded by what the connection offers, and
+the create carries on to `POST /projects`, which names its own repository.
+
 That is the point of the command rather than a `kitchen api POST /projects`.
 **Creating a project starts a build of its production branch immediately**, so
 `--root-directory`, `--dockerfile` and `--dockerfile-target` are sent with the

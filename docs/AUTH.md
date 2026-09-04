@@ -502,11 +502,18 @@ Five rules go with that table:
   directory, where the connection is a GitHub App across one. Their whole
   justification is that a project cannot be created without them, and since
   creating a project is `any person` a CI key has no form left to fill in.
+  The listing stays the installation's: the platform holds no per-person git
+  credential to ask a narrower question with, and a `Connection` names no
+  organisation, owner or group to scope the answer to, so a caller-scoped
+  listing is a feature rather than a policy change. The preflight beside it is
+  bounded all the same — it answers only about the repositories that listing
+  carries, so the contents of a repository the connection does not offer are
+  not read through the platform's credential for anybody (#331).
 - **A route's listed requirement is a floor.** A condition that depends on the
   *body* of one request cannot be a row of a table whose unit is a route, so it
   is checked in the handler above the row's role and refused with a `403`
-  naming the field and the role it wants. There is exactly one, and it is the
-  reason the admin row above mentions a field:
+  naming the field and the role it wants. There is exactly one that raises the
+  role, and it is the reason the admin row above mentions a field:
   `deletionPolicy: Delete` on a claim destroys the provisioned resource and
   everything on it — the CNPG Cluster and its volumes, every object version in
   the bucket, the Valkey StatefulSet and its disk — and destroying data is
@@ -515,7 +522,12 @@ Five rules go with that table:
   `developer`'s. The dashboard reads the same rule from `ui/src/lib/claims.ts`
   rather than from the generated table, since the table cannot state it, and it
   gates the confirmation on typing the claim's name the way project deletion
-  does. A second such condition is written here or it does not exist.
+  does. A second such condition is written here or it does not exist. There is
+  one other body-dependent refusal and it raises no role at all:
+  `POST /connections/{name}/detect` refuses a `repo` the connection's own
+  repository listing does not carry, because what the platform's git credential
+  is used to read is bounded by what that connection offers rather than by who
+  is asking.
 - **A field withheld by role is absent, never zeroed.** The dashboard has to be
   able to tell "no tunnel is configured" from "you are not allowed to know", and
   an empty component survey reads as a healthy platform running nothing.
@@ -563,6 +575,14 @@ and the contents of any one of them, whether or not the key's project has
 anything to do with it. Their entire justification was that a project cannot
 be created without them. A caller who may not create one has no form to fill
 in, so they ask for a person too.
+
+That bounded who may ask, not what may be asked about, and the second half is
+answered separately: the preflight reads only the repositories the listing
+beside it carries, and a repository the connection does not offer is refused a
+`403` rather than read for anybody who can guess its name. The listing itself
+is still the installation's — narrowing it to the caller needs a credential the
+caller owns, which the platform does not have and a `Connection` gives it no
+scope to stand in for (#331).
 
 The check is the reserved domain and nothing cleverer: a machine account can
 only exist under `machines.kitchen.local` and a person can only exist outside

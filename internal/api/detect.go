@@ -157,6 +157,30 @@ func (s *Server) detectRepository(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// Which repositories this may be asked about, settled before anything is
+	// read (#331). The listing beside this route is what the connection's
+	// credential is meant to offer; reading a repository outside it would let
+	// anybody who may create a project pull the contents of any repository
+	// the installation's token happens to reach, one guessed name at a time.
+	// A provider with no listing behind it leaves nothing to check against,
+	// and is read as it always was.
+	offerCtx, cancelOffer := context.WithTimeout(ctx, repositoryListTimeout)
+	offer, err := offeredRepository(offerCtx, git, body.Repo)
+	cancelOffer()
+	if err != nil {
+		writeRepositoryListingError(w, connection, err)
+		return
+	}
+	if offer.Enumerable && !offer.Listed {
+		// A refusal rather than an answer: the repository may well exist and
+		// be readable, and saying which would make this the enumeration the
+		// providers' own 404s are careful not to be. It names the connection,
+		// because an installation may have several and another may offer it.
+		writeJSON(w, http.StatusForbidden, errorBody{
+			Error: repositoryNotOfferedMessage(connection.Name, body.Repo, offer.Truncated)})
+		return
+	}
+
 	detectCtx, cancel := context.WithTimeout(ctx, detectTimeout)
 	defer cancel()
 
@@ -379,6 +403,22 @@ func (s *Server) gitProviderFor(
 		return nil, "", err
 	}
 	return git, "", nil
+}
+
+// repositoryNotOfferedMessage is the refusal for a repository the connection
+// does not list. It says what the rule is rather than what the repository is,
+// and the truncated case says so outright: a listing cut short at its cap is
+// the one way a repository the credential could read is refused here anyway,
+// and somebody who is told nothing would go looking for a fault in the token.
+func repositoryNotOfferedMessage(connection, repo string, truncated bool) string {
+	message := fmt.Sprintf(
+		"connection %q does not list %s: this reads a repository through the platform's own credential, "+
+			"so it answers only about the repositories that connection offers", connection, repo)
+	if truncated {
+		message += ", and that listing was cut short at its cap of the most recently pushed — " +
+			"a repository past the cap is refused here even where the credential could read it"
+	}
+	return message
 }
 
 // writeProviderError renders a failure to reach the provider. It is a bad

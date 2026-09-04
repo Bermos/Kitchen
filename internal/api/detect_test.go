@@ -19,6 +19,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -44,6 +45,16 @@ import (
 func fakeGitHubContents(t *testing.T, dirs map[string][]string, files map[string]string) *httptest.Server {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		// What this connection offers, which is the set the preflight is
+		// allowed to be asked about at all. acme/vanished is listed and is a
+		// 404 everywhere else: that is a listing gone stale between the two
+		// requests, and the one way a repository the connection offers is
+		// still unreadable.
+		if req.URL.Path == gitHubReposPath {
+			_, _ = w.Write([]byte(`[{"full_name": "acme/shop", "default_branch": "trunk"},
+				{"full_name": "acme/vanished", "default_branch": "trunk"}]`))
+			return
+		}
 		// The repository itself, which is what a request that named no ref
 		// resolves its default branch from. It is deliberately not "main":
 		// a preflight that assumed the name would look right and be wrong.
@@ -167,15 +178,16 @@ func TestDetectingARootDirectoryThatIsNotThere(t *testing.T) {
 }
 
 func TestDetectingARepositoryTheConnectionCannotSee(t *testing.T) {
-	// The repository the credential can see is acme/shop; every other
-	// repository is a 404, which is what GitHub answers both for a
-	// repository that does not exist and for one a token is not allowed to
-	// know about.
+	// acme/vanished is a repository the connection lists and cannot read:
+	// every request about it is a 404, which is what GitHub answers both for
+	// a repository that does not exist and for one a token is not allowed to
+	// know about. A listing that has gone stale since it was walked is what
+	// that looks like from here.
 	github := fakeGitHubContents(t, map[string][]string{"": {"go.mod"}}, nil)
 	h := newHarness(t, nil, append(fixtures(), gitHubConnection("hub", github.URL, "ghp_stored")...)...)
 
 	recorder := h.do(t, http.MethodPost, "/api/v1/connections/hub/detect",
-		`{"repo": "acme/private", "ref": "main"}`)
+		`{"repo": "acme/vanished", "ref": "main"}`)
 	// It is the caller's to act on — a repository to correct, or a token to
 	// widen — so it is an answer rather than a failure.
 	if recorder.Code != http.StatusOK {
@@ -192,8 +204,128 @@ func TestDetectingARepositoryTheConnectionCannotSee(t *testing.T) {
 	}
 	// It names the connection, because an installation may have several and
 	// the fix is usually in the one that was asked.
-	if !strings.Contains(view.Message, `"hub"`) || !strings.Contains(view.Message, "acme/private") {
+	if !strings.Contains(view.Message, `"hub"`) || !strings.Contains(view.Message, "acme/vanished") {
 		t.Fatalf("the message does not say what could not read what: %+v", view)
+	}
+}
+
+// The preflight reads a repository's contents through the platform's own
+// credential, so it answers about the repositories the connection offers and
+// about nothing else. Without that, anybody who may create a project — which
+// is anybody signed in, on their first day and holding no role — could read
+// any repository the installation's token happens to reach by guessing its
+// name.
+func TestDetectingARepositoryTheConnectionDoesNotList(t *testing.T) {
+	// The listing carries acme/storefront alone. This server serves nothing
+	// else, so a preflight that read the repository anyway would answer 200
+	// with "unreadable" rather than the refusal below.
+	github := fakeGitHubRepos(t, "ghp_stored", `[{"full_name": "acme/storefront", "default_branch": "main"}]`)
+	h := newHarness(t, nil, append(fixtures(), gitHubConnection("hub", github.URL, "ghp_stored")...)...)
+	h.demoteCaller(t)
+
+	recorder := h.do(t, http.MethodPost, "/api/v1/connections/hub/detect",
+		`{"repo": "acme/secrets", "ref": "main"}`)
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("want 403, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	got := errorOf(t, recorder.Body.String())
+	// It names the connection — an installation may have several, and
+	// another may well offer this repository — and the repository that was
+	// asked about.
+	if !strings.Contains(got, `"hub"`) || !strings.Contains(got, "acme/secrets") {
+		t.Fatalf("the refusal does not say what was refused: %q", got)
+	}
+	if !strings.Contains(got, "does not list") {
+		t.Fatalf("the refusal does not say why: %q", got)
+	}
+	// Nothing about the repository itself: whether it exists is what the
+	// providers' own 404s are careful not to say, and a refusal that said it
+	// would be the enumeration this route was closed to.
+	if strings.Contains(got, "unreadable") || strings.Contains(got, "not found") {
+		t.Fatalf("the refusal says something about the repository: %q", got)
+	}
+}
+
+// A repository the listing does carry is read exactly as it was, and the
+// name is matched the way the providers match it: acme/shop and Acme/Shop are
+// one repository, and a name pasted with the wrong case is not a repository
+// the connection does not offer.
+func TestDetectingIgnoresTheCaseOfARepositoryName(t *testing.T) {
+	h := newHarness(t, nil, append(fixtures(), gitHubConnection("hub", "https://example.invalid", "ghp_stored")...)...)
+	h.server.GitProviders = func(*kitchenv1alpha1.Connection, string) (gitprovider.Provider, error) {
+		return listingProvider{repos: []string{"acme/shop"}}, nil
+	}
+	h.demoteCaller(t)
+
+	recorder := h.do(t, http.MethodPost, "/api/v1/connections/hub/detect",
+		`{"repo": "Acme/Shop", "ref": "main"}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if view := decode[detectionView](t, recorder); !view.Detected {
+		t.Fatalf("a listed repository was not read: %+v", view)
+	}
+
+	// The repository next to it in the same organisation is not offered, and
+	// nothing about it is read.
+	recorder = h.do(t, http.MethodPost, "/api/v1/connections/hub/detect",
+		`{"repo": "acme/secrets", "ref": "main"}`)
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("want 403, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+// A listing cut short at its cap is the one case a repository the credential
+// could read is refused anyway. It is said outright, because somebody told
+// only that the connection does not list it would go looking for a fault in
+// the token.
+func TestDetectingARepositoryPastTheListingsCap(t *testing.T) {
+	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.URL.Path != gitHubReposPath {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		// Every page full, so the walk stops at its own cap and says it did.
+		// The size is the provider's, and a page short of it would end the
+		// walk before the cap was reached.
+		const providerPageSize = 100
+		page := make([]map[string]any, 0, providerPageSize)
+		for i := range providerPageSize {
+			page = append(page, map[string]any{
+				"full_name": fmt.Sprintf("acme/repo-%s-%d", req.URL.Query().Get("page"), i), "default_branch": "main"})
+		}
+		_ = json.NewEncoder(w).Encode(page)
+	}))
+	t.Cleanup(github.Close)
+	h := newHarness(t, nil, append(fixtures(), gitHubConnection("hub", github.URL, "ghp_stored")...)...)
+
+	recorder := h.do(t, http.MethodPost, "/api/v1/connections/hub/detect",
+		`{"repo": "acme/secrets", "ref": "main"}`)
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("want 403, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if got := errorOf(t, recorder.Body.String()); !strings.Contains(got, "cut short") {
+		t.Fatalf("the refusal does not say the listing was truncated: %q", got)
+	}
+}
+
+// A provider with no listing behind it leaves nothing to check against, and
+// nothing is narrowed: gitlab and gitea are read exactly as they were. That
+// is the honest gap rather than a filter invented for them.
+func TestDetectingOnAProviderThatCannotEnumerate(t *testing.T) {
+	h := newHarness(t, nil, append(fixtures(), gitHubConnection("hub", "https://example.invalid", "ghp_stored")...)...)
+	h.server.GitProviders = func(*kitchenv1alpha1.Connection, string) (gitprovider.Provider, error) {
+		return blindProvider{}, nil
+	}
+	h.demoteCaller(t)
+
+	recorder := h.do(t, http.MethodPost, "/api/v1/connections/hub/detect",
+		`{"repo": "acme/anything", "ref": "main"}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if view := decode[detectionView](t, recorder); !view.Detected {
+		t.Fatalf("a provider with no listing did not read the repository: %+v", view)
 	}
 }
 
@@ -242,19 +374,19 @@ func TestDetectingWithoutARefReadsTheDefaultBranch(t *testing.T) {
 	}
 }
 
-// A repository the credential cannot see is a 404 on the way to the default
-// branch, and it is the caller's to fix: a name they mistyped, or a token that
-// was never granted it.
+// A repository the connection lists and cannot read is a 404 on the way to
+// the default branch, and it is the caller's to fix: a token that has lost
+// the repository since the listing was walked, or a repository that has gone.
 func TestDetectingWithoutARefForARepositoryThatIsNotThere(t *testing.T) {
 	github := fakeGitHubContents(t, map[string][]string{"": {"go.mod"}}, nil)
 	h := newHarness(t, nil, append(fixtures(), gitHubConnection("hub", github.URL, "ghp_stored")...)...)
 
-	recorder := h.do(t, http.MethodPost, "/api/v1/connections/hub/detect", `{"repo": "acme/typo"}`)
+	recorder := h.do(t, http.MethodPost, "/api/v1/connections/hub/detect", `{"repo": "acme/vanished"}`)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
 	}
 	view := decode[detectionView](t, recorder)
-	if view.Detected || !strings.Contains(view.Message, "acme/typo") {
+	if view.Detected || !strings.Contains(view.Message, "acme/vanished") {
 		t.Fatalf("the answer does not name the repository it could not see: %+v", view)
 	}
 	// It is the repository that could not be read, which is what separates
@@ -279,6 +411,23 @@ func (blindProvider) ListDir(context.Context, string, string, string) ([]gitprov
 }
 func (blindProvider) ReadFile(context.Context, string, string, string) ([]byte, error) {
 	return nil, gitprovider.ErrFileNotFound
+}
+
+// listingProvider reads a repository the way blindProvider does and lists the
+// repositories it was built with, which is what lets a test say what the
+// listing check makes of a name without a provider's wire format in the way.
+type listingProvider struct {
+	blindProvider
+	repos []string
+}
+
+func (p listingProvider) ListRepositories(context.Context) (gitprovider.RepositoryListing, error) {
+	listing := gitprovider.RepositoryListing{}
+	for _, repo := range p.repos {
+		listing.Repositories = append(listing.Repositories,
+			gitprovider.Repository{FullName: repo, DefaultBranch: "main"})
+	}
+	return listing, nil
 }
 
 // A provider that cannot work out a default branch is not a failure of the

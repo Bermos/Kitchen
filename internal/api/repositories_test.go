@@ -33,12 +33,17 @@ import (
 // answered from what the connection's stored credential can see so that the
 // repository is chosen rather than spelled.
 
+// gitHubReposPath is the one endpoint the listing asks GitHub for, and since
+// the preflight beside it checks its answer, the same path is served by the
+// fakes in detect_test.go too.
+const gitHubReposPath = "/user/repos"
+
 // fakeGitHubRepos serves /user/repos for one token and nothing else, which is
 // the whole of what the listing asks GitHub for.
 func fakeGitHubRepos(t *testing.T, goodToken, body string) *httptest.Server {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		if req.URL.Path != "/user/repos" {
+		if req.URL.Path != gitHubReposPath {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
