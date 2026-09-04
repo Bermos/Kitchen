@@ -117,6 +117,11 @@ func (postgresContract) reconcile(
 	branchErr := r.reconcileBranches(ctx, claim, project.Name, databaseBrancher{provisioner}, appNS,
 		conn.Spec.Provider, mode.Isolated())
 
+	// What this database can be recovered to, and what has been. It runs
+	// after the shared binding exists and before the bind below writes the
+	// status, because promoting a recovery *is* a rewrite of that binding.
+	recoveryErr := r.reconcileRecoveries(ctx, claim, provisioner, appNS, conn.Spec.Provider)
+
 	// The declaration travels in the bind's audit record: what the data
 	// derives from and where the provider put it are the two facts the
 	// binding is answerable for. "" reads as undeclared/unreported — the
@@ -132,9 +137,10 @@ func (postgresContract) reconcile(
 	}); err != nil {
 		return ctrl.Result{}, err
 	}
-	if branchErr != nil {
-		// The shared binding works either way; the branch condition carries
-		// the provider's complaint and the requeue retries it.
+	if branchErr != nil || recoveryErr != nil {
+		// The shared binding works either way; the branch and recovery
+		// conditions carry the provider's complaint and the requeue retries
+		// it.
 		return ctrl.Result{RequeueAfter: claimRequeueDelay}, nil
 	}
 	log.Info("reconciled resource claim", "claim", claim.Name, "secret", claim.Status.SecretName)
@@ -169,6 +175,11 @@ func (postgresContract) finalize(
 
 	for _, branch := range claim.Status.Branches {
 		if err := r.deleteBranch(ctx, claim, brancher, appNS, branch); err != nil {
+			return err
+		}
+	}
+	if provisioner != nil {
+		if err := r.finalizeRecoveries(ctx, claim, provisioner, appNS); err != nil {
 			return err
 		}
 	}

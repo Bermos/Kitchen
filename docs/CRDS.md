@@ -1629,6 +1629,10 @@ spec:
   type: postgres
   deletionPolicy: Retain                # Retain (default) | Delete — what deleting the claim does to the data
   dataClass: confidential               # never above the project's class; absent = unclassified
+  recoveries:                           # point-in-time copies asked for; each becomes a sibling database
+    - name: before-the-migration
+      at: 2026-08-30T14:05:00Z          # inside the window the status reports
+  promotedRecovery: ""                  # which copy the claim binds; empty binds the instance's own database
   config:
     previewMode: fresh                  # what previews get: the provider's declared mode (default), shared or none
     postgres:                           # what the database itself has to be; all of it optional
@@ -1652,7 +1656,25 @@ status:
       id: br-def456
       secretName: shop-db-binding-my-shop-pr-41
       provenance: production            # a branch of a production database is production-derived
-  conditions: [...]                     # Ready, Provisioned, PreviewBranchesReady
+  recovery:                             # what this claim can be recovered to, and what has been
+    available: true                     # its provider can do it AND reports a window with something in it
+    reason: neon can reconstruct…       # the provider's own account, and why not when it cannot
+    window:                             # read from the provider every reconcile, never declared
+      earliest: 2026-08-24T09:12:00Z
+      latest: 2026-08-31T09:12:00Z
+      observedAt: 2026-08-31T09:12:00Z
+    recoveries:
+      - name: before-the-migration
+        at: 2026-08-30T14:05:00Z        # the moment this copy holds, not when it was made
+        id: br-ghi789
+        secretName: shop-db-recovery-before-the-migration
+        provenance: production          # a recovery of production data is production data, earlier
+        dataClass: confidential         # inherited from the claim: a new place the same data lives
+        phase: Ready                    # Pending | Ready | Failed
+    retained:                           # what a promote displaced and did not destroy
+      - displacedBy: before-the-migration
+        at: 2026-08-31T09:20:00Z
+  conditions: [...]                     # Ready, Provisioned, PreviewBranchesReady, RecoveriesReady
 ```
 
 Reconcile: require the `database` capability on the Connection (Pending, saying so,
@@ -1685,6 +1707,26 @@ never needs the right to create them itself. Everything in the block is applied
 when the database is created and is not reapplied to a running one: a major
 version is not something to change under a live Postgres, and asking for a
 different database means asking for a different database.
+
+**`spec.recoveries` recovers to a copy; `spec.promotedRecovery` decides to use
+one.** Neither supported provider rewinds a database in place, and neither
+needs to: recovering makes a *sibling* holding the data as it was at a moment
+— for Neon, a branch at a parent timestamp — with a binding Secret of its own
+(`<claim>-recovery-<name>`), while the application keeps reading what it was
+reading. Setting `promotedRecovery` rewrites the claim's own binding Secret
+with that copy's, which rolls every Environment reading the claim; what it
+displaced is recorded under `status.recovery.retained` and **kept**, on the
+same reasoning that makes `deletionPolicy: Retain` the default. Removing a
+name from `spec.recoveries` discards that copy and its data.
+
+Whether any of it is possible is `status.recovery.available`, and it is
+**observed, never declared**: the provisioner implements the optional
+interface or it does not, and the window is read off the provider on every
+reconcile rather than being a field somebody sets. There is deliberately no
+`pointInTimeRecovery` capability on the Connection — a declared capability is
+one somebody can declare falsely. [docs/api/claims.md](api/claims.md#recovering-the-data-to-a-moment-in-the-past)
+is the surface, and [docs/BACKUP.md](BACKUP.md) is where this sits next to the
+platform's own archive, which restores the claim and never the data behind it.
 
 **`config.inngest` names an Inngest app rather than creating one.** An
 `inngest` claim, through a `backgroundJobs`-capable Connection holding an

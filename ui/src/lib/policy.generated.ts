@@ -188,6 +188,10 @@ export type Route =
   | "POST /api/v1/claims"
   | "GET /api/v1/claims/{name}"
   | "DELETE /api/v1/claims/{name}"
+  | "GET /api/v1/claims/{name}/recoveries"
+  | "POST /api/v1/claims/{name}/recoveries"
+  | "POST /api/v1/claims/{name}/recoveries/{recovery}/promote"
+  | "DELETE /api/v1/claims/{name}/recoveries/{recovery}"
   | "/"
 ;
 
@@ -329,5 +333,9 @@ export const POLICY: Readonly<Record<Route, Requirement>> = {
   "POST /api/v1/claims": { kind: "projectRole", role: "developer", doing: "claiming a resource" },
   "GET /api/v1/claims/{name}": { kind: "projectRole", role: "viewer", doing: "reading a resource claim" },
   "DELETE /api/v1/claims/{name}": { kind: "projectRole", role: "developer", doing: "deleting a resource claim" },
+  "GET /api/v1/claims/{name}/recoveries": { kind: "projectRole", role: "viewer", doing: "reading what a claim can be recovered to" },
+  "POST /api/v1/claims/{name}/recoveries": { kind: "projectRole", role: "developer", doing: "recovering a claim to a point in time" },
+  "POST /api/v1/claims/{name}/recoveries/{recovery}/promote": { kind: "projectRole", role: "developer", doing: "promoting a recovery" },
+  "DELETE /api/v1/claims/{name}/recoveries/{recovery}": { kind: "projectRole", role: "developer", doing: "discarding a recovery" },
   "/": { kind: "authenticated" },
 };

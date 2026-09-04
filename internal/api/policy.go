@@ -687,6 +687,33 @@ func (s *Server) routes() []route {
 		{"DELETE /api/v1/claims/{name}", s.deleteClaim,
 			onProject(access.ProjectDeveloper, ofClaim, "deleting a resource claim")},
 
+		// Point-in-time recovery (#247), where the provider can do it. The
+		// two verbs are two different blast radii and so two different
+		// requirements — recovering is the developer's, promoting is the
+		// admin's, and the split is why they are separate operations at all.
+		//
+		// **Recovering is cheap and reversible.** It makes a *sibling*
+		// database holding the claim's data as it was at a moment, with a
+		// binding of its own, and touches nothing the application is
+		// reading. Getting the timestamp wrong costs another recovery, not
+		// the database — so it sits with the role that claims resources in
+		// the first place. Discarding one is the same act backwards, and the
+		// handler refuses to discard the one the claim is bound to.
+		//
+		// **Promoting is destructive**, and its requirement is the handler's
+		// rather than this table's — `admin` on the *claim's* project, which
+		// is the same escalation `deletionPolicy: Delete` takes and for the
+		// same reason: it replaces the database every environment of the
+		// project reads. The row below is the floor.
+		{"GET /api/v1/claims/{name}/recoveries", s.listClaimRecoveries,
+			onProject(access.ProjectViewer, ofClaim, "reading what a claim can be recovered to")},
+		{"POST /api/v1/claims/{name}/recoveries", s.createClaimRecovery,
+			onProject(access.ProjectDeveloper, ofClaim, "recovering a claim to a point in time")},
+		{"POST /api/v1/claims/{name}/recoveries/{recovery}/promote", s.promoteClaimRecovery,
+			onProject(access.ProjectDeveloper, ofClaim, "promoting a recovery")},
+		{"DELETE /api/v1/claims/{name}/recoveries/{recovery}", s.deleteClaimRecovery,
+			onProject(access.ProjectDeveloper, ofClaim, "discarding a recovery")},
+
 		// Anything else under the API prefix is a 404 rather than a
 		// fall-through, and it is still a 404 only after the caller has been
 		// identified: an anonymous request should not be able to map the

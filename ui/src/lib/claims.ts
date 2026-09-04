@@ -67,3 +67,36 @@ export function destroysDataRefusal(caller: Caller, doing: string): string | und
 export function deletionGatedByName(claim: { deletionPolicy?: string } | null | undefined): boolean {
   return Boolean(claim && destroysData(claim));
 }
+
+/**
+ * The second thing about a claim that is not the developer's (#247).
+ *
+ * A claim's data can be recovered to a point in time where the provider can
+ * actually do it, and the operation is deliberately two: **recover** makes a
+ * sibling database holding the data as it was at a moment and touches nothing
+ * the application is reading, and **promote** makes that sibling the claim's
+ * binding. The first is cheap and reversible and is the developer's; the
+ * second replaces the database every environment of the project reads, so the
+ * API refuses it below `admin` — the same role `deletionPolicy: Delete` needs
+ * and the same role that may delete the project.
+ *
+ * Like that one, it cannot be read off `policy.generated.ts`: the route's row
+ * is the floor, and the escalation is the handler's. So it is stated here in
+ * the same role ordering, and the screen asks this rather than spelling out
+ * its own comparison.
+ */
+
+/** Whether this caller may promote a recovery over the claim's own database. */
+export function mayPromoteRecovery(caller: Caller): boolean {
+  return projectAtLeast(effectiveProjectRole(caller), "admin");
+}
+
+/** Why not, in the vocabulary the API refuses in — or undefined when the
+ * caller may. */
+export function promoteRefusal(caller: Caller): string | undefined {
+  if (mayPromoteRecovery(caller)) return undefined;
+  const held = effectiveProjectRole(caller);
+  const on = caller.projectName ? ` on ${caller.projectName}` : "";
+  const have = held ? `you have ${held}${on}` : `you have no role${on}`;
+  return `${have}; promoting a recovery needs admin: it replaces the database every environment of this project reads, and the one it displaces is kept but no longer bound`;
+}

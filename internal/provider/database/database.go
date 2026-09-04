@@ -41,6 +41,15 @@ limitations under the License.
 // it keeps production data out of previews by construction rather than by
 // policy.
 //
+// Recovery is the other optional interface, and it is asymmetric in the
+// opposite direction: Neon's point-in-time recovery is inherent to its
+// storage — a branch at a parent timestamp, with the window read off the
+// project's retention — where an in-cluster database can only recover from a
+// backup somebody configured. So RecoverableProvisioner is implemented where
+// the provider can actually do it, and a claim through a provisioner that
+// does not implement it reports no window and offers no recovery, rather than
+// offering one that fails when used.
+//
 // Capabilities are the other thing an in-cluster provisioner can answer that
 // a SaaS one cannot. A claim names a Postgres major version and the
 // extensions its first migration will call for; CapableProvisioner resolves
@@ -55,6 +64,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -248,6 +258,62 @@ type CapableProvisioner interface {
 	// error wrapping ErrUnsatisfiable when it cannot, naming what it could
 	// not supply and what it could.
 	ProvisionWith(ctx context.Context, res naming.Resource, req Requirements) (Instance, error)
+}
+
+// RecoveryWindow is how far back a provider can actually reconstruct an
+// instance's data. It is read from the provider rather than declared: a
+// retention a claim states and a retention the provider honours are two
+// different facts, and a date picker over the first is worse than no feature
+// at all.
+type RecoveryWindow struct {
+	// Earliest is the oldest moment the provider can still reach.
+	Earliest time.Time
+	// Latest is the newest — now, for a provider that keeps continuous
+	// history, and the last archived moment for one that does not.
+	Latest time.Time
+}
+
+// Empty reports a window with nothing in it: a provider that keeps no
+// history, or one whose retention has been turned down to zero. A claim over
+// an empty window offers no recovery rather than offering one that fails when
+// used.
+func (w RecoveryWindow) Empty() bool { return !w.Earliest.Before(w.Latest) }
+
+// Contains reports whether a moment is one the provider can be asked for.
+func (w RecoveryWindow) Contains(at time.Time) bool {
+	return !at.Before(w.Earliest) && !at.After(w.Latest)
+}
+
+// RecoverableProvisioner is a Provisioner whose provider can reconstruct an
+// instance's data as it was at a past moment — the same optional-interface
+// shape as CapableProvisioner, and for the same reason: it is a real
+// difference between implementations rather than a method every one of them
+// has to fake.
+//
+// It is deliberately **not** a Capability. A Capability is declared on a
+// Connection by whoever creates it, and whether a provider can recover to a
+// point in time is a fact about the implementation — a declared capability is
+// one somebody can declare falsely. The provisioner implements this or it does
+// not, and the claim's *status* reports the window it read. Observed, never
+// declared, the same rule residency follows.
+//
+// Neither supported provider rewinds a database in place, and none needs to:
+// what recovery produces is a *sibling* holding the old data, which is why
+// the second half of the operation — promoting the sibling over the original,
+// or discarding it — is the platform's and not the provider's.
+type RecoverableProvisioner interface {
+	Provisioner
+
+	// RecoveryWindow is how far back the provider can actually reach for
+	// this instance, read from the provider. An empty window means the
+	// provider keeps no history for it.
+	RecoveryWindow(ctx context.Context, instanceID string) (RecoveryWindow, error)
+
+	// RecoverTo creates (or finds) a database of the given name holding the
+	// instance's data as of at. It answers a Branch because that is what it
+	// is: the parent's data under a new address — and so, for a branch of a
+	// production database, ProvenanceProduction.
+	RecoverTo(ctx context.Context, instanceID, name string, at time.Time) (Branch, error)
 }
 
 // Options is what a Provisioner is built from. It is a struct rather than an

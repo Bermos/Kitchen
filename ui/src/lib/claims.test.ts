@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { deletionGatedByName, destroysData, destroysDataRefusal, mayDestroyData } from "./claims";
+import {
+  deletionGatedByName,
+  destroysData,
+  destroysDataRefusal,
+  mayDestroyData,
+  mayPromoteRecovery,
+  promoteRefusal,
+} from "./claims";
 import type { Caller } from "./policy";
 
 // The one escalation on the claims surface (#320): `deletionPolicy: Delete`
@@ -55,5 +62,36 @@ describe("the delete confirmation", () => {
     expect(deletionGatedByName({ deletionPolicy: "Delete" })).toBe(true);
     expect(deletionGatedByName({ deletionPolicy: "Retain" })).toBe(false);
     expect(deletionGatedByName(null)).toBe(false);
+  });
+});
+
+// The second escalation (#247): recovering a claim to a point in time makes a
+// sibling database and is the developer's, and promoting that sibling over
+// the claim's own is the admin's. Same reason as above — the route's row is
+// the floor and the escalation is the handler's — so the dashboard has to
+// know it as well as the API does.
+describe("who may promote a recovery", () => {
+  it("is the admin, and the operator who holds admin everywhere", () => {
+    expect(mayPromoteRecovery(admin)).toBe(true);
+    expect(mayPromoteRecovery(operator)).toBe(true);
+  });
+
+  it("is not the developer, whose half of this is recovering", () => {
+    expect(mayPromoteRecovery(developer)).toBe(false);
+    expect(mayPromoteRecovery(viewer)).toBe(false);
+    expect(mayPromoteRecovery(stranger)).toBe(false);
+  });
+
+  it("says why in the words the API refuses in", () => {
+    const refusal = promoteRefusal(developer);
+    expect(refusal).toContain("you have developer on shop");
+    expect(refusal).toContain("needs admin");
+    // What it does is the reason it needs the role, and the refusal says both.
+    expect(refusal).toContain("every environment of this project reads");
+    expect(refusal).toContain("displaces is kept");
+  });
+
+  it("says nothing to somebody who may", () => {
+    expect(promoteRefusal(admin)).toBeUndefined();
   });
 });

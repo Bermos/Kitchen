@@ -227,6 +227,51 @@ type ResourceClaimSpec struct {
 	// never defaulted.
 	// +optional
 	DataClass DataClass `json:"dataClass,omitempty"`
+
+	// Recoveries are the point-in-time recoveries asked for on this claim:
+	// each one a *sibling* database holding the claim's data as it was at a
+	// moment, created by the reconciler and listed on the status.
+	//
+	// Nothing is rewound and nothing is replaced by asking — which is the
+	// whole design. Neither provider can rewind a database in place, and none
+	// needs to: recovering to a sibling leaves the original untouched while
+	// somebody looks at the copy, which is the only way to find out whether
+	// the timestamp was the right one. Making the copy the claim's binding is
+	// PromotedRecovery, a second and deliberate act.
+	//
+	// Removing an entry discards that recovery and its data at the provider.
+	// +optional
+	Recoveries []ClaimRecoveryRequest `json:"recoveries,omitempty"`
+
+	// PromotedRecovery names the recovery, out of Recoveries, whose database
+	// the claim binds to. Empty — the normal state — binds the instance's own
+	// database.
+	//
+	// It is durable desired state rather than a one-shot command: the claim
+	// binds to what this names for as long as it names it, so a reconcile
+	// that runs again does not undo the cutover. The database it displaces is
+	// **retained**, never destroyed, under the same reasoning that makes
+	// deletionPolicy Retain the default — you do not want to discover the
+	// recovery was wrong after the original is gone.
+	// +optional
+	PromotedRecovery string `json:"promotedRecovery,omitempty"`
+}
+
+// ClaimRecoveryRequest asks for one point-in-time recovery of the claim's
+// resource: a sibling database holding its data as of At, under a name the
+// claim's status and the binding Secret are keyed by.
+type ClaimRecoveryRequest struct {
+	// Name identifies the recovery within the claim, and names its binding
+	// Secret. It is a DNS label because it ends up in object names on both
+	// sides of the platform.
+	// +kubebuilder:validation:MaxLength=40
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	Name string `json:"name"`
+
+	// At is the moment to recover to. It has to be inside the window the
+	// provider reports on the status; a moment outside it is refused by the
+	// API, and by the provider if it ever got that far.
+	At metav1.Time `json:"at"`
 }
 
 // claimConfig is the contract-agnostic slice of spec.config the platform
@@ -747,6 +792,149 @@ type ClaimPreviewVolume struct {
 	Provenance string `json:"provenance,omitempty"`
 }
 
+// ClaimRecoveryStatus is what the claim can be recovered to, and what has
+// been. The window is **observed**, never declared: it is read off the
+// provider on every reconcile, because a retention somebody wrote down and a
+// retention the provider honours are two different facts, and a date picker
+// over the second one is the only one worth having.
+type ClaimRecoveryStatus struct {
+	// Available says whether this claim can be recovered at all: its
+	// provider implements point-in-time recovery *and* reports a window with
+	// something in it. False is a complete answer — Reason says which of the
+	// two it is.
+	Available bool `json:"available"`
+
+	// Reason is why recovery is unavailable, or the sentence behind an
+	// available one. It is the provider's own account rather than the
+	// platform's guess: "cnpg cannot recover to a point in time until its
+	// backup policy exists" reads differently from "this provider keeps no
+	// history", and both are true of different claims.
+	// +optional
+	Reason string `json:"reason,omitempty"`
+
+	// Window is how far back the provider can actually reach. Absent where
+	// the provider cannot say — which is not the same as a window of zero
+	// length, and is surfaced as the absence it is.
+	// +optional
+	Window *ClaimRecoveryWindow `json:"window,omitempty"`
+
+	// Recoveries are the siblings this claim has recovered, newest request
+	// last, each with the moment it holds and the Secret its binding was
+	// written into.
+	// +optional
+	Recoveries []ClaimRecovery `json:"recoveries,omitempty"`
+
+	// Retained are the databases a promote displaced and did not destroy.
+	// Reaping one is a separate deliberate act — the platform never does it
+	// on its own, because a promote is exactly the moment somebody might
+	// have chosen the wrong timestamp.
+	// +optional
+	Retained []ClaimRetainedDatabase `json:"retained,omitempty"`
+}
+
+// ClaimRecoveryWindow is the span the provider can reconstruct data across,
+// as it last answered.
+type ClaimRecoveryWindow struct {
+	// Earliest is the oldest moment the provider can still reach.
+	Earliest metav1.Time `json:"earliest"`
+	// Latest is the newest — now, for a provider whose history is continuous
+	// up to the present.
+	Latest metav1.Time `json:"latest"`
+	// ObservedAt is when the window was read. A window is a moving pair of
+	// timestamps, and one read ten minutes ago has already slid.
+	ObservedAt metav1.Time `json:"observedAt"`
+}
+
+// The phases one recovery moves through. They are the claim's own vocabulary
+// rather than the claim phases, because a recovery being made says nothing
+// about whether the claim is bound: the application is reading its own
+// database throughout.
+const (
+	// ClaimRecoveryPending: asked for, and the provider has not answered yet.
+	ClaimRecoveryPending = "Pending"
+	// ClaimRecoveryReady: the sibling exists and its binding is written.
+	ClaimRecoveryReady = "Ready"
+	// ClaimRecoveryFailed: the provider refused, with its words in Message.
+	ClaimRecoveryFailed = "Failed"
+)
+
+// ClaimRecovery is one recovered sibling database: what it holds, where its
+// binding was written, and what the provider declared about it.
+type ClaimRecovery struct {
+	// Name is the claim-scoped name the recovery was asked for under.
+	Name string `json:"name"`
+
+	// At is the moment this database holds the claim's data as of.
+	At metav1.Time `json:"at"`
+
+	// ID is the provider-side identifier of the recovered database, opaque
+	// like every other the platform records.
+	// +optional
+	ID string `json:"id,omitempty"`
+
+	// SecretName is the recovery's own binding Secret in the application
+	// namespace — a second address for the same application's data, which is
+	// what makes looking at the copy possible before anything is promoted.
+	// +optional
+	SecretName string `json:"secretName,omitempty"`
+
+	// Provenance is the provider's declaration of what the recovered data
+	// derives from. A point-in-time recovery of a production database is
+	// production data at an earlier moment, so it is production — correct by
+	// construction rather than by policy.
+	// +kubebuilder:validation:Enum=production;masked;synthetic
+	// +optional
+	Provenance string `json:"provenance,omitempty"`
+
+	// DataClass is the class the recovery inherits from the claim. A
+	// recovery creates a new place the same data lives, so it carries the
+	// same classification; it is recorded here rather than read off the
+	// claim so that a claim reclassified later does not rewrite what a
+	// recovery was made under.
+	// +optional
+	DataClass DataClass `json:"dataClass,omitempty"`
+
+	// Phase is Pending while the provider is making it, Ready once its
+	// binding is written, Failed when the provider refused. Message carries
+	// the provider's own words.
+	// +kubebuilder:validation:Enum=Pending;Ready;Failed
+	// +optional
+	Phase string `json:"phase,omitempty"`
+	// +optional
+	Message string `json:"message,omitempty"`
+
+	// CreatedAt is when the platform first recorded this recovery, which is
+	// not the moment it holds: At is.
+	// +optional
+	CreatedAt metav1.Time `json:"createdAt,omitempty"`
+
+	// PromotedAt is when this recovery became the claim's binding. Absent on
+	// every recovery nobody promoted, which is most of them.
+	// +optional
+	PromotedAt *metav1.Time `json:"promotedAt,omitempty"`
+}
+
+// ClaimRetainedDatabase is a database a promote displaced and left behind.
+type ClaimRetainedDatabase struct {
+	// Recovery is the recovery whose database was displaced, empty when what
+	// was displaced was the instance's own database — the one the claim was
+	// bound to before anything was ever promoted, which is still there under
+	// the instance's name.
+	// +optional
+	Recovery string `json:"recovery,omitempty"`
+
+	// ID is the provider-side identifier of the retained database, where the
+	// platform has one to record.
+	// +optional
+	ID string `json:"id,omitempty"`
+
+	// DisplacedBy is the recovery that took its place.
+	DisplacedBy string `json:"displacedBy"`
+
+	// At is when the promote happened.
+	At metav1.Time `json:"at"`
+}
+
 // ResourceClaimStatus defines the observed state of a ResourceClaim.
 type ResourceClaimStatus struct {
 	// +optional
@@ -844,6 +1032,12 @@ type ResourceClaimStatus struct {
 	// reconciler reads what to mount.
 	// +optional
 	Volume *ClaimVolumeStatus `json:"volume,omitempty"`
+
+	// Recovery is what the claim can be recovered to and what has been
+	// recovered: the window the provider reports, the siblings, and anything
+	// a promote displaced. Absent on a claim of a type nothing recovers.
+	// +optional
+	Recovery *ClaimRecoveryStatus `json:"recovery,omitempty"`
 
 	// RedirectURIs is the redirect list an oidcClient claim's client is
 	// registered with, as the operator last wrote it. It is what a reconcile

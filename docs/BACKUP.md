@@ -69,6 +69,42 @@ Also not in the archive, and named in its own manifest so nobody has to guess:
   each application namespace is a copy the operator syncs, written again on the
   next build.
 
+## Two different recoveries, and this document is only one of them
+
+The list above has a shape to it: **this archive restores the platform's
+configuration and its accounts, and never the application data a claim points
+at.** That is not a gap to be filled later — the data belongs to the provider
+running it — but it does leave a second kind of recovery, and conflating the
+two is how somebody ends up restoring a platform and expecting a database to
+come back with it.
+
+| | Restores | How | Where it is |
+| --- | --- | --- | --- |
+| **Platform archive** | Configuration, credentials and accounts — every Project, Connection, Environment, Domain and ResourceClaim, plus the identity provider's Postgres | The restore Job, below | This document |
+| **Claim recovery** | One claim's application data, as it was at a moment | Per claim, through its own provider | [docs/api/claims.md](api/claims.md#recovering-the-data-to-a-moment-in-the-past) |
+
+A full disaster recovery is both, in that order: restoring the platform brings
+back the *claims*, and what each of them points at is recovered separately, or
+not at all. The two answer different questions and fail in different ways —
+this one is all-or-nothing and is taken on a schedule, and the other reaches
+back only as far as the claim's own provider keeps history, which the claim
+reports rather than the platform deciding.
+
+**Claim recovery exists where the provider can actually do it.** A Neon claim
+can be recovered to any moment inside the project's retention window, because
+Neon's storage keeps continuous history; a claim through the self-hosted
+provider cannot, because there is no archive behind it to recover from — a
+per-claim backup policy, which is what would put one there, is
+[issue #245](https://github.com/Bermos/Kitchen/issues/245)'s second phase. The
+claim says which of the two it is, in the provider's own words, rather than
+either being assumed.
+
+Neither kind of recovery rewinds anything in place. The platform restore
+writes objects back into an empty platform; a claim recovery makes a *copy* of
+the data at the chosen moment and leaves the original alone until somebody
+promotes the copy. Both are described in their own document, and neither
+substitutes for the other.
+
 ## Taking a backup
 
 **Platform → Backup** on the dashboard. The screen says what an archive would
