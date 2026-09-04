@@ -487,6 +487,37 @@ FORMAT JSONEachRow`,
 	return patterns, nil
 }
 
+// CountLogs is how many lines a selection matches — the whole answer, with no
+// buckets, no facets and no lines.
+//
+// It exists for the saved-query alerts (issue #77), which ask one question
+// every few minutes and compare the answer to a number. The histogram would
+// answer it too, but at the cost of two queries and a window the alert already
+// knows, and an alert evaluating every minute on a busy install is exactly the
+// place not to spend either.
+//
+// Like every other analytic here it carries caller-written query text, so it
+// runs under the same read-only settings and execution cap.
+func (c *Client) CountLogs(ctx context.Context, selection LogSelection) (uint64, error) {
+	where, params, err := selection.whereClause()
+	if err != nil {
+		return 0, err
+	}
+	statement := fmt.Sprintf(`SELECT toString(count()) AS hits
+FROM %s.%s
+%s
+FORMAT JSONEachRow`, quoteIdentifier(c.cfg.Database), quoteIdentifier(LogsTable), where)
+
+	rows, err := c.selectionRows(ctx, statement, params)
+	if err != nil {
+		return 0, err
+	}
+	if len(rows) == 0 {
+		return 0, nil
+	}
+	return parseUint(rows[0]["hits"]), nil
+}
+
 // selectionRows runs an aggregate that carries caller-written query text and
 // reads its JSONEachRow answer as strings. Everything an analytic selects is
 // cast to String in the statement, so there is one decoding path and no

@@ -15,7 +15,7 @@ state, restores it and asserts the project is back. See
 
 | Store | Holds | In the archive |
 | --- | --- | --- |
-| **etcd**, through the CRDs | Every Project, Connection, Build, Release, Environment, Domain, ResourceClaim and SavedQuery, plus the Kitchen singleton | **Yes** |
+| **etcd**, through the CRDs | Every Project, Connection, Build, Release, Environment, Domain, ResourceClaim, SavedQuery and NotificationSubscription, plus the Kitchen singleton | **Yes** |
 | **The identity provider's Postgres** | Accounts, sessions, OAuth clients, passkeys, API keys | **Yes**, as a data dump |
 | **ClickHouse** | Logs, metrics, traces, flow data, the audit log | **No** |
 
@@ -65,6 +65,13 @@ Also not in the archive, and named in its own manifest so nobody has to guess:
   take one.
 - **The platform's upgrade history** (`PlatformUpdate` objects), which describes
   a cluster that will not exist by the time anyone is restoring.
+- **Notifications in flight** (`NotificationDelivery` objects), including the
+  dead letters. A delivery is one message on its way somewhere, so restoring a
+  queue of them would post a week-old batch of deploys at whoever is watching
+  the new cluster — and restoring the dead letters would invite somebody to
+  send them again. The *subscriptions* are carried, signing keys included, so a
+  restored platform keeps talking to the same receivers; what was announced is
+  in the activity feed either way.
 - **Secrets outside the platform namespace.** The registry pull credential in
   each application namespace is a copy the operator syncs, written again on the
   next build.

@@ -86,6 +86,7 @@ rules:
       - domains
       - resourceclaims
       - savedqueries
+      - notificationsubscriptions
       - exceptions
       - accessreviews
     verbs: ["get", "list", "watch"]

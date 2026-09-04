@@ -6721,6 +6721,469 @@ metadata:
     {{- end }}
   labels:
     {{- include "kitchen.labels" . | nindent 4 }}
+  name: notificationdeliveries.kitchen.bermos.dev
+spec:
+  group: kitchen.bermos.dev
+  names:
+    kind: NotificationDelivery
+    listKind: NotificationDeliveryList
+    plural: notificationdeliveries
+    singular: notificationdelivery
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.event
+      name: Event
+      type: string
+    - jsonPath: .spec.subscriptionRef.name
+      name: Subscription
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.attempts
+      name: Attempts
+      type: integer
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: NotificationDelivery is the Schema for the notificationdeliveries
+          API.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              NotificationDeliverySpec is one event on its way to one subscription.
+
+              The payload is stored as the exact bytes that will be sent, not as fields to
+              be re-marshalled per attempt. That is what makes the signature reproducible:
+              a receiver verifies an HMAC over the body it received, and a body whose key
+              order changed between attempt one and attempt four would verify on one and
+              not the other.
+            properties:
+              event:
+                description: |-
+                  Event is what happened, and EventID identifies it. The id is the
+                  receiver's idempotency key: every attempt of this delivery carries the
+                  same one, and at-least-once means a receiver will see a repeat.
+                enum:
+                - build.failed
+                - deploy.succeeded
+                - preview.created
+                - preview.destroyed
+                - environment.unhealthy
+                - alert.firing
+                type: string
+              eventId:
+                minLength: 1
+                type: string
+              payload:
+                description: Payload is the JSON body, verbatim.
+                maxLength: 16384
+                type: string
+              project:
+                description: |-
+                  Project is what the event was about, empty for a platform event. It is
+                  duplicated out of the payload because it is what the API filters a
+                  caller's view of the deliveries by, and parsing every payload to
+                  answer one list request is not a filter.
+                type: string
+              subscriptionRef:
+                description: |-
+                  SubscriptionRef is the subscription this is for. The object is also
+                  this delivery's owner, so the reference cannot dangle for long.
+                properties:
+                  name:
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+            required:
+            - event
+            - eventId
+            - payload
+            - subscriptionRef
+            type: object
+          status:
+            description: NotificationDeliveryStatus is how it is getting on.
+            properties:
+              attempted:
+                items:
+                  description: |-
+                    NotificationDeliveryAttempt is one attempt, kept so that "it failed" can be
+                    read as "it failed like this, four times, over nine minutes".
+                  properties:
+                    durationMillis:
+                      description: DurationMillis is how long the attempt took.
+                      format: int64
+                      type: integer
+                    error:
+                      description: |-
+                        Error is why it failed, empty on the one that did not. It is the
+                        transport's message or the receiver's status line — never the
+                        receiver's body, which is somebody else's data and may be anything.
+                      type: string
+                    number:
+                      format: int32
+                      type: integer
+                    statusCode:
+                      description: StatusCode is the receiver's, or 0 when there was
+                        no response at all.
+                      format: int32
+                      type: integer
+                    time:
+                      format: date-time
+                      type: string
+                  required:
+                  - number
+                  - time
+                  type: object
+                maxItems: 10
+                type: array
+              attempts:
+                description: |-
+                  Attempts is how many have been made, and Attempted the last few of
+                  them. The list is bounded (maxDeliveryAttemptRecords) because the
+                  ladder is bounded; it is the whole ladder in practice.
+                format: int32
+                type: integer
+              completedTime:
+                description: |-
+                  CompletedTime is when it was delivered or dead-lettered, and what the
+                  pruner ages a finished delivery from.
+                format: date-time
+                type: string
+              lastError:
+                description: |-
+                  LastError and LastStatusCode are the most recent attempt's, lifted out
+                  of the list so that a printer column and a list row can show why
+                  without reading it.
+                type: string
+              lastStatusCode:
+                format: int32
+                type: integer
+              nextAttemptTime:
+                description: |-
+                  NextAttemptTime is when the next attempt is due. It is the backoff,
+                  made explicit: the reconciler requeues to it rather than sleeping, so a
+                  restart resumes the ladder instead of restarting it.
+                format: date-time
+                type: string
+              phase:
+                description: NotificationDeliveryPhase is where one delivery has got
+                  to.
+                enum:
+                - Pending
+                - Delivered
+                - DeadLettered
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.17.2
+    {{- if .Values.crds.keep }}
+    helm.sh/resource-policy: keep
+    {{- end }}
+  labels:
+    {{- include "kitchen.labels" . | nindent 4 }}
+  name: notificationsubscriptions.kitchen.bermos.dev
+spec:
+  group: kitchen.bermos.dev
+  names:
+    kind: NotificationSubscription
+    listKind: NotificationSubscriptionList
+    plural: notificationsubscriptions
+    singular: notificationsubscription
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.url
+      name: URL
+      type: string
+    - jsonPath: .spec.projectRef.name
+      name: Project
+      type: string
+    - jsonPath: .status.lastResult
+      name: Last
+      type: string
+    - jsonPath: .status.deadLettered
+      name: Dead
+      type: integer
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: NotificationSubscription is the Schema for the notificationsubscriptions
+          API.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: NotificationSubscriptionSpec is where to send what.
+            properties:
+              createdBy:
+                description: |-
+                  CreatedBy is who made it, as the API knew them. Recorded rather than
+                  enforced: a subscription belongs to the project or to the platform,
+                  not to a person, and this is a byline.
+                type: string
+              description:
+                description: |-
+                  Description is what this subscription is for, in the words of whoever
+                  made it. A URL alone stops meaning anything about four months after it
+                  is written down.
+                maxLength: 500
+                type: string
+              events:
+                description: |-
+                  Events is what this subscription wants to hear about. An empty list is
+                  refused at admission rather than treated as "everything": a
+                  subscription that silently widens when the platform learns a new event
+                  type is a subscription that starts paging somebody at 03:00 because of
+                  an upgrade.
+                items:
+                  description: |-
+                    NotificationEvent is one of the things a subscription can ask to hear about.
+
+                    The vocabulary is deliberately the *platform's* rather than the
+                    reconcilers': a subscriber is a relay somebody wrote in an afternoon, and it
+                    should not have to know that a promotion, an auto-deploy and a rollback are
+                    three code paths that all mean a release went live.
+                  enum:
+                  - build.failed
+                  - deploy.succeeded
+                  - preview.created
+                  - preview.destroyed
+                  - environment.unhealthy
+                  - alert.firing
+                  type: string
+                maxItems: 32
+                minItems: 1
+                type: array
+              maxAttempts:
+                description: |-
+                  MaxAttempts bounds the retry ladder. The attempt that exhausts it is
+                  the one that dead-letters the delivery.
+                format: int32
+                maximum: 10
+                minimum: 1
+                type: integer
+              projectRef:
+                description: |-
+                  ProjectRef narrows the subscription to one project. Empty is the
+                  platform scope: every project's events, which is the operator's
+                  subscription and nobody else's — the API refuses to write one for
+                  anybody but an operator.
+                properties:
+                  name:
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+              secretRef:
+                description: |-
+                  SecretRef names the Secret holding the signing key, under the key
+                  `secret`. The API writes it from the create request and never reads it
+                  back out; rotating it is another write of a value that also never
+                  comes back.
+
+                  The Secret is owned by this object, so deleting the subscription
+                  deletes the key with it.
+                properties:
+                  name:
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+              suspended:
+                description: |-
+                  Suspended stops delivery without deleting anything. It is the switch
+                  for a receiver that has gone down and is filling the dead letter with
+                  the same failure: nothing new is queued while it is set, and what is
+                  already queued waits.
+                type: boolean
+              timeoutSeconds:
+                description: |-
+                  TimeoutSeconds bounds one attempt. A receiver that takes longer than
+                  this has not accepted the event, and the attempt counts as a failure.
+                format: int32
+                maximum: 30
+                minimum: 1
+                type: integer
+              url:
+                description: |-
+                  URL is the endpoint every matching event is POSTed to. It must be
+                  absolute and `https` — a signed payload over plain HTTP is a payload
+                  anybody on the path can read, and the signature only proves it was not
+                  changed.
+
+                  A relay is what a chat vendor's integration is here: the platform ships
+                  one shape of payload, signed, and Slack, Discord and Teams are each
+                  forty lines of somebody else's code in front of it.
+                maxLength: 2000
+                minLength: 1
+                type: string
+            required:
+            - events
+            - secretRef
+            - url
+            type: object
+          status:
+            description: NotificationSubscriptionStatus is what has actually happened
+              to it.
+            properties:
+              conditions:
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              deadLettered:
+                format: int64
+                type: integer
+              delivered:
+                description: |-
+                  Delivered, Failed and DeadLettered count attempts and outcomes since
+                  the subscription was created. They are counters rather than a list
+                  because the list is the Deliveries themselves, and a status that grew
+                  with traffic would be a status nobody could read.
+                format: int64
+                type: integer
+              failed:
+                format: int64
+                type: integer
+              lastDeliveryTime:
+                description: |-
+                  LastDeliveryTime and LastResult are the most recent outcome, which is
+                  the one thing a person checking "is this working" is looking for.
+                format: date-time
+                type: string
+              lastError:
+                description: LastError is why the last attempt failed, empty after
+                  one that did not.
+                type: string
+              lastResult:
+                enum:
+                - delivered
+                - failed
+                type: string
+              lastStatusCode:
+                format: int32
+                type: integer
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.17.2
+    {{- if .Values.crds.keep }}
+    helm.sh/resource-policy: keep
+    {{- end }}
+  labels:
+    {{- include "kitchen.labels" . | nindent 4 }}
   name: platformupdates.kitchen.bermos.dev
 spec:
   group: kitchen.bermos.dev
@@ -11201,6 +11664,9 @@ spec:
     - jsonPath: .spec.query
       name: Query
       type: string
+    - jsonPath: .status.firing
+      name: Firing
+      type: boolean
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -11210,7 +11676,8 @@ spec:
         description: |-
           SavedQuery is the Schema for the savedqueries API.
 
-          It has no status: there is no observed state, because nothing observes it.
+          Its status is the alert's and only the alert's: a saved query nobody asked
+          to be alerted on is observed by nothing and carries none.
         properties:
           apiVersion:
             description: |-
@@ -11239,10 +11706,68 @@ spec:
               person's history or nowhere. This is that question with a name on it,
               shared by everyone on the platform.
 
-              It has no reconciler and needs none: unlike a Domain or a ResourceClaim,
-              which do nothing until something acts on them, a saved query has its whole
-              effect by existing. Reading it back is the feature.
+              A saved query without an alert has no reconciler and needs none: unlike a
+              Domain or a ResourceClaim, which do nothing until something acts on them, a
+              saved query has its whole effect by existing, and reading it back is the
+              feature. An alert is the exception, and the only one — it is a standing
+              question that something has to actually ask, on a schedule, which is what
+              SavedQueryReconciler does.
             properties:
+              alert:
+                description: |-
+                  Alert turns the question into a standing one: evaluated on a schedule
+                  against a threshold over a window, and announced when it crosses.
+
+                  It is on the saved query rather than in an object of its own because
+                  the query *is* the alert's definition — an alert with a query nobody
+                  can open in the observability view, edit and save again is an alert
+                  nobody can tune. Absent means the query is only ever asked by a person.
+                properties:
+                  comparison:
+                    default: above
+                    description: |-
+                      Comparison is which side of the threshold fires. `above` is the usual
+                      one — more errors than this. `below` is the heartbeat: a service that
+                      logs every minute and has stopped.
+                    enum:
+                    - above
+                    - below
+                    type: string
+                  intervalMinutes:
+                    description: |-
+                      IntervalMinutes is how often it is evaluated. It is a floor rather
+                      than a promise: an evaluation is due after this long, and the
+                      reconciler gets to it when it gets to it.
+                    format: int32
+                    maximum: 1440
+                    minimum: 1
+                    type: integer
+                  suspended:
+                    description: Suspended stops evaluation without deleting the alert
+                      or the query.
+                    type: boolean
+                  threshold:
+                    description: |-
+                      Threshold is the number of matching lines the count is compared
+                      against.
+                    format: int64
+                    minimum: 0
+                    type: integer
+                  windowMinutes:
+                    description: |-
+                      WindowMinutes is how far back each evaluation counts. It is separate
+                      from the query's own rangeMinutes, which is what a person opening the
+                      query in the dashboard sees: an alert wants a short window it can
+                      evaluate often, and the same query is usually worth reading over a
+                      longer one.
+                    format: int32
+                    maximum: 1440
+                    minimum: 1
+                    type: integer
+                required:
+                - threshold
+                - windowMinutes
+                type: object
               description:
                 description: Description says what the query is for, when the title
                   cannot.
@@ -11308,8 +11833,41 @@ spec:
             required:
             - title
             type: object
+          status:
+            description: |-
+              SavedQueryStatus is what the alert has observed. A saved query with no alert
+              never has one written.
+            properties:
+              firing:
+                description: |-
+                  Firing is whether the threshold is crossed right now. The notification
+                  is sent on the *edge* into it — a threshold that stays crossed for an
+                  afternoon is one message, not one every five minutes.
+                type: boolean
+              firingSince:
+                format: date-time
+                type: string
+              lastCount:
+                format: int64
+                type: integer
+              lastEvaluationTime:
+                description: |-
+                  LastEvaluationTime is when the alert was last asked, and LastCount what
+                  it answered. Both are on the object rather than only in the log so that
+                  "is this alert working" is answerable without one.
+                format: date-time
+                type: string
+              message:
+                description: |-
+                  Message is the last evaluation in words, including the reason an
+                  evaluation could not be made — no telemetry store, a query the store
+                  refused — which is otherwise invisible on an alert that has simply
+                  never fired.
+                type: string
+            type: object
         type: object
     served: true
     storage: true
-    subresources: {}
+    subresources:
+      status: {}
 {{- end }}

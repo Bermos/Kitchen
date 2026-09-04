@@ -21,6 +21,9 @@ spec:
     - jsonPath: .spec.query
       name: Query
       type: string
+    - jsonPath: .status.firing
+      name: Firing
+      type: boolean
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -30,7 +33,8 @@ spec:
         description: |-
           SavedQuery is the Schema for the savedqueries API.
 
-          It has no status: there is no observed state, because nothing observes it.
+          Its status is the alert's and only the alert's: a saved query nobody asked
+          to be alerted on is observed by nothing and carries none.
         properties:
           apiVersion:
             description: |-
@@ -59,10 +63,68 @@ spec:
               person's history or nowhere. This is that question with a name on it,
               shared by everyone on the platform.
 
-              It has no reconciler and needs none: unlike a Domain or a ResourceClaim,
-              which do nothing until something acts on them, a saved query has its whole
-              effect by existing. Reading it back is the feature.
+              A saved query without an alert has no reconciler and needs none: unlike a
+              Domain or a ResourceClaim, which do nothing until something acts on them, a
+              saved query has its whole effect by existing, and reading it back is the
+              feature. An alert is the exception, and the only one — it is a standing
+              question that something has to actually ask, on a schedule, which is what
+              SavedQueryReconciler does.
             properties:
+              alert:
+                description: |-
+                  Alert turns the question into a standing one: evaluated on a schedule
+                  against a threshold over a window, and announced when it crosses.
+
+                  It is on the saved query rather than in an object of its own because
+                  the query *is* the alert's definition — an alert with a query nobody
+                  can open in the observability view, edit and save again is an alert
+                  nobody can tune. Absent means the query is only ever asked by a person.
+                properties:
+                  comparison:
+                    default: above
+                    description: |-
+                      Comparison is which side of the threshold fires. `above` is the usual
+                      one — more errors than this. `below` is the heartbeat: a service that
+                      logs every minute and has stopped.
+                    enum:
+                    - above
+                    - below
+                    type: string
+                  intervalMinutes:
+                    description: |-
+                      IntervalMinutes is how often it is evaluated. It is a floor rather
+                      than a promise: an evaluation is due after this long, and the
+                      reconciler gets to it when it gets to it.
+                    format: int32
+                    maximum: 1440
+                    minimum: 1
+                    type: integer
+                  suspended:
+                    description: Suspended stops evaluation without deleting the alert
+                      or the query.
+                    type: boolean
+                  threshold:
+                    description: |-
+                      Threshold is the number of matching lines the count is compared
+                      against.
+                    format: int64
+                    minimum: 0
+                    type: integer
+                  windowMinutes:
+                    description: |-
+                      WindowMinutes is how far back each evaluation counts. It is separate
+                      from the query's own rangeMinutes, which is what a person opening the
+                      query in the dashboard sees: an alert wants a short window it can
+                      evaluate often, and the same query is usually worth reading over a
+                      longer one.
+                    format: int32
+                    maximum: 1440
+                    minimum: 1
+                    type: integer
+                required:
+                - threshold
+                - windowMinutes
+                type: object
               description:
                 description: Description says what the query is for, when the title
                   cannot.
@@ -128,7 +190,40 @@ spec:
             required:
             - title
             type: object
+          status:
+            description: |-
+              SavedQueryStatus is what the alert has observed. A saved query with no alert
+              never has one written.
+            properties:
+              firing:
+                description: |-
+                  Firing is whether the threshold is crossed right now. The notification
+                  is sent on the *edge* into it — a threshold that stays crossed for an
+                  afternoon is one message, not one every five minutes.
+                type: boolean
+              firingSince:
+                format: date-time
+                type: string
+              lastCount:
+                format: int64
+                type: integer
+              lastEvaluationTime:
+                description: |-
+                  LastEvaluationTime is when the alert was last asked, and LastCount what
+                  it answered. Both are on the object rather than only in the log so that
+                  "is this alert working" is answerable without one.
+                format: date-time
+                type: string
+              message:
+                description: |-
+                  Message is the last evaluation in words, including the reason an
+                  evaluation could not be made — no telemetry store, a query the store
+                  refused — which is otherwise invisible on an alert that has simply
+                  never fired.
+                type: string
+            type: object
         type: object
     served: true
     storage: true
-    subresources: {}
+    subresources:
+      status: {}

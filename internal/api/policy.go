@@ -479,9 +479,51 @@ func (s *Server) routes() []route {
 		{"GET /api/v1/logs/patterns", s.logPatterns, acrossProjects()},
 		{"GET /api/v1/logs/saved", s.listSavedQueries, acrossProjects()},
 		{"POST /api/v1/logs/saved", s.createSavedQuery, anyCaller()},
+		// Setting an alert on one is the same requirement as deleting it: the
+		// query belongs to the platform rather than to whoever saved it, and
+		// all this route can do is make it ask itself on a schedule. What a
+		// crossing then *does* is a subscription's, and writing one of those
+		// is an admin's or an operator's.
+		{"PATCH /api/v1/logs/saved/{name}", s.patchSavedQuery, acrossProjects()},
 		{"DELETE /api/v1/logs/saved/{name}", s.deleteSavedQuery, acrossProjects()},
 
 		{"GET /api/v1/events", s.listEvents, acrossProjects()},
+
+		// Outbound notifications (#77). The scope of a subscription decides
+		// its requirement, and the two scopes are two different things:
+		//
+		//   - A subscription **naming a project** sends that project's
+		//     activity to an address of somebody's choosing, and carries the
+		//     key it is signed with. That is the project's admin's, on the
+		//     same reasoning as issuing a CI key: it is a credential, and the
+		//     thing it lets somebody do is read what the project is doing.
+		//   - A subscription **naming no project** hears every project's
+		//     events and is the operator's alone. The table cannot say so —
+		//     ofProjectInBody resolves a body with no project to no project,
+		//     which admits the handler for everybody — so the handler refuses
+		//     it with a 403 that says which role it wanted, in the same shape
+		//     the environment requirements write uses.
+		//
+		// Reading is a viewer's read of the project's own configuration, and
+		// a platform subscription resolves to no project at all, which is how
+		// a member is told it does not exist rather than that it is not
+		// theirs.
+		{"GET /api/v1/notifications/subscriptions", s.listSubscriptions, acrossProjects()},
+		{"POST /api/v1/notifications/subscriptions", s.createSubscription,
+			onProject(access.ProjectAdmin, ofProjectInBody, "subscribing to a project's notifications")},
+		{"GET /api/v1/notifications/subscriptions/{name}", s.getSubscription,
+			onProject(access.ProjectViewer, ofSubscription, "reading a notification subscription")},
+		{"PATCH /api/v1/notifications/subscriptions/{name}", s.patchSubscription,
+			onProject(access.ProjectAdmin, ofSubscription, "changing a notification subscription")},
+		{"DELETE /api/v1/notifications/subscriptions/{name}", s.deleteSubscription,
+			onProject(access.ProjectAdmin, ofSubscription, "deleting a notification subscription")},
+		// The deliveries, and the dead letters among them. Reading them is a
+		// viewer's read like the subscription; retrying one sends the
+		// project's activity offsite a second time, which is the write the
+		// subscription's own admin makes.
+		{"GET /api/v1/notifications/deliveries", s.listDeliveries, acrossProjects()},
+		{"POST /api/v1/notifications/deliveries/{name}/retry", s.retryDelivery,
+			onProject(access.ProjectAdmin, ofDelivery, "retrying a notification delivery")},
 
 		// The decision register. Decisions live in the store rather than the
 		// cluster, so the table's project resolvers cannot reach them: the

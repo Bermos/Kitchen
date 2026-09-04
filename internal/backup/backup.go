@@ -114,6 +114,19 @@ type Kind struct {
 // back Active until somebody resolves it again. The resolution itself is in
 // the audit log, which is the authoritative history either way.
 //
+// NotificationSubscription is carried, and NotificationDelivery is not. A
+// subscription is configuration — where this installation sends an account of
+// itself — and it restores usefully: its signing key is an ordinary Secret in
+// the platform namespace and travels with the rest of them, so a restored
+// platform keeps talking to the same receiver with the same key rather than
+// going quiet until somebody notices. (The Secret's owner reference is
+// stripped on export like every other, so it comes back unowned; deleting the
+// subscription still deletes it, because the API does that itself.) A
+// delivery, by contrast, is one message in flight: restoring a queue of them
+// would post a week-old batch of deploy notifications at whoever is watching
+// the new cluster, and restoring the dead letters would invite somebody to
+// retry them. Both are in the activity feed either way.
+//
 // AccessReview is carried for the same reason and with the same caveat: a
 // recertification cycle is a record. Note what a restore does *not* need to
 // carry — the artefact each closed cycle produced is a signed envelope in the
@@ -136,6 +149,7 @@ var Kinds = []Kind{
 	{Kind: "Exception", Plural: "exceptions"},
 	{Kind: "AccessReview", Plural: "accessreviews"},
 	{Kind: "SavedQuery", Plural: "savedqueries"},
+	{Kind: "NotificationSubscription", Plural: "notificationsubscriptions"},
 }
 
 // Manifest describes an archive. It is the first entry in the tar and the

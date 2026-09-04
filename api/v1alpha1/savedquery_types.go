@@ -28,9 +28,12 @@ import (
 // person's history or nowhere. This is that question with a name on it,
 // shared by everyone on the platform.
 //
-// It has no reconciler and needs none: unlike a Domain or a ResourceClaim,
-// which do nothing until something acts on them, a saved query has its whole
-// effect by existing. Reading it back is the feature.
+// A saved query without an alert has no reconciler and needs none: unlike a
+// Domain or a ResourceClaim, which do nothing until something acts on them, a
+// saved query has its whole effect by existing, and reading it back is the
+// feature. An alert is the exception, and the only one — it is a standing
+// question that something has to actually ask, on a schedule, which is what
+// SavedQueryReconciler does.
 type SavedQuerySpec struct {
 	// Title is what the query is called in the dashboard. It is free text,
 	// unlike the object's name, which has to be a DNS label.
@@ -89,21 +92,138 @@ type SavedQuerySpec struct {
 	// this is a byline.
 	// +optional
 	SavedBy string `json:"savedBy,omitempty"`
+
+	// Alert turns the question into a standing one: evaluated on a schedule
+	// against a threshold over a window, and announced when it crosses.
+	//
+	// It is on the saved query rather than in an object of its own because
+	// the query *is* the alert's definition — an alert with a query nobody
+	// can open in the observability view, edit and save again is an alert
+	// nobody can tune. Absent means the query is only ever asked by a person.
+	// +optional
+	Alert *SavedQueryAlert `json:"alert,omitempty"`
+}
+
+// SavedQueryAlert is a threshold over a window, asked on a schedule.
+//
+// It is the second trigger onto the notification path (issue #77), and it
+// deliberately adds nothing to that path: crossing the threshold records an
+// `alert.firing` activity event exactly the way a reconciler records a deploy,
+// and the subscriptions do the rest. What it adds in front is a schedule and a
+// comparison, which is the whole difference between the two triggers.
+type SavedQueryAlert struct {
+	// WindowMinutes is how far back each evaluation counts. It is separate
+	// from the query's own rangeMinutes, which is what a person opening the
+	// query in the dashboard sees: an alert wants a short window it can
+	// evaluate often, and the same query is usually worth reading over a
+	// longer one.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=1440
+	WindowMinutes int32 `json:"windowMinutes"`
+
+	// Threshold is the number of matching lines the count is compared
+	// against.
+	// +kubebuilder:validation:Minimum=0
+	Threshold int64 `json:"threshold"`
+
+	// Comparison is which side of the threshold fires. `above` is the usual
+	// one — more errors than this. `below` is the heartbeat: a service that
+	// logs every minute and has stopped.
+	// +kubebuilder:validation:Enum=above;below
+	// +kubebuilder:default=above
+	// +optional
+	Comparison string `json:"comparison,omitempty"`
+
+	// IntervalMinutes is how often it is evaluated. It is a floor rather
+	// than a promise: an evaluation is due after this long, and the
+	// reconciler gets to it when it gets to it.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=1440
+	// +optional
+	IntervalMinutes int32 `json:"intervalMinutes,omitempty"`
+
+	// Suspended stops evaluation without deleting the alert or the query.
+	// +optional
+	Suspended bool `json:"suspended,omitempty"`
+}
+
+// DefaultAlertIntervalMinutes is how often an alert that does not say is
+// evaluated.
+const DefaultAlertIntervalMinutes int32 = 5
+
+// The two directions an alert watches, spelled once. The CRD's enum, the API's
+// validation, the reconciler's message and the dashboard's wording are all
+// this string, and a second spelling of it is a comparison that silently never
+// fires.
+const (
+	AlertComparisonAbove = "above"
+	AlertComparisonBelow = "below"
+)
+
+// Interval is the evaluation period this alert asked for.
+func (a *SavedQueryAlert) Interval() int32 {
+	if a == nil || a.IntervalMinutes <= 0 {
+		return DefaultAlertIntervalMinutes
+	}
+	return a.IntervalMinutes
+}
+
+// Fires reports whether a count crosses the threshold in the direction this
+// alert watches.
+func (a *SavedQueryAlert) Fires(count int64) bool {
+	if a == nil {
+		return false
+	}
+	if a.Comparison == AlertComparisonBelow {
+		return count < a.Threshold
+	}
+	return count > a.Threshold
+}
+
+// SavedQueryStatus is what the alert has observed. A saved query with no alert
+// never has one written.
+type SavedQueryStatus struct {
+	// LastEvaluationTime is when the alert was last asked, and LastCount what
+	// it answered. Both are on the object rather than only in the log so that
+	// "is this alert working" is answerable without one.
+	// +optional
+	LastEvaluationTime *metav1.Time `json:"lastEvaluationTime,omitempty"`
+	// +optional
+	LastCount int64 `json:"lastCount,omitempty"`
+
+	// Firing is whether the threshold is crossed right now. The notification
+	// is sent on the *edge* into it — a threshold that stays crossed for an
+	// afternoon is one message, not one every five minutes.
+	// +optional
+	Firing bool `json:"firing,omitempty"`
+	// +optional
+	FiringSince *metav1.Time `json:"firingSince,omitempty"`
+
+	// Message is the last evaluation in words, including the reason an
+	// evaluation could not be made — no telemetry store, a query the store
+	// refused — which is otherwise invisible on an alert that has simply
+	// never fired.
+	// +optional
+	Message string `json:"message,omitempty"`
 }
 
 // +kubebuilder:object:root=true
+// +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Title",type=string,JSONPath=`.spec.title`
 // +kubebuilder:printcolumn:name="Query",type=string,JSONPath=`.spec.query`
+// +kubebuilder:printcolumn:name="Firing",type=boolean,JSONPath=`.status.firing`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // SavedQuery is the Schema for the savedqueries API.
 //
-// It has no status: there is no observed state, because nothing observes it.
+// Its status is the alert's and only the alert's: a saved query nobody asked
+// to be alerted on is observed by nothing and carries none.
 type SavedQuery struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec SavedQuerySpec `json:"spec,omitempty"`
+	Spec   SavedQuerySpec   `json:"spec,omitempty"`
+	Status SavedQueryStatus `json:"status,omitempty"`
 }
 
 // +kubebuilder:object:root=true

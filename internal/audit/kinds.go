@@ -98,6 +98,17 @@ const (
 	// workloads that read it — is a settings change and is recorded as one,
 	// on the project; this kind is the content alone.
 	KindProjectFile = "ProjectFile"
+
+	// KindNotificationSubscription is where the platform was told to send an
+	// account of itself (#77), and it is a credential write: the signing key
+	// goes in with the subscription and is rotated through the same route.
+	//
+	// It is its own kind rather than a KindConnection record, though both
+	// hold a credential the platform never reads back, because a connection
+	// is something the platform reads *from* and a subscription is somewhere
+	// it writes *to*. "Every address this platform sends its activity to, and
+	// who added each" is one query, and it is the one an auditor asks.
+	KindNotificationSubscription = "NotificationSubscription"
 )
 
 // The `change` key a record's details carry, which is what makes one kind of

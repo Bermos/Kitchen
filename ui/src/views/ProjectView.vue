@@ -23,6 +23,7 @@ import ProjectWorkloadsPanel from "../components/ProjectWorkloadsPanel.vue";
 import EnvironmentCard from "../components/EnvironmentCard.vue";
 import KeysPanel from "../components/KeysPanel.vue";
 import MembersPanel from "../components/MembersPanel.vue";
+import NotificationsPanel from "../components/NotificationsPanel.vue";
 import OperatorOnly from "../components/OperatorOnly.vue";
 import PageHeader from "../components/PageHeader.vue";
 import PhaseBadge from "../components/PhaseBadge.vue";
@@ -1836,6 +1837,12 @@ function host(url?: string): string {
           :declared-names="repoFiles"
           @saved="refresh"
         />
+
+        <!-- Where this project's own activity is sent. It is on the settings
+             tab because it is configuration of the project rather than
+             something anybody does day to day, and it is its own section
+             because subscribing carries a credential and its own route. -->
+        <NotificationsPanel :project="project.name" :role="project.role" />
 
         <!-- Deleting is the admin's alone, and it is on the admin's own tab —
              but it is named separately from the settings above it, because

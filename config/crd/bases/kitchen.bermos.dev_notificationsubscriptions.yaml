@@ -1,0 +1,265 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.17.2
+  name: notificationsubscriptions.kitchen.bermos.dev
+spec:
+  group: kitchen.bermos.dev
+  names:
+    kind: NotificationSubscription
+    listKind: NotificationSubscriptionList
+    plural: notificationsubscriptions
+    singular: notificationsubscription
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.url
+      name: URL
+      type: string
+    - jsonPath: .spec.projectRef.name
+      name: Project
+      type: string
+    - jsonPath: .status.lastResult
+      name: Last
+      type: string
+    - jsonPath: .status.deadLettered
+      name: Dead
+      type: integer
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: NotificationSubscription is the Schema for the notificationsubscriptions
+          API.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: NotificationSubscriptionSpec is where to send what.
+            properties:
+              createdBy:
+                description: |-
+                  CreatedBy is who made it, as the API knew them. Recorded rather than
+                  enforced: a subscription belongs to the project or to the platform,
+                  not to a person, and this is a byline.
+                type: string
+              description:
+                description: |-
+                  Description is what this subscription is for, in the words of whoever
+                  made it. A URL alone stops meaning anything about four months after it
+                  is written down.
+                maxLength: 500
+                type: string
+              events:
+                description: |-
+                  Events is what this subscription wants to hear about. An empty list is
+                  refused at admission rather than treated as "everything": a
+                  subscription that silently widens when the platform learns a new event
+                  type is a subscription that starts paging somebody at 03:00 because of
+                  an upgrade.
+                items:
+                  description: |-
+                    NotificationEvent is one of the things a subscription can ask to hear about.
+
+                    The vocabulary is deliberately the *platform's* rather than the
+                    reconcilers': a subscriber is a relay somebody wrote in an afternoon, and it
+                    should not have to know that a promotion, an auto-deploy and a rollback are
+                    three code paths that all mean a release went live.
+                  enum:
+                  - build.failed
+                  - deploy.succeeded
+                  - preview.created
+                  - preview.destroyed
+                  - environment.unhealthy
+                  - alert.firing
+                  type: string
+                maxItems: 32
+                minItems: 1
+                type: array
+              maxAttempts:
+                description: |-
+                  MaxAttempts bounds the retry ladder. The attempt that exhausts it is
+                  the one that dead-letters the delivery.
+                format: int32
+                maximum: 10
+                minimum: 1
+                type: integer
+              projectRef:
+                description: |-
+                  ProjectRef narrows the subscription to one project. Empty is the
+                  platform scope: every project's events, which is the operator's
+                  subscription and nobody else's — the API refuses to write one for
+                  anybody but an operator.
+                properties:
+                  name:
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+              secretRef:
+                description: |-
+                  SecretRef names the Secret holding the signing key, under the key
+                  `secret`. The API writes it from the create request and never reads it
+                  back out; rotating it is another write of a value that also never
+                  comes back.
+
+                  The Secret is owned by this object, so deleting the subscription
+                  deletes the key with it.
+                properties:
+                  name:
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+              suspended:
+                description: |-
+                  Suspended stops delivery without deleting anything. It is the switch
+                  for a receiver that has gone down and is filling the dead letter with
+                  the same failure: nothing new is queued while it is set, and what is
+                  already queued waits.
+                type: boolean
+              timeoutSeconds:
+                description: |-
+                  TimeoutSeconds bounds one attempt. A receiver that takes longer than
+                  this has not accepted the event, and the attempt counts as a failure.
+                format: int32
+                maximum: 30
+                minimum: 1
+                type: integer
+              url:
+                description: |-
+                  URL is the endpoint every matching event is POSTed to. It must be
+                  absolute and `https` — a signed payload over plain HTTP is a payload
+                  anybody on the path can read, and the signature only proves it was not
+                  changed.
+
+                  A relay is what a chat vendor's integration is here: the platform ships
+                  one shape of payload, signed, and Slack, Discord and Teams are each
+                  forty lines of somebody else's code in front of it.
+                maxLength: 2000
+                minLength: 1
+                type: string
+            required:
+            - events
+            - secretRef
+            - url
+            type: object
+          status:
+            description: NotificationSubscriptionStatus is what has actually happened
+              to it.
+            properties:
+              conditions:
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              deadLettered:
+                format: int64
+                type: integer
+              delivered:
+                description: |-
+                  Delivered, Failed and DeadLettered count attempts and outcomes since
+                  the subscription was created. They are counters rather than a list
+                  because the list is the Deliveries themselves, and a status that grew
+                  with traffic would be a status nobody could read.
+                format: int64
+                type: integer
+              failed:
+                format: int64
+                type: integer
+              lastDeliveryTime:
+                description: |-
+                  LastDeliveryTime and LastResult are the most recent outcome, which is
+                  the one thing a person checking "is this working" is looking for.
+                format: date-time
+                type: string
+              lastError:
+                description: LastError is why the last attempt failed, empty after
+                  one that did not.
+                type: string
+              lastResult:
+                enum:
+                - delivered
+                - failed
+                type: string
+              lastStatusCode:
+                format: int32
+                type: integer
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

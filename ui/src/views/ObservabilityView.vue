@@ -11,7 +11,7 @@ import {
   type LogSelection,
   type SavedQuery,
 } from "../lib/api";
-import { compactCount, formatBytes } from "../lib/format";
+import { compactCount, formatBytes, timeAgo } from "../lib/format";
 import { useFreshness } from "../lib/freshness";
 import { clausesOf, hasClause, isEditable, removeClause, toggleClause, type Clause } from "../lib/logquery";
 import { operatorMode } from "../lib/mode";
@@ -407,6 +407,81 @@ function isCurrent(entry: SavedQuery): boolean {
   );
 }
 
+// An alert on a saved query: the same question, asked on a schedule against a
+// threshold, so that nobody has to be looking at this screen for it to be
+// noticed. The crossing is announced once, on the edge — where it goes is a
+// notification subscription's business, on the project's or the platform's
+// settings.
+const alerting = ref<SavedQuery | null>(null);
+const alertWindow = ref(10);
+const alertThreshold = ref(0);
+const alertComparison = ref<"above" | "below">("above");
+const alertInterval = ref(5);
+const alertPaused = ref(false);
+const savingAlert = ref(false);
+
+watch(alerting, (entry) => {
+  if (!entry) return;
+  const alert = entry.alert;
+  alertWindow.value = alert?.windowMinutes ?? 10;
+  alertThreshold.value = alert?.threshold ?? 0;
+  alertComparison.value = alert?.comparison ?? "above";
+  alertInterval.value = alert?.intervalMinutes ?? 5;
+  alertPaused.value = alert?.suspended ?? false;
+});
+
+const comparisons = [
+  { label: "more lines than", value: "above" },
+  { label: "fewer lines than", value: "below" },
+];
+
+/** What the alert on a saved query has to say for itself, if anything. */
+function alertWords(entry: SavedQuery): string {
+  const alert = entry.alert;
+  if (!alert) return "";
+  if (alert.suspended) return `${entry.title}: alert paused`;
+  if (alert.firing) return alert.message || `${entry.title}: firing`;
+  return alert.message || `${entry.title}: watching`;
+}
+
+async function saveAlert(remove = false) {
+  const entry = alerting.value;
+  if (!entry || savingAlert.value) return;
+  savingAlert.value = true;
+  try {
+    await api.setQueryAlert(
+      entry.name,
+      remove
+        ? null
+        : {
+            windowMinutes: alertWindow.value,
+            threshold: alertThreshold.value,
+            comparison: alertComparison.value,
+            intervalMinutes: alertInterval.value,
+            suspended: alertPaused.value,
+          },
+    );
+    toast.add({
+      title: remove ? `“${entry.title}” is no longer watched` : `“${entry.title}” is being watched`,
+      description: remove
+        ? undefined
+        : "Crossing the line announces itself once. Subscribe an address in settings to be told.",
+      color: "success",
+      icon: remove ? "i-lucide-bell-off" : "i-lucide-bell",
+    });
+    alerting.value = null;
+    await saved.refresh();
+  } catch (err) {
+    toast.add({
+      title: "The alert could not be saved",
+      description: err instanceof Error ? err.message : String(err),
+      color: "error",
+    });
+  } finally {
+    savingAlert.value = false;
+  }
+}
+
 async function removeSaved() {
   const entry = removing.value;
   if (!entry) return;
@@ -573,6 +648,15 @@ const placeholder = computed(() =>
           @click="applySaved(entry)"
         >
           {{ entry.title }}
+        </button>
+        <button
+          class="px-1 py-0.5"
+          :class="entry.alert?.firing ? 'text-warning' : 'text-dimmed hover:text-toned'"
+          :title="entry.alert ? alertWords(entry) : `Watch ${entry.title} on a schedule`"
+          :aria-label="`Alert on ${entry.title}`"
+          @click="alerting = entry"
+        >
+          <UIcon :name="entry.alert ? 'i-lucide-bell' : 'i-lucide-bell-plus'" class="size-3" />
         </button>
         <button
           class="px-1 py-0.5 text-dimmed hover:text-error"
@@ -811,6 +895,60 @@ const placeholder = computed(() =>
           >
             Save
           </UButton>
+        </div>
+      </template>
+    </UModal>
+
+    <UModal
+      :open="alerting !== null"
+      :title="`Watch “${alerting?.title}”`"
+      description="The same question, counted over a window and asked on a schedule. Crossing the line announces itself once — subscribing an address to that announcement is done in settings."
+      @update:open="(open: boolean) => { if (!open) alerting = null; }"
+    >
+      <template #body>
+        <div class="space-y-4">
+          <div class="grid gap-3 sm:grid-cols-2">
+            <UFormField label="Fires when there are" hint="over the window below">
+              <div class="flex items-center gap-2">
+                <USelect v-model="alertComparison" :items="comparisons" class="w-full" />
+                <UInputNumber v-model="alertThreshold" :min="0" class="w-28" />
+              </div>
+            </UFormField>
+            <UFormField label="Window (minutes)" help="How far back each evaluation counts.">
+              <UInputNumber v-model="alertWindow" :min="1" :max="1440" class="w-32" />
+            </UFormField>
+            <UFormField label="Asked every (minutes)" help="A floor rather than a promise.">
+              <UInputNumber v-model="alertInterval" :min="1" :max="1440" class="w-32" />
+            </UFormField>
+            <UFormField label="Paused" help="Keeps the alert without evaluating it.">
+              <USwitch v-model="alertPaused" />
+            </UFormField>
+          </div>
+          <p v-if="alerting?.alert?.message" class="text-xs text-muted">{{ alerting.alert.message }}</p>
+          <p v-if="alerting?.alert?.firing" class="flex items-center gap-2 text-xs">
+            <StatusDot tone="warning" />
+            <span class="text-warning">
+              Firing since {{ timeAgo(alerting.alert.firingSince || alerting.alert.lastEvaluatedAt || "") }}.
+            </span>
+          </p>
+        </div>
+      </template>
+      <template #footer>
+        <div class="flex justify-between gap-2 w-full">
+          <UButton
+            v-if="alerting?.alert"
+            color="error"
+            variant="ghost"
+            icon="i-lucide-bell-off"
+            :loading="savingAlert"
+            @click="saveAlert(true)"
+          >
+            Stop watching
+          </UButton>
+          <div class="flex justify-end gap-2 ml-auto">
+            <UButton color="neutral" variant="subtle" @click="alerting = null">Cancel</UButton>
+            <UButton icon="i-lucide-bell" :loading="savingAlert" @click="saveAlert()">Save</UButton>
+          </div>
         </div>
       </template>
     </UModal>

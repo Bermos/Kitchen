@@ -305,3 +305,53 @@ operator delete it — a field on the CRD and a migration for the queries
 already saved, which is a bigger change than the risk (a shared shortcut
 nobody else can read anything through) is worth. The list is capped at 100 and
 every deletion is the platform's to see.
+
+### An alert on one
+
+`PATCH /logs/saved/{name}` turns a saved query into a standing one: counted
+over a window, on a schedule, against a threshold.
+
+```sh
+curl -sS -X PATCH -H "authorization: Bearer $TOKEN" \
+  -d '{"alert": {"windowMinutes": 10, "threshold": 25, "comparison": "above",
+                 "intervalMinutes": 5}}' \
+  https://kitchen.apps.example.com/api/v1/logs/saved/checkout-500s
+```
+
+`windowMinutes` (1–1440) is how far back each evaluation counts, and is
+separate from the query's own `rangeMinutes` on purpose: an alert wants a short
+window it can evaluate often, and the same query is usually worth *reading*
+over a longer one. `comparison` is `above` — more matching lines than the
+threshold — or `below`, which is the heartbeat: a service that logs every
+minute and has stopped. `intervalMinutes` (default 5) is how often it is asked,
+and is a floor rather than a promise. `suspended` stops evaluation without
+deleting the alert or the query.
+
+The alert comes back with the last evaluation on it, because the two are read
+together:
+
+```json
+{"name": "checkout-500s", "title": "Checkout 500s", "…": "…",
+ "alert": {"windowMinutes": 10, "threshold": 25, "comparison": "above",
+           "intervalMinutes": 5, "suspended": false,
+           "firing": true, "firingSince": "2026-09-04T02:05:00Z",
+           "lastCount": 63, "lastEvaluatedAt": "2026-09-04T02:10:00Z",
+           "message": "63 line(s) in the last 10 minute(s); the alert fires above 25"}}
+```
+
+`{"alert": null}` removes it. **The selection itself is not patchable** — a
+saved query is a link with a name on it, so changing what it asks is saving a
+different question, and editing one in place would move it under everybody who
+had already found it, including whoever is being woken by its alert.
+
+Crossing the threshold records an `alert.firing` event in [the activity
+feed](audit.md), and that is the whole of what it does on its own. Being
+*told* is a [notification subscription](notifications.md), which is why the two
+triggers — a deploy going wrong, and a query crossing a line — reach a receiver
+through one signed, retried, dead-lettered path rather than two.
+
+It is **edge-triggered**: the event is recorded on the transition into firing,
+so a threshold that stays crossed all afternoon is one message. `lastCount` and
+`message` are what a person reads while it stays crossed; `message` is also
+where an evaluation that could not be made says so, which is otherwise
+invisible on an alert that has simply never fired.

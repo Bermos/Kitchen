@@ -301,6 +301,11 @@ func TestEveryCustomResourceKindIsInTheArchive(t *testing.T) {
 	// so at the Kinds list).
 	carried["PlatformUpdate"] = true
 	carried["Promotion"] = true
+	// NotificationDelivery is the third, and it is Promotion's reasoning
+	// exactly: a delivery is one message in flight, so a restore would post a
+	// week-old batch at whoever is watching the new cluster. The subscription
+	// it belongs to *is* carried, and the events are in the activity feed.
+	carried["NotificationDelivery"] = true
 
 	for gvk, goType := range scheme.AllKnownTypes() {
 		if gvk.Group != kitchenv1alpha1.GroupVersion.Group || strings.HasSuffix(gvk.Kind, "List") {

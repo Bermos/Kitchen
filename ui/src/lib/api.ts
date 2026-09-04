@@ -2362,6 +2362,7 @@ export interface SavedQuery {
   includeCluster?: boolean;
   savedBy?: string;
   createdAt: string;
+  alert?: SavedQueryAlert;
 }
 
 /** What POST /logs/saved accepts. */
@@ -2374,6 +2375,108 @@ export interface NewSavedQuery {
   limit?: number;
   view?: "lines" | "patterns";
   includeCluster?: boolean;
+  alert?: NewAlert;
+}
+
+/** A standing question: a saved query counted over a window, on a schedule,
+ * against a threshold. Crossing it announces itself, and a notification
+ * subscription is what turns that into somebody being told. */
+export interface SavedQueryAlert {
+  windowMinutes: number;
+  threshold: number;
+  comparison: "above" | "below";
+  intervalMinutes: number;
+  suspended: boolean;
+  /** What the last evaluation found. It is edge-triggered, so `firing` staying
+   * true is one announcement rather than one every interval. */
+  firing: boolean;
+  firingSince?: string;
+  lastCount: number;
+  lastEvaluatedAt?: string;
+  message?: string;
+}
+
+/** What PATCH /logs/saved/{name} accepts for `alert`. */
+export interface NewAlert {
+  windowMinutes: number;
+  threshold: number;
+  comparison?: "above" | "below";
+  intervalMinutes?: number;
+  suspended?: boolean;
+}
+
+/** Where the platform sends an account of itself (GET /notifications/subscriptions).
+ * The signing key is never part of it — it goes in with a write and no
+ * response ever echoes it. */
+export interface NotificationSubscription {
+  name: string;
+  url: string;
+  events: string[];
+  /** Empty for the platform scope: every project's events, which is the
+   * operator's subscription and nobody else's. */
+  project?: string;
+  scope: "project" | "platform";
+  description?: string;
+  suspended: boolean;
+  maxAttempts: number;
+  timeoutSeconds: number;
+  createdBy?: string;
+  createdAt: string;
+  /** Whether it can deliver, and why not when it cannot. */
+  ready: boolean;
+  reason?: string;
+  delivered: number;
+  failed: number;
+  deadLettered: number;
+  lastResult?: "delivered" | "failed";
+  lastDeliveryAt?: string;
+  lastStatusCode?: number;
+  lastError?: string;
+}
+
+/** What POST /notifications/subscriptions accepts; PATCH takes the same fields
+ * and changes only what is present. */
+export interface NewNotificationSubscription {
+  name?: string;
+  url?: string;
+  events?: string[];
+  project?: string;
+  description?: string;
+  suspended?: boolean;
+  maxAttempts?: number;
+  timeoutSeconds?: number;
+  /** The key every payload to this address is signed with. It is written and
+   * never read back, here or anywhere. */
+  secret?: string;
+}
+
+/** One event on its way to one subscription — including the ones that never
+ * arrived, which is what a dead letter is. */
+export interface NotificationDelivery {
+  name: string;
+  subscription: string;
+  event: string;
+  eventId: string;
+  project?: string;
+  phase: "Pending" | "Delivered" | "DeadLettered";
+  attempts: number;
+  queuedAt: string;
+  completedAt?: string;
+  nextAttemptAt?: string;
+  lastError?: string;
+  lastStatusCode?: number;
+  /** The exact body that would have been sent, which is what makes a dead
+   * letter something a person can act on rather than only read. */
+  payload?: string;
+  attempted?: NotificationAttempt[];
+}
+
+export interface NotificationAttempt {
+  number: number;
+  at: string;
+  statusCode?: number;
+  error?: string;
+  durationMillis?: number;
 }
 
 /** One bucket of an environment's resource history. CPU and memory are summed
@@ -3935,6 +4038,28 @@ export const api = {
   savedQueries: list<SavedQuery>("/logs/saved"),
   saveQuery: (query: NewSavedQuery) => request<SavedQuery>("POST", "/logs/saved", query),
   deleteSavedQuery: (name: string) => request<SavedQuery>("DELETE", `/logs/saved/${encodeURIComponent(name)}`),
+  /** Set, change or remove the standing alert on one. `null` removes it; the
+   * selection itself is not editable, because a saved query is a link with a
+   * name on it. */
+  setQueryAlert: (name: string, alert: NewAlert | null) =>
+    request<SavedQuery>("PATCH", `/logs/saved/${encodeURIComponent(name)}`, { alert }),
+
+  // Notifications: where the platform sends an account of itself, and what
+  // became of each delivery.
+  subscriptions: list<NotificationSubscription>("/notifications/subscriptions"),
+  createSubscription: (subscription: NewNotificationSubscription) =>
+    request<NotificationSubscription>("POST", "/notifications/subscriptions", subscription),
+  patchSubscription: (name: string, changes: NewNotificationSubscription) =>
+    request<NotificationSubscription>(
+      "PATCH",
+      `/notifications/subscriptions/${encodeURIComponent(name)}`,
+      changes,
+    ),
+  deleteSubscription: (name: string) =>
+    request<void>("DELETE", `/notifications/subscriptions/${encodeURIComponent(name)}`),
+  deliveries: list<NotificationDelivery>("/notifications/deliveries"),
+  retryDelivery: (name: string) =>
+    request<NotificationDelivery>("POST", `/notifications/deliveries/${encodeURIComponent(name)}/retry`),
 
   // Live tails of the same log endpoints, as Server-Sent Events.
   streamBuildLogs: (name: string, query: LogQuery, onLine: (line: LogLine) => void, signal: AbortSignal) =>

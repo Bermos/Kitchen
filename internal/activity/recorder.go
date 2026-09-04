@@ -49,6 +49,23 @@ const DefaultActor = "operator"
 // API-server reads without holding on to a stale credential for long.
 const storeCacheTTL = time.Minute
 
+// Sink is something else that wants every event the platform records.
+//
+// There is one implementation, internal/notify, which turns the events
+// somebody subscribed to into outbound webhooks. It is an interface here
+// rather than a direct call for the ordinary reason — this package must not
+// depend on the notification objects — and it is *on the recorder* rather than
+// wired next to every Record call for a better one: a reconciler that records
+// what it did notifies about it for free, and one that forgets leaves a hole
+// in the feed as well, which somebody notices.
+//
+// A sink is handed the event on the recorder's own detached goroutine and
+// returns nothing. Whatever it does with it, it does after the reconcile that
+// produced the event has finished.
+type Sink interface {
+	Deliver(ctx context.Context, event clickhouse.Event)
+}
+
 // Recorder writes activity events, asynchronously and best-effort. A nil
 // Recorder is valid and records nothing, so tests and callers that were wired
 // without one do not have to care.
@@ -64,6 +81,11 @@ type Recorder struct {
 	Namespace string
 	// Singleton is the Kitchen object's name.
 	Singleton string
+
+	// Sink, when set, is handed every event as well. It is deliberately not
+	// downstream of the store: an installation with no telemetry store has no
+	// activity feed, and it still has notifications.
+	Sink Sink
 
 	mu       sync.Mutex
 	store    *clickhouse.Client
@@ -87,6 +109,15 @@ func (r *Recorder) Record(ctx context.Context, event clickhouse.Event) {
 	// and its cancellation (a requeue, a shutdown race) should not lose the
 	// entry that was already decided on.
 	background := context.WithoutCancel(ctx)
+	if r.Sink != nil {
+		// Its own goroutine, so that neither half waits for the other and a
+		// slow store cannot delay a notification (or the other way round).
+		go func() {
+			sinkCtx, cancel := context.WithTimeout(background, 30*time.Second)
+			defer cancel()
+			r.Sink.Deliver(sinkCtx, event)
+		}()
+	}
 	go func() {
 		insertCtx, cancel := context.WithTimeout(background, 10*time.Second)
 		defer cancel()
