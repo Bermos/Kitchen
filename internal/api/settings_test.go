@@ -261,18 +261,6 @@ func TestTheDashboardIsServedNextToTheAPI(t *testing.T) {
 	h.server.UI = ui.Handler(UIConfig(h.server.Client, "kitchen-ui"))
 	handler := h.server.Handler()
 
-	// The SPA answers anonymously, on deep links too.
-	for _, path := range []string{"/", "/projects/shop", "/auth/callback"} {
-		recorder := httptest.NewRecorder()
-		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
-		if recorder.Code != http.StatusOK {
-			t.Fatalf("%s: want 200, got %d", path, recorder.Code)
-		}
-		if !strings.Contains(recorder.Header().Get("Content-Type"), "text/html") {
-			t.Fatalf("%s: want the app shell, got %q", path, recorder.Header().Get("Content-Type"))
-		}
-	}
-
 	// Its bootstrap configuration says where to sign in, and for what.
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/config.json", nil))
@@ -285,11 +273,42 @@ func TestTheDashboardIsServedNextToTheAPI(t *testing.T) {
 		t.Fatalf("the config does not add up: %+v", config)
 	}
 
+	// The SPA answers anonymously, on deep links too.
+	for _, path := range []string{"/", "/projects/shop", "/auth/callback"} {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("%s: want 200, got %d", path, recorder.Code)
+		}
+		if !strings.Contains(recorder.Header().Get("Content-Type"), "text/html") {
+			t.Fatalf("%s: want the app shell, got %q", path, recorder.Header().Get("Content-Type"))
+		}
+		// The policy is built from the same singleton the config above is,
+		// so the destinations it permits are exactly the ones the dashboard
+		// has just been told to use rather than a second list to keep true
+		// (#321).
+		policy := recorder.Header().Get("Content-Security-Policy")
+		for _, origin := range []string{config.APIURL, config.Issuer} {
+			if !strings.Contains(policy, " "+origin+" ") && !strings.Contains(policy, " "+origin+";") {
+				t.Fatalf("%s: the policy does not permit %s: %q", path, origin, policy)
+			}
+		}
+		if recorder.Header().Get("X-Frame-Options") != "DENY" {
+			t.Fatalf("%s: the dashboard is framable", path)
+		}
+	}
+
 	// The API next door still refuses an anonymous caller.
 	recorder = httptest.NewRecorder()
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/projects", nil))
 	if recorder.Code != http.StatusUnauthorized {
 		t.Fatalf("the API answered an anonymous caller: %d", recorder.Code)
+	}
+	// The dashboard's browser hardening is the dashboard's: /api/ is reached
+	// by the CLI and by machine accounts as much as by a browser, and a
+	// policy on a JSON response would only be one more thing to keep true.
+	if policy := recorder.Header().Get("Content-Security-Policy"); policy != "" {
+		t.Fatalf("the API carries the dashboard's policy: %q", policy)
 	}
 }
 
