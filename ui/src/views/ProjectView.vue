@@ -12,6 +12,7 @@ import { pipelineShown } from "../lib/promotions";
 import { releaseHistoryEntry, releaseHistoryLabel } from "../lib/status";
 import { useAsync, usePoll } from "../lib/useAsync";
 import ClaimModal from "../components/ClaimModal.vue";
+import ClaimRecoveryModal from "../components/ClaimRecoveryModal.vue";
 import CommitBody from "../components/CommitBody.vue";
 import CommitBodyToggle from "../components/CommitBodyToggle.vue";
 import ConditionsTable from "../components/ConditionsTable.vue";
@@ -92,6 +93,14 @@ const mayBuild = computed(() => may("POST /api/v1/projects/{name}/builds", calle
 const mayAcquire = computed(() => may("POST /api/v1/projects/{name}/acquisitions", caller.value));
 const mayDeploy = computed(() => may("PATCH /api/v1/environments/{name}", caller.value));
 const mayClaim = computed(() => may("POST /api/v1/claims", caller.value));
+// Reading what a claim can be recovered to is the viewer's; the control is
+// offered on the kinds of claim that hold data somebody would want back, and
+// the panel behind it says — in the provider's own words — when this one
+// cannot be recovered at all.
+const mayReadRecovery = computed(() => may("GET /api/v1/claims/{name}/recoveries", caller.value));
+function offersRecovery(claim: Claim): boolean {
+  return claim.type === "postgres";
+}
 const mayUnclaim = computed(() => may("DELETE /api/v1/claims/{name}", caller.value));
 const mayConfigure = computed(() => may("PATCH /api/v1/projects/{name}", caller.value));
 const mayDelete = computed(() => may("DELETE /api/v1/projects/{name}", caller.value));
@@ -1248,6 +1257,19 @@ function host(url?: string): string {
                 </td>
                 <td class="px-3 py-2 text-right text-xs text-muted whitespace-nowrap">{{ timeAgo(claim.createdAt) }}</td>
                 <td class="px-3 py-2 text-right whitespace-nowrap">
+                  <!-- Recovering the data to a moment in the past, where the
+                       provider can do it. It is offered next to the claim
+                       because that is where somebody is when they need it,
+                       and what it opens says whether this claim's provider
+                       can reach back at all. -->
+                  <ClaimRecoveryModal
+                    v-if="mayReadRecovery && offersRecovery(claim)"
+                    class="mr-1"
+                    :claim="claim.name"
+                    :project="project.name"
+                    :role="project.role"
+                    @changed="refresh"
+                  />
                   <UButton
                     v-if="mayUnclaim && (!destroysData(claim) || mayUnclaimData)"
                     color="neutral"

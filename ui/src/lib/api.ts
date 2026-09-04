@@ -1985,6 +1985,70 @@ export interface Claim {
   scopes?: string[];
 }
 
+/** How far back a claim's provider can actually reconstruct its data, as the
+ * provider last answered. Observed, never declared: a retention somebody
+ * wrote down and a retention the provider honours are two different facts,
+ * and a date picker over the second one is the only one worth having. */
+export interface ClaimRecoveryWindow {
+  earliest: string;
+  latest: string;
+  /** When the window was read. A window is a moving pair of timestamps, and
+   * one read ten minutes ago has already slid. */
+  observedAt: string;
+}
+
+/** One recovered sibling database: the claim's data as it was at a moment,
+ * under an address of its own. Recovering one changes nothing the
+ * application is reading — promoting it is what does. */
+export interface ClaimRecovery {
+  name: string;
+  /** The moment this database holds the data as of, which is not when it was
+   * made. */
+  at: string;
+  /** Pending while the provider makes it, Ready once its binding is written,
+   * Failed with the provider's own words in `message`. */
+  phase?: string;
+  message?: string;
+  /** The recovery's own binding secret — a name, never its contents. */
+  secret?: string;
+  /** What the provider says the recovered data derives from, and the class
+   * it inherited from the claim: a recovery is a new place the same data
+   * lives. */
+  provenance?: string;
+  dataClass?: string;
+  createdAt?: string;
+  promotedAt?: string;
+  /** This recovery is what the claim binds now. */
+  promoted?: boolean;
+}
+
+/** A database a promote displaced and did not destroy. `recovery` is empty
+ * when what was displaced was the claim's original database. */
+export interface ClaimRetained {
+  recovery?: string;
+  id?: string;
+  displacedBy: string;
+  at: string;
+}
+
+/** GET /claims/{name}/recoveries: what a claim can be recovered to, and what
+ * it has been. The list is meaningless without the window, which is why the
+ * two arrive together. */
+export interface ClaimRecoveries {
+  claim: string;
+  /** Whether this claim can be recovered at all, and why not — the
+   * provider's own account, so a claim through a provider that cannot do
+   * this says which provider and why rather than showing a dead control. */
+  available: boolean;
+  reason?: string;
+  window?: ClaimRecoveryWindow;
+  recoveries: ClaimRecovery[];
+  retained?: ClaimRetained[];
+  /** The recovery the claim binds now, absent for a claim bound to its own
+   * database. */
+  promoted?: string;
+}
+
 /** One provider's declaration for one claim type, from GET /claim-types:
  * what a preview gets and why, which preview modes a claim may name, and
  * what the binding does to the workload. */
@@ -3961,6 +4025,28 @@ export const api = {
   // Answers 202: the operator's finalizer finishes the teardown — branches,
   // binding secrets and, under deletionPolicy Delete, the database itself.
   deleteClaim: (name: string) => request<Claim>("DELETE", `/claims/${name}`),
+
+  // Point-in-time recovery, where the provider can do it. Recovering makes a
+  // sibling database and touches nothing the application reads; promoting
+  // makes the sibling the claim's binding, which is the admin's and answers
+  // 202 because the operator cuts it over afterwards.
+  claimRecoveries: (name: string) =>
+    request<ClaimRecoveries>("GET", `/claims/${encodeURIComponent(name)}/recoveries`),
+  recoverClaim: (name: string, at: string, recovery?: string) =>
+    request<ClaimRecoveries>("POST", `/claims/${encodeURIComponent(name)}/recoveries`, {
+      at,
+      ...(recovery ? { name: recovery } : {}),
+    }),
+  promoteClaimRecovery: (name: string, recovery: string) =>
+    request<ClaimRecoveries>(
+      "POST",
+      `/claims/${encodeURIComponent(name)}/recoveries/${encodeURIComponent(recovery)}/promote`,
+    ),
+  discardClaimRecovery: (name: string, recovery: string) =>
+    request<ClaimRecoveries>(
+      "DELETE",
+      `/claims/${encodeURIComponent(name)}/recoveries/${encodeURIComponent(recovery)}`,
+    ),
 
   // The platform as it is running: cluster, tunnel, build queue, components.
   status: () => request<PlatformStatus>("GET", "/status"),

@@ -1434,6 +1434,29 @@ cannot write it carries on and exchanges every time.
   the API's `403` naming the field and the role it wants is printed as it
   stands, through the one error shape every command already answers with. A
   flag would only be a way to spell a role the caller either holds or does not.
+
+  **Point-in-time recovery is the first of these that added routes**, four of
+  them, and the decision is still `kitchen api` — which is why it is written
+  down here rather than assumed. Recovering is one line with the moment in it,
+  and what would make a command worth writing is not there: nothing long
+  running to follow (the copy appears on `GET /claims/{name}/recoveries` as
+  `Pending` and then `Ready`), no credential to keep out of a terminal (a
+  copy's binding is a secret *name*, like every other on this API), and no
+  answer a table would read better than the JSON does. Promoting is the
+  opposite case: its dashboard gate is typing the claim's name, which exists
+  precisely to slow a person down at the moment they are least likely to be
+  careful, and a flag that spells that gate is a gate that has been removed.
+  So the `403` and the `409` this surface answers with are printed as they
+  stand, through the one error shape every command already has:
+
+  ```sh
+  kitchen api GET /claims/shop-db/recoveries | jq '{available, reason, window}'
+  kitchen api POST /claims/shop-db/recoveries \
+    --data '{"at":"2026-08-30T14:05:00Z","name":"before-the-migration"}'
+  kitchen api POST /claims/shop-db/recoveries/before-the-migration/promote
+  kitchen api DELETE /claims/shop-db/recoveries/before-the-migration
+  ```
+
   `kitchen env set --from-claim` already reads any of their bindings
   by name, and it did not have to learn what a bucket or a queue is to do it.
   Asking for a database with an extension is one line as it is:

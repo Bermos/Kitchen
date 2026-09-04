@@ -20,6 +20,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Bermos/Kitchen/internal/provider/database/databasetest"
 )
@@ -204,3 +205,114 @@ func TestProviderErrorsCarryTheAPIsDiagnostic(t *testing.T) {
 		t.Fatal("the error leaks the credential")
 	}
 }
+
+// The window is the project's own retention, read from the provider rather
+// than assumed: a date picker over a window that does not exist is worse than
+// no feature.
+func TestNeonReadsItsRecoveryWindowFromTheProject(t *testing.T) {
+	neon, fake := neonAgainstFake(t)
+	ctx := context.Background()
+
+	instance, err := neon.Provision(ctx, shopDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	window, err := neon.RecoveryWindow(ctx, instance.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if window.Empty() {
+		t.Fatal("a project with retention has a window")
+	}
+	reach := window.Latest.Sub(window.Earliest)
+	if want := time.Duration(databasetest.NeonRetention) * time.Second; reach != want {
+		t.Fatalf("the window reaches back %s, want the project's retention %s", reach, want)
+	}
+	if !window.Contains(window.Latest.Add(-time.Hour)) {
+		t.Fatal("an hour ago is inside a seven-day window")
+	}
+	if window.Contains(window.Earliest.Add(-time.Second)) {
+		t.Fatal("a moment before the earliest is outside the window")
+	}
+
+	// Retention turned off is a provider that keeps no history, and the
+	// window says so rather than pretending to a moment ago.
+	fake.SetRetention(instance.ID, 0)
+	window, err = neon.RecoveryWindow(ctx, instance.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !window.Empty() {
+		t.Fatalf("a project with no retention has no window, got %+v", window)
+	}
+}
+
+// The whole of Neon's recovery: one field on the request CreateBranch already
+// posts. The test asserts the field reaches the API, because that is the
+// difference between a recovery and a branch of the present.
+func TestNeonRecoverToSendsTheParentTimestamp(t *testing.T) {
+	neon, fake := neonAgainstFake(t)
+	ctx := context.Background()
+
+	instance, err := neon.Provision(ctx, shopDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Now().UTC().Add(-3 * time.Hour).Truncate(time.Second)
+	branch, err := neon.RecoverTo(ctx, instance.ID, "recovery-before-the-migration", at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created := fake.BranchNamed("kitchen-shop-db", "recovery-before-the-migration")
+	if created == nil {
+		t.Fatal("no branch was created")
+	}
+	if created.ParentTimestamp != at.Format(time.RFC3339) {
+		t.Fatalf("parent_timestamp did not reach the API: %q", created.ParentTimestamp)
+	}
+	// A recovery of a production database is production data at an earlier
+	// moment, and the binding is the sibling's rather than the primary's.
+	if branch.Provenance != ProvenanceProduction {
+		t.Fatalf("a recovery of a production database is production-derived, got %q", branch.Provenance)
+	}
+	if branch.Binding.Host == instance.Binding.Host {
+		t.Fatal("the recovery's binding points at the original")
+	}
+
+	// Idempotent by name, like every other create here: a reconcile that runs
+	// twice recovers once, and never takes a second copy a minute later.
+	again, err := neon.RecoverTo(ctx, instance.ID, "recovery-before-the-migration", at.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.ID != branch.ID {
+		t.Fatalf("a second RecoverTo made a second database: %q then %q", branch.ID, again.ID)
+	}
+
+	// An ordinary branch still carries no timestamp: recovery is the one
+	// caller that sets it.
+	if _, err := neon.CreateBranch(ctx, instance.ID, "shop-pr-9"); err != nil {
+		t.Fatal(err)
+	}
+	if preview := fake.BranchNamed("kitchen-shop-db", "shop-pr-9"); preview == nil || preview.ParentTimestamp != "" {
+		t.Fatalf("a preview branch is not a recovery: %+v", preview)
+	}
+}
+
+// A recovery with no moment to recover to is refused before anything is
+// created — the field is the whole operation.
+func TestNeonRecoverToNeedsAMoment(t *testing.T) {
+	neon, _ := neonAgainstFake(t)
+	ctx := context.Background()
+
+	instance, err := neon.Provision(ctx, shopDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := neon.RecoverTo(ctx, instance.ID, "recovery-nowhen", time.Time{}); err == nil {
+		t.Fatal("want a refusal")
+	}
+}
+
+// Neon implements the optional interface; the compiler is the assertion.
+var _ RecoverableProvisioner = (*Neon)(nil)

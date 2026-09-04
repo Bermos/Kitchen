@@ -553,6 +553,169 @@ A type that provisions no data — `oidcClient` — takes no `deletionPolicy` at
 all, and deleting one stays the developer's: what it holds is permission to
 sign people in, and that must not outlive the claim.
 
+## Recovering the data to a moment in the past
+
+Neither supported provider can rewind a database in place, and neither needs
+to. Neon branches at a parent timestamp; what comes back is a **second**
+database holding the old data. So the operation this API offers is *recover to
+a copy, then decide*, and it is two calls rather than one:
+
+| | What it does | Who |
+|---|---|---|
+| `POST /claims/{name}/recoveries` | Makes a copy holding the data as it was at a moment, with an address of its own. Nothing the application reads changes | `developer` |
+| `POST /claims/{name}/recoveries/{recovery}/promote` | Makes that copy the claim's binding. Every environment reading the claim rolls onto it | `admin` |
+
+That split is not a compromise forced by the providers, it is the better
+design: the original is untouched while somebody looks at the copy, which is
+the only way to find out whether the timestamp was the right one; cutover is a
+deliberate act with its own confirmation rather than a side effect of choosing
+a time; and getting it wrong twice costs another copy, not the database.
+
+### The window is read, never declared
+
+```sh
+curl -sS -H "authorization: Bearer $TOKEN" \
+  https://kitchen.apps.example.com/api/v1/claims/shop-db/recoveries
+```
+
+```json
+{
+  "claim": "shop-db",
+  "available": true,
+  "reason": "neon can reconstruct this database to any moment inside the window",
+  "window": {
+    "earliest": "2026-08-24T09:12:00Z",
+    "latest": "2026-08-31T09:12:00Z",
+    "observedAt": "2026-08-31T09:12:00Z"
+  },
+  "recoveries": []
+}
+```
+
+The window is the provider's own answer — for Neon, the project's history
+retention, which is hours on the free plan and up to weeks on a paid one —
+read on every reconcile and reported on the claim's status. It is **never** a
+capability somebody declares on the Connection: whether a provider can do this
+is a fact about the implementation, and a declared capability is one somebody
+can declare falsely. Same rule as residency: observed, never declared.
+
+A claim whose provider cannot do it at all says so and offers nothing:
+
+```json
+{"claim": "shop-db", "available": false,
+ "reason": "cnpg cannot recover a database to a point in time: there is no history at the provider to reach back into",
+ "recoveries": []}
+```
+
+That asymmetry is deliberate and is said out loud rather than shown as a
+greyed-out button: a Neon claim offers recovery today, and a claim through the
+self-hosted provider does not, because there is nothing behind it to recover
+*from*. A timestamp outside the window is refused here, with the window in the
+refusal, rather than at the provider:
+
+```json
+{"error": "2026-07-30T14:05:00Z is outside what this claim can be recovered to: its provider can reach back to 2026-08-24T09:12:00Z, and no further forward than 2026-08-31T09:12:00Z"}
+```
+
+### Recovering
+
+```sh
+curl -sS -X POST -H "authorization: Bearer $TOKEN" \
+  -d '{"at": "2026-08-30T14:05:00Z", "name": "before-the-migration"}' \
+  https://kitchen.apps.example.com/api/v1/claims/shop-db/recoveries
+```
+
+`at` is the whole of the request — RFC 3339, and nothing else, because a
+timestamp whose format the API guessed is a recovery to the wrong moment.
+`name` is optional and identifies the copy on the claim; absent, it is derived
+from the moment. The answer is `202`: the operator makes the copy and writes
+its binding after the response has gone out, and the copy appears on the list
+as `Pending`, then `Ready` with a `secret` of its own, or `Failed` with the
+provider's own words.
+
+**A copy inherits the claim's classification and the provider's provenance.**
+A recovery is a new place the same data lives, so it carries the same
+`dataClass`, and a point-in-time recovery of a production database is
+production data at an earlier moment — `provenance: production`, correct by
+construction rather than by policy.
+
+**Discarding one** is `DELETE /claims/{name}/recoveries/{recovery}`, also
+`202`: the copy and its data go. Discarding the copy the claim currently binds
+is refused with a `409` — that is not a discard, it is taking the
+application's database away — and the way out is to promote something else
+first.
+
+### Promoting, and what it displaces
+
+```sh
+curl -sS -X POST -H "authorization: Bearer $TOKEN" \
+  https://kitchen.apps.example.com/api/v1/claims/shop-db/recoveries/before-the-migration/promote
+```
+
+`202`, and `admin` on the claim's project — the same role `deletionPolicy:
+Delete` needs, and the same role that may delete the whole project. It is a
+handler condition rather than a row in the route table, exactly like that one,
+and the refusal names the role and what it does:
+
+```json
+{"error": "you have developer on shop; promoting a recovery needs admin: it replaces the database every environment of this project reads, and the one it displaces is kept but no longer bound"}
+```
+
+The dashboard confirms it by typing the claim's name, which is the gate
+deleting a project has and for the same reason. It lands in the audit log
+before anything is written, so a promote the log cannot record is a promote
+that does not happen (`503`).
+
+**The displaced database is kept.** Under the same reasoning that makes
+`deletionPolicy: Retain` the default — destroying data is opted into, never
+implied — a promote leaves what it replaced where it is, listed under
+`retained` with what displaced it and when. Reaping it is a separate
+deliberate act, because a promote is exactly the moment somebody might have
+chosen the wrong timestamp. Nothing on this surface removes it; deleting the
+claim under `Delete` is what eventually does.
+
+**Cutover ordering: the binding is rewritten and the environments roll.** The
+platform does not stop them first. Scaling every environment of a project to
+zero, cutting over, and scaling back up is the conservative answer and it was
+considered; what is chosen is the rolling one, for two reasons. An outage the
+platform starts on its own has no bound on how long it lasts if the roll then
+fails — which is the worst possible minute to discover that. And the thing a
+scale-down would protect against, writes landing in the displaced database
+during the cutover, is exactly what **retaining** that database keeps
+readable. So the window is one rolling deploy wide, some pods are still
+writing to the old database inside it, and both facts are said on the
+confirmation rather than left to be discovered.
+
+### What this does not answer
+
+Three questions the design leaves open, answered here as narrowly as they can
+honestly be, so that nothing reads as a promise:
+
+- **Recovering a claim that no longer exists.** It cannot be done through this
+  API, and that is deliberate rather than pending. Every route here addresses
+  a claim; a deleted claim has no route, and a route that reached objects the
+  platform no longer has a record of would be a way to bind one project to
+  another project's retained data — which is the thing
+  [rebinding](#rebinding-a-retained-resource) exists to prevent. Under
+  `Retain` the database is still at the provider under `kitchen-<project>-<claim>`,
+  and the way back to it is to claim that name again in that project, which
+  rebinds; the recoveries then work from there. Under `Delete` it is gone, and
+  nothing recovers it.
+- **Whether copies expire.** They do not. A copy is a real database with a
+  real cost, and one forgotten after an incident is production-classified data
+  nobody is watching — but the platform reaping data on a timer is exactly
+  what `Retain` says it does not do. What it does instead is make them
+  impossible to lose track of: every copy is on the claim, on this endpoint
+  and on the claim's screen, with its class and its provenance next to it. An
+  expiry, if it is ever built, is a policy somebody sets and not a default.
+- **Recovering to a transaction rather than a moment.** `targetTime` is the
+  useful one and the only one offered. A log sequence number or a transaction
+  id is a provider's vocabulary, not a claim's, and neither is knowable from
+  anywhere the dashboard can see.
+
+The CLI reaches all four routes through `kitchen api`, as it does the rest of
+this surface; see [CLI.md](../CLI.md).
+
 ## Rebinding a retained resource
 
 `deletionPolicy: Retain` is the default for every type that provisions data,

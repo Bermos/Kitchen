@@ -24,6 +24,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"time"
 
 	"github.com/Bermos/Kitchen/internal/provider/naming"
 )
@@ -51,6 +52,11 @@ type neonProject struct {
 	// RegionID is where Neon placed the project — the actual placement, which
 	// is what the claim's residency records.
 	RegionID string `json:"region_id"`
+	// HistoryRetentionSeconds is how far back this project's storage can be
+	// branched from: hours on the free plan, up to weeks on a paid one. It is
+	// the whole of the recovery window, and it is read rather than assumed —
+	// see RecoveryWindow.
+	HistoryRetentionSeconds int64 `json:"history_retention_seconds"`
 }
 
 type neonBranch struct {
@@ -145,6 +151,55 @@ func (n *Neon) Deprovision(ctx context.Context, instanceID string) error {
 // synthesizes on the way to a branch is where masked/synthetic declarations
 // come from, and Neon does neither.
 func (n *Neon) CreateBranch(ctx context.Context, instanceID, name string) (Branch, error) {
+	return n.branchAt(ctx, instanceID, name, time.Time{})
+}
+
+// RecoveryWindow reads how far back this Neon project can be branched from:
+// its own history retention, which is a per-project setting the plan decides.
+// Latest is now, because Neon's history is continuous up to the present — a
+// branch taken at this instant is the database as it is.
+//
+// It is read on every reconcile rather than remembered: retention moves when
+// the plan does, and a window the platform kept believing in after the
+// provider stopped honouring it is precisely the date picker over a window
+// that does not exist.
+func (n *Neon) RecoveryWindow(ctx context.Context, instanceID string) (RecoveryWindow, error) {
+	out := struct {
+		Project neonProject `json:"project"`
+	}{}
+	if err := n.do(ctx, http.MethodGet, "/projects/"+instanceID, nil, &out); err != nil {
+		return RecoveryWindow{}, err
+	}
+	latest := time.Now().UTC()
+	retention := time.Duration(out.Project.HistoryRetentionSeconds) * time.Second
+	if retention <= 0 {
+		// Retention turned off: the project holds no history, so there is
+		// nothing to reach back to and the window says so rather than
+		// pretending to a moment ago.
+		return RecoveryWindow{Earliest: latest, Latest: latest}, nil
+	}
+	return RecoveryWindow{Earliest: latest.Add(-retention), Latest: latest}, nil
+}
+
+// RecoverTo creates (or finds) a branch holding the project's data as it was
+// at `at` — one field, `parent_timestamp`, on the same request CreateBranch
+// posts. Nothing is rewound: what comes back is a sibling database under its
+// own address, which the platform then promotes or discards.
+//
+// A recovery of a production database is production data at an earlier
+// moment, so the branch declares ProvenanceProduction like every other.
+func (n *Neon) RecoverTo(ctx context.Context, instanceID, name string, at time.Time) (Branch, error) {
+	if at.IsZero() {
+		return Branch{}, fmt.Errorf("recovering %s needs a moment to recover to", name)
+	}
+	return n.branchAt(ctx, instanceID, name, at)
+}
+
+// branchAt is the one branch-creating path: CreateBranch is it with no
+// parent timestamp, RecoverTo is it with one. Both are idempotent by name —
+// a reconcile may run twice, and a recovery found again must be the same
+// database rather than a second one taken a minute later.
+func (n *Neon) branchAt(ctx context.Context, instanceID, name string, at time.Time) (Branch, error) {
 	branches, err := n.listBranches(ctx, instanceID)
 	if err != nil {
 		return Branch{}, err
@@ -163,8 +218,12 @@ func (n *Neon) CreateBranch(ctx context.Context, instanceID, name string) (Branc
 	created := struct {
 		Branch neonBranch `json:"branch"`
 	}{}
+	branch := map[string]any{"name": name}
+	if !at.IsZero() {
+		branch["parent_timestamp"] = at.UTC().Format(time.RFC3339)
+	}
 	body := map[string]any{
-		"branch":    map[string]any{"name": name},
+		"branch":    branch,
 		"endpoints": []map[string]any{{"type": "read_write"}},
 	}
 	if err := n.do(ctx, http.MethodPost, "/projects/"+instanceID+"/branches", body, &created); err != nil {

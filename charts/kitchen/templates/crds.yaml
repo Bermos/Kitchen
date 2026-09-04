@@ -10449,6 +10449,59 @@ spec:
                 required:
                 - name
                 type: object
+              promotedRecovery:
+                description: |-
+                  PromotedRecovery names the recovery, out of Recoveries, whose database
+                  the claim binds to. Empty — the normal state — binds the instance's own
+                  database.
+
+                  It is durable desired state rather than a one-shot command: the claim
+                  binds to what this names for as long as it names it, so a reconcile
+                  that runs again does not undo the cutover. The database it displaces is
+                  **retained**, never destroyed, under the same reasoning that makes
+                  deletionPolicy Retain the default — you do not want to discover the
+                  recovery was wrong after the original is gone.
+                type: string
+              recoveries:
+                description: |-
+                  Recoveries are the point-in-time recoveries asked for on this claim:
+                  each one a *sibling* database holding the claim's data as it was at a
+                  moment, created by the reconciler and listed on the status.
+
+                  Nothing is rewound and nothing is replaced by asking — which is the
+                  whole design. Neither provider can rewind a database in place, and none
+                  needs to: recovering to a sibling leaves the original untouched while
+                  somebody looks at the copy, which is the only way to find out whether
+                  the timestamp was the right one. Making the copy the claim's binding is
+                  PromotedRecovery, a second and deliberate act.
+
+                  Removing an entry discards that recovery and its data at the provider.
+                items:
+                  description: |-
+                    ClaimRecoveryRequest asks for one point-in-time recovery of the claim's
+                    resource: a sibling database holding its data as of At, under a name the
+                    claim's status and the binding Secret are keyed by.
+                  properties:
+                    at:
+                      description: |-
+                        At is the moment to recover to. It has to be inside the window the
+                        provider reports on the status; a moment outside it is refused by the
+                        API, and by the provider if it ever got that far.
+                      format: date-time
+                      type: string
+                    name:
+                      description: |-
+                        Name identifies the recovery within the claim, and names its binding
+                        Secret. It is a DNS label because it ends up in object names on both
+                        sides of the platform.
+                      maxLength: 40
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                      type: string
+                  required:
+                  - at
+                  - name
+                  type: object
+                type: array
               type:
                 description: |-
                   Kind of resource requested. It is immutable: the type decides who
@@ -10669,6 +10722,175 @@ spec:
                   and the sentence behind the mode otherwise — the provider's own words
                   about what a preview gets.
                 type: string
+              recovery:
+                description: |-
+                  Recovery is what the claim can be recovered to and what has been
+                  recovered: the window the provider reports, the siblings, and anything
+                  a promote displaced. Absent on a claim of a type nothing recovers.
+                properties:
+                  available:
+                    description: |-
+                      Available says whether this claim can be recovered at all: its
+                      provider implements point-in-time recovery *and* reports a window with
+                      something in it. False is a complete answer — Reason says which of the
+                      two it is.
+                    type: boolean
+                  reason:
+                    description: |-
+                      Reason is why recovery is unavailable, or the sentence behind an
+                      available one. It is the provider's own account rather than the
+                      platform's guess: "cnpg cannot recover to a point in time until its
+                      backup policy exists" reads differently from "this provider keeps no
+                      history", and both are true of different claims.
+                    type: string
+                  recoveries:
+                    description: |-
+                      Recoveries are the siblings this claim has recovered, newest request
+                      last, each with the moment it holds and the Secret its binding was
+                      written into.
+                    items:
+                      description: |-
+                        ClaimRecovery is one recovered sibling database: what it holds, where its
+                        binding was written, and what the provider declared about it.
+                      properties:
+                        at:
+                          description: At is the moment this database holds the claim's
+                            data as of.
+                          format: date-time
+                          type: string
+                        createdAt:
+                          description: |-
+                            CreatedAt is when the platform first recorded this recovery, which is
+                            not the moment it holds: At is.
+                          format: date-time
+                          type: string
+                        dataClass:
+                          description: |-
+                            DataClass is the class the recovery inherits from the claim. A
+                            recovery creates a new place the same data lives, so it carries the
+                            same classification; it is recorded here rather than read off the
+                            claim so that a claim reclassified later does not rewrite what a
+                            recovery was made under.
+                          enum:
+                          - public
+                          - internal
+                          - confidential
+                          - strictlyConfidential
+                          type: string
+                        id:
+                          description: |-
+                            ID is the provider-side identifier of the recovered database, opaque
+                            like every other the platform records.
+                          type: string
+                        message:
+                          type: string
+                        name:
+                          description: Name is the claim-scoped name the recovery
+                            was asked for under.
+                          type: string
+                        phase:
+                          description: |-
+                            Phase is Pending while the provider is making it, Ready once its
+                            binding is written, Failed when the provider refused. Message carries
+                            the provider's own words.
+                          enum:
+                          - Pending
+                          - Ready
+                          - Failed
+                          type: string
+                        promotedAt:
+                          description: |-
+                            PromotedAt is when this recovery became the claim's binding. Absent on
+                            every recovery nobody promoted, which is most of them.
+                          format: date-time
+                          type: string
+                        provenance:
+                          description: |-
+                            Provenance is the provider's declaration of what the recovered data
+                            derives from. A point-in-time recovery of a production database is
+                            production data at an earlier moment, so it is production — correct by
+                            construction rather than by policy.
+                          enum:
+                          - production
+                          - masked
+                          - synthetic
+                          type: string
+                        secretName:
+                          description: |-
+                            SecretName is the recovery's own binding Secret in the application
+                            namespace — a second address for the same application's data, which is
+                            what makes looking at the copy possible before anything is promoted.
+                          type: string
+                      required:
+                      - at
+                      - name
+                      type: object
+                    type: array
+                  retained:
+                    description: |-
+                      Retained are the databases a promote displaced and did not destroy.
+                      Reaping one is a separate deliberate act — the platform never does it
+                      on its own, because a promote is exactly the moment somebody might
+                      have chosen the wrong timestamp.
+                    items:
+                      description: ClaimRetainedDatabase is a database a promote displaced
+                        and left behind.
+                      properties:
+                        at:
+                          description: At is when the promote happened.
+                          format: date-time
+                          type: string
+                        displacedBy:
+                          description: DisplacedBy is the recovery that took its place.
+                          type: string
+                        id:
+                          description: |-
+                            ID is the provider-side identifier of the retained database, where the
+                            platform has one to record.
+                          type: string
+                        recovery:
+                          description: |-
+                            Recovery is the recovery whose database was displaced, empty when what
+                            was displaced was the instance's own database — the one the claim was
+                            bound to before anything was ever promoted, which is still there under
+                            the instance's name.
+                          type: string
+                      required:
+                      - at
+                      - displacedBy
+                      type: object
+                    type: array
+                  window:
+                    description: |-
+                      Window is how far back the provider can actually reach. Absent where
+                      the provider cannot say — which is not the same as a window of zero
+                      length, and is surfaced as the absence it is.
+                    properties:
+                      earliest:
+                        description: Earliest is the oldest moment the provider can
+                          still reach.
+                        format: date-time
+                        type: string
+                      latest:
+                        description: |-
+                          Latest is the newest — now, for a provider whose history is continuous
+                          up to the present.
+                        format: date-time
+                        type: string
+                      observedAt:
+                        description: |-
+                          ObservedAt is when the window was read. A window is a moving pair of
+                          timestamps, and one read ten minutes ago has already slid.
+                        format: date-time
+                        type: string
+                    required:
+                    - earliest
+                    - latest
+                    - observedAt
+                    type: object
+                required:
+                - available
+                type: object
               redirectURIs:
                 description: |-
                   RedirectURIs is the redirect list an oidcClient claim's client is

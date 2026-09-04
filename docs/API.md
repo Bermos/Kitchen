@@ -136,13 +136,18 @@ twice.
 **A requirement is a floor.** A route is the unit of authorization, so a
 condition that depends on the *body* of one request rather than on the route
 cannot be a row: it is checked in the handler, above the row's role, and
-refused with a `403` naming the field and the role it wants. There is one, and
-it is marked † below — `deletionPolicy: Delete` on a claim destroys the
-provisioned resource and the data on it, which makes asking for it, and
-deleting a claim that already carries it, `admin`'s rather than `developer`'s.
-The rows stay `developer` because that is what claiming and unclaiming
-otherwise need, and anything that grows a second such condition is marked the
-same way.
+refused with a `403` naming the field and the role it wants. There are two.
+
+**†** — `deletionPolicy: Delete` on a claim destroys the provisioned resource
+and the data on it, which makes asking for it, and deleting a claim that
+already carries it, `admin`'s rather than `developer`'s. The rows stay
+`developer` because that is what claiming and unclaiming otherwise need.
+
+**‡** — promoting a recovery over a claim's own database replaces what every
+environment of the project reads, so it takes the same role for the same
+reason. Its row is `developer` like the rest of the recovery surface, and the
+handler is where the `admin` is; the displaced database is kept either way,
+which is what makes recovering itself the day job it is marked as.
 
 ### Being refused
 
@@ -315,6 +320,10 @@ name against `internal/api/policy.go`, so a route that moves fails them too.
 | POST | `/claims` | Ask for a provisioned resource: a database, a bucket or a cache from a connection — optionally naming what it has to be, and what previews get — an OAuth client from the platform's identity provider, a persistent volume mounted into one of the project's processes, or the keys a worker connects to Inngest with | `developer` † |
 | GET | `/claims/{name}` | One claim | `viewer` |
 | DELETE | `/claims/{name}` | Delete it — what happens to the data is its `deletionPolicy`'s call; an OAuth client is always deregistered, and an Inngest app's preview environments are archived | `developer` † |
+| GET | `/claims/{name}/recoveries` | How far back this claim's provider can reconstruct its data, and the copies already recovered | `viewer` |
+| POST | `/claims/{name}/recoveries` | Recover the data to a moment inside that window: `202`, and a *copy* with an address of its own — the claim keeps reading what it was reading | `developer` |
+| POST | `/claims/{name}/recoveries/{recovery}/promote` | Make that copy the claim's binding: `202`, and the database it displaces is kept | `admin` ‡ |
+| DELETE | `/claims/{name}/recoveries/{recovery}` | Discard a copy nobody promoted, and its data with it: `202` | `developer` |
 
 ## Endpoint reference
 

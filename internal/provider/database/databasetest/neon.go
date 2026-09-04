@@ -33,11 +33,24 @@ import (
 // Provision reports as the instance's Region.
 const NeonRegion = "aws-eu-central-1"
 
+// NeonRetention is the history retention the fake reports for every project,
+// which is what the recovery window is computed from: seven days, a paid
+// plan's answer.
+const NeonRetention = 7 * 24 * 60 * 60
+
 // NeonProject is one fake Neon project with its branches, keyed by branch ID.
 type NeonProject struct {
 	ID       string
 	Name     string
 	Branches map[string]*NeonBranch
+	// retentionSet distinguishes "no retention" from "not configured", so
+	// SetRetention(0) reports zero rather than the default.
+	retentionSet bool
+	// Retention is the project's history retention in seconds, as
+	// `history_retention_seconds`. Zero means the fake reports
+	// NeonRetention; SetRetention makes a project keep none, which is the
+	// window a claim offers no recovery over.
+	Retention int64
 }
 
 // NeonBranch is one fake branch. Its role password is derived from the ID
@@ -46,6 +59,11 @@ type NeonBranch struct {
 	ID      string
 	Name    string
 	Default bool
+	// ParentTimestamp is what the branch was created at, as the request
+	// spelled it — empty for an ordinary branch of the parent's present.
+	// It is the one field a point-in-time recovery adds, so it is the one
+	// the tests assert reached the API.
+	ParentTimestamp string
 }
 
 // Password is the fake's deterministic role password for a branch.
@@ -71,6 +89,7 @@ func NewNeonServer() *NeonServer {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /projects", s.listProjects)
+	mux.HandleFunc("GET /projects/{project}", s.getProject)
 	mux.HandleFunc("POST /projects", s.createProject)
 	mux.HandleFunc("DELETE /projects/{project}", s.deleteProject)
 	mux.HandleFunc("GET /projects/{project}/branches", s.listBranches)
@@ -124,6 +143,18 @@ func (s *NeonServer) AddProject(name string) *NeonProject {
 	return project
 }
 
+// SetRetention sets a project's history retention in seconds. Zero seconds
+// is a project with no history at all, which is what a claim with an empty
+// recovery window is reading.
+func (s *NeonServer) SetRetention(projectID string, seconds int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if project, ok := s.projects[projectID]; ok {
+		project.Retention = seconds
+		project.retentionSet = true
+	}
+}
+
 // ProjectNamed returns a snapshot of the project with that name, or nil.
 func (s *NeonServer) ProjectNamed(name string) *NeonProject {
 	s.mu.Lock()
@@ -132,7 +163,11 @@ func (s *NeonServer) ProjectNamed(name string) *NeonProject {
 		if project.Name != name {
 			continue
 		}
-		snapshot := &NeonProject{ID: project.ID, Name: project.Name, Branches: map[string]*NeonBranch{}}
+		snapshot := &NeonProject{
+			ID: project.ID, Name: project.Name,
+			Retention: project.retention(), retentionSet: true,
+			Branches: map[string]*NeonBranch{},
+		}
 		for id, branch := range project.Branches {
 			copied := *branch
 			snapshot.Branches[id] = &copied
@@ -182,6 +217,31 @@ func (s *NeonServer) listProjects(w http.ResponseWriter, _ *http.Request) {
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"projects": projects})
+}
+
+// getProject is what the recovery window is read from: the project with its
+// history retention.
+func (s *NeonServer) getProject(w http.ResponseWriter, req *http.Request) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	project, ok := s.projects[req.PathValue("project")]
+	if !ok {
+		http.NotFound(w, req)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"project": map[string]any{
+		"id": project.ID, "name": project.Name, "region_id": NeonRegion,
+		"history_retention_seconds": project.retention(),
+	}})
+}
+
+// retention is what the fake reports for a project: what SetRetention was
+// given, or the default.
+func (p *NeonProject) retention() int64 {
+	if p.retentionSet {
+		return p.Retention
+	}
+	return NeonRetention
 }
 
 func (s *NeonServer) createProject(w http.ResponseWriter, req *http.Request) {
@@ -246,7 +306,8 @@ func (s *NeonServer) listBranches(w http.ResponseWriter, req *http.Request) {
 func (s *NeonServer) createBranch(w http.ResponseWriter, req *http.Request) {
 	body := struct {
 		Branch struct {
-			Name string `json:"name"`
+			Name            string `json:"name"`
+			ParentTimestamp string `json:"parent_timestamp"`
 		} `json:"branch"`
 	}{}
 	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
@@ -262,7 +323,10 @@ func (s *NeonServer) createBranch(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	s.nextID++
-	branch := &NeonBranch{ID: fmt.Sprintf("br-%d", s.nextID), Name: body.Branch.Name}
+	branch := &NeonBranch{
+		ID: fmt.Sprintf("br-%d", s.nextID), Name: body.Branch.Name,
+		ParentTimestamp: body.Branch.ParentTimestamp,
+	}
 	project.Branches[branch.ID] = branch
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"branch": map[string]any{"id": branch.ID, "name": branch.Name, "default": false},
