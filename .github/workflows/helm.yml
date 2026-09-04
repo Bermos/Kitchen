@@ -66,7 +66,14 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install Helm
+        # Pinned. Unpinned, the action resolves "latest" over the network at
+        # job time and, when that lookup fails, falls back with a warning to a
+        # Helm 3 — which does not adopt the namespace --create-namespace made,
+        # so the chart cannot install at all (CLAUDE.md, "Things that are true
+        # and easy to get wrong"). Bump this deliberately, not by a fetch.
         uses: azure/setup-helm@v4
+        with:
+          version: v4.2.4
 
       - name: Check generated templates are in sync
         run: |
@@ -597,7 +604,14 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install Helm
+        # Pinned. Unpinned, the action resolves "latest" over the network at
+        # job time and, when that lookup fails, falls back with a warning to a
+        # Helm 3 — which does not adopt the namespace --create-namespace made,
+        # so the chart cannot install at all (CLAUDE.md, "Things that are true
+        # and easy to get wrong"). Bump this deliberately, not by a fetch.
         uses: azure/setup-helm@v4
+        with:
+          version: v4.2.4
 
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
