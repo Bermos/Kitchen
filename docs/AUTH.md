@@ -775,6 +775,15 @@ second, belt-and-braces route rule refusing the path on the public hostname,
 because Gateway API's standard channel has no fixed-response filter — the
 refusal is the service's own 404.
 
+Not being routed is the first half of "from outside the cluster"; the second
+is that the listener is now behind a NetworkPolicy. `networkPolicy.enabled`
+(on by default) denies ingress to `kitchen-system` and allows it back for the
+published ports alone, so `auth.internalPort` answers pods in the platform
+namespace — the operator and the preview gate — and nothing else on the
+cluster. An application pod, including a preview built from an unreviewed pull
+request, could reach it directly on the Service address until that policy
+existed. See [the chart README](../charts/kitchen/README.md#what-the-platform-namespace-accepts).
+
 The prefix is also rate-limited, per source address, by the platform rather
 than by better-auth: it is mounted ahead of the better-auth catch-all, so
 better-auth's limiter has never seen a request to it. `auth.internalRateLimit`

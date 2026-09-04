@@ -158,6 +158,66 @@ Two consequences worth knowing:
   annotation, deleting the release would delete the namespace and take the
   platform's data with it.
 
+### What the platform namespace accepts
+
+`networkPolicy.enabled` (on by default) puts a default-deny ingress
+NetworkPolicy on `kitchen-system` and then allows traffic back, one rule per
+thing that legitimately receives it. Without it, everything the platform runs
+was one DNS name away from every application pod on the cluster — including a
+preview built from a pull request nobody has reviewed — and that included the
+identity provider's Postgres, the telemetry store, and the private listener
+that enumerates accounts and mints CI keys for any project.
+
+What is allowed, and to whom:
+
+| Allowed | From | Why |
+|---|---|---|
+| The API and the dashboard (`api.port`), the git webhook receiver (`webhookReceiver.port`) | anywhere | published on the shared Gateway |
+| The metrics endpoint (`metrics.port`) | anywhere | scraped by a Prometheus that is somewhere else by definition; protected by TokenReview when `metrics.secure` is on |
+| The identity provider's published port (`auth.port`) | anywhere | the OIDC issuer, published on the Gateway |
+| The registry (`registry.service.port`) | anywhere | [published on the internet on purpose](#why-it-is-published-on-the-internet-rather-than-reached-in-cluster) |
+| The preview gate | anywhere | a proxy in the request path of a published URL |
+| The telemetry agent's OTLP receivers | anywhere | every workload on the platform exports here; it is what the endpoint is for |
+| The object store (`objectStore.service.port`) | the platform namespace, and namespaces carrying `kitchen.bermos.dev/project` | an `objectStore` claim hands an application pod this address |
+| Everything else — ClickHouse, the identity provider's Postgres, `auth.internalPort`, the health ports | the platform namespace alone | nothing outside it has business there |
+
+Three things about the shape are worth knowing before changing it:
+
+- **It is ingress only.** There is no egress policy and adding one is not a
+  small change: under Cilium the API server is reached as the `host` or
+  `remote-node` identity, which an `ipBlock` does not match, so a default-deny
+  egress with an `ipBlock: 0.0.0.0/0` escape hatch takes the operator's own API
+  server connection out with it. The platform also talks to whatever git
+  provider, ACME server, container registry and object store an installation
+  points it at, which the chart cannot enumerate.
+- **A published port is allowed from *everywhere*, not from a namespace.**
+  Traffic off the shared Gateway has been proxied by Cilium's Envoy and carries
+  the reserved `ingress` identity, which no `networking.k8s.io/v1` peer can
+  select — not a namespace selector, not an `ipBlock`. An ingress rule with
+  ports and no `from` matches every source, that one included. Nothing is given
+  away: those ports answer the internet already. (This is also why the chart
+  writes plain NetworkPolicy rather than CiliumNetworkPolicy, which *can* name
+  that identity: a `cilium.io/v2` object cannot be rendered on a cluster
+  without Cilium's CRDs, and would fail every `helm template` and every
+  CI install that does not run Cilium.)
+- **The bundled cert-manager is exempted whole**, because its admission webhook
+  is called by the kube-apiserver — another identity a NetworkPolicy cannot
+  name. A deny that caught it would stop every Certificate in the cluster being
+  admitted.
+
+Enforcement belongs to the CNI, not to the chart. Cilium is a prerequisite and
+enforces `networking.k8s.io/v1` NetworkPolicy, so on a supported cluster these
+are real. On a cluster whose CNI does not enforce NetworkPolicy the objects are
+created and mean nothing, silently — which is the usual way a network policy
+comes to protect nothing.
+
+**Inter-application policy is deliberately not here.** Two applications in two
+projects can still reach each other, and [docs/SCOPE.md](../../docs/SCOPE.md)
+says why: Kitchen has no multi-tenant threat model. What this policy claims is
+narrower and worth stating plainly — an application cannot reach the platform's
+own stores. If you want app-to-app isolation as well, write it yourself against
+the `kitchen.bermos.dev/project` label every application namespace carries.
+
 Set `namespace.create=false` to manage the namespace yourself, in which case
 its Pod Security labels are yours to get right.
 
@@ -1509,6 +1569,27 @@ namespace](#adopting-an-existing-namespace) — or upgrade with
 yourself. Adopting is a metadata-only change: nothing is restarted, and the
 labels the chart then applies are what make log collection work.
 
+### Upgrading to a closed platform namespace
+
+The upgrade that adds `networkPolicy.enabled` starts denying ingress to
+`kitchen-system` from everywhere except the rules in [What the platform
+namespace accepts](#what-the-platform-namespace-accepts). Nothing the platform
+does needs anything else, and the objects appear whether or not the cluster
+enforces them — but two things are worth checking before you upgrade:
+
+- **Anything of yours that reaches into `kitchen-system`** — a Prometheus that
+  scrapes something other than `metrics.port`, a job that queries ClickHouse
+  directly, a sidecar talking to the identity provider's Postgres — stops
+  working the moment the CNI enforces the deny. Move it into the namespace, or
+  upgrade with `--set networkPolicy.enabled=false` and write your own.
+- **A cluster whose CNI does not enforce NetworkPolicy gets nothing, and says
+  nothing.** Cilium is a prerequisite and does enforce it. If you are running
+  something else, the policies are inert and the platform's stores are still
+  open to every pod on the cluster.
+
+Rolling it back is `--set networkPolicy.enabled=false` on the next upgrade,
+which deletes the policies with the release's own manifest.
+
 ### Upgrading from 0.1.0
 
 Releases at 0.1.0 cannot be upgraded in place. Their ClickHouse and Postgres
@@ -1615,6 +1696,7 @@ kubectl delete namespace kitchen-system
 | `developmentLogging` | `false` | Console encoder, debug level. |
 | `serviceAccount.create` / `.name` / `.annotations` | `true` / `""` / `{}` | |
 | `rbac.create` | `true` | Manager ClusterRole, leader election Role, bindings. |
+| `networkPolicy.enabled` | `true` | Deny ingress to `kitchen-system` except from the platform itself, on the published ports, and from project namespaces to the object store and the telemetry agent. Needs a CNI that enforces NetworkPolicy; see [What the platform namespace accepts](#what-the-platform-namespace-accepts). |
 | `selfUpdate.enabled` | `false` | Let the platform upgrade its own release from the dashboard. Creates a ServiceAccount bound to **cluster-admin**; see [Letting the platform update itself](#letting-the-platform-update-itself). |
 | `selfUpdate.chart` | `oci://ghcr.io/bermos/charts/kitchen` | Chart the upgrade pulls from. |
 | `selfUpdate.releaseName` | `""` | Release to upgrade. Defaults to this release's own name. |

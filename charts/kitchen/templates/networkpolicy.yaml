@@ -1,0 +1,281 @@
+{{- include "kitchen.validate" . -}}
+{{- if .Values.networkPolicy.enabled }}
+# What an application namespace may reach in the platform namespace.
+#
+# Until this existed there was no NetworkPolicy anywhere in the chart, so any
+# pod the platform ran — including a preview built from a pull request nobody
+# has reviewed — could open a socket to the identity provider's Postgres, to
+# ClickHouse, and to the private listener that enumerates accounts and mints
+# CI keys for any project. None of those are published, none of them are
+# reachable from outside the cluster, and all of them were one DNS name away
+# from every application.
+#
+# The shape is a default deny for ingress, plus one allow per thing that
+# legitimately receives traffic. Three properties of that shape are load
+# bearing:
+#
+#   - **Ingress only.** There is no egress policy here and adding one is not a
+#     small change: under Cilium the API server is reached as the `host` or
+#     `remote-node` identity, which an `ipBlock` does not match, so a
+#     default-deny egress with an `ipBlock: 0.0.0.0/0` escape hatch takes the
+#     operator's own API server connection out with it. The platform also
+#     talks to whatever git provider, ACME server, container registry and
+#     object store an installation points it at — a list the chart cannot
+#     know. Egress is left to whoever knows their own network.
+#
+#   - **A published port is allowed from everywhere**, expressed as an ingress
+#     rule with ports and no `from`. That is not laziness: traffic arriving
+#     through the shared Gateway has been proxied by Cilium's Envoy and
+#     carries the reserved `ingress` identity, which no `networking.k8s.io/v1`
+#     peer can name — not a namespace selector, not an `ipBlock`. A rule with
+#     no `from` matches every source, that one included. Nothing is given away
+#     by it either: these ports answer the internet already.
+#
+#   - **cert-manager is exempted whole.** It is bundled into this namespace
+#     and its webhook is called by the kube-apiserver, whose identity a plain
+#     NetworkPolicy cannot name any better than Envoy's. A default deny that
+#     caught it would stop every Certificate in the cluster being admitted,
+#     which is a long way from the problem this file exists for.
+#
+# A component added to this namespace later gets nothing until it is named
+# here. That is the intended direction of the failure.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "kitchen.fullname" . }}-default-deny-ingress
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kitchen.labels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+---
+# The platform talking to itself: the operator to ClickHouse and the registry,
+# the auth service to its Postgres, the collector to ClickHouse, the preview
+# gate to the identity provider's private listener, the backup and restore
+# Jobs to all of them. One rule rather than a graph, because everything in
+# this namespace is the platform and the boundary being drawn is the
+# namespace's.
+#
+# This is also the whole of what ClickHouse and the identity provider's
+# Postgres get: neither is published, neither is named by any rule below, so
+# after this file they answer the platform namespace and nothing else. That is
+# the finding this file was written for.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "kitchen.fullname" . }}-allow-platform-internal
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kitchen.labels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector: {}
+{{- if index .Values "cert-manager" "enabled" }}
+---
+# cert-manager, exempted for the reason at the top of this file: its webhook
+# is called by the kube-apiserver, and a NetworkPolicy has no way to say so.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "kitchen.fullname" . }}-allow-cert-manager
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kitchen.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+    matchExpressions:
+      # cert-manager's own four workloads, by the names its chart gives them.
+      - key: app.kubernetes.io/name
+        operator: In
+        values: [cert-manager, webhook, cainjector, startupapicheck]
+  policyTypes:
+    - Ingress
+  ingress:
+    - {}
+{{- end }}
+---
+# The operator: the REST API and the dashboard it serves, the git webhook
+# receiver, and the metrics endpoint. The first two are published on the
+# shared Gateway; the third is scraped by a Prometheus that is somewhere else
+# by definition, and is protected by TokenReview when `metrics.secure` is on.
+# Everything else the manager listens on — the health probes — stays inside
+# the namespace and the kubelet, which is the node and not a peer.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "kitchen.fullname" . }}-allow-api
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kitchen.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "kitchen.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+        - protocol: TCP
+          port: {{ int .Values.api.port }}
+        - protocol: TCP
+          port: {{ int .Values.webhookReceiver.port }}
+        {{- if .Values.metrics.enabled }}
+        - protocol: TCP
+          port: {{ int .Values.metrics.port }}
+        {{- end }}
+{{- if .Values.auth.enabled }}
+---
+# The identity provider, on its published port alone. The second listener —
+# `auth.internalPort`, the operator's `/kitchen` prefix — is deliberately not
+# here: it enumerates accounts, mints CI keys for any project and rewrites an
+# OAuth client's redirect list on the strength of one header, and the rule
+# above is the whole of who may reach it. templates/auth/service-internal.yaml
+# is the other half of that argument.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "kitchen.authFullname" . }}-allow-published
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kitchen.labels" . | nindent 4 }}
+    app.kubernetes.io/component: auth
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "kitchen.authSelectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+        - protocol: TCP
+          port: {{ int .Values.auth.port }}
+{{- end }}
+{{- if eq (include "kitchen.previewGateEnabled" .) "true" }}
+---
+# The forward-auth gate for protected previews. Its ports belong to the
+# operator, which creates the Deployment, so the chart does not name them: the
+# gate is a proxy in the request path of a published URL and a health
+# endpoint, and there is nothing on it to reach that the Gateway does not
+# already carry.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kitchen-preview-gate-allow-published
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kitchen.labels" . | nindent 4 }}
+    app.kubernetes.io/component: preview-gate
+spec:
+  podSelector:
+    matchLabels:
+      # What internal/controller/previewgate_reconcile.go labels the pods
+      # with; it is the Deployment's immutable selector, so it cannot move.
+      app.kubernetes.io/name: kitchen-preview-gate
+  policyTypes:
+    - Ingress
+  ingress:
+    - {}
+{{- end }}
+{{- if eq (include "kitchen.registryEnabled" .) "true" }}
+---
+# The bundled registry. It is published on the shared Gateway on purpose —
+# the node's container runtime is what pulls an image and trusts neither an
+# in-cluster CA nor plain HTTP — so its port answers the internet and there is
+# nothing to gain by refusing it from inside the cluster. It admits nobody
+# anonymously; that is the control, not the network.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "kitchen.registryFullname" . }}-allow-published
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kitchen.labels" . | nindent 4 }}
+    app.kubernetes.io/component: registry
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "kitchen.registrySelectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+        - protocol: TCP
+          port: {{ int .Values.registry.service.port }}
+{{- end }}
+{{- if eq (include "kitchen.collectorEnabled" .) "true" }}
+---
+# The telemetry agent's OTLP receivers. Every workload on the platform exports
+# here — that is what the endpoint is for, and what every environment is
+# handed in its OTLP environment variables — so the two receiver ports are
+# open to the cluster. The agent's own health port is not.
+#
+# The Service in front of them is `internalTrafficPolicy: Local`, so in
+# practice a pod only ever reaches the agent on its own node; the policy does
+# not have to express that, because kube-proxy already does.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "kitchen.collectorFullname" . }}-allow-otlp
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kitchen.labels" . | nindent 4 }}
+    app.kubernetes.io/component: collector
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "kitchen.collectorSelectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+        - protocol: TCP
+          port: {{ int .Values.kitchen.observability.traces.port }}
+        - protocol: TCP
+          port: {{ int .Values.collector.otlp.grpcPort }}
+{{- end }}
+{{- if .Values.objectStore.enabled }}
+---
+# The bundled object store. Unlike the registry it is not published on the
+# Gateway, and unlike ClickHouse it is something applications legitimately
+# open connections to: an objectStore claim hands a pod this address. So the
+# rule is the narrowest one that still works — the platform namespace, and the
+# namespaces the operator created for projects, which carry the project label.
+# Nothing else on the cluster gets to knock.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "kitchen.objectStoreFullname" . }}-allow-applications
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kitchen.labels" . | nindent 4 }}
+    app.kubernetes.io/component: objectstore
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "kitchen.objectStoreSelectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        # Every namespace the operator created for a project, and no other:
+        # ensureNamespace writes this label and reconciles it onto namespaces
+        # that already exist, so an installation upgrading into this policy
+        # does not have to be relabelled by hand.
+        - namespaceSelector:
+            matchExpressions:
+              - key: kitchen.bermos.dev/project
+                operator: Exists
+      ports:
+        - protocol: TCP
+          port: {{ int .Values.objectStore.service.port }}
+{{- end }}
+{{- end }}

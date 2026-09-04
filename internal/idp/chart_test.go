@@ -146,3 +146,49 @@ func read(t *testing.T, path string) string {
 	}
 	return string(body)
 }
+
+// TestThePrivateListenerIsNotReachableFromAnApplication: not being named by a
+// route keeps the /kitchen prefix off the internet. It did nothing at all
+// about the cluster, where until the platform namespace had a NetworkPolicy
+// any application pod — a preview built from an unreviewed pull request
+// included — could open a connection straight to the private Service and
+// enumerate every account, mint a CI key for any project, or rewrite an OAuth
+// client's redirect list.
+//
+// The rule the policy has to keep is narrow and easy to lose in an edit: the
+// identity provider's published port is allowed from every source, because
+// traffic off the shared Gateway carries an identity a NetworkPolicy cannot
+// name, and `auth.internalPort` is allowed from nowhere but the platform
+// namespace. Adding it to that rule would be a one-line change that reads
+// like a fix and reopens the whole thing.
+//
+// Textual over the template, for the reason the test above gives: this
+// package cannot assume a helm binary.
+func TestThePrivateListenerIsNotReachableFromAnApplication(t *testing.T) {
+	policy := read(t, filepath.Join("..", "..", "charts", "kitchen", "templates", "networkpolicy.yaml"))
+
+	if !strings.Contains(policy, "kind: NetworkPolicy") ||
+		!strings.Contains(policy, `name: {{ include "kitchen.fullname" . }}-default-deny-ingress`) {
+		t.Fatal("the chart no longer denies ingress to the platform namespace by default; every " +
+			"application pod can reach the identity provider's private listener")
+	}
+	if !strings.Contains(policy, "port: {{ int .Values.auth.port }}") {
+		t.Error("no policy allows the identity provider's published port, so the shared Gateway " +
+			"cannot reach the issuer at all")
+	}
+	if strings.Contains(policy, ".Values.auth.internalPort") {
+		t.Error("a NetworkPolicy names auth.internalPort: the /kitchen prefix enumerates accounts, " +
+			"mints CI keys and rewrites OAuth redirect lists, and the platform namespace is the " +
+			"whole of who may reach it")
+	}
+	// The stores hold every account and every credential the platform has,
+	// and nothing outside the namespace has business with either. They are
+	// protected by not being named: an allow rule for one of them is the
+	// finding coming back.
+	for _, store := range []string{"clickhouseSelectorLabels", "postgresSelectorLabels"} {
+		if strings.Contains(policy, store) {
+			t.Errorf("a NetworkPolicy selects %s; the telemetry store and the accounts database "+
+				"answer the platform namespace and nothing else", store)
+		}
+	}
+}
