@@ -165,6 +165,8 @@ func TestSchemaPublishesTheDashboardOnlyStatement(t *testing.T) {
 	wanted := map[string]string{
 		"kitchen retention":         "/platform/settings",
 		"kitchen backup":            "/platform/backup",
+		"kitchen backup list":       "/platform/backup",
+		"kitchen backup run":        "/platform/backup",
 		"kitchen audit-pack":        "/platform/audit",
 		"kitchen access":            "/platform/audit",
 		"kitchen access identities": "/platform/audit",

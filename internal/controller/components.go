@@ -116,6 +116,17 @@ func (r *KitchenReconciler) surveyComponents(
 		})
 	}
 
+	// The scheduled backup, on the same terms as the clock check: not a
+	// workload, and in this list because this list is what an operator reads.
+	// It is the row that answers "when did a backup last work", which is the
+	// question a platform only asks itself once it is too late.
+	if backup := backupComponent(kitchen); backup != nil {
+		surveyed = append(surveyed, surveyedWorkload{
+			status:     *backup,
+			objectName: BackupCronJobName,
+		})
+	}
+
 	components := resolveNames(surveyed)
 	kitchen.Status.Components = components
 

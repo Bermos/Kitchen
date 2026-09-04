@@ -127,57 +127,133 @@ consequence is the version rule below.
 
 ## Automating it
 
-**Nothing here takes a backup on its own yet, and this section is what to do
-until it does.** The archive is good and the restore is tested; what is missing
-is a schedule, somewhere off-cluster to put the result, and — the part that
-actually loses data — anything that says the backups have stopped. The design
-for all three is [issue #245](https://github.com/Bermos/Kitchen/issues/245).
+**Platform → Backup**, the Schedule section. Give it a five-field cron
+expression and a destination, and the operator writes a CronJob of the same
+exporter the button uses — so a scheduled archive and a manual one are the same
+file and restore identically.
 
-Say what today is honestly: a Kitchen installation is backed up exactly as
-often as somebody remembers to open the Backup screen, and the archive's only
-destinations are that person's downloads folder and whatever `kitchen backup`
-was pointed at.
+```
+Schedule     0 3 * * *          five fields, UTC
+Destination  s3://kitchen-backups/prod
+Retention    keep the last 30
+```
 
-### What that is missing, in the order it costs you
+The same three from a terminal. The schedule and the retention are ordinary
+settings; the destination has a route of its own because it carries a
+credential, and the settings route must never carry one:
 
-1. **A schedule.** `cmd/backup` — the same exporter behind the button, shipped
-   in the operator's image precisely so that a scheduled backup and a manual
-   one produce the same archive — has always been written for a CronJob, and
-   no CronJob has ever been created for it.
-2. **A destination.** `POST /platform/backup` streams `Content-Disposition:
-   attachment`. There is nowhere to send an archive, so even a hand-wired
-   schedule writes it onto a volume on the cluster the archive exists to
-   survive the loss of.
-3. **A signal when it stops.** This is the one to care about. Every backup
-   system's characteristic failure is not a corrupt archive, it is six weeks of
-   no archive that nobody noticed — and a `CronJob` whose pods fail silently is
-   how that happens, the same way it happens to a project's scheduled jobs. A
-   platform whose last successful backup was in March should say so on its own
-   status, unasked.
+```sh
+# where archives go, once — the response echoes the bucket and no key
+kitchen api PUT /platform/backup/destination --data '{
+  "type": "s3",
+  "s3": {"bucket": "kitchen-backups", "prefix": "prod", "region": "eu-central-1",
+         "accessKeyId": "…", "secretAccessKey": "…"}
+}'
 
-### Wiring one yourself in the meantime
+# when it runs and how much is kept
+kitchen api PATCH /settings --data '{"backupSchedule": "0 3 * * *", "backupKeepLast": 30}'
 
-`/backup` is at the root of the operator's image and takes `--output`, so a
-CronJob of it is a small manifest. Two things it needs that the chart does not
-create: a ServiceAccount that may read the platform's objects and every Secret
-in `kitchen-system`, and a second container that moves the file somewhere else
-— an `emptyDir` shared between an init container that exports and a main
-container that uploads, which is the shape the buildpacks build job already
-uses.
+kitchen backup run     # take one now, to the destination
+kitchen backup list    # what is actually in the bucket
+```
 
-Be clear-eyed about what that gets you. It is a schedule and an upload; it is
-not the missing third item. Nothing watches it, so it belongs beside whatever
-already alerts on this cluster, and the check worth alerting on is the age of
-the newest object at the destination rather than the exit code of the last run.
-`kitchen backup --json` answers one object read back off the archive it just
-wrote — the accounts row count included — which is the thing to assert on,
-because an archive that carries the objects and silently carries no accounts
-looks exactly like a healthy one until the restore.
+`kitchen backup run` is the step worth taking on the day you configure a
+destination. It is how you find out that the credential works then, rather than
+at 02:00 six weeks later.
 
-The grant is the part to think about rather than copy. A backup reads every
-credential the platform holds; that is the same power the operator's own
-ServiceAccount has, so an account for this is about making the grant legible
-and removable, not about reducing it.
+All four of those are the operator's routes, and no credential `kitchen login`
+can store holds that role yet — see
+[docs/CLI.md](CLI.md#the-platform-commands-are-the-dashboards-for-now). Until
+that changes, the dashboard is where this is configured, and the commands are
+here because the shape of the answer is worth reading whichever surface you
+use.
+
+### What one run does, and why in that order
+
+1. **Export** the archive onto disk in the run's own pod.
+2. **Upload** it to the destination.
+3. **Verify** it by reading it back — a ranged GET of the first 64 KiB, which
+   is enough because the manifest is the first entry in the tar, checked
+   against the release and the timestamp this run just wrote.
+4. **Prune** by the retention, and only now.
+
+Pruning last is the whole of it. A prune that ran before the new archive had
+been read back would be a system that deletes last week's backup on the night
+this week's fails, which is the one way a backup system can be worse than not
+having one. And a scheduled backup nothing has ever read back is an untested
+restore, which the first line of this document says is worth nothing.
+
+Retention only ever considers keys under the configured prefix that are named
+the way this platform names an archive. A bucket you also keep other things in
+does not lose them — `kitchen backup list` marks every object with whether it
+is one this platform wrote, precisely so nobody has to wonder.
+
+### The thing that actually loses data
+
+**Nothing here is worth much without the part that says the backups have
+stopped.** A backup system's characteristic failure is not a corrupt archive,
+it is six weeks of no archive that nobody noticed, and a CronJob whose pods
+fail silently is exactly how that happens.
+
+So the platform reports on its own backup, unasked, in three places that are
+one fact:
+
+- the **`BackupReady` condition** on the Kitchen object;
+- a **`backup` row in `status.components`** — the list an operator already
+  reads, beside the workloads and the clock check;
+- **`lastSuccess`** on the Backup screen, and on `GET /platform/backup`.
+
+`BackupReady` is **false with reason `NotScheduled`** on an installation that
+has configured nothing. That is deliberate. An installation with no scheduled
+backup is not broken, it is unprotected, and this is the one place that says so
+without being asked.
+
+The other reasons: `RunFailed` (the newest run failed, with its message),
+`NeverSucceeded` (a run was scheduled and no archive has ever reached the
+destination), `RunLate` (a run started and has not finished within its timeout),
+`Suspended` (paused on purpose, saying how old the last archive is) and
+`BackedUp`.
+
+The check worth alerting on from outside is still the age of the newest object
+at the destination — `kitchen backup list --json` — rather than the exit code
+of the last run. A run that exits 0 having uploaded nothing is the failure that
+matters, and the bucket is the only thing that can disprove it.
+
+### The details worth knowing before you set one
+
+- **Cron is UTC**, here as everywhere else on this platform — worth saying out
+  loud in a system that measures node clock drift. `0 3 * * *` is 03:00 UTC,
+  not 03:00 where you are sitting.
+- **Pick a quiet hour.** The accounts half of an archive is taken through the
+  identity provider's database, and a dump competing with sign-ins helps
+  nobody. Two runs never overlap — `concurrencyPolicy: Forbid` — and one run is
+  bounded by `spec.backup.timeout`, 30 minutes by default.
+- **A schedule with no destination is refused**, at admission and by the API.
+  There is deliberately no local destination: the only place on the cluster to
+  put an archive is a volume on the cluster the archive exists to survive the
+  loss of.
+- **Suspend rather than delete** for maintenance. It keeps the configuration,
+  which is the difference between a pause and a hope that somebody puts it back.
+- **No credential is ever read back.** The destination's key pair is a Secret
+  the operator writes, labelled `app.kubernetes.io/managed-by: kitchen` and
+  removed with the destination. Nothing serves it, and a form that redisplays
+  the destination sends no key — which is why leaving the key fields empty
+  means "leave the credential alone", and moving to the pod's own credential
+  chain is an explicit `ambientCredentials: true`.
+- **Prefer no long-lived key at all where you can.** A destination naming no
+  Secret uses the ambient credential chain — IRSA, EKS Pod Identity, an
+  instance role — which is the better answer wherever it is available, because
+  there is then nothing to leak.
+- **Ask the store to encrypt it.** `serverSideEncryption: AES256` or
+  `aws:kms` with a `kmsKeyId`. See the next section for why.
+- **Retention is not a safety property.** It deletes, so it is something
+  whoever reaches the credential can use. Object Lock or object versioning is
+  the store's answer to that, and Kitchen does not manage it.
+- **The run's own identity** is a `<release>-backup` ServiceAccount the chart
+  creates (`backup.rbac.create`). It is read-only, and it is not a privilege
+  reduction: a backup reads every credential the platform holds, which is the
+  operator's own power. It exists so the grant is enumerable, visible in one
+  file, and gone with the release.
 
 ### And where the archive goes is now a credential store
 

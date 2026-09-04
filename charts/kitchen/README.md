@@ -1622,6 +1622,8 @@ kubectl delete namespace kitchen-system
 | `selfUpdate.timeout` | `15m` | How long helm is given to finish. |
 | `selfUpdate.serviceAccountName` | `""` | Generated when empty. |
 | `selfUpdate.image.repository` / `.tag` | `alpine/helm` / `3.19.0` | Image the update job runs helm from. |
+| `backup.serviceAccountName` | `""` | Generated when empty. The identity a **scheduled** backup runs as. The schedule, the destination and the retention are not chart values: they are runtime configuration on the `Kitchen` object, edited on the Backup screen, because a backup that could only be reconfigured by a `helm upgrade` is one nobody reconfigures. See [docs/BACKUP.md](../../docs/BACKUP.md). |
+| `backup.rbac.create` | `true` | Create the scheduled backup's ServiceAccount and its roles. Read-only, and not a privilege reduction: a backup reads every credential the platform holds. It is separate so the grant is legible in one file and gone with the release. |
 | `restore.enabled` | `false` | Run the restore Job. A bootstrap step, not something an install does — see [docs/BACKUP.md](../../docs/BACKUP.md). Needs one of the two sources below. |
 | `restore.secretName` / `.secretKey` | `""` / `backup.tar.gz` | Secret holding the archive. Bounded by etcd's object limit (about 1 MiB). |
 | `restore.existingClaim` | `""` | A PersistentVolumeClaim holding the archive instead, for one past that. |

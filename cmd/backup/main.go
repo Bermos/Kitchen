@@ -27,10 +27,19 @@ limitations under the License.
 //
 // It ships in the operator's image for the same reason the restore command
 // does: the archive and the code that reads it should be the same release.
+//
+// --upload is the scheduled half, and it is what the operator's CronJob runs:
+// it reads spec.backup.destination off the singleton, exports, uploads,
+// verifies the archive by reading its manifest back off the destination, and
+// only then prunes by the configured retention. Only then, because a prune
+// that ran first would delete last week's archive on the night this week's
+// failed. The run's result is left on the pod's termination message as JSON,
+// which is where the operator reads status.backup from.
 package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -63,19 +72,29 @@ func main() {
 func run() error {
 	var (
 		output       string
+		upload       bool
+		scratch      string
 		namespace    string
 		skipAccounts bool
 	)
 	flag.StringVar(&output, "output", "",
 		"Where to write the archive. \"-\" writes it to standard output.")
+	flag.BoolVar(&upload, "upload", false,
+		"Write the archive to the destination on spec.backup, verify it by reading it back, "+
+			"and then prune by the configured retention.")
+	flag.StringVar(&scratch, "scratch", "",
+		"Directory an uploaded archive is staged in. The default is the system temporary directory.")
 	flag.StringVar(&namespace, "namespace", controller.PlatformNamespace,
 		"The platform namespace the objects and secrets are read from.")
 	flag.BoolVar(&skipAccounts, "skip-accounts", false,
 		"Leave the identity provider's database out of the archive.")
 	flag.Parse()
 
-	if output == "" {
-		return errors.New("--output is required: where to write the archive")
+	switch {
+	case output == "" && !upload:
+		return errors.New("one of --output or --upload is required: where the archive goes")
+	case output != "" && upload:
+		return errors.New("--output and --upload are two destinations; pass one")
 	}
 	ctx := ctrl.SetupSignalHandler()
 
@@ -127,6 +146,10 @@ func run() error {
 			fmt.Fprintln(os.Stderr, "warning: no accounts in this archive:", message)
 			exporter.AccountsMessage = message
 		}
+	}
+
+	if upload {
+		return uploadArchive(ctx, cluster, kitchen, exporter, namespace, scratch)
 	}
 
 	target := os.Stdout
@@ -202,4 +225,74 @@ func connectAccounts(
 		return nil, err.Error()
 	}
 	return accounts, ""
+}
+
+// terminationMessagePath is where a container leaves its result for whoever
+// is reading its status afterwards. The operator reads this one to fill in
+// status.backup, exactly as the build reconciler reads a builder's digest out
+// of the same place.
+const terminationMessagePath = "/dev/termination-log"
+
+// uploadArchive is `--upload`: export, upload, verify by reading the archive
+// back, and only then prune.
+//
+// The order is the design and not an implementation detail. A prune that ran
+// before the new archive had been read back would be a system that deletes
+// last week's backup because this week's failed; see internal/backup/run.go.
+func uploadArchive(
+	ctx context.Context,
+	cluster client.Client,
+	kitchen *kitchenv1alpha1.Kitchen,
+	exporter *backup.Exporter,
+	namespace string,
+	scratch string,
+) error {
+	spec := kitchen.Spec.Backup
+	if spec.Destination == nil {
+		return errors.New("this installation has no backup destination: " +
+			"configure one on the Backup screen, or with PUT /api/v1/platform/backup/destination")
+	}
+	target, err := backup.Open(ctx, cluster, namespace, spec.Destination)
+	if err != nil {
+		return err
+	}
+
+	run := &backup.Run{
+		Exporter:    exporter,
+		Destination: target,
+		Retention: backup.RetentionPolicy{
+			KeepLast: spec.Retention.KeepLast,
+			KeepDays: spec.Retention.KeepDays,
+		},
+		Scratch: scratch,
+	}
+	result, runErr := run.Do(ctx)
+	writeTerminationMessage(result)
+	if runErr != nil {
+		return runErr
+	}
+
+	fmt.Printf("wrote %s (%d bytes) to %s and read it back\n", result.Archive, result.Bytes, result.Destination)
+	fmt.Printf("  %d objects, %d secrets, %d account rows\n",
+		result.Objects, result.Secrets, result.AccountRows)
+	if result.AccountsMessage != "" {
+		fmt.Println("  warning: no accounts in this archive:", result.AccountsMessage)
+	}
+	fmt.Printf("  %d archives at the destination; %d pruned\n", result.Archives, result.Pruned)
+	return nil
+}
+
+// writeTerminationMessage leaves the run's result where the operator can read
+// it. Failing to write it is not a failed backup: the archive is uploaded and
+// verified either way, and a run that succeeded must not be reported as
+// having failed because a file could not be opened.
+func writeTerminationMessage(result backup.Result) {
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		return
+	}
+	if err := os.WriteFile(terminationMessagePath, encoded, 0o644); err != nil {
+		fmt.Fprintln(os.Stderr, "warning: the run's result could not be written to",
+			terminationMessagePath+":", err)
+	}
 }

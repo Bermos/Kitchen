@@ -92,6 +92,15 @@ and watch on projects and kitchens, and nothing else at all.
 {{- end }}
 
 {{/*
+The scheduled backup's ServiceAccount name. The operator creates the CronJob
+and so has to be told the name, which is release-name prefixed and therefore
+only knowable from here.
+*/}}
+{{- define "kitchen.backupServiceAccountName" -}}
+{{- default (printf "%s-backup" (include "kitchen.fullname" .)) .Values.backup.serviceAccountName }}
+{{- end }}
+
+{{/*
 Container image reference, digest taking precedence over tag.
 */}}
 {{- define "kitchen.image" -}}

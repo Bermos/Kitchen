@@ -154,6 +154,10 @@ export type Route =
   | "PATCH /api/v1/platform/retention"
   | "GET /api/v1/platform/backup"
   | "POST /api/v1/platform/backup"
+  | "PUT /api/v1/platform/backup/destination"
+  | "DELETE /api/v1/platform/backup/destination"
+  | "GET /api/v1/platform/backup/runs"
+  | "POST /api/v1/platform/backup/runs"
   | "GET /api/v1/settings"
   | "PATCH /api/v1/settings"
   | "GET /api/v1/updates"
@@ -289,6 +293,10 @@ export const POLICY: Readonly<Record<Route, Requirement>> = {
   "PATCH /api/v1/platform/retention": { kind: "operator", doing: "changing the platform's retention" },
   "GET /api/v1/platform/backup": { kind: "operator", doing: "reading what a platform backup would carry" },
   "POST /api/v1/platform/backup": { kind: "operator", doing: "exporting the platform's state" },
+  "PUT /api/v1/platform/backup/destination": { kind: "operator", doing: "setting where the platform's backups are written" },
+  "DELETE /api/v1/platform/backup/destination": { kind: "operator", doing: "removing where the platform's backups are written" },
+  "GET /api/v1/platform/backup/runs": { kind: "operator", doing: "reading what the platform's backup destination holds" },
+  "POST /api/v1/platform/backup/runs": { kind: "operator", doing: "running the platform's backup now" },
   "GET /api/v1/settings": { kind: "operator", doing: "reading the platform's settings" },
   "PATCH /api/v1/settings": { kind: "operator", doing: "changing the platform's settings" },
   "GET /api/v1/updates": { kind: "operator", doing: "reading the platform's updates" },

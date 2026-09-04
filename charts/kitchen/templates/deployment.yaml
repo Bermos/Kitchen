@@ -81,6 +81,22 @@ spec:
             # operator can only learn it from here.
             - --preview-gate-service-account={{ include "kitchen.previewGateServiceAccountName" . }}
             {{- end }}
+            # The scheduled backup is a CronJob the operator writes, because
+            # its schedule and destination are runtime configuration this
+            # chart never sees. What the chart owns is the image it runs —
+            # /backup is a further binary in this same image — and the
+            # account it runs as, whose name is release-name prefixed and so
+            # is only knowable from here. The image is passed unconditionally,
+            # because a schedule is set through the API at any time after the
+            # install and this chart never hears about it.
+            - --backup-image={{ include "kitchen.image" . }}
+            {{- if or .Values.backup.rbac.create .Values.backup.serviceAccountName }}
+            # The account is passed only where there is one to name. Left
+            # unset, a run lands on the namespace's default account, which can
+            # read nothing — a loud failure rather than an archive quietly
+            # missing half the platform.
+            - --backup-service-account={{ include "kitchen.backupServiceAccountName" . }}
+            {{- end }}
             {{- if .Values.selfUpdate.enabled }}
             # Self-update reaches the operator as flags rather than as fields
             # on the Kitchen singleton, because the singleton is applied as a

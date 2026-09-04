@@ -169,7 +169,7 @@ platform's own surface, which the API answers to the operator role alone:
 
 | Command | What it calls |
 |---|---|
-| `kitchen backup` | `POST /platform/backup` |
+| `kitchen backup` (and `list`, `run`) | `POST /platform/backup`, `GET`/`POST /platform/backup/runs` |
 | `kitchen retention` | `GET /platform/retention` |
 | `kitchen access identities/reviews/show` | `GET /access/identities`, `GET /access/reviews`, `GET /access/reviews/{name}` |
 | `kitchen audit-pack` | `GET /projects/{name}/audit-pack` |
@@ -296,6 +296,8 @@ give.
 | `kitchen schema` | The whole CLI as JSON | — |
 | `kitchen version` | Which release of the CLI this is | — |
 | `kitchen backup` † | Take a backup of the platform and write it to a file | `POST /platform/backup` |
+| `kitchen backup list` † | What the platform's backup destination holds right now | `GET /platform/backup/runs` |
+| `kitchen backup run` † | Take one to the destination now, rather than to this machine | `POST /platform/backup/runs` |
 
 † The dashboard's for now: no credential `kitchen login` can store runs it — see
 [The platform commands are the dashboard's for now](#the-platform-commands-are-the-dashboards-for-now).
@@ -1144,6 +1146,35 @@ The archive is a credential. It holds every secret the platform has, in the
 clear; keep it where you would keep the cluster's root credentials, and off the
 cluster it came from. Taking one is recorded in the platform's audit log as an
 `export`.
+
+#### The scheduled half
+
+The platform takes its own backups once a schedule and a destination are set —
+see [docs/BACKUP.md](BACKUP.md). Two commands read and drive that:
+
+```sh
+kitchen backup list    # what is at the destination, read from the destination
+kitchen backup run     # take one to the destination now
+```
+
+`kitchen backup list` reads the bucket rather than the platform's status: the
+status says what the last run believed it did, and this says what a recovery
+would actually find. **The age of the newest archive here is the check worth
+alerting on**, rather than the exit code of the last run — a run that exits 0
+having uploaded nothing looks healthy, and only the bucket disproves it. Every
+object is marked with whether it is one this platform wrote, so a bucket that
+holds other things does not leave anybody guessing what retention would touch.
+
+`kitchen backup run` answers as soon as the run has been *started*, with the
+name of the Job doing the work. It is what makes a destination testable: press
+it on the day you configure one, rather than finding out at 02:00 six weeks
+later.
+
+Configuring the destination stays `kitchen api PUT
+/platform/backup/destination` — a one-time operator setup with a credential in
+it, which is exactly the fallback that escape hatch exists for — and the
+schedule and retention are `kitchen api PATCH /settings` with
+`backupSchedule`, `backupSuspend`, `backupKeepLast` and `backupKeepDays`.
 
 There is no `kitchen restore`, and there cannot be: a restore happens into a
 cluster whose accounts database is gone, so the credential this CLI signs in

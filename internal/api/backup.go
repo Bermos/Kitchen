@@ -107,6 +107,12 @@ type backupView struct {
 	// Snapshots is whether volume snapshots are an option on this cluster.
 	Snapshots snapshotSupportView `json:"snapshots"`
 
+	// Schedule is the scheduled backup: when it runs, where it writes, and —
+	// the part worth reading first — when one last worked. A screen that only
+	// showed what an archive *would* carry could not tell an operator that
+	// the last one was taken in March.
+	Schedule backupScheduleView `json:"schedule"`
+
 	// Filename is what the download should be called, so that an archive on
 	// somebody's disk still says which platform and which day it came from.
 	Filename string `json:"filename"`
@@ -152,6 +158,7 @@ func (s *Server) getBackup(w http.ResponseWriter, req *http.Request) {
 		Excluded:        backup.Excluded,
 		Filename:        backupFilename(kitchen, time.Now().UTC()),
 		Snapshots:       s.snapshotSupport(ctx),
+		Schedule:        newBackupScheduleView(kitchen),
 	}
 	for _, kind := range backup.Kinds {
 		count, err := s.countKind(ctx, kind)
@@ -335,32 +342,10 @@ func (s *Server) snapshotSupport(ctx context.Context) snapshotSupportView {
 	return snapshotSupportView{Supported: true, Classes: classes}
 }
 
-// backupFilename names the download after the installation and the day, so
-// that an archive found on a disk months later says which platform it is from
-// before anyone opens it.
+// backupFilename names the download after the installation and the day. The
+// naming itself is internal/backup's, so that an archive taken from this
+// button and one taken by the schedule are indistinguishable — and so that
+// retention, which deletes by that name, recognises both.
 func backupFilename(kitchen *kitchenv1alpha1.Kitchen, now time.Time) string {
-	name := kitchen.Spec.ClusterName
-	if name == "" {
-		name = kitchen.Spec.BaseDomain
-	}
-	if name == "" {
-		name = "kitchen"
-	}
-	return fmt.Sprintf("kitchen-backup-%s-%s.tar.gz", sanitizeFilename(name), now.Format("2006-01-02T150405Z"))
-}
-
-// sanitizeFilename keeps a base domain or a cluster name to what a filename
-// can carry. It comes off the Kitchen object rather than from a request, but a
-// header value with a quote in it is a header value with two meanings.
-func sanitizeFilename(name string) string {
-	cleaned := make([]rune, 0, len(name))
-	for _, r := range name {
-		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '.':
-			cleaned = append(cleaned, r)
-		default:
-			cleaned = append(cleaned, '-')
-		}
-	}
-	return string(cleaned)
+	return backup.Filename(kitchen.Spec.ClusterName, kitchen.Spec.BaseDomain, now)
 }

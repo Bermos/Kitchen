@@ -1932,6 +1932,11 @@ export interface Settings {
    * one of the three. `operatorsState` in `./operators` is where that is read.
    */
   operators?: Operator[] | null;
+  /** The scheduled backup as this route can edit it, plus what it has been
+   * doing. The destination is in it and its credential is not: writing one is
+   * `PUT /platform/backup/destination`'s, because this route must never carry
+   * a credential. */
+  backup?: BackupSchedule;
   conditions?: Condition[];
 }
 
@@ -3068,6 +3073,104 @@ export interface AddonDeletion {
   message: string;
 }
 
+/**
+ * Where scheduled archives go, described and never echoed.
+ *
+ * `credential` says only *how* this destination authenticates, never what
+ * with: `stored` is a key pair the platform holds in a Secret, `ambient` is
+ * the credential chain the pod already has. The API never reads a credential
+ * back, so there is no field here that could carry one.
+ */
+export interface BackupDestination {
+  type: string;
+  /** The destination as a person reads it: `s3://bucket/prefix`. */
+  described: string;
+  bucket?: string;
+  prefix?: string;
+  region?: string;
+  endpoint?: string;
+  forcePathStyle?: boolean;
+  serverSideEncryption?: string;
+  kmsKeyId?: string;
+  credential: "stored" | "ambient";
+}
+
+/**
+ * The scheduled backup: what is configured, and — the half worth reading
+ * first — what it has actually been doing.
+ *
+ * `lastSuccess` is the number an operator should be watching. Every other
+ * field makes backups happen; this is the only one that makes their absence
+ * visible, and six weeks of no archive that nobody noticed is how a backup
+ * system fails. `ready`, `reason` and `message` are the platform's own
+ * `BackupReady` condition rather than a second opinion derived here.
+ */
+export interface BackupSchedule {
+  /** Five-field cron, UTC. Empty is no scheduled backup at all. */
+  schedule?: string;
+  suspended: boolean;
+  timeoutMinutes: number;
+  destination?: BackupDestination;
+  /** Absent is "keep everything", which is the safe default. */
+  keepLast?: number;
+  keepDays?: number;
+  lastRun?: string;
+  lastSuccess?: string;
+  lastSuccessArchive?: string;
+  lastSuccessBytes?: number;
+  lastFailure?: string;
+  archives?: number;
+  ready: boolean;
+  reason?: string;
+  message?: string;
+}
+
+/**
+ * What `PUT /platform/backup/destination` takes. The credential half is
+ * write-only and nothing ever reads it back — which is why leaving the keys
+ * out means "leave the credential alone", and moving onto the pod's own
+ * credential chain is an explicit `ambientCredentials`.
+ */
+export interface BackupDestinationWrite {
+  type?: string;
+  s3: {
+    bucket: string;
+    prefix?: string;
+    region?: string;
+    endpoint?: string;
+    forcePathStyle?: boolean;
+    serverSideEncryption?: string;
+    kmsKeyId?: string;
+    accessKeyId?: string;
+    secretAccessKey?: string;
+    ambientCredentials?: boolean;
+  };
+}
+
+/** One object at the destination. `archive` is whether the platform wrote it,
+ * and so whether retention would ever prune it — a bucket may hold other
+ * things, and they are listed too so nobody has to wonder. */
+export interface BackupObject {
+  key: string;
+  size: number;
+  modified: string;
+  archive: boolean;
+}
+
+/** What the destination actually holds, read from the destination rather than
+ * from the platform's belief about it. */
+export interface BackupHolds {
+  destination: string;
+  objects: BackupObject[];
+  truncated?: boolean;
+}
+
+/** A run started by hand, named so it can be followed. */
+export interface BackupStarted {
+  job: string;
+  destination: string;
+}
+
 export interface Backup {
   platformVersion: string;
   clusterName?: string;
@@ -3080,6 +3183,9 @@ export interface Backup {
    * archive's own manifest cannot come to disagree about what is missing. */
   excluded: string[];
   snapshots: SnapshotSupport;
+  /** The scheduled backup, so that one screen answers both "what would an
+   * archive carry" and "when did one last work". */
+  schedule: BackupSchedule;
   filename: string;
 }
 
@@ -3844,7 +3950,29 @@ export const api = {
         | "releaseRetention"
         | "logRetentionDays"
       >
-    > & { operators?: OperatorWrite[] },
+    > & {
+      operators?: OperatorWrite[];
+      /** The scheduled backup's ordinary settings. An empty `backupSchedule`
+       * turns it off; `0` on either bound removes that bound, which is the
+       * only way back to keeping every archive. The destination is not here
+       * and never will be — it carries a credential. */
+      backupSchedule?: string;
+      backupSuspend?: boolean;
+      backupKeepLast?: number;
+      backupKeepDays?: number;
+    },
   ) =>
     request<Settings>("PATCH", "/settings", changes),
+
+  // Where scheduled archives go. It has a route of its own because it carries
+  // a credential, and PATCH /settings must never carry one. The answer echoes
+  // the bucket and the prefix and no key, ever.
+  setBackupDestination: (body: BackupDestinationWrite) =>
+    request<BackupSchedule>("PUT", "/platform/backup/destination", body),
+  removeBackupDestination: () => request<BackupSchedule>("DELETE", "/platform/backup/destination"),
+  // What the destination holds now, read from the destination — the only half
+  // a recovery can use.
+  backupHolds: () => request<BackupHolds>("GET", "/platform/backup/runs"),
+  // Take one now, to the destination. Answers as soon as the run is started.
+  runBackup: () => request<BackupStarted>("POST", "/platform/backup/runs", {}),
 };

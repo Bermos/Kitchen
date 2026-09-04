@@ -444,6 +444,11 @@ var publishedShapes = map[string]struct {
 	"linked":      {"What a directory was linked to, and where the fact was written", linked{}},
 	"forgotten":   {"Which installations this machine no longer holds a credential for", forgotten{}},
 	"backupTaken": {"An archive that was taken: where it went, and what the platform put in it", backupTaken{}},
+	"backupDestinationHolds": {
+		"What the platform's backup destination holds right now, read from the destination itself",
+		backupDestinationHolds{},
+	},
+	"backupStarted": {"A backup that has been started to the destination, named so it can be followed", backupStarted{}},
 	"auditPackTaken": {"An audit pack that was exported: the two documents on disk, the sha256 of " +
 		"the bytes that were written, and what the pack holds by count. `truncated` means the " +
 		"pack answers for less than it was asked for — retention removed part of the window, or " +
