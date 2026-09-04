@@ -34,6 +34,12 @@ const (
 	EventReleasePromoted   = "release.promoted"
 	EventReleaseRolledBack = "release.rolledBack"
 	EventReleasePruned     = "release.pruned"
+	// A release cut from the commit an environment was already running, with
+	// the project's settings as they stand now (#392). It is its own type
+	// beside `release.promoted` and `release.rolledBack` because it is the
+	// one deploy nobody's commit caused: the feed's reader is asking "why did
+	// this change when nothing was pushed", and the answer is this entry.
+	EventReleaseRedeployed = "release.redeployed"
 	EventPreviewCreated    = "preview.created"
 	EventPreviewRemoved    = "preview.removed"
 	// A preview the platform declined to create because the project is at

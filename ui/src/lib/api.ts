@@ -290,6 +290,20 @@ export interface PromotionStage {
 /** One request to move a release into an environment, with what the policy
  * decided about it. The spec is immutable: retrying a blocked promotion is a
  * new one, and an old one stays as the record of what was refused and why. */
+/** What a redeploy came to: the release cut from the commit the environment
+ * was already running, and where it is going. */
+export interface Redeploy {
+  environment: string;
+  project: string;
+  release: string;
+  previousRelease: string;
+  image: string;
+  /** Set instead of a move when the environment declares requirements: the
+   * release exists, and the policy engine decides whether it lands. */
+  promotion?: string;
+  message: string;
+}
+
 export interface Promotion {
   name: string;
   project: string;
@@ -4033,6 +4047,13 @@ export const api = {
   moveEnvironment: (name: string, release: string) =>
     request<Environment | Promotion>("PATCH", `/environments/${name}`, { release }),
   deleteEnvironment: (name: string) => request<Environment>("DELETE", `/environments/${name}`),
+  // The same commit, today's settings (#392). A release freezes the
+  // configuration it was cut with, so a corrected setting reaches nothing that
+  // is already running; this asks the platform to cut a new release from the
+  // commit the environment is already on. Answered 202 with the release it
+  // made — and with `promotion` set instead of a move where the environment
+  // declares requirements.
+  redeployEnvironment: (name: string) => request<Redeploy>("POST", `/environments/${name}/redeploy`),
   // The requirements write is the environment's owners' (or an operator's):
   // the API enforces it in the handler, so `may()` alone cannot decide this
   // control — the screen also checks the owners list against the caller.

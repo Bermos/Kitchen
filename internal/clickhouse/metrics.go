@@ -143,12 +143,12 @@ func (c *Client) deployMetrics(ctx context.Context, query MetricsQuery, dayStart
 
 	statement := fmt.Sprintf(`SELECT
     toString(toUnixTimestamp(toStartOfDay(timestamp))) AS bucket,
-    toString(countIf(type IN ('%s', '%s'))) AS deploys
+    toString(countIf(type IN ('%s', '%s', '%s'))) AS deploys
 FROM %s.%s
 WHERE %s
 GROUP BY bucket
 FORMAT JSONEachRow`,
-		EventReleasePromoted, EventReleaseRolledBack,
+		EventReleasePromoted, EventReleaseRolledBack, EventReleaseRedeployed,
 		quoteIdentifier(c.cfg.Database), quoteIdentifier(EventsTable), strings.Join(conditions, " AND "))
 
 	rows, err := c.aggregateRows(ctx, statement, params)

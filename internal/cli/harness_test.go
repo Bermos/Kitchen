@@ -126,6 +126,12 @@ type platform struct {
 	promotions      []promotion
 	moveToPromotion *promotion
 
+	// redeployed is the 202 POST /environments/{name}/redeploy answers with:
+	// the release the platform cut from the commit the environment was
+	// already on. Nil refuses the way the API refuses a project that already
+	// declares what the running release froze.
+	redeployed *redeployed
+
 	// refuse answers every API call with this status and message when set.
 	refuseStatus  int
 	refuseMessage string
@@ -228,8 +234,8 @@ func (p *platform) serve(w http.ResponseWriter, req *http.Request) {
 		p.answerLogs(w, req)
 	case strings.HasPrefix(path, "/builds/"):
 		p.answerBuild(w)
-	case strings.HasPrefix(path, "/environments/") && req.Method == http.MethodPatch:
-		p.moveEnvironment(w, body)
+	case strings.HasPrefix(path, "/environments/"):
+		p.answerEnvironmentRoute(w, req, strings.TrimPrefix(path, "/environments/"), body)
 	case path == "/platform/backup" && req.Method == http.MethodPost:
 		p.answerBackup(w)
 	case strings.HasPrefix(path, "/decisions") || strings.HasPrefix(path, "/exceptions"):
@@ -238,8 +244,6 @@ func (p *platform) serve(w http.ResponseWriter, req *http.Request) {
 		writeAnswer(w, http.StatusOK, p.criticality)
 	case path == "/compliance/dependents":
 		writeAnswer(w, http.StatusOK, p.dependents)
-	case strings.HasPrefix(path, "/environments/"):
-		p.answerEnvironment(w, strings.TrimPrefix(path, "/environments/"))
 	default:
 		writeAnswer(w, http.StatusNotFound, errorBody{Error: "no such endpoint: " + path})
 	}
@@ -604,6 +608,22 @@ func (p *platform) patchProject(body []byte) {
 	p.patchFiles(body)
 }
 
+// answerEnvironmentRoute is everything under /environments/{name} that has not
+// already been matched above: reading one, moving it to another release, and
+// redeploying the commit it is already on. They are one branch of the switch
+// so that the fake platform's router stays inside the complexity the linter
+// allows, and one function so that the order they are tried in is legible.
+func (p *platform) answerEnvironmentRoute(w http.ResponseWriter, req *http.Request, rest string, body []byte) {
+	switch {
+	case strings.HasSuffix(rest, "/redeploy") && req.Method == http.MethodPost:
+		p.redeployEnvironment(w)
+	case req.Method == http.MethodPatch:
+		p.moveEnvironment(w, body)
+	default:
+		p.answerEnvironment(w, rest)
+	}
+}
+
 func (p *platform) answerEnvironment(w http.ResponseWriter, name string) {
 	name = strings.TrimSuffix(name, "/logs")
 	for _, e := range p.environments {
@@ -632,6 +652,16 @@ func (p *platform) moveEnvironment(w http.ResponseWriter, body []byte) {
 	}
 	p.environments[0].Release = asked["release"]
 	writeAnswer(w, http.StatusOK, p.environments[0])
+}
+
+// redeployEnvironment answers the release a redeploy cut, or the refusal a
+// project that declares exactly what is already running gets.
+func (p *platform) redeployEnvironment(w http.ResponseWriter) {
+	if p.redeployed == nil {
+		writeAnswer(w, http.StatusConflict, errorBody{Error: "there is nothing to redeploy"})
+		return
+	}
+	writeAnswer(w, http.StatusAccepted, p.redeployed)
 }
 
 func (p *platform) createPromotion(w http.ResponseWriter, body []byte) {

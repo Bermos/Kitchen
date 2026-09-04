@@ -414,6 +414,14 @@ func (s *Server) routes() []route {
 			onProject(access.ProjectDeveloper, ofEnvironment, "redeploying")},
 		{"DELETE /api/v1/environments/{name}", s.deleteEnvironment,
 			onProject(access.ProjectDeveloper, ofEnvironment, "deleting an environment")},
+		// Redeploying the commit that is already there with the project's
+		// current settings (#392). It is a developer's write, the same bar as
+		// a build and as the move above, because it is the same power: a
+		// developer who may push a commit already takes the project's current
+		// settings live with it, and this only removes the requirement to
+		// have a commit to push.
+		{"POST /api/v1/environments/{name}/redeploy", s.redeployEnvironment,
+			onProject(access.ProjectDeveloper, ofEnvironment, "redeploying an environment")},
 		{"GET /api/v1/environments/{name}/logs", s.environmentLogs,
 			onProject(access.ProjectViewer, ofEnvironment, "reading an environment's logs")},
 		{"GET /api/v1/environments/{name}/workload", s.environmentWorkload,

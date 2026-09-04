@@ -166,6 +166,14 @@ secret reaches what is already running** — the platform restarts the workloads
 that read it — where a changed environment variable waits for the next
 release.
 
+When there is no next release to wait for — the setting was wrong and there is
+no commit to make — `kitchen redeploy` cuts one: the same commit, the same
+image, today's settings.
+
+```sh
+kitchen redeploy                       # production, with what the project says now
+```
+
 ### A database, and anything else the platform provisions
 
 A **claim** asks for something the project needs — today, a Postgres. The
@@ -418,6 +426,23 @@ the diff is.
 If the target environment declares requirements of its own, the answer is a
 `202` and a promotion rather than an immediate move —
 `kitchen promotions <name>` follows it.
+
+**Redeploy, when the fix is a setting rather than the code.** A release freezes
+the configuration it was built with, so correcting a project setting changes
+nothing that is already running, and rebuilding an unchanged commit resolves to
+the release that commit already has. `kitchen redeploy` is the way out: it cuts
+a new release from the commit the environment is on with the project's settings
+as they stand, and deploys it.
+
+```sh
+kitchen redeploy                                   # production
+kitchen redeploy --environment shop-pr-42 --yes    # a preview, without asking
+```
+
+It refuses, in words, when the project declares exactly what the running
+release already froze — there would be nothing to redeploy — and it supersedes
+a deploy that is still in flight, which is what unsticks an environment waiting
+on a release that is never going to finish.
 
 ## What is the operator's, not yours
 

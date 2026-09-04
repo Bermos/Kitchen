@@ -84,6 +84,7 @@ var notifiable = map[string]kitchenv1alpha1.NotificationEvent{
 	clickhouse.EventBuildFailed:          kitchenv1alpha1.NotifyBuildFailed,
 	clickhouse.EventReleasePromoted:      kitchenv1alpha1.NotifyDeploySucceeded,
 	clickhouse.EventReleaseRolledBack:    kitchenv1alpha1.NotifyDeploySucceeded,
+	clickhouse.EventReleaseRedeployed:    kitchenv1alpha1.NotifyDeploySucceeded,
 	clickhouse.EventPreviewCreated:       kitchenv1alpha1.NotifyPreviewCreated,
 	clickhouse.EventPreviewRemoved:       kitchenv1alpha1.NotifyPreviewDestroyed,
 	clickhouse.EventEnvironmentUnhealthy: kitchenv1alpha1.NotifyEnvironmentUnhealthy,

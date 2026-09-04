@@ -43,6 +43,77 @@ automatic ones):
 `rolledBack` when the environment was moved back to an older release, and
 `superseded` when another release replaced it any other way.
 
+## Redeploying what is already there
+
+A `Release` freezes the project's configuration at the moment it was cut, which
+is what makes a rollback exact — and it means a setting corrected afterwards
+reaches nothing that is already running. Until there is a next release there is
+no next snapshot, and there are three ways that leaves a project stuck with a
+setting it has already fixed: a rebuild of an unchanged commit resolves to the
+`Release` that commit already has, a `Release` cannot be edited, and there may
+be no commit to make.
+
+So there is a route that makes one:
+
+```sh
+curl -sS -X POST -H "authorization: Bearer $TOKEN" \
+  https://kitchen.apps.example.com/api/v1/environments/shop-production/redeploy
+```
+
+It cuts a **new** `Release` from the commit the environment is already on — the
+same build, the same image digests, the same attested artifacts — with a fresh
+snapshot of what the project declares *now*, and points the environment at it.
+The release that was running is untouched and still describes exactly what it
+deployed, so rolling back to it is still rolling back to what was there.
+
+The answer is `202`, because making the release is all that happened
+synchronously; the deploy itself is the operator's:
+
+```json
+{"environment": "shop-production", "project": "shop",
+ "release": "shop-rel-88145878c4cc-cfg-3f7a91be",
+ "previousRelease": "shop-rel-88145878c4cc",
+ "image": "registry.apps.example.com/shop@sha256:9d3f…",
+ "message": "shop-production is deploying shop-rel-88145878c4cc-cfg-3f7a91be: the same commit as shop-rel-88145878c4cc, with shop's current settings"}
+```
+
+The new release is named after the commit it is still of, plus a fingerprint of
+everything it froze. A name goes on identifying exactly one snapshot, which is
+the property the immutability rule exists for; redeploying the same commit with
+the same settings twice converges on one release rather than piling up copies,
+and redeploying a redeploy replaces the fingerprint rather than stacking a
+second one.
+
+Two requests are refused rather than answered with a release, and both say so
+in words:
+
+- **The environment is running nothing yet** — there is no commit to redeploy,
+  only one to build. `400`.
+- **The project already declares exactly what the running release froze.** `409`:
+  an identical release is not a recovery, and a history read under pressure
+  should not have two names for one snapshot in it.
+
+A `409` also answers the one case the route cannot serve: the build that
+produced the running release has been pruned. The commit's own `kitchen.json`
+lives on that build, and a snapshot taken without it would silently drop
+everything the repository declares — so the refusal names the build and says to
+build the commit again instead.
+
+Where the environment declares [requirements](#the-bar-an-environment-sets) the
+release is made but not landed: the answer carries `promotion` as well, and the
+policy engine decides, exactly as it does for the PATCH above. One door into a
+gated environment, whichever route knocks.
+
+The move is recorded like any other — the environment's `history` gains an
+entry with `reason: superseded` — and the activity feed carries a
+`release.redeployed` entry, which is its own type so that a deploy nobody
+pushed a commit for is legible as one. `kitchen redeploy` is the same call from
+a terminal.
+
+**A redeploy supersedes an in-flight deploy**, exactly the way a newer commit's
+release does: it is the same one-field move, so an environment stuck waiting on
+a release that will never finish is unstuck by pointing it at a newer one.
+
 ## Is this release attested?
 
 `GET /releases/{name}` carries the unit's own compliance answer on
