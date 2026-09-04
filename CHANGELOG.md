@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.32.0](https://github.com/Bermos/Kitchen/compare/v0.31.0...v0.32.0) (2026-09-04)
+
+
+### Features
+
+* **api:** deploy the commit an environment is on again with today's settings ([#403](https://github.com/Bermos/Kitchen/issues/403)) ([9d826f2](https://github.com/Bermos/Kitchen/commit/9d826f2aec8b8e3536504380f8abb25535a03215)), closes [#392](https://github.com/Bermos/Kitchen/issues/392)
+* **claims:** a self-hosted Inngest, one server per environment ([#400](https://github.com/Bermos/Kitchen/issues/400)) ([03ab22e](https://github.com/Bermos/Kitchen/commit/03ab22edcb4f4e9a11aab75bfd1f21b5e65bdb8d))
+
+
+### Bug fixes
+
+* **operator:** end a deploy task whose pod can never be created, and say so on the environment ([#401](https://github.com/Bermos/Kitchen/issues/401)) ([2de120e](https://github.com/Bermos/Kitchen/commit/2de120e9f3987d53681ec8c9bd435a639b412bd3)), closes [#391](https://github.com/Bermos/Kitchen/issues/391) [#393](https://github.com/Bermos/Kitchen/issues/393)
+
+
+### Documentation
+
+* translate a Helm chart into a project, since the platform will not install one ([#404](https://github.com/Bermos/Kitchen/issues/404)) ([f2b9be8](https://github.com/Bermos/Kitchen/commit/f2b9be8702674e659bb75a029b444af058f2d682))
+
 ## [0.31.0](https://github.com/Bermos/Kitchen/compare/v0.30.0...v0.31.0) (2026-09-04)
 
 
