@@ -139,6 +139,14 @@ type Security struct {
 	// image's user left alone, not a request to run as root.
 	RunAsUser  int64 `json:"runAsUser,omitempty"`
 	RunAsGroup int64 `json:"runAsGroup,omitempty"`
+	// FSGroup is the gid the volumes mounted into the containers are owned
+	// by, which is what makes a non-root workload able to write the volume
+	// it was given. Zero is the volume's own ownership left alone.
+	FSGroup int64 `json:"fsGroup,omitempty"`
+	// FSGroupChangePolicy is when the kubelet applies that ownership.
+	// Empty is Kubernetes' default, Always; OnRootMismatch skips the
+	// recursive walk when the volume's root already matches.
+	FSGroupChangePolicy string `json:"fsGroupChangePolicy,omitempty"`
 	// ReadOnlyRootFilesystem mounts the container's own filesystem read
 	// only.
 	ReadOnlyRootFilesystem bool `json:"readOnlyRootFilesystem,omitempty"`
@@ -163,6 +171,7 @@ func SecuritySpec(request Security, subject string) (*kitchenv1alpha1.SecuritySp
 		RunAsNonRoot:             request.RunAsNonRoot,
 		RunAsUser:                request.RunAsUser,
 		RunAsGroup:               request.RunAsGroup,
+		FSGroup:                  request.FSGroup,
 		ReadOnlyRootFilesystem:   request.ReadOnlyRootFilesystem,
 		AllowPrivilegeEscalation: request.AllowPrivilegeEscalation,
 	}
@@ -174,6 +183,31 @@ func SecuritySpec(request Security, subject string) (*kitchenv1alpha1.SecuritySp
 			return nil, fmt.Errorf(
 				"%s: %s cannot be negative, and 0 leaves the image's own user alone (got %d)",
 				subject, id.name, id.value)
+		}
+	}
+	if security.FSGroup < 0 {
+		return nil, fmt.Errorf(
+			"%s: fsGroup cannot be negative, and 0 leaves the volume's own ownership alone (got %d)",
+			subject, security.FSGroup)
+	}
+	if policy := request.FSGroupChangePolicy; policy != "" {
+		switch kitchenv1alpha1.FSGroupChangePolicy(policy) {
+		case kitchenv1alpha1.FSGroupChangeAlways, kitchenv1alpha1.FSGroupChangeOnRootMismatch:
+			security.FSGroupChangePolicy = kitchenv1alpha1.FSGroupChangePolicy(policy)
+		default:
+			return nil, fmt.Errorf(
+				"%s: fsGroupChangePolicy is %q or %q (got %q)",
+				subject, kitchenv1alpha1.FSGroupChangeAlways,
+				kitchenv1alpha1.FSGroupChangeOnRootMismatch, policy)
+		}
+		// A policy without a group changes nothing at all: the kubelet
+		// reads it only when there is an fsGroup to apply. Storing one
+		// would be a setting that reads back as a declaration and does
+		// nothing.
+		if security.FSGroup == 0 {
+			return nil, fmt.Errorf(
+				"%s: fsGroupChangePolicy is when the volume's ownership is changed, so it needs an fsGroup to change it to",
+				subject)
 		}
 	}
 	for _, capability := range request.DropCapabilities {

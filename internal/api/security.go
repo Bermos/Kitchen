@@ -39,8 +39,13 @@ type securityView struct {
 	RunAsNonRoot bool `json:"runAsNonRoot"`
 	// RunAsUser and RunAsGroup are absent when the image's own are used,
 	// which is not the same as running as uid 0 and must not read like it.
-	RunAsUser                int64    `json:"runAsUser,omitempty"`
-	RunAsGroup               int64    `json:"runAsGroup,omitempty"`
+	RunAsUser  int64 `json:"runAsUser,omitempty"`
+	RunAsGroup int64 `json:"runAsGroup,omitempty"`
+	// FSGroup and its change policy are absent when the volumes keep their
+	// own ownership, on the same reading: a workload with no volume claim
+	// has nothing for them to say.
+	FSGroup                  int64    `json:"fsGroup,omitempty"`
+	FSGroupChangePolicy      string   `json:"fsGroupChangePolicy,omitempty"`
 	ReadOnlyRootFilesystem   bool     `json:"readOnlyRootFilesystem"`
 	AllowPrivilegeEscalation bool     `json:"allowPrivilegeEscalation"`
 	DropCapabilities         []string `json:"dropCapabilities,omitempty"`
@@ -76,6 +81,8 @@ func newSecurityView(security *kitchenv1alpha1.SecuritySpec) *securityView {
 	view.RunAsNonRoot = security.RunAsNonRoot
 	view.RunAsUser = security.RunAsUser
 	view.RunAsGroup = security.RunAsGroup
+	view.FSGroup = security.FSGroup
+	view.FSGroupChangePolicy = string(security.FSGroupChangePolicy)
 	view.ReadOnlyRootFilesystem = security.ReadOnlyRootFilesystem
 	view.DropCapabilities = security.DropCapabilities
 	return view

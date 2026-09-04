@@ -430,6 +430,7 @@ func TestRuntimeOverlaysOnlyWhatTheFileNames(t *testing.T) {
 func TestTheFileDeclaresTheSecurityPosture(t *testing.T) {
 	config, err := Parse([]byte(`{"runtime": {"security": {
 	  "runAsNonRoot": true, "runAsUser": 1001, "readOnlyRootFilesystem": true,
+	  "fsGroup": 1001, "fsGroupChangePolicy": "OnRootMismatch",
 	  "dropCapabilities": ["all"]
 	}}}`))
 	if err != nil {
@@ -441,6 +442,12 @@ func TestTheFileDeclaresTheSecurityPosture(t *testing.T) {
 	}
 	if !security.DropsAll() {
 		t.Fatalf("the capability list is not the kernel's spelling: %v", security.DropCapabilities)
+	}
+	// The gid that owns the volume the image is given, which the repository
+	// is as much the right place to say as the rest of the posture.
+	if security.FSGroup != 1001 ||
+		security.FSGroupChangePolicy != kitchenv1alpha1.FSGroupChangeOnRootMismatch {
+		t.Fatalf("the volume group did not survive the file: %+v", security)
 	}
 	if !slices.Contains(config.Declares(), "runtime.security") {
 		t.Errorf("the file does not report that it declared the posture: %v", config.Declares())
@@ -462,6 +469,18 @@ func TestTheFileDeclaresTheSecurityPosture(t *testing.T) {
 	}
 	if empty.Runtime.Security != nil {
 		t.Errorf("an empty posture should be no posture: %+v", empty.Runtime.Security)
+	}
+
+	// A gid is a gid, and the file is refused rather than reaching a pod the
+	// API server would not admit.
+	if _, err := Parse([]byte(`{"runtime": {"security": {"fsGroup": -1}}}`)); err == nil {
+		t.Error("a negative gid was accepted from the file")
+	}
+	// A change policy with no ownership to change is a setting that does
+	// nothing, so it is refused where it is written.
+	if _, err := Parse([]byte(
+		`{"runtime": {"security": {"fsGroupChangePolicy": "OnRootMismatch"}}}`)); err == nil {
+		t.Error("a change policy with no group was accepted from the file")
 	}
 }
 

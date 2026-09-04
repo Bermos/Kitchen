@@ -586,8 +586,14 @@ spec:
     security:                           # the posture every workload of this
       runAsNonRoot: true                # project runs under — web, workers,
       runAsUser: 1001                   # services and scheduled runs alike
-      runAsGroup: 1001                  # 0 = the image's own user
-      readOnlyRootFilesystem: true      # left alone, not "run as root"
+      runAsGroup: 1001                  # 0 = the image's own user left
+      readOnlyRootFilesystem: true      # alone, not "run as root"
+      fsGroup: 1001                     # owns the volumes it mounts: a fresh
+                                        # one comes up root:root, which a
+                                        # non-root workload cannot write
+      fsGroupChangePolicy: OnRootMismatch
+                                        # unset = Always, a walk of the whole
+                                        # volume on every start
       allowPrivilegeEscalation: false   # the default, and the one the platform
       dropCapabilities: [ALL]           # tightens; there is no list to add one
   processes:                            # what it ships *besides* the web process

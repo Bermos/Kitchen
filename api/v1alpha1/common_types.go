@@ -391,6 +391,41 @@ type SecuritySpec struct {
 	// +optional
 	RunAsGroup int64 `json:"runAsGroup,omitempty"`
 
+	// FSGroup is the supplementary group the volumes mounted into the
+	// containers are owned by. A freshly provisioned PersistentVolume comes
+	// up owned by `root:root`, so a workload that asked to run as anybody
+	// else is handed a volume it cannot write — it starts, reads as
+	// healthy, and fails on its first write. The kubelet chowns the volume
+	// to this gid before the container starts, which is the only thing that
+	// makes the two features — this posture and a volume claim — work
+	// together.
+	//
+	// It is a pod-level field, not a container-level one, so it lands
+	// beside RunAsNonRoot rather than in the per-container context. Zero is
+	// the same reading RunAsUser's is: the volume's own ownership left
+	// alone, not a request to own it as gid 0.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	FSGroup int64 `json:"fsGroup,omitempty"`
+
+	// FSGroupChangePolicy is when the kubelet does that chown. Left alone
+	// it is Kubernetes' own default, `Always`, which walks the whole volume
+	// on every start — correct, and on a large volume slow enough to be the
+	// reason a pod takes minutes to come up. `OnRootMismatch` skips the
+	// walk when the volume's own root already has the right ownership,
+	// which is what a workload with a big persistent volume reaches for.
+	//
+	// The default is deliberately not moved: `OnRootMismatch` looks only at
+	// the top of the volume, so a subtree left behind by a previous uid
+	// stays unwritable and the failure arrives long after the change that
+	// caused it. That is a trade a project makes knowingly, not one the
+	// platform makes for it.
+	//
+	// It is meaningless without FSGroup and refused without one, rather
+	// than stored as a setting that does nothing.
+	// +optional
+	FSGroupChangePolicy FSGroupChangePolicy `json:"fsGroupChangePolicy,omitempty"`
+
 	// ReadOnlyRootFilesystem mounts the container's own filesystem read
 	// only. An application that writes to a path it did not declare fails
 	// on the write rather than on the next node it lands on.
@@ -428,6 +463,22 @@ type SecuritySpec struct {
 	// +kubebuilder:validation:items:Pattern=`^[A-Z][A-Z0-9_]*$`
 	DropCapabilities []string `json:"dropCapabilities,omitempty"`
 }
+
+// FSGroupChangePolicy is when the kubelet changes the ownership of a volume
+// it is about to mount. The values and their meanings are corev1's, spelled
+// the same way, because that is what they become.
+// +kubebuilder:validation:Enum=Always;OnRootMismatch
+type FSGroupChangePolicy string
+
+const (
+	// FSGroupChangeAlways chowns the whole volume on every start. It is
+	// Kubernetes' own default and what an unset policy takes.
+	FSGroupChangeAlways FSGroupChangePolicy = "Always"
+	// FSGroupChangeOnRootMismatch chowns only when the volume's own root
+	// does not already have the ownership asked for, which turns a
+	// minutes-long recursive walk of a large volume into a single stat.
+	FSGroupChangeOnRootMismatch FSGroupChangePolicy = "OnRootMismatch"
+)
 
 // CapabilityDropAll is the entry that means every capability, spelled the way
 // corev1 spells it.
@@ -467,7 +518,7 @@ func (s *SecuritySpec) Declared() []string {
 	if s == nil {
 		return nil
 	}
-	declared := make([]string, 0, 5)
+	declared := make([]string, 0, 6)
 	if s.RunAsNonRoot {
 		declared = append(declared, "it must not run as root")
 	}
@@ -476,6 +527,13 @@ func (s *SecuritySpec) Declared() []string {
 	}
 	if s.RunAsGroup > 0 {
 		declared = append(declared, fmt.Sprintf("it runs as gid %d", s.RunAsGroup))
+	}
+	if s.FSGroup > 0 {
+		volumes := fmt.Sprintf("its volumes are owned by gid %d", s.FSGroup)
+		if s.FSGroupChangePolicy == FSGroupChangeOnRootMismatch {
+			volumes += ", changed only when the volume's own root does not already match"
+		}
+		declared = append(declared, volumes)
 	}
 	if s.ReadOnlyRootFilesystem {
 		declared = append(declared, "its root filesystem is read only")

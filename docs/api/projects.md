@@ -236,8 +236,9 @@ process, its workers, its services and its scheduled runs, since a posture
 describes how a container runs rather than the command it is started with:
 
 ```json
-{"security": {"runAsNonRoot": true, "runAsUser": 1001,
-              "readOnlyRootFilesystem": true, "dropCapabilities": ["ALL"]}}
+{"security": {"runAsNonRoot": true, "runAsUser": 1001, "runAsGroup": 1001,
+              "fsGroup": 1001, "readOnlyRootFilesystem": true,
+              "dropCapabilities": ["ALL"]}}
 ```
 
 Every field is optional and `0` or `false` on any of them is the platform's
@@ -248,6 +249,20 @@ back. Capabilities are the kernel's spelling without the `CAP_` prefix, or the
 single entry `ALL`; there is deliberately no list to add one, since the
 platform drops none by default and a project that could add one would grant
 its own container more than its image asked for.
+
+`fsGroup` is the gid that owns the volumes the workloads mount, and it is the
+field that makes a declared user and a volume claim work together: a freshly
+provisioned volume comes up owned by `root:root`, so a workload running as
+1001 is handed one it cannot write — it starts, reads as healthy, and fails on
+its first write. The kubelet chowns the volume to this gid before the
+container starts. `0` is the volume's own ownership left alone, on the same
+reading as `runAsUser`. `fsGroupChangePolicy` is when that chown happens:
+absent is Kubernetes' own default, `Always`, which walks the whole volume on
+every start, and `OnRootMismatch` skips the walk when the volume's root
+already matches — fast on a large volume, at the price of a subtree left by a
+previous uid staying unwritable. The default is not moved, because that trade
+is the project's to make. It applies only alongside an `fsGroup` and is
+refused without one.
 
 **A project that declares nothing still runs under a posture**, and reading a
 project back reports it resolved — the runtime's own seccomp profile, and no
