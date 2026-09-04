@@ -4,6 +4,7 @@ import { useRouter } from "vue-router";
 import { api, type Build } from "../lib/api";
 import { buildFailureLine, buildStallLine } from "../lib/builds";
 import { duration, formatDurationSeconds, shortSHA, timeAgo } from "../lib/format";
+import { useFreshness } from "../lib/freshness";
 import { useAsync, usePoll } from "../lib/useAsync";
 import CommitBody from "../components/CommitBody.vue";
 import CommitBodyToggle from "../components/CommitBodyToggle.vue";
@@ -27,6 +28,9 @@ const failureOf = (build: Build) => buildFailureLine(build);
 const stallOf = (build: Build) => buildStallLine(build);
 
 const { data, error, loading, refresh } = useAsync(() => api.builds());
+// How old this screen is, and the reader's hold on it: every fetch above
+// reports into it and the header renders it.
+const freshness = useFreshness();
 usePoll(() => void refresh(), 10000, () => true);
 
 // The queue is the gate's own state, which lives on /status rather than on any
@@ -53,7 +57,7 @@ const visible = computed(() => (project.value ? (data.value ?? []).filter((b) =>
 
 <template>
   <div class="space-y-6">
-    <PageHeader title="Builds">
+    <PageHeader :freshness="freshness" title="Builds">
       <template #description>
         Every build across the projects you can see, newest first — what is running now, what is waiting for a slot, and
         what the last commit did.

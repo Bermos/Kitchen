@@ -129,6 +129,62 @@ again.
 | `badges` | What the title *is*: a phase, an environment type, a classification. |
 | `meta` | The small facts under it: a repository, a branch, an age. |
 | `actions` | What can be done to the thing named. |
+| `freshness` (prop) | The screen's own age and the reader's hold on it, on a screen that polls. Below. |
+
+### The freshness control
+
+**A screen that polls says how old it is, and offers to hold still while it is
+read.** The dashboard polls a great deal — five clocks on the overview alone —
+and every one of them used to be silent: rows reordered themselves under the
+cursor mid-click, and a metrics store that had stopped answering left confident
+numbers from twenty minutes ago looking exactly like numbers from four seconds
+ago. One control in the header answers both, and it is the header's rather than
+each screen's so that the answer is in the same place on every screen.
+
+A screen takes it in one line — `const freshness = useFreshness()`, handed to
+`PageHeader` — and everything that polls on that screen reports into it through
+`useAsync`, the panels inside the view included. It says one of four things:
+
+| | What it means |
+|---|---|
+| `Live · 4s ago` | The oldest thing on the screen was fetched four seconds ago. |
+| `Paused · 3 changes waiting` | Held while you read; three of the screen's sources have newer data, applied when you resume. |
+| `Stale · 22m ago` | A source has failed for longer than its own poll interval. The screen is not being told the truth. |
+| `Loading…` | Nothing has answered yet. |
+
+Four decisions inside that, each of which somebody will want to change:
+
+- **The screen is as old as its oldest part.** The age is the oldest of the
+  screen's sources, not the newest. The reader is asking whether they can trust
+  what is in front of them, and the weakest part is the honest answer.
+- **Pause is per screen, and navigating ends it.** It exists so that what
+  somebody is reading does not move under the cursor; leaving the screen is
+  them saying they have finished reading it. A pause that travelled would be a
+  global "stop updating" nobody asked for, on screens whose data they have not
+  looked at yet. The shell's own pollers — the sidebar's inventory and the
+  platform status at its foot — are outside it entirely (`screen: false`),
+  because the sidebar is navigation rather than something being read.
+- **Pause expires after five minutes.** A pause that outlives the reading it
+  was for *is* the stale screen this control exists to prevent, wearing a label
+  that says everything is fine. Five minutes is long enough to read a failing
+  build's log excerpt and short enough that a screen left open over lunch is
+  live again when its owner comes back. The held data is applied when it
+  expires, not thrown away.
+- **Stale is a claim, and it is only made when it is true.** A source is stale
+  once its failures have outlasted its own poll interval — one missed poll on a
+  sixty-second fetch is a blip, a minute of them is a number that has stopped
+  being true. A source that has never answered is not stale: there is nothing
+  on the screen to be wrong about, and the view's error alert says so.
+
+**A stale source is a screen that stops repeating itself.** The strip goes to
+the warning tone, and the numbers it covers fall back to `—` with a banner
+naming the real age — `the metrics store did not answer the last 3 polls —
+these numbers are from 22:38`. This is the `—` rule below along the time axis:
+a number the caller may not know is `—` rather than `0`, and a number that has
+stopped being true is `—` rather than the number it used to be.
+
+`design.test.ts` requires the control on every view that calls `usePoll`, and
+requires that nothing but `PageHeader` places it.
 
 ## Sections inside a page
 

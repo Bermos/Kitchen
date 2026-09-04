@@ -3,6 +3,7 @@ import { computed, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { api, type Span } from "../lib/api";
 import { compactCount } from "../lib/format";
+import { useFreshness } from "../lib/freshness";
 import { useAsync, usePoll } from "../lib/useAsync";
 import PageHeader from "../components/PageHeader.vue";
 
@@ -51,6 +52,9 @@ const traces = useAsync(() =>
     limit: 100,
   }),
 );
+// How old this screen is, and the reader's hold on it: every fetch above
+// reports into it and the header renders it.
+const freshness = useFreshness();
 usePoll(() => void traces.refresh(), 15_000, () => selected.value === null);
 
 /** The open trace. It is in the URL, so a trace is a link. */
@@ -183,7 +187,7 @@ function barTone(span: Span): string {
 
 <template>
   <div class="space-y-6">
-    <PageHeader title="Traces">
+    <PageHeader :freshness="freshness" title="Traces">
       <template #description>
         What one request did, as the application reported it. Add an OpenTelemetry SDK and it exports here on its own —
         every environment is given the endpoint.

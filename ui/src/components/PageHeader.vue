@@ -24,8 +24,15 @@
  *   created.
  * - `actions` — what can be done to the thing named, right-aligned and
  *   wrapping under the title on a narrow viewport rather than squeezing it.
+ *
+ * And one part that is not a slot: `freshness`. A screen that polls says how
+ * old it is and offers to hold still while it is read, and it says it in the
+ * same place on every screen — see `docs/UI.md`, "The freshness control". The
+ * object comes from `useFreshness()`; the header only places it.
  */
 import type { RouteLocationRaw } from "vue-router";
+import type { ScreenFreshness } from "../lib/freshness";
+import FreshnessControl from "./FreshnessControl.vue";
 
 /** One step of the trail. The last has no `to` — it is where you are. */
 export interface Crumb {
@@ -42,8 +49,10 @@ withDefaults(
     title: string;
     description?: string;
     breadcrumb?: Crumb[];
+    /** The screen's freshness, on a screen that polls. */
+    freshness?: ScreenFreshness;
   }>(),
-  { description: undefined, breadcrumb: () => [] },
+  { description: undefined, breadcrumb: () => [], freshness: undefined },
 );
 </script>
 
@@ -76,7 +85,8 @@ withDefaults(
       </div>
     </div>
 
-    <div v-if="$slots.actions" class="flex items-center gap-2 flex-wrap">
+    <div v-if="$slots.actions || freshness" class="flex items-center gap-2 flex-wrap">
+      <FreshnessControl v-if="freshness" :freshness="freshness" />
       <slot name="actions" />
     </div>
   </div>

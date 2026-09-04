@@ -3,6 +3,7 @@ import { computed, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { api, type PlatformPod, type PlatformWorkload } from "../lib/api";
 import { timeAgo, uptime } from "../lib/format";
+import { useFreshness } from "../lib/freshness";
 import { useAsync, usePoll } from "../lib/useAsync";
 import PageHeader from "../components/PageHeader.vue";
 import StatusDot from "../components/StatusDot.vue";
@@ -30,6 +31,9 @@ const { data, error, loading, refresh } = useAsync(() =>
   api.platformWorkloads({ namespace: namespace.value || undefined }),
 );
 watch(namespace, () => void refresh());
+// How old this screen is, and the reader's hold on it: every fetch above
+// reports into it and the header renders it.
+const freshness = useFreshness();
 usePoll(() => void refresh(), 30_000, () => true);
 
 const search = ref("");
@@ -81,7 +85,7 @@ function clearFilters() {
 
 <template>
   <div class="space-y-6">
-    <PageHeader title="Workloads" :breadcrumb="[{ label: 'Platform', to: '/platform' }, { label: 'Workloads' }]">
+    <PageHeader :freshness="freshness" title="Workloads" :breadcrumb="[{ label: 'Platform', to: '/platform' }, { label: 'Workloads' }]">
       <template #description>
         Everything the cluster is running, and first of all the things it is not running that it was asked to.
       </template>

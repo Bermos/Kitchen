@@ -5,6 +5,7 @@ import { api, CRITICALITIES, DATA_CLASSES, type Claim, type Project, type Releas
 import { buildFailureLine } from "../lib/builds";
 import { deletionGatedByName, destroysData, destroysDataRefusal, mayDestroyData } from "../lib/claims";
 import { duration, shortImage, shortSHA, timeAgo } from "../lib/format";
+import { useFreshness } from "../lib/freshness";
 import { callerFor } from "../lib/me";
 import { may } from "../lib/policy";
 import { pipelineShown } from "../lib/promotions";
@@ -65,6 +66,9 @@ const { data, error, loading, refresh } = useAsync(async () => {
   return { project, environments, releases, builds, claims, domains, promotions };
 });
 watch(name, () => void refresh());
+// How old this screen is, and the reader's hold on it: every fetch above
+// reports into it and the header renders it.
+const freshness = useFreshness();
 usePoll(() => void refresh(), 10000, () => true);
 
 const project = computed(() => data.value?.project);
@@ -757,7 +761,11 @@ function host(url?: string): string {
   <div class="space-y-6">
     <UAlert v-if="error" color="error" variant="soft" icon="i-lucide-triangle-alert" :title="error" />
     <template v-else-if="project">
-      <PageHeader :title="project.name" :breadcrumb="[{ label: 'Overview', to: '/' }, { label: project.name }]">
+      <PageHeader
+        :freshness="freshness"
+        :title="project.name"
+        :breadcrumb="[{ label: 'Overview', to: '/' }, { label: project.name }]"
+      >
         <template #meta>
           <span v-if="project.repo">{{ project.repo }}</span>
           <span v-else-if="vendoredImage" class="font-mono">{{ vendoredImage.reference }}</span>

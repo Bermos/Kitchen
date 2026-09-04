@@ -12,6 +12,7 @@ import {
 } from "../lib/api";
 import { buildStallLine } from "../lib/builds";
 import { duration, shortSHA, timeAgo } from "../lib/format";
+import { useFreshness } from "../lib/freshness";
 import { callerFor } from "../lib/me";
 import { may } from "../lib/policy";
 import { useAsync, usePoll } from "../lib/useAsync";
@@ -47,6 +48,9 @@ const mayCancel = computed(() =>
 // A queued or running build is still moving; keep the header fresh while the
 // log viewer below follows the output.
 const moving = computed(() => build.value?.phase === "Queued" || build.value?.phase === "Running");
+// How old this screen is, and the reader's hold on it: every fetch above
+// reports into it and the header renders it.
+const freshness = useFreshness();
 usePoll(() => void refresh(), 5000, () => moving.value);
 
 // Cancelling keeps the Build — phase Cancelled — and stops its BuildKit job.
@@ -340,6 +344,7 @@ const logRunLabels = computed<Record<string, string>>(() => {
     <UAlert v-if="error" color="error" variant="soft" icon="i-lucide-triangle-alert" :title="error" />
     <template v-else-if="build">
       <PageHeader
+        :freshness="freshness"
         :title="build.git.message || build.acquisition?.reference || build.name"
         :breadcrumb="[
           { label: 'Overview', to: '/' },

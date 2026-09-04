@@ -2,6 +2,7 @@
 import { computed, ref } from "vue";
 import { api, type TrafficEdge } from "../lib/api";
 import { compactCount } from "../lib/format";
+import { useFreshness } from "../lib/freshness";
 import { operatorMode } from "../lib/mode";
 import { useAsync, usePoll } from "../lib/useAsync";
 import OperatorOnly from "../components/OperatorOnly.vue";
@@ -35,6 +36,9 @@ const { data, error, loading, refresh } = useAsync(() =>
     project: project.value || undefined,
   }),
 );
+// How old this screen is, and the reader's hold on it: every fetch above
+// reports into it and the header renders it.
+const freshness = useFreshness();
 usePoll(() => void refresh(), 15000, () => true);
 function rerun() {
   void refresh();
@@ -150,7 +154,7 @@ function edgeLabel(edge: TrafficEdge): string {
 
 <template>
   <div class="space-y-6">
-    <PageHeader title="Traffic">
+    <PageHeader :freshness="freshness" title="Traffic">
       <template #description>
         The service map, aggregated from Cilium's Hubble flows — one edge per talking pair in the window.
       </template>
