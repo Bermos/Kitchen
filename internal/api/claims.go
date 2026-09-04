@@ -30,6 +30,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/access"
 	"github.com/Bermos/Kitchen/internal/audit"
 	"github.com/Bermos/Kitchen/internal/clickhouse"
 	"github.com/Bermos/Kitchen/internal/provider/contract"
@@ -173,6 +174,10 @@ func (s *Server) createClaim(w http.ResponseWriter, req *http.Request) {
 		badRequest(w, "%s claim takes no deletionPolicy: the policy decides what happens to provisioned "+
 			"data, and %s holds none — it is always removed with the claim",
 			withArticle(claimType.Name), withArticle(claimType.Resource))
+		return
+	}
+	if policy == kitchenv1alpha1.ClaimDelete &&
+		!s.mayDestroyData(ctx, w, project, project.Name, "asking for a claim that destroys its "+claimType.Resource) {
 		return
 	}
 	dataClass, err := dataClassFromRequest(body.DataClass)
@@ -494,6 +499,43 @@ func withArticle(noun string) string {
 // nothing should be able to reach a CREATE EXTENSION statement unchecked.
 var extensionNamePattern = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_-]*$`)
 
+// mayDestroyData is the one escalation on the claims surface: `deletionPolicy:
+// Delete` is the admin's, everything else about a claim is the developer's.
+//
+// It lives in the handlers rather than in the route table because the route
+// table's unit is a whole route, and this condition is a field of the request
+// body on the way in and a field of the stored claim on the way out. So the
+// row in internal/api/policy.go is the **floor** — a developer claims
+// resources and takes them away — and this is the ceiling on the one case that
+// destroys data: the CNPG Cluster and its PVCs, every object version in the
+// bucket, the Valkey StatefulSet and its volume. The compliance regime expects
+// destroying data to be segregated from the day job, and admin is already the
+// role that may delete the project all of it belongs to.
+//
+// The refusal names the field and the role it wants, which is the rule every
+// refusal on this API follows. project may be nil, for a claim whose project
+// is no longer there: an operator holds admin on it anyway, and nobody else
+// holds anything.
+func (s *Server) mayDestroyData(
+	ctx context.Context,
+	w http.ResponseWriter,
+	project *kitchenv1alpha1.Project,
+	projectName string,
+	doing string,
+) bool {
+	role := s.roleOn(ctx, project)
+	if role.AtLeast(access.ProjectAdmin) {
+		return true
+	}
+	held := role.String()
+	if held == "" {
+		held = "no role"
+	}
+	forbidden(w, fmt.Sprintf("you have %s on %s; %s needs admin: deletionPolicy Delete destroys the "+
+		"provisioned resource and the data on it, and there is no undo", held, projectName, doing))
+	return false
+}
+
 func (s *Server) deleteClaim(w http.ResponseWriter, req *http.Request) {
 	ctx := req.Context()
 
@@ -504,8 +546,32 @@ func (s *Server) deleteClaim(w http.ResponseWriter, req *http.Request) {
 	}
 	caller, _ := CallerFrom(ctx)
 	outcome := "the provisioned resource is left where it is"
-	if _, shaper, ok := claimShaperFor(claim.Spec.Type); ok {
+	resource := "resource"
+	if claimType, shaper, ok := claimShaperFor(claim.Spec.Type); ok {
 		outcome = shaper.deletionOutcome(claim)
+		resource = claimType.Resource
+	}
+	// The floor is developer, in the table; taking a claim away is the day
+	// job. Taking away a claim whose policy is Delete is not — it destroys
+	// the resource and the data on it — so this one is the admin's, and the
+	// claim's own spec is what says which of the two this is.
+	if claim.Spec.DeletionPolicy == kitchenv1alpha1.ClaimDelete {
+		project := &kitchenv1alpha1.Project{}
+		if err := s.get(ctx, claim.Spec.ProjectRef.Name, project); err != nil {
+			if !apierrors.IsNotFound(err) {
+				s.writeError(w, err)
+				return
+			}
+			// A dangling project reference. Nobody holds a role on a project
+			// that is not there, and only an operator — admin on every
+			// project, present, future and missing — gets past the check
+			// below to clean the claim up.
+			project = nil
+		}
+		if !s.mayDestroyData(ctx, w, project, claim.Spec.ProjectRef.Name,
+			"deleting a claim that destroys its "+resource) {
+			return
+		}
 	}
 	if !s.recorded(w, req, audit.Transition{
 		Object:    claim,

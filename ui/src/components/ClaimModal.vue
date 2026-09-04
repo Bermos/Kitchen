@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { api, DATA_CLASSES, type ClaimProvider, type ClaimType, type Connection, type NewClaim } from "../lib/api";
+import { DESTRUCTIVE_POLICY, destroysDataRefusal, mayDestroyData } from "../lib/claims";
 import { connectionChoices, noteFor, selectableChoices, type ConnectionChoice } from "../lib/connections";
 import { callerFor } from "../lib/me";
 import { may } from "../lib/policy";
@@ -18,6 +19,11 @@ import { may } from "../lib/policy";
 
 const props = defineProps<{
   project: string;
+  /** The caller's role on this project, as it arrived on the project's own
+   * payload. It decides one thing here: `deletionPolicy: Delete` destroys
+   * the provisioned data and is the admin's, which the API enforces at the
+   * door — so the option is not offered to a developer as if it were. */
+  role?: string;
   /** The names of the project's declared processes, for the volume picker.
    * The web process is implicit and always offered. */
   processes?: string[];
@@ -196,10 +202,29 @@ function postgresRequest() {
  * policy picker and the empty states name the right thing for every type. */
 const resourceNoun = computed(() => claimTypes.value.find((entry) => entry.type === type.value)?.resource ?? "resource");
 
+/** Whether this caller may ask for the policy that destroys the data, and the
+ * sentence the form says when they may not. Destroying data is the admin's
+ * (#320); the rest of the claim is the developer's day job. */
+const mayDestroy = computed(() => mayDestroyData(callerFor(props.role, props.project)));
+const destroyRefusal = computed(() =>
+  destroysDataRefusal(callerFor(props.role, props.project), `asking for a claim that destroys its ${resourceNoun.value}`),
+);
+
 const policyOptions = computed(() => [
   { label: `Retain — keep the ${resourceNoun.value} when the claim is deleted`, value: "Retain" },
-  { label: `Delete — destroy the ${resourceNoun.value} and its data with the claim`, value: "Delete" },
+  {
+    label: `Delete — destroy the ${resourceNoun.value} and its data with the claim`,
+    value: DESTRUCTIVE_POLICY,
+    disabled: !mayDestroy.value,
+  },
 ]);
+
+// A developer who had the option open and lost it — the role arriving after
+// the form did — must not be left holding a choice the API will refuse.
+watch(mayDestroy, (may) => {
+  if (!may && deletionPolicy.value === DESTRUCTIVE_POLICY) deletionPolicy.value = "Retain";
+});
+
 /** The volume block as the API takes it. */
 function volumeRequest() {
   return {
@@ -550,6 +575,7 @@ async function save() {
             help="Retain is the default: deleting a claim must not be able to destroy the data on a production volume. A retained volume outlives the project, and a claim of the same name binds to it again. Preview volumes are always cleaned up."
           >
             <USelect v-model="deletionPolicy" :items="policyOptions" class="w-full" />
+            <p v-if="destroyRefusal" class="mt-1 text-xs text-muted">{{ destroyRefusal }}.</p>
           </UFormField>
         </template>
 
@@ -761,6 +787,7 @@ async function save() {
             :help="`Retain is the default: deleting a claim must not be able to destroy a production ${resourceNoun}. Preview resources are always cleaned up.`"
           >
             <USelect v-model="deletionPolicy" :items="policyOptions" class="w-full" />
+            <p v-if="destroyRefusal" class="mt-1 text-xs text-muted">{{ destroyRefusal }}.</p>
           </UFormField>
         </template>
 

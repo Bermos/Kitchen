@@ -133,6 +133,17 @@ which every route is registered from — so a route cannot exist without a
 requirement, and the dashboard's copy of it is generated rather than written
 twice.
 
+**A requirement is a floor.** A route is the unit of authorization, so a
+condition that depends on the *body* of one request rather than on the route
+cannot be a row: it is checked in the handler, above the row's role, and
+refused with a `403` naming the field and the role it wants. There is one, and
+it is marked † below — `deletionPolicy: Delete` on a claim destroys the
+provisioned resource and the data on it, which makes asking for it, and
+deleting a claim that already carries it, `admin`'s rather than `developer`'s.
+The rows stay `developer` because that is what claiming and unclaiming
+otherwise need, and anything that grows a second such condition is marked the
+same way.
+
 ### Being refused
 
 **`403` names the role it wanted**, and what would have satisfied it:
@@ -295,9 +306,9 @@ name against `internal/api/policy.go`, so a route that moves fails them too.
 | DELETE | `/domains/{name}` | Detach it; the operator removes its certificate | `developer` |
 | GET | `/claim-types` | What can be claimed: every claim type, and what each provider that fulfils it declares about previews, idling and deploys | any account |
 | GET | `/claims` | Every resource claim. `?project=` filters | any account — filtered |
-| POST | `/claims` | Ask for a provisioned resource: a database, a bucket or a cache from a connection — optionally naming what it has to be, and what previews get — an OAuth client from the platform's identity provider, a persistent volume mounted into one of the project's processes, or the keys a worker connects to Inngest with | `developer` |
+| POST | `/claims` | Ask for a provisioned resource: a database, a bucket or a cache from a connection — optionally naming what it has to be, and what previews get — an OAuth client from the platform's identity provider, a persistent volume mounted into one of the project's processes, or the keys a worker connects to Inngest with | `developer` † |
 | GET | `/claims/{name}` | One claim | `viewer` |
-| DELETE | `/claims/{name}` | Delete it — what happens to the data is its `deletionPolicy`'s call; an OAuth client is always deregistered, and an Inngest app's preview environments are archived | `developer` |
+| DELETE | `/claims/{name}` | Delete it — what happens to the data is its `deletionPolicy`'s call; an OAuth client is always deregistered, and an Inngest app's preview environments are archived | `developer` † |
 
 ## Endpoint reference
 
