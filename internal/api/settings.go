@@ -57,6 +57,14 @@ type settingsView struct {
 	// too old to have one".
 	BuildCPU    string `json:"buildCPU"`
 	BuildMemory string `json:"buildMemory"`
+	// BuildTimeoutMinutes is `spec.builds.timeoutMinutes`: how long one build
+	// may run before the platform ends it, as the build would actually get it
+	// — a singleton that names no deadline is reported as the platform's own
+	// default rather than as an empty box, the way the ceiling is. No
+	// omitempty, for the reason the two quantities above carry none: 0 is a
+	// setting here — no deadline at all — and a dashboard has to be able to
+	// tell it from an API too old to have the field.
+	BuildTimeoutMinutes int32 `json:"buildTimeoutMinutes"`
 	// No omitempty: 0 is a setting here — keep every release — not an absent
 	// one, and the dashboard has to be able to tell the two apart.
 	ReleaseRetention int32  `json:"releaseRetention"`
@@ -112,25 +120,37 @@ func operatorViews(operators []kitchenv1alpha1.AccessSubject) []operatorView {
 
 func newSettingsView(kitchen *kitchenv1alpha1.Kitchen) settingsView {
 	view := settingsView{
-		BaseDomain:       kitchen.Spec.BaseDomain,
-		APIExternalURL:   externalURL(kitchen),
-		GatewayClassName: kitchen.Spec.Ingress.GatewayClassName,
-		AuthEnabled:      kitchen.Spec.Auth.Enabled,
-		BuildStrategy:    string(kitchen.Spec.Builds.DefaultStrategy),
-		BuildConcurrency: kitchen.Spec.Builds.Concurrency,
-		BuildCPU:         kitchen.Spec.Builds.Resources.CPU,
-		BuildMemory:      kitchen.Spec.Builds.Resources.Memory,
-		ReleaseRetention: kitchen.Spec.Builds.ReleaseRetention,
-		LogRetentionDays: kitchen.Spec.Observability.ClickHouse.RetentionDays,
-		GatewayAddress:   kitchen.Status.GatewayAddress,
-		PublicAddresses:  kitchen.Spec.Ingress.PublicAddresses,
-		Conditions:       conditionViews(kitchen.Status.Conditions),
-		Operators:        operatorViews(kitchen.Spec.Access.Operators),
+		BaseDomain:          kitchen.Spec.BaseDomain,
+		APIExternalURL:      externalURL(kitchen),
+		GatewayClassName:    kitchen.Spec.Ingress.GatewayClassName,
+		AuthEnabled:         kitchen.Spec.Auth.Enabled,
+		BuildStrategy:       string(kitchen.Spec.Builds.DefaultStrategy),
+		BuildConcurrency:    kitchen.Spec.Builds.Concurrency,
+		BuildCPU:            kitchen.Spec.Builds.Resources.CPU,
+		BuildMemory:         kitchen.Spec.Builds.Resources.Memory,
+		BuildTimeoutMinutes: buildTimeoutMinutes(kitchen),
+		ReleaseRetention:    kitchen.Spec.Builds.ReleaseRetention,
+		LogRetentionDays:    kitchen.Spec.Observability.ClickHouse.RetentionDays,
+		GatewayAddress:      kitchen.Status.GatewayAddress,
+		PublicAddresses:     kitchen.Spec.Ingress.PublicAddresses,
+		Conditions:          conditionViews(kitchen.Status.Conditions),
+		Operators:           operatorViews(kitchen.Spec.Access.Operators),
 	}
 	if cfg, err := issuerFor(kitchen); err == nil {
 		view.AuthHost = cfg.issuer
 	}
 	return view
+}
+
+// buildTimeoutMinutes is the deadline a build started now would get: the
+// platform's own setting, or the operator's compiled default where the
+// singleton names none — which is what an installation that predates the field
+// has, and what the reconciler gives it.
+func buildTimeoutMinutes(kitchen *kitchenv1alpha1.Kitchen) int32 {
+	if kitchen.Spec.Builds.TimeoutMinutes == nil {
+		return controller.DefaultBuildTimeoutMinutes
+	}
+	return *kitchen.Spec.Builds.TimeoutMinutes
 }
 
 func (s *Server) getKitchen(req *http.Request) (*kitchenv1alpha1.Kitchen, error) {
@@ -160,10 +180,15 @@ type patchSettingsRequest struct {
 	// empty string is a setting here — the installation that has decided its
 	// builds are unbounded — and a request that does not mention the field
 	// must not be able to clear it.
-	BuildCPU         *string `json:"buildCPU"`
-	BuildMemory      *string `json:"buildMemory"`
-	ReleaseRetention *int32  `json:"releaseRetention"`
-	LogRetentionDays *int32  `json:"logRetentionDays"`
+	BuildCPU    *string `json:"buildCPU"`
+	BuildMemory *string `json:"buildMemory"`
+	// BuildTimeoutMinutes is how long a build may run, in minutes. A pointer
+	// for the same reason: 0 is the installation that has decided its builds
+	// have no deadline, and a request that does not mention the field must
+	// not be able to clear it.
+	BuildTimeoutMinutes *int32 `json:"buildTimeoutMinutes"`
+	ReleaseRetention    *int32 `json:"releaseRetention"`
+	LogRetentionDays    *int32 `json:"logRetentionDays"`
 	// Operators replaces the whole platform access list, and is a pointer so
 	// that a request which does not mention it cannot disturb it — the
 	// difference between an absent list and an empty one is load-bearing on
@@ -225,6 +250,17 @@ func (s *Server) patchSettings(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 		kitchen.Spec.Builds.Resources.Memory = ceiling
+	}
+	if body.BuildTimeoutMinutes != nil {
+		// Zero is a setting here and not a mistake: an installation that
+		// would rather end a runaway build by hand than lose an hour's work
+		// to a number can say so. Negative is not a setting.
+		if *body.BuildTimeoutMinutes < 0 {
+			badRequest(w, "buildTimeoutMinutes cannot be negative (got %d); 0 means no deadline",
+				*body.BuildTimeoutMinutes)
+			return
+		}
+		kitchen.Spec.Builds.TimeoutMinutes = body.BuildTimeoutMinutes
 	}
 	if body.ReleaseRetention != nil {
 		// Zero is the one setting here that means "no bound": every release a
@@ -495,6 +531,7 @@ func changedSettingsFields(body patchSettingsRequest) []string {
 		{"buildConcurrency", body.BuildConcurrency != nil},
 		{"buildCPU", body.BuildCPU != nil},
 		{"buildMemory", body.BuildMemory != nil},
+		{"buildTimeoutMinutes", body.BuildTimeoutMinutes != nil},
 		{"releaseRetention", body.ReleaseRetention != nil},
 		{"logRetentionDays", body.LogRetentionDays != nil},
 		{"operators", body.Operators != nil},

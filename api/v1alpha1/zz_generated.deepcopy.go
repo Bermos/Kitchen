@@ -874,6 +874,11 @@ func (in *BuildStatus) DeepCopy() *BuildStatus {
 func (in *BuildsSpec) DeepCopyInto(out *BuildsSpec) {
 	*out = *in
 	out.Resources = in.Resources
+	if in.TimeoutMinutes != nil {
+		in, out := &in.TimeoutMinutes, &out.TimeoutMinutes
+		*out = new(int32)
+		**out = **in
+	}
 	in.Cache.DeepCopyInto(&out.Cache)
 }
 

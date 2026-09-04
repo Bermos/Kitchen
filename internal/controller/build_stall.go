@@ -56,6 +56,16 @@ const (
 	// deleteStalledJobs.
 	reasonBuildStalled = "BuildStalled"
 
+	// The two numbers below stay compiled in where the build's own deadline
+	// is `spec.builds.timeoutMinutes` on the Kitchen object, and they stay
+	// that way deliberately (#223). They are about the platform being unable
+	// to start a build at all, not about how long a build may take, so
+	// folding them into "the build timeout" would make one number mean two
+	// things — and the second of them is bounded by something an operator
+	// does not set either: an event expires after an hour, and the
+	// FailedCreate that explains the stall has to still exist when the build
+	// is failed for it.
+
 	// buildStallGrace is how long a build Job may exist with no pod before
 	// the Build says so. Creating a pod is immediate on an idle cluster and
 	// takes a moment on a busy one, so this is well past normal rather than

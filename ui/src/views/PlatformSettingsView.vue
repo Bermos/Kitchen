@@ -39,6 +39,9 @@ const concurrency = ref<number>(2);
 // decided its builds are unbounded, not a box nobody has filled in yet.
 const buildCPU = ref<string>("");
 const buildMemory = ref<string>("");
+// How long a build may run before the platform ends it. 0 is a setting — no
+// deadline at all — and not an empty box.
+const buildTimeout = ref<number>(60);
 const releaseRetention = ref<number>(10);
 const retention = ref<number>(30);
 
@@ -48,6 +51,7 @@ watch(settings, (value) => {
   concurrency.value = value.buildConcurrency ?? 2;
   buildCPU.value = value.buildCPU ?? "";
   buildMemory.value = value.buildMemory ?? "";
+  buildTimeout.value = value.buildTimeoutMinutes ?? 60;
   releaseRetention.value = value.releaseRetention ?? 10;
   retention.value = value.logRetentionDays ?? 30;
 });
@@ -60,6 +64,7 @@ const dirty = computed(() => {
     concurrency.value !== (s.buildConcurrency ?? 2) ||
     buildCPU.value !== (s.buildCPU ?? "") ||
     buildMemory.value !== (s.buildMemory ?? "") ||
+    buildTimeout.value !== (s.buildTimeoutMinutes ?? 60) ||
     releaseRetention.value !== (s.releaseRetention ?? 10) ||
     retention.value !== (s.logRetentionDays ?? 30)
   );
@@ -85,6 +90,7 @@ async function save() {
       buildConcurrency: concurrency.value,
       buildCPU: buildCPU.value.trim(),
       buildMemory: buildMemory.value.trim(),
+      buildTimeoutMinutes: buildTimeout.value,
       releaseRetention: releaseRetention.value,
       logRetentionDays: retention.value,
     });
@@ -186,6 +192,16 @@ const strategies = [
                 help="A Kubernetes quantity — 4Gi, 512Mi. A build that reaches it is killed and fails saying so. Empty for no ceiling."
               >
                 <UInput v-model="buildMemory" placeholder="4Gi" class="w-40" />
+              </UFormField>
+              <!-- The ceiling in time, beside the ceiling in capacity. It is
+                   the Job's own deadline, which a Job cannot be told to change
+                   once it exists — so the help says which builds a change
+                   reaches rather than leaving it to be found out. -->
+              <UFormField
+                label="Build timeout (minutes)"
+                help="How long one build may run before the platform ends it and the commit reports a failed build. 0 means no deadline. Applies to builds started after the change."
+              >
+                <UInputNumber v-model="buildTimeout" :min="0" :max="1440" class="w-40" />
               </UFormField>
               <UFormField
                 label="Releases kept per project"

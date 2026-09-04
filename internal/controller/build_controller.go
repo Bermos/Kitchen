@@ -92,11 +92,17 @@ const (
 	// and still keeps finished jobs from piling up in the namespace.
 	buildJobTTLSeconds = 3600
 
-	// buildDeadlineSeconds is the longest a build Job may be active before
-	// the job-controller ends it. It is generous — an hour is far past any
-	// build this platform is meant to run — because the point of it is that
-	// a build has an end at all, not that it is a time budget.
-	buildDeadlineSeconds = 3600
+	// DefaultBuildTimeoutMinutes is the longest a build Job may be active
+	// before the job-controller ends it, when the Kitchen object names no
+	// ceiling of its own. It is generous — an hour is far past any build this
+	// platform is meant to run — because the point of it is that a build has
+	// an end at all, not that it is a time budget.
+	//
+	// It is the CRD's default spelled a second time, for the reason
+	// DefaultBuildConcurrency is: it is what a build gets when the platform
+	// object cannot be read at all, and a build with no deadline is the bug
+	// the deadline exists for.
+	DefaultBuildTimeoutMinutes = 60
 
 	// DefaultBuildConcurrency is how many builds run at once when the Kitchen
 	// object names no limit. It is exported because the API reports the queue
@@ -462,7 +468,7 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 				planDetected = workloadFrameworks[plan.Workload]
 			}
 			if err := r.createJob(ctx, build, project, plan, planDetected, planCacheStatus,
-				builds.Resources, appNS, credsSecret, gitCreds.Secret); err != nil {
+				builds, appNS, credsSecret, gitCreds.Secret); err != nil {
 				return ctrl.Result{}, err
 			}
 			log.Info("build job created",
@@ -696,6 +702,28 @@ func (r *BuildReconciler) platformBuilds(ctx context.Context) kitchenv1alpha1.Bu
 	return kitchen.Spec.Builds
 }
 
+// buildDeadline is what the job controller is told a build may take, from the
+// platform's own setting: nil for the installation that has said its builds
+// have no deadline, and the minutes as seconds for every other one.
+//
+// A deadline nobody has set is the compiled default rather than none, which is
+// the reading that matters for a platform object that could not be read at
+// all: a build with no end is the bug the deadline exists for, and an unset
+// field is exactly what an installation older than the field has.
+//
+// A negative number cannot reach here through admission or the API, and is
+// read as no deadline rather than as a Job the API server would refuse.
+func buildDeadline(minutes *int32) *int64 {
+	timeout := int32(DefaultBuildTimeoutMinutes)
+	if minutes != nil {
+		timeout = *minutes
+	}
+	if timeout <= 0 {
+		return nil
+	}
+	return ptr.To(int64(timeout) * 60)
+}
+
 // platformAttestation is what the builder is asked to attest, resolved against
 // the platform singleton.
 //
@@ -853,7 +881,7 @@ func (r *BuildReconciler) createJob(
 	plan buildPlan,
 	detected framework.Framework,
 	cache *kitchenv1alpha1.BuildCacheStatus,
-	resources kitchenv1alpha1.BuildResourcesSpec,
+	builds kitchenv1alpha1.BuildsSpec,
 	appNS, credsSecret, gitSecret string,
 ) error {
 	template := dockerfilePod(project, build, plan, cache, credsSecret, gitSecret, r.platformAttestation(ctx))
@@ -863,7 +891,7 @@ func (r *BuildReconciler) createJob(
 	// What a build may take, from the platform object rather than from
 	// anything the commit or the project can say. It is applied here rather
 	// than in either pod shape because it is the same decision for both.
-	applyBuildResources(ctx, &template.Spec, resources)
+	applyBuildResources(ctx, &template.Spec, builds.Resources)
 
 	labels := map[string]string{
 		labelProject:      project.Name,
@@ -893,14 +921,15 @@ func (r *BuildReconciler) createJob(
 			// exists on disk while the pod does — then let the cluster
 			// reclaim it. The logs themselves live on in ClickHouse.
 			TTLSecondsAfterFinished: ptr.To(int32(buildJobTTLSeconds)),
-			// A build that is still going an hour later is not going to
-			// finish, and BackoffLimit 0 gives a Job no other end: nothing
-			// retries, so nothing ever reaches a limit. The deadline is the
-			// job-controller's own, which means a build that hangs where the
-			// reconciler cannot see it — a pod the scheduler never places, a
-			// builder waiting on a registry that never answers — still ends
-			// in a Failed condition the Build can read.
-			ActiveDeadlineSeconds: ptr.To(int64(buildDeadlineSeconds)),
+			// A build still going long past what this installation says a
+			// build takes is not going to finish, and BackoffLimit 0 gives a
+			// Job no other end: nothing retries, so nothing ever reaches a
+			// limit. The deadline is the job-controller's own, which means a
+			// build that hangs where the reconciler cannot see it — a pod the
+			// scheduler never places, a builder waiting on a registry that
+			// never answers — still ends in a Failed condition the Build can
+			// read. Nil is the installation that has cleared it.
+			ActiveDeadlineSeconds: buildDeadline(builds.TimeoutMinutes),
 			Template:              template,
 		},
 	}
