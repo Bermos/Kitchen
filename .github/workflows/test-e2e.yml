@@ -172,8 +172,12 @@ jobs:
       - name: Create kind cluster
         run: kind create cluster
 
-      # Layer-cached across runs and shared with the Helm workflow's own build
-      # of the same context, so this is usually a cache restore.
+      # Restored from the cache the Helm workflow's job writes, and it writes
+      # nothing back. Both jobs build this same context on every pull request,
+      # so a second exporter would spend the build re-uploading layers the
+      # first one is uploading at that moment — two writers of one cache scope
+      # contend rather than share, and the reader gets the same layers either
+      # way.
       - name: Build the operator image
         uses: docker/build-push-action@v6
         with:
@@ -181,7 +185,6 @@ jobs:
           load: true
           tags: kitchen:ci
           cache-from: type=gha
-          cache-to: type=gha,mode=max
 
       - name: Start a registry the cluster can push to and pull from
         run: |
