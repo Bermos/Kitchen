@@ -179,6 +179,18 @@ function openRollback(release?: Release) {
   rollbackFrom.value = release?.name ?? "";
   rollbackOpen.value = true;
 }
+// `?rollback=1` opens it on arrival, which is what the overview's attention
+// band links at: the reason for rolling back has already been read up there,
+// and landing on the environment screen to hunt for the button again is the
+// second navigation that band exists to remove. The panel is still the whole
+// of the decision — this only opens it.
+watch(
+  [() => route.query.rollback, data],
+  ([wanted, loaded]) => {
+    if (wanted && loaded && mayDeploy.value) rollbackOpen.value = true;
+  },
+  { immediate: true },
+);
 
 // Deleting is for previews only — a stuck one whose pull request the operator
 // no longer tracks. Production is refused server-side; the button only shows

@@ -203,6 +203,40 @@ The tone (`text-highlighted`, `text-muted`, `text-error`) is free — a danger
 zone's heading is red and still a section heading. The size and the weight are
 not.
 
+## The attention band
+
+The overview's band is not part of the frame — it is one screen's answer to
+one question — but two decisions inside it are written down here, because the
+next screen that hoists a problem out of a list will face both and there is no
+reason for it to answer them differently.
+
+**What it is:** failing and degraded work leaves the table and is rendered
+above it, with the three things a triage needs beside each other — the error
+line at its full length (it is the one string that lets somebody decide whether
+to act, and it was the one the table truncated), the blast radius as its own
+sentence, and the resolving action as a button. The row stays in the table
+below, dimmed and marked `in band`: the table is the inventory, and an
+inventory with holes in it is worse than one that repeats itself.
+
+- **The cap is five, and the rest fold rather than disappear.** Past five a
+  band stops being a band: the thing that was meant to put the worst problem
+  where the eye lands becomes its own scrolling list with the inventory pushed
+  off the screen behind it. The band says how many it is holding back — `2
+  more` — so a sixth problem is never something the screen quietly failed to
+  mention.
+- **A dismissal lasts until the condition changes, and no longer.** Back on
+  the next poll makes the control useless during the ten minutes somebody is
+  already fixing the thing; lasting past the failure would hide the *next* one,
+  which is the failure mode that stops people trusting a band like this at all.
+  So a dismissal is recorded against a signature carrying the error, the
+  release and the build: the same failure stays down, a new one comes back. It
+  is deliberately not persisted — a dismissal says "I have seen it, I am on
+  it", and a reload is somebody asking what is wrong again.
+
+The `conditions` in the expanded row are operator content like any other, and
+sit behind `<OperatorOnly>`; the error line and the failing step's output are
+the developer's and are not gated.
+
 ## Tables
 
 Most of this dashboard is tables, and they are where the drift showed first:
