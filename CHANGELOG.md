@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.26.0](https://github.com/Bermos/Kitchen/compare/v0.25.0...v0.26.0) (2026-09-04)
+
+
+### ⚠ BREAKING CHANGES
+
+* **platform:** `Project.spec.source` is a union. A repository now lives under `source.git` rather than directly on `source`, and `spec.registry` is optional and refused on a project whose source is an image. A Project stored in the old shape reads as having no source at all, so an existing installation's Projects have to be rewritten into `source.git` once.
+
+### Features
+
+* **backup:** a schedule, an off-cluster destination, and a signal when they stop ([#364](https://github.com/Bermos/Kitchen/issues/364)) ([97809af](https://github.com/Bermos/Kitchen/commit/97809afed72271f5df6af799e240fcf01a03cfee))
+* **operator:** fsGroup, so a non-root workload can write the volume it was given ([#355](https://github.com/Bermos/Kitchen/issues/355)) ([3bd3ede](https://github.com/Bermos/Kitchen/commit/3bd3edeb0e6c92d1749a66b2ad81dddc878039b6)), closes [#347](https://github.com/Bermos/Kitchen/issues/347)
+* **platform:** a workload can run an image this platform did not build ([#362](https://github.com/Bermos/Kitchen/issues/362)) ([c63554f](https://github.com/Bermos/Kitchen/commit/c63554ff53a8ea59177af6c537a48baf95aa3d0f))
+
+
+### Bug fixes
+
+* **api:** destroying a claim's data is the admin's, not the developer's ([#359](https://github.com/Bermos/Kitchen/issues/359)) ([da616ce](https://github.com/Bermos/Kitchen/commit/da616cee8a46348c70f4799c6f1181209649926a)), closes [#320](https://github.com/Bermos/Kitchen/issues/320)
+* **auth:** keep a CI key to the token exchange it exists for ([#356](https://github.com/Bermos/Kitchen/issues/356)) ([c66fdd8](https://github.com/Bermos/Kitchen/commit/c66fdd8343facb8be1580cd6358e967cd3abb4d6)), closes [#318](https://github.com/Bermos/Kitchen/issues/318)
+* **auth:** serve the operator's /kitchen prefix on a private listener ([#360](https://github.com/Bermos/Kitchen/issues/360)) ([20527f2](https://github.com/Bermos/Kitchen/commit/20527f276b66d3acb186304205710ee2d715f08d))
+
 ## [0.25.0](https://github.com/Bermos/Kitchen/compare/v0.24.0...v0.25.0) (2026-09-04)
 
 
