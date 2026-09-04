@@ -174,6 +174,13 @@ type projectView struct {
 	// list, on GET /environments/{name}/processes, and the two differ for as
 	// long as it takes something to build.
 	Processes []processView `json:"processes,omitempty"`
+	// Files are the configuration files this project places into its
+	// workloads (#311). A plain file carries its content; a secret one
+	// carries a digest of what the platform holds and never the content —
+	// and carries the digest only where this response was built for one
+	// project, since the list would otherwise read a Secret per project to
+	// answer a field a list does not show.
+	Files []configFileView `json:"files,omitempty"`
 	// DataClass is the sensitivity classification of the data this project
 	// handles. Absent means unclassified — a state the screens show as such,
 	// never a default.
@@ -269,6 +276,10 @@ func newProjectView(project *kitchenv1alpha1.Project, role access.ProjectRole) p
 	for _, process := range project.Spec.Processes {
 		view.Processes = append(view.Processes, newProcessView(process, nil, ""))
 	}
+	// Without what the platform holds, so a secret file reads as declared
+	// and its digest is filled in by the routes that answer one project —
+	// see withFileContent.
+	view.Files = configFileViews(project.Spec.Files, nil)
 	view.DataClass = string(project.Spec.DataClass)
 	view.Criticality = string(project.Spec.Criticality)
 	view.RTO = string(project.Spec.RTO)

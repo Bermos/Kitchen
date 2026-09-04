@@ -509,6 +509,101 @@ spec:
                     x-kubernetes-list-map-keys:
                     - name
                     x-kubernetes-list-type: map
+                  files:
+                    description: |-
+                      Files are the configuration files it declared. Like the variables and
+                      unlike the processes they merge by name onto the project's, because a
+                      project may hold a *secret* file the repository is not allowed to
+                      write: a list that replaced would take the declaration away and leave
+                      the application without the credential file it starts on.
+
+                      They carry content and never secrecy, for the reason the variables
+                      carry literals and never a reference: the file is committed to a
+                      repository anybody who can open a pull request may write, so a
+                      declaration in it is public by construction.
+                    items:
+                      description: |-
+                        ConfigFile is one file of a project's deployable configuration: what is in
+                        it, where it is mounted, and which of the unit's workloads read it.
+
+                        **Secrecy is a flag on this one object rather than a second list**, and the
+                        reasoning is in docs/api/files.md: a file that becomes secret keeps its
+                        path, its workloads and its place in the list, so splitting the declaration
+                        in two would mean moving it house to change one property of its content.
+                        What *is* split is the writing: a plain file's content travels on
+                        `PATCH /projects/{name}` with the rest of the declaration, and a secret
+                        file's content has a route of its own that no response reads back.
+
+                        **A file is never templated from the environment.** It is stored and
+                        mounted exactly as written. Substituting variables into it would make the
+                        platform a template engine, which is the first step towards the thing
+                        #285's compiled catalogue exists to refuse — and the moment a file is
+                        rendered per environment it stops being the thing the Release froze.
+                      properties:
+                        content:
+                          description: |-
+                            Content is the file, verbatim. It is empty for a secret file, whose
+                            content the platform holds where nothing reads it back, and may be
+                            empty for a plain one — a file that has to exist and say nothing is a
+                            thing some software wants.
+                          maxLength: 131072
+                          type: string
+                        name:
+                          description: |-
+                            Name identifies the file within the project — it is the key the
+                            platform stores the content under and the name every other surface
+                            refers to it by, so it is a key rather than a path: `configuration`,
+                            `app-ini`. The path is separate because two workloads of one unit may
+                            want the same file in different places one day, and because a path is
+                            not a usable key.
+                          maxLength: 253
+                          pattern: ^[-._a-zA-Z0-9]+$
+                          type: string
+                        path:
+                          description: |-
+                            Path is where the file appears inside the container: absolute, and
+                            naming the file itself rather than the directory it is in. Only that
+                            one path is replaced — the rest of the directory is the image's, which
+                            is what a config file dropped beside an application's own files needs.
+                          maxLength: 1024
+                          pattern: ^/([^/]+/)*[^/]+$
+                          type: string
+                        secret:
+                          description: |-
+                            Secret says the content is a credential: it is held in a Secret rather
+                            than in this object, written through its own route, and never answered
+                            by any response on the API. The declaration — the path, the workloads,
+                            the fact of it — stays here and is read by anyone who may read the
+                            project, because that is not the secret part.
+                          type: boolean
+                        workloads:
+                          description: |-
+                            Workloads are the workloads of this unit that mount the file, by name
+                            — `web` for the web process, and a process's own name for anything in
+                            `spec.processes`. An empty list is every workload of the unit, which
+                            is what a vendored application's single config file wants and is
+                            therefore the default.
+
+                            It is a list of names rather than a per-workload declaration because
+                            one file reaching three workloads is one fact: a unit is one
+                            application, and its configuration file is the application's.
+                          items:
+                            type: string
+                          type: array
+                          x-kubernetes-list-type: atomic
+                      required:
+                      - name
+                      - path
+                      type: object
+                      x-kubernetes-validations:
+                      - message: 'a secret file''s content is not written here: declare
+                          it with `secret: true` and send the content to PUT /projects/{name}/files/{file},
+                          which no response reads back'
+                        rule: '!(has(self.secret) && self.secret && has(self.content))'
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - name
+                    x-kubernetes-list-type: map
                   path:
                     description: |-
                       Path the file was read from, relative to the repository root — the

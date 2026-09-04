@@ -217,8 +217,53 @@ func Processes(
 	return processes
 }
 
+// Files merges the file's configuration files onto the project's, by name.
+//
+// It merges rather than replaces, which is what the variables do and not what
+// the processes do — and for the variables' reason rather than for symmetry.
+// A project may hold a **secret** file, whose content the platform keeps
+// where nothing reads it back and which a committed file is not allowed to
+// declare. A list that replaced would take that declaration away on the next
+// build, and the failure would be an application starting without the
+// credential file it is configured by.
+//
+// A name the file declares that the project holds as a secret is refused
+// outright rather than resolved either way, exactly as a variable bound to a
+// credential is: letting the file win would replace a credential with a
+// public value out of a pull request, and letting the project win would leave
+// content in the repository that reads as though it applies and does not.
+func Files(
+	base []kitchenv1alpha1.ConfigFile,
+	config *kitchenv1alpha1.RepoConfig,
+) ([]kitchenv1alpha1.ConfigFile, error) {
+	if config == nil || len(config.Files) == 0 {
+		return base, nil
+	}
+
+	merged := make([]kitchenv1alpha1.ConfigFile, len(base))
+	for i, file := range base {
+		merged[i] = *file.DeepCopy()
+	}
+
+	for _, declared := range config.Files {
+		at := slices.IndexFunc(merged, func(f kitchenv1alpha1.ConfigFile) bool { return f.Name == declared.Name })
+		if at < 0 {
+			merged = append(merged, *declared.DeepCopy())
+			continue
+		}
+		if merged[at].Secret {
+			return base, fmt.Errorf(
+				"%w: it declares the file %s, which this project holds as a secret — content in a committed file "+
+					"cannot stand in for a credential. Rename the file in %s, or take the secret file off the project",
+				ErrInvalid, declared.Name, FileName)
+		}
+		merged[at] = *declared.DeepCopy()
+	}
+	return merged, nil
+}
+
 // Snapshot is the whole of what a Release freezes, with the file applied: the
-// three lists an Environment reads, resolved once at the end of the build
+// four lists an Environment reads, resolved once at the end of the build
 // that produced them.
 func Snapshot(
 	base kitchenv1alpha1.ConfigSnapshot,
@@ -235,9 +280,14 @@ func Snapshot(
 	if err != nil {
 		return base, err
 	}
+	files, err := Files(base.Files, config)
+	if err != nil {
+		return base, err
+	}
 	return kitchenv1alpha1.ConfigSnapshot{
 		Env:       env,
 		Runtime:   runtime,
 		Processes: Processes(base.Processes, config),
+		Files:     files,
 	}, nil
 }

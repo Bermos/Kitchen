@@ -89,6 +89,36 @@ type projectSecret struct {
 	Reference keyRef `json:"reference"`
 }
 
+// configFile is one of a project's configuration files (#311) — what
+// software the platform did not build is configured by.
+//
+// Content is a pointer for the reason it is one on the API: a plain file's
+// content is answered in full, and a secret file's is absent rather than
+// empty, so "there is nothing to show you" and "the file is empty" are
+// different answers. ContentHash and Size are what the platform will say
+// about a secret file's content, and are empty until one has been written.
+type configFile struct {
+	Name        string   `json:"name"`
+	Path        string   `json:"path"`
+	Workloads   []string `json:"workloads,omitempty"`
+	Secret      bool     `json:"secret,omitempty"`
+	Content     *string  `json:"content,omitempty"`
+	ContentHash string   `json:"contentHash,omitempty"`
+	Size        int      `json:"size,omitempty"`
+}
+
+// fileWrite is one file on its way in. It carries no content for the files it
+// is not changing, which the API reads as "keep what you hold" — the same
+// bargain envVarWrite makes, and what lets the CLI edit a list holding a
+// secret file it has never been shown.
+type fileWrite struct {
+	Name      string   `json:"name"`
+	Path      string   `json:"path"`
+	Content   *string  `json:"content,omitempty"`
+	Secret    bool     `json:"secret,omitempty"`
+	Workloads []string `json:"workloads,omitempty"`
+}
+
 // project is `GET /projects/{name}`.
 type project struct {
 	Name                  string      `json:"name"`
@@ -115,6 +145,10 @@ type project struct {
 	// release's list, on GET /environments/{name}/processes — this is the
 	// declaration `processes set` reads to rewrite one entry of.
 	Processes []process `json:"processes,omitempty"`
+	// Files is the configuration files the project places into its workloads.
+	// A plain file carries its content; a secret one carries a digest of what
+	// the platform holds and never the content.
+	Files []configFile `json:"files,omitempty"`
 }
 
 // connection is one of the platform's Connections as somebody choosing one
@@ -1245,6 +1279,25 @@ func (c *client) setEnv(ctx context.Context, name string, env []envVarWrite) (*p
 	body := map[string]any{"env": env}
 	return answer, c.do(ctx, "changing "+name+"'s environment variables",
 		http.MethodPatch, "/projects/"+name+"/env", nil, body, answer)
+}
+
+// setFiles replaces a project's whole configuration file list. The API keeps
+// the content of any file this body leaves a `content` off, which is what lets
+// the CLI send the list back without ever having read a secret file's.
+func (c *client) setFiles(ctx context.Context, name string, files []fileWrite) (*project, error) {
+	answer := &project{}
+	body := map[string]any{"files": files}
+	return answer, c.do(ctx, "changing "+name+"'s configuration files",
+		http.MethodPatch, "/projects/"+name, nil, body, answer)
+}
+
+// setProjectFile writes the content of a secret configuration file. The
+// content travels one way: the answer is the declaration and a digest.
+func (c *client) setProjectFile(ctx context.Context, project, name, content string) (*configFile, error) {
+	answer := &configFile{}
+	return answer, c.do(ctx, "setting the content of the file "+name+" on "+project, http.MethodPut,
+		"/projects/"+project+"/files/"+url.PathEscape(name), nil,
+		map[string]string{"content": content}, answer)
 }
 
 // projectSecrets lists a project's own secrets by name. There is no read that

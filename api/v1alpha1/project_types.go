@@ -550,6 +550,27 @@ type ProjectSpec struct {
 	// +listType=map
 	// +listMapKey=name
 	Processes []ProcessSpec `json:"processes,omitempty"`
+
+	// Files are the configuration files this project's workloads are handed
+	// — software the platform did not build is configured by one, and the
+	// platform had only variables (#311). Each names its content, the path
+	// it is mounted at, and the workloads that read it.
+	//
+	// They are here beside the variables rather than in a volume because
+	// that is what they are: configuration, small, changing with a deploy,
+	// and snapshotted into every Release so that a rollback restores the
+	// file that release ran with.
+	//
+	// A file marked `secret` carries no content here. The platform holds it
+	// where nothing reads it back, and this list carries the declaration —
+	// see [ConfigFile].
+	//
+	// Entries merge per name rather than by position (listType=map), so two
+	// people adding two files do not drop each other's.
+	// +optional
+	// +listType=map
+	// +listMapKey=name
+	Files []ConfigFile `json:"files,omitempty"`
 }
 
 // RegistryConnection is the Connection this project pushes its builds to,

@@ -34,6 +34,10 @@ import (
 // once so the linter is not counting occurrences of a word.
 const production = "production"
 
+// loggerInfo is the one configuration file body these cases write, spelled
+// once for the same reason.
+const loggerInfo = "logger: info\n"
+
 // repo is a repository with a fixed set of files, which is everything Read
 // needs to be exercised: what it does with the bytes is Parse's, and what it
 // does with the absence of them is the case worth having a double for.
@@ -590,11 +594,15 @@ func TestSnapshotIsWhatARollbackReplays(t *testing.T) {
 		Env:       []kitchenv1alpha1.EnvVar{{Name: "NODE_ENV", Value: "development"}},
 		Runtime:   kitchenv1alpha1.RuntimeSpec{Port: 8080},
 		Processes: []kitchenv1alpha1.ProcessSpec{{Name: "old", Type: kitchenv1alpha1.ProcessWorker}},
+		Files: []kitchenv1alpha1.ConfigFile{
+			{Name: "configuration", Path: "/config/app.yaml", Content: "logger: warn\n"},
+		},
 	}
 	config, err := Parse([]byte(`{
 	  "runtime": {"port": 3000},
 	  "env": {"NODE_ENV": "production"},
-	  "processes": [{"name": "new", "type": "worker"}]
+	  "processes": [{"name": "new", "type": "worker"}],
+	  "files": [{"name": "configuration", "path": "/config/app.yaml", "content": "logger: info\n"}]
 	}`))
 	if err != nil {
 		t.Fatalf("parse: %v", err)
@@ -607,13 +615,147 @@ func TestSnapshotIsWhatARollbackReplays(t *testing.T) {
 	if snapshot.Runtime.Port != 3000 || snapshot.Env[0].Value != production || snapshot.Processes[0].Name != "new" {
 		t.Fatalf("snapshot = %+v", snapshot)
 	}
+	// The file is frozen with the rest of it, which is what makes a rollback
+	// restore the configuration file that release ran with.
+	if len(snapshot.Files) != 1 || snapshot.Files[0].Content != loggerInfo {
+		t.Fatalf("snapshot files = %+v", snapshot.Files)
+	}
 
 	// A build that read no file freezes the project as it stands.
 	unchanged, err := Snapshot(base, nil)
 	if err != nil {
 		t.Fatalf("snapshot: %v", err)
 	}
-	if unchanged.Runtime.Port != 8080 {
+	if unchanged.Runtime.Port != 8080 || unchanged.Files[0].Content != "logger: warn\n" {
 		t.Fatalf("snapshot = %+v, want the project's own", unchanged)
+	}
+}
+
+// A configuration file declared in the repository (#311): what software the
+// platform did not build is configured by, committed beside the code that
+// runs it.
+func TestFilesTravelWithTheCommit(t *testing.T) {
+	config, err := Parse([]byte(`{
+	  "processes": [{"name": "worker", "type": "worker", "command": ["node", "worker.js"]}],
+	  "files": [
+	    {"name": "configuration", "path": "/config/configuration.yaml", "content": "logger: info\n"},
+	    {"name": "worker-conf", "path": "/etc/worker.toml", "content": "queue = \"jobs\"\n",
+	     "workloads": ["worker"]}
+	  ]
+	}`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(config.Files) != 2 {
+		t.Fatalf("files = %+v, want both", config.Files)
+	}
+	if config.Files[0].Content != loggerInfo || config.Files[0].Path != "/config/configuration.yaml" {
+		t.Fatalf("the file did not survive the parse: %+v", config.Files[0])
+	}
+	if !config.Files[0].ReachesWorkload("worker") || config.Files[1].ReachesWorkload("web") {
+		t.Fatalf("a file that named no workload reaches all of them, and one that named some reaches those")
+	}
+	if !slices.Contains(config.Declares(), "files.configuration") || !config.DeclaresFile("worker-conf") {
+		t.Fatalf("the file does not say it declared its files: %v", config.Declares())
+	}
+}
+
+func TestFilesRefusals(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		file     string
+		mentions string
+	}{
+		{
+			// The whole reason a repository may not declare one: this file
+			// is committed, so everything in it is public, and whether the
+			// platform holds a credential is not a commit's to say.
+			name:     "a secret file",
+			file:     `{"files": [{"name": "app-ini", "path": "/data/app.ini", "secret": true}]}`,
+			mentions: "sets secret",
+		},
+		{
+			name:     "a file with no content",
+			file:     `{"files": [{"name": "conf", "path": "/config/app.yaml"}]}`,
+			mentions: "has no content",
+		},
+		{
+			name:     "a path that is not absolute",
+			file:     `{"files": [{"name": "conf", "path": "config/app.yaml", "content": "a"}]}`,
+			mentions: "the path is absolute",
+		},
+		{
+			name: "a workload the commit does not declare",
+			file: `{"files": [{"name": "conf", "path": "/config/app.yaml", "content": "a",
+			        "workloads": ["ghost"]}]}`,
+			mentions: "which this project does not declare",
+		},
+		{
+			name: "two files at one path",
+			file: `{"files": [{"name": "conf", "path": "/config/app.yaml", "content": "a"},
+			        {"name": "other", "path": "/config/app.yaml", "content": "b"}]}`,
+			mentions: "one path is one file",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Parse([]byte(tc.file))
+			if !errors.Is(err, ErrInvalid) {
+				t.Fatalf("err = %v, want the file refused", err)
+			}
+			if !strings.Contains(err.Error(), tc.mentions) {
+				t.Errorf("message %q does not say what is wrong (%s)", err, tc.mentions)
+			}
+		})
+	}
+}
+
+// Files merge by name, unlike the processes and like the variables — and for
+// the variables' reason: a project may hold a secret file the repository is
+// not allowed to declare, and a list that replaced would take it away.
+func TestFilesMergeByName(t *testing.T) {
+	base := []kitchenv1alpha1.ConfigFile{
+		{Name: "configuration", Path: "/config/configuration.yaml", Content: "logger: warn\n"},
+		{Name: "app-ini", Path: "/data/app.ini", Secret: true},
+	}
+	config, err := Parse([]byte(
+		`{"files": [{"name": "configuration", "path": "/config/configuration.yaml", "content": "logger: info\n"}]}`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	merged, err := Files(base, config)
+	if err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+	if len(merged) != 2 {
+		t.Fatalf("files = %+v, want the secret file kept", merged)
+	}
+	if merged[0].Content != loggerInfo {
+		t.Fatalf("the commit's content did not win: %+v", merged[0])
+	}
+	if !merged[1].Secret || merged[1].Name != "app-ini" {
+		t.Fatalf("the project's secret file was dropped by a file that never mentioned it: %+v", merged)
+	}
+
+	// A file that says nothing about files leaves the project's.
+	kept, err := Files(base, &kitchenv1alpha1.RepoConfig{})
+	if err != nil || len(kept) != 2 {
+		t.Fatalf("files = %+v, %v — want the project's kept", kept, err)
+	}
+}
+
+func TestFilesRefuseToShadowASecretFile(t *testing.T) {
+	base := []kitchenv1alpha1.ConfigFile{{Name: "app-ini", Path: "/data/app.ini", Secret: true}}
+	config, err := Parse([]byte(
+		`{"files": [{"name": "app-ini", "path": "/data/app.ini", "content": "[server]\nSECRET_KEY = x\n"}]}`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	_, err = Files(base, config)
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("err = %v, want the shadowing refused", err)
+	}
+	if !strings.Contains(err.Error(), "holds as a secret") {
+		t.Errorf("message %q does not say why", err)
 	}
 }

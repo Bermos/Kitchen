@@ -26,6 +26,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -65,6 +66,12 @@ type platform struct {
 	// one appends to. Values are never in it: the fake answers the shape the
 	// API answers, which carries none.
 	secrets []projectSecret
+
+	// files is the content the fake platform holds for a project's *secret*
+	// configuration files, by name. It is deliberately not on the project:
+	// the API answers a digest and a size for one and never the content, so
+	// a test that found content in an answer found a bug in the CLI.
+	files map[string]string
 
 	// configDiff is what /releases/{name}/config-diff answers with: the
 	// comparison `kitchen rollback` prints before it asks. Nil answers 404,
@@ -264,10 +271,104 @@ func (p *platform) answerSecrets(w http.ResponseWriter, req *http.Request, path 
 		p.setSecret(w, path, body)
 	case strings.Contains(path, "/secrets/") && req.Method == http.MethodDelete:
 		p.deleteSecret(w, path)
+	case strings.Contains(path, "/files/") && req.Method == http.MethodPut:
+		p.setFileContent(w, path, body)
 	default:
 		return false
 	}
 	return true
+}
+
+// patchFiles is the settings PATCH as far as the configuration files go: the
+// list replaces the project's, and a file whose `content` the body left out
+// keeps what the platform holds. That last half is the whole bargain the CLI
+// is written against, so the fake has to make it too.
+func (p *platform) patchFiles(body []byte) {
+	asked := struct {
+		Files *[]fileWrite `json:"files"`
+	}{}
+	_ = json.Unmarshal(body, &asked)
+	if asked.Files == nil {
+		return
+	}
+
+	held := map[string]string{}
+	for _, file := range p.project.Files {
+		if file.Content != nil {
+			held[file.Name] = *file.Content
+		}
+	}
+	declared := make([]configFile, 0, len(*asked.Files))
+	for _, file := range *asked.Files {
+		entry := configFile{Name: file.Name, Path: file.Path, Secret: file.Secret, Workloads: file.Workloads}
+		switch {
+		case file.Secret:
+			if content, written := p.files[file.Name]; written {
+				entry.ContentHash = hashOf(content)
+				entry.Size = len(content)
+			}
+		case file.Content != nil:
+			content := *file.Content
+			entry.Content = &content
+		default:
+			content := held[file.Name]
+			entry.Content = &content
+		}
+		declared = append(declared, entry)
+	}
+	// A declaration that has gone takes the content the platform held with
+	// it, the way the API prunes it after the write lands.
+	for name := range p.files {
+		if !slices.ContainsFunc(declared, func(f configFile) bool { return f.Name == name && f.Secret }) {
+			delete(p.files, name)
+		}
+	}
+	p.project.Files = declared
+}
+
+// setFileContent is the write half of a secret configuration file. It stores
+// the content and answers the declaration and a digest — never the content.
+func (p *platform) setFileContent(w http.ResponseWriter, path string, body []byte) {
+	name := path[strings.LastIndex(path, "/files/")+len("/files/"):]
+	asked := struct {
+		Content string `json:"content"`
+	}{}
+	_ = json.Unmarshal(body, &asked)
+
+	var declared *configFile
+	if p.project != nil {
+		for i := range p.project.Files {
+			if p.project.Files[i].Name == name {
+				declared = &p.project.Files[i]
+			}
+		}
+	}
+	if declared == nil {
+		writeAnswer(w, http.StatusNotFound, errorBody{Error: "no such file " + name})
+		return
+	}
+	if p.files == nil {
+		p.files = map[string]string{}
+	}
+	_, existed := p.files[name]
+	p.files[name] = asked.Content
+	declared.ContentHash = hashOf(asked.Content)
+	declared.Size = len(asked.Content)
+
+	status := http.StatusCreated
+	if existed {
+		status = http.StatusOK
+	}
+	writeAnswer(w, status, configFile{
+		Name: declared.Name, Path: declared.Path, Workloads: declared.Workloads,
+		Secret: true, ContentHash: declared.ContentHash, Size: declared.Size,
+	})
+}
+
+// hashOf is the short digest the API answers about content it holds.
+func hashOf(content string) string {
+	sum := sha256.Sum256([]byte(content))
+	return hex.EncodeToString(sum[:])[:16]
 }
 
 // answerBackup streams a real archive, built by the same package the operator
@@ -477,6 +578,7 @@ func (p *platform) patchProject(body []byte) {
 		}
 		p.project.Processes = declared
 	}
+	p.patchFiles(body)
 }
 
 func (p *platform) answerEnvironment(w http.ResponseWriter, name string) {

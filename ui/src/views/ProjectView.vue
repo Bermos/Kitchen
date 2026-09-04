@@ -15,6 +15,7 @@ import CommitBody from "../components/CommitBody.vue";
 import CommitBodyToggle from "../components/CommitBodyToggle.vue";
 import ConditionsTable from "../components/ConditionsTable.vue";
 import EnvVarsPanel from "../components/EnvVarsPanel.vue";
+import ProjectFilesPanel from "../components/ProjectFilesPanel.vue";
 import ProjectSecretsPanel from "../components/ProjectSecretsPanel.vue";
 import ProjectWorkloadsPanel from "../components/ProjectWorkloadsPanel.vue";
 import EnvironmentCard from "../components/EnvironmentCard.vue";
@@ -149,6 +150,11 @@ const repoDeclares = computed(() => repoConfig.value?.declares ?? []);
 function declaredInRepo(field: string): boolean {
   return repoDeclares.value.includes(field);
 }
+// Configuration files are named one by one — "files.configuration" — because
+// they merge onto the project's by name rather than replacing the list.
+const repoFiles = computed(() =>
+  repoDeclares.value.filter((field) => field.startsWith("files.")).map((field) => field.slice("files.".length)),
+);
 
 const currentRelease = computed(() => production.value?.release);
 function buildOf(release: Release) {
@@ -1706,6 +1712,20 @@ function host(url?: string): string {
           :processes="project.processes"
           :built-here="builtHere"
           :declared-in="declaredInRepo('processes') ? repoConfig?.path : undefined"
+          @saved="refresh"
+        />
+
+        <!-- The configuration files this project places. Its own section with
+             its own save, because it is its own concern and its own write: a
+             file is not a setting on the form above, and a secret file's
+             content goes to a route of its own. -->
+        <ProjectFilesPanel
+          :project="project.name"
+          :role="project.role"
+          :files="project.files"
+          :processes="project.processes"
+          :declared-in="repoConfig?.path"
+          :declared-names="repoFiles"
           @saved="refresh"
         />
 

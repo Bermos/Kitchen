@@ -439,6 +439,10 @@ var publishedShapes = map[string]struct {
 		projectSecret{}},
 	"secretList": {"A project's own secrets, by name. Values are never answered",
 		list[projectSecret]{}},
+	"fileList": {"The configuration files a project places into its workloads: name, path, the " +
+		"workloads that read each and what the platform holds. A plain file carries its content; a " +
+		"secret one carries a digest and a size, and never the content",
+		list[configFile]{}},
 	"logLine":     {"One log line, from a build or from something running", logLine{}},
 	"deployEvent": {"One event of a followed deploy: build, log, release, environment or result", deployEvent{}},
 	"linked":      {"What a directory was linked to, and where the fact was written", linked{}},

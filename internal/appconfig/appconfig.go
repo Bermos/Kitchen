@@ -722,3 +722,182 @@ func applyProcessImage(process *kitchenv1alpha1.ProcessSpec, request Process) er
 	process.Image = image
 	return nil
 }
+
+// File is one configuration file as a client sends it (#311).
+//
+// It is one shape for both surfaces that take one — the settings PATCH and a
+// repository's kitchen.json — for the reason [Image] is: they are one
+// declaration, and two spellings of it is how the two would come to be
+// validated differently.
+//
+// Content is a pointer, and that is the whole of what makes an editor
+// possible against an API that never reads a credential back. A client that
+// read the list, changed one entry and sent the rest back has **nothing to
+// send** for a secret file's content: an absent `content` therefore keeps
+// whatever is stored, and only an explicit one replaces it. A plain file
+// reads its content back, so it round-trips either way.
+type File struct {
+	Name string `json:"name"`
+	// Path is where the file appears in the container: absolute, naming the
+	// file rather than the directory holding it.
+	Path string `json:"path"`
+	// Content is the file, verbatim. Absent keeps the stored content;
+	// present replaces it. It is refused on a secret file, whose content has
+	// a route of its own that no response reads back.
+	Content *string `json:"content,omitempty"`
+	// Secret says the content is a credential. The declaration stays
+	// readable; the content does not.
+	Secret bool `json:"secret,omitempty"`
+	// Workloads that mount the file, by name — `web` and the project's own
+	// process names. Empty is every workload of the unit.
+	Workloads []string `json:"workloads,omitempty"`
+}
+
+// configFilePath is a mount path: absolute, no trailing slash, and naming a
+// file rather than a directory. It mirrors the CRD's own pattern so the
+// refusal is a sentence rather than an admission error quoting a regexp.
+var configFilePath = regexp.MustCompile(`^/([^/]+/)*[^/]+$`)
+
+// Files validates a whole file list and turns it into the spec, replacing
+// rather than merging — the list is what the project declares, and a merge
+// would leave no way to delete an entry.
+//
+// `stored` is what the project already holds, consulted for exactly one
+// thing: the content of a file whose request left it out. `workloads` is what
+// the unit runs besides its web process, so that a file naming a workload
+// nobody declared is refused here rather than mounted into nothing.
+func Files(requests []File, stored []kitchenv1alpha1.ConfigFile, workloads []string) ([]kitchenv1alpha1.ConfigFile, error) {
+	if len(requests) == 0 {
+		return nil, nil
+	}
+	held := make(map[string]kitchenv1alpha1.ConfigFile, len(stored))
+	for _, file := range stored {
+		held[file.Name] = file
+	}
+	known := map[string]bool{kitchenv1alpha1.WebProcessName: true}
+	for _, workload := range workloads {
+		known[workload] = true
+	}
+
+	files := make([]kitchenv1alpha1.ConfigFile, 0, len(requests))
+	seen, paths := map[string]bool{}, map[string]string{}
+	for _, request := range requests {
+		file, err := FileSpec(request, held, known)
+		if err != nil {
+			return nil, err
+		}
+		if seen[file.Name] {
+			return nil, fmt.Errorf("file %q is listed twice", file.Name)
+		}
+		seen[file.Name] = true
+		// Two files at one path is one file: the second mount wins and the
+		// first silently never appears, which is a config file that is
+		// declared, saved, shown on the screen and not there.
+		for _, workload := range mountedOn(file, workloads) {
+			at := workload + ":" + file.Path
+			if other, taken := paths[at]; taken {
+				return nil, fmt.Errorf(
+					"files %q and %q are both mounted at %s on the %s workload: one path is one file",
+					other, file.Name, file.Path, workload)
+			}
+			paths[at] = file.Name
+		}
+		files = append(files, file)
+	}
+	return files, nil
+}
+
+// mountedOn lists the workloads one file reaches, which for a file that named
+// none is every workload the unit has.
+func mountedOn(file kitchenv1alpha1.ConfigFile, workloads []string) []string {
+	if len(file.Workloads) > 0 {
+		return file.Workloads
+	}
+	return append([]string{kitchenv1alpha1.WebProcessName}, workloads...)
+}
+
+// FileSpec validates one configuration file. `held` is what the project
+// already holds by name, and `known` the workload names that exist.
+func FileSpec(
+	request File,
+	held map[string]kitchenv1alpha1.ConfigFile,
+	known map[string]bool,
+) (kitchenv1alpha1.ConfigFile, error) {
+	file := kitchenv1alpha1.ConfigFile{
+		Name:      strings.TrimSpace(request.Name),
+		Path:      strings.TrimSpace(request.Path),
+		Secret:    request.Secret,
+		Workloads: request.Workloads,
+	}
+	if err := ValidateFileName(file.Name); err != nil {
+		return kitchenv1alpha1.ConfigFile{}, err
+	}
+	if err := ValidateFilePath(file.Name, file.Path); err != nil {
+		return kitchenv1alpha1.ConfigFile{}, err
+	}
+	for _, workload := range file.Workloads {
+		if !known[strings.TrimSpace(workload)] {
+			return kitchenv1alpha1.ConfigFile{}, fmt.Errorf(
+				"file %q is for the workload %q, which this project does not declare: "+
+					"name \"web\" for the web process, or one of the project's own workloads, "+
+					"or leave the list out and every workload gets it",
+				file.Name, workload)
+		}
+	}
+
+	switch {
+	case file.Secret && request.Content != nil:
+		return kitchenv1alpha1.ConfigFile{}, fmt.Errorf(
+			"file %q is secret, so its content is not written here: "+
+				"send it to PUT /projects/{name}/files/%s, which no response reads back", file.Name, file.Name)
+	case file.Secret:
+		// Nothing to carry: the content is in the platform's own Secret, and
+		// this list holds the declaration.
+	case request.Content != nil:
+		file.Content = *request.Content
+	default:
+		// Absent content keeps what is stored. That is what lets a client
+		// read the list, change one file's path and send the rest back
+		// without having to resend every file's body.
+		file.Content = held[file.Name].Content
+	}
+	if len(file.Content) > kitchenv1alpha1.ConfigFileContentLimit {
+		return kitchenv1alpha1.ConfigFile{}, fmt.Errorf(
+			"file %q is %d bytes, and a configuration file may be at most %d — "+
+				"it is configuration rather than data, and data belongs in a volume",
+			file.Name, len(file.Content), kitchenv1alpha1.ConfigFileContentLimit)
+	}
+	return file, nil
+}
+
+// ValidateFileName checks a configuration file's name, which is the key the
+// platform stores its content under.
+func ValidateFileName(name string) error {
+	if name == "" {
+		return errors.New("every file needs a name")
+	}
+	if errs := validation.IsConfigMapKey(name); len(errs) > 0 {
+		return fmt.Errorf(
+			"%q cannot be the name of a file: use letters, digits, '-', '_' and '.', at most 253 characters — "+
+				"it is a name for the file, not its path", name)
+	}
+	return nil
+}
+
+// ValidateFilePath checks where a file is mounted: absolute, naming a file
+// rather than a directory, and not reaching for one with `..`.
+func ValidateFilePath(name, path string) error {
+	if path == "" {
+		return fmt.Errorf("file %q names no path: say where in the container it is mounted, like /config/app.yaml", name)
+	}
+	if !configFilePath.MatchString(path) {
+		return fmt.Errorf(
+			"file %q is mounted at %q: the path is absolute and names the file itself, like /config/app.yaml", name, path)
+	}
+	for _, segment := range strings.Split(path, "/") {
+		if segment == ".." || segment == "." {
+			return fmt.Errorf("file %q is mounted at %q: a mount path has no %q in it", name, path, segment)
+		}
+	}
+	return nil
+}

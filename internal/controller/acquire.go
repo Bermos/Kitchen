@@ -237,6 +237,7 @@ func (r *BuildReconciler) acquire(
 		Env:       project.Spec.Env,
 		Runtime:   project.Spec.Runtime,
 		Processes: project.Spec.Processes,
+		Files:     project.Spec.Files,
 	}, build.Status.Config)
 	if err != nil {
 		return r.fail(ctx, build, project, reasonConfigInvalid, err.Error())

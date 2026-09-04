@@ -64,6 +64,22 @@ const (
 	// projectSecretsSourcePrefix names the platform-namespace copy the API
 	// writes and the reconciler mirrors from.
 	projectSecretsSourcePrefix = "kitchen-project-secrets-"
+
+	// ProjectFilesName is the Secret an application's namespace holds its
+	// project's *secret configuration files* in, one key per file (#311). It
+	// is compiled in for the reason ProjectSecretsName is: a pod's volume
+	// references it by name, and a name somebody could change is a reference
+	// that stops resolving.
+	//
+	// It is a second object rather than another key in the one above because
+	// the two are different vocabularies sharing one namespace of keys: a
+	// project with a secret named `config` and a secret file named `config`
+	// is an ordinary project, and one object would make it a collision.
+	ProjectFilesName = "kitchen-project-files"
+
+	// projectFilesSourcePrefix names the platform-namespace copy the API
+	// writes and the reconciler mirrors from.
+	projectFilesSourcePrefix = "kitchen-project-files-"
 )
 
 // ProjectSecretsSourceName is the Secret in the platform namespace holding one
@@ -71,6 +87,13 @@ const (
 // is spelled once and exported for the API to use.
 func ProjectSecretsSourceName(projectName string) string {
 	return projectSecretsSourcePrefix + projectName
+}
+
+// ProjectFilesSourceName is the Secret in the platform namespace holding one
+// project's secret configuration files. It reads the way the secrets' does,
+// for the same reason.
+func ProjectFilesSourceName(projectName string) string {
+	return projectFilesSourcePrefix + projectName
 }
 
 // mirrorProjectSecrets keeps the application namespace's copy of the
@@ -85,11 +108,33 @@ func ProjectSecretsSourceName(projectName string) string {
 // deleting the last secret remove the object instead of leaving an empty one
 // behind for an environment variable to reference.
 func (r *ProjectReconciler) mirrorProjectSecrets(ctx context.Context, project *kitchenv1alpha1.Project) error {
+	// Two objects, one mechanism: the project's own credentials, and the
+	// content of its secret configuration files. Both are written by the API
+	// in the platform namespace and neither can be written there by it, so
+	// both are mirrored here.
+	for source, copied := range map[string]string{
+		ProjectSecretsSourceName(project.Name): ProjectSecretsName,
+		ProjectFilesSourceName(project.Name):   ProjectFilesName,
+	} {
+		if err := r.mirrorProjectSecret(ctx, project, source, copied); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// mirrorProjectSecret keeps one application-namespace copy in step with the
+// platform-namespace source the API writes.
+func (r *ProjectReconciler) mirrorProjectSecret(
+	ctx context.Context,
+	project *kitchenv1alpha1.Project,
+	sourceName, copiedName string,
+) error {
 	appNS := appNamespace(project.Name)
-	copied := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: ProjectSecretsName, Namespace: appNS}}
+	copied := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: copiedName, Namespace: appNS}}
 
 	source := &corev1.Secret{}
-	key := types.NamespacedName{Namespace: project.Namespace, Name: ProjectSecretsSourceName(project.Name)}
+	key := types.NamespacedName{Namespace: project.Namespace, Name: sourceName}
 	switch err := r.Get(ctx, key, source); {
 	case apierrors.IsNotFound(err):
 		if err := r.Delete(ctx, copied); err != nil && !apierrors.IsNotFound(err) {
@@ -121,12 +166,14 @@ func (r *ProjectReconciler) mirrorProjectSecrets(ctx context.Context, project *k
 // deterministic, which is the same reason every other dependent is deleted by
 // name in the finalizer rather than left to ownership.
 func (r *ProjectReconciler) deleteProjectSecrets(ctx context.Context, project *kitchenv1alpha1.Project) error {
-	source := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
-		Name:      ProjectSecretsSourceName(project.Name),
-		Namespace: project.Namespace,
-	}}
-	if err := r.Delete(ctx, source); err != nil && !apierrors.IsNotFound(err) {
-		return err
+	for _, name := range []string{
+		ProjectSecretsSourceName(project.Name),
+		ProjectFilesSourceName(project.Name),
+	} {
+		source := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: project.Namespace}}
+		if err := r.Delete(ctx, source); err != nil && !apierrors.IsNotFound(err) {
+			return err
+		}
 	}
 	return nil
 }

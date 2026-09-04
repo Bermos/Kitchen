@@ -83,6 +83,21 @@ const (
 	// operation: one query has to answer "every pack ever taken", and buried
 	// among a project's settings changes it would not.
 	KindEvidenceExport = "EvidenceExport"
+
+	// KindProjectFile is the fifth, and it is the content of a project's
+	// *secret* configuration file being written or replaced (#311) — the
+	// file the application is configured by, held where no response reads it
+	// back.
+	//
+	// It is not KindProjectSecret, though both are credentials and both are
+	// classified as credential writes so that one privileged view shows
+	// both. A secret and a config file are two things a project declares,
+	// with two routes, two screens and two lists, and a log that answered
+	// "every secret this project holds" with a file among them would be
+	// answering a question nobody asked. Declaring the file — its path, the
+	// workloads that read it — is a settings change and is recorded as one,
+	// on the project; this kind is the content alone.
+	KindProjectFile = "ProjectFile"
 )
 
 // The `change` key a record's details carry, which is what makes one kind of

@@ -137,6 +137,31 @@ type configDiffBody struct {
 	Variables []variableChangeView `json:"variables"`
 	Runtime   []fieldChangeView    `json:"runtime"`
 	Processes []processChangeView  `json:"processes"`
+	Files     []fileChangeView     `json:"files"`
+}
+
+// fileChangeView is one configuration file across the two snapshots.
+//
+// A **plain** file's content is compared here and never travels, for the
+// reason a variable's literal does not: the comparison is over what the
+// platform holds, and only the verdict crosses the wire. A **secret** file's
+// content is not in either snapshot at all — it is the project's, held where
+// nothing reads it back — so what moves between two releases is its
+// declaration, and `change` says so and says nothing about the credential.
+type fileChangeView struct {
+	Name string `json:"name"`
+	// Path each side mounts it at. It is configuration a viewer already
+	// reads off the project, so unlike the content it travels as itself: a
+	// rollback that moved a file from one path to another is exactly the
+	// surprise this route exists to name.
+	Path        string `json:"path,omitempty"`
+	AgainstPath string `json:"againstPath,omitempty"`
+	// Secret says the content is a credential on the side named in the path,
+	// which is what tells a reader that "changed" here cannot be about
+	// content.
+	Secret        bool   `json:"secret,omitempty"`
+	AgainstSecret bool   `json:"againstSecret,omitempty"`
+	Change        string `json:"change"`
 }
 
 // releaseConfigDiff compares the configuration snapshot of the release named
@@ -187,6 +212,7 @@ func (s *Server) releaseConfigDiff(w http.ResponseWriter, req *http.Request) {
 		Variables: diffEnv(release.Spec.ConfigSnapshot.Env, against.Spec.ConfigSnapshot.Env),
 		Runtime:   diffRuntime(release.Spec.ConfigSnapshot.Runtime, against.Spec.ConfigSnapshot.Runtime),
 		Processes: diffProcesses(release, against),
+		Files:     diffFiles(release.Spec.ConfigSnapshot.Files, against.Spec.ConfigSnapshot.Files),
 	})
 }
 
@@ -282,6 +308,64 @@ func diffEnv(release, against []kitchenv1alpha1.EnvVar) []variableChangeView {
 			}
 			view.Source, view.Ref = envSource(to), envRef(to)
 			view.AgainstSource, view.AgainstRef = envSource(from), envRef(from)
+		}
+		out = append(out, view)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if ri, rj := changeRank(out[i].Change), changeRank(out[j].Change); ri != rj {
+			return ri < rj
+		}
+		return out[i].Name < out[j].Name
+	})
+	return out
+}
+
+// diffFiles compares two snapshots' configuration files by name.
+//
+// The comparison is over the whole ConfigFile — content, path, secrecy and
+// the workloads it reaches — so that a file which kept its content and moved
+// to another path reads as changed, which it is. Nothing of the content
+// survives into the answer beyond the verdict.
+func diffFiles(release, against []kitchenv1alpha1.ConfigFile) []fileChangeView {
+	byName := func(files []kitchenv1alpha1.ConfigFile) map[string]kitchenv1alpha1.ConfigFile {
+		out := make(map[string]kitchenv1alpha1.ConfigFile, len(files))
+		for _, file := range files {
+			out[file.Name] = file
+		}
+		return out
+	}
+	head, base := byName(release), byName(against)
+
+	names := make([]string, 0, len(head)+len(base))
+	for name := range head {
+		names = append(names, name)
+	}
+	for name := range base {
+		if _, both := head[name]; !both {
+			names = append(names, name)
+		}
+	}
+
+	out := make([]fileChangeView, 0, len(names))
+	for _, name := range names {
+		to, inHead := head[name]
+		from, inBase := base[name]
+		view := fileChangeView{
+			Name:          name,
+			Path:          to.Path,
+			AgainstPath:   from.Path,
+			Secret:        to.Secret,
+			AgainstSecret: from.Secret,
+		}
+		switch {
+		case inHead && !inBase:
+			view.Change = changeAdded
+		case !inHead && inBase:
+			view.Change = changeRemoved
+		case reflect.DeepEqual(to, from):
+			view.Change = changeUnchanged
+		default:
+			view.Change = changeChanged
 		}
 		out = append(out, view)
 	}

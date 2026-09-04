@@ -241,6 +241,24 @@ func (s *Server) routes() []route {
 			onProject(access.ProjectDeveloper, ofProject, "setting a project's secret")},
 		{"DELETE /api/v1/projects/{name}/secrets/{secret}", s.deleteProjectSecret,
 			onProject(access.ProjectDeveloper, ofProject, "deleting a project's secret")},
+		// The content of a project's *secret* configuration file (#311) —
+		// the file software the platform did not build is configured by,
+		// held where no response reads it back.
+		//
+		// **Admin, unlike the secret beside it, and it is one rule rather
+		// than caution.** Everything about a configuration file is the
+		// admin's: the declaration is a project setting on
+		// PATCH /projects/{name}, beside the port and the workload list, and
+		// a plain file's content travels with it. A content route below that
+		// bar would let a developer replace the secret file and not the
+		// plain one, which is the inversion nobody would choose on purpose.
+		//
+		// There is no route to read one and no route to delete one. Reading
+		// is what the whole feature refuses; deleting is taking the file off
+		// spec.files, which is where the declaration lives and which takes
+		// the content with it.
+		{"PUT /api/v1/projects/{name}/files/{file}", s.setProjectFile,
+			onProject(access.ProjectAdmin, ofProject, "setting the content of a project's secret file")},
 		{"DELETE /api/v1/projects/{name}", s.deleteProject,
 			onProject(access.ProjectAdmin, ofProject, "deleting a project")},
 		{"GET /api/v1/projects/{name}/builds", s.listProjectBuilds,

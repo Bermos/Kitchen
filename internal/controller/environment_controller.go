@@ -172,6 +172,12 @@ func (r *EnvironmentReconciler) git() gitReporting {
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=kitchens,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;create
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
+// An environment's plain configuration files are a ConfigMap of its own, so
+// the environment both writes it and takes it away: when a release stops
+// declaring a plain file, and with the environment in the finalizer. `delete`
+// is therefore as necessary here as `create` is — without it every pass ends
+// on a forbidden delete and no Deployment is ever written.
+// +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
@@ -243,16 +249,7 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	labels := childLabels(project.Name, env)
 	host := hostname(project.Name, env, kitchen.Spec.BaseDomain)
 
-	// Only previews are ever gated: a production environment is the
-	// application's public address. A preview asked to be protected on a
-	// platform with no gate gets no route at all — publishing it anyway would
-	// be the one outcome the Project explicitly did not ask for.
-	protected := env.Spec.Type == kitchenv1alpha1.EnvironmentPreview && project.Spec.Previews.IsProtected()
-	gate := previewGate(kitchen)
-	unprotectable := protected && gate == nil
-	if !protected {
-		gate = nil
-	}
+	protected, gate, unprotectable := gatingFor(env, project, kitchen)
 
 	podEnv, effects, requeue, err := r.resolveEnv(ctx, env, release)
 	if err != nil {
@@ -303,6 +300,15 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		append(platformEnv(kitchen, project.Name, env, release, publicURL),
 			serviceEnv(env, release, appNS)...),
 		podEnv...)
+
+	// The plain configuration files this release declares, placed before
+	// anything that mounts them — the deploy tasks below first of all, which
+	// are the first pods of a release to run. A file marked secret is not
+	// here: its content is the project's, mirrored into this namespace with
+	// the project's other secrets, and never in a Release.
+	if err := r.applyConfigFiles(ctx, env, release, appNS, labels); err != nil {
+		return ctrl.Result{}, err
+	}
 
 	// Deploy-time work happens here, and everything below it is what "takes
 	// traffic" means (#272). A task that has not succeeded stops the pass
@@ -391,6 +397,28 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 // finalize deletes the Environment's children and releases the finalizer. The
 // children live in another namespace, so owner references cannot garbage
 // collect them for us.
+// gatingFor decides what stands in front of this environment: whether it is
+// gated at all, the gate to route through, and whether it asked to be gated
+// on a platform that has none.
+//
+// Only previews are ever gated: a production environment is the application's
+// public address. A preview asked to be protected on a platform with no gate
+// gets no route at all — publishing it anyway would be the one outcome the
+// Project explicitly did not ask for.
+func gatingFor(
+	env *kitchenv1alpha1.Environment,
+	project *kitchenv1alpha1.Project,
+	kitchen *kitchenv1alpha1.Kitchen,
+) (protected bool, gate *previewGateBackend, unprotectable bool) {
+	protected = env.Spec.Type == kitchenv1alpha1.EnvironmentPreview && project.Spec.Previews.IsProtected()
+	gate = previewGate(kitchen)
+	unprotectable = protected && gate == nil
+	if !protected {
+		gate = nil
+	}
+	return protected, gate, unprotectable
+}
+
 func (r *EnvironmentReconciler) finalize(ctx context.Context, env *kitchenv1alpha1.Environment) (ctrl.Result, error) {
 	if !controllerutil.ContainsFinalizer(env, environmentFinalizer) {
 		return ctrl.Result{}, nil
@@ -418,6 +446,11 @@ func (r *EnvironmentReconciler) finalize(ctx context.Context, env *kitchenv1alph
 	// environment and the process rather than after the environment alone and
 	// so are found by their label instead of being listed above.
 	if err := r.deleteProcesses(ctx, env, appNS); err != nil {
+		return ctrl.Result{}, err
+	}
+	// And the environment's own configuration files, which are named after it
+	// with a suffix and so are not among the three above.
+	if err := r.deleteConfigFiles(ctx, appNS, env.Name); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -909,6 +942,14 @@ func (r *EnvironmentReconciler) applyDeployment(
 		// default rather than whatever the image happens to be.
 		applySecurityContext(&deploy.Spec.Template.Spec, &app, runtimeSpec.Security)
 		deploy.Spec.Template.Spec.Containers = []corev1.Container{app}
+		// The configuration files this release hands the web process, and the
+		// digest of them. The digest is what makes a rollback restore the file
+		// the release ran with rather than leaving it on disk for the next pod
+		// to start: two releases differing only in a file's content otherwise
+		// produce the same pod template and nothing restarts.
+		files := configFilesOf(release, kitchenv1alpha1.WebProcessName)
+		configFilesOnPod(&deploy.Spec.Template.Spec, env.Name, files)
+		applyConfigFilesRevision(&deploy.Spec.Template.ObjectMeta, configFilesRevision(files))
 		// Last, over the template this mutation has just finished building: a
 		// Secret reaches a pod as a variable, as an `envFrom` or as a mounted
 		// file, and digesting the finished template covers every one of those

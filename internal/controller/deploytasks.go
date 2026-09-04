@@ -344,7 +344,7 @@ func (r *EnvironmentReconciler) startDeployTask(
 			},
 		},
 	}
-	podSpec := processPodSpec(task.release, task.project, task.podEnv, task.process, task.mounts)
+	podSpec := processPodSpec(task.env.Name, task.release, task.project, task.podEnv, task.process, task.mounts)
 	// Never, not OnFailure: with a backoff limit of zero a restarting
 	// container would retry inside a Job that can never fail, which is a
 	// migration running twice while the deploy waits for a verdict that never
