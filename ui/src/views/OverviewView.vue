@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { api, type Build, type Environment, type PlatformEvent, type ProjectTraffic } from "../lib/api";
+import { clearDismissals, incidentsFrom, undismissed } from "../lib/attention";
 import { buildFailureLine } from "../lib/builds";
 import { compactCount, formatSeconds, timeAgo } from "../lib/format";
 import { clockTime, staleNotice, useFreshness } from "../lib/freshness";
@@ -9,6 +10,7 @@ import { callerFor } from "../lib/me";
 import { refusal } from "../lib/policy";
 import { statusDetail, unhealthyConditions, type Tone } from "../lib/status";
 import { useAsync, usePoll } from "../lib/useAsync";
+import AttentionBand from "../components/AttentionBand.vue";
 import NewProjectModal from "../components/NewProjectModal.vue";
 import PageHeader from "../components/PageHeader.vue";
 import PhaseBadge from "../components/PhaseBadge.vue";
@@ -164,6 +166,24 @@ const activityMode = computed(() => {
   return "streaming";
 });
 
+// The band above the table, and the reason a row in the table is dimmed. Both
+// read the same list, so "in band" is a fact rather than a guess: a project is
+// marked exactly when something of its is up there.
+//
+// Dismissals are forgotten the moment nothing is wrong at all — a signature
+// set that only ever grew would be a slow leak, and there is nothing left for
+// it to be about.
+const incidents = computed(() => {
+  if (!data.value) return [];
+  const [projects, environments, builds] = data.value;
+  return incidentsFrom(projects, environments, builds);
+});
+const attention = computed(() => undismissed(incidents.value));
+const inBand = computed(() => new Set(attention.value.map((incident) => incident.project)));
+watch(incidents, (list) => {
+  if (!list.length) clearDismissals();
+});
+
 const filter = ref<"all" | "production" | "previews" | "failing">("all");
 
 interface Row {
@@ -176,6 +196,9 @@ interface Row {
   tone: Tone;
   detail: string;
   lastDeploy?: string;
+  /** Hoisted into the band above: still in the inventory, no longer the thing
+   * being asked about here. */
+  inBand: boolean;
 }
 
 const rows = computed<Row[]>(() => {
@@ -199,6 +222,7 @@ const rows = computed<Row[]>(() => {
       previews,
       tone: failing ? "error" : busy ? "warning" : production?.phase === "Live" ? "success" : "neutral",
       detail: statusDetail(project.conditions),
+      inBand: inBand.value.has(project.name),
       lastDeploy: production?.createdAt && latestBuild?.completedAt ? latestBuild.completedAt : latestBuild?.createdAt,
     };
   });
@@ -272,6 +296,10 @@ function host(url?: string): string {
       :title="staleNotice('the metrics store', metrics.failures.value, metrics.updatedAt.value)"
     />
 
+    <!-- Whatever is broken, above everything else on the screen: the error at
+         its full length, what it costs, and the way out. -->
+    <AttentionBand :incidents="attention" @acted="refresh" />
+
     <!-- The KPI strip only renders once the metrics endpoint answered; an
          installation without a telemetry store simply has no numbers row. -->
     <div v-if="tiles" class="grid grid-cols-2 lg:grid-cols-4 gap-3">
@@ -323,16 +351,31 @@ function host(url?: string): string {
             v-for="row in visible"
             :key="row.name"
             class="border-b border-muted last:border-0 hover:bg-elevated/40"
+            :class="row.inBand ? 'opacity-60' : ''"
           >
             <td class="px-3 py-2">
-              <RouterLink :to="{ name: 'project', params: { name: row.name } }" class="flex items-center gap-2.5 group">
-                <StatusDot :tone="row.tone" :pulse="row.tone === 'warning'" />
-                <span>
-                  <span class="block text-highlighted font-medium group-hover:underline">{{ row.name }}</span>
-                  <span class="block text-xs text-muted">{{ row.repo }}</span>
-                </span>
-              </RouterLink>
-              <p v-if="row.detail" class="text-xs text-error mt-1 pl-6 truncate max-w-sm" :title="row.detail">
+              <div class="flex items-center justify-between gap-2">
+                <RouterLink
+                  :to="{ name: 'project', params: { name: row.name } }"
+                  class="flex items-center gap-2.5 group min-w-0"
+                >
+                  <StatusDot :tone="row.tone" :pulse="row.tone === 'warning'" />
+                  <span class="min-w-0">
+                    <span class="block text-highlighted font-medium group-hover:underline truncate">{{ row.name }}</span>
+                    <span class="block text-xs text-muted truncate">{{ row.repo }}</span>
+                  </span>
+                </RouterLink>
+                <!-- Not a repetition: the row is still the inventory's, and
+                     this says where the answer about it has gone. -->
+                <span v-if="row.inBand" class="text-[11px] font-mono text-dimmed shrink-0">in band</span>
+              </div>
+              <!-- The truncated version of a line the band is already showing
+                   in full is noise, so a row in the band does not repeat it. -->
+              <p
+                v-if="row.detail && !row.inBand"
+                class="text-xs text-error mt-1 pl-6 truncate max-w-sm"
+                :title="row.detail"
+              >
                 {{ row.detail }}
               </p>
             </td>
@@ -361,7 +404,7 @@ function host(url?: string): string {
                    that reports "Failed" and nothing else is a row whose only
                    use is to be clicked. -->
               <p
-                v-if="row.latestBuild && buildFailureLine(row.latestBuild)"
+                v-if="row.latestBuild && !row.inBand && buildFailureLine(row.latestBuild)"
                 class="text-xs text-error mt-1 break-words"
               >
                 {{ buildFailureLine(row.latestBuild) }}
