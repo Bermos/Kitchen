@@ -1,0 +1,33 @@
+{
+  "$schema": "https://raw.githubusercontent.com/Bermos/Kitchen/main/docs/schemas/kitchen.schema.json",
+  "build": {
+    "strategy": "dockerfile",
+    "dockerfilePath": "Dockerfile"
+  },
+  "runtime": {
+    "port": 8080
+  },
+  "env": {
+    "RELEASE_LABEL": "one",
+    "MIGRATION_FAILS": "0"
+  },
+  "processes": [
+    {
+      "name": "api",
+      "type": "service",
+      "port": 9000,
+      "build": {
+        "strategy": "dockerfile",
+        "rootDirectory": "test/fixtures/multi-workload",
+        "dockerfilePath": "Dockerfile",
+        "dockerfileTarget": "shipped"
+      }
+    },
+    {
+      "name": "migrate",
+      "type": "task",
+      "command": ["/migrate.sh"],
+      "timeout": "2m"
+    }
+  ]
+}

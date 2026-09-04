@@ -91,3 +91,646 @@ jobs:
         run: |
           go mod tidy
           make test-e2e
+
+  # A project that is several workloads, on a cluster (#301).
+  #
+  # Everything else that proves this feature proves it against an API server
+  # with no kubelet: the per-workload plan, the frozen digests, the refusals
+  # and the sequencing are all held by unit and envtest coverage, and all of it
+  # was green while nothing had ever run. What only a cluster can answer is the
+  # other half — that the images are in a registry, that a pod resolves a
+  # sibling's address and gets an answer from *its own* sibling, that traffic
+  # does not arrive before a deploy task has finished, and that the stage
+  # `dockerfileTarget` names is the stage that was pushed.
+  #
+  # So this is the one job in the tree that runs a real build: BuildKit fetches
+  # this repository at the commit under test, builds the fixture under
+  # test/fixtures/multi-workload twice — once with no target and once at the
+  # stage the unit's `api` workload names — pushes both to a registry beside
+  # the cluster, and the operator releases and deploys the set.
+  #
+  # Two pieces of scaffolding make that possible on kind, and both are the test
+  # cluster's rather than the platform's:
+  #
+  #   - **The registry speaks plain HTTP.** A registry with a private
+  #     certificate would need its CA in the builder, in the node's container
+  #     runtime and in the operator. A plain-HTTP one needs the builder told
+  #     so once — BuildKit reads that from buildkitd.toml, so the pinned
+  #     builder image is rebuilt with one and loaded into the node under its
+  #     own name — and containerd told so once, which is a hosts.toml. The
+  #     operator needs nothing: `http://` on a registry Connection is a shape
+  #     internal/provider already honours.
+  #   - **The source is this repository.** The builder fetches the commit
+  #     itself from github.com, and the fixture is a directory of this
+  #     repository, so the project points at this repository at the pull
+  #     request's head commit. That is why the job does not run for a pull
+  #     request from a fork: the head commit is not in this repository, and
+  #     there is nothing for the builder to fetch.
+  #
+  # The job's token is read-only on purpose and not merely by hygiene. The
+  # operator registers a git webhook on the repository it is pointed at and
+  # posts a commit status against the commit it builds — against *this*
+  # repository, here. A token that cannot write is what makes both attempts
+  # fail harmlessly rather than leaving a webhook on the repository behind.
+  workloads:
+    name: Several workloads on kind
+    needs: changes
+    if: >-
+      github.event_name == 'pull_request'
+      && github.event.pull_request.head.repo.full_name == github.repository
+      && (needs.changes.outputs.run == 'true'
+      || startsWith(github.head_ref, 'release-please--'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      PROJECT: multiwl
+      APP_NS: kitchen-multiwl
+      FIXTURE: test/fixtures/multi-workload
+      REPO: ${{ github.repository }}
+      COMMIT: ${{ github.event.pull_request.head.sha }}
+      BRANCH: ${{ github.head_ref }}
+      # Only ever used to install the HTTPRoute CRD the Environment reconciler
+      # writes into. The Helm workflow resolves this from the Cilium release it
+      # pins, because there the version has to be the one Cilium's Gateway
+      # implementation requires; nothing here reads a route back through a
+      # controller, so a plain pin is enough.
+      GATEWAY_API_VERSION: v1.6.1
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@v4
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Install the latest version of kind
+        run: |
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/latest/kind-linux-amd64
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+
+      - name: Create kind cluster
+        run: kind create cluster
+
+      # Layer-cached across runs and shared with the Helm workflow's own build
+      # of the same context, so this is usually a cache restore.
+      - name: Build the operator image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: kitchen:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Start a registry the cluster can push to and pull from
+        run: |
+          set -euo pipefail
+          pull() {
+            for attempt in 1 2 3; do
+              docker pull "$1" && return 0
+              sleep $((attempt * 10))
+            done
+            return 1
+          }
+          # Google's Docker Hub mirror first: an anonymous rate limit failing
+          # this job would say nothing about the change under test.
+          image=mirror.gcr.io/library/registry:2
+          pull "${image}" || { image=registry:2; pull "${image}"; }
+
+          # On the cluster's own docker network, so the node reaches it by
+          # address and so do the pods, which route out through the node.
+          docker run --detach --name kitchen-e2e-registry --network kind "${image}"
+          addr="$(docker inspect \
+            --format '{{ (index .NetworkSettings.Networks "kind").IPAddress }}' \
+            kitchen-e2e-registry):5000"
+          echo "the test registry is at ${addr}"
+
+          for _ in $(seq 60); do
+            curl --fail --silent --output /dev/null "http://${addr}/v2/" && break
+            sleep 1
+          done
+          curl --fail --silent --output /dev/null "http://${addr}/v2/" || {
+            echo "::error::the test registry never answered /v2/"
+            docker logs kitchen-e2e-registry
+            exit 1
+          }
+
+          # The node's container runtime is what pulls an application's image,
+          # and it speaks HTTPS to anything that is not a loopback address. A
+          # hosts.toml under the certs.d directory kind already points
+          # containerd at is how it is told otherwise.
+          docker exec kind-control-plane \
+            grep -n 'config_path' /etc/containerd/config.toml || echo \
+            "::warning::containerd names no registry config_path; the probe below will say so"
+          docker exec kind-control-plane mkdir -p "/etc/containerd/certs.d/${addr}"
+          docker exec --interactive kind-control-plane \
+            sh -c "cat > /etc/containerd/certs.d/${addr}/hosts.toml" <<EOF
+          server = "http://${addr}"
+
+          [host."http://${addr}"]
+            capabilities = ["pull", "resolve"]
+          EOF
+
+          # Proved now rather than discovered as an ImagePullBackOff eight
+          # minutes from here. The registry cannot have this image, so the pull
+          # must fail — what matters is that it fails for not finding it rather
+          # than for anything about TLS.
+          if docker exec kind-control-plane crictl pull "${addr}/absent:1" > /tmp/pull-probe.log 2>&1; then
+            echo "::error::the registry answered for an image it cannot have"
+            exit 1
+          fi
+          cat /tmp/pull-probe.log
+          if grep -qiE 'https|tls|certificate|x509' /tmp/pull-probe.log; then
+            echo "::error::the node reached the test registry over HTTPS. containerd was not" \
+                 "told that ${addr} speaks plain HTTP — check that kind still points it at" \
+                 "/etc/containerd/certs.d."
+            exit 1
+          fi
+
+          echo "REGISTRY_ADDR=${addr}" >> "$GITHUB_ENV"
+
+      - name: Teach the builder that the test registry speaks plain HTTP
+        run: |
+          set -euo pipefail
+          # Read out of the operator rather than written down twice: bumping
+          # BuildkitImage has to bump what this job actually runs, or the case
+          # would keep proving something about a builder the platform no longer
+          # uses.
+          builder="$(grep -oE 'moby/buildkit:[A-Za-z0-9._-]+' \
+            internal/controller/build_controller.go | head -1)"
+          [ -n "${builder}" ] || {
+            echo "::error::could not read the builder image out of internal/controller"
+            exit 1
+          }
+          echo "the operator builds with ${builder}"
+          docker pull "${builder}"
+
+          # The one thing BuildKit cannot be told from outside the daemon: it
+          # decides a registry's scheme from its own configuration and treats
+          # nothing but a loopback address as plain HTTP. The image keeps its
+          # own name, so the operator's pod spec is untouched and the node uses
+          # the copy loaded below.
+          mkdir -p /tmp/kitchen-builder
+          cat > /tmp/kitchen-builder/buildkitd.toml <<EOF
+          [registry."${REGISTRY_ADDR}"]
+            http = true
+          EOF
+          # Both paths, because buildkitd reads /etc/buildkit when it is root
+          # and the user's own config directory when it is not, and the build
+          # pod's builder is rootless.
+          cat > /tmp/kitchen-builder/Dockerfile <<EOF
+          FROM ${builder}
+          USER root
+          RUN mkdir -p /etc/buildkit /home/user/.config/buildkit
+          COPY buildkitd.toml /etc/buildkit/buildkitd.toml
+          COPY buildkitd.toml /home/user/.config/buildkit/buildkitd.toml
+          RUN chmod 0644 /etc/buildkit/buildkitd.toml /home/user/.config/buildkit/buildkitd.toml && chown -R 1000:1000 /home/user/.config
+          USER 1000:1000
+          EOF
+          docker build --tag "${builder}" /tmp/kitchen-builder
+          echo "BUILDER_IMAGE=${builder}" >> "$GITHUB_ENV"
+
+      - name: Load the images into kind
+        run: |
+          set -euo pipefail
+          kind load docker-image kitchen:ci
+          kind load docker-image "${BUILDER_IMAGE}"
+
+      - name: Install the Gateway API CRDs
+        run: |
+          kubectl apply -f \
+            "https://github.com/kubernetes-sigs/gateway-api/releases/download/${GATEWAY_API_VERSION}/standard-install.yaml"
+
+      # Only what a build and a deploy need. The identity provider, its
+      # database, the telemetry store, the collector, the preview gate and the
+      # bundled registry are all somebody else's job to check, and every one of
+      # them is minutes of install this job would spend proving nothing.
+      - name: Install the chart
+        run: |
+          helm install kitchen charts/kitchen \
+            --namespace kitchen-system --create-namespace \
+            --set image.repository=kitchen --set image.tag=ci \
+            --set kitchen.baseDomain=apps.example.com \
+            --set kitchen.tls.mode=none \
+            --set cert-manager.enabled=false \
+            --set registry.enabled=false \
+            --set auth.enabled=false \
+            --set postgres.enabled=false \
+            --set previewGate.enabled=false \
+            --set clickhouse.enabled=false --set clickhouse.acknowledgeNoStore=true \
+            --set collector.enabled=false \
+            --set kitchen.compliance.attestation.enabled=false \
+            --set kitchen.compliance.audit.enabled=false \
+            --set kitchen.builds.cache.enabled=false \
+            --set kitchen.builds.resources.cpu=500m \
+            --set kitchen.builds.resources.memory=1Gi \
+            --wait --timeout 6m || {
+              kubectl -n kitchen-system get pods -o wide
+              kubectl -n kitchen-system logs -l control-plane=controller-manager --tail=100
+              exit 1
+            }
+
+      # Nothing here creates a Build. The project names its production branch
+      # and the platform resolves that branch's tip and builds it, which is
+      # what a project connected to a finished repository does — and it is one
+      # fewer thing the case has to be right about.
+      - name: Point the platform at this commit and wait for the unit to build
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          kubectl -n kitchen-system create secret generic e2e-git \
+            --from-literal=token="${GITHUB_TOKEN}"
+          # The registry admits anyone, so this credential is never checked.
+          # It is here because the platform's shape requires one: the build
+          # authenticates with it and the deployment pulls with it.
+          kubectl -n kitchen-system create secret docker-registry e2e-registry \
+            --docker-server="${REGISTRY_ADDR}" \
+            --docker-username=kitchen --docker-password=kitchen
+
+          kubectl apply -f - <<EOF
+          apiVersion: kitchen.bermos.dev/v1alpha1
+          kind: Connection
+          metadata:
+            name: e2e-git
+            namespace: kitchen-system
+          spec:
+            provider: github
+            credentialsSecretRef: {name: e2e-git}
+          ---
+          apiVersion: kitchen.bermos.dev/v1alpha1
+          kind: Connection
+          metadata:
+            name: e2e-registry
+            namespace: kitchen-system
+          spec:
+            provider: dockerRegistry
+            credentialsSecretRef: {name: e2e-registry}
+            config:
+              url: http://${REGISTRY_ADDR}
+          ---
+          apiVersion: kitchen.bermos.dev/v1alpha1
+          kind: Project
+          metadata:
+            name: ${PROJECT}
+            namespace: kitchen-system
+          spec:
+            source:
+              connectionRef: {name: e2e-git}
+              repo: ${REPO}
+              productionBranch: ${BRANCH}
+            build:
+              strategy: dockerfile
+              rootDirectory: ${FIXTURE}
+            registry:
+              connectionRef: {name: e2e-registry}
+            previews:
+              protected: false
+          EOF
+
+          build=""
+          for _ in $(seq 60); do
+            build="$(kubectl -n kitchen-system get builds \
+              -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+            [ -n "${build}" ] && break
+            sleep 5
+          done
+          [ -n "${build}" ] || {
+            echo "::error::the platform never seeded a build for the project's production branch"
+            kubectl -n kitchen-system get project "${PROJECT}" -o jsonpath='{.status.conditions}' | tr ',' '\n'
+            kubectl -n kitchen-system logs -l control-plane=controller-manager --tail=200
+            exit 1
+          }
+          echo "the platform seeded build ${build} for $(kubectl -n kitchen-system get build \
+            "${build}" -o jsonpath='{.spec.git.sha}') (this pull request's head is ${COMMIT})"
+
+          for _ in $(seq 90); do
+            phase="$(kubectl -n kitchen-system get build "${build}" -o jsonpath='{.status.phase}')"
+            [ "${phase}" = Succeeded ] && break
+            [ "${phase}" = Failed ] && break
+            sleep 10
+          done
+          phase="$(kubectl -n kitchen-system get build "${build}" -o jsonpath='{.status.phase}')"
+          [ "${phase}" = Succeeded ] || {
+            echo "::error::the unit's build ended ${phase}"
+            kubectl -n kitchen-system get build "${build}" -o yaml
+            kubectl -n "${APP_NS}" get jobs,pods -o wide
+            for pod in $(kubectl -n "${APP_NS}" get pods -o name); do
+              echo "--- ${pod}"
+              kubectl -n "${APP_NS}" logs "${pod}" --all-containers --tail=200 || true
+            done
+            exit 1
+          }
+
+          release="$(kubectl -n kitchen-system get releases \
+            -o jsonpath='{.items[0].metadata.name}')"
+          echo "BUILD=${build}" >> "$GITHUB_ENV"
+          echo "RELEASE=${release}" >> "$GITHUB_ENV"
+
+      # #301's first and fourth criteria. They share a step because they share
+      # a Dockerfile: the same file produced both images from the same commit,
+      # and the only thing that differs between them is the stage each was
+      # told to ship.
+      - name: One commit, two images, and the stage the target named
+        run: |
+          set -euo pipefail
+          catalog="$(curl --fail --silent "http://${REGISTRY_ADDR}/v2/_catalog")"
+          echo "the registry holds ${catalog}"
+          for repository in "${PROJECT}" "${PROJECT}-api"; do
+            grep -q "\"${repository}\"" <<<"${catalog}" || {
+              echo "::error::${repository} was never pushed: one commit did not produce" \
+                   "the whole unit"
+              exit 1
+            }
+          done
+
+          # The release froze an image per workload, and they are different
+          # images — the `api` workload declared a build of its own, so running
+          # the project's image under another command would be the wrong set.
+          web_image="$(kubectl -n kitchen-system get release "${RELEASE}" \
+            -o jsonpath='{.spec.image}')"
+          api_image="$(kubectl -n kitchen-system get release "${RELEASE}" \
+            -o jsonpath='{.spec.workloads[?(@.name=="api")].image}')"
+          echo "web ${web_image}"
+          echo "api ${api_image}"
+          [ -n "${api_image}" ] || {
+            echo "::error::the release froze no image for the api workload"
+            kubectl -n kitchen-system get release "${RELEASE}" -o yaml
+            exit 1
+          }
+          [ "${api_image}" != "${web_image}" ] || {
+            echo "::error::both workloads were released to the same image"
+            exit 1
+          }
+          echo "WEB_IMAGE=${web_image}" >> "$GITHUB_ENV"
+          echo "API_IMAGE=${api_image}" >> "$GITHUB_ENV"
+
+          # Both running. The deploy task the fixture declares runs first and
+          # succeeds, so reaching this at all is already half of the third
+          # criterion.
+          for workload in "${PROJECT}-production" "${PROJECT}-production-api"; do
+            for _ in $(seq 60); do
+              kubectl -n "${APP_NS}" get deploy "${workload}" >/dev/null 2>&1 && break
+              sleep 5
+            done
+            kubectl -n "${APP_NS}" rollout status "deploy/${workload}" --timeout=5m || {
+              echo "::error::${workload} never came up"
+              kubectl -n "${APP_NS}" get pods -o wide
+              kubectl -n "${APP_NS}" describe deploy "${workload}"
+              kubectl -n kitchen-system get environment "${PROJECT}-production" -o yaml
+              exit 1
+            }
+          done
+
+          # And the stages. Neither image can be asked what it was built from
+          # any other way — which is the whole reason this is a cluster test:
+          # the assertion is about the artifact, and BuildKit shipping the
+          # file's last stage regardless would be a green build every time.
+          web_stage="$(kubectl -n "${APP_NS}" exec "deploy/${PROJECT}-production" \
+            -- wget -q -O - http://127.0.0.1:8080/stage.txt)"
+          api_stage="$(kubectl -n "${APP_NS}" exec "deploy/${PROJECT}-production-api" \
+            -- wget -q -O - http://127.0.0.1:9000/stage.txt)"
+          echo "the web process runs the ${web_stage} stage; the api workload runs ${api_stage}"
+          [ "${web_stage}" = final ] || {
+            echo "::error::the web process names no dockerfileTarget and should run the" \
+                 "file's last stage, but it runs '${web_stage}'"
+            exit 1
+          }
+          [ "${api_stage}" = shipped ] || {
+            echo "::error::the api workload names dockerfileTarget 'shipped' and runs" \
+                 "'${api_stage}': the target was not honoured"
+            exit 1
+          }
+
+      # #301's second criterion, and the one that is wrong in the most
+      # expensive way if it is wrong at all: a preview's web process reaching
+      # production's API.
+      #
+      # The preview is applied rather than built. Both environments run the
+      # same release on purpose — if the two web processes are handed the same
+      # image, the same variables' names and the same commit, then the only
+      # thing that can make them reach different services is the platform
+      # having resolved each environment's own siblings.
+      - name: A workload reaches its own environment's sibling, not another's
+        run: |
+          set -euo pipefail
+          kubectl apply -f - <<EOF
+          apiVersion: kitchen.bermos.dev/v1alpha1
+          kind: Environment
+          metadata:
+            name: ${PROJECT}-pr-1
+            namespace: kitchen-system
+          spec:
+            projectRef: {name: ${PROJECT}}
+            type: preview
+            releaseRef: {name: ${RELEASE}}
+            preview:
+              pullRequest: 1
+              branch: ${BRANCH}
+          EOF
+
+          for workload in "${PROJECT}-pr-1" "${PROJECT}-pr-1-api"; do
+            for _ in $(seq 60); do
+              kubectl -n "${APP_NS}" get deploy "${workload}" >/dev/null 2>&1 && break
+              sleep 5
+            done
+            kubectl -n "${APP_NS}" rollout status "deploy/${workload}" --timeout=5m || {
+              echo "::error::the preview's ${workload} never came up"
+              kubectl -n "${APP_NS}" get pods -o wide
+              kubectl -n kitchen-system get environment "${PROJECT}-pr-1" -o yaml
+              exit 1
+            }
+          done
+
+          address() {
+            kubectl -n "${APP_NS}" get deploy "$1" \
+              -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="KITCHEN_SERVICE_API")].value}'
+          }
+          preview_address="$(address "${PROJECT}-pr-1")"
+          production_address="$(address "${PROJECT}-production")"
+          echo "the preview is told ${preview_address}"
+          echo "production is told ${production_address}"
+          case "${preview_address}" in
+            *"${PROJECT}-pr-1-api.${APP_NS}.svc.cluster.local:9000"*) ;;
+            *)
+              echo "::error::the preview's KITCHEN_SERVICE_API is '${preview_address}'," \
+                   "which is not the preview's own api service"
+              exit 1
+              ;;
+          esac
+          case "${preview_address}" in
+            *"${PROJECT}-production"*)
+              echo "::error::the preview's KITCHEN_SERVICE_API names production's api service"
+              exit 1
+              ;;
+          esac
+          case "${production_address}" in
+            *"${PROJECT}-production-api.${APP_NS}.svc.cluster.local:9000"*) ;;
+            *)
+              echo "::error::production's KITCHEN_SERVICE_API is '${production_address}'"
+              exit 1
+              ;;
+          esac
+
+          # A variable that reads correctly and resolves nowhere would pass
+          # every check above, so each web process is made to actually fetch
+          # from the address it was handed — and the answer says which pod
+          # served it, which is the whole claim.
+          reached() {
+            kubectl -n "${APP_NS}" exec "deploy/$1" \
+              -- sh -c 'wget -q -O - "$KITCHEN_SERVICE_API/host.txt"' 2>/dev/null || true
+          }
+          preview_served="$(reached "${PROJECT}-pr-1")"
+          production_served="$(reached "${PROJECT}-production")"
+          echo "the preview's web process was answered by ${preview_served}"
+          echo "production's web process was answered by ${production_served}"
+          case "${preview_served}" in
+            "${PROJECT}-pr-1-api-"*) ;;
+            *)
+              echo "::error::the preview's web process was answered by ${preview_served}," \
+                   "which is not one of the preview's own api pods"
+              exit 1
+              ;;
+          esac
+          case "${production_served}" in
+            "${PROJECT}-production-api-"*) ;;
+            *)
+              echo "::error::production's web process was answered by ${production_served}"
+              exit 1
+              ;;
+          esac
+          role="$(kubectl -n "${APP_NS}" exec "deploy/${PROJECT}-pr-1" \
+            -- sh -c 'wget -q -O - "$KITCHEN_SERVICE_API/process.txt"' 2>/dev/null || true)"
+          [ "${role}" = api ] || {
+            echo "::error::the address resolved to a workload that says it is '${role}'"
+            exit 1
+          }
+
+      # #301's third criterion. Two releases of the same images, applied by
+      # hand: what differs between them is the frozen configuration the deploy
+      # task runs under, which is the only way to make one commit's migration
+      # fail and then succeed without rebuilding it.
+      - name: A failing deploy task leaves the previous release serving
+        run: |
+          set -euo pipefail
+          release() { # release <name> <label> <migration fails>
+            kubectl apply -f - <<EOF
+          apiVersion: kitchen.bermos.dev/v1alpha1
+          kind: Release
+          metadata:
+            name: $1
+            namespace: kitchen-system
+          spec:
+            projectRef: {name: ${PROJECT}}
+            buildRef: {name: ${BUILD}}
+            image: ${WEB_IMAGE}
+            workloads:
+              - name: api
+                image: ${API_IMAGE}
+            configSnapshot:
+              runtime:
+                port: 8080
+              env:
+                - name: RELEASE_LABEL
+                  value: "$2"
+                - name: MIGRATION_FAILS
+                  value: "$3"
+              processes:
+                - name: api
+                  type: service
+                  port: 9000
+                - name: migrate
+                  type: task
+                  command: ["/migrate.sh"]
+                  timeout: 2m
+          EOF
+          }
+          deployed() {
+            kubectl -n "${APP_NS}" exec "deploy/${PROJECT}-production" \
+              -- wget -q -O - http://127.0.0.1:8080/release.txt 2>/dev/null || true
+          }
+          point_at() {
+            kubectl -n kitchen-system patch environment "${PROJECT}-production" \
+              --type=merge -p "{\"spec\":{\"releaseRef\":{\"name\":\"$1\"}}}"
+          }
+
+          serving="$(deployed)"
+          [ "${serving}" = one ] || {
+            echo "::error::production is serving release '${serving}' before any of this"
+            exit 1
+          }
+
+          release "${PROJECT}-rel-refused" two 1
+          point_at "${PROJECT}-rel-refused"
+
+          for _ in $(seq 60); do
+            phase="$(kubectl -n kitchen-system get environment "${PROJECT}-production" \
+              -o jsonpath='{.status.phase}')"
+            [ "${phase}" = Degraded ] && break
+            sleep 5
+          done
+          phase="$(kubectl -n kitchen-system get environment "${PROJECT}-production" \
+            -o jsonpath='{.status.phase}')"
+          [ "${phase}" = Degraded ] || {
+            echo "::error::a deploy whose task failed left the environment ${phase}"
+            kubectl -n kitchen-system get environment "${PROJECT}-production" -o yaml
+            kubectl -n "${APP_NS}" get jobs
+            exit 1
+          }
+          kubectl -n "${APP_NS}" get jobs
+
+          # The point of the feature: nothing was applied, so the release
+          # before it is still the one taking traffic.
+          serving="$(deployed)"
+          [ "${serving}" = one ] || {
+            echo "::error::a deploy whose task failed still moved traffic: production" \
+                 "serves '${serving}'"
+            exit 1
+          }
+          label="$(kubectl -n "${APP_NS}" get deploy "${PROJECT}-production" \
+            -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="RELEASE_LABEL")].value}')"
+          [ "${label}" = one ] || {
+            echo "::error::the web Deployment was rewritten for a release whose task failed"
+            exit 1
+          }
+
+          # And a task that succeeds lets the release through.
+          release "${PROJECT}-rel-applied" three 0
+          point_at "${PROJECT}-rel-applied"
+          for _ in $(seq 60); do
+            [ "$(deployed)" = three ] && break
+            sleep 5
+          done
+          serving="$(deployed)"
+          [ "${serving}" = three ] || {
+            echo "::error::a deploy whose task succeeded never took traffic: production" \
+                 "serves '${serving}'"
+            kubectl -n kitchen-system get environment "${PROJECT}-production" -o yaml
+            kubectl -n "${APP_NS}" get jobs
+            exit 1
+          }
+          for _ in $(seq 24); do
+            phase="$(kubectl -n kitchen-system get environment "${PROJECT}-production" \
+              -o jsonpath='{.status.phase}')"
+            [ "${phase}" = Live ] && break
+            sleep 5
+          done
+          [ "${phase}" = Live ] || {
+            echo "::error::the environment is ${phase} after a deploy that applied"
+            kubectl -n kitchen-system get environment "${PROJECT}-production" -o yaml
+            exit 1
+          }
+
+      - name: What the cluster looked like when it failed
+        if: failure()
+        run: |
+          kubectl -n kitchen-system get projects,connections,builds,releases,environments -o wide || true
+          kubectl -n kitchen-system get environments -o yaml || true
+          kubectl -n "${APP_NS}" get all -o wide || true
+          kubectl -n "${APP_NS}" get events --sort-by=.lastTimestamp || true
+          kubectl -n kitchen-system logs -l control-plane=controller-manager --tail=400 || true
+          for pod in $(kubectl -n "${APP_NS}" get pods -o name); do
+            echo "--- ${pod}"
+            kubectl -n "${APP_NS}" logs "${pod}" --all-containers --tail=200 || true
+          done

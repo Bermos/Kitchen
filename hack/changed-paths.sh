@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
-# Decide whether one of the three kind jobs has anything to check in this pull
-# request, and print `run=true` or `run=false` for a workflow to read.
+# Decide whether the kind jobs have anything to check in this pull request, and
+# print `run=true` or `run=false` for a workflow to read.
 #
-# The three kind jobs — Chart install on kind, E2E on kind, Gateway L7 flows on
-# kind — cost twelve to fourteen minutes each and sit on the critical path of
-# every merge. Most pull requests cannot affect all three: a CLI change reaches
-# no cluster at all, and the Hubble job installs no Kitchen, so nothing in this
-# repository except its own script can change what it proves.
+# The four kind jobs — Chart install on kind, E2E on kind, Several workloads on
+# kind, Gateway L7 flows on kind — cost twelve to fourteen minutes each and sit
+# on the critical path of every merge. Most pull requests cannot affect all of
+# them: a CLI change reaches no cluster at all, and the Hubble job installs no
+# Kitchen, so nothing in this repository except its own script can change what
+# it proves. There are three profiles rather than four because the two jobs in
+# the E2E workflow share one.
 #
 # This is a job-level gate, not a `paths:` filter on the workflow, and the
 # difference decides whether a pull request can merge. A skipped job still
@@ -65,14 +67,16 @@ chart_ignores=(
   '.github/workflows/publish.yml'
 )
 
-# The E2E job runs the operator's own suite (test/e2e) against kind. It installs
-# no chart and runs no auth service, so those cannot break it; `test/` very much
-# can, which is why it is absent here and present above.
+# The E2E workflow's two kind jobs, under one profile. One runs the operator's
+# own suite (test/e2e) against kind; the other installs the chart and deploys a
+# project of several workloads through a real build, which is why `charts/*` is
+# *not* ignorable here even though the first job installs no chart. `test/` very
+# much can change what both prove, which is why it is absent here and present
+# above. Neither runs the auth service.
 e2e_ignores=(
   'internal/cli/*'
   'cmd/kitchen/*'
   'ui/*'
-  'charts/*'
   'auth/*'
   '.github/workflows/test.yml'
   '.github/workflows/lint.yml'

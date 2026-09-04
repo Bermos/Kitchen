@@ -196,7 +196,7 @@ have already been spent, and the conflict has to be resolved by whoever is
 holding the merge button rather than by whoever wrote the code and still
 remembers why. The rebase above costs nothing when there is nothing to resolve.
 
-**Arm auto-merge when you open the pull request.** The three kind jobs are
+**Arm auto-merge when you open the pull request.** The four kind jobs are
 twelve to fourteen minutes; nothing is gained by watching them. `gh pr merge
 --squash --auto` (or the Enable auto-merge button) lands the branch the moment
 the required checks are green, which is what makes the wait somebody else's
