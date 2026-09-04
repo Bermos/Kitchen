@@ -291,6 +291,17 @@ would lock the operator out of client registration.
 {{- printf "%s-auth" (include "kitchen.fullname" .) }}
 {{- end }}
 
+{{/*
+The Service in front of the identity provider's private listener: the
+operator's `/kitchen` prefix, and nothing the internet has any business
+reaching. It is a second Service rather than a second port on the first one so
+that the published Service has exactly one port and no route can name the
+wrong one by accident.
+*/}}
+{{- define "kitchen.authInternalFullname" -}}
+{{- printf "%s-auth-internal" (include "kitchen.fullname" .) }}
+{{- end }}
+
 {{- define "kitchen.authSecretName" -}}
 {{- printf "%s-auth" (include "kitchen.fullname" .) }}
 {{- end }}
@@ -380,6 +391,28 @@ everywhere.
 {{- define "kitchen.authInternalURL" -}}
 {{- if .Values.auth.enabled }}
 {{- printf "http://%s.%s.svc:%v" (include "kitchen.authFullname" .) .Release.Namespace .Values.auth.service.port }}
+{{- else }}
+{{- include "kitchen.authIssuer" . }}
+{{- end }}
+{{- end }}
+
+{{/*
+Where the operator reaches the `/kitchen` prefix: the account directory, the
+CI keys and the management of the OAuth clients it registered.
+
+It is a different address from `authInternalURL` because it is a different
+listener. That one is the issuer — discovery, tokens, the login pages — and is
+published on the shared Gateway; this one is not published anywhere, which is
+the point: the prefix mints CI keys and rewrites redirect lists on the
+strength of one header, and had been answering to the internet.
+
+An installation federating to an identity provider of its own has neither, and
+gets the issuer: it serves no such prefix, the operator finds that out with a
+404, and `idp.ErrNoDirectory` says what that costs.
+*/}}
+{{- define "kitchen.authDirectoryURL" -}}
+{{- if .Values.auth.enabled }}
+{{- printf "http://%s.%s.svc:%v" (include "kitchen.authInternalFullname" .) .Release.Namespace .Values.auth.internalService.port }}
 {{- else }}
 {{- include "kitchen.authIssuer" . }}
 {{- end }}

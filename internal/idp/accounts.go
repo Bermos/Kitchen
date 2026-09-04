@@ -100,16 +100,16 @@ type accountsResponse struct {
 // Accounts is every account at the identity provider, excluding the service
 // account the operator itself signs in as — it is a credential, not a person.
 func (c *Client) Accounts(ctx context.Context) ([]Account, error) {
-	body, err := c.getDirectory(ctx, c.cfg.BaseURL+AccountsPath, "listing the accounts")
+	body, err := c.getDirectory(ctx, c.cfg.DirectoryURL+AccountsPath, "listing the accounts")
 	if errors.Is(err, errDirectoryNotFound) {
-		return nil, fmt.Errorf("listing the accounts at %s: %w", c.cfg.BaseURL, ErrNoDirectory)
+		return nil, fmt.Errorf("listing the accounts at %s: %w", c.cfg.DirectoryURL, ErrNoDirectory)
 	}
 	if err != nil {
 		return nil, err
 	}
 	answer := &accountsResponse{}
 	if err := json.Unmarshal(body, answer); err != nil {
-		return nil, fmt.Errorf("listing the accounts at %s: %w", c.cfg.BaseURL, err)
+		return nil, fmt.Errorf("listing the accounts at %s: %w", c.cfg.DirectoryURL, err)
 	}
 	return answer.Accounts, nil
 }
@@ -117,7 +117,7 @@ func (c *Client) Accounts(ctx context.Context) ([]Account, error) {
 // AccountByEmail is the account holding an address, or ErrAccountNotFound.
 // The address is matched case-insensitively, addresses being what they are.
 func (c *Client) AccountByEmail(ctx context.Context, email string) (*Account, error) {
-	endpoint := c.cfg.BaseURL + AccountsPath + "?" + url.Values{"email": []string{email}}.Encode()
+	endpoint := c.cfg.DirectoryURL + AccountsPath + "?" + url.Values{"email": []string{email}}.Encode()
 	body, err := c.getDirectory(ctx, endpoint, fmt.Sprintf("resolving the account %q", email))
 	if errors.Is(err, errDirectoryNotFound) {
 		// The directory answers 404 for an address nobody holds. An issuer

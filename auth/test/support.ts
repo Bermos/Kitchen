@@ -20,12 +20,17 @@ export const DATABASE_URL =
 
 export interface Harness {
 	url: string;
+	/** The private listener's address: the `/kitchen` prefix and nothing else. */
+	internalURL: string;
 	config: Config;
 	auth: Auth;
 	pool: Pool;
 	serviceKey: string;
 	bootstrapToken: string;
+	/** A call to the published listener, which is what the Gateway routes at. */
 	fetch: (path: string, init?: RequestInit) => Promise<Response>;
+	/** A call to the private listener, which only the cluster can reach. */
+	internal: (path: string, init?: RequestInit) => Promise<Response>;
 	stop: () => Promise<void>;
 }
 
@@ -46,11 +51,14 @@ async function resetSchema(pool: Pool): Promise<void> {
 
 export async function startHarness(overrides: Partial<Config> = {}): Promise<Harness> {
 	const port = await freePort();
+	const internalPort = await freePort();
 	// 64 characters: the api-key plugin's minimum, and what the chart generates.
 	const serviceKey = randomBytes(32).toString("hex");
 	const bootstrapToken = randomBytes(16).toString("hex");
 	const config: Config = {
 		port,
+		internalPort,
+		kitchenRatePerMinute: 300,
 		baseURL: `http://127.0.0.1:${port}`,
 		secret: randomBytes(32).toString("hex"),
 		databaseURL: DATABASE_URL,
@@ -72,18 +80,24 @@ export async function startHarness(overrides: Partial<Config> = {}): Promise<Har
 	await seedServiceCredential(auth, config);
 	await seedUIClient(auth, config);
 
-	const server: Server = createServer(auth, config, pool);
+	const server: Server = createServer(auth, config, pool, "public");
+	const internal: Server = createServer(auth, config, pool, "private");
 	await new Promise<void>((resolve) => server.listen(port, "127.0.0.1", resolve));
+	await new Promise<void>((resolve) => internal.listen(config.internalPort, "127.0.0.1", resolve));
+	const internalURL = `http://127.0.0.1:${config.internalPort}`;
 
 	return {
 		url: config.baseURL,
+		internalURL,
 		config,
 		auth,
 		pool,
 		serviceKey: config.serviceKey ?? "",
 		bootstrapToken: config.bootstrapToken ?? "",
 		fetch: (path, init) => fetch(`${config.baseURL}${path}`, init),
+		internal: (path, init) => fetch(`${internalURL}${path}`, init),
 		stop: async () => {
+			await new Promise<void>((resolve) => internal.close(() => resolve()));
 			await new Promise<void>((resolve) => server.close(() => resolve()));
 			await pool.end();
 		},

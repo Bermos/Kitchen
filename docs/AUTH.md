@@ -161,9 +161,12 @@ separate specification an issuer may implement or not — and the OAuth provider
 plugin this chart ships does not: its registration answer names no client
 configuration endpoint. So the operator prefers the standard route when the
 issuer offers one, and otherwise maintains the client at `/kitchen/clients`,
-the same private prefix the account directory lives on, authenticated by the
-same service credential and refusing to touch any client the operator did not
-itself register — the dashboard's own client included.
+the same private prefix the account directory lives on — private in the
+literal sense: it is served on a listener nothing publishes, see
+[The `/kitchen` prefix is not published](#the-kitchen-prefix-is-not-published-settled).
+It is authenticated by the same service credential and refuses to touch any
+client the operator did not itself register — the dashboard's own client
+included.
 
 An issuer that offers neither is not a fault to fix, and the claim says so
 rather than looking bound and behaving otherwise: it stays `Bound`, the client
@@ -690,6 +693,7 @@ project.
 | Auth storage | Chart-managed single-node Postgres (external override) | OLTP; SQLite would cap replicas at 1; mirrors the ClickHouse pattern |
 | App auth surface | `ResourceClaim` type `oidcClient` | Reuses the existing claim → binding-secret → env flow |
 | An app client's redirect list | Maintained by the operator, out of the URLs it owns | The component that creates and deletes environments is the only one that knows when a callback appears or goes |
+| Where `/kitchen` is served | A second listener on a second Service, which no HTTPRoute names | The auth route publishes `PathPrefix /`, so a prefix that mints CI keys and rewrites redirect lists was reachable from the internet on one header |
 | Changing a registered client | RFC 7592 where the issuer has it, Kitchen's own prefix otherwise | The shipped provider plugin implements registration and not management; a federated issuer keeps its clients and loses the maintenance, reported on the claim |
 | API tokens for CI | better-auth's api-key plugin, exchanged for a JWT at the issuer | The plugin already holds the operator's credential; the operator stays stateless and revocation stays in one place |
 | Dashboard sessions | Rotating refresh tokens (`offline_access`), one per browser in `localStorage` | Renewal that needs no redirect and no framing of the login page; rotation is what makes browser storage defensible |
@@ -729,6 +733,55 @@ preserved across upgrades:
   mints a client per app, and the account directory and client management
   under `/kitchen`.
 - `bootstrapToken` — the first-administrator link, below.
+
+The same secret carries the two addresses the operator reaches the issuer at:
+`internalURL`, the cluster-internal address of the published listener, and
+`directoryURL`, the address of the private one. Both are optional and both
+fall back to the issuer, which is what a federated installation gets.
+
+### The `/kitchen` prefix is not published (settled)
+
+`/kitchen` is the operator's own corner of the identity provider: the account
+directory, the CI keys, and the management of the OAuth clients the operator
+registered. It is not part of any standard — OpenID Connect answers "who holds
+this token" and nothing else — and it answers to the service credential alone.
+
+It used to be served on the same listener as everything else, and the auth
+HTTPRoute sends `PathPrefix /` of `auth.<baseDomain>` at that listener. So the
+prefix was on the internet, and whoever held `serviceKey` could, from
+anywhere, enumerate every account, mint a CI key for any project, delete keys,
+and rewrite every operator-registered client's redirect list — an
+account-takeover primitive against every application holding an `oidcClient`
+claim, and against the preview gate. The key is 64 random characters compared
+by hash, so this was the blast radius of a *leaked* key rather than a guessable
+one; the fix is to make a leaked key useless from outside the cluster.
+
+The service therefore listens twice:
+
+| | Published listener | Private listener |
+|---|---|---|
+| Port | `auth.port` (8080) | `auth.internalPort` (8081) |
+| Service | `<release>-auth` | `<release>-auth-internal` |
+| Named by an HTTPRoute | yes, `PathPrefix /` | **no** |
+| Serves | OIDC, the hosted pages, `/bootstrap`, the probes | `/kitchen/*` and the probes |
+| Under `/kitchen` | `404`, the words an issuer without the prefix uses | the routing table in `auth/src/directory.ts` |
+| Anything else | the issuer | `404` |
+
+Nothing routes to the second Service, and the chart's only reference to it is
+the `directoryURL` it writes into `<release>-auth`;
+`internal/idp/chart_test.go` fails if an HTTPRoute ever names it. There is no
+second, belt-and-braces route rule refusing the path on the public hostname,
+because Gateway API's standard channel has no fixed-response filter — the
+refusal is the service's own 404.
+
+The prefix is also rate-limited, per source address, by the platform rather
+than by better-auth: it is mounted ahead of the better-auth catch-all, so
+better-auth's limiter has never seen a request to it. `auth.internalRateLimit`
+is requests per minute per address (300 by default, 0 for none), the refusal is
+a `429` with `Retry-After`, and every refusal under the prefix — the rate
+limit, a missing key, a key the issuer did not issue, a key that is not the
+operator's, and a call to `/kitchen` on the published listener — is logged with
+the address it came from.
 
 ### Bootstrap (settled)
 

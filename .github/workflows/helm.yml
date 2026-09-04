@@ -858,6 +858,8 @@ jobs:
           issuer="https://auth.apps.example.com"
           # Reach the service directly, with the Host the Gateway would set.
           base="http://kitchen-auth.kitchen-system.svc"
+          # The private listener, on the Service no HTTPRoute names.
+          private="http://kitchen-auth-internal.kitchen-system.svc"
 
           # One pod runs the whole check: discovery, then dynamic client
           # registration with the credential the operator is given, then the
@@ -883,6 +885,21 @@ jobs:
                 -d '{\"client_name\":\"anon\",\"redirect_uris\":[\"https://anon.example.com/cb\"]}' \
                 ${base}/oauth2/register)
               [ \"\${status}\" != 200 ]
+
+              # The operator's own prefix is not on the published Service, and
+              # holding the service key does not change that: the route sends
+              # PathPrefix / of the issuer's hostname here, so anything this
+              # Service answers is answered to the internet.
+              status=\$(curl -s -o /dev/null -w '%{http_code}' \
+                -H 'Host: auth.apps.example.com' -H 'x-api-key: ${service_key}' \
+                ${base}/kitchen/accounts)
+              [ \"\${status}\" = 404 ]
+
+              # It is on the private Service, to the operator's credential and
+              # to nothing else.
+              curl -fsS -o /dev/null -H 'x-api-key: ${service_key}' ${private}/kitchen/accounts
+              status=\$(curl -s -o /dev/null -w '%{http_code}' ${private}/kitchen/accounts)
+              [ \"\${status}\" = 401 ]
 
               curl -fsS -o /dev/null -H 'Host: auth.apps.example.com' \
                 '${base}/bootstrap?token=${bootstrap_token}'

@@ -41,6 +41,13 @@ spec:
           env:
             - name: PORT
               value: {{ .Values.auth.port | quote }}
+            # The private listener: the operator's `/kitchen` prefix, on a
+            # port no HTTPRoute names. The published listener answers 404
+            # there — see templates/auth/service-internal.yaml.
+            - name: KITCHEN_AUTH_INTERNAL_PORT
+              value: {{ .Values.auth.internalPort | quote }}
+            - name: KITCHEN_AUTH_INTERNAL_RATE_LIMIT
+              value: {{ .Values.auth.internalRateLimit | quote }}
             - name: KITCHEN_AUTH_BASE_URL
               value: {{ include "kitchen.authIssuer" . | quote }}
             - name: BETTER_AUTH_SECRET
@@ -109,6 +116,9 @@ spec:
           ports:
             - name: http
               containerPort: {{ .Values.auth.port }}
+              protocol: TCP
+            - name: internal
+              containerPort: {{ .Values.auth.internalPort }}
               protocol: TCP
           # The service waits for Postgres on start, so the first rollout can
           # take as long as the database takes to initialise.

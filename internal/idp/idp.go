@@ -37,9 +37,10 @@ import (
 
 // Secret keys the chart writes into the identity provider's secret.
 const (
-	SecretKeyIssuer      = "issuer"
-	SecretKeyServiceKey  = "serviceKey"
-	SecretKeyInternalURL = "internalURL"
+	SecretKeyIssuer       = "issuer"
+	SecretKeyServiceKey   = "serviceKey"
+	SecretKeyInternalURL  = "internalURL"
+	SecretKeyDirectoryURL = "directoryURL"
 )
 
 // DiscoveryPath is where every OIDC client looks for the issuer's metadata.
@@ -61,6 +62,18 @@ type Config struct {
 	// inside, where the chart points it at the service instead.
 	BaseURL string
 
+	// DirectoryURL is where the operator reaches the `/kitchen` prefix: the
+	// account directory, the CI keys and the management of the clients it
+	// registered. It is a different address from BaseURL because it is a
+	// different listener — the chart publishes the issuer on the shared
+	// Gateway and does not publish this one, which is what keeps a surface
+	// that mints CI keys and rewrites redirect lists off the internet.
+	//
+	// It falls back to BaseURL, which is what a federated issuer gets: it
+	// serves no such prefix either way, and the operator finds that out with
+	// a 404 and ErrNoDirectory.
+	DirectoryURL string
+
 	// ServiceKey authenticates client registration.
 	ServiceKey string
 }
@@ -69,9 +82,10 @@ type Config struct {
 // the chart writes.
 func ConfigFromSecret(secret *corev1.Secret) (Config, error) {
 	cfg := Config{
-		Issuer:     strings.TrimSuffix(strings.TrimSpace(string(secret.Data[SecretKeyIssuer])), "/"),
-		BaseURL:    strings.TrimSuffix(strings.TrimSpace(string(secret.Data[SecretKeyInternalURL])), "/"),
-		ServiceKey: strings.TrimSpace(string(secret.Data[SecretKeyServiceKey])),
+		Issuer:       strings.TrimSuffix(strings.TrimSpace(string(secret.Data[SecretKeyIssuer])), "/"),
+		BaseURL:      strings.TrimSuffix(strings.TrimSpace(string(secret.Data[SecretKeyInternalURL])), "/"),
+		DirectoryURL: strings.TrimSuffix(strings.TrimSpace(string(secret.Data[SecretKeyDirectoryURL])), "/"),
+		ServiceKey:   strings.TrimSpace(string(secret.Data[SecretKeyServiceKey])),
 	}
 	var missing []string
 	if cfg.Issuer == "" {
@@ -84,10 +98,21 @@ func ConfigFromSecret(secret *corev1.Secret) (Config, error) {
 		return Config{}, fmt.Errorf("secret %s/%s is missing the keys: %s",
 			secret.Namespace, secret.Name, strings.Join(missing, ", "))
 	}
+	return defaults(cfg), nil
+}
+
+// defaults fills in the two addresses that are allowed to be absent. An
+// installation whose chart predates the private listener has no directoryURL
+// in its secret, and one federating to an issuer of its own has neither
+// address: both then reach the issuer the way everybody else does.
+func defaults(cfg Config) Config {
 	if cfg.BaseURL == "" {
 		cfg.BaseURL = cfg.Issuer
 	}
-	return cfg, nil
+	if cfg.DirectoryURL == "" {
+		cfg.DirectoryURL = cfg.BaseURL
+	}
+	return cfg
 }
 
 // Metadata is the part of the issuer's discovery document Kitchen uses.
@@ -107,8 +132,10 @@ type Client struct {
 
 // New builds a client with a timeout, so an issuer that stops answering
 // costs a reconcile rather than a controller worker.
+// A Config assembled by hand rather than read from the secret is defaulted
+// here too, so that a caller which knows only the issuer still reaches it.
 func New(cfg Config) *Client {
-	return &Client{cfg: cfg, http: &http.Client{Timeout: 15 * time.Second}}
+	return &Client{cfg: defaults(cfg), http: &http.Client{Timeout: 15 * time.Second}}
 }
 
 // WithHTTPClient replaces the HTTP client, for tests and for callers that
@@ -274,6 +301,10 @@ func (c *Client) request(ctx context.Context, method, endpoint string, body io.R
 
 // HostHeaderFor returns the Host header a request to one of the issuer's
 // endpoints should carry, or "" when the address speaks for itself.
+//
+// The `/kitchen` prefix is one of the addresses that speak for themselves: it
+// is served on a listener of its own, which routes on the path alone and has
+// no virtual host to be told about.
 func HostHeaderFor(cfg Config, endpoint string) string {
 	if cfg.BaseURL == cfg.Issuer {
 		return ""

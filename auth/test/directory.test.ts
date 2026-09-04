@@ -22,7 +22,7 @@ describe("the account directory", () => {
 	let bo: { id: string; email: string };
 
 	const asOperator = (path: string) =>
-		kitchen.fetch(path, { headers: { "x-api-key": kitchen.serviceKey } });
+		kitchen.internal(path, { headers: { "x-api-key": kitchen.serviceKey } });
 
 	before(async () => {
 		kitchen = await startHarness();
@@ -82,12 +82,12 @@ describe("the account directory", () => {
 	});
 
 	it("refuses a caller with no credential at all", async () => {
-		const response = await kitchen.fetch("/kitchen/accounts");
+		const response = await kitchen.internal("/kitchen/accounts");
 		assert.equal(response.status, 401);
 	});
 
 	it("refuses a credential the issuer never handed out", async () => {
-		const response = await kitchen.fetch("/kitchen/accounts", {
+		const response = await kitchen.internal("/kitchen/accounts", {
 			headers: { "x-api-key": randomBytes(32).toString("hex") },
 		});
 		assert.equal(response.status, 401);
@@ -96,7 +96,7 @@ describe("the account directory", () => {
 	it("refuses a valid key that is not the operator's, and says which", async () => {
 		const key = await issueKeyFor(kitchen, anna.id);
 
-		const response = await kitchen.fetch("/kitchen/accounts", { headers: { "x-api-key": key } });
+		const response = await kitchen.internal("/kitchen/accounts", { headers: { "x-api-key": key } });
 		assert.equal(response.status, 403, "a CI key is a valid credential belonging to somebody else");
 		const { error } = (await response.json()) as { error: string };
 		assert.match(error, /operator/);
@@ -106,7 +106,7 @@ describe("the account directory", () => {
 		// No api key, cookie or not: the directory reads no session at all, so
 		// a signed-in administrator's browser gets the same refusal a stranger
 		// does.
-		const response = await kitchen.fetch("/kitchen/accounts", {
+		const response = await kitchen.internal("/kitchen/accounts", {
 			headers: { cookie: "better-auth.session_token=whatever" },
 		});
 		assert.equal(response.status, 401);
@@ -120,7 +120,7 @@ describe("the account directory", () => {
 	});
 
 	it("names the methods an endpoint answers", async () => {
-		const response = await kitchen.fetch("/kitchen/accounts", {
+		const response = await kitchen.internal("/kitchen/accounts", {
 			method: "POST",
 			headers: { "x-api-key": kitchen.serviceKey, "content-type": "application/json" },
 			body: "{}",

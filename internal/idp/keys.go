@@ -116,7 +116,7 @@ type keysResponse struct {
 // Keys is every CI key belonging to one project, oldest first.
 func (c *Client) Keys(ctx context.Context, project string) ([]Key, error) {
 	what := fmt.Sprintf("listing %s's keys", project)
-	endpoint := c.cfg.BaseURL + KeysPath + "?" + url.Values{"project": []string{project}}.Encode()
+	endpoint := c.cfg.DirectoryURL + KeysPath + "?" + url.Values{"project": []string{project}}.Encode()
 	body, err := c.callDirectory(ctx, "GET", endpoint, nil, what)
 	if errors.Is(err, errDirectoryNotFound) {
 		return nil, fmt.Errorf("%s: %w", what, ErrNoKeyDirectory)
@@ -142,7 +142,7 @@ func (c *Client) CreateKey(ctx context.Context, project, name string) (*IssuedKe
 	if err != nil {
 		return nil, err
 	}
-	body, err := c.callDirectory(ctx, "POST", c.cfg.BaseURL+KeysPath, payload, what)
+	body, err := c.callDirectory(ctx, "POST", c.cfg.DirectoryURL+KeysPath, payload, what)
 	switch {
 	case errors.Is(err, errDirectoryNotFound):
 		return nil, fmt.Errorf("%s: %w", what, ErrNoKeyDirectory)
@@ -166,7 +166,7 @@ func (c *Client) CreateKey(ctx context.Context, project, name string) (*IssuedKe
 func (c *Client) DeleteKey(ctx context.Context, project, name string) (*Key, error) {
 	what := fmt.Sprintf("revoking the key %q of %s", name, project)
 	query := url.Values{"project": []string{project}, "name": []string{name}}
-	body, err := c.callDirectory(ctx, "DELETE", c.cfg.BaseURL+KeysPath+"?"+query.Encode(), nil, what)
+	body, err := c.callDirectory(ctx, "DELETE", c.cfg.DirectoryURL+KeysPath+"?"+query.Encode(), nil, what)
 	if errors.Is(err, errDirectoryNotFound) {
 		return nil, fmt.Errorf("%s: %w", what, ErrKeyNotFound)
 	}

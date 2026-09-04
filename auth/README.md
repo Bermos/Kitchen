@@ -11,7 +11,11 @@ What matters to everything else is the contract, not this implementation:
 
 ## What it serves
 
-Everything is mounted at the root, so the issuer is the origin itself:
+Everything is mounted at the root, so the issuer is the origin itself. It is
+served on **two listeners**: the public one below, which the chart publishes on
+the shared Gateway, and a private one on `KITCHEN_AUTH_INTERNAL_PORT` that
+serves the operator's `/kitchen` prefix and nothing else — see
+[The operator's own prefix](#the-operators-own-prefix).
 
 | Path | Purpose |
 |---|---|
@@ -23,8 +27,8 @@ Everything is mounted at the root, so the issuer is the origin itself:
 | `/get-session`, `/list-accounts`, `/list-sessions` | What the dashboard's account screen reads |
 | `/update-user`, `/change-password`, `/revoke-session` | What it writes — see [docs/AUTH.md](../docs/AUTH.md), "Managing an account" |
 | `/bootstrap` | First-administrator flow, see below |
-| `/kitchen/*` | Kitchen's own prefix, for the operator's service credential only — see below |
-| `/healthz`, `/readyz` | Probes; readiness additionally requires Postgres |
+| `/kitchen/*` | **404 here.** Kitchen's own prefix is served on the private listener only — see below |
+| `/healthz`, `/readyz` | Probes; readiness additionally requires Postgres. Both listeners answer them |
 
 Plugins: OAuth/OIDC provider, SSO (upstream OIDC and SAML providers), social
 login (GitHub), organizations, passkeys, two-factor and API keys.
@@ -94,6 +98,22 @@ service credential and to nothing else — not to a signed-in administrator, and
 not to a CI key, which is an ordinary account's credential. It exists because
 the platform needs two things OpenID Connect has no answer to.
 
+**It is served on the private listener alone** (`KITCHEN_AUTH_INTERNAL_PORT`,
+8081 by default), and the public one answers `404` under the prefix, in the
+words an issuer that never had it would use. The chart fronts the private port
+with a second Service, `<release>-auth-internal`, that no HTTPRoute names —
+because the auth route sends `PathPrefix /` of the issuer's hostname at the
+public Service, and this prefix enumerates accounts, mints CI keys for any
+project and rewrites an OAuth client's redirect list on the strength of one
+header. The operator is told where to find it through `directoryURL` in the
+`<release>-auth` secret.
+
+The prefix is rate-limited per source address by
+`KITCHEN_AUTH_INTERNAL_RATE_LIMIT` (requests per minute, `300` by default, `0`
+for none), because it is mounted ahead of the better-auth catch-all and so
+better-auth's own limiter never sees it. Over the limit is a `429` with
+`Retry-After`; every refusal under the prefix names the address it came from.
+
 | | |
 |---|---|
 | `GET /kitchen/accounts` | Every account that belongs to a **person**, or the one holding `?email=`. It is what the operator list is seeded from and what the dashboard's people picker resolves an address with |
@@ -162,7 +182,9 @@ third row in that table, not a second mechanism.
 | `KITCHEN_AUTH_BASE_URL` | yes | Public issuer URL, e.g. `https://auth.apps.example.com` |
 | `BETTER_AUTH_SECRET` | yes | Signing secret (≥16 characters) |
 | `DATABASE_URL` | yes | Postgres connection string |
-| `PORT` | no | Listen port, default `8080` |
+| `PORT` | no | Listen port for the published listener, default `8080` |
+| `KITCHEN_AUTH_INTERNAL_PORT` | no | Listen port for the private `/kitchen` listener, default `8081`. Must differ from `PORT` |
+| `KITCHEN_AUTH_INTERNAL_RATE_LIMIT` | no | Requests into `/kitchen` per minute per source address, default `300`, `0` for none |
 | `KITCHEN_AUTH_SERVICE_KEY` | no | Operator API key, exactly the key the operator sends (≥64 characters) |
 | `KITCHEN_AUTH_SERVICE_ACCOUNT_EMAIL` | no | Machine account owning that key, default `operator@kitchen.local` |
 | `KITCHEN_AUTH_BOOTSTRAP_TOKEN` | no | Token for the first-administrator link |

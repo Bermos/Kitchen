@@ -5,6 +5,16 @@
 # JWKS, the OAuth endpoints and the hosted login pages. The Gateway itself is
 # created by the Kitchen reconciler, so this route stays unaccepted until the
 # operator has programmed it.
+#
+# `PathPrefix /` here is why the operator's own `/kitchen` prefix is not
+# served on this backend at all. Everything this Service answers is answered
+# to the internet, and that prefix enumerates accounts, mints CI keys for any
+# project and rewrites an OAuth client's redirect list on the strength of one
+# header. It lives on a second listener behind
+# templates/auth/service-internal.yaml, which no route names, and the port
+# below answers 404 for it. There is no belt-and-braces rule refusing the path
+# here because Gateway API's standard channel has no fixed-response filter:
+# the refusal is the service's own.
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:

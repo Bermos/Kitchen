@@ -1764,8 +1764,11 @@ kubectl delete namespace kitchen-system
 | `auth.github.existingSecret` / `.existingSecretKey` | `""` / `clientSecret` | Read the client secret from an existing secret. |
 | `auth.allowSocialSignUp` | `false` | Let an unknown GitHub account create a Kitchen account. |
 | `auth.trustedOrigins` | `[]` | Extra browser origins allowed to make signed-in calls to the identity provider. The dashboard's own is derived from `api.externalURL`. |
-| `auth.port` | `8080` | Container port. |
-| `auth.service.type` / `.port` | `ClusterIP` / `80` | |
+| `auth.port` | `8080` | Container port for the published listener: OIDC, the hosted pages, the bootstrap link. |
+| `auth.internalPort` | `8081` | Container port for the private listener, which serves the operator's `/kitchen` prefix. The published one answers 404 there. |
+| `auth.internalRateLimit` | `300` | Requests into `/kitchen` per minute per source address; `0` for none. |
+| `auth.service.type` / `.port` | `ClusterIP` / `80` | The Service the HTTPRoute names, and the only one published. |
+| `auth.internalService.port` / `.annotations` | `80` / `{}` | The Service in front of the private listener, `<release>-auth-internal`. No HTTPRoute references it. |
 | `auth.route.enabled` | `true` | Publish the issuer on the shared Gateway. |
 | `auth.route.host` | `""` | Defaults to `auth.<baseDomain>`. This is the OIDC issuer. |
 | `auth.route.gateway.name` / `.namespace` | `kitchen` / `kitchen-system` | Must match the operator's constants. |

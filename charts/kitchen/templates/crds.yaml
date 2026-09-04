@@ -4020,7 +4020,10 @@ spec:
                       operator's view of the identity provider: the keys issuer, serviceKey
                       and, optionally, internalURL — a cluster-internal address for the same
                       issuer, for clusters that cannot resolve their own base domain from the
-                      inside. The chart writes it as <release>-auth. Without it the operator
+                      inside — and directoryURL, where the operator alone reaches the private
+                      /kitchen prefix, which is served on a listener no HTTPRoute publishes.
+                      Both addresses fall back to the issuer when absent.
+                      The chart writes it as <release>-auth. Without it the operator
                       cannot register OAuth clients, so nothing that depends on one — the
                       preview gate, later the oidcClient claims — can be reconciled.
                     properties:

@@ -41,7 +41,7 @@ describe("the operator's OAuth clients", () => {
 	}
 
 	function setRedirectURIs(clientId: string, redirectURIs: string[], key = kitchen.serviceKey) {
-		return kitchen.fetch("/kitchen/clients", {
+		return kitchen.internal("/kitchen/clients", {
 			method: "PUT",
 			headers: { "content-type": "application/json", "x-api-key": key },
 			body: JSON.stringify({ clientId, redirectURIs }),
@@ -98,7 +98,7 @@ describe("the operator's OAuth clients", () => {
 	it("deregisters a client with its claim", async () => {
 		const clientId = await register("gone", ["https://gone.apps.example.com/auth/callback"]);
 
-		const removal = await kitchen.fetch(`/kitchen/clients?clientId=${clientId}`, {
+		const removal = await kitchen.internal(`/kitchen/clients?clientId=${clientId}`, {
 			method: "DELETE",
 			headers: { "x-api-key": kitchen.serviceKey },
 		});
@@ -106,7 +106,7 @@ describe("the operator's OAuth clients", () => {
 
 		// Gone means gone: the same call again is a 404, which is what the
 		// operator's finalizer reads as "already removed".
-		const again = await kitchen.fetch(`/kitchen/clients?clientId=${clientId}`, {
+		const again = await kitchen.internal(`/kitchen/clients?clientId=${clientId}`, {
 			method: "DELETE",
 			headers: { "x-api-key": kitchen.serviceKey },
 		});
@@ -116,7 +116,7 @@ describe("the operator's OAuth clients", () => {
 	it("answers only to the operator's credential", async () => {
 		const clientId = await register("guarded", ["https://guarded.apps.example.com/auth/callback"]);
 
-		const anonymous = await kitchen.fetch("/kitchen/clients", {
+		const anonymous = await kitchen.internal("/kitchen/clients", {
 			method: "PUT",
 			headers: { "content-type": "application/json" },
 			body: JSON.stringify({ clientId, redirectURIs: ["https://impostor.example.com/callback"] }),
@@ -154,7 +154,7 @@ describe("the dashboard's own client", () => {
 	});
 
 	it("is not the operator's to change", async () => {
-		const response = await kitchen.fetch("/kitchen/clients", {
+		const response = await kitchen.internal("/kitchen/clients", {
 			method: "PUT",
 			headers: { "content-type": "application/json", "x-api-key": kitchen.serviceKey },
 			body: JSON.stringify({
@@ -166,7 +166,7 @@ describe("the dashboard's own client", () => {
 	});
 
 	it("is not the operator's to remove", async () => {
-		const response = await kitchen.fetch(`/kitchen/clients?clientId=${uiClientId}`, {
+		const response = await kitchen.internal(`/kitchen/clients?clientId=${uiClientId}`, {
 			method: "DELETE",
 			headers: { "x-api-key": kitchen.serviceKey },
 		});

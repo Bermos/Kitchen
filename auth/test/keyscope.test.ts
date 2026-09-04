@@ -35,6 +35,10 @@ describe("what an API key may reach", () => {
 	const withKey = (path: string, key: string, init: RequestInit = {}) =>
 		kitchen.fetch(path, { ...init, headers: { ...init.headers, "x-api-key": key } });
 
+	/** The same call on the private listener, which is where `/kitchen` lives. */
+	const withKeyInternally = (path: string, key: string, init: RequestInit = {}) =>
+		kitchen.internal(path, { ...init, headers: { ...init.headers, "x-api-key": key } });
+
 	/** A client registration, as the operator makes it. */
 	const registration = {
 		client_name: "shop",
@@ -45,7 +49,7 @@ describe("what an API key may reach", () => {
 	before(async () => {
 		kitchen = await startHarness();
 
-		const issued = await withKey("/kitchen/keys", kitchen.serviceKey, {
+		const issued = await withKeyInternally("/kitchen/keys", kitchen.serviceKey, {
 			method: "POST",
 			headers: { "content-type": "application/json" },
 			body: JSON.stringify({ project: "shop", name: "nightly" }),
@@ -157,7 +161,7 @@ describe("what an API key may reach", () => {
 		});
 		assert.equal(registered.status, 200, await registered.clone().text());
 
-		const accounts = await withKey("/kitchen/accounts", kitchen.serviceKey);
+		const accounts = await withKeyInternally("/kitchen/accounts", kitchen.serviceKey);
 		assert.equal(accounts.status, 200, await accounts.clone().text());
 	});
 

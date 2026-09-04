@@ -1145,11 +1145,30 @@ auth:
   # screen's password change and session list are refused from anywhere else —
   # so this is trust, not merely a CORS header.
   trustedOrigins: []
-  # -- Container port the service binds to.
+  # -- Container port the service binds to. This is the published listener:
+  # OpenID Connect, the hosted sign-in pages and the bootstrap link.
   port: 8080
+  # -- Container port the private listener binds to. It serves the operator's
+  # `/kitchen` prefix — the account directory, CI keys and the management of
+  # the OAuth clients the operator registered — and the published listener
+  # answers 404 there. Nothing routes to it from outside the cluster.
+  internalPort: 8081
+  # -- Requests one source address may make into the `/kitchen` prefix per
+  # minute, or 0 for no limit. The prefix is Kitchen's rather than
+  # better-auth's, so better-auth's own rate limiting never sees it.
+  internalRateLimit: 300
   service:
     type: ClusterIP
-    # -- Service port fronting the identity provider.
+    # -- Service port fronting the identity provider. This is the one the
+    # HTTPRoute names, and the only one published.
+    port: 80
+    annotations: {}
+  # The Service in front of the private listener. It is deliberately a second
+  # Service rather than a second port on the one above: the published Service
+  # then has exactly one port, and no route can name the wrong one.
+  internalService:
+    # -- Service port fronting the private `/kitchen` prefix. No HTTPRoute
+    # references it.
     port: 80
     annotations: {}
   route:

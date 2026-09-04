@@ -68,6 +68,11 @@ export interface KitchenRequest {
 	body: Record<string, unknown>;
 	apiKey: string | null;
 	/**
+	 * Where the call came from, for the log line a refusal writes. It is
+	 * reported and never trusted: nothing here decides anything on it.
+	 */
+	source?: string;
+	/**
 	 * The account the credential belongs to, filled in by the prefix's own
 	 * check before any route runs. It is the service account — that is what
 	 * the check establishes — and a route needs it when what it may do
@@ -116,7 +121,7 @@ export async function handleKitchenRequest(
 	config: Config,
 	request: KitchenRequest,
 ): Promise<KitchenResponse> {
-	const caller = await authenticate(auth, config, request.apiKey);
+	const caller = await authenticate(auth, config, request);
 	if ("refusal" in caller) {
 		return caller.refusal;
 	}
@@ -147,13 +152,21 @@ export async function handleKitchenRequest(
  * read the account table, and answering it with "invalid key" would send
  * whoever is holding it looking for the wrong fault. A human session does not
  * reach here at all, because nothing here looks at a session cookie.
+ *
+ * Every refusal names the address it refused. The prefix is only reachable
+ * from inside the cluster, so a rejected call here is either a workload that
+ * should not be making it or somebody who has already got that far, and
+ * neither is findable from a log line that says only that a key was wrong.
  */
 async function authenticate(
 	auth: Auth,
 	config: Config,
-	apiKey: string | null,
+	request: KitchenRequest,
 ): Promise<{ refusal: KitchenResponse } | { operator: string }> {
+	const from = { source: request.source ?? "unknown", path: request.path, method: request.method };
+	const apiKey = request.apiKey;
 	if (!apiKey) {
+		log.warn("refused an unauthenticated call to the Kitchen prefix", from);
 		return {
 			refusal: {
 				status: 401,
@@ -164,6 +177,7 @@ async function authenticate(
 
 	const verified = await apiKeys(auth).verifyApiKey({ body: { key: apiKey } });
 	if (!verified.valid || !verified.key) {
+		log.warn("refused a call to the Kitchen prefix carrying a key the issuer did not issue", from);
 		return { refusal: { status: 401, body: { error: "invalid api key" } } };
 	}
 
@@ -171,7 +185,7 @@ async function authenticate(
 	const ctx = await auth.$context;
 	const owner = ownerId ? await ctx.internalAdapter.findUserById(ownerId) : null;
 	if (!owner || normalizeEmail(owner.email) !== normalizeEmail(config.serviceAccountEmail)) {
-		log.warn("refused a Kitchen API call from a key that is not the operator's");
+		log.warn("refused a Kitchen API call from a key that is not the operator's", from);
 		return {
 			refusal: {
 				status: 403,

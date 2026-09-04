@@ -453,15 +453,19 @@ func (r *ResourceClaimReconciler) deregisterOIDCClient(
 		RegistrationToken: string(record.Data[oidcKeyRegistrationToken]),
 	}
 	cfg := idp.Config{
-		Issuer:     string(record.Data[oidcKeyIssuer]),
-		BaseURL:    string(record.Data[oidcKeyInternalURL]),
-		ServiceKey: "",
+		Issuer:  string(record.Data[oidcKeyIssuer]),
+		BaseURL: string(record.Data[oidcKeyInternalURL]),
 	}
 	if cfg.BaseURL == "" {
 		cfg.BaseURL = cfg.Issuer
 	}
-	if key, err := r.serviceKeyFor(ctx); err == nil {
-		cfg.ServiceKey = key
+	// The credential and the address of the directory are the platform's as
+	// it is now, not as it was when the client was registered: a rotated key
+	// has to be the one that is used, and deregistering goes through the
+	// private `/kitchen` prefix, whose address the record predates.
+	if live, err := r.platformIDP(ctx); err == nil {
+		cfg.ServiceKey = live.ServiceKey
+		cfg.DirectoryURL = live.DirectoryURL
 	}
 
 	if err := idp.New(cfg).DeleteClient(ctx, handle); err != nil {
@@ -474,27 +478,25 @@ func (r *ResourceClaimReconciler) deregisterOIDCClient(
 	return nil
 }
 
-// serviceKeyFor reads the credential the operator registers clients with. It
-// is looked up again at deletion rather than kept in the record: a rotated
-// key has to be the one that is used, and the record is about the client.
-func (r *ResourceClaimReconciler) serviceKeyFor(ctx context.Context) (string, error) {
+// platformIDP reads the identity provider the platform runs now — the
+// credential the operator authenticates with, and the two addresses it
+// reaches the issuer at. It is looked up again at deletion rather than kept
+// in the record: the record is about the client, and neither a rotated key
+// nor a moved listener is the client changing.
+func (r *ResourceClaimReconciler) platformIDP(ctx context.Context) (idp.Config, error) {
 	kitchen := &kitchenv1alpha1.Kitchen{}
 	if err := r.Get(ctx, types.NamespacedName{Name: KitchenSingletonName}, kitchen); err != nil {
-		return "", err
+		return idp.Config{}, err
 	}
 	if kitchen.Spec.Auth.SecretRef == nil {
-		return "", errors.New("the platform runs no identity provider")
+		return idp.Config{}, errors.New("the platform runs no identity provider")
 	}
 	secret := &corev1.Secret{}
 	key := types.NamespacedName{Namespace: PlatformNamespace, Name: kitchen.Spec.Auth.SecretRef.Name}
 	if err := r.Get(ctx, key, secret); err != nil {
-		return "", err
+		return idp.Config{}, err
 	}
-	cfg, err := idp.ConfigFromSecret(secret)
-	if err != nil {
-		return "", err
-	}
-	return cfg.ServiceKey, nil
+	return idp.ConfigFromSecret(secret)
 }
 
 // writeOIDCRecord stores what the operator needs to manage the client later,
