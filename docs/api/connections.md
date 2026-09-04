@@ -177,13 +177,17 @@ a Redis address carries its own password:
 
 The scheme is `redis://` or `rediss://` and nothing else — `rediss` is the
 encrypted one, and the binding tells the application which it got rather than
-letting it guess. Its `config` says what the operator knows about the server
+letting it guess. The URL's password is the server's own, and **every claim
+through this connection is handed it**: what separates two projects here is
+the logical database each holds, which is not a credential boundary — see
+[claims](claims.md) for what that does and does not promise, and for when to
+give a project the platform's own `valkey` instead. Its `config` says what the operator knows about the server
 and the provisioner will not guess:
 
 | Field | Default | What it does |
 |---|---|---|
 | `usage` | unset | What the server's `maxmemory-policy` is configured for: `cache` for an evicting server, `queue` for one that refuses writes when it is full. Left unset, a claim naming a `usage` is **refused** — a queue bound to an evicting server loses jobs silently, and that is the incident this contract exists to prevent |
-| `databases` | `16` | How many logical databases the server offers. A claim gets one and every preview of it gets another, so a claim whose preview would run past the last is refused rather than bound to a keyspace the server rejects |
+| `databases` | `16` | How many logical databases the server offers (`CONFIG GET databases` at the server; Redis serves 16 unless it was configured otherwise). Each claim through this connection holds one and each of its previews holds another, allocated out of that pool and recorded on the connection's `status.cache.databases`; a claim or preview that finds every one held is **refused**, naming the constraint, rather than sharing a keyspace somebody else is using. Database 0 is never allocated: bindings made before the platform allocated databases at all selected it, and they keep it |
 
 Testing it dials the server and authenticates — `PING`, and the server's own
 `+PONG`. Both providers report the `cache` capability.

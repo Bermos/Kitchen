@@ -51,6 +51,9 @@ func testScheme(t *testing.T) *runtime.Scheme {
 	if err := appsv1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
+	if err := kitchenv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
 	return scheme
 }
 

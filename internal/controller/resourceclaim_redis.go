@@ -60,6 +60,12 @@ import (
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;delete
 
+// The external cache provider provisions nothing, but it does write: which
+// logical database of the server each claim and each preview holds is
+// recorded on the Connection's own status, because that is the only place
+// every claim through one server can see what the others were given.
+// +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=connections/status,verbs=get;update;patch
+
 // redisContract is the claimContract for type redis.
 type redisContract struct{}
 

@@ -84,6 +84,41 @@ type ConnectionStatus struct {
 	// never on provider names.
 	// +optional
 	Capabilities []Capability `json:"capabilities,omitempty"`
+
+	// Cache is what a cache provider records about the server this
+	// Connection reaches. Only the `redis` provider writes it: an external
+	// server's logical databases are one finite pool shared by every claim
+	// through the Connection, so which claim holds which has to be written
+	// down somewhere both a later reconcile and every other claim can read.
+	// +optional
+	Cache *CacheConnectionStatus `json:"cache,omitempty"`
+}
+
+// CacheConnectionStatus is the record of what has been handed out at the
+// server a cache Connection reaches.
+type CacheConnectionStatus struct {
+	// Databases is every logical database of this server the platform has
+	// handed out, and who holds it. It is the allocation itself and not a
+	// report of one: a claim's database is read back from here on every
+	// reconcile, which is what keeps it the same one.
+	// +optional
+	Databases []CacheDatabase `json:"databases,omitempty"`
+}
+
+// CacheDatabase is one logical database at an external cache server.
+type CacheDatabase struct {
+	// Database is the logical database number, as the binding's URL selects
+	// it (redis://host:6379/3).
+	// +kubebuilder:validation:Minimum=0
+	Database int `json:"database"`
+
+	// Holder is what holds it: the claim's own provider-side name, or
+	// "<name>/<environment>" for one of its previews. Empty means the
+	// database has been handed out before and given back — it can be handed
+	// out again, and the platform cannot empty a server it does not run, so
+	// one that has never been used is preferred to it.
+	// +optional
+	Holder string `json:"holder,omitempty"`
 }
 
 // +kubebuilder:object:root=true
