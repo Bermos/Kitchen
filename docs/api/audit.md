@@ -24,7 +24,8 @@ things the reconcilers decided on their own, and `value` carries the one
 number some events have (a finished build's duration in seconds, a scheduled
 run's). Types:
 `build.succeeded`, `build.failed`, `release.promoted`, `release.rolledBack`,
-`preview.created`, `preview.removed`, `preview.refused`, `project.created`, `project.deleted`,
+`release.redeployed`, `preview.created`, `preview.removed`, `preview.refused`,
+`project.created`, `project.deleted`,
 `claim.created`, `claim.deleted`, `claim.bound`, `claim.failed`,
 `run.started`, `run.succeeded`, `run.failed`, `secret.rotated`.
 
@@ -33,6 +34,13 @@ is the platform restarting a workload because a Secret it reads changed under
 it, and it names which workload and what it was reading. A pod roll at a
 moment nobody deployed anything has no other account of itself. The write that
 caused it is the audit log's, as a credential change.
+
+`release.redeployed` is the deploy no commit caused: somebody corrected a
+project setting and asked for the release the environment was already on to be
+cut again with it (see
+[redeploying](environments.md#redeploying-what-is-already-there)). It is its
+own type rather than a `release.promoted` so that "what changed when nothing
+was pushed" is answerable from the feed alone.
 
 The three `run.` types are one firing of a
 [scheduled job](processes.md); `process` and `run` name which, and `run` is

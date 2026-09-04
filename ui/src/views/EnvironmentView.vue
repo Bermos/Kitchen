@@ -94,6 +94,7 @@ function claimProvenanceFor(claim: Claim): string {
 const caller = computed(() => callerFor(data.value?.project.role, data.value?.environment.project));
 const mayDeploy = computed(() => may("PATCH /api/v1/environments/{name}", caller.value));
 const mayDeleteEnvironment = computed(() => may("DELETE /api/v1/environments/{name}", caller.value));
+const mayRedeploy = computed(() => may("POST /api/v1/environments/{name}/redeploy", caller.value));
 const moving = computed(() => environment.value?.phase === "Deploying" || environment.value?.phase === "Pending");
 // How old this screen is, and the reader's hold on it: every fetch above
 // reports into it and the header renders it.
@@ -213,6 +214,41 @@ async function deleteEnvironment() {
     });
     deleting.value = false;
     confirmingDelete.value = false;
+  }
+}
+
+// Redeploying is the same commit with today's settings (#392). It is beside
+// rollback because it is the other half of one question — a release freezes
+// the configuration it was cut with, so rollback is how you go back to an
+// older one and this is how a corrected setting reaches the one you are on.
+// The confirmation says what changes and what does not, because "redeploy" on
+// its own reads like a synonym for "deploy" and is not one.
+const confirmingRedeploy = ref(false);
+const redeploying = ref(false);
+async function redeployEnvironment() {
+  const env = environment.value;
+  if (!env) return;
+  redeploying.value = true;
+  try {
+    const accepted = await api.redeployEnvironment(env.name);
+    toast.add({
+      title: accepted.promotion
+        ? `${accepted.release} awaits ${env.name}'s requirements`
+        : `${env.name} is deploying ${accepted.release}`,
+      description: accepted.message,
+      color: "success",
+      icon: "i-lucide-refresh-cw",
+    });
+    confirmingRedeploy.value = false;
+    await refresh();
+  } catch (err) {
+    toast.add({
+      title: "Redeploying failed",
+      description: err instanceof Error ? err.message : String(err),
+      color: "error",
+    });
+  } finally {
+    redeploying.value = false;
   }
 }
 
@@ -338,6 +374,16 @@ function historyBy(entry: { reason: string; by?: string }): string {
             Delete preview
           </UButton>
           <UButton
+            v-if="mayRedeploy && environment.release"
+            color="neutral"
+            variant="subtle"
+            size="sm"
+            icon="i-lucide-refresh-cw"
+            @click="confirmingRedeploy = true"
+          >
+            Redeploy
+          </UButton>
+          <UButton
             v-if="mayDeploy && otherReleases.length"
             color="neutral"
             variant="subtle"
@@ -371,6 +417,24 @@ function historyBy(entry: { reason: string; by?: string }): string {
         :error="signals.error.value"
         variant="strip"
       />
+
+      <!-- Redeploy confirmation. It names both halves of the change, since
+           the whole point of the action is that one of them does not move. -->
+      <UModal
+        :open="confirmingRedeploy"
+        :title="`Redeploy ${environment.name}?`"
+        :description="`The same commit as ${environment.release}, today's settings. A new release is cut from the commit this environment is already running, carrying the project's configuration as it stands now, and deployed here. The release running now is left as it is, so rolling back to it still puts back what was there.`"
+        @update:open="(open: boolean) => { confirmingRedeploy = open; }"
+      >
+        <template #footer>
+          <div class="flex justify-end gap-2 w-full">
+            <UButton color="neutral" variant="subtle" @click="confirmingRedeploy = false">Cancel</UButton>
+            <UButton :loading="redeploying" icon="i-lucide-refresh-cw" @click="redeployEnvironment">
+              Redeploy {{ environment.name }}
+            </UButton>
+          </div>
+        </template>
+      </UModal>
 
       <!-- Preview deletion confirmation -->
       <UModal

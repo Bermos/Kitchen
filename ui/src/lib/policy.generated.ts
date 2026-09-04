@@ -100,6 +100,7 @@ export type Route =
   | "GET /api/v1/environments/{name}"
   | "PATCH /api/v1/environments/{name}"
   | "DELETE /api/v1/environments/{name}"
+  | "POST /api/v1/environments/{name}/redeploy"
   | "GET /api/v1/environments/{name}/logs"
   | "GET /api/v1/environments/{name}/workload"
   | "GET /api/v1/environments/{name}/processes"
@@ -254,6 +255,7 @@ export const POLICY: Readonly<Record<Route, Requirement>> = {
   "GET /api/v1/environments/{name}": { kind: "projectRole", role: "viewer", doing: "reading an environment" },
   "PATCH /api/v1/environments/{name}": { kind: "projectRole", role: "developer", doing: "redeploying" },
   "DELETE /api/v1/environments/{name}": { kind: "projectRole", role: "developer", doing: "deleting an environment" },
+  "POST /api/v1/environments/{name}/redeploy": { kind: "projectRole", role: "developer", doing: "redeploying an environment" },
   "GET /api/v1/environments/{name}/logs": { kind: "projectRole", role: "viewer", doing: "reading an environment's logs" },
   "GET /api/v1/environments/{name}/workload": { kind: "projectRole", role: "viewer", doing: "reading an environment's workload" },
   "GET /api/v1/environments/{name}/processes": { kind: "projectRole", role: "viewer", doing: "reading an environment's processes" },

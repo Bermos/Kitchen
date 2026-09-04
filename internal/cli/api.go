@@ -1715,6 +1715,27 @@ func (c *client) moveEnvironment(ctx context.Context, name, to string) (*moveOut
 	return out, decodeJSON(raw, out.Environment)
 }
 
+// redeployed is what a redeploy came to: the release that was cut from the
+// commit the environment was already on, and where it is going. `promotion` is
+// set instead of a move when the environment declares requirements.
+type redeployed struct {
+	Environment     string `json:"environment"`
+	Project         string `json:"project"`
+	Release         string `json:"release"`
+	PreviousRelease string `json:"previousRelease"`
+	Image           string `json:"image"`
+	Promotion       string `json:"promotion,omitempty"`
+	Message         string `json:"message"`
+}
+
+// redeployEnvironment asks the platform to cut a release from the commit an
+// environment is already running, with the project's settings as they stand.
+func (c *client) redeployEnvironment(ctx context.Context, name string) (*redeployed, error) {
+	answer := &redeployed{}
+	return answer, c.do(ctx, "redeploying "+name,
+		http.MethodPost, "/environments/"+name+"/redeploy", nil, nil, answer)
+}
+
 // promote asks for a release to land on an environment: the platform creates
 // a Promotion, phase Pending, and the policy engine takes it from there.
 func (c *client) promote(ctx context.Context, project, environment, release, reason string) (*promotion, error) {

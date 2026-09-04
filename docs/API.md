@@ -232,6 +232,7 @@ name against `internal/api/policy.go`, so a route that moves fails them too.
 | GET | `/environments/{name}` | One environment | `viewer` |
 | PATCH | `/environments/{name}` | Move it to another release — promotion and rollback. An environment with requirements answers `202` with the Promotion the move became | `developer` |
 | DELETE | `/environments/{name}` | Tear down a stuck preview. Previews only | `developer` |
+| POST | `/environments/{name}/redeploy` | Deploy the commit it is already on again, with the project's settings as they stand now. Answers `202` with the Release it made — or with the Promotion it became, where the environment declares requirements | `developer` |
 | GET | `/environments/{name}/logs` | That environment's runtime logs | `viewer` |
 | GET | `/environments/{name}/workload` | What it is running: replicas, restarts, uptime, resources, pods | `viewer` |
 | GET | `/environments/{name}/processes` | Its workers, services, scheduled jobs and deploy tasks, and how each is getting on | `viewer` |

@@ -1343,12 +1343,7 @@ func (r *BuildReconciler) succeed(
 	// and that refusal fails the build here, after the image was pushed,
 	// because the conflict is between a file read before the build and a
 	// project that could have been edited during it.
-	snapshot, err := repoconfig.Snapshot(kitchenv1alpha1.ConfigSnapshot{
-		Env:       project.Spec.Env,
-		Runtime:   runtimeFor(project, build),
-		Processes: project.Spec.Processes,
-		Files:     project.Spec.Files,
-	}, build.Status.Config)
+	snapshot, err := ConfigSnapshotFor(project, build)
 	if err != nil {
 		return r.fail(ctx, build, project, reasonConfigInvalid, err.Error())
 	}

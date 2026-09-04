@@ -430,8 +430,11 @@ var publishedShapes = map[string]struct {
 	"promotion": {"One request to move a release into an environment, with what the policy " +
 		"decided about it. Phase is Pending, Evaluating, Allowed, AllowedWithException, " +
 		"Blocked, Applied or Failed; a Blocked one names the unmet rules by id", promotion{}},
-	"promotionList":   {"A list of promotions, newest first", list[promotion]{}},
-	"environment":     {"One environment. Phase is Pending, Deploying, Live, Degraded or Terminating", environment{}},
+	"promotionList": {"A list of promotions, newest first", list[promotion]{}},
+	"environment":   {"One environment. Phase is Pending, Deploying, Live, Degraded or Terminating", environment{}},
+	"redeployed": {"A release cut from the commit an environment was already running, carrying the " +
+		"project's settings as they stand, and where it is going. `promotion` is set instead of a " +
+		"move when the environment declares requirements", redeployed{}},
 	"environmentList": {"A list of environments", list[environment]{}},
 	"envVarList":      {"A project's environment variables. Values are never answered", list[envVar]{}},
 	"secret": {"One of a project's own secrets: its name, and the `fromSecret` reference an " +

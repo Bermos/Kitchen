@@ -1784,21 +1784,57 @@ func (s *Server) patchEnvironment(w http.ResponseWriter, req *http.Request) {
 	// one running. Releases are immutable, so creation time is the order they
 	// were cut in. A deleted outgoing release cannot be compared any more and
 	// counts as superseded.
-	outgoing := env.Spec.ReleaseRef.Name
-	reason := kitchenv1alpha1.ReleaseMoveSuperseded
+	move := releaseMove{
+		reason: kitchenv1alpha1.ReleaseMoveSuperseded,
+		// The activity feed tells the same story in its own vocabulary: the
+		// history's reason describes what happened to the outgoing release,
+		// the feed entry describes what was done to the environment.
+		verb: "promoted to", event: clickhouse.EventReleasePromoted,
+	}
 	previous := &kitchenv1alpha1.Release{}
-	if err := s.get(ctx, outgoing, previous); err == nil &&
+	if err := s.get(ctx, env.Spec.ReleaseRef.Name, previous); err == nil &&
 		release.CreationTimestamp.Before(&previous.CreationTimestamp) {
-		reason = kitchenv1alpha1.ReleaseMoveRolledBack
+		move = releaseMove{
+			reason: kitchenv1alpha1.ReleaseMoveRolledBack,
+			verb:   "rolled back to", event: clickhouse.EventReleaseRolledBack,
+		}
 	}
 
-	// The activity feed tells the same story in its own vocabulary: the
-	// history's reason describes what happened to the outgoing release,
-	// the feed entry describes what was done to the environment.
-	moveType, verb := clickhouse.EventReleasePromoted, "promoted to"
-	if reason == kitchenv1alpha1.ReleaseMoveRolledBack {
-		moveType, verb = clickhouse.EventReleaseRolledBack, "rolled back to"
+	if !s.pointEnvironmentAt(w, req, env, release, move) {
+		return
 	}
+	writeJSON(w, http.StatusOK, newEnvironmentView(env))
+}
+
+// releaseMove is one move of an environment onto a release, in the two
+// vocabularies that describe it: `reason` is what became of the release being
+// left behind, which is what the environment's history records, and `verb`
+// and `event` are what was done to the environment, which is what the
+// activity feed reads.
+type releaseMove struct {
+	reason kitchenv1alpha1.ReleaseMoveReason
+	verb   string
+	event  string
+}
+
+// pointEnvironmentAt makes the move and leaves the three records of it: the
+// audit transition, the environment's own history and the activity feed.
+//
+// It is one function because there are two doors — a caller naming a release,
+// and a redeploy making one (#392) — and a move recorded one way through one
+// of them and another way through the other is a history that means different
+// things depending on which button was pressed. It answers the request itself
+// only when something went wrong, and reports whether the caller may write the
+// response.
+func (s *Server) pointEnvironmentAt(
+	w http.ResponseWriter,
+	req *http.Request,
+	env *kitchenv1alpha1.Environment,
+	release *kitchenv1alpha1.Release,
+	move releaseMove,
+) bool {
+	ctx := req.Context()
+	outgoing := env.Spec.ReleaseRef.Name
 
 	if !s.recorded(w, req, audit.Transition{
 		Object:  env,
@@ -1806,29 +1842,29 @@ func (s *Server) patchEnvironment(w http.ResponseWriter, req *http.Request) {
 		From:    outgoing,
 		To:      release.Name,
 		Project: env.Spec.ProjectRef.Name,
-		Reason:  fmt.Sprintf("environment %s was %s release %s", env.Name, verb, release.Name),
+		Reason:  fmt.Sprintf("environment %s was %s release %s", env.Name, move.verb, release.Name),
 		Details: map[string]any{
 			"release":         release.Name,
 			"previousRelease": outgoing,
 			"image":           release.Spec.Image,
-			"move":            string(reason),
+			"move":            string(move.reason),
 		},
 	}) {
-		return
+		return false
 	}
 
 	patch := client.MergeFrom(env.DeepCopy())
 	env.Spec.ReleaseRef = kitchenv1alpha1.LocalObjectReference{Name: release.Name}
 	if err := s.Client.Patch(ctx, env, patch); err != nil {
 		s.writeError(w, err)
-		return
+		return false
 	}
 
 	caller, _ := CallerFrom(ctx)
-	// Persist what the audit log line below already knows: how the outgoing
+	// Persist what the audit log line above already knows: how the outgoing
 	// release stopped being current, and who moved the environment off it.
 	base := env.DeepCopy()
-	if env.RecordReleaseMove(outgoing, reason, callerName(caller)) {
+	if env.RecordReleaseMove(outgoing, move.reason, callerName(caller)) {
 		if err := s.Client.Status().Patch(ctx, env, client.MergeFrom(base)); err != nil {
 			// The spec change went through either way; the environment
 			// reconciler still records the move, just without the caller.
@@ -1840,14 +1876,14 @@ func (s *Server) patchEnvironment(w http.ResponseWriter, req *http.Request) {
 	s.log().Info("environment moved to another release through the api",
 		"environment", env.Name, "release", release.Name, "caller", callerName(caller))
 	s.Activity.Record(ctx, clickhouse.Event{
-		Type:        moveType,
+		Type:        move.event,
 		Project:     env.Spec.ProjectRef.Name,
 		Environment: env.Name,
 		Release:     release.Name,
-		Message:     fmt.Sprintf("%s %s release %s", env.Name, verb, release.Name),
+		Message:     fmt.Sprintf("%s %s release %s", env.Name, move.verb, release.Name),
 		Actor:       callerName(caller),
 	})
-	writeJSON(w, http.StatusOK, newEnvironmentView(env))
+	return true
 }
 
 // cancelBuild stops a queued or running build: the BuildKit job is deleted and

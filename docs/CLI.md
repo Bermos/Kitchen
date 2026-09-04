@@ -326,6 +326,7 @@ give.
 | `kitchen secret list/set/rm` | The project's own secrets — credentials the platform did not mint | `GET /projects/{name}/secrets`, `PUT`/`DELETE /projects/{name}/secrets/{secret}` |
 | `kitchen files list/set/rm` | The configuration files the project places into its workloads — what software the platform did not build is configured by | `GET /projects/{name}`, `PATCH /projects/{name}`, `PUT /projects/{name}/files/{file}` |
 | `kitchen rollback` | Put an environment back on an earlier release, saying what that changes first | `GET /releases/{name}/config-diff`, `PATCH /environments/{name}` |
+| `kitchen redeploy` | Deploy the commit an environment is already on again, with the project's settings as they stand | `POST /environments/{name}/redeploy` |
 | `kitchen promote` | Ask for a release to land on an environment; the policy decides | `POST /projects/{name}/promotions` |
 | `kitchen promotions` | What promotions were asked for and what became of them | `GET /projects/{name}/promotions`, `GET /promotions/{name}` |
 | `kitchen projects` | The projects this account can see, with its role on each | `GET /projects` |
@@ -955,6 +956,40 @@ spot: the platform answers with the promotion it became, phase `Pending`, and
 the policy engine decides whether the release lands. That is still a rollback
 without a rebuild — a `Release` is immutable, so re-promoting an old one puts
 back exactly what ran.
+
+### Redeploying, when the fix is a setting
+
+A release freezes the configuration it was cut with — that is what makes the
+rollback above exact — so a corrected project setting reaches nothing that is
+already running, and it waits for the next release. When there is no next
+commit to make, there is no next release either: rebuilding an unchanged commit
+resolves to the release that commit already has, and a release cannot be
+edited.
+
+```sh
+kitchen redeploy                                 # production
+kitchen redeploy --environment shop-pr-42 --yes  # a preview, without asking
+```
+
+It asks the platform to cut a **new** release from the commit the environment
+is already on — the same build, the same image digests — carrying the project's
+settings as they stand, and to deploy that. The release that was running is
+untouched, so rolling back to it still puts back what was there.
+
+```
+Redeploy shop-production — the same commit as shop-rel-88145878c4cc, with the project's settings as they stand now? [y/N]
+Redeploying shop-production → shop-rel-88145878c4cc-cfg-3f7a91be (the same commit as shop-rel-88145878c4cc)
+```
+
+It refuses, and says which it is, when the environment is running nothing yet
+and when the project declares exactly what the running release already froze —
+an identical release is not a recovery. Against an environment that declares
+requirements the release is made but not landed, and the answer carries the
+promotion it became.
+
+It also supersedes a deploy that is still in flight, the same way a newer
+commit's release does, which is what unsticks an environment waiting on a
+release that is never going to finish.
 
 ### Promoting
 
