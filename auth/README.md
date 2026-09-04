@@ -18,7 +18,7 @@ Everything is mounted at the root, so the issuer is the origin itself:
 | `/.well-known/openid-configuration` | OIDC discovery document |
 | `/jwks` | Signing keys; the operator API validates bearer tokens against these |
 | `/oauth2/authorize`, `/oauth2/token`, `/oauth2/userinfo` | Authorization Code + PKCE |
-| `/oauth2/register` | Dynamic client registration (authenticated) |
+| `/oauth2/register` | Dynamic client registration — the operator's service credential only, see below |
 | `/login`, `/consent` | The hosted pages the provider redirects to |
 | `/get-session`, `/list-accounts`, `/list-sessions` | What the dashboard's account screen reads |
 | `/update-user`, `/change-password`, `/revoke-session` | What it writes — see [docs/AUTH.md](../docs/AUTH.md), "Managing an account" |
@@ -81,6 +81,12 @@ then register OAuth clients — the mechanism behind `ResourceClaim` type
 `oidcClient`. Rotating the value in the Secret and restarting replaces the key;
 the previous one is dropped.
 
+It is the **only** key that may do that. `clientPrivileges` on the OAuth
+provider admits the service account for every client action and refuses
+everyone else, a signed-in administrator included, and `src/keyscope.ts` keeps
+every other key to the two endpoints a CI credential needs. See "What a key may
+do at the issuer" below.
+
 ## The operator's own prefix
 
 `/kitchen/*` is Kitchen's, not better-auth's. It answers to the operator's
@@ -125,6 +131,29 @@ key — and it is that account's `sub` the project grants a role to
 Nothing outside this service parses the address to make a decision. The operator
 is handed the `sub`; it reads the domain only to render a key's grant as a key
 rather than as a stranger with an odd address.
+
+### What a key may do at the issuer
+
+The same reading of `enableSessionForAPIKeys` has a second half, and it is the
+one that mattered: the session the plugin mints is a session on **every**
+endpoint this service serves, not only on the one Kitchen sends a key to. A CI
+key was therefore a signed-in administrator here — able to register OAuth
+clients the operator's `/kitchen/clients` cannot see, and to mint further keys
+for its own machine account, which `GET /kitchen/keys` cannot see either
+because it lists one row per account.
+
+`src/keyscope.ts` states the reach instead of inheriting it:
+
+| Key | Reaches |
+|---|---|
+| A project's CI key | `GET /token` (the exchange CI and `kitchen login` make) and `/get-session`. `/kitchen/*` is answered ahead of better-auth and refuses it a 403 of its own |
+| The operator's service credential | Everything |
+
+Anything else is a 403 saying what a key is for. The two are told apart by the
+presented value rather than by a lookup, because the chart seeds
+`KITCHEN_AUTH_SERVICE_KEY` and the account that owns it as a pair — so the
+guard costs a comparison and no query. A wider credential (issue #349) is a
+third row in that table, not a second mechanism.
 
 ## Configuration
 

@@ -113,11 +113,18 @@ export function machineIdentity(email: string): { project: string; key: string }
 	return { project, key };
 }
 
+/**
+ * Whether an address is the service account's — the one account the operator's
+ * own credential belongs to, and the only one that may register an OAuth
+ * client (`clientPrivileges` in src/auth.ts).
+ */
+export function isServiceAccount(config: Config, email: string | undefined | null): boolean {
+	return Boolean(email) && normalizeEmail(email ?? "") === normalizeEmail(config.serviceAccountEmail);
+}
+
 /** Whether an address belongs to somebody who signs in. */
 export function isPerson(config: Config, email: string): boolean {
-	return (
-		normalizeEmail(email) !== normalizeEmail(config.serviceAccountEmail) && !isMachineAccount(email)
-	);
+	return !isServiceAccount(config, email) && !isMachineAccount(email);
 }
 
 /** One row of the user table, reduced to what anything here reads. */
