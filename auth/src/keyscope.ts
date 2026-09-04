@@ -47,6 +47,11 @@ import { log } from "./log.js";
  * a third answer to the same question rather than a second mechanism: what
  * changes is which paths `mayReach` returns true for, decided from the key's
  * own scope. The shape here is deliberately one function taking a path.
+ *
+ * The file answers a second question too, and it is the same one from the
+ * other side: **where a key comes from**. The rule above bounds what a
+ * credential may reach; `guardKeyIssuance` below bounds who may mint one at
+ * all, for every caller and not only for a key (issue #357).
  */
 
 /**
@@ -113,5 +118,70 @@ export function guardKeySession(config: Config) {
 		}
 		log.warn("refused an API key outside what a key may reach", { path: ctx.path });
 		throw new APIError("FORBIDDEN", { message: KEY_SESSION_REFUSAL });
+	};
+}
+
+/**
+ * The api-key plugin's own endpoints: `/api-key/create`, `/list`, `/get`,
+ * `/update` and `/delete`.
+ *
+ * They are mounted because the plugin mounts them, not because Kitchen wants
+ * them: `POST /projects/{name}/keys` writes a key through the adapter
+ * (src/keys.ts) and never posts here. `/api-key/verify` is not in the set
+ * because it is not on the router at all — the plugin declares it
+ * `serverOnly`, so it has no path and is reachable only from this service's
+ * own code, which is how src/directory.ts checks the operator's credential.
+ */
+const KEY_PLUGIN_PREFIX = "/api-key/";
+
+/** Whether a path is one of the plugin's own key-management endpoints. */
+export function isKeyPluginPath(path: string): boolean {
+	return path === "/api-key" || path.startsWith(KEY_PLUGIN_PREFIX);
+}
+
+/** How the rule below reads when a refusal has to explain it. */
+export const KEY_ISSUANCE_REFUSAL =
+	"a key is issued by Kitchen, not at the identity provider: ask the Kitchen API for one " +
+	"(POST /projects/{name}/keys, or the project's Keys screen), which creates the machine " +
+	"account that owns it — so the key holds a role on exactly one project, is listed by GET " +
+	"/kitchen/keys, and can be revoked. A key minted here would carry the caller's own subject " +
+	"and every role they hold, and no Kitchen surface could see it or take it back";
+
+/**
+ * Refuses the plugin's key endpoints to everyone but the operator's own
+ * service credential.
+ *
+ * `guardKeySession` above already keeps a *key* out of them, which is the half
+ * issue #318 was about. This is the other half: the endpoints are behind a
+ * session, and a signed-in person's browser is a session too. A key minted
+ * that way has `referenceId` pointing at that person's own account, so it is a
+ * long-lived copy of their identity carrying every role they hold on every
+ * project — the exact credential src/keys.ts exists to make impossible.
+ * Nothing could see it either: `GET /kitchen/keys` lists machine accounts, and
+ * the only things that could list or revoke such a key are these endpoints,
+ * which no Kitchen screen offers.
+ *
+ * So the invariant is stated here rather than left to nobody happening to post
+ * there: **a key comes from `POST /projects/{name}/keys` and belongs to a
+ * machine account, or it does not exist.** The service credential is admitted
+ * for the same reason it is admitted everywhere else — it is the platform
+ * talking to its own issuer — and a platform-scoped key (issue #349) does not
+ * need this door opened, because it too would be minted through the platform's
+ * own path.
+ *
+ * Like the guard above it verifies nothing and looks nothing up: the question
+ * is whether a caller of this kind may be at this endpoint at all, which is
+ * settled before anyone establishes who the caller is.
+ */
+export function guardKeyIssuance(config: Config) {
+	return async (ctx: { path: string; headers?: Headers | null }): Promise<void> => {
+		if (!isKeyPluginPath(ctx.path)) {
+			return;
+		}
+		if (isServiceCredential(config, ctx.headers?.get("x-api-key") ?? "")) {
+			return;
+		}
+		log.warn("refused a key endpoint at the issuer", { path: ctx.path });
+		throw new APIError("FORBIDDEN", { message: KEY_ISSUANCE_REFUSAL });
 	};
 }

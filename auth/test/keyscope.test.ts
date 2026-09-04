@@ -20,6 +20,14 @@ import { startHarness, type Harness } from "./support.js";
  * is what it is for, and it is bounded by *who it is* instead:
  * `clientPrivileges` admits the service account and refuses even a signed-in
  * administrator.
+ *
+ * They pin where a key *comes from* as well, which is the same seam from the
+ * other side (issue #357). The api-key plugin's own endpoints are behind a
+ * session, and a signed-in person's browser is one: the key they could mint
+ * there would carry their own subject and every role they hold, and no Kitchen
+ * surface could list it or revoke it. So a key comes from `POST
+ * /projects/{name}/keys` — `/kitchen/keys` here — and belongs to a machine
+ * account, or it does not exist.
  */
 describe("what an API key may reach", () => {
 	let kitchen: Harness;
@@ -151,6 +159,78 @@ describe("what an API key may reach", () => {
 			});
 			assert.equal(response.status, 403, `${path} should be refused to a key: ${await response.clone().text()}`);
 		}
+	});
+
+	it("refuses a signed-in person a key at the issuer, whatever their role", async () => {
+		// The endpoint is behind a session, and this is one: an administrator's
+		// browser, from a trusted origin. What it would mint is `referenceId`
+		// pointing at Anna's own account — a long-lived credential holding
+		// every role she holds, on every project, that `GET /kitchen/keys`
+		// cannot see and `DELETE /kitchen/keys` cannot take back.
+		const minted = await kitchen.fetch("/api-key/create", {
+			method: "POST",
+			headers: { "content-type": "application/json", origin: kitchen.url, cookie: browser },
+			body: JSON.stringify({ name: "annas-own" }),
+		});
+		assert.equal(minted.status, 403, await minted.clone().text());
+
+		const ctx = await kitchen.auth.$context;
+		const anna = await ctx.internalAdapter.findUserByEmail(ADMIN);
+		assert.ok(anna, "the administrator exists");
+		const keys = await ctx.adapter.findMany({
+			model: "apikey",
+			where: [{ field: "referenceId", value: anna.user.id }],
+		});
+		assert.equal(keys.length, 0, "a person owns no keys: every key belongs to a machine account");
+	});
+
+	it("refuses a signed-in person the plugin's other key endpoints too", async () => {
+		// Listing, reading, changing and revoking are the same surface as
+		// creating: a listing no Kitchen screen shows is how a key minted here
+		// would have been managed, and leaving them open would leave the door
+		// they belong to open as well.
+		for (const [path, init] of [
+			["/api-key/list", {}],
+			["/api-key/get?id=whatever", {}],
+			["/api-key/update", { method: "POST", body: JSON.stringify({ keyId: "whatever", name: "x" }) }],
+			["/api-key/delete", { method: "POST", body: JSON.stringify({ keyId: "whatever" }) }],
+		] as [string, RequestInit][]) {
+			const response = await kitchen.fetch(path, {
+				...init,
+				headers: { "content-type": "application/json", origin: kitchen.url, cookie: browser },
+			});
+			assert.equal(
+				response.status,
+				403,
+				`${path} is not a person's: ${await response.clone().text()}`,
+			);
+		}
+	});
+
+	it("leaves the platform's own way of issuing a key working", async () => {
+		// The refusal above is only correct because this still works: the
+		// operator asks the issuer for a key, gets a machine account created to
+		// own it, and that account is what a project grants a role to.
+		const issued = await withKeyInternally("/kitchen/keys", kitchen.serviceKey, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ project: "shop", name: "release" }),
+		});
+		assert.equal(issued.status, 201, await issued.clone().text());
+		const key = (await issued.json()) as IssuedProjectKey;
+		assert.equal(key.email, "shop.release@machines.kitchen.local");
+
+		const listed = await withKeyInternally("/kitchen/keys?project=shop", kitchen.serviceKey);
+		assert.equal(listed.status, 200, await listed.clone().text());
+		const { keys } = (await listed.json()) as { keys: { name: string }[] };
+		assert.ok(
+			keys.some((row) => row.name === "release"),
+			"a key the platform issued is a key the platform can see",
+		);
+
+		// And it is a working credential: the exchange `kitchen login` makes.
+		const exchanged = await withKey("/token", key.key);
+		assert.equal(exchanged.status, 200, await exchanged.clone().text());
 	});
 
 	it("keeps the operator's own credential unrestricted", async () => {
