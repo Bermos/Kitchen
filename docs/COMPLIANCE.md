@@ -602,20 +602,57 @@ Reading commit metadata — or parsing `(#123)` out of the message — answers
 confidently and wrongly on the two merge strategies most organisations actually
 use.
 
-`GET /repos/{owner}/{repo}/commits/{sha}/pulls` is the association GitHub
-maintains across both, and it is what is used.
+Every forge maintains that association and every one of them spells it
+differently, so each is asked in its own words — and all three git providers
+answer, which is what `gitprovider.ChangeReader` being a capability rather than
+part of being a source is for:
+
+| Provider | Which request the commit arrived through | Who approved it |
+|---|---|---|
+| GitHub | `GET /repos/{owner}/{repo}/commits/{sha}/pulls` — every request the commit is associated with; the merged one is the one that put it on the branch | `GET /repos/{owner}/{repo}/pulls/{n}/reviews` |
+| GitLab | `GET /projects/{id}/repository/commits/{sha}/merge_requests` — matched against a request's commits, its merge commit **and its squash commit** | `GET /projects/{id}/merge_requests/{iid}/approvals` |
+| Gitea | `GET /repos/{owner}/{repo}/commits/{sha}/pull` — the one merged request, resolved from its recorded merge commit | `GET /repos/{owner}/{repo}/pulls/{n}/reviews` |
+
+GitLab's number is the merge request's `iid`, the project-scoped `!42` a person
+reading the evidence later will recognise, rather than the instance-wide `id`
+that means nothing to anybody looking at the project.
 
 ### 8.3 Only approvals that still stand
 
 A provider records every review ever left. An approval a later push dismissed is
 still in the list with its state changed; a reviewer who approved and then asked
 for changes appears twice. So the reduction is: newest review per reviewer, and
-only where that newest one is an approval — with `COMMENTED` skipped, because on
-GitHub a comment leaves the previous verdict standing.
+only where that newest one is an approval — a verdict that is not an approval is
+still the reviewer's newest word, which is exactly what supersedes the approval
+before it.
 
 Getting this wrong produces evidence that a change was approved when the
 approval had been withdrawn before it merged, which is worse than no evidence,
-because somebody would rely on it.
+because somebody would rely on it. And each forge records a withdrawn approval
+its own way, so the reduction is one rule fed by three translations:
+
+- **GitHub** rewrites the review's state to `DISMISSED` and leaves it in the
+  list. A `COMMENTED` review is skipped, because there a comment leaves the
+  previous verdict standing.
+- **Gitea** leaves the state saying `APPROVED` and sets `dismissed` beside it —
+  so reading the state alone counts an approval somebody explicitly took away.
+  `stale` is the same fact by another route: the review was left on a revision a
+  later push superseded. Both are excluded. Its verdicts are spelled
+  `REQUEST_CHANGES` rather than GitHub's `CHANGES_REQUESTED`, and `COMMENT`,
+  `PENDING` and `REQUEST_REVIEW` are not verdicts at all.
+- **GitLab** has no review states to read. Approvals are their own resource, and
+  revoking one — or a push resetting them, where the project is configured to —
+  *removes* it rather than marking it. So the standing set is exactly what
+  `/approvals` answers with, and the merge request's note history, which still
+  remembers "approved this merge request", is deliberately never read:
+  reconstructing approvals from it would resurrect precisely the ones GitLab
+  took away.
+
+What is recorded either way is **the person, never the rule**. A GitLab approval
+rule can be satisfied by any member of a group, and Gitea marks a review
+`official` or not against its own branch protection; both are the forge's policy
+question about the project, while `approved_by` and the review's user are the
+fact about the change. A group is not a pair of eyes.
 
 ### 8.4 Self-approval is recorded, not filtered
 
@@ -674,16 +711,23 @@ deadlock with itself. The requirement applies to the production branch alone.
 
 ### 8.8 What is not built
 
-**GitLab.** The acceptance criteria ask for GitHub and GitLab. GitLab and Gitea
-are now real providers — a credential probe, webhook registration, verified push
-and merge-request deliveries, and the commit status and preview comment posted
-back. What neither implements is `gitprovider.ChangeReader`, so nothing about a
-GitLab merge request's reviews reaches a decision here.
-`ChangeReader` is a capability interface for exactly this reason, in the same
-shape as `SourceReader` and `StatusReporter`: a provider lands as a source
-first and gains the rest, and a Connection that cannot answer is told apart
-from one that answers "no pull request". GitLab's `CommitProvenance` is a
-method on a type that exists now and does not implement it.
+**What the forges cannot be asked, now that all three are.** GitLab reports no
+per-approval timestamp: neither its approvals resource nor its approval-state
+one carries a time, and the only place one exists is the note history §8.3 says
+is not read. So a GitLab approval is recorded with the approver and no `when` —
+left empty rather than filled in from the merge request's own `merged_at`, which
+would be the platform making up a fact and attributing it to the provider.
+Gitea's `stale` is read as a dismissal, which is **stricter than Gitea's own
+gate**: an installation that has not turned on "dismiss stale approvals" counts
+an approval Kitchen does not. That is the direction to be wrong in — an approval
+of a revision that is not the one that merged is not an approval of what merged
+— and it can refuse a build Gitea would have let through, which the break-glass
+path below exists for.
+
+`ChangeReader` stays a capability interface in the same shape as `SourceReader`
+and `StatusReporter`: a provider lands as a source first and gains the rest, so
+a forge added later starts without it, and a Connection that cannot answer is
+told apart from one that answers "no pull request".
 
 **Break-glass now exists** (#136). A direct push during an incident used to be
 a hard refusal where the project requires review; it is now *allowed and loudly

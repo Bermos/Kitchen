@@ -109,6 +109,26 @@ func TestDefaultFallsBackToTheHostedAPI(t *testing.T) {
 	}
 }
 
+func TestEveryGitProviderCanSayHowACommitArrived(t *testing.T) {
+	// This is where a forge is "registered" for provenance: the operator
+	// resolves the capability by asserting the interface over whatever this
+	// factory built, so a provider that never gained the method — or one that
+	// quietly loses it — degrades to "this connection cannot say how a commit
+	// reached the branch", which is a sentence in a build status rather than a
+	// failing test.
+	for _, provider := range []string{ProviderGitHub, ProviderGitLab, ProviderGitea} {
+		t.Run(provider, func(t *testing.T) {
+			built, err := Default(providerConnection(provider, ""), "token")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := Change(built); !ok {
+				t.Fatalf("a %s connection cannot say how a commit arrived", provider)
+			}
+		})
+	}
+}
+
 func TestDefaultRejectsUnsupportedProviders(t *testing.T) {
 	_, err := Default(providerConnection("svn", ""), "tok")
 	if !errors.Is(err, ErrUnsupportedProvider) {
