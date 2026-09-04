@@ -179,6 +179,45 @@ var _ = Describe("A deploy-time task", func() {
 		ExpectWithOffset(1, k8sClient.Status().Update(ctx, job)).To(Succeed())
 	}
 
+	// refusePod plays the one part envtest has no kubelet for: a pod created
+	// for the run whose container is refused before it is created. It is a
+	// waiting reason and nothing else — the Job's own counters and conditions
+	// stay exactly as they were, which is the whole of why #391 waited for
+	// ever.
+	refusePod := func(runName string) {
+		pod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      runName + "-abcde",
+				Namespace: appNS,
+				Labels:    map[string]string{"job-name": runName, labelEnvironment: prodName},
+			},
+			Spec: corev1.PodSpec{
+				RestartPolicy: corev1.RestartPolicyNever,
+				Containers:    []corev1.Container{{Name: AppContainerName, Image: firstImage}},
+			},
+		}
+		ExpectWithOffset(1, k8sClient.Create(ctx, pod)).To(Succeed())
+		pod.Status = corev1.PodStatus{
+			Phase: corev1.PodPending,
+			ContainerStatuses: []corev1.ContainerStatus{{
+				Name: AppContainerName,
+				State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{
+					Reason: "CreateContainerConfigError",
+					Message: "container has runAsNonRoot and image has non-numeric user (node), " +
+						"cannot verify user is non-root",
+				}},
+			}},
+		}
+		ExpectWithOffset(1, k8sClient.Status().Update(ctx, pod)).To(Succeed())
+		// It is taken away with the case that made it. The run's name is
+		// derived, so a pod left behind would be found by the next case's
+		// first run and refuse a migration that nothing refused.
+		DeferCleanup(func() {
+			ExpectWithOffset(1, client.IgnoreNotFound(
+				k8sClient.Delete(ctx, pod, client.GracePeriodSeconds(0)))).To(Succeed())
+		})
+	}
+
 	condition := func(env *kitchenv1alpha1.Environment, name string) *metav1.Condition {
 		return meta.FindStatusCondition(env.Status.Conditions, name)
 	}
@@ -361,6 +400,62 @@ var _ = Describe("A deploy-time task", func() {
 		Expect(get(prodName, deploy)).To(BeTrue())
 		Expect(deploy.Spec.Template.Spec.Containers[0].Image).To(Equal(secondImage),
 			"a retry that succeeds is the deploy carrying on, not a run beside it")
+	})
+
+	// #391, whole. The kubelet refuses the container, the Job never fails, and
+	// before this the environment said a task "is running" for as long as
+	// somebody left it there — recoverable only with `kubectl delete job`.
+	It("ends a run whose pod can never start, says why, and lets the next release through", func() {
+		const kubelet = "container has runAsNonRoot and image has non-numeric user (node), " +
+			"cannot verify user is non-root"
+
+		first := release(firstImage, []kitchenv1alpha1.ProcessSpec{task()})
+		environment(prodName, kitchenv1alpha1.EnvironmentProduction, first)
+		started := runs(migrate)[0].Name
+
+		By("having the kubelet refuse the run's container, which is not a Job failure")
+		refusePod(started)
+		reconcileOnce(prodName)
+
+		By("failing the task with the kubelet's own sentence rather than waiting for ever")
+		env := environmentStatus(ctx, prodName)
+		Expect(env.Status.Phase).To(Equal(kitchenv1alpha1.EnvironmentDegraded))
+		blocked := condition(env, condDeployTasks)
+		Expect(blocked.Status).To(Equal(metav1.ConditionFalse))
+		Expect(blocked.Reason).To(Equal(reasonTaskRefused),
+			"a refused run is not a slow one, and the screen has to stop saying running")
+		Expect(blocked.Message).To(ContainSubstring(kubelet))
+		Expect(condition(env, condReady).Reason).To(Equal(reasonTaskRefused))
+
+		row := env.FindProcessStatus(migrate)
+		Expect(row.LastRun.Phase).To(Equal(kitchenv1alpha1.RunFailed))
+		Expect(row.LastRun.Refused).To(BeTrue())
+		Expect(row.LastFailure.Message).To(ContainSubstring(kubelet))
+
+		By("taking the wedged Job with it, so no kubectl is needed to move on")
+		Eventually(func() bool {
+			return get(started, &batchv1.Job{})
+		}).Should(BeFalse())
+
+		By("keeping the verdict once the Job is gone, rather than starting the migration again")
+		for range 3 {
+			reconcileOnce(prodName)
+		}
+		Expect(runs(migrate)).To(BeEmpty())
+		Expect(condition(environmentStatus(ctx, prodName), condDeployTasks).Reason).To(Equal(reasonTaskRefused))
+		Expect(get(prodName, &appsv1.Deployment{})).To(BeFalse(),
+			"a refused task is still a task that has not succeeded: nothing of the release takes traffic")
+
+		By("letting the next release run its own task, which is the environment moving on")
+		moveTo(prodName, release(secondImage, []kitchenv1alpha1.ProcessSpec{task()}))
+		retried := runs(migrate)
+		Expect(retried).To(HaveLen(1))
+		Expect(retried[0].Name).To(Equal(prodName + "-" + migrate + "-2"))
+		finish(retried[0].Name, batchv1.JobComplete)
+		reconcileOnce(prodName)
+		deploy := &appsv1.Deployment{}
+		Expect(get(prodName, deploy)).To(BeTrue())
+		Expect(deploy.Spec.Template.Spec.Containers[0].Image).To(Equal(secondImage))
 	})
 
 	It("runs the work again for the release a rollback goes back to", func() {

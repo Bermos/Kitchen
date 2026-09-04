@@ -708,6 +708,31 @@ carries the run's own message, the commit's deployment status reports a
 failure, and the workloads panel says so in a banner above the list with the
 button that runs it again beside it.
 
+A run whose pod the kubelet **refuses** is failed too, rather than waited for
+(#391). `CreateContainerConfigError` and its siblings are not Job failures —
+the kubelet retries the same doomed spec, `backoffLimit` is never approached,
+and the Job reports one active pod indefinitely — so a task like that used to
+say "is running" for ever while nothing ran and nothing was going to. Such a
+run:
+
+- is failed with **the kubelet's own sentence**, which names the field and the
+  image, and carries `"refused": true` on the run so that "it never started" is
+  not confused with "it ran and failed" — there is nothing half-applied to undo,
+  and the fix is in the spec rather than in the program;
+- lands in the activity feed as `run.failed`, saying it *could not be started*;
+- takes its Job with it, which is what lets the next release run its own task.
+  Deleting it is safe here and nowhere else: a refused container never ran, so
+  there is no output to lose;
+- and for a deploy task, puts `DeployTasksComplete=False` with the terminal
+  reason **`TaskRefused`** beside `TaskRunning`, so the screen stops saying
+  running. The previous release keeps serving, exactly as for any other failed
+  task.
+
+A scheduled run gets the same treatment. Nothing is gated on it, which is why
+it is the quieter half — but a wedged run under the default `Forbid`
+concurrency is a schedule that never fires again and says nothing at all,
+which is the failure mode worth hunting.
+
 ## From a terminal
 
 ```sh

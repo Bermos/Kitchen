@@ -596,6 +596,29 @@ func (r *EnvironmentReconciler) observeCronJob(
 	if err != nil {
 		return err
 	}
+	// A scheduled run whose pod the kubelet will not create is failed here,
+	// with the kubelet's own sentence, and its Job is taken with it (#391).
+	//
+	// Nothing is gated on a scheduled run, which is why this is the lighter
+	// half of the same fix — but it is the half #277's lesson is about:
+	// silently doing nothing is the failure mode worth hunting. Left alone,
+	// such a run stays "active" for ever, the failure reaches neither the
+	// row nor the activity feed, and under the default `Forbid` concurrency
+	// the schedule never fires again — a nightly job that stopped running
+	// and said nothing.
+	//
+	// The Job goes now rather than after the status write, because nothing
+	// waits on this verdict: what a lost status update would cost here is one
+	// row, and what leaving the Job would cost is every run after it.
+	for i := range runs {
+		refused, err := r.refuseRun(ctx, appNS, &runs[i])
+		if err != nil {
+			return err
+		}
+		if refused {
+			r.deleteRefusedJob(ctx, appNS, runs[i].Name)
+		}
+	}
 	if len(runs) > 0 {
 		status.LastRun = &runs[0]
 	}
@@ -820,6 +843,12 @@ func (r *EnvironmentReconciler) recordRuns(
 		if run.Phase == kitchenv1alpha1.RunFailed {
 			event.Type = clickhouse.EventRunFailed
 			event.Message = fmt.Sprintf("%s %s failed", what, statuses[i].Name)
+			// A run the kubelet refused never ran, and the feed says so in
+			// those words: "failed" of a migration that never started sends
+			// somebody looking through output that does not exist.
+			if run.Refused {
+				event.Message = fmt.Sprintf("%s %s could not be started", what, statuses[i].Name)
+			}
 			if run.Message != "" {
 				event.Message += ": " + run.Message
 			}

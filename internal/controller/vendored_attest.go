@@ -154,6 +154,18 @@ func (r *BuildReconciler) attestAcquired(
 		return status
 	}
 	status.Digest = digest
+	// What the vendor's image says it runs as, read with the same credential
+	// the pods will pull it with and before attestation is considered at all.
+	// It is the fact the Release is refused on where `runAsNonRoot` cannot be
+	// verified against it (#393) — a vendored `USER nonroot` is the case that
+	// cost the most to diagnose.
+	if _, dockerConfig, err := pullCredential(ctx, r.Client, build.Namespace, subject.Source); err == nil {
+		status.User = r.imageUser(ctx, dockerConfig, registryServerOf(subject.Source.Repository),
+			attestation.ArtifactRef(repository, digest))
+	} else {
+		log.V(1).Info("the pull credential could not be read for the image's user",
+			"build", build.Name, "image", subject.Image, "cause", err.Error())
+	}
 
 	kitchen := &kitchenv1alpha1.Kitchen{}
 	if err := r.Get(ctx, types.NamespacedName{Name: KitchenSingletonName}, kitchen); err != nil {

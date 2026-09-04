@@ -1024,6 +1024,31 @@ with reason `ContainerRefused` for a container the kubelet would not create,
 `RestartingUnderPosture` for one that starts and exits under a declared
 posture — with the constraints in force named in the message.
 
+The refusal is looked for across **every** workload the environment keeps
+running, not only the web process, and whether or not the URL is answering: a
+refused worker is refused while production serves perfectly well, and a
+release rolling out behind pods still serving the last one is exactly where
+nothing else would mention it. One refused pod is the whole diagnosis — the
+refusal is of the pod spec, so every replica of that workload carries it — and
+the environment goes `Degraded` rather than staying `Deploying`, because
+nothing here changes on its own. `status.refusal` carries the pod and the
+container behind the sentence, which is the operator's half of it. A *run's*
+pod is never counted here: a deploy task's refusal gates its own deploy and a
+scheduled run's is the schedule's failure, and neither is the application
+being down.
+
+**`runAsNonRoot` without `runAsUser` is refused before it can be deployed
+(#393).** That setting makes the kubelet *verify* the image does not run as
+uid 0, and it can only do that against a uid — `USER node` and `USER nonroot`
+are names, resolved inside the image where the kubelet cannot look, so every
+pod is refused with "cannot verify user is non-root" however non-root that
+user is. The platform reads the image's own `USER` when it pushes or acquires
+the digest, records it as `status.artifact.user` on the Build, and fails the
+build that would have produced the Release — naming the workload, the image,
+the user it found and `runAsUser` as the fix. It is not refused at the API,
+because the same request is exactly right for an image whose `USER` is a
+number.
+
 Reconcile: ensure per-project namespace, register the git webhook via the Connection
 (signing secret generated per project), validate that the referenced Connections carry
 the required capabilities. The production Environment is created by the first
@@ -1076,6 +1101,8 @@ status:
   artifact:
     repository: harbor.example.com/kitchen/my-shop
     digest: sha256:ab12...              # the identity everything downstream keys on
+    user: node                          # the image's own USER, read from its config;
+                                        # empty means "not read", never "root"
     attestedAt: ...                     # when the platform attached its build record
     keyID: 9f2c...                      # what it was signed under
     evidence:                           # an index of what is attached, not a copy of it
@@ -1480,7 +1507,15 @@ status:
         startedAt: "2026-08-24T03:00:04Z"
         finishedAt: "2026-08-24T03:00:37Z"
         message: "BackoffLimitExceeded: Job has reached the specified backoff limit"
+        refused: false                  # true when the kubelet would not create its
+                                        # container at all: the run never started
       lastFailure: {...}                # the most recent one that failed
+  refusal:                              # a container the kubelet would not create,
+    workload: worker                    # absent when there is none
+    pod: my-shop-pr-42-worker-7d9f-x2k
+    container: app
+    reason: CreateContainerConfigError
+    message: "the container of worker could not be started: ..."
   conditions: [...]                     # Ready, RouteProgrammed, WorkloadAvailable,
                                         # DeployTasksComplete (only where the release
                                         # declares one), PreviewProtected (previews only),
@@ -1547,6 +1582,20 @@ run's message on `DeployTasksComplete`, which is also what the commit's deploy
 status reports as a failure. Tasks run in declared order, one at a time, and a
 release that arrives while the previous deploy's run is still going waits for
 it rather than killing it.
+
+A run whose pod the kubelet **refuses** is ended rather than waited for
+(#391). `CreateContainerConfigError` and its siblings are not Job failures:
+the kubelet retries the same doomed spec, `backoffLimit` is never approached,
+and the Job reports one active pod for ever — so before this the environment
+said a task "is running" for as long as somebody left it there. Such a run is
+failed with the kubelet's own sentence, the condition carries the terminal
+reason `TaskRefused` beside `TaskRunning`, the run's row records
+`refused: true`, and the wedged Job is deleted once the verdict is written so
+that the next release runs its own task. It is safe to delete precisely
+because a refused container never ran: there is no output to lose. A scheduled
+run gets the same treatment on its own row and in the activity feed, where
+nothing is gated on it but a `Forbid` schedule would otherwise never fire
+again.
 
 The same pass materializes the Release's other `processes`: a **worker** becomes
 a plain Deployment named `<environment>-<process>` with no Service and no route —

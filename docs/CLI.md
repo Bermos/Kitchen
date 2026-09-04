@@ -491,6 +491,12 @@ still running has not finished. Both are waited on. It is a settled `Degraded` �
 one that holds, with nothing on the environment saying work is in flight — that
 exits `12`.
 
+A deploy task whose pod the kubelet **refused** is finished, not in flight: its
+reason is `TaskRefused` rather than `TaskRunning`, so a followed deploy stops
+on it instead of waiting out `--environment-timeout`, and the failure it
+reports is the kubelet's own sentence — which names the field and the image
+that could not be started (#391).
+
 Everything else about the environment stays a fact in the result rather than in
 the status. A build of a branch nothing promotes produces a release no
 environment picks up, and an environment that has not gone live inside

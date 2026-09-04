@@ -679,6 +679,18 @@ type ProcessRun struct {
 	// all when it did not.
 	// +optional
 	Message string `json:"message,omitempty"`
+
+	// Refused says this run failed because the kubelet would not create its
+	// container at all — the run never started, as opposed to starting and
+	// exiting non-zero (#391).
+	//
+	// It is a fact worth keeping apart from an ordinary failure because the
+	// two ask for different things. A migration that ran and failed may have
+	// left half a schema behind; one that was refused ran nothing, so there
+	// is nothing to undo and the fix is in the spec rather than in the
+	// program. The reason and the kubelet's own sentence are in Message.
+	// +optional
+	Refused bool `json:"refused,omitempty"`
 }
 
 // FindProcess returns the named process of a list, or nil.

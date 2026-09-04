@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
@@ -334,4 +335,40 @@ func (s *Store) Resolve(ctx context.Context, ref string) (string, error) {
 		return "", fmt.Errorf("the digest of %s could not be read from its registry: %w", ref, err)
 	}
 	return ArtifactRef(reference.Context().Name(), descriptor.Digest.String()), nil
+}
+
+// ImageUser is the `USER` an image's own config declares — `node`,
+// `nonroot:nonroot`, `1001`, or empty for an image that declares none and so
+// runs as root.
+//
+// It exists because `runAsNonRoot` is a promise the kubelet has to *check*,
+// and it can only check a uid: an image whose user is a name is refused before
+// its container is created, however non-root that name is inside the image
+// (#393). Reading it here is what lets the platform say so while a Release is
+// being made, in the words of the image and the field that fixes it, rather
+// than leaving the sentence on a pod nobody can reach.
+//
+// It reads the *config* of the manifest, which is one blob and one request
+// against a digest already resolved. An index — what a multi-platform image
+// answers with — has no config of its own, so remote.Image resolves the
+// platform's own image inside it first, which is the same one the node would
+// pull.
+func (s *Store) ImageUser(ctx context.Context, ref string) (string, error) {
+	options := []name.Option{}
+	if s.PlainHTTP {
+		options = append(options, name.Insecure)
+	}
+	reference, err := name.ParseReference(ref, options...)
+	if err != nil {
+		return "", fmt.Errorf("%q is not an image reference: %w", ref, err)
+	}
+	image, err := remote.Image(reference, s.options(ctx)...)
+	if err != nil {
+		return "", fmt.Errorf("the image %s could not be read from its registry: %w", ref, err)
+	}
+	config, err := image.ConfigFile()
+	if err != nil {
+		return "", fmt.Errorf("the config of %s could not be read: %w", ref, err)
+	}
+	return strings.TrimSpace(config.Config.User), nil
 }

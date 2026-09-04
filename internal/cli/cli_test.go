@@ -606,6 +606,42 @@ func TestATransientDegradedIsNotAFailedDeploy(t *testing.T) {
 	}
 }
 
+// A deploy task whose pod the kubelet refuses is a *finished* deploy task, and
+// a followed deploy has to stop on it rather than wait out its timeout. The
+// CLI reads that off the reasons the operator writes — `TaskRefused` is not
+// one of the two that mean "still going" — and reports the kubelet's own
+// sentence, which is the whole diagnosis (#391).
+func TestADeployWhoseTaskWasRefusedStopsWithTheReason(t *testing.T) {
+	quicken(t)
+	degradedSettle = 0
+
+	const kubelet = "container has runAsNonRoot and image has non-numeric user (node), " +
+		"cannot verify user is non-root"
+	refused := refusedEnvironment()
+	refused.Conditions = []condition{{
+		Type: condDeployTasks, Status: "False", Reason: "TaskRefused",
+		Message: "migrate could not be started, so nothing of this release was deployed and " +
+			testEnvironment + " is still serving what it was. Run " + testTaskRun + ": " +
+			"CreateContainerConfigError: " + kubelet,
+	}}
+
+	h := newHarness(t)
+	deployingProject(h)
+	h.platform.environments = []environment{refused}
+
+	if code := h.run("deploy", "--sha", "abc123def456", "--json"); code != exitDeployFailed {
+		t.Fatalf("exit %d, wanted %d; stderr: %s", code, exitDeployFailed, h.stderr.String())
+	}
+	envelope, isError := h.lines()[len(h.lines())-1]["error"].(map[string]any)
+	if !isError {
+		t.Fatalf("the stream does not end in an error envelope: %v", h.lines()[len(h.lines())-1])
+	}
+	message, _ := envelope["message"].(string)
+	if !strings.Contains(message, kubelet) {
+		t.Fatalf("the failure does not carry the kubelet's own account: %q", message)
+	}
+}
+
 // The other half of the same judgement, and the one that has to be read off
 // the environment rather than timed: a Degraded whose own conditions say a
 // deploy task is still running is waited on, and the wait running out is

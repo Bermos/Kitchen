@@ -569,6 +569,25 @@ image this platform produced, `vendored` for one it only pulled. It is
 published rather than implied because a reader has to be able to tell them
 apart without knowing which release of Kitchen wrote the field.
 
+`user` is the image's own `USER`, read from its config with the credential the
+image was pushed or pulled with — `node`, `nonroot:nonroot`, `1001`, or empty
+for an image that declares none and so runs as root. Empty also means "not
+read": an installation whose registry could not be reached records nothing
+rather than a guess, and nothing downstream reads the absence as root.
+
+It is recorded because `runAsNonRoot` cannot be honoured without it. That
+setting makes the kubelet *verify* the image does not run as uid 0, and it can
+only do that against a uid — a name is resolved inside the image, where the
+kubelet cannot look — so a project that declares the platform's own
+recommended posture with `USER node` has every pod refused with "cannot verify
+user is non-root". A build whose project asks for `runAsNonRoot`, names no
+`runAsUser`, and produces or acquires an image whose user is a name is
+**failed** with `reason: ImageUserUnverifiable`, naming the workload, the
+image, the user found in it and `runAsUser` as the fix — before a Release
+exists and long before a pod is refused where nobody can see it (#393). An
+image whose `USER` is a number needs no help and is never refused, which is
+why this is decided here rather than at the API.
+
 ### An artifact the platform did not build
 
 A vendored artifact — a project whose source is an image, or one workload of a
