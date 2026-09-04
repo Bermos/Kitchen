@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.29.0](https://github.com/Bermos/Kitchen/compare/v0.28.0...v0.29.0) (2026-09-04)
+
+
+### Features
+
+* **ui:** put a failing project where the eye lands, with the way out beside it ([#381](https://github.com/Bermos/Kitchen/issues/381)) ([ef27188](https://github.com/Bermos/Kitchen/commit/ef27188e5144a494560e49df88ce65e25d203990)), closes [#180](https://github.com/Bermos/Kitchen/issues/180)
+* **ui:** say how old every screen is, and let a reader pause it ([#380](https://github.com/Bermos/Kitchen/issues/380)) ([d8dac44](https://github.com/Bermos/Kitchen/commit/d8dac4405ef3f3b4e2d96f4c61c00d569433dc7d)), closes [#182](https://github.com/Bermos/Kitchen/issues/182)
+
+
+### Bug fixes
+
+* **chart:** deny ingress to the platform namespace, and require TLS on database bindings ([#379](https://github.com/Bermos/Kitchen/issues/379)) ([26a8f6c](https://github.com/Bermos/Kitchen/commit/26a8f6ce59400ea33d9fa9e9d7c51bc19de60594))
+* **deps:** clear nine reachable advisories in cilium and prometheus ([#376](https://github.com/Bermos/Kitchen/issues/376)) ([481bedf](https://github.com/Bermos/Kitchen/commit/481bedf6a6abb00c09aef7270f8e8faf770a6645))
+
 ## [0.28.0](https://github.com/Bermos/Kitchen/compare/v0.27.0...v0.28.0) (2026-09-04)
 
 
