@@ -470,6 +470,20 @@ catalogue exists to refuse.
 
 ## Recommendation
 
+> **Decided, 4 September 2026 — and partly built since.** #312 took this
+> recommendation: [the decision](https://github.com/Bermos/Kitchen/issues/312#issuecomment-5536311908)
+> is shape C, and shape C's own deliverable — a page that translates a chart by
+> hand — is [docs/HELM-CHARTS.md](../HELM-CHARTS.md), which works Sonarr through
+> to a project and states the boundaries below in the platform's own voice. The
+> two fields this section lifts out have both shipped: a `volume` claim that
+> [binds a volume the platform did not create](../api/claims.md#binding-a-volume-the-platform-did-not-create)
+> ([#346](https://github.com/Bermos/Kitchen/issues/346)) and `fsGroup` in
+> `runtime.security` ([#347](https://github.com/Bermos/Kitchen/issues/347)). So
+> the highest-value line in this report has come true: **Sonarr and Plex are now
+> expressible whole.** What survives of the residue is the first-run volume seed
+> ([#348](https://github.com/Bermos/Kitchen/issues/348)), which is open, and a
+> published port that is not HTTP, which is not filed.
+
 ### Shape C, with two fields lifted out of it and built anyway
 
 **C — a chart is a source of values that a person translates by hand, and the
@@ -531,14 +545,20 @@ answer:
 1. **`volume` claims that bind an existing external volume**, read-only or
    read-write, with the two-projects-one-volume question settled explicitly.
    *Unlocks Sonarr and Plex — two of the five charts — on its own.*
+   **Shipped: [#346](https://github.com/Bermos/Kitchen/issues/346). Two projects
+   may read one volume; one may write it.**
 2. **`fsGroup` in `runtime.security`.** One field. Three of five charts need
    it, and so does every non-root image handed a volume.
+   **Shipped: [#347](https://github.com/Bermos/Kitchen/issues/347).**
 3. #311, already filed, which this spike confirms is correctly scoped —
    and which does **not** close the first-run volume seed, so that should be
-   filed separately rather than assumed.
+   filed separately rather than assumed. **Filed:
+   [#348](https://github.com/Bermos/Kitchen/issues/348), as the three-way
+   decision it is rather than as a presumed init container.**
 4. **A page in `docs/` that translates a chart by hand**, worked through one
    of these five, naming what does not come across. That page is shape C's
    entire deliverable and the reason it is an answer rather than a shrug.
+   **Written: [docs/HELM-CHARTS.md](../HELM-CHARTS.md).**
 
 ### What would change this recommendation
 

@@ -445,6 +445,7 @@ resource claims**, both of which a project `developer` creates and deletes;
 | | |
 |---|---|
 | [CONFIG.md](CONFIG.md) | `kitchen.json`: every key, and what a repository may not decide |
+| [HELM-CHARTS.md](HELM-CHARTS.md) | Software that ships as a Helm chart: the hand translation into a project, and what the platform refuses |
 | [AGENTS.md](AGENTS.md) | The same ground for a coding agent, with the machine contract |
 | [CLI.md](CLI.md) | Every command, its flags, and the JSON surface |
 | [API.md](API.md) | The routes, the roles that gate them, and how to get a token |

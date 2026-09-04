@@ -35,6 +35,10 @@ text of one.
   decide.
 - [docs/schemas/kitchen.schema.json](docs/schemas/kitchen.schema.json): The
   JSON Schema for that file, for a `$schema` key or for validation.
+- [docs/HELM-CHARTS.md](docs/HELM-CHARTS.md): Software delivered as a Helm
+  chart. Kitchen installs no charts; this is the hand translation — the chart
+  object to Kitchen vocabulary map, one chart worked through to a project, the
+  residue the platform refuses and why, and what is still open.
 
 ## Driving the platform from a program
 
