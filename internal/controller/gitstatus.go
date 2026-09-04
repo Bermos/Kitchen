@@ -84,8 +84,13 @@ func (g gitReporting) reportingProviderFor(
 	ctx context.Context,
 	project *kitchenv1alpha1.Project,
 ) (gitprovider.Provider, bool) {
+	// A project with no repository has no commit to report a verdict onto
+	// and no provider to report it to (#307).
+	if !project.Spec.Source.HasRepository() {
+		return nil, false
+	}
 	conn := &kitchenv1alpha1.Connection{}
-	key := types.NamespacedName{Namespace: project.Namespace, Name: project.Spec.Source.ConnectionRef.Name}
+	key := types.NamespacedName{Namespace: project.Namespace, Name: project.Spec.Source.GitSource().ConnectionRef.Name}
 	if err := g.Get(ctx, key, conn); err != nil {
 		return nil, false
 	}
@@ -150,11 +155,11 @@ func (g gitReporting) reportBuild(
 	}
 
 	log := logf.FromContext(ctx)
-	if err := reporter.SetCommitStatus(ctx, project.Spec.Source.Repo, status); err != nil {
+	if err := reporter.SetCommitStatus(ctx, project.Spec.Source.GitSource().Repo, status); err != nil {
 		// The build itself is unaffected: this is the platform failing to
 		// narrate it, and the Connection's own probe says why.
 		log.Error(err, "failed to post the commit status", "project", project.Name,
-			"repo", project.Spec.Source.Repo, "sha", build.Spec.Git.SHA)
+			"repo", project.Spec.Source.GitSource().Repo, "sha", build.Spec.Git.SHA)
 		return
 	}
 	log.V(1).Info("posted commit status", "project", project.Name, "sha", build.Spec.Git.SHA, "state", state)
@@ -191,7 +196,7 @@ func (g gitReporting) reportEnvironment(
 	}
 
 	log := logf.FromContext(ctx)
-	repo := project.Spec.Source.Repo
+	repo := project.Spec.Source.GitSource().Repo
 
 	// A forge with no deployment record still gets everything else. Only a
 	// provider that has the half and refused it is a failure worth recording.
@@ -271,7 +276,7 @@ func (g gitReporting) retireEnvironment(
 	}
 
 	log := logf.FromContext(ctx)
-	repo := project.Spec.Source.Repo
+	repo := project.Spec.Source.GitSource().Repo
 	if publisher, ok := g.publisherFor(ctx, project); ok {
 		err := publisher.PublishDeployment(ctx, repo, gitprovider.Deployment{
 			SHA:         report.Revision,

@@ -256,6 +256,12 @@ type Process struct {
 	// Build is this workload's own build, for a monorepo shipping several
 	// images from one commit. Absent means it runs the project's image.
 	Build *ProcessBuild `json:"build,omitempty"`
+	// Image is an image this platform did not build, and the third answer to
+	// the question Build asks: a repository somewhere and a tag or a digest
+	// of it. It excludes Build — a workload is built here or published
+	// elsewhere, never both — and absent from both still means the project's
+	// own image run with another command.
+	Image *Image `json:"image,omitempty"`
 	// Replicas is a worker's copy count. Zero is allowed and means a worker
 	// that is declared and parked, which is how one is turned off without
 	// losing its command.
@@ -356,6 +362,9 @@ func ProcessSpec(request Process) (kitchenv1alpha1.ProcessSpec, error) {
 		return process, err
 	}
 	if err := applyProcessBuild(&process, request); err != nil {
+		return process, err
+	}
+	if err := applyProcessImage(&process, request); err != nil {
 		return process, err
 	}
 
@@ -614,5 +623,102 @@ func ApplyResource(resources *corev1.ResourceRequirements, name corev1.ResourceN
 	}
 	resources.Requests[name] = quantity
 	resources.Limits[name] = quantity
+	return nil
+}
+
+// Image is an image this platform did not build, as a client sends it (#307).
+//
+// It is one shape for both places that take one — a project whose web process
+// is vendored, and a workload of any project that is — because they are one
+// question, and two spellings of it is how a project's image and a workload's
+// would come to be validated differently.
+//
+// `connection` is the credential the image is *pulled* with, named the way
+// every other Connection in this API is named: by name, never as a nested
+// spec. It is optional, because a public image is pulled anonymously and
+// requiring one would be a Connection somebody had to invent.
+type Image struct {
+	Repository string `json:"repository"`
+	Tag        string `json:"tag,omitempty"`
+	Digest     string `json:"digest,omitempty"`
+	Connection string `json:"connection,omitempty"`
+}
+
+// imageRepository is what a repository reference may look like: lowercase
+// path segments, optionally preceded by a registry host with a port. It is
+// the CRD's own pattern, stated here so that a bad reference is a sentence
+// rather than an admission error naming a regular expression.
+var imageRepository = regexp.MustCompile(
+	`^([a-z0-9]+([.\-_][a-z0-9]+)*(:[0-9]+)?/)?[a-z0-9]+([._\-][a-z0-9]+)*(/[a-z0-9]+([._\-][a-z0-9]+)*)*$`)
+
+// imageTag and imageDigest are the two ways of naming a version.
+var (
+	imageTag    = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9._-]*$`)
+	imageDigest = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
+)
+
+// ImageSource validates one vendored image reference. `field` names where it
+// arrived, so that the same sentence can be about a project's source and
+// about one workload of it.
+func ImageSource(field string, request Image) (*kitchenv1alpha1.ImageSourceSpec, error) {
+	image := &kitchenv1alpha1.ImageSourceSpec{
+		Repository: strings.TrimSpace(request.Repository),
+		Tag:        strings.TrimSpace(request.Tag),
+		Digest:     strings.TrimSpace(request.Digest),
+	}
+	switch {
+	case image.Repository == "":
+		return nil, fmt.Errorf(
+			"%s.repository is required: where the image lives, registry host included — "+
+				"ghcr.io/home-assistant/home-assistant", field)
+	case strings.ContainsAny(image.Repository, "@: ") && !imageRepository.MatchString(image.Repository):
+		return nil, fmt.Errorf(
+			"%s.repository is the repository alone, without a tag or a digest: send the version as "+
+				"%s.tag or %s.digest (got %q)", field, field, field, image.Repository)
+	case !imageRepository.MatchString(image.Repository):
+		return nil, fmt.Errorf(
+			"%s.repository is not a repository reference: lowercase path segments, "+
+				"optionally after a registry host (got %q)", field, image.Repository)
+	}
+	if image.Tag != "" && !imageTag.MatchString(image.Tag) {
+		return nil, fmt.Errorf("%s.tag is not a tag (got %q)", field, image.Tag)
+	}
+	if image.Digest != "" && !imageDigest.MatchString(image.Digest) {
+		return nil, fmt.Errorf(
+			"%s.digest is `sha256:` and sixty-four lowercase hex digits (got %q)", field, image.Digest)
+	}
+	if image.Tag == "" && image.Digest == "" {
+		return nil, fmt.Errorf(
+			"%s needs a tag or a digest: without one there is no way to say which version of %s to run",
+			field, image.Repository)
+	}
+	if connection := strings.TrimSpace(request.Connection); connection != "" {
+		image.ConnectionRef = &kitchenv1alpha1.LocalObjectReference{Name: connection}
+	}
+	return image, nil
+}
+
+// applyProcessImage validates a workload's vendored image.
+//
+// The two refusals are the two things the CRD's own rules say, restated where
+// a person can be answered: a workload is built or vendored and not both, and
+// a vendored image needs a version. Whether the *project* has a repository to
+// build from at all is not asked here — this validator sees one process and
+// no project — and is refused at admission by the rule on ProjectSpec.
+func applyProcessImage(process *kitchenv1alpha1.ProcessSpec, request Process) error {
+	if request.Image == nil {
+		return nil
+	}
+	if request.Build != nil {
+		return fmt.Errorf(
+			"process %q: a workload is built from the repository or run from an image somebody else built, "+
+				"never both — keep \"build\" or keep \"image\"",
+			process.Name)
+	}
+	image, err := ImageSource(fmt.Sprintf("process %q image", process.Name), *request.Image)
+	if err != nil {
+		return err
+	}
+	process.Image = image
 	return nil
 }

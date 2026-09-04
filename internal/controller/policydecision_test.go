@@ -99,8 +99,8 @@ func decisionFixtures(t *testing.T) (*DecisionRecorder, *fakeDecisionStore, *stu
 	project := &kitchenv1alpha1.Project{
 		ObjectMeta: metav1.ObjectMeta{Name: "shop", Namespace: PlatformNamespace},
 		Spec: kitchenv1alpha1.ProjectSpec{
-			Source:   kitchenv1alpha1.GitSourceSpec{Repo: "acme/shop", ConnectionRef: kitchenv1alpha1.LocalObjectReference{Name: "github"}},
-			Registry: kitchenv1alpha1.RegistrySpec{ConnectionRef: kitchenv1alpha1.LocalObjectReference{Name: "registry"}},
+			Source:   kitchenv1alpha1.ProjectSourceSpec{Git: &kitchenv1alpha1.GitSourceSpec{Repo: "acme/shop", ConnectionRef: kitchenv1alpha1.LocalObjectReference{Name: "github"}}},
+			Registry: &kitchenv1alpha1.RegistrySpec{ConnectionRef: kitchenv1alpha1.LocalObjectReference{Name: "registry"}},
 		},
 	}
 	kitchen := &kitchenv1alpha1.Kitchen{

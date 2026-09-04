@@ -514,11 +514,11 @@ var _ = Describe("Domain Controller", func() {
 			project := &kitchenv1alpha1.Project{
 				ObjectMeta: metav1.ObjectMeta{Name: projectName, Namespace: PlatformNamespace},
 				Spec: kitchenv1alpha1.ProjectSpec{
-					Source: kitchenv1alpha1.GitSourceSpec{
+					Source: kitchenv1alpha1.ProjectSourceSpec{Git: &kitchenv1alpha1.GitSourceSpec{
 						ConnectionRef: kitchenv1alpha1.LocalObjectReference{Name: "gh"},
 						Repo:          "acme/shop",
-					},
-					Registry: kitchenv1alpha1.RegistrySpec{
+					}},
+					Registry: &kitchenv1alpha1.RegistrySpec{
 						ConnectionRef: kitchenv1alpha1.LocalObjectReference{Name: "registry"},
 					},
 				},

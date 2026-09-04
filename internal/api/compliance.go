@@ -212,7 +212,7 @@ func (s *Server) evidenceFor(ctx context.Context, build *kitchenv1alpha1.Build) 
 		return nil, err
 	}
 	connection := &kitchenv1alpha1.Connection{}
-	if err := s.get(ctx, project.Spec.Registry.ConnectionRef.Name, connection); err != nil {
+	if err := s.get(ctx, project.Spec.RegistryConnection(), connection); err != nil {
 		return nil, err
 	}
 	target, err := provider.Registry(connection)

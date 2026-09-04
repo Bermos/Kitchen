@@ -259,7 +259,7 @@ func TestTheVolumeGroupReachesEveryWorkloadThatMountsAClaim(t *testing.T) {
 	project := &kitchenv1alpha1.Project{
 		ObjectMeta: metav1.ObjectMeta{Name: "shop", Namespace: "kitchen-system"},
 		Spec: kitchenv1alpha1.ProjectSpec{
-			Registry: kitchenv1alpha1.RegistrySpec{
+			Registry: &kitchenv1alpha1.RegistrySpec{
 				ConnectionRef: kitchenv1alpha1.LocalObjectReference{Name: "harbor"},
 			},
 		},

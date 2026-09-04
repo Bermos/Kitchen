@@ -326,7 +326,7 @@ func (e *PolicyEvaluator) evidenceReader(
 	}
 	connection := &kitchenv1alpha1.Connection{}
 	if err := e.Client.Get(ctx, types.NamespacedName{
-		Namespace: PlatformNamespace, Name: project.Spec.Registry.ConnectionRef.Name,
+		Namespace: PlatformNamespace, Name: project.Spec.RegistryConnection(),
 	}, connection); err != nil {
 		return nil, err
 	}

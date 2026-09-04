@@ -183,9 +183,9 @@ name against `internal/api/policy.go`, so a route that moves fails them too.
 | Method | Path | Does | Requires |
 |---|---|---|---|
 | GET | `/projects` | List projects | any account — filtered |
-| POST | `/projects` | Create a project | any person |
+| POST | `/projects` | Create a project — from a repository, or from an image somebody else built | any person |
 | GET | `/projects/{name}` | One project — its env vars by name, never their values | `viewer` |
-| PATCH | `/projects/{name}` | Change its settings — branch, previews, build, runtime. Not its env vars | `admin` |
+| PATCH | `/projects/{name}` | Change its settings — branch, previews, build, runtime, workloads. Not its env vars | `admin` |
 | PATCH | `/projects/{name}/env` | Change its environment variables — the whole list | `developer` |
 | GET | `/projects/{name}/secrets` | Its own secrets by name, and the reference each is read by. Never a value | `viewer` |
 | PUT | `/projects/{name}/secrets/{secret}` | Set one, or replace the value of one already there. The value goes in and never comes back out | `developer` |

@@ -217,6 +217,7 @@
           "description": "The port a service listens on, and the port its siblings reach it on. Required on a service and refused on anything else: only a service is addressed."
         },
         "build": { "$ref": "#/$defs/processBuild" },
+        "image": { "$ref": "#/$defs/imageSource" },
         "replicas": {
           "type": "integer",
           "minimum": 0,
@@ -247,6 +248,33 @@
           "description": "Run this workload in preview environments too. A worker and a scheduled job are off unless asked for; a service and a task are on unless they say otherwise, because a preview missing one of its own services — or with a database branch nothing migrated — is a broken preview."
         },
         "health": { "$ref": "#/$defs/health" }
+      }
+    },
+    "imageSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository"],
+      "description": "An image this platform did not build, and the third answer to the question build asks: a repository somebody else publishes and a tag or a digest of it. It excludes build \u2014 a workload is built here or published elsewhere, never both \u2014 and a unit may mix the two, shipping an upstream image beside a sidecar built from this repository in one release.",
+      "properties": {
+        "repository": {
+          "type": "string",
+          "description": "Where the image lives, registry host included and without a tag or a digest.",
+          "examples": ["ghcr.io/home-assistant/home-assistant", "docker.io/library/postgres"]
+        },
+        "tag": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_][A-Za-z0-9._-]*$",
+          "description": "The version as the vendor publishes it. A tag or a digest is required; naming both means this tag, and it must still be this content."
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$",
+          "description": "The exact content. It is what the release records whichever of the two is declared, because a tag is a moving target and a rollback that followed one would not be a rollback."
+        },
+        "connection": {
+          "type": "string",
+          "description": "The Connection this image is pulled with, holding a docker config for its registry. Leave it out for a public image, which is pulled anonymously. It is never the connection the project pushes its own builds to."
+        }
       }
     },
     "processBuild": {

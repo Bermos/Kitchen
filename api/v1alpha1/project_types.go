@@ -56,6 +56,75 @@ type GitSourceSpec struct {
 	RequirePullRequest bool `json:"requirePullRequest,omitempty"`
 }
 
+// ProjectSourceSpec is where a Project's software comes from, and it is a
+// union: exactly one member is set (#307).
+//
+// Until this existed the answer was always a repository, and a Project's
+// `spec.source` *was* the [GitSourceSpec]. That is the first member, and it
+// is unchanged in every respect but where it sits. The second is an image
+// somebody else built — the home lab's Home Assistant, an upstream service a
+// team runs but does not develop — which has no commit for anything upstream
+// of a Release to key on.
+//
+// It is a union rather than two optional fields with a rule about them
+// because the two are answers to one question, and a project that set both
+// would be saying its web process is two things. Exactly one is set: a
+// project always has a web process, and a web process always comes from
+// somewhere.
+//
+// What follows from which member is set is the whole of the difference
+// upstream of a Release. A repository is built, so it needs a `registry` to
+// push to, produces a Build with a builder Job, and has pull requests to
+// preview. An image is acquired, so it needs no registry at all, produces a
+// Build that resolves a digest and runs no builder, and has no pull requests
+// — which the Project says in words rather than by previews quietly never
+// appearing.
+//
+// +kubebuilder:validation:XValidation:rule="has(self.git) != has(self.image)",message="a project's source is one thing: a repository this platform builds (`git`), or an image somebody else built (`image`) — set exactly one of them"
+type ProjectSourceSpec struct {
+	// Git is a repository this platform builds.
+	// +optional
+	Git *GitSourceSpec `json:"git,omitempty"`
+
+	// Image is the web process's image, published by somebody else. The
+	// project's other workloads declare their own on [ProcessSpec.Image];
+	// this is the web process's, which is `spec.runtime` and has no entry in
+	// the process list to declare one on.
+	// +optional
+	Image *ImageSourceSpec `json:"image,omitempty"`
+}
+
+// HasRepository reports whether this project is built from a repository. It
+// is the question every path upstream of a Release asks — the webhook, the
+// first build, the commit status reporter, previews — and it is asked of the
+// source rather than of the presence of a field somewhere, so that there is
+// one answer.
+func (s ProjectSourceSpec) HasRepository() bool { return s.Git != nil }
+
+// GitSource is the repository this project is built from, zero for a project
+// that has none.
+//
+// It answers a value rather than the pointer so that a reader which has
+// already established there is a repository — the whole of the build path —
+// does not restate the check, and one that has not gets an empty repository
+// and an empty branch rather than a panic. `HasRepository` is the question
+// when the answer matters.
+func (s ProjectSourceSpec) GitSource() GitSourceSpec {
+	if s.Git == nil {
+		return GitSourceSpec{}
+	}
+	return *s.Git
+}
+
+// ImageSource is the web process's vendored image, zero for a project built
+// from a repository. It reads the way GitSource does, for the same reason.
+func (s ProjectSourceSpec) ImageSource() ImageSourceSpec {
+	if s.Image == nil {
+		return ImageSourceSpec{}
+	}
+	return *s.Image
+}
+
 // ProjectBuildSpec overrides platform build defaults for one project.
 type ProjectBuildSpec struct {
 	// +kubebuilder:default=auto
@@ -316,15 +385,52 @@ func (p *PromotionPolicySpec) NextStage(environment string) *PromotionStage {
 	return &p.Stages[index+1]
 }
 
-// ProjectSpec defines the desired state of a Project: a repository that
-// becomes a running application.
+// ProjectSpec defines the desired state of a Project: software that becomes a
+// running application.
+//
+// It was "a repository that becomes a running application" until #307, and
+// the two rules below are the whole of what changed about the *project* when
+// it stopped having to be one. Each refuses a combination that would
+// otherwise be a setting nothing reads:
+//
+//   - A registry is where builds are *pushed*, so a project that builds
+//     needs one and a project that builds nothing has no use for one. It is
+//     tied to the source rather than left optional in both directions,
+//     because a registry on a vendored project reads as the place its image
+//     comes from and is not.
+//   - A workload built from the repository needs a repository. This is the
+//     one cross-field rule a workload's own spec cannot state: `spec.image`
+//     and `spec.build` exclude each other there, but neither knows whether
+//     the project has a repository at all.
+//
+// Previews are the one refusal that is deliberately *not* here. They follow
+// pull requests and an image source has none, but `previews.enabled` defaults
+// to true, so an admission rule against it would refuse every vendored
+// project ever written — including one that never mentioned previews. The
+// refusal is the API's, where a person asking for them can be answered, and
+// the Project's `Previews` condition, which says the same thing to one who
+// merely inherited the default. A preview that silently never appears reads
+// as a fault; a condition saying why does not.
+//
+// +kubebuilder:validation:XValidation:rule="has(self.source.git) == has(self.registry)",message="a registry is where built images are pushed: a project built from a repository needs one, and a project whose source is an image builds nothing and has nothing to push there"
+// +kubebuilder:validation:XValidation:rule="has(self.source.git) || !has(self.processes) || !self.processes.exists(p, has(p.build))",message="a workload built from the repository needs a repository: this project's source is an image, so every workload of it runs an image somebody else built (`image`)"
 type ProjectSpec struct {
-	Source GitSourceSpec `json:"source"`
+	Source ProjectSourceSpec `json:"source"`
 
 	// +optional
 	Build ProjectBuildSpec `json:"build,omitempty"`
 
-	Registry RegistrySpec `json:"registry"`
+	// Registry is where this project's builds push their images: a
+	// Connection with the imageStore capability. It is required of a project
+	// built from a repository and refused of one whose source is an image,
+	// which builds nothing — see the rules on this type.
+	//
+	// It is not the credential a vendored image is *pulled* with. That is
+	// named on the image itself ([ImageSourceSpec.ConnectionRef]), because a
+	// vendor's registry is somewhere the platform never writes and often
+	// somewhere it needs no account at all.
+	// +optional
+	Registry *RegistrySpec `json:"registry,omitempty"`
 
 	// +optional
 	Previews PreviewsSpec `json:"previews,omitempty"`
@@ -446,6 +552,23 @@ type ProjectSpec struct {
 	Processes []ProcessSpec `json:"processes,omitempty"`
 }
 
+// RegistryConnection is the Connection this project pushes its builds to,
+// empty for a project that builds nothing. It is the one spelling of that
+// question, for the same reason `registrySecretName` is the one spelling of
+// the Secret's name: two readings of "which registry" is how a build and a
+// pull come to disagree.
+func (p ProjectSpec) RegistryConnection() string {
+	if p.Registry == nil {
+		return ""
+	}
+	return p.Registry.ConnectionRef.Name
+}
+
+// Builds reports whether anything of this project is built by the platform.
+// It is the source's question and not the registry's: a project is built
+// exactly when it has a repository to build from.
+func (p ProjectSpec) Builds() bool { return p.Source.HasRepository() }
+
 // ProjectStatus defines the observed state of a Project.
 type ProjectStatus struct {
 	// +optional
@@ -478,7 +601,8 @@ type ProjectStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:printcolumn:name="Repo",type=string,JSONPath=`.spec.source.repo`
+// +kubebuilder:printcolumn:name="Repo",type=string,JSONPath=`.spec.source.git.repo`
+// +kubebuilder:printcolumn:name="Image",type=string,JSONPath=`.spec.source.image.repository`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 

@@ -569,7 +569,7 @@ func (r *GitWebhookReceiver) projectsFor(
 	}
 	var out []kitchenv1alpha1.Project
 	for _, p := range list.Items {
-		if p.Spec.Source.ConnectionRef.Name == connection && strings.EqualFold(p.Spec.Source.Repo, repo) {
+		if p.Spec.Source.GitSource().ConnectionRef.Name == connection && strings.EqualFold(p.Spec.Source.GitSource().Repo, repo) {
 			out = append(out, p)
 		}
 	}

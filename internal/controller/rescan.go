@@ -472,7 +472,8 @@ func (s *RescanSweeper) start(
 	name := rescanJobName(env.Name, release.Name)
 	appNS := appNamespace(project.Name)
 	job := rescanJob(name, appNS, project, env, release, scanner, artifact,
-		registrySecretName(project.Spec.Registry.ConnectionRef.Name), s.OperatorImage)
+		pullSecretName(project, release.Spec.ConfigSnapshot.Processes, kitchenv1alpha1.WebProcessName),
+		s.OperatorImage)
 
 	if err := s.Client.Create(ctx, job); err != nil {
 		if !apierrors.IsAlreadyExists(err) {

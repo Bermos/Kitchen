@@ -214,10 +214,10 @@ func TestMetricsOverviewKeepsProjectsWithNoTraffic(t *testing.T) {
 	quiet := &kitchenv1alpha1.Project{
 		ObjectMeta: metav1.ObjectMeta{Name: otherProject, Namespace: testNamespace},
 		Spec: kitchenv1alpha1.ProjectSpec{
-			Source: kitchenv1alpha1.GitSourceSpec{
+			Source: kitchenv1alpha1.ProjectSourceSpec{Git: &kitchenv1alpha1.GitSourceSpec{
 				ConnectionRef: kitchenv1alpha1.LocalObjectReference{Name: "gh"},
 				Repo:          "acme/blog",
-			},
+			}},
 		},
 	}
 	h := newHarness(t, nil, append(fixtures(), quiet)...)

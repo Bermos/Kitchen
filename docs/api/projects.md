@@ -24,6 +24,65 @@ their defaults:
 {"productionBranch": "main", "previews": true}
 ```
 
+### A project whose software this platform did not build
+
+A project's source is one of two things, and exactly one of them is sent: a
+repository this platform builds, or an image somebody else published.
+
+```sh
+curl -sS -X POST -H "authorization: Bearer $TOKEN" \
+  -d '{"name": "home-assistant", "image": {
+        "repository": "ghcr.io/home-assistant/home-assistant",
+        "tag": "2026.9.1"}}' \
+  https://kitchen.apps.example.com/api/v1/projects
+```
+
+`image.repository` is where the image lives, registry host included and
+without a tag or a digest. One of `image.tag` and `image.digest` is required —
+a tag is what a vendor publishes, a digest pins the exact content, and naming
+both means "this tag, and it must still be this content". `image.connection`
+is a Connection with the `imageStore` capability holding a docker config for
+that registry, and it is **left out for a public image**, which is pulled
+anonymously.
+
+It is deliberately not the same credential as `registry`. That one is where
+this platform *pushes* what it builds; a vendored image is *pulled* from
+somewhere the platform never writes, and often from somewhere it holds no
+account at all.
+
+Everything a repository needs is refused rather than ignored on such a
+project, here and on the settings PATCH: `registry`, `connection`,
+`productionBranch` and `previews`. A `400` naming the field is the answer,
+because each of them would otherwise read back as a setting that took and do
+nothing.
+
+**Previews are refused in words.** They are environments for pull requests and
+this project has no repository to open one against, so `{"previews": true}` is
+a `400` saying so, and the Project's own `Previews` condition says the same
+thing to anyone who never asked. A preview that silently never appears reads
+as a fault.
+
+**A Build still exists.** Creating the project produces one, and it resolves
+the digest the image reference names and freezes it onto a Release without
+running a builder — so `status.artifact`, the evidence index, the quality
+gates, the audit chain, the build screens and the CLI keep working unchanged.
+Nothing fakes a commit: the Build names no SHA and no branch.
+
+**Which version runs is set here and not moved from here yet.** The settings
+PATCH changes a project's settings, and which image it runs is not one of
+them: what makes a second version of a vendored image arrive — a tag that has
+moved, and the Build that follows it — is
+[#308](https://github.com/Bermos/Kitchen/issues/308). Until it lands, a
+vendored project runs the version it was created with.
+
+**A unit may mix the two.** A project built from a repository can carry a
+workload that runs an upstream image, declared on the workload rather than on
+the project — see
+[a workload that runs a vendored image](processes.md#a-workload-that-runs-a-vendored-image).
+They ship in one Release, deploy together, and roll back together: the Release
+records the digest every workload of the unit resolved to, vendored ones
+included.
+
 `rootDirectory`, `dockerfilePath` and `dockerfileTarget` may be set here too,
 which is what `POST /connections/{name}/detect` exists to get right: the
 preflight reads the repository the way a build would — down to the stages the

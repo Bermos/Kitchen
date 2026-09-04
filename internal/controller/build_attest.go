@@ -319,7 +319,7 @@ func buildRecord(
 		"project": project.Name,
 		"build":   build.Name,
 		"source": map[string]any{
-			"repository": project.Spec.Source.Repo,
+			"repository": project.Spec.Source.GitSource().Repo,
 			"commit":     build.Spec.Git.SHA,
 			"branch":     build.Spec.Git.Branch,
 		},

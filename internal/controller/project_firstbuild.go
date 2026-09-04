@@ -72,6 +72,14 @@ func (r *ProjectReconciler) ensureInitialBuild(
 		return false
 	}
 
+	// A project whose source is an image has nothing to resolve a branch on.
+	// Its first build is the acquisition of what it already names, which is
+	// what makes creating such a project deploy it rather than leaving it
+	// waiting for a push that can never come.
+	if !project.Spec.Source.HasRepository() {
+		return r.seedAcquisition(ctx, project, setCond)
+	}
+
 	provider, err := r.resolveProvider(ctx, project, conn)
 	if err != nil {
 		setCond(condInitialBuild, metav1.ConditionFalse, "ProviderError", err.Error())
@@ -85,19 +93,19 @@ func (r *ProjectReconciler) ensureInitialBuild(
 		return false
 	}
 
-	branch := project.Spec.Source.ProductionBranch
+	branch := project.Spec.Source.GitSource().ProductionBranch
 	if branch == "" {
 		branch = "main"
 	}
-	revision, err := resolver.HeadRevision(ctx, project.Spec.Source.Repo, branch)
+	revision, err := resolver.HeadRevision(ctx, project.Spec.Source.GitSource().Repo, branch)
 	if errors.Is(err, gitprovider.ErrFileNotFound) {
 		// A repository the credential cannot read answers this 404 too, and
 		// "push a commit" is the wrong thing to tell somebody whose
 		// repository nothing can see. Asking about the repository itself is
 		// what tells the two apart.
-		if detect.UnreadableRepository(ctx, provider, project.Spec.Source.Repo) {
+		if detect.UnreadableRepository(ctx, provider, project.Spec.Source.GitSource().Repo) {
 			setCond(condInitialBuild, metav1.ConditionFalse, reasonRepositoryUnreadable,
-				detect.UnreadableRepositoryMessage(conn.Name, project.Spec.Source.Repo))
+				detect.UnreadableRepositoryMessage(conn.Name, project.Spec.Source.GitSource().Repo))
 			// Unlike the branch below, this one does improve by being asked
 			// again: what has to change is a credential held at the provider
 			// — a token's repository access, an app installation, a secret
@@ -112,7 +120,7 @@ func (r *ProjectReconciler) ensureInitialBuild(
 		// and neither improves by being asked again.
 		setCond(condInitialBuild, metav1.ConditionFalse, "NoCommit", fmt.Sprintf(
 			"%s has no branch %q to build: push a commit, or correct the project's production branch",
-			project.Spec.Source.Repo, branch))
+			project.Spec.Source.GitSource().Repo, branch))
 		return false
 	}
 	if err != nil {
@@ -197,4 +205,58 @@ func buildForRevision(
 			},
 		},
 	}
+}
+
+// seedAcquisition is the first build of a project with no repository: the
+// image it already names, resolved and released.
+//
+// It is the exact counterpart of the branch tip resolved above, and it exists
+// for the same reason: connecting software to the platform should deploy it,
+// not leave it waiting for an event. What makes the *second* acquisition
+// happen — a tag that has moved since — is #308.
+func (r *ProjectReconciler) seedAcquisition(
+	ctx context.Context,
+	project *kitchenv1alpha1.Project,
+	setCond func(string, metav1.ConditionStatus, string, string),
+) bool {
+	image := project.Spec.Source.ImageSource()
+	build := &kitchenv1alpha1.Build{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      AcquisitionNameFor(project.Name, image.Reference()),
+			Namespace: project.Namespace,
+			Labels:    map[string]string{kitchenv1alpha1.ProjectLabel: project.Name},
+			Annotations: map[string]string{
+				initialBuildAnnotation: "the project's first build, for the image it already names",
+			},
+		},
+		Spec: kitchenv1alpha1.BuildSpec{
+			ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: project.Name},
+		},
+	}
+	if r.Audit != nil {
+		if err := r.Audit.Record(ctx, audit.Transition{
+			Object:     build,
+			Kind:       audit.KindBuild,
+			Operation:  clickhouse.AuditCreate,
+			Controller: actorProjectController,
+			To:         string(kitchenv1alpha1.BuildQueued),
+			Project:    project.Name,
+			Reason: fmt.Sprintf("project %s was created, so %s is acquired",
+				project.Name, image.Reference()),
+			Details: map[string]any{"image": image.Reference()},
+		}); err != nil {
+			setCond(condInitialBuild, metav1.ConditionFalse, "AuditFailed", err.Error())
+			return true
+		}
+	}
+	switch err := r.Create(ctx, build); {
+	case apierrors.IsAlreadyExists(err):
+	case err != nil:
+		setCond(condInitialBuild, metav1.ConditionFalse, "BuildNotCreated", err.Error())
+		return true
+	}
+	project.Status.InitialBuildRef = &kitchenv1alpha1.LocalObjectReference{Name: build.Name}
+	setCond(condInitialBuild, metav1.ConditionTrue, "Created", fmt.Sprintf(
+		"build %s was created for %s", build.Name, image.Reference()))
+	return false
 }

@@ -224,6 +224,7 @@ The workloads the project ships besides its web process —
     {"name": "migrate", "type": "task", "command": ["npm", "run", "migrate"], "timeout": "10m"},
     {"name": "worker", "type": "worker", "command": ["node", "worker.js"], "replicas": 2},
     {"name": "api", "type": "service", "port": 8080, "build": {"rootDirectory": "services/api", "dockerfileTarget": "api"}},
+    {"name": "cache", "type": "service", "port": 6379, "image": {"repository": "docker.io/library/redis", "tag": "7.4"}},
     {"name": "nightly", "type": "cron", "schedule": "0 3 * * *", "command": ["node", "nightly.js"]}
   ]
 }
@@ -236,6 +237,7 @@ The workloads the project ships besides its web process —
 | `command`, `args` | Exec form, as above. |
 | `port` | A service's listening port, and the port its siblings reach it on. Required on a service and refused on anything else. |
 | `build` | This workload's own build: `strategy` (`auto`, `dockerfile` or `buildpacks`, defaulting to `auto`), `dockerfilePath`, `dockerfileTarget`, and `rootDirectory` relative to the repository root. `auto` is the project's own default read over *this workload's* root directory: a Dockerfile there wins and this is a dockerfile build; otherwise the framework detected there is built with buildpacks; otherwise the build fails with a message naming this workload, the file it looked for and the `strategy` that would settle it. It resolves the builder alone — a workload names its own port and command, which are the other two things detection would answer — and it does not inherit the project's `strategy`. That directory is the workload's build root — `dockerfilePath` is relative to it and nothing above it is part of the build — so a path that leaves it is refused here, exactly as `build.dockerfilePath` is for the project. `dockerfileTarget` is which stage of that file to ship, and it falls back to the project's stage rather than to the file's last one; a stage on a `buildpacks` workload is refused naming that workload. Absent means it runs the project's image with another command. Refused on a `cron`. |
+| `image` | An image this platform did not build, and the third answer to the question `build` asks: `repository` (registry host included, without a tag or a digest), one or both of `tag` and `digest`, and an optional `connection` naming the Connection it is *pulled* with — left out for a public image, which is pulled anonymously. It excludes `build`: a workload is built from this repository or published elsewhere, never both. A unit may mix the two, and they ship in one release that records the digest each workload resolved to, so the whole of it rolls back together. |
 | `replicas` | A worker's or a service's copy count. Zero is a workload that is declared and parked. |
 | `singleton` | Two of this workload must never run at once, so a deploy stops the old copy before starting the new one. Refuses `replicas` above 1, and refused on a `cron` — that question is `concurrencyPolicy` — and on a `task`, which is one run per deploy. |
 | `cpu`, `memory` | Kubernetes quantities. |

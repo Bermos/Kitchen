@@ -82,7 +82,7 @@ func TestPatchingAProjectsSettings(t *testing.T) {
 	if err := h.server.get(context.Background(), "shop", stored); err != nil {
 		t.Fatal(err)
 	}
-	if stored.Spec.Source.ProductionBranch != "stable" || stored.Spec.Previews.IsEnabled() {
+	if stored.Spec.Source.GitSource().ProductionBranch != "stable" || stored.Spec.Previews.IsEnabled() {
 		t.Fatalf("the settings did not stick: %+v", stored.Spec)
 	}
 	if stored.Spec.Build.Strategy != kitchenv1alpha1.BuildStrategyBuildpacks ||
@@ -246,7 +246,7 @@ func TestPatchingAProjectsEnvVars(t *testing.T) {
 		t.Fatalf("the env vars did not stick: %+v", stored.Spec.Env)
 	}
 	// And nothing else on the project moved.
-	if stored.Spec.Source.ProductionBranch != defaultProductionBranch {
+	if stored.Spec.Source.GitSource().ProductionBranch != defaultProductionBranch {
 		t.Fatalf("the env write touched the project's settings: %+v", stored.Spec.Source)
 	}
 }
@@ -443,7 +443,7 @@ func TestPatchingAProjectLeavesTheRestAlone(t *testing.T) {
 	if err := h.server.get(context.Background(), "shop", stored); err != nil {
 		t.Fatal(err)
 	}
-	if stored.Spec.Source.ProductionBranch != defaultProductionBranch || stored.Spec.Source.Repo != "acme/shop" {
+	if stored.Spec.Source.GitSource().ProductionBranch != defaultProductionBranch || stored.Spec.Source.GitSource().Repo != "acme/shop" {
 		t.Fatalf("fields that were not patched changed: %+v", stored.Spec.Source)
 	}
 }

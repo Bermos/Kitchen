@@ -82,8 +82,8 @@ func platform() []client.Object {
 				Finalizers: []string{"kitchen.bermos.dev/project"},
 			},
 			Spec: kitchenv1alpha1.ProjectSpec{
-				Source:   kitchenv1alpha1.GitSourceSpec{Repo: "acme/shop"},
-				Registry: kitchenv1alpha1.RegistrySpec{},
+				Source:   kitchenv1alpha1.ProjectSourceSpec{Git: &kitchenv1alpha1.GitSourceSpec{Repo: "acme/shop"}},
+				Registry: &kitchenv1alpha1.RegistrySpec{},
 			},
 		},
 		&kitchenv1alpha1.Build{
@@ -204,7 +204,7 @@ func TestBackupAndRestoreIntoAnEmptyCluster(t *testing.T) {
 	if err := empty.Get(ctx, key, project); err != nil {
 		t.Fatalf("the project did not come back: %v", err)
 	}
-	if project.Spec.Source.Repo != "acme/shop" {
+	if project.Spec.Source.GitSource().Repo != "acme/shop" {
 		t.Errorf("the project came back as %+v", project.Spec)
 	}
 	kitchen := &kitchenv1alpha1.Kitchen{}

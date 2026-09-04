@@ -641,8 +641,8 @@ func (s *Server) deleteConnection(w http.ResponseWriter, req *http.Request) {
 	}
 	for i := range projects.Items {
 		project := &projects.Items[i]
-		if project.Spec.Source.ConnectionRef.Name == connection.Name ||
-			project.Spec.Registry.ConnectionRef.Name == connection.Name {
+		if project.Spec.Source.GitSource().ConnectionRef.Name == connection.Name ||
+			project.Spec.RegistryConnection() == connection.Name {
 			users = append(users, "project "+project.Name)
 		}
 	}

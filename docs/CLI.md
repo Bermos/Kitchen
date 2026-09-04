@@ -595,6 +595,35 @@ together — which is what makes a monorepo one project rather than four. Withou
 one it runs the project's image with another command. `kitchen builds` and
 `kitchen api GET /builds/<name>` list what a commit produced under `workloads`.
 
+A workload with an `image` runs one this platform did not build, which is the
+third answer to the question `build` asks and excludes it:
+
+```sh
+kitchen api PATCH /projects/shop --data '{"processes":[
+  {"name":"cache","type":"service","port":6379,
+   "image":{"repository":"docker.io/library/redis","tag":"7.4"}}
+]}'
+```
+
+`image.connection` names the Connection it is *pulled* with and is left out for
+a public image — it is never the connection the project pushes its own builds
+to. A unit may mix the two freely, and they ship in one release that records
+the digest each workload resolved to, so `kitchen rollback` restores the
+vendored digests exactly as it restores the built ones.
+
+A **project** whose web process is such an image is created the same way, with
+`image` where a repository project sends `repo`:
+
+```sh
+kitchen api POST /projects --data '{"name":"home-assistant",
+  "image":{"repository":"ghcr.io/home-assistant/home-assistant","tag":"2026.9.1"}}'
+```
+
+It needs no registry, no git connection and no production branch, and asking it
+for previews is refused in words: there are no pull requests to open against a
+project with no repository. `kitchen projects create` does not carry this —
+see the decisions table.
+
 `build.dockerfileTarget` on such a workload is which stage of its Dockerfile to
 ship — the per-workload counterpart of `--dockerfile-target` on `kitchen
 projects create`, and it goes through `kitchen api` for the same reason the
@@ -1211,6 +1240,8 @@ cannot write it carries on and exchanges every time.
 | The exit status of a deploy | The build's, plus `12` for an environment that settled `Degraded` | "Did my build pass", "was my release refused" and "is it live yet" are three questions. The first two are answers a pipeline has to be able to branch on, so they are codes; the third is a fact about the environment, and stays in the result where a caller reads the phase and the URL |
 | When `Degraded` counts as refused | Only once it has settled: it holds, and no condition says work is in flight | A phase is what the last reconcile left behind, so a retry reads `Degraded` for a moment before the platform looks at the new release. Stopping at the first `Degraded` would report that as a failure — and stopping at none of them is the hole this closes |
 | Credentials on the command line | `--api-key-file` and `--api-key-stdin` preferred, `--api-key` documented as visible in the process list | The convenient spelling should not be the one that leaks |
+| A project whose software this platform did not build | No command; `kitchen api POST /projects` with an `image` instead of a `repo` | `kitchen projects create` is a command about *this checkout*: it links a directory to a project, takes the repository and the name from it, and preflights the layout. A project with no repository is not created from a checkout at all — there is nothing to link and nothing to detect — so it is a different flow with none of the command's reasons behind it. The whole body is three keys, and the dashboard's new-project dialog carries it |
+| A workload's vendored image | No command; the process list already goes through `kitchen api PATCH /projects/{name}` | It is one more key on a record that already has no flag-shaped spelling worth having; a workload declares `image` where another declares `build`, in the same list |
 | A project's settings | No command; `kitchen api PATCH /projects/{name}` | One JSON body written occasionally by an admin — a port, a replica count, a health check, a security posture, a process list, arguments, a classification, the Dockerfile stage to ship (which `projects create` does carry, since the first build starts with the project). A flag per field would be a second surface to keep in step with the first, and a list of records with commands and schedules in it has no flag-shaped spelling worth having |
 | The platform commands | Declared the dashboard's for now, in `--help`, in `kitchen schema` and in a refusal that names the screen | A key is a role on one project and those routes need the operator role, so no credential this CLI can store runs them — and `kitchen api` carries the same token, so it is no way round a *role*. Shipping them published and silently unrunnable was the state [#208](https://github.com/Bermos/Kitchen/issues/208) found; a platform-scoped key is the real answer and is [#349](https://github.com/Bermos/Kitchen/issues/349), designed with [#318](https://github.com/Bermos/Kitchen/issues/318) because both decide what a key is |
 | Account management | No command, and none possible | Changing a password, or ending a session, is done at the identity provider against its session cookie — and this CLI holds a key, never a session. It is not an endpoint `kitchen api` reaches either, because that reaches the operator API and these are not on it ([AUTH.md](AUTH.md), "Managing an account") |

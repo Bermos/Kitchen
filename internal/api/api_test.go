@@ -77,6 +77,9 @@ const (
 	// webStage is the Dockerfile stage the target assertions name. It is one
 	// string in three places for the same reason eventStream is.
 	webStage = "web"
+	// testRegistry is the fixtures' image store Connection: the one the
+	// project pushes what it builds to, named for the same reason.
+	testRegistry = "registry"
 )
 
 // issuer is a stand-in for the platform's identity provider: it serves the
@@ -198,13 +201,13 @@ func fixtures() []runtime.Object {
 	project := &kitchenv1alpha1.Project{
 		ObjectMeta: metav1.ObjectMeta{Name: "shop", Namespace: testNamespace},
 		Spec: kitchenv1alpha1.ProjectSpec{
-			Source: kitchenv1alpha1.GitSourceSpec{
+			Source: kitchenv1alpha1.ProjectSourceSpec{Git: &kitchenv1alpha1.GitSourceSpec{
 				ConnectionRef:    kitchenv1alpha1.LocalObjectReference{Name: "gh"},
 				Repo:             "acme/shop",
 				ProductionBranch: defaultProductionBranch,
-			},
-			Registry: kitchenv1alpha1.RegistrySpec{
-				ConnectionRef: kitchenv1alpha1.LocalObjectReference{Name: "registry"},
+			}},
+			Registry: &kitchenv1alpha1.RegistrySpec{
+				ConnectionRef: kitchenv1alpha1.LocalObjectReference{Name: testRegistry},
 			},
 			Previews: kitchenv1alpha1.PreviewsSpec{Enabled: ptr.To(true)},
 		},
@@ -286,7 +289,7 @@ func fixtures() []runtime.Object {
 		},
 	}
 	registry := &kitchenv1alpha1.Connection{
-		ObjectMeta: metav1.ObjectMeta{Name: "registry", Namespace: testNamespace},
+		ObjectMeta: metav1.ObjectMeta{Name: testRegistry, Namespace: testNamespace},
 		Spec: kitchenv1alpha1.ConnectionSpec{
 			Provider:             "dockerRegistry",
 			CredentialsSecretRef: kitchenv1alpha1.CredentialsReference{Name: "registry-credentials"},
@@ -1056,7 +1059,8 @@ func TestCreatingAProject(t *testing.T) {
 	if err := h.server.get(context.Background(), otherProject, stored); err != nil {
 		t.Fatal(err)
 	}
-	if stored.Spec.Source.ConnectionRef.Name != "gh" || stored.Spec.Registry.ConnectionRef.Name != "registry" {
+	if stored.Spec.Source.GitSource().ConnectionRef.Name != "gh" ||
+		stored.Spec.RegistryConnection() != testRegistry {
 		t.Fatalf("the connections did not stick: %+v", stored.Spec)
 	}
 	if got := stored.Annotations["kitchen.bermos.dev/requested-by"]; got != testCaller {
@@ -1395,12 +1399,12 @@ func TestRebuildingAProjectThatHasNeverBuilt(t *testing.T) {
 	fresh := &kitchenv1alpha1.Project{
 		ObjectMeta: metav1.ObjectMeta{Name: "blog", Namespace: testNamespace},
 		Spec: kitchenv1alpha1.ProjectSpec{
-			Source: kitchenv1alpha1.GitSourceSpec{
+			Source: kitchenv1alpha1.ProjectSourceSpec{Git: &kitchenv1alpha1.GitSourceSpec{
 				ConnectionRef: kitchenv1alpha1.LocalObjectReference{Name: "gh"},
 				Repo:          "acme/blog",
-			},
-			Registry: kitchenv1alpha1.RegistrySpec{
-				ConnectionRef: kitchenv1alpha1.LocalObjectReference{Name: "registry"},
+			}},
+			Registry: &kitchenv1alpha1.RegistrySpec{
+				ConnectionRef: kitchenv1alpha1.LocalObjectReference{Name: testRegistry},
 			},
 		},
 	}

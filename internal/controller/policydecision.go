@@ -361,7 +361,7 @@ func (r *DecisionRecorder) registryAttester(ctx context.Context, projectName str
 	}
 	connection := &kitchenv1alpha1.Connection{}
 	if err := r.Client.Get(ctx, types.NamespacedName{
-		Namespace: PlatformNamespace, Name: project.Spec.Registry.ConnectionRef.Name,
+		Namespace: PlatformNamespace, Name: project.Spec.RegistryConnection(),
 	}, connection); err != nil {
 		return nil, err
 	}

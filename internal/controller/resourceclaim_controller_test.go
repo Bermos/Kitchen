@@ -129,11 +129,11 @@ var _ = Describe("ResourceClaim Controller", func() {
 		project := &kitchenv1alpha1.Project{
 			ObjectMeta: metav1.ObjectMeta{Name: projectName, Namespace: namespace},
 			Spec: kitchenv1alpha1.ProjectSpec{
-				Source: kitchenv1alpha1.GitSourceSpec{
+				Source: kitchenv1alpha1.ProjectSourceSpec{Git: &kitchenv1alpha1.GitSourceSpec{
 					ConnectionRef: kitchenv1alpha1.LocalObjectReference{Name: "gh"},
 					Repo:          "acme/clshop",
-				},
-				Registry: kitchenv1alpha1.RegistrySpec{
+				}},
+				Registry: &kitchenv1alpha1.RegistrySpec{
 					ConnectionRef: kitchenv1alpha1.LocalObjectReference{Name: "registry"},
 				},
 				Previews: kitchenv1alpha1.PreviewsSpec{Enabled: ptr.To(true), Protected: ptr.To(false)},
@@ -392,11 +392,11 @@ var _ = Describe("ResourceClaim Controller", func() {
 			return &kitchenv1alpha1.Project{
 				ObjectMeta: metav1.ObjectMeta{Name: otherProject, Namespace: namespace},
 				Spec: kitchenv1alpha1.ProjectSpec{
-					Source: kitchenv1alpha1.GitSourceSpec{
+					Source: kitchenv1alpha1.ProjectSourceSpec{Git: &kitchenv1alpha1.GitSourceSpec{
 						ConnectionRef: kitchenv1alpha1.LocalObjectReference{Name: "gh"},
 						Repo:          "acme/clwarehouse",
-					},
-					Registry: kitchenv1alpha1.RegistrySpec{
+					}},
+					Registry: &kitchenv1alpha1.RegistrySpec{
 						ConnectionRef: kitchenv1alpha1.LocalObjectReference{Name: "registry"},
 					},
 				},
