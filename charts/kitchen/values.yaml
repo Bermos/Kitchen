@@ -59,6 +59,26 @@ rbac:
   # -- Create the ClusterRole/Role and their bindings for the manager.
   create: true
 
+# Who may open a connection to the platform namespace.
+#
+# On by default, because Kitchen owns the cluster it is installed into and the
+# alternative is what shipped before it: any application pod — including a
+# preview built from an unreviewed pull request — able to reach the identity
+# provider's Postgres, ClickHouse and the private listener that mints CI keys,
+# on nothing but a DNS name. The policies deny ingress to the namespace and
+# then allow it back for each thing that legitimately receives traffic; see
+# templates/networkpolicy.yaml, which says why each rule is shaped as it is.
+#
+# Enforcement belongs to the CNI. Cilium is a prerequisite and enforces
+# `networking.k8s.io/v1` NetworkPolicy, so on a supported cluster this is real;
+# on a cluster whose CNI does not, it is inert and silently so.
+networkPolicy:
+  # -- Deny ingress to the platform namespace except from the platform itself,
+  # the published ports, and the application namespaces that need the object
+  # store and the telemetry agent. Needs a CNI that enforces NetworkPolicy —
+  # Cilium, which is a prerequisite, does.
+  enabled: true
+
 # Letting the platform upgrade its own Helm release from the dashboard.
 #
 # Off by default, and the default is the safe one: the upgrade runs as a Job

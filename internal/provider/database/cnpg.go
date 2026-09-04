@@ -518,11 +518,23 @@ func (c *CNPG) binding(ctx context.Context, cluster string) (Binding, error) {
 	}
 	host := fmt.Sprintf("%s-rw.%s.svc", cluster, c.Namespace)
 
+	// `sslmode=require` rather than libpq's default, which is `prefer`:
+	// prefer negotiates TLS and silently falls back to plaintext when the
+	// server declines, so a downgrade is indistinguishable from a normal
+	// connection. CloudNativePG serves TLS on every cluster it creates, with
+	// a CA it generates itself, so requiring encryption costs nothing here.
+	//
+	// It is `require` and not `verify-full` because verification needs that
+	// per-cluster CA in the application's trust store, and nothing puts it
+	// there — the binding is one string handed to a container. Requiring
+	// encryption without verification is what the same client already asks of
+	// Neon (see neon.go), and it closes the plaintext-on-the-wire half.
 	dsn := url.URL{
-		Scheme: "postgresql",
-		User:   url.UserPassword(user, password),
-		Host:   host + ":" + port,
-		Path:   "/" + database,
+		Scheme:   "postgresql",
+		User:     url.UserPassword(user, password),
+		Host:     host + ":" + port,
+		Path:     "/" + database,
+		RawQuery: "sslmode=require",
 	}
 	return Binding{
 		URL:      dsn.String(),

@@ -317,6 +317,65 @@ jobs:
             exit 1
           fi
 
+      - name: Check the platform namespace is closed to application namespaces
+        run: |
+          set -euo pipefail
+          policies=$(helm template kitchen charts/kitchen --namespace kitchen-system \
+            ${CHART_BASE} ${CHART_ACME} --set objectStore.enabled=true \
+            -s templates/networkpolicy.yaml)
+
+          # The deny is the whole point: without it every rule below is an
+          # allow on top of an allow-everything default.
+          echo "${policies}" | grep -q 'name: kitchen-default-deny-ingress' || {
+            echo "::error::the chart renders no default-deny ingress policy for kitchen-system;" \
+                 "every application pod can reach the identity provider's Postgres and ClickHouse."
+            exit 1
+          }
+          # cert-manager's webhook is called by the kube-apiserver, whose
+          # identity a NetworkPolicy cannot name. Catching it in the deny stops
+          # every Certificate in the cluster being admitted.
+          echo "${policies}" | grep -q 'name: kitchen-allow-cert-manager' || {
+            echo "::error::the bundled cert-manager is not exempted from the default deny;" \
+                 "its admission webhook would stop answering the API server."
+            exit 1
+          }
+          # Neither store is published and neither may be named by an allow:
+          # the platform-internal rule is all they get.
+          for store in clickhouse postgres; do
+            if echo "${policies}" | grep -q "app.kubernetes.io/name: kitchen-${store}"; then
+              echo "::error::a NetworkPolicy names kitchen-${store}; the telemetry store and the" \
+                   "accounts database are reachable from the platform namespace and nowhere else."
+              exit 1
+            fi
+          done
+          # The published ports have to be allowed from every source, not from
+          # a namespace: traffic off the shared Gateway has been through
+          # Cilium's Envoy and carries the reserved `ingress` identity, which
+          # no networking.k8s.io/v1 peer can select.
+          for port in 8092 8090 8080 5000; do
+            echo "${policies}" | grep -q "port: ${port}$" || {
+              echo "::error::published port ${port} is not allowed by any policy;" \
+                   "the shared Gateway cannot reach it."
+              exit 1
+            }
+          done
+          # The identity provider's private listener — accounts, CI keys,
+          # OAuth redirect lists — is the one port that must not appear.
+          if echo "${policies}" | grep -q 'port: 8081$'; then
+            echo "::error::a policy allows the identity provider's internal listener;" \
+                 "it is reachable from the platform namespace alone."
+            exit 1
+          fi
+
+          # Off means no policies at all, not a policy that allows everything.
+          off=$(helm template kitchen charts/kitchen --namespace kitchen-system \
+            ${CHART_BASE} ${CHART_ACME} --set networkPolicy.enabled=false \
+            -s templates/networkpolicy.yaml 2>/dev/null || true)
+          if echo "${off}" | grep -q 'kind: NetworkPolicy'; then
+            echo "::error::networkPolicy.enabled=false still rendered a NetworkPolicy"
+            exit 1
+          fi
+
       - name: Check the collector is only rendered with somewhere to ship to
         run: |
           set -euo pipefail
@@ -774,6 +833,44 @@ jobs:
             echo "::error::the git webhook receiver did not answer a ping"
             exit 1
           }
+
+      - name: Verify the network policies select the pods they name
+        run: |
+          set -euo pipefail
+          # This cluster is plain kind, so its CNI is kindnet and NOTHING here
+          # enforces a NetworkPolicy — a policy that blocked every flow on the
+          # platform would still leave this job green. What the cluster can
+          # prove is the half that is silent in a render: that each policy is
+          # admitted by the API server, and that the label selector it was
+          # written with actually selects the pods it was written for. A
+          # selector that matches nothing is how a policy comes to protect
+          # nothing while reading exactly right.
+          kubectl -n kitchen-system get networkpolicy \
+            kitchen-default-deny-ingress \
+            kitchen-allow-platform-internal \
+            kitchen-allow-cert-manager \
+            kitchen-allow-api \
+            kitchen-auth-allow-published \
+            kitchen-registry-allow-published \
+            kitchen-collector-allow-otlp \
+            kitchen-preview-gate-allow-published
+          selects() {
+            selector=$(kubectl -n kitchen-system get networkpolicy "$1" -o json \
+              | jq -r '.spec.podSelector.matchLabels | to_entries
+                       | map("\(.key)=\(.value)") | join(",")')
+            count=$(kubectl -n kitchen-system get pods -l "${selector}" \
+              --no-headers 2>/dev/null | wc -l)
+            [ "${count}" -gt 0 ] || {
+              echo "::error::NetworkPolicy $1 selects no pods (selector '${selector}');" \
+                   "it protects nothing."
+              exit 1
+            }
+            echo "$1 selects ${count} pod(s) on '${selector}'"
+          }
+          for policy in kitchen-allow-api kitchen-auth-allow-published \
+                        kitchen-registry-allow-published kitchen-collector-allow-otlp; do
+            selects "${policy}"
+          done
 
       - name: Verify the edge certificate is requested
         run: |
