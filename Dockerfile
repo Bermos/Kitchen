@@ -93,6 +93,16 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
 RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
     go build -ldflags "-X github.com/Bermos/Kitchen/internal/version.Version=${VERSION}" \
     -o rescan cmd/rescan/main.go
+# The program that prepares an application's volume before the application
+# starts. It runs as an init container in the application's own pod, so the
+# image it comes from is one the application's namespace can already pull —
+# which is the operator's, and is the reason it rides here rather than being a
+# utility image pinned somewhere. Same source tree, same release: a plan the
+# operator writes and a program that reads it must agree about the schema
+# between them, and one image is what guarantees they do.
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
+    go build -ldflags "-X github.com/Bermos/Kitchen/internal/version.Version=${VERSION}" \
+    -o volume-init cmd/volumeinit/main.go
 
 # Use distroless as minimal base image to package the manager binary
 # Refer to https://github.com/GoogleContainerTools/distroless for more details
@@ -104,6 +114,7 @@ COPY --from=builder /workspace/restore .
 COPY --from=builder /workspace/gate .
 COPY --from=builder /workspace/qualitygate .
 COPY --from=builder /workspace/rescan .
+COPY --from=builder /workspace/volume-init .
 USER 65532:65532
 
 ENTRYPOINT ["/manager"]

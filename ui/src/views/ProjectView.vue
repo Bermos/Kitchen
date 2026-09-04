@@ -11,6 +11,7 @@ import { may } from "../lib/policy";
 import { pipelineShown } from "../lib/promotions";
 import { releaseHistoryEntry, releaseHistoryLabel } from "../lib/status";
 import { useAsync, usePoll } from "../lib/useAsync";
+import { volumeInitDrafts, volumeInitProblems, volumeInitWrites, type VolumeInitDraft } from "../lib/workloads";
 import ClaimModal from "../components/ClaimModal.vue";
 import ClaimRecoveryModal from "../components/ClaimRecoveryModal.vue";
 import CommitBody from "../components/CommitBody.vue";
@@ -20,6 +21,7 @@ import EnvVarsPanel from "../components/EnvVarsPanel.vue";
 import ProjectFilesPanel from "../components/ProjectFilesPanel.vue";
 import ProjectSecretsPanel from "../components/ProjectSecretsPanel.vue";
 import ProjectWorkloadsPanel from "../components/ProjectWorkloadsPanel.vue";
+import VolumeInitEditor from "../components/VolumeInitEditor.vue";
 import EnvironmentCard from "../components/EnvironmentCard.vue";
 import KeysPanel from "../components/KeysPanel.vue";
 import MembersPanel from "../components/MembersPanel.vue";
@@ -364,6 +366,9 @@ const settings = reactive({
   // One capability per line, the same shape the argument fields take: a list
   // of words is a list of lines, never a string split on spaces.
   dropCapabilities: "",
+  // What the web process needs done inside the volumes it mounts before it
+  // starts. Empty for every project that mounts none, which is most of them.
+  init: [] as VolumeInitDraft[],
   // Two of this workload must never run at once. It is next to the replica
   // count because it is the same decision from the other side, and the form
   // keeps the two consistent rather than letting the API refuse the pair.
@@ -507,6 +512,7 @@ function loadSettings(from: Project) {
   settings.readOnlyRootFilesystem = from.security?.readOnlyRootFilesystem ?? false;
   settings.allowPrivilegeEscalation = from.security?.allowPrivilegeEscalation ?? false;
   settings.dropCapabilities = wordLines(from.security?.dropCapabilities);
+  settings.init = volumeInitDrafts(from.init);
   settings.singleton = from.singleton ?? false;
   settings.notRequestDriven = from.notRequestDriven ?? false;
   settings.dataClass = from.dataClass ?? "";
@@ -517,6 +523,10 @@ function loadSettings(from: Project) {
 watch(project, (value) => {
   if (value && value.name !== settings.loadedFor) loadSettings(value);
 });
+
+// What is wrong with the web process's volume preparation, in the words the
+// API would use — shown beside the form rather than arriving as a failed save.
+const volumePreparationProblems = computed(() => volumeInitProblems(settings.init, "The web process"));
 
 const savingSettings = ref(false);
 async function saveSettings() {
@@ -579,6 +589,9 @@ async function saveSettings() {
         allowPrivilegeEscalation: settings.allowPrivilegeEscalation,
         dropCapabilities: wordsOf(settings.dropCapabilities),
       },
+      // The whole declaration every time, so a volume taken off the list is
+      // one the platform stops preparing.
+      init: volumeInitWrites(settings.init),
       singleton: settings.singleton,
       notRequestDriven: settings.notRequestDriven,
       dataClass: settings.dataClass,
@@ -1756,6 +1769,17 @@ function host(url?: string): string {
                 privileges than the process that started it. Turn it on only for an image that genuinely needs a
                 setuid binary."
             />
+          </div>
+
+          <!-- What the web process needs done inside its volumes before it
+               starts. It sits after the posture because it depends on it:
+               the steps run as the workload runs, so who owns what they
+               create is the volume group above. -->
+          <div class="rounded-md border border-default bg-muted p-5 space-y-4">
+            <VolumeInitEditor v-model="settings.init" :may-edit="true" heading="h2" />
+            <p v-if="volumePreparationProblems.length" class="text-xs text-warning">
+              {{ volumePreparationProblems.join(" ") }}
+            </p>
           </div>
 
           <!-- How it starts. Exec form is a list of words, so each field is

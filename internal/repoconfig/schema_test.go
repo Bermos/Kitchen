@@ -147,6 +147,17 @@ func TestPublishedSchemaMatchesTheFileTheParserAccepts(t *testing.T) {
 	compare(t, "processes[]", reflect.TypeFor[appconfig.Process](), *root.Properties["processes"].Items, root)
 	compare(t, "files[]", reflect.TypeFor[FileConfigFile](), *root.Properties["files"].Items, root)
 	compare(t, "processes[].health", reflect.TypeFor[appconfig.Health](), root.Defs["process"].Properties["health"], root)
+	// What a workload prepares inside its volumes before it starts (#348).
+	// Both the web process and a named workload point at the same definition,
+	// so the file cannot describe one of them and not the other.
+	compare(t, "runtime.init[]", reflect.TypeFor[appconfig.VolumeInit](),
+		*root.Properties["runtime"].Properties["init"].Items, root)
+	compare(t, "processes[].init[]", reflect.TypeFor[appconfig.VolumeInit](),
+		*root.Defs["process"].Properties["init"].Items, root)
+	compare(t, "init[].directories[]", reflect.TypeFor[appconfig.VolumeInitDirectory](),
+		*root.Defs["volumeInit"].Properties["directories"].Items, root)
+	compare(t, "init[].seed[]", reflect.TypeFor[appconfig.VolumeInitSeed](),
+		*root.Defs["volumeInit"].Properties["seed"].Items, root)
 }
 
 // build.rootDirectory is on the Go struct only so that it can be refused with

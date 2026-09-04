@@ -191,6 +191,9 @@ func (r *EnvironmentReconciler) reconcileProcesses(
 	// mounts are the environment's volume claims; each process gets the
 	// ones that name it, and nothing else's.
 	mounts []mountedVolume,
+	// inits is what each workload prepares inside its volumes before it
+	// starts, worked out once for the whole environment.
+	inits volumeInits,
 	// tasks is what the deploy-task pass already settled. Its rows are used
 	// as they are rather than recomputed: they carry which release each task
 	// ran for and how, which is the record that keeps a migration to one run
@@ -242,7 +245,7 @@ func (r *EnvironmentReconciler) reconcileProcesses(
 		switch process.Type {
 		case kitchenv1alpha1.ProcessCron:
 			if err := r.applyCronJob(ctx, env, release, project, appNS, labels, podEnv, process,
-				processMounts); err != nil {
+				processMounts, inits[process.Name]); err != nil {
 				return nil, err
 			}
 			if err := r.observeCronJob(ctx, env, appNS, process, &status); err != nil {
@@ -250,7 +253,7 @@ func (r *EnvironmentReconciler) reconcileProcesses(
 			}
 		default:
 			if err := r.applyWorkerDeployment(ctx, env, release, project, appNS, labels, podEnv, process,
-				processMounts); err != nil {
+				processMounts, inits[process.Name]); err != nil {
 				return nil, err
 			}
 			// A service is a worker with something in front of it. The
@@ -292,6 +295,9 @@ func processPodSpec(
 	podEnv []corev1.EnvVar,
 	process kitchenv1alpha1.ProcessSpec,
 	mounts []mountedVolume,
+	// init is what this workload prepares inside those volumes before its
+	// own container starts, empty where it declares none.
+	init podInit,
 ) corev1.PodSpec {
 	volumes, volumeMounts := podVolumes(mounts)
 	container := corev1.Container{
@@ -349,6 +355,11 @@ func processPodSpec(
 	// service, a scheduled run and a deploy-time task all get them: a unit is
 	// one application, and its configuration file is the application's.
 	configFilesOnPod(&pod, envName, configFilesOf(release, process.Name))
+	// The init container that prepares this workload's volumes. A worker, a
+	// scheduled run and a deploy task all take one: a volume claim names one
+	// process, and the process that mounts an empty filesystem is the one
+	// that cannot start on it.
+	volumeInitOnPod(&pod, init)
 	return pod
 }
 
@@ -371,6 +382,7 @@ func (r *EnvironmentReconciler) applyWorkerDeployment(
 	podEnv []corev1.EnvVar,
 	process kitchenv1alpha1.ProcessSpec,
 	mounts []mountedVolume,
+	init podInit,
 ) error {
 	name := ProcessWorkloadName(env.Name, process.Name)
 	podLabels := processLabels(labels, process.Name)
@@ -416,7 +428,7 @@ func (r *EnvironmentReconciler) applyWorkerDeployment(
 			}}
 		}
 		deploy.Spec.Template.Labels = podLabels
-		deploy.Spec.Template.Spec = processPodSpec(env.Name, release, project, podEnv, process, mounts)
+		deploy.Spec.Template.Spec = processPodSpec(env.Name, release, project, podEnv, process, mounts, init)
 		// The digest of the plain files it reads, for the reason the web
 		// process carries one: a release differing only in a file's content
 		// would otherwise leave a running worker on the old file for ever.
@@ -516,6 +528,7 @@ func (r *EnvironmentReconciler) applyCronJob(
 	// — bounded by the run's timeout, and avoided by the default
 	// concurrency policy, Forbid.
 	mounts []mountedVolume,
+	init podInit,
 ) error {
 	name := ProcessWorkloadName(env.Name, process.Name)
 	childLabels := processLabels(labels, process.Name)
@@ -537,7 +550,7 @@ func (r *EnvironmentReconciler) applyCronJob(
 		cron.Spec.JobTemplate.Spec.BackoffLimit = ptr.To(runBackoffLimit)
 		cron.Spec.JobTemplate.Spec.ActiveDeadlineSeconds = ptr.To(process.TimeoutSeconds())
 		cron.Spec.JobTemplate.Spec.Template.Labels = childLabels
-		podSpec := processPodSpec(env.Name, release, project, podEnv, process, mounts)
+		podSpec := processPodSpec(env.Name, release, project, podEnv, process, mounts, init)
 		// A scheduled run needs no digest of anything: its next run is a new
 		// pod, which reads whatever the file holds when it starts.
 		//

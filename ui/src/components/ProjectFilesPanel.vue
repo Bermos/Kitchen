@@ -321,7 +321,7 @@ function contentSummary(file: ConfigFileDraft): string {
           </UFormField>
           <UFormField
             label="Path"
-            help="Where the file appears inside the application: absolute, naming the file itself. Everything else in that directory stays as the image left it."
+            help="Where the file appears inside the application: absolute, naming the file itself. Everything else in that directory stays as the image left it. Leave it empty for a file that is only seeded into a volume — a mounted file is read-only, and one mounted where the seed writes would shadow the copy the application then owns."
             :error="pathProblem(draft.path) || (collides ? 'Another file is already mounted there.' : undefined)"
           >
             <UInput

@@ -530,6 +530,16 @@ type patchProjectRequest struct {
 	// it back off, restoring the platform's default, which every workload
 	// runs under either way.
 	Security *securityRequest `json:"security,omitempty"`
+	// Init is what the *web* process prepares inside the volumes it mounts
+	// before its own container starts (#348): directories that have to
+	// exist, and configuration files seeded in once. A named workload's own
+	// is on its entry of `processes`, since a volume claim names the one
+	// process that mounts it.
+	//
+	// It replaces the whole declaration and `[]` clears it, the way the
+	// process list and the file list do: the list is short, ordered by
+	// nothing, and a merge would leave no way to delete an entry.
+	Init *[]volumeInitRequest `json:"init,omitempty"`
 	// Command replaces the image's entrypoint and Args its arguments, in
 	// exec form: a list of words, never a shell line. PreviewArgs replaces
 	// Args in preview environments, the way an environment variable's
@@ -970,6 +980,19 @@ func applyProjectBuildAndRuntime(project *kitchenv1alpha1.Project, body patchPro
 			return err
 		}
 	}
+	return applyProjectRuntimeDeclarations(project, body)
+}
+
+// applyProjectRuntimeDeclarations is the half of the runtime that is a whole
+// declaration rather than a scalar: the health check, the security posture,
+// what the web process prepares inside its volumes, and the three exec-form
+// lists. Each replaces what it describes outright, and each is validated by
+// the same code a kitchen.json goes through.
+//
+// It is a function of its own because the caller is one long sequence of
+// independent field assignments and this is where the sequence stops being
+// one: everything here parses something.
+func applyProjectRuntimeDeclarations(project *kitchenv1alpha1.Project, body patchProjectRequest) error {
 	if body.Health != nil {
 		health, err := healthFromRequest(*body.Health, "health", false)
 		if err != nil {
@@ -983,6 +1006,13 @@ func applyProjectBuildAndRuntime(project *kitchenv1alpha1.Project, body patchPro
 			return err
 		}
 		project.Spec.Runtime.Security = security
+	}
+	if body.Init != nil {
+		init, err := appconfig.VolumeInits(*body.Init, "the web process")
+		if err != nil {
+			return err
+		}
+		project.Spec.Runtime.Init = init
 	}
 	// Exec form throughout, so nothing here is split, quoted or handed to a
 	// shell: the words arrive as words and reach the container as words.
@@ -1137,6 +1167,16 @@ func (s *Server) patchProject(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 		project.Spec.Files = files
+	}
+	// After both, because it is the one rule neither can state on its own: a
+	// seed reads a file of this project, and one request may add the file and
+	// the workload that seeds it. Refused here so the sentence names the
+	// file, rather than arriving later as an environment that will not
+	// deploy.
+	if err := appconfig.ValidateSeededFiles(
+		project.Spec.Runtime.Init, project.Spec.Processes, project.Spec.Files); err != nil {
+		badRequest(w, "%s", err.Error())
+		return
 	}
 	var nextClass *kitchenv1alpha1.DataClass
 	if body.DataClass != nil {
@@ -2170,6 +2210,7 @@ func changedProjectFields(body patchProjectRequest, continuity continuityChange)
 		{"cpu", body.CPU != nil},
 		{"memory", body.Memory != nil},
 		{"health", body.Health != nil},
+		{"init", body.Init != nil},
 		{"command", body.Command != nil},
 		{"args", body.Args != nil},
 		{"previewArgs", body.PreviewArgs != nil},

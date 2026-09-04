@@ -142,6 +142,13 @@ func configFileMounts(envName string, files []kitchenv1alpha1.ConfigFile) ([]cor
 	var plain, secret []corev1.KeyToPath
 	mounts := make([]corev1.VolumeMount, 0, len(files))
 	for _, file := range files {
+		// A file with no path is placed in no container: it exists to be
+		// copied into a volume by a workload's init (#348), and mounting it
+		// where the seed writes would shadow the volume's own copy with a
+		// read-only one the application could never rewrite.
+		if file.Path == "" {
+			continue
+		}
 		volume := ConfigFilesVolumeName
 		if file.Secret {
 			volume = secretFilesVolumeName
@@ -198,7 +205,12 @@ func configFilesRevision(files []kitchenv1alpha1.ConfigFile) string {
 	digest := sha256.New()
 	counted := 0
 	for _, file := range files {
-		if file.Secret {
+		// Only what this workload mounts. A seeded file is deliberately not
+		// digested: a seed is what the volume *started* with, and applies
+		// only where the destination is absent, so rolling a workload
+		// because a seed's content moved would promise a change that will
+		// not reach the volume.
+		if file.Secret || file.Path == "" {
 			continue
 		}
 		counted++

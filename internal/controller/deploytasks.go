@@ -155,6 +155,7 @@ func (r *EnvironmentReconciler) reconcileDeployTasks(
 	labels map[string]string,
 	podEnv []corev1.EnvVar,
 	mounts []mountedVolume,
+	inits volumeInits,
 ) (deployTaskOutcome, error) {
 	out := deployTaskOutcome{}
 	for i := range release.Spec.ConfigSnapshot.Processes {
@@ -199,7 +200,7 @@ func (r *EnvironmentReconciler) reconcileDeployTasks(
 			if err := r.advanceDeployTask(ctx, deployTaskContext{
 				env: env, project: project, release: release,
 				appNS: appNS, labels: labels, podEnv: podEnv, mounts: mounts,
-				process: process,
+				process: process, init: inits[process.Name],
 			}, &status, &out); err != nil {
 				return out, err
 			}
@@ -222,6 +223,10 @@ type deployTaskContext struct {
 	podEnv  []corev1.EnvVar
 	mounts  []mountedVolume
 	process kitchenv1alpha1.ProcessSpec
+	// init is what this task prepares inside its volumes before its own
+	// container starts. A migration that writes into a volume needs the tree
+	// as much as the worker that reads it afterwards.
+	init podInit
 }
 
 // advanceDeployTask moves one task one step: observe the run this deploy
@@ -363,7 +368,8 @@ func (r *EnvironmentReconciler) startDeployTask(
 			},
 		},
 	}
-	podSpec := processPodSpec(task.env.Name, task.release, task.project, task.podEnv, task.process, task.mounts)
+	podSpec := processPodSpec(
+		task.env.Name, task.release, task.project, task.podEnv, task.process, task.mounts, task.init)
 	// Never, not OnFailure: with a backoff limit of zero a restarting
 	// container would retry inside a Job that can never fail, which is a
 	// migration running twice while the deploy waits for a verdict that never

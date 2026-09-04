@@ -342,6 +342,20 @@ type RuntimeSpec struct {
 	// the posture that release ran under.
 	// +optional
 	Security *SecuritySpec `json:"security,omitempty"`
+
+	// Init is what the web process needs done inside the volumes it mounts
+	// before its own container starts: directories that have to exist, and
+	// configuration files seeded into the volume once (#348).
+	//
+	// It is here rather than on the claim because it is the *process's*
+	// requirement — an image that will not start on an empty filesystem —
+	// and it is snapshotted into the Release with the rest of the runtime,
+	// so rolling back restores what that release seeded with. Each entry
+	// names one of the volumes this workload mounts; see [VolumeInit].
+	// +optional
+	// +listType=map
+	// +listMapKey=volume
+	Init []VolumeInit `json:"init,omitempty"`
 }
 
 // SecuritySpec is the security posture an application's containers run under.

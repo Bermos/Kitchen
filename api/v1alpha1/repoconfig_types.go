@@ -230,6 +230,15 @@ type RepoRuntimeConfig struct {
 	// the commit that makes it able to is the commit that should say so.
 	// +optional
 	Security *SecuritySpec `json:"security,omitempty"`
+
+	// Init is what the web process prepares inside the volumes it mounts
+	// before it starts (#348). The commit is where it belongs: which
+	// directories an image cannot start without is a property of the image,
+	// and the commit that builds the image is the one that knows.
+	// +optional
+	// +listType=map
+	// +listMapKey=volume
+	Init []VolumeInit `json:"init,omitempty"`
 }
 
 // RepoResources is a workload's CPU and memory as two Kubernetes quantity
@@ -277,6 +286,7 @@ func (c *RepoConfig) Declares() []string {
 			"runtime.previewArgs":      len(r.PreviewArgs) > 0,
 			"runtime.health":           r.Health != nil,
 			"runtime.security":         r.Security != nil,
+			"runtime.init":             len(r.Init) > 0,
 		} {
 			if declared {
 				fields = append(fields, name)

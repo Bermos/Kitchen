@@ -429,6 +429,24 @@ model, a task that may mount another process's volume, or a decision that
 images which need this are out of scope — that is a question, and this spike's
 contribution is to show it survives #311 rather than being solved by it.
 
+> **Settled.** [#348](https://github.com/Bermos/Kitchen/issues/348) took the
+> first of the three: an init step in the model, and **declarative rather than
+> a command**. A workload declares `init` for a volume it mounts, made of two
+> typed steps — `directories` created if absent, and configuration files
+> `seed`ed in only where the destination does not exist — which the platform
+> executes itself in an init container in the workload's own pod, from the
+> operator's own image and under the project's own `runtime.security`. No
+> user-supplied argv and no shell, so the rule the KEDA install job follows
+> holds here; idempotent by construction, so running it on every start is the
+> same as running it once; and #267's one-process rule is untouched, since the
+> steps run in the pod that already mounts the volume. The second option was
+> rejected because it changes that rule; the third because `fsGroup` (#347)
+> plus a config file (#311) still leaves Home Assistant and Gitea unable to
+> start on an empty volume, which is exactly the state the issue calls
+> unacceptable. The reasoning lives with the field: [CRDS.md](../CRDS.md)
+> (`runtime.init`), [CONFIG.md](../CONFIG.md) (`kitchen.json`) and
+> [api/projects.md](../api/projects.md#a-volume-the-process-cannot-start-on).
+
 ### The boundary
 
 **Host network, host devices, and node pinning.** Home Assistant's whole case.

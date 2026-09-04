@@ -396,6 +396,62 @@ previous uid staying unwritable. The default is not moved, because that trade
 is the project's to make. It applies only alongside an `fsGroup` and is
 refused without one.
 
+### A volume the process cannot start on
+
+`init` is what the **web process** needs done inside the volumes it mounts,
+before its own container starts. A [volume claim](claims.md) hands a workload
+an empty filesystem, and a good deal of vendored software will not start on
+one — Gitea wants a directory tree that exists before it looks at it, Home
+Assistant a `configuration.yaml` it may then rewrite. A named workload's own
+declaration is the `init` on its entry of
+[`processes`](processes.md#declaring-them), on identical terms: a claim names
+the one process that mounts it.
+
+```json
+{"init": [{"volume": "config",
+           "directories": [{"path": "custom_components"},
+                           {"path": "secrets", "mode": "0750"}],
+           "seed": [{"file": "configuration", "path": "configuration.yaml"}]}]}
+```
+
+It replaces the whole declaration, and `[]` takes it off — the reading
+`processes` and `files` already have.
+
+**There is no command here, and there deliberately never will be.** The two
+steps are the vocabulary; the platform runs them itself, in an init container
+in the workload's own pod, from the operator's own image, under this project's
+own `security` posture. Nothing a request carries reaches an argv, which is
+the same rule the platform's KEDA install job follows.
+
+**Every step is idempotent by construction**, because this runs on every start
+of every pod and not only the first:
+
+| Step | What it does | What it never does |
+| --- | --- | --- |
+| `directories` | Creates the directory if it is absent, at `mode` if one is given (octal **as a string**, since JSON's numbers are not octal) | Touches one that is already there — mode and owner both stay the application's |
+| `seed` | Copies one of the project's [files](files.md) in, where the destination does not exist | Overwrites what the application wrote, ever |
+
+`volume` names a claim **this workload mounts**, and every path is relative to
+that claim's mount path: a leading slash and a `..` are not spellable, so no
+step can reach out of the volume. Ownership is nobody's field here — the init
+container runs as the pod runs, so what it creates comes out owned by the
+process that will use it, which is what `security.fsGroup` and
+`security.runAsUser` above already decide.
+
+A file used only as a seed is a file with **no `path`**: it is placed in no
+container, because a mounted config file is read-only and, mounted where the
+seed writes, would shadow the copy the application then owns.
+
+The declaration is snapshotted into the Release with the rest of the runtime,
+so a rollback restores the tree and the seeds that release started with. A
+seed naming a file the project does not declare is refused here, naming it.
+What cannot be checked until the claims are known is refused on the
+environment instead: a volume this workload does not mount, or one it mounts
+read-only, leaves it `Ready=False` with reason `VolumeInitInvalid` and no
+Deployment written — so whatever was serving carries on serving. A step that
+fails at run time lands on the same condition with reason `VolumeInitFailed`,
+in the step's own words.
+
 **A project that declares nothing still runs under a posture**, and reading a
 project back reports it resolved — the runtime's own seccomp profile, and no
 privilege escalation, which are the two hardenings a working image does not
