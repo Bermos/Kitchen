@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.28.0](https://github.com/Bermos/Kitchen/compare/v0.27.0...v0.28.0) (2026-09-04)
+
+
+### Features
+
+* **compliance:** evidence for artifacts the platform did not build ([#375](https://github.com/Bermos/Kitchen/issues/375)) ([15d4f45](https://github.com/Bermos/Kitchen/commit/15d4f45193626e05b54c7fee948995993a45d318))
+* **platform:** configure vendored software with a file, not only variables ([#373](https://github.com/Bermos/Kitchen/issues/373)) ([cd22f07](https://github.com/Bermos/Kitchen/commit/cd22f07c8ed9bc2bc5716e55c7129b7a80ce69c3))
+
 ## [0.27.0](https://github.com/Bermos/Kitchen/compare/v0.26.0...v0.27.0) (2026-09-04)
 
 
