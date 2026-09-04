@@ -1,6 +1,6 @@
 {
   "name": "kitchen-auth",
-  "version": "0.25.0",
+  "version": "0.26.0",
   "private": true,
   "description": "Kitchen's identity provider: better-auth with the OAuth/OIDC provider plugin",
   "license": "Apache-2.0",
