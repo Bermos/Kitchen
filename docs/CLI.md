@@ -132,12 +132,20 @@ preflight is advice, so what a key sees is a warning about it and then the
 refusal of the create itself. That is the right shape for a CLI, which is
 exactly where a too-broad token ends up on a laptop.
 
-In CI, skip `login` entirely:
+In CI, skip `login` entirely — and name the installation, because a machine
+that has never run `kitchen login` knows none and the committed link file is
+not allowed to introduce one ([Linking a directory](#linking-a-directory)):
 
 | Variable | What it is |
 |---|---|
+| `KITCHEN_API` | The installation to talk to. Set it explicitly in CI |
 | `KITCHEN_API_KEY` | A key to exchange for a token, per command |
 | `KITCHEN_TOKEN` | A token somebody already exchanged, used as it is |
+
+The key is exchanged at the issuer this installation's `/config.json` names,
+and that document needs no credential to serve — so an issuer on another site
+is taken from it only after `kitchen login` has recorded one for this
+installation, and the request carrying the key follows no redirect.
 
 ### Why there is no browser sign-in
 
@@ -253,6 +261,47 @@ that cannot resolve one says all three:
 
 Which installation, likewise: `--api`, `KITCHEN_API`, the link file, and then
 the machine's current installation from `kitchen login`.
+
+**The link file may choose an installation; it may never introduce one.** It is
+committed, which is the point of it — and that makes it the one input to this
+CLI that anybody who can push to the repository writes, a fork's pull request
+included. A file free to name any host would be a file that decides where a
+credential goes: the API key is handed to whatever issuer the named host's
+`/config.json` claims, and `KITCHEN_TOKEN` travels to it as a bearer. So the
+`api` in it is used only when `kitchen login` has already stored that
+installation on this machine, and anything else is refused — exit `2`, naming
+the host:
+
+```
+$ kitchen deploy
+/home/anna/shop/.kitchen/project.json names an installation this machine has
+not signed in to: https://kitchen.elsewhere.example
+
+the link file is committed, so it may choose between installations
+`kitchen login` has stored but not introduce one while KITCHEN_API_KEY is set —
+a commit could otherwise send that credential to a host of its own choosing.
+Say which installation this is with --api https://kitchen.elsewhere.example or
+KITCHEN_API (CI should always set it), or run
+`kitchen login --api https://kitchen.elsewhere.example` on a machine that
+trusts it
+```
+
+With no credential in the environment there is nothing to lose by asking, so a
+person at a terminal is asked — the question shows the host — and a run with no
+terminal names the flag rather than waiting for an answer nobody can give.
+Saying which installation this is with `--api` or `KITCHEN_API` overrides the
+file outright and is never checked against it: a caller who names a platform
+has named it.
+
+**In CI, set `KITCHEN_API`.** A pipeline holding `KITCHEN_API_KEY` or
+`KITCHEN_TOKEN` should say which platform it deploys to, rather than read it
+out of the working copy it is building:
+
+```sh
+export KITCHEN_API=https://kitchen.example.com
+export KITCHEN_API_KEY=…   # from the project's People tab
+kitchen deploy
+```
 
 Run without `--project` on a terminal, `kitchen link` offers the projects this
 account can see and lets you pick one. Without a terminal it names the flag and
@@ -1352,7 +1401,7 @@ to be read by whoever sent the request. `hint` says what would fix it.
 
 | Variable | Meaning |
 |---|---|
-| `KITCHEN_API` | The installation to talk to |
+| `KITCHEN_API` | The installation to talk to. What CI sets, since the link file may only choose an installation this machine has signed in to |
 | `KITCHEN_PROJECT` | The project to act on |
 | `KITCHEN_TOKEN` | A platform token, used as it is |
 | `KITCHEN_API_KEY` | A key to exchange for one |
@@ -1363,7 +1412,7 @@ to be read by whoever sent the request. `hint` says what would fix it.
 | File | Holds |
 |---|---|
 | `<config dir>/kitchen/auth.json` | One entry per installation: the issuer, the API key, and the last exchanged token with its expiry. Mode `0600` |
-| `<working copy>/.kitchen/project.json` | The project this directory deploys to, and the installation. No credential |
+| `<working copy>/.kitchen/project.json` | The project this directory deploys to, and the installation — which it may only choose from `auth.json`, never introduce. No credential |
 
 The exchanged token is cached until it expires, so a script running twenty
 commands exchanges once. Losing that cache costs one request; a machine that
@@ -1383,6 +1432,7 @@ cannot write it carries on and exchanges every time.
 | Following a deploy | Poll the build, stream its logs, then watch for the release and the environment | All four are things the API already answers; the CLI renders them and drives nothing |
 | The exit status of a deploy | The build's, plus `12` for an environment that settled `Degraded` | "Did my build pass", "was my release refused" and "is it live yet" are three questions. The first two are answers a pipeline has to be able to branch on, so they are codes; the third is a fact about the environment, and stays in the result where a caller reads the phase and the URL |
 | When `Degraded` counts as refused | Only once it has settled: it holds, and no condition says work is in flight | A phase is what the last reconcile left behind, so a retry reads `Degraded` for a moment before the platform looks at the new release. Stopping at the first `Degraded` would report that as a failure — and stopping at none of them is the hole this closes |
+| What the link file may decide | The project outright; the installation only from among those `auth.json` already holds | It is committed, so a commit — or a fork's pull request — writes it, and an unconstrained `api` in it chooses where the environment's key or token is sent. Refusing a host this machine has not signed in to costs a linked checkout nothing (`kitchen login` stored the host it linked on) and costs CI one variable it should be setting anyway ([#317](https://github.com/Bermos/Kitchen/issues/317)) |
 | Credentials on the command line | `--api-key-file` and `--api-key-stdin` preferred, `--api-key` documented as visible in the process list | The convenient spelling should not be the one that leaks |
 | A project whose software this platform did not build | No command; `kitchen api POST /projects` with an `image` instead of a `repo` | `kitchen projects create` is a command about *this checkout*: it links a directory to a project, takes the repository and the name from it, and preflights the layout. A project with no repository is not created from a checkout at all — there is nothing to link and nothing to detect — so it is a different flow with none of the command's reasons behind it. The whole body is three keys, and the dashboard's new-project dialog carries it |
 | Acquiring a new digest | No command; `kitchen api POST /projects/{name}/acquisitions` | The ordinary case needs no caller at all — the platform polls, and a moved tag produces the acquisition on its own. What is left is "check now", which is a button on a screen, and "take exactly this digest", which is a vendor's own pipeline calling one endpoint with one key at the end of its publish. Neither is about *this checkout*, which is what every command here is: `kitchen deploy` deploys the commit in the working directory, and a project with no repository has no working directory to be in. A `--image-digest` flag on `deploy` would be a second meaning for a command whose whole shape — link a directory, read its HEAD, follow the build — assumes the first |

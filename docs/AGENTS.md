@@ -34,7 +34,7 @@ Two files, either of which may be absent:
 
 | File | What it means |
 |---|---|
-| `.kitchen/project.json` | The directory is linked to a project: `{"project": "shop", "api": "https://kitchen.apps.example.com"}`. Written by `kitchen link`, holds no credential, and is meant to be committed. |
+| `.kitchen/project.json` | The directory is linked to a project: `{"project": "shop", "api": "https://kitchen.apps.example.com"}`. Written by `kitchen link`, holds no credential, and is meant to be committed. Because it is committed, the `api` in it may only *choose* an installation this machine has signed in to — set `KITCHEN_API` where nothing has run `kitchen login`, which is every CI runner ([CLI.md](CLI.md#linking-a-directory)). |
 | `kitchen.json` | The project declares its own build and runtime settings — see [Configuration](#configuration-kitchenjson). |
 
 Neither being there does not mean the repository is not deployed by Kitchen:

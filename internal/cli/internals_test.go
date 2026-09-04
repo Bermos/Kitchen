@@ -97,6 +97,31 @@ func TestNormalizeAPIAcceptsWhatSomebodyWillType(t *testing.T) {
 	}
 }
 
+// Which issuers an unauthenticated /config.json may name: the platform's own
+// site, and nowhere else. Registrable is the public suffix list's answer, so
+// two installations sharing nothing but a suffix are not one site.
+func TestSameSiteIsTheAPIsOwnRegistrableDomain(t *testing.T) {
+	for _, testCase := range []struct {
+		base, issuer string
+		wanted       bool
+	}{
+		{"https://kitchen.example.com", "https://kitchen.example.com", true},
+		{"https://kitchen.example.com", "https://auth.example.com", true},
+		{"https://kitchen.example.com", "https://auth.example.com/", true},
+		{"https://kitchen.example.co.uk", "https://auth.example.co.uk", true},
+		{"http://127.0.0.1:8080", "http://127.0.0.1:9090", true},
+		{"https://kitchen.example.com", "https://issuer.attacker.example", false},
+		{"https://kitchen.example.co.uk", "https://attacker.co.uk", false},
+		{"https://kitchen.example.com", "not a url at all", false},
+		{"https://kitchen.example.com", "", false},
+	} {
+		if got := sameSite(testCase.base, testCase.issuer); got != testCase.wanted {
+			t.Errorf("sameSite(%q, %q) = %v, wanted %v",
+				testCase.base, testCase.issuer, got, testCase.wanted)
+		}
+	}
+}
+
 func TestAPIPathAcceptsBothSpellings(t *testing.T) {
 	for _, typed := range []string{"/projects", "projects", "/api/v1/projects"} {
 		if got := apiPath(typed); got != "/api/v1/projects" {

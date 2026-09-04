@@ -174,9 +174,18 @@ func login(parent context.Context, r *Runtime, key, fromFile string, fromStdin b
 // login cannot infer from anything already stored, so it asks when it can and
 // names the flag when it cannot.
 func loginTarget(r *Runtime) (string, error) {
-	if base, err := r.apiURL(); err == nil {
+	base, err := r.apiURL()
+	if err == nil {
 		return base, nil
 	}
+	// A link file naming an installation this machine has not signed in to is
+	// refused there, credential in the environment or not, and asking the same
+	// question again in other words would only bury the reason. Anything else
+	// that could not resolve one is what this asks about.
+	if linked, _, linkErr := r.link(); linkErr == nil && linked != nil && linked.API != "" {
+		return "", err
+	}
+
 	answer, err := ask(r, "Kitchen URL (e.g. https://kitchen.example.com):", "--api")
 	if err != nil {
 		return "", err

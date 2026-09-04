@@ -450,11 +450,21 @@ func confirm(r *Runtime, question string, yes bool) error {
 	if err != nil {
 		return err
 	}
-	switch strings.ToLower(answer) {
-	case "y", "yes":
-		return nil
-	default:
+	if !affirmative(answer) {
 		return fail(codeFailed, "cancelled")
+	}
+	return nil
+}
+
+// affirmative is what counts as somebody saying yes to a question. Silence —
+// an empty answer — is no, which is what makes every prompt in this CLI safe
+// to hold down return through.
+func affirmative(answer string) bool {
+	switch strings.ToLower(strings.TrimSpace(answer)) {
+	case "y", "yes":
+		return true
+	default:
+		return false
 	}
 }
 

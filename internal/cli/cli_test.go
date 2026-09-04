@@ -32,6 +32,11 @@ const (
 	testProject = "shop"
 	testValue   = "debug"
 
+	// testKey is the API key a test signs in with. It is a project's key, so
+	// what matters about it is only that it is the thing the CLI must not
+	// hand to a host nobody named.
+	testKey = "a-key-from-the-project"
+
 	// testRefusal is the sentence the fake platform refuses with. The
 	// assertions are about where it ends up rather than what it says.
 	testRefusal = "adding a connection needs the operator role; you are a member"
@@ -131,6 +136,9 @@ func TestLinkWritesTheProjectAndTheOtherCommandsReadIt(t *testing.T) {
 	h := newHarness(t)
 	h.platform.project = &project{Name: testProject, Role: "developer", Repo: "acme/shop",
 		ProductionBranch: "main", ProductionEnvironment: "shop-production"}
+	// Sign in first, because a link file only ever *chooses* an installation
+	// this machine already knows — the whole of allowLinked.
+	h.signIn()
 
 	if code := h.run("link", "--project", testProject, "--json"); code != exitOK {
 		t.Fatalf("exit %d, stderr: %s", code, h.stderr.String())
@@ -186,6 +194,171 @@ func TestTheLinkIsFoundFromASubdirectory(t *testing.T) {
 	if code := h.run("env", "list", "--json"); code != exitOK {
 		t.Fatalf("exit %d, stderr: %s", code, h.stderr.String())
 	}
+}
+
+// The link file is committed — that is what it is for — so anybody who can
+// push to the repository writes it, a fork's pull request included. It may
+// therefore choose between the installations this machine has signed in to,
+// and never introduce one: a commit that could name any host would be a commit
+// that decides where CI's credential is sent.
+func TestALinkFileCannotIntroduceAnInstallation(t *testing.T) {
+	for _, credential := range []string{"KITCHEN_TOKEN", "KITCHEN_API_KEY"} {
+		t.Run(credential, func(t *testing.T) {
+			h := newHarness(t)
+			attacker := newSink(t)
+			if _, err := writeLink(h.work, &link{Project: testProject, API: attacker.url()}); err != nil {
+				t.Fatal(err)
+			}
+			// The shape the docs used to recommend: a credential in the
+			// environment, and the installation left to the link file.
+			delete(h.env, "KITCHEN_API")
+			delete(h.env, "KITCHEN_TOKEN")
+			h.env[credential] = "a-credential"
+
+			if code := h.run("status", "--json"); code != exitUsage {
+				t.Fatalf("exit %d, wanted %d", code, exitUsage)
+			}
+			refusal := h.failure()
+			if refusal.Code != codeUsage {
+				t.Fatalf("code %q", refusal.Code)
+			}
+			if !strings.Contains(refusal.Message, attacker.url()) {
+				t.Fatalf("the refusal does not name the host: %q", refusal.Message)
+			}
+			for _, wanted := range []string{"--api", "KITCHEN_API", credential} {
+				if !strings.Contains(refusal.Hint, wanted) {
+					t.Fatalf("the hint does not mention %s: %q", wanted, refusal.Hint)
+				}
+			}
+			attacker.untouched(t)
+		})
+	}
+}
+
+// The other half of the same rule: choosing is exactly what the link file is
+// still for, including on a machine signed in to more than one installation.
+func TestALinkFileChoosesAmongTheInstallationsTheMachineKnows(t *testing.T) {
+	h := newHarness(t)
+	elsewhere := newPlatform(t)
+
+	h.signIn()
+	// The second sign-in is the machine's current installation, so anything
+	// that answers here answers because the link file chose it.
+	h.signInTo(elsewhere.server.URL)
+	if _, err := writeLink(h.work, &link{Project: testProject, API: h.platform.server.URL}); err != nil {
+		t.Fatal(err)
+	}
+	delete(h.env, "KITCHEN_API")
+	h.platform.forget()
+	elsewhere.forget()
+
+	if code := h.run("whoami", "--json"); code != exitOK {
+		t.Fatalf("exit %d, stderr: %s", code, h.stderr.String())
+	}
+	if len(h.platform.sent("GET", "/me")) == 0 {
+		t.Fatal("the linked installation was not the one asked")
+	}
+	if asked := elsewhere.sent("GET", "/me"); len(asked) != 0 {
+		t.Fatalf("the current installation answered instead of the linked one: %+v", asked)
+	}
+}
+
+// Saying which installation this is remains the caller's to do, and overrides
+// the file rather than being checked against it — which is what CI does.
+func TestAnExplicitInstallationOverridesTheLinkFile(t *testing.T) {
+	h := newHarness(t)
+	attacker := newSink(t)
+	if _, err := writeLink(h.work, &link{Project: testProject, API: attacker.url()}); err != nil {
+		t.Fatal(err)
+	}
+
+	// KITCHEN_API, which the harness sets, is the installation.
+	if code := h.run("whoami", "--json"); code != exitOK {
+		t.Fatalf("with KITCHEN_API: exit %d, stderr: %s", code, h.stderr.String())
+	}
+	// And so is --api, with nothing in the environment naming one.
+	delete(h.env, "KITCHEN_API")
+	if code := h.run("whoami", "--api", h.platform.server.URL, "--json"); code != exitOK {
+		t.Fatalf("with --api: exit %d, stderr: %s", code, h.stderr.String())
+	}
+	attacker.untouched(t)
+}
+
+// With no credential in the environment there is nothing to lose by asking,
+// so a person at a terminal is asked — and nobody is ever waited on.
+func TestTrustingAnUnknownInstallationIsAQuestionNobodyBlocksOn(t *testing.T) {
+	h := newHarness(t)
+	attacker := newSink(t)
+	if _, err := writeLink(h.work, &link{Project: testProject, API: attacker.url()}); err != nil {
+		t.Fatal(err)
+	}
+	delete(h.env, "KITCHEN_API")
+	delete(h.env, "KITCHEN_TOKEN")
+
+	// No terminal: the flag that answers the question, not a wait.
+	if code := h.run("whoami", "--json"); code != exitUsage {
+		t.Fatalf("without a terminal: exit %d, wanted %d", code, exitUsage)
+	}
+	if hint := h.failure().Hint; !strings.Contains(hint, "--api") {
+		t.Fatalf("the hint does not name the flag: %q", hint)
+	}
+
+	// A person who says no is refused in the same words.
+	h.stdinTerminal = true
+	h.stdin = strings.NewReader("n\n")
+	if code := h.run("whoami", "--json"); code != exitUsage {
+		t.Fatalf("after declining: exit %d, wanted %d", code, exitUsage)
+	}
+
+	// A person who says yes gets as far as the credential — of which there is
+	// none, so the host is still sent nothing at all.
+	h.stdin = strings.NewReader("y\n")
+	if code := h.run("whoami", "--json"); code != exitUnauthenticated {
+		t.Fatalf("after accepting: exit %d, wanted %d", code, exitUnauthenticated)
+	}
+	if question := h.stderr.String(); !strings.Contains(question, attacker.url()) {
+		t.Fatalf("the question does not show the host: %q", question)
+	}
+	attacker.untouched(t)
+}
+
+// The key is handed to whatever /config.json names as the issuer, and that
+// document needs no credential to serve — so an issuer somewhere else entirely
+// is one the CLI will not take out of it unasked.
+func TestAnOffSiteIssuerIsNotTakenFromTheConfigurationDocument(t *testing.T) {
+	h := newHarness(t)
+	delete(h.env, "KITCHEN_TOKEN")
+	h.env["KITCHEN_API_KEY"] = testKey
+	h.platform.issuerOverride = "https://issuer.attacker.example"
+
+	if code := h.run("whoami", "--json"); code != exitUnauthenticated {
+		t.Fatalf("exit %d, wanted %d", code, exitUnauthenticated)
+	}
+	refusal := h.failure()
+	if !strings.Contains(refusal.Message, "issuer.attacker.example") {
+		t.Fatalf("the refusal does not name the issuer: %q", refusal.Message)
+	}
+	if !strings.Contains(refusal.Hint, "kitchen login") {
+		t.Fatalf("the hint does not say how to accept it: %q", refusal.Hint)
+	}
+}
+
+// net/http drops an Authorization header across hosts and knows nothing about
+// x-api-key, so the one request that carries the key follows no redirect.
+func TestTheKeyExchangeRefusesToFollowARedirect(t *testing.T) {
+	h := newHarness(t)
+	attacker := newSink(t)
+	delete(h.env, "KITCHEN_TOKEN")
+	h.env["KITCHEN_API_KEY"] = testKey
+	h.platform.issuerRedirect = attacker.url() + "/token"
+
+	if code := h.run("whoami", "--json"); code != exitUnauthenticated {
+		t.Fatalf("exit %d, wanted %d", code, exitUnauthenticated)
+	}
+	if message := h.failure().Message; !strings.Contains(message, "redirect") {
+		t.Fatalf("the refusal does not say a redirect was refused: %q", message)
+	}
+	attacker.untouched(t)
 }
 
 // Interactive-only work must never block: with no terminal, a command that
@@ -718,7 +891,7 @@ func TestLoginStoresTheCredentialAndCheckWhoItIs(t *testing.T) {
 	h := newHarness(t)
 	delete(h.env, "KITCHEN_TOKEN")
 
-	code := h.run("login", "--api", h.platform.server.URL, "--api-key", "a-key-from-the-project", "--json")
+	code := h.run("login", "--api", h.platform.server.URL, "--api-key", testKey, "--json")
 	if code != exitOK {
 		t.Fatalf("exit %d, stderr: %s", code, h.stderr.String())
 	}
@@ -732,7 +905,7 @@ func TestLoginStoresTheCredentialAndCheckWhoItIs(t *testing.T) {
 		t.Fatal(err)
 	}
 	current := stored.Installations[h.platform.server.URL]
-	if current == nil || current.APIKey != "a-key-from-the-project" {
+	if current == nil || current.APIKey != testKey {
 		t.Fatalf("the key was not stored: %+v", stored)
 	}
 	if current.Issuer != h.platform.issuer.URL {
@@ -757,6 +930,28 @@ func TestLoginStoresTheCredentialAndCheckWhoItIs(t *testing.T) {
 	if code := h.run("whoami", "--json"); code != exitOK {
 		t.Fatalf("whoami after login: exit %d, stderr: %s", code, h.stderr.String())
 	}
+}
+
+// Signing in is the command that hands the key over, so it is the one that
+// most needs the link file not to choose the host: the refusal is the answer,
+// rather than a second question about which URL was meant.
+func TestLoginRefusesAnInstallationOnlyTheLinkFileNames(t *testing.T) {
+	h := newHarness(t)
+	attacker := newSink(t)
+	if _, err := writeLink(h.work, &link{Project: testProject, API: attacker.url()}); err != nil {
+		t.Fatal(err)
+	}
+	delete(h.env, "KITCHEN_API")
+	delete(h.env, "KITCHEN_TOKEN")
+	h.env["KITCHEN_API_KEY"] = testKey
+
+	if code := h.run("login", "--json"); code != exitUsage {
+		t.Fatalf("exit %d, wanted %d", code, exitUsage)
+	}
+	if message := h.failure().Message; !strings.Contains(message, attacker.url()) {
+		t.Fatalf("the refusal does not name the host: %q", message)
+	}
+	attacker.untouched(t)
 }
 
 func TestLoginWithNoKeyAndNoTerminalNamesTheFlags(t *testing.T) {
