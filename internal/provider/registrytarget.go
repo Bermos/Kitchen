@@ -90,3 +90,39 @@ func parseRegistryURL(raw string) (RegistryTarget, error) {
 	}
 	return RegistryTarget{Prefix: raw, Server: server, BaseURL: scheme + "://" + server}, nil
 }
+
+// RegistrySignatureConfig is what a dockerRegistry Connection declares about
+// the signatures on the images pulled through it (#309).
+//
+// It lives in the Connection's free-form config rather than in a typed field
+// because that is where every other registry setting lives, and because it is
+// a property of the *registry account* rather than of any one image: a
+// Connection that reaches one vendor's registry has one expected signer, and
+// saying so once is better than repeating it on every image source that pulls
+// through it. What an image declares for itself wins over this.
+type RegistrySignatureConfig struct {
+	// Identity the signature must name, empty for any signer.
+	Identity string `json:"identity,omitempty"`
+	// Issuer narrows that identity to one OIDC issuer.
+	Issuer string `json:"issuer,omitempty"`
+	// PublicKeySecret names a Secret in the platform namespace holding the
+	// verification key under `public.pem`. It is the only thing that can
+	// make a signature `verified` — see attestation.VerifyUpstream.
+	PublicKeySecret string `json:"publicKeySecret,omitempty"`
+}
+
+// RegistrySignature reads that declaration off a Connection. A Connection of
+// another provider, or one that declares nothing, answers the zero value —
+// which is "look, record what you find, verify nothing", the honest default.
+func RegistrySignature(conn *kitchenv1alpha1.Connection) RegistrySignatureConfig {
+	if conn == nil || conn.Spec.Provider != registryProvider || conn.Spec.Config == nil {
+		return RegistrySignatureConfig{}
+	}
+	var cfg struct {
+		Signature RegistrySignatureConfig `json:"signature"`
+	}
+	if err := json.Unmarshal(conn.Spec.Config.Raw, &cfg); err != nil {
+		return RegistrySignatureConfig{}
+	}
+	return cfg.Signature
+}

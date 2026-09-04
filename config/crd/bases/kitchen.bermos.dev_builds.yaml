@@ -260,17 +260,32 @@ spec:
                           type: string
                         source:
                           description: |-
-                            Source says who made the claim this evidence carries: `builder` for
-                            one the build process itself produced and the platform countersigned,
-                            `platform` for one the reconciler made on its own account.
+                            Source says who made the claim this evidence carries. Four answers,
+                            two for an artifact this platform built and two for one it did not:
+
+                              - `builder`: the build process itself produced it and the platform
+                                countersigned it;
+                              - `platform`: the reconciler made it on its own account, about a
+                                build it orchestrated;
+                              - `vendor-asserted`: somebody else published it on the digest, and
+                                the platform checked it describes that digest and restated it
+                                under its own key. It is the vendor's claim, not the platform's;
+                              - `platform-observed`: the platform produced it by looking at an
+                                image it only pulled — a bill of materials generated over a
+                                digest nobody here compiled. It is an observation, and it is
+                                never presented as the vendor's word.
 
                             The distinction matters to anyone reading the evidence. The platform's
-                            signature is on both, so the signature cannot tell them apart, and a
-                            claim about what a build did is worth more when the thing that did the
-                            building made it.
+                            signature is on all four, so the signature cannot tell them apart, and
+                            a claim about what a build did is worth more when the thing that did
+                            the building made it — just as a bill of materials the vendor stands
+                            behind is a different artefact from one the platform derived by
+                            unpacking layers.
                           enum:
                           - builder
                           - platform
+                          - vendor-asserted
+                          - platform-observed
                           type: string
                       required:
                       - predicateType
@@ -288,6 +303,50 @@ spec:
                       deployment is honest — but it is one that no policy requiring evidence
                       will ever let move, which is where that fact is meant to bite.
                     type: string
+                  observedSBOM:
+                    description: |-
+                      ObservedSBOM is what became of the platform's own attempt to describe
+                      what is inside an image it did not build. It is absent for a built
+                      artifact, whose bill of materials comes from the builder; absent where
+                      the vendor published one — the publisher's is the better evidence, and
+                      a generated one beside it would be a second answer to one question —
+                      and absent again where the installation turned generation off.
+                    properties:
+                      finishedAt:
+                        description: FinishedAt is when the run ended.
+                        format: date-time
+                        type: string
+                      generator:
+                        description: |-
+                          Generator is the image that produced it, so a reader can tell which
+                          tool's view of the artifact this is — two scanners disagree about what
+                          is in an image far more often than either admits.
+                        type: string
+                      job:
+                        description: Job is the Job in the application namespace,
+                          while it exists.
+                        type: string
+                      message:
+                        description: |-
+                          Message explains a generation that did not happen, or output that
+                          could not be attested.
+                        type: string
+                      phase:
+                        description: Phase is what became of the run.
+                        enum:
+                        - Pending
+                        - Running
+                        - Completed
+                        - Failed
+                        - Skipped
+                        type: string
+                      predicateType:
+                        description: |-
+                          PredicateType is what the generated document was attested under —
+                          SPDX's or CycloneDX's, whichever the generator emitted. The platform
+                          records what came out rather than converting it.
+                        type: string
+                    type: object
                   repository:
                     description: Repository the image was pushed to, without a tag
                       or digest.
@@ -309,7 +368,84 @@ spec:
                       gaining a shape.
                     enum:
                     - built
+                    - vendored
                     type: string
+                  upstream:
+                    description: |-
+                      Upstream is where a vendored artifact came from and what the platform
+                      established about the vendor's own signature on it. It is absent for
+                      an artifact this platform built, which has no upstream: the build is
+                      the origin, and `Evidence` carries the account of it.
+                    properties:
+                      admittedAt:
+                        description: AdmittedAt is when.
+                        format: date-time
+                        type: string
+                      admittedBy:
+                        description: |-
+                          AdmittedBy is who brought this digest onto the platform: the
+                          authenticated caller that asked for the acquisition where one did, and
+                          the reconciler that acted otherwise (`system:controller/...`). It is
+                          never blank and never "the operator" — an adoption nobody is named for
+                          is an adoption nothing can be asked about, and the four-eyes rule
+                          digest-approved-by-someone-else is written against exactly this field.
+                        type: string
+                      pullConnection:
+                        description: |-
+                          PullConnection is the Connection the image was pulled with, empty for
+                          an anonymous pull of a public image.
+                        type: string
+                      reference:
+                        description: |-
+                          Reference is what the project declared, as written — a tag most of the
+                          time, which is exactly why the digest beside it is recorded separately.
+                        type: string
+                      repository:
+                        description: Repository the artifact was pulled from, without
+                          a tag or digest.
+                        type: string
+                      signature:
+                        description: Signature is what became of the vendor's own
+                          signature on the digest.
+                        properties:
+                          identity:
+                            description: |-
+                              Identity is who the signature was required to name: the identity the
+                              project or its Connection named, and empty where a key alone was asked
+                              for — a key-based check is complete without one. It is the
+                              *configured* identity rather than one read out of the signature,
+                              because a subject copied out of an unverified certificate is a claim
+                              by whoever wrote the certificate.
+                            type: string
+                          message:
+                            description: |-
+                              Message explains an `unverifiable`, in the words of whatever could not
+                              be established. It is empty for `verified` and for `none`, both of
+                              which are complete facts on their own.
+                            type: string
+                          result:
+                            description: Result is the fact. See UpstreamSignatureResult.
+                            enum:
+                            - verified
+                            - unverifiable
+                            - none
+                            type: string
+                          signatures:
+                            description: |-
+                              Signatures is how many signatures were found attached to the digest.
+                              Zero with Result `none` is the ordinary unsigned image; more than zero
+                              with `unverifiable` is the case worth looking at.
+                            format: int32
+                            type: integer
+                        type: object
+                      vendorAttestations:
+                        description: |-
+                          VendorAttestations counts the statements the vendor published on this
+                          digest that the platform restated and signed. Zero is ordinary: most
+                          images carry nothing at all.
+                        format: int32
+                        type: integer
+                    type: object
                 type: object
               cache:
                 description: |-
@@ -923,6 +1059,61 @@ spec:
                               minLength: 1
                               pattern: ^([a-z0-9]+([.\-_][a-z0-9]+)*(:[0-9]+)?/)?[a-z0-9]+([._\-][a-z0-9]+)*(/[a-z0-9]+([._\-][a-z0-9]+)*)*$
                               type: string
+                            signature:
+                              description: |-
+                                Signature is whose signature on this image the platform should check,
+                                and against what.
+
+                                Absent means the platform still *looks* — whether a vendor signs at all
+                                is a fact worth recording either way — and records what it found
+                                without being able to say it is the right signer's. See
+                                ImageSignatureSpec, and UpstreamSignatureResult for the three answers.
+
+                                It can also be declared once on the pulling Connection, which is where
+                                it belongs when a whole registry is one vendor's; what is written here
+                                wins for this image.
+                              properties:
+                                identity:
+                                  description: |-
+                                    Identity is the signer the signature must additionally name — a
+                                    keyless signature's certificate subject, `releases@example.com` or a
+                                    workflow URI. Matched exactly and case-insensitively, never as a
+                                    pattern.
+
+                                    **On its own it cannot produce a `verified` result**, and that is a
+                                    deliberate refusal rather than a gap: a certificate embedded in a
+                                    signature is a claim by whoever wrote the certificate, and Kitchen
+                                    holds no Fulcio root to chain it to. An identity with no key beside it
+                                    therefore reads `unverifiable`, saying so. Naming it is still worth
+                                    doing — the fact travels into the adoption attestation, and the
+                                    platform will not call a signature verified that names somebody else.
+                                  maxLength: 255
+                                  type: string
+                                issuer:
+                                  description: |-
+                                    Issuer is the OIDC issuer that identity was certified by
+                                    (`https://token.actions.githubusercontent.com`). It narrows Identity
+                                    and means nothing without one.
+                                  maxLength: 255
+                                  type: string
+                                publicKeyRef:
+                                  description: |-
+                                    PublicKeyRef names a Secret in the platform namespace holding the
+                                    vendor's public key under `public.pem` — the same spelling the
+                                    platform's own signing key uses, so an operator learns one convention.
+
+                                    It is what makes a `verified` result possible. Key-based verification
+                                    is complete on its own: the bytes either check out under that key or
+                                    they do not, and the platform needs no trust root, no transparency log
+                                    and no network to say which.
+                                  properties:
+                                    name:
+                                      minLength: 1
+                                      type: string
+                                  required:
+                                  - name
+                                  type: object
+                              type: object
                             tag:
                               description: Tag is the version as the vendor publishes
                                 it — `2026.9.1`, `stable`.
@@ -1824,17 +2015,32 @@ spec:
                                 type: string
                               source:
                                 description: |-
-                                  Source says who made the claim this evidence carries: `builder` for
-                                  one the build process itself produced and the platform countersigned,
-                                  `platform` for one the reconciler made on its own account.
+                                  Source says who made the claim this evidence carries. Four answers,
+                                  two for an artifact this platform built and two for one it did not:
+
+                                    - `builder`: the build process itself produced it and the platform
+                                      countersigned it;
+                                    - `platform`: the reconciler made it on its own account, about a
+                                      build it orchestrated;
+                                    - `vendor-asserted`: somebody else published it on the digest, and
+                                      the platform checked it describes that digest and restated it
+                                      under its own key. It is the vendor's claim, not the platform's;
+                                    - `platform-observed`: the platform produced it by looking at an
+                                      image it only pulled — a bill of materials generated over a
+                                      digest nobody here compiled. It is an observation, and it is
+                                      never presented as the vendor's word.
 
                                   The distinction matters to anyone reading the evidence. The platform's
-                                  signature is on both, so the signature cannot tell them apart, and a
-                                  claim about what a build did is worth more when the thing that did the
-                                  building made it.
+                                  signature is on all four, so the signature cannot tell them apart, and
+                                  a claim about what a build did is worth more when the thing that did
+                                  the building made it — just as a bill of materials the vendor stands
+                                  behind is a different artefact from one the platform derived by
+                                  unpacking layers.
                                 enum:
                                 - builder
                                 - platform
+                                - vendor-asserted
+                                - platform-observed
                                 type: string
                             required:
                             - predicateType
@@ -1852,6 +2058,50 @@ spec:
                             deployment is honest — but it is one that no policy requiring evidence
                             will ever let move, which is where that fact is meant to bite.
                           type: string
+                        observedSBOM:
+                          description: |-
+                            ObservedSBOM is what became of the platform's own attempt to describe
+                            what is inside an image it did not build. It is absent for a built
+                            artifact, whose bill of materials comes from the builder; absent where
+                            the vendor published one — the publisher's is the better evidence, and
+                            a generated one beside it would be a second answer to one question —
+                            and absent again where the installation turned generation off.
+                          properties:
+                            finishedAt:
+                              description: FinishedAt is when the run ended.
+                              format: date-time
+                              type: string
+                            generator:
+                              description: |-
+                                Generator is the image that produced it, so a reader can tell which
+                                tool's view of the artifact this is — two scanners disagree about what
+                                is in an image far more often than either admits.
+                              type: string
+                            job:
+                              description: Job is the Job in the application namespace,
+                                while it exists.
+                              type: string
+                            message:
+                              description: |-
+                                Message explains a generation that did not happen, or output that
+                                could not be attested.
+                              type: string
+                            phase:
+                              description: Phase is what became of the run.
+                              enum:
+                              - Pending
+                              - Running
+                              - Completed
+                              - Failed
+                              - Skipped
+                              type: string
+                            predicateType:
+                              description: |-
+                                PredicateType is what the generated document was attested under —
+                                SPDX's or CycloneDX's, whichever the generator emitted. The platform
+                                records what came out rather than converting it.
+                              type: string
+                          type: object
                         repository:
                           description: Repository the image was pushed to, without
                             a tag or digest.
@@ -1873,7 +2123,84 @@ spec:
                             gaining a shape.
                           enum:
                           - built
+                          - vendored
                           type: string
+                        upstream:
+                          description: |-
+                            Upstream is where a vendored artifact came from and what the platform
+                            established about the vendor's own signature on it. It is absent for
+                            an artifact this platform built, which has no upstream: the build is
+                            the origin, and `Evidence` carries the account of it.
+                          properties:
+                            admittedAt:
+                              description: AdmittedAt is when.
+                              format: date-time
+                              type: string
+                            admittedBy:
+                              description: |-
+                                AdmittedBy is who brought this digest onto the platform: the
+                                authenticated caller that asked for the acquisition where one did, and
+                                the reconciler that acted otherwise (`system:controller/...`). It is
+                                never blank and never "the operator" — an adoption nobody is named for
+                                is an adoption nothing can be asked about, and the four-eyes rule
+                                digest-approved-by-someone-else is written against exactly this field.
+                              type: string
+                            pullConnection:
+                              description: |-
+                                PullConnection is the Connection the image was pulled with, empty for
+                                an anonymous pull of a public image.
+                              type: string
+                            reference:
+                              description: |-
+                                Reference is what the project declared, as written — a tag most of the
+                                time, which is exactly why the digest beside it is recorded separately.
+                              type: string
+                            repository:
+                              description: Repository the artifact was pulled from,
+                                without a tag or digest.
+                              type: string
+                            signature:
+                              description: Signature is what became of the vendor's
+                                own signature on the digest.
+                              properties:
+                                identity:
+                                  description: |-
+                                    Identity is who the signature was required to name: the identity the
+                                    project or its Connection named, and empty where a key alone was asked
+                                    for — a key-based check is complete without one. It is the
+                                    *configured* identity rather than one read out of the signature,
+                                    because a subject copied out of an unverified certificate is a claim
+                                    by whoever wrote the certificate.
+                                  type: string
+                                message:
+                                  description: |-
+                                    Message explains an `unverifiable`, in the words of whatever could not
+                                    be established. It is empty for `verified` and for `none`, both of
+                                    which are complete facts on their own.
+                                  type: string
+                                result:
+                                  description: Result is the fact. See UpstreamSignatureResult.
+                                  enum:
+                                  - verified
+                                  - unverifiable
+                                  - none
+                                  type: string
+                                signatures:
+                                  description: |-
+                                    Signatures is how many signatures were found attached to the digest.
+                                    Zero with Result `none` is the ordinary unsigned image; more than zero
+                                    with `unverifiable` is the case worth looking at.
+                                  format: int32
+                                  type: integer
+                              type: object
+                            vendorAttestations:
+                              description: |-
+                                VendorAttestations counts the statements the vendor published on this
+                                digest that the platform restated and signed. Zero is ordinary: most
+                                images carry nothing at all.
+                              format: int32
+                              type: integer
+                          type: object
                       type: object
                     detectedFramework:
                       description: |-

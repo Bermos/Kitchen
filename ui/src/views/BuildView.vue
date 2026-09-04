@@ -1,7 +1,15 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { useRoute } from "vue-router";
-import { api, type EvidenceSet, type LogLine, type LogQuery, type QualityGate } from "../lib/api";
+import {
+  api,
+  type EvidenceSet,
+  type LogLine,
+  type LogQuery,
+  type ObservedSBOM,
+  type QualityGate,
+  type UpstreamArtifact,
+} from "../lib/api";
 import { buildStallLine } from "../lib/builds";
 import { duration, shortSHA, timeAgo } from "../lib/format";
 import { callerFor } from "../lib/me";
@@ -166,6 +174,62 @@ const evidenceLabels: Record<string, string> = {
 
 function evidenceLabel(kind: string): string {
   return evidenceLabels[kind] ?? evidenceLabels.other;
+}
+
+/** Whose claim one attestation carries, in the words the platform records.
+ *
+ *  The platform's signature is on all four, so the signature cannot tell them
+ *  apart — and the difference is the whole point: a claim about what a build
+ *  did is worth more when the thing that did the building made it, and a bill
+ *  of materials the vendor stands behind is a different artefact from one the
+ *  platform derived by unpacking layers. `platform` is left unsaid, because
+ *  it is what an unlabelled attestation on a built artifact already is. */
+const claimants: Record<string, string> = {
+  builder: "from the builder",
+  "vendor-asserted": "the vendor's own",
+  "platform-observed": "observed here",
+};
+
+function claimant(source?: string): string {
+  return source ? (claimants[source] ?? "") : "";
+}
+
+/** What became of the vendor's own signature on a vendored digest.
+ *
+ *  Three answers and no fourth. "None" is not a failed check: most images
+ *  published in the world carry no signature, and wording it as a failure
+ *  would send somebody looking for a problem that is not there. */
+function upstreamSignature(upstream: UpstreamArtifact): string {
+  switch (upstream.signature) {
+    case "verified":
+      return upstream.signatureIdentity
+        ? `Upstream signature verified against ${upstream.signatureIdentity}`
+        : "Upstream signature verified";
+    case "none":
+      return "The vendor publishes no signature for this digest";
+    case "unverifiable":
+      return upstream.signatureMessage
+        ? `Upstream signature unverifiable — ${upstream.signatureMessage}`
+        : "Upstream signature unverifiable";
+    default:
+      return "Nothing was established about the vendor's signature";
+  }
+}
+
+/** What became of the platform's own bill of materials for a vendored image.
+ *
+ *  A failed generation is worth saying out loud: an artifact with no bill of
+ *  materials is one no rescan can ever look inside, and it reads exactly like
+ *  a clean image if nobody says so. */
+function observedSBOMLine(observed: ObservedSBOM): string {
+  switch (observed.phase) {
+    case "Completed":
+      return `Bill of materials generated here by ${observed.generator}`;
+    case "Failed":
+      return observed.message || "The platform could not generate a bill of materials for this image";
+    default:
+      return `Generating a bill of materials with ${observed.generator}`;
+  }
 }
 
 /** How a gate's run reads at a glance.
@@ -533,12 +597,47 @@ const logRunLabels = computed<Record<string, string>>(() => {
           <div class="min-w-0">
             <p class="text-sm font-medium text-highlighted flex items-center gap-2">
               Artifact
+              <UBadge v-if="build.artifact.sourceType === 'vendored'" color="info" variant="subtle" size="sm"
+                >vendored</UBadge
+              >
               <UBadge v-if="build.artifact.attested" color="success" variant="subtle" size="sm">attested</UBadge>
               <UBadge v-else color="neutral" variant="subtle" size="sm">no evidence</UBadge>
             </p>
             <p class="text-xs text-muted font-mono mt-0.5 break-all" :title="build.artifact.digest">
               {{ build.artifact.repository }}@{{ build.artifact.digest }}
             </p>
+
+            <!-- Where an image the platform did not build came from, who
+                 admitted it here, and what became of the vendor's own
+                 signature. Three answers and only two of them are about a
+                 check: an unsigned image is what most published images are,
+                 and showing it as a failure would send somebody looking for
+                 a problem that is not there. -->
+            <div v-if="build.artifact.upstream" class="mt-1.5 space-y-0.5">
+              <p class="text-[11px] text-muted">
+                Published by somebody else, from
+                <span class="font-mono">{{ build.artifact.upstream.reference }}</span>
+              </p>
+              <p v-if="build.artifact.upstream.admittedBy" class="text-[11px] text-muted">
+                Admitted by {{ build.artifact.upstream.admittedBy }}
+                <span v-if="build.artifact.upstream.admittedAt" class="text-dimmed">
+                  {{ timeAgo(build.artifact.upstream.admittedAt) }}
+                </span>
+              </p>
+              <p
+                class="text-[11px]"
+                :class="build.artifact.upstream.signature === 'unverifiable' ? 'text-warning' : 'text-muted'"
+              >
+                {{ upstreamSignature(build.artifact.upstream) }}
+              </p>
+              <p
+                v-if="build.artifact.observedSBOM"
+                class="text-[11px]"
+                :class="build.artifact.observedSBOM.phase === 'Failed' ? 'text-warning' : 'text-muted'"
+              >
+                {{ observedSBOMLine(build.artifact.observedSBOM) }}
+              </p>
+            </div>
             <p v-if="build.artifact.attested" class="text-[11px] text-dimmed mt-0.5 font-mono">
               signed under {{ shortDigest("sha256:" + build.artifact.keyID) }}, {{ timeAgo(build.artifact.attestedAt!) }}
             </p>
@@ -559,7 +658,7 @@ const logRunLabels = computed<Record<string, string>>(() => {
                 :title="attached.predicateType"
               >
                 {{ evidenceLabel(attached.kind) }}
-                <span v-if="attached.source === 'builder'" class="text-dimmed ml-1">from the builder</span>
+                <span v-if="claimant(attached.source)" class="text-dimmed ml-1">{{ claimant(attached.source) }}</span>
               </UBadge>
             </div>
             <p v-if="build.artifact.message && build.artifact.attested" class="text-[11px] text-warning mt-1">

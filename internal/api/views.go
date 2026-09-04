@@ -782,11 +782,62 @@ type artifactView struct {
 	Attested   bool       `json:"attested"`
 	AttestedAt *time.Time `json:"attestedAt,omitempty"`
 	KeyID      string     `json:"keyID,omitempty"`
+	// Upstream is where an artifact the platform did not build came from,
+	// who admitted it onto this installation, and what became of the
+	// vendor's own signature (#309). Absent for a built artifact, which has
+	// no upstream: the build is the origin.
+	Upstream *upstreamArtifactView `json:"upstream,omitempty"`
+	// ObservedSBOM is what became of the platform's own attempt to describe
+	// a vendored image's contents, where it had to make one.
+	ObservedSBOM *observedSBOMView `json:"observedSBOM,omitempty"`
 	// Evidence is what is attached, by predicate type — enough for a screen
 	// to say "provenance and an SBOM are attached" without asking the
 	// registry, and not enough to be mistaken for the evidence itself.
 	Evidence []evidenceView `json:"evidence,omitempty"`
 	Message  string         `json:"message,omitempty"`
+}
+
+// upstreamArtifactView is the adoption of an artifact somebody else built, as
+// a screen shows it.
+//
+// The signature is a word rather than a boolean, and the third word is the
+// reason: "the vendor publishes no signature" is the ordinary state of most
+// published images, and showing it as a failed check would send somebody
+// looking for a problem that is not there.
+type upstreamArtifactView struct {
+	Reference  string     `json:"reference,omitempty"`
+	Repository string     `json:"repository,omitempty"`
+	AdmittedBy string     `json:"admittedBy,omitempty"`
+	AdmittedAt *time.Time `json:"admittedAt,omitempty"`
+	// Signature is `verified`, `unverifiable` or `none`.
+	Signature          string `json:"signature,omitempty"`
+	SignatureIdentity  string `json:"signatureIdentity,omitempty"`
+	SignatureMessage   string `json:"signatureMessage,omitempty"`
+	Signatures         int32  `json:"signatures,omitempty"`
+	VendorAttestations int32  `json:"vendorAttestations,omitempty"`
+}
+
+// newUpstreamArtifactView renders the adoption record, or nothing for a built
+// artifact.
+func newUpstreamArtifactView(upstream *kitchenv1alpha1.UpstreamArtifactStatus) *upstreamArtifactView {
+	if upstream == nil {
+		return nil
+	}
+	view := &upstreamArtifactView{
+		Reference:          upstream.Reference,
+		Repository:         upstream.Repository,
+		AdmittedBy:         upstream.AdmittedBy,
+		Signature:          string(upstream.Signature.Result),
+		SignatureIdentity:  upstream.Signature.Identity,
+		SignatureMessage:   upstream.Signature.Message,
+		Signatures:         upstream.Signature.Signatures,
+		VendorAttestations: upstream.VendorAttestations,
+	}
+	if at := upstream.AdmittedAt; at != nil {
+		stamp := at.Time
+		view.AdmittedAt = &stamp
+	}
+	return view
 }
 
 // evidenceView names one attestation attached to an artifact.
@@ -830,6 +881,15 @@ func newArtifactView(artifact *kitchenv1alpha1.ArtifactStatus) *artifactView {
 		Attested:   artifact.AttestedAt != nil,
 		KeyID:      artifact.KeyID,
 		Message:    artifact.Message,
+		Upstream:   newUpstreamArtifactView(artifact.Upstream),
+	}
+	if observed := artifact.ObservedSBOM; observed != nil {
+		view.ObservedSBOM = &observedSBOMView{
+			Phase:         string(observed.Phase),
+			Generator:     observed.Generator,
+			PredicateType: observed.PredicateType,
+			Message:       observed.Message,
+		}
 	}
 	if at := artifact.AttestedAt; at != nil {
 		stamp := at.Time

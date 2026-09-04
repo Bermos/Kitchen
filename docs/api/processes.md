@@ -355,6 +355,7 @@ platform did not build.
 | `tag` | The version as the vendor publishes it. One of `tag` and `digest` is required. |
 | `digest` | `sha256:` and sixty-four hex digits, pinning the exact content. Naming both means "this tag, and it must still be this content". |
 | `connection` | A Connection with the `imageStore` capability holding a docker config for that registry. **Left out for a public image**, which is pulled anonymously. |
+| `signature` | Whose signature on this image is acceptable: `publicKeySecret` (a Secret in the platform namespace holding the vendor's key under `public.pem`), `identity`, `issuer`. Left out, the platform still looks and records what it found — whether a vendor signs at all is a fact worth having — but cannot say the signature is the right signer's. **A key is what makes a `verified` result reachable**; an identity with no key beside it reads `unverifiable` and says why. It can be declared once on the pulling Connection instead, and what an image says wins. See [COMPLIANCE.md §18.5](../COMPLIANCE.md). |
 
 The unit above is the case this exists for: an upstream image as one workload
 and a sidecar built from this repository as another, in one Release. It

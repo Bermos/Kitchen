@@ -65,6 +65,13 @@ type ArtifactAttester interface {
 	// which is how findings too large for a pod's termination message reach
 	// the operator that signs them.
 	Blob(ctx context.Context, repository, digest string) ([]byte, error)
+	// VendorStatements reads what somebody else published about a digest
+	// this platform did not build, skipping anything already signed under
+	// the platform's own key (#309).
+	VendorStatements(ctx context.Context, ref, platformKeyID string) (attestation.VendorEvidence, error)
+	// Signatures reads the signatures attached to a digest, judging none of
+	// them — see attestation.VerifyUpstream for the judging.
+	Signatures(ctx context.Context, ref string) ([]attestation.UpstreamSignature, error)
 }
 
 // AttesterFactory builds the attester for one registry, out of the docker

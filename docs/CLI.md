@@ -902,6 +902,31 @@ content digest through OCI referrers rather than out of a Kitchen table — so
 thing with the platform out of the loop, which is what makes the evidence
 survive an installation that stops using Kitchen.
 
+The **CLAIM** column says whose claim each attestation carries, because the
+platform's signature is on all of them and so cannot tell them apart: `from
+the builder` for what the build process itself asserted and the platform
+countersigned, `the vendor's own` for what a publisher attached to a digest
+this platform did not build, and `observed here` for what the platform worked
+out about an image it only pulled. An unlabelled row is the reconciler's own
+account of a build it orchestrated.
+
+An artifact the platform did not build is headed by where it came from, who
+admitted it onto this installation, and what became of the vendor's own
+signature:
+
+```
+Upstream: ghcr.io/home-assistant/home-assistant:2026.9.1
+Admitted by ana@example.com on 2026-09-04T09:12:00Z
+Upstream signature: verified against releases@home-assistant.io
+```
+
+`--json` carries the same three facts under `upstream`, plus `sourceType`
+(`built` or `vendored`) and a `sources` map from predicate type to claimant.
+The signature has three values and only two of them are about a check:
+`none` means **the vendor publishes no signature**, which is the ordinary
+state of most published images and is a fact rather than a failure —
+[COMPLIANCE.md §18](COMPLIANCE.md) is the whole model.
+
 Each attestation says who made the claim. Kitchen's build record is the
 reconciler's account of a build it orchestrated; SLSA provenance and the bill of
 materials come from the builder and are countersigned by the platform. The

@@ -527,6 +527,61 @@ spec:
                               minLength: 1
                               pattern: ^([a-z0-9]+([.\-_][a-z0-9]+)*(:[0-9]+)?/)?[a-z0-9]+([._\-][a-z0-9]+)*(/[a-z0-9]+([._\-][a-z0-9]+)*)*$
                               type: string
+                            signature:
+                              description: |-
+                                Signature is whose signature on this image the platform should check,
+                                and against what.
+
+                                Absent means the platform still *looks* — whether a vendor signs at all
+                                is a fact worth recording either way — and records what it found
+                                without being able to say it is the right signer's. See
+                                ImageSignatureSpec, and UpstreamSignatureResult for the three answers.
+
+                                It can also be declared once on the pulling Connection, which is where
+                                it belongs when a whole registry is one vendor's; what is written here
+                                wins for this image.
+                              properties:
+                                identity:
+                                  description: |-
+                                    Identity is the signer the signature must additionally name — a
+                                    keyless signature's certificate subject, `releases@example.com` or a
+                                    workflow URI. Matched exactly and case-insensitively, never as a
+                                    pattern.
+
+                                    **On its own it cannot produce a `verified` result**, and that is a
+                                    deliberate refusal rather than a gap: a certificate embedded in a
+                                    signature is a claim by whoever wrote the certificate, and Kitchen
+                                    holds no Fulcio root to chain it to. An identity with no key beside it
+                                    therefore reads `unverifiable`, saying so. Naming it is still worth
+                                    doing — the fact travels into the adoption attestation, and the
+                                    platform will not call a signature verified that names somebody else.
+                                  maxLength: 255
+                                  type: string
+                                issuer:
+                                  description: |-
+                                    Issuer is the OIDC issuer that identity was certified by
+                                    (`https://token.actions.githubusercontent.com`). It narrows Identity
+                                    and means nothing without one.
+                                  maxLength: 255
+                                  type: string
+                                publicKeyRef:
+                                  description: |-
+                                    PublicKeyRef names a Secret in the platform namespace holding the
+                                    vendor's public key under `public.pem` — the same spelling the
+                                    platform's own signing key uses, so an operator learns one convention.
+
+                                    It is what makes a `verified` result possible. Key-based verification
+                                    is complete on its own: the bytes either check out under that key or
+                                    they do not, and the platform needs no trust root, no transparency log
+                                    and no network to say which.
+                                  properties:
+                                    name:
+                                      minLength: 1
+                                      type: string
+                                  required:
+                                  - name
+                                  type: object
+                              type: object
                             tag:
                               description: Tag is the version as the vendor publishes
                                 it — `2026.9.1`, `stable`.

@@ -564,10 +564,82 @@ authority. `source` says who made the claim — the platform signs both, so the
 signature cannot tell them apart, and a claim about what a build did is worth
 more when the thing that did the building made it.
 
-`sourceType` says where the artifact's evidence came from, and reads `built`
-on everything the platform holds evidence about today. It is published rather
-than implied because a reader has to be able to tell a built artifact from one
-of another kind without knowing which release of Kitchen wrote the field.
+`sourceType` says where the artifact's evidence came from: `built` for an
+image this platform produced, `vendored` for one it only pulled. It is
+published rather than implied because a reader has to be able to tell them
+apart without knowing which release of Kitchen wrote the field.
+
+### An artifact the platform did not build
+
+A vendored artifact — a project whose source is an image, or one workload of a
+unit that names its own (see [projects.md](projects.md)) — has no build record
+and no builder to ask for provenance. What it carries instead is three other
+things, and the source on each says which:
+
+| `source` | What it is |
+|---|---|
+| `vendor-asserted` | Something the publisher attached to the digest — SLSA provenance, an SBOM — checked to describe *this* digest, restated about it and countersigned by the platform. The platform's signature means "this is what the vendor said, unaltered", never "this is true" |
+| `platform-observed` | Something the platform worked out about an image it only pulled: the adoption record below, and a bill of materials where the vendor published none |
+
+The generated bill of materials carries SPDX's or CycloneDX's predicate type
+like any other — it has to, or the rescan pass and `require-sbom` would not
+read it — so the two are told apart by the signed adoption record and by
+`source`, rather than by a naming convention.
+
+`artifact.upstream` is the adoption itself: where the image came from, who
+admitted it onto this installation, and what became of the vendor's own
+signature.
+
+```json
+"artifact": {
+  "repository": "ghcr.io/home-assistant/home-assistant",
+  "digest": "sha256:1c9a…",
+  "sourceType": "vendored",
+  "attested": true,
+  "upstream": {
+    "reference": "ghcr.io/home-assistant/home-assistant:2026.9.1",
+    "admittedBy": "ana@example.com",
+    "admittedAt": "2026-09-04T09:12:00Z",
+    "signature": "verified",
+    "signatureIdentity": "releases@home-assistant.io",
+    "vendorAttestations": 2
+  },
+  "observedSBOM": {"phase": "Completed", "generator": "anchore/syft:v1.18.1",
+                   "predicateType": "https://spdx.dev/Document"},
+  "evidence": [
+    {"predicateType": "https://slsa.dev/provenance/v1",
+     "kind": "provenance", "source": "vendor-asserted", "manifest": "sha256:d1e2…"},
+    {"predicateType": "https://kitchen.bermos.dev/attestation/artifact-adoption/v1",
+     "kind": "other", "source": "platform-observed", "manifest": "sha256:d1e2…"}
+  ]
+}
+```
+
+**`signature` has three values and only two of them are about a check.**
+`verified` means a signature over this digest checked out under the key the
+project or its pulling Connection named. `unverifiable` means a signature is
+attached and the platform could not establish that it is the one this project
+asked for — most often because no key is configured, which the message says.
+`none` means **the vendor publishes no signature**, which is the ordinary
+state of most published images and is recorded as a fact rather than as a
+failure. A status that could only say yes or no would report those two last
+cases in one word.
+
+An identity alone never produces `verified`: a keyless signature's certificate
+is a claim by whoever issued it, and Kitchen holds no Fulcio root to chain it
+to. Configure `signature.publicKeyRef` on the image source to make a
+`verified` result reachable — [projects.md](projects.md) has the field, and
+[COMPLIANCE.md §18](../COMPLIANCE.md) has the whole model.
+
+**Where the evidence goes, and when it cannot.** Evidence is attached to the
+artifact's own digest in the artifact's own repository, with the credential the
+image is pulled with — the same rule a built artifact follows. A vendor's
+public registry does not accept writes from its readers, so an image pulled
+from one carries no attached evidence and `artifact.message` says so. The
+adoption facts on `artifact.upstream` are recorded either way, because they
+cost no registry write: the two questions a vendored digest can actually
+answer — who brought it in, and did the signature check out — are answerable
+about a public image nobody can attach anything to.
 
 ### One evidence record per image
 

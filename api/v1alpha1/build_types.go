@@ -293,6 +293,13 @@ const (
 	// is the build's own, harvested from the builder and countersigned, plus
 	// what the reconciler asserts about the build it orchestrated.
 	ArtifactSourceBuilt ArtifactSourceType = "built"
+
+	// ArtifactSourceVendored is an artifact somebody else built and this
+	// platform only pulled (#309). Its evidence is of two other kinds: what
+	// the vendor published on the digest, restated and countersigned, and
+	// what the platform observed about an image it never compiled. Neither
+	// is a build record, and nothing here turns one into the other.
+	ArtifactSourceVendored ArtifactSourceType = "vendored"
 )
 
 // ArtifactStatus identifies what a build produced and records whether the
@@ -331,9 +338,25 @@ type ArtifactStatus struct {
 	// apart *without* knowing which release of Kitchen wrote the field. So
 	// the enum exists now, with one value, and gains values rather than
 	// gaining a shape.
-	// +kubebuilder:validation:Enum=built
+	// +kubebuilder:validation:Enum=built;vendored
 	// +optional
 	SourceType ArtifactSourceType `json:"sourceType,omitempty"`
+
+	// Upstream is where a vendored artifact came from and what the platform
+	// established about the vendor's own signature on it. It is absent for
+	// an artifact this platform built, which has no upstream: the build is
+	// the origin, and `Evidence` carries the account of it.
+	// +optional
+	Upstream *UpstreamArtifactStatus `json:"upstream,omitempty"`
+
+	// ObservedSBOM is what became of the platform's own attempt to describe
+	// what is inside an image it did not build. It is absent for a built
+	// artifact, whose bill of materials comes from the builder; absent where
+	// the vendor published one — the publisher's is the better evidence, and
+	// a generated one beside it would be a second answer to one question —
+	// and absent again where the installation turned generation off.
+	// +optional
+	ObservedSBOM *ObservedSBOMStatus `json:"observedSBOM,omitempty"`
 
 	// AttestedAt is when the platform attached its own build record to the
 	// digest.
@@ -408,6 +431,150 @@ type AcquisitionStatus struct {
 	ResolvedAt *metav1.Time `json:"resolvedAt,omitempty"`
 }
 
+// UpstreamSignatureResult is what the platform established about a vendor's
+// own signature on an artifact it published.
+//
+// Three answers and no fourth, because the third one is the point: **"the
+// vendor publishes no signature" is not a failure**. A great many perfectly
+// ordinary images are published unsigned, and a status that could only say
+// "verified" or "not verified" would report those two facts — an unsigned
+// image and an image whose signature did not check out — in the same word.
+// +kubebuilder:validation:Enum=verified;unverifiable;none
+type UpstreamSignatureResult string
+
+const (
+	// UpstreamSignatureVerified: a signature over this digest was checked
+	// against the key the project or its Connection named, and it held. Where
+	// an identity was named too, the signature names it.
+	UpstreamSignatureVerified UpstreamSignatureResult = "verified"
+
+	// UpstreamSignatureUnverifiable: a signature exists and the platform
+	// could not establish that it is the one this project asked for — no key
+	// is configured to check it against, the key did not accept it, or it
+	// names an identity other than the one required. Message says which.
+	UpstreamSignatureUnverifiable UpstreamSignatureResult = "unverifiable"
+
+	// UpstreamSignatureNone: the vendor attached no signature to this
+	// digest. A fact, recorded as one.
+	UpstreamSignatureNone UpstreamSignatureResult = "none"
+)
+
+// UpstreamSignatureStatus is the signature fact about one vendored artifact.
+type UpstreamSignatureStatus struct {
+	// Result is the fact. See UpstreamSignatureResult.
+	// +optional
+	Result UpstreamSignatureResult `json:"result,omitempty"`
+
+	// Identity is who the signature was required to name: the identity the
+	// project or its Connection named, and empty where a key alone was asked
+	// for — a key-based check is complete without one. It is the
+	// *configured* identity rather than one read out of the signature,
+	// because a subject copied out of an unverified certificate is a claim
+	// by whoever wrote the certificate.
+	// +optional
+	Identity string `json:"identity,omitempty"`
+
+	// Signatures is how many signatures were found attached to the digest.
+	// Zero with Result `none` is the ordinary unsigned image; more than zero
+	// with `unverifiable` is the case worth looking at.
+	// +optional
+	Signatures int32 `json:"signatures,omitempty"`
+
+	// Message explains an `unverifiable`, in the words of whatever could not
+	// be established. It is empty for `verified` and for `none`, both of
+	// which are complete facts on their own.
+	// +optional
+	Message string `json:"message,omitempty"`
+}
+
+// ObservedSBOMStatus is one run of the platform's bill-of-materials generator
+// over a vendored digest.
+//
+// It borrows GatePhase deliberately, and the distinction that type exists to
+// draw is the one that matters here too: `Completed` means the generator ran
+// and its output was recorded, `Failed` means it did not run and there is no
+// bill of materials either way. An artifact whose generation failed is not an
+// artifact with an empty bill of materials, and a compliance surface that
+// showed them the same way would report a clean, contentless image.
+type ObservedSBOMStatus struct {
+	// Phase is what became of the run.
+	// +optional
+	Phase GatePhase `json:"phase,omitempty"`
+
+	// Generator is the image that produced it, so a reader can tell which
+	// tool's view of the artifact this is — two scanners disagree about what
+	// is in an image far more often than either admits.
+	// +optional
+	Generator string `json:"generator,omitempty"`
+
+	// Job is the Job in the application namespace, while it exists.
+	// +optional
+	Job string `json:"job,omitempty"`
+
+	// PredicateType is what the generated document was attested under —
+	// SPDX's or CycloneDX's, whichever the generator emitted. The platform
+	// records what came out rather than converting it.
+	// +optional
+	PredicateType string `json:"predicateType,omitempty"`
+
+	// FinishedAt is when the run ended.
+	// +optional
+	FinishedAt *metav1.Time `json:"finishedAt,omitempty"`
+
+	// Message explains a generation that did not happen, or output that
+	// could not be attested.
+	// +optional
+	Message string `json:"message,omitempty"`
+}
+
+// UpstreamArtifactStatus is where a vendored artifact came from and who
+// brought it here.
+//
+// It is the platform's own record of an adoption, and it is the half of the
+// evidence a vendor cannot supply: an upstream can say what it built, and only
+// this installation can say that on this date this person pointed this project
+// at that digest. The same facts are minted as a signed attestation
+// (PredicateArtifactAdoption) so that they travel with the image; this is the
+// index of it, for the same reason ArtifactStatus.Evidence is an index.
+type UpstreamArtifactStatus struct {
+	// Reference is what the project declared, as written — a tag most of the
+	// time, which is exactly why the digest beside it is recorded separately.
+	// +optional
+	Reference string `json:"reference,omitempty"`
+
+	// Repository the artifact was pulled from, without a tag or digest.
+	// +optional
+	Repository string `json:"repository,omitempty"`
+
+	// PullConnection is the Connection the image was pulled with, empty for
+	// an anonymous pull of a public image.
+	// +optional
+	PullConnection string `json:"pullConnection,omitempty"`
+
+	// AdmittedBy is who brought this digest onto the platform: the
+	// authenticated caller that asked for the acquisition where one did, and
+	// the reconciler that acted otherwise (`system:controller/...`). It is
+	// never blank and never "the operator" — an adoption nobody is named for
+	// is an adoption nothing can be asked about, and the four-eyes rule
+	// digest-approved-by-someone-else is written against exactly this field.
+	// +optional
+	AdmittedBy string `json:"admittedBy,omitempty"`
+
+	// AdmittedAt is when.
+	// +optional
+	AdmittedAt *metav1.Time `json:"admittedAt,omitempty"`
+
+	// Signature is what became of the vendor's own signature on the digest.
+	// +optional
+	Signature UpstreamSignatureStatus `json:"signature,omitempty"`
+
+	// VendorAttestations counts the statements the vendor published on this
+	// digest that the platform restated and signed. Zero is ordinary: most
+	// images carry nothing at all.
+	// +optional
+	VendorAttestations int32 `json:"vendorAttestations,omitempty"`
+}
+
 // BuildCacheStatus is what the layer cache did for one build, which is the
 // difference between "this build was slow" and "this build was slow because it
 // had nothing to reuse".
@@ -463,15 +630,28 @@ type ArtifactEvidence struct {
 	// +optional
 	Manifest string `json:"manifest,omitempty"`
 
-	// Source says who made the claim this evidence carries: `builder` for
-	// one the build process itself produced and the platform countersigned,
-	// `platform` for one the reconciler made on its own account.
+	// Source says who made the claim this evidence carries. Four answers,
+	// two for an artifact this platform built and two for one it did not:
+	//
+	//   - `builder`: the build process itself produced it and the platform
+	//     countersigned it;
+	//   - `platform`: the reconciler made it on its own account, about a
+	//     build it orchestrated;
+	//   - `vendor-asserted`: somebody else published it on the digest, and
+	//     the platform checked it describes that digest and restated it
+	//     under its own key. It is the vendor's claim, not the platform's;
+	//   - `platform-observed`: the platform produced it by looking at an
+	//     image it only pulled — a bill of materials generated over a
+	//     digest nobody here compiled. It is an observation, and it is
+	//     never presented as the vendor's word.
 	//
 	// The distinction matters to anyone reading the evidence. The platform's
-	// signature is on both, so the signature cannot tell them apart, and a
-	// claim about what a build did is worth more when the thing that did the
-	// building made it.
-	// +kubebuilder:validation:Enum=builder;platform
+	// signature is on all four, so the signature cannot tell them apart, and
+	// a claim about what a build did is worth more when the thing that did
+	// the building made it — just as a bill of materials the vendor stands
+	// behind is a different artefact from one the platform derived by
+	// unpacking layers.
+	// +kubebuilder:validation:Enum=builder;platform;vendor-asserted;platform-observed
 	// +optional
 	Source string `json:"source,omitempty"`
 }
@@ -1033,6 +1213,29 @@ func (a BuildArtifact) Name() string {
 // artifact's digest.
 func (a BuildArtifact) Attested() bool {
 	return a.Artifact != nil && a.Artifact.AttestedAt != nil
+}
+
+// Vendored reports whether this is an image the platform did not build.
+//
+// It reads the recorded source type rather than the absence of a commit,
+// because a unit can be *half* vendored: one workload's image comes from a
+// vendor and the next is built from the repository beside it, in one Release
+// (#306). The question is asked of the artifact, never of the Build.
+func (a BuildArtifact) Vendored() bool {
+	return a.Artifact != nil && a.Artifact.SourceType == ArtifactSourceVendored
+}
+
+// VendoredArtifacts is every image of this unit that somebody else built, in
+// the order Artifacts lists them. It is the list the outsourcing inventory is
+// assembled from and the list the vendored policy rules are asked about.
+func (b *Build) VendoredArtifacts() []BuildArtifact {
+	vendored := []BuildArtifact{}
+	for _, artifact := range b.Artifacts() {
+		if artifact.Vendored() {
+			vendored = append(vendored, artifact)
+		}
+	}
+	return vendored
 }
 
 // Artifacts is every image this build produced that there is an evidence

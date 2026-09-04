@@ -642,6 +642,29 @@ type Image struct {
 	Tag        string `json:"tag,omitempty"`
 	Digest     string `json:"digest,omitempty"`
 	Connection string `json:"connection,omitempty"`
+	// Signature is whose signature on this image the platform should check,
+	// and against what (#309). Absent means the platform still looks and
+	// records what it finds — whether a vendor signs at all is a fact worth
+	// having — without being able to say it is the right signer's.
+	Signature *ImageSignature `json:"signature,omitempty"`
+}
+
+// ImageSignature is the expectation an installation sets for a vendored
+// image's signature.
+//
+// A key is what makes a `verified` result reachable, and an identity on its
+// own deliberately cannot: a keyless signature's certificate is a claim by
+// whoever issued it, and this platform holds no Fulcio root to chain it to.
+// See attestation.VerifyUpstream and COMPLIANCE.md §18.5.
+type ImageSignature struct {
+	// PublicKeySecret names a Secret in the platform namespace holding the
+	// vendor's verification key under `public.pem`.
+	PublicKeySecret string `json:"publicKeySecret,omitempty"`
+	// Identity the signature must name, and Issuer the OIDC issuer that
+	// certified it. Matched exactly and case-insensitively, never as a
+	// pattern.
+	Identity string `json:"identity,omitempty"`
+	Issuer   string `json:"issuer,omitempty"`
 }
 
 // imageRepository is what a repository reference may look like: lowercase
@@ -694,6 +717,27 @@ func ImageSource(field string, request Image) (*kitchenv1alpha1.ImageSourceSpec,
 	}
 	if connection := strings.TrimSpace(request.Connection); connection != "" {
 		image.ConnectionRef = &kitchenv1alpha1.LocalObjectReference{Name: connection}
+	}
+	if declared := request.Signature; declared != nil {
+		signature := &kitchenv1alpha1.ImageSignatureSpec{
+			Identity: strings.TrimSpace(declared.Identity),
+			Issuer:   strings.TrimSpace(declared.Issuer),
+		}
+		if secret := strings.TrimSpace(declared.PublicKeySecret); secret != "" {
+			signature.PublicKeyRef = &kitchenv1alpha1.LocalObjectReference{Name: secret}
+		}
+		if signature.Identity == "" && signature.Issuer == "" && signature.PublicKeyRef == nil {
+			return nil, fmt.Errorf(
+				"%s.signature says nothing: name the identity the signature must carry, or the "+
+					"secret holding the key it must verify under — an empty expectation is the "+
+					"same as none, and reads as one that is being enforced", field)
+		}
+		if signature.Issuer != "" && signature.Identity == "" {
+			return nil, fmt.Errorf(
+				"%s.signature.issuer narrows an identity and means nothing without one: send "+
+					"%s.signature.identity too", field, field)
+		}
+		image.Signature = signature
 	}
 	return image, nil
 }

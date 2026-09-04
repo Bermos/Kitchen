@@ -33,7 +33,9 @@ repository this platform builds, or an image somebody else published.
 curl -sS -X POST -H "authorization: Bearer $TOKEN" \
   -d '{"name": "home-assistant", "image": {
         "repository": "ghcr.io/home-assistant/home-assistant",
-        "tag": "2026.9.1"}}' \
+        "tag": "2026.9.1",
+        "signature": {"identity": "releases@home-assistant.io",
+                      "publicKeySecret": "home-assistant-cosign"}}}' \
   https://kitchen.apps.example.com/api/v1/projects
 ```
 
@@ -69,11 +71,36 @@ a `400` saying so, and the Project's own `Previews` condition says the same
 thing to anyone who never asked. A preview that silently never appears reads
 as a fault.
 
+`image.signature` says whose signature on the image is acceptable:
+`publicKeySecret` names a Secret in the platform namespace holding the
+vendor's key under `public.pem`, `identity` the signer the signature must
+name, and `issuer` the OIDC issuer that certified it (which narrows an
+identity and is refused without one). An empty `signature` object is refused
+too — an expectation that says nothing reads as one being enforced. It is optional — the platform
+looks either way, because whether a vendor signs at all is worth recording —
+and it can also be declared once on the pulling Connection, where it belongs
+when a whole registry is one vendor's; what an image declares wins over that,
+whole rather than field by field. **A key is what makes a `verified` result
+reachable**: a keyless signature's certificate is a claim by whoever issued
+it, and this platform holds no root to chain it to, so an identity with no key
+beside it reads `unverifiable` and says why. [COMPLIANCE.md
+§18.5](../COMPLIANCE.md) is the model.
+
 **A Build still exists.** Creating the project produces one, and it resolves
 the digest the image reference names and freezes it onto a Release without
 running a builder — so `status.artifact`, the evidence index, the quality
 gates, the audit chain, the build screens and the CLI keep working unchanged.
 Nothing fakes a commit: the Build names no SHA and no branch.
+
+**It is attested, never assumed.** The Build harvests what the vendor
+published about the digest, checks each statement describes *that* digest,
+restates it and signs it under the platform's key as `vendor-asserted`;
+generates a bill of materials where the vendor published none and signs it as
+`platform-observed`; records what became of the vendor's own signature; and
+signs an adoption record saying who admitted this digest, from where and when.
+What each of those is, and where evidence cannot be attached at all, is
+[builds.md](builds.md#an-artifact-the-platform-did-not-build) and
+[COMPLIANCE.md §18](../COMPLIANCE.md).
 
 **What moves it afterwards is a new digest under the tag it follows.** The
 settings PATCH changes a project's settings, and which image it runs is not

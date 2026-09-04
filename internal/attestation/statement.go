@@ -67,6 +67,29 @@ const (
 	// countersigned rather than written here. See harvest.go.
 	PredicateBuildRecord = "https://kitchen.bermos.dev/attestation/build-record/v1"
 
+	// PredicateArtifactAdoption records that this platform admitted an
+	// artifact somebody else built: which upstream reference it was taken
+	// from, which digest that resolved to, who admitted it and when, and what
+	// became of the vendor's own signature on it (#309).
+	//
+	// It is a Kitchen predicate because no standard covers it, and the reason
+	// no standard covers it is that it is not a claim about the artifact at
+	// all — it is a claim about **this installation's relationship to** the
+	// artifact. SLSA says how something was built; an SBOM says what is in
+	// it; neither can say that on the fourteenth of March a named person
+	// pointed a named project at that digest, which is the fact an auditor
+	// asks a vendored estate for first.
+	//
+	// It is also what makes the two source types tell-apart-able by a signed
+	// predicate rather than by a naming convention: the record names, by
+	// envelope digest, which of the artifact's evidence is the vendor's own
+	// assertion and which is the platform's observation of an image it only
+	// pulled. A bill of materials the platform generated carries SPDX's
+	// predicate type like any other — it has to, or nothing downstream would
+	// read it — and this is where the platform says whose bill of materials
+	// it is.
+	PredicateArtifactAdoption = "https://kitchen.bermos.dev/attestation/artifact-adoption/v1"
+
 	// PredicateQualityGate records that a gate ran over an artifact and what
 	// it found: the gate's name and version, when it ran, and its raw output
 	// unmodified.

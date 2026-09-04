@@ -368,7 +368,7 @@ func (r *BuildReconciler) attestGate(
 	artifact.Artifact.Evidence = append(artifact.Artifact.Evidence, kitchenv1alpha1.ArtifactEvidence{
 		PredicateType: attestation.PredicateQualityGate,
 		Manifest:      manifest,
-		Source:        sourcePlatform,
+		Source:        claimantFor(artifact.Artifact),
 	})
 	return nil
 }

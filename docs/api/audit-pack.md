@@ -341,6 +341,14 @@ quietly contradict §5.1's whole argument, which is that the evidence does not
 need Kitchen. It is also the performance decision: nothing here fans out one
 registry round trip per artifact per predicate.
 
+**A row can be an image nobody here built.** A vendored artifact carries no
+build record and no builder provenance; what it carries is what the publisher
+attached to the digest (`vendor-asserted`), what the platform worked out about
+an image it only pulled (`platform-observed`), and the adoption record in
+`upstream`. Nothing here fakes a commit for it: the three commit-shaped rules
+stay inert and an environment that requires one refuses the artifact, which is
+in [COMPLIANCE.md §18](../COMPLIANCE.md).
+
 **One row per image, not one per release.** A commit that builds several
 images produces one artifact per workload, each attested about its own digest
 and each with its own gates and its own exploitability assertions — so a
@@ -356,7 +364,12 @@ of what was deployed.
 | `attestedAt`, `keyID` | When the platform attached its own build record, and under which key | GR-D1 |
 | `evidence[].predicateType` | What is attached: SLSA's URI for provenance, SPDX's or CycloneDX's for a bill of materials, one of Kitchen's own for a claim no standard covers | GR-B1, GR-D1 |
 | `evidence[].manifest` | The manifest digest to fetch it by, without listing anything | GR-I4 |
-| `evidence[].source` | `builder` for a claim the build process made and the platform countersigned, `platform` for one the reconciler made alone. The signature cannot tell them apart, and the difference matters | GR-D1 |
+| `evidence[].source` | Who made the claim: `builder` for one the build process made and the platform countersigned, `platform` for one the reconciler made alone, `vendor-asserted` for one a publisher attached to a digest this platform did not build, and `platform-observed` for one the platform worked out about an image it only pulled. The signature cannot tell them apart, and the difference matters | GR-D1 |
+| `sourceType` | `built` for an image this platform produced, `vendored` for one it only pulled. A word on every row rather than an inference from the presence of `upstream`, so a pack read by somebody who has never seen a vendored row still reads | GR-B1, GR-D1 |
+| `upstream.reference`, `repository` | The outsourcing record: where a vendored image came from, as the project declared it and as the digest resolves | GR-B1 |
+| `upstream.admittedBy`, `admittedAt` | Who brought this digest onto this platform, and when. It is the half of a vendored artifact's evidence no vendor can supply — an upstream can say what it built, and only this installation can say that on that date a named person pointed a named project at that digest | GR-D1, GR-E2 |
+| `upstream.signature`, `signatureIdentity`, `signatureMessage` | What became of the vendor's own signature: `verified` against a named identity, `unverifiable` with the reason, or `none` — the vendor publishes no signature, which is the ordinary state of most published images and is a fact rather than a finding | GR-D1 |
+| `upstream.vendorAttestations` | How many of the publisher's own statements the platform restated and signed onto the digest | GR-B1, GR-D1 |
 | `gates[].name`, `phase`, `finishedAt`, `message` | What each quality gate did — which is not the same question as what it found; what it found is in its attestation. A gate that ran and could not be attested is worth telling apart from one that never ran | GR-D4 |
 | `gates[].source`, `reportedBy`, `predicateType`, `attested` | `platform` for a gate Kitchen ran, `external` for one ingested from an application's own CI, with the identity that submitted it and where its findings were signed | GR-D4, GR-E5 |
 | `vex[].author`, `submittedBy`, `submittedAt`, `statements`, `digest` | The OpenVEX documents somebody attached. The document names its own author; the authenticated identity that handed it to the platform is a second and different fact | GR-D4 |

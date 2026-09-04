@@ -2688,6 +2688,7 @@ the surface an answer comes out of; the CLI reaches all of them, and
 | **Retention and the clock** (#140, §12) | GR-D8, GR-G6, GR-L3 | 2023/1 Kap. IV.B/D | One retention model over every class, a floor under the audit log, deletion evidence, and a measured answer to whether the clocks agree | `GET /platform/retention`, `PATCH /platform/retention`, `kitchen retention`, the retention panel | Immutability the platform does not have. §12.3 states exactly what the claim is, and `auditImmutable: false` is a smaller claim rather than a fault |
 | **Criticality** (#141) | GR-C1, GR-C2, GR-C4 | 2023/1 Kap. V | The designation and its tolerances, the function-to-resource mapping forwards, and the blast radius of one provider backwards | `GET /compliance/criticality`, `GET /compliance/dependents`, `kitchen criticality`, the criticality panel | Deciding what is critical, and RPO alerting — no provider declares a recovery point, and a rule that always passed would read as evidence |
 | **Audit pack** (#142, §13) | GR-J3, GR-L1 | 2023/1 throughout; 2013/3 | One project's whole answer for one window, byte-reproducible, in three renderings of one address — the JSON the digest is about, a DSSE envelope over it, and a self-contained page for a reader who is not an engineer | `GET /projects/{name}/audit-pack`, `kitchen audit-pack`, the pack panel | The gaps it names out loud: a truncated window, an inventory that is current state, an unsigned platform (§13.5) |
+| **Software nobody here built** (#309, §18) | GR-B1, GR-D1, GR-E2 | 2018/3 Rz 18; 2023/1 Kap. IV.A/B | What the vendor published about a digest, restated and countersigned; a bill of materials the platform generated where the vendor published none; and a signed record of the adoption itself — who admitted this digest, from where, and what became of the vendor's signature | `GET /builds/{name}/attestations`, `kitchen attestations`, the Build screen, the pack's `attestations[].upstream`, `GET /compliance/inventory` | A commit. The three commit-shaped rules stay inert and refuse rather than being satisfied by a substitute (§18.6), and evidence cannot be attached where the vendor's registry refuses writes (§18.8) |
 | **This mapping** (#143, §17) | Meta | — | The document that makes the rest legible, and the register the GR codes point at | `docs/COMPLIANCE.md` §17, linked from the README | Being right about margin numbers on its own authority. §17.1 |
 
 ### 17.5 What has no row, and why
@@ -2768,3 +2769,256 @@ and access management is asking for artifacts this platform already produces
 and can already export. Whoever writes that table gets §17.4's middle columns
 unchanged and rewrites only the anchors — which is the whole argument for
 having used somebody else's formats in the first place (§5.1).
+
+---
+
+## 18. Software the platform did not build (issue #309)
+
+Everything above §17 is evidence produced by a build this platform ran.
+`attestBuild` signs the reconciler's account of a build it orchestrated,
+`harvest.go` countersigns what BuildKit asserted, the bill of materials comes
+out of the build's own scanner container, and quality gates are submitted by
+whatever CI ran them.
+
+A vendored artifact — an application that arrives as a container image
+somebody else built (#306) — has none of that, and it is precisely the
+artifact an institution is asked hardest about. This section is what it
+carries instead.
+
+### 18.1 The model already fits, because evidence keys on a digest
+
+The one property that makes this small: **evidence attaches to a content
+digest, not to a pipeline.** `harvest.go` reads statements out of a registry,
+checks they describe the digest the platform intends to call the artifact, and
+hands them back to be re-signed — and none of that cares who did the building.
+The rescan pass matches an SBOM against today's vulnerability database with no
+rebuild and no redeploy. `policy.MaterializeInput` tolerates a nil Build.
+
+So the machinery is not duplicated for vendored software. What is added is
+three kinds of claim and two rules, and the discipline of never letting the
+three kinds be mistaken for one another.
+
+### 18.2 Three claims, and the words that keep them apart
+
+`ArtifactStatus.sourceType` says what the artifact is — `built` or `vendored` —
+and `ArtifactEvidence.source` says who made each claim attached to it:
+
+| `source` | Whose claim | On what |
+|---|---|---|
+| `platform` | The reconciler's account of a build it orchestrated | built |
+| `builder` | The build process's own account, countersigned | built |
+| `vendor-asserted` | The publisher's, checked to describe this digest, restated about it and countersigned | vendored |
+| `platform-observed` | The platform's own, about an image it only pulled | vendored |
+
+Everything the platform attaches to an artifact *after* it exists takes the
+same fork: a quality gate's findings and a rescan's are `platform` on an
+artifact this platform built and `platform-observed` on one it only pulled.
+It is one distinction in two vocabularies, not two rules — the platform ran
+the scanner either way, and what changes is whether it is also the thing that
+built what the scanner looked at.
+
+The platform's signature is on all four, so the signature cannot tell them
+apart. That is the reason the word exists: a claim about what a build did is
+worth more when the process that did the building made it, and a bill of
+materials the publisher stands behind is a different artefact from one the
+platform derived by unpacking layers.
+
+**Restating is not believing.** The platform does not verify a vendor's DSSE
+signature — it holds no key to check it against, and pretending otherwise is
+the failure this whole layer exists to avoid. What it checks is the only thing
+checkable without a key: that the statement names the digest being deployed. A
+statement about another artifact is discarded rather than restated, because
+re-signing it would put this platform's signature on somebody else's claim
+about somebody else's image (§5.1, `Statement.Describes`).
+
+### 18.3 A bill of materials where the vendor published none
+
+Most vendors publish none, and an artifact with no bill of materials is one
+nobody ever looks inside again: `cmd/rescan fetch` refuses to scan nothing
+rather than reporting a clean result for an image nobody has opened.
+
+So the platform generates one — a scanner pod pointed at the digest, its
+output stored in the registry and countersigned here, exactly the shape §7.3
+and §9.4 already use. It is `platform-observed`, never `vendor-asserted`, and
+it is skipped entirely where the vendor published one: two answers to one
+question is worse than one, because a rescan would have to choose between them
+and the choice would be arbitrary.
+
+Given that document, **`max-severity`, the VEX register and the whole of §9
+work over vendored software with no further machinery at all** — which is
+where a severity ceiling and an expiring exception earn their keep hardest.
+
+The generated document carries SPDX's or CycloneDX's predicate type like any
+other. It has to: `require-sbom` and the rescan both match on it, and a
+predicate type only Kitchen knew would be evidence only Kitchen could read
+(§5.1). The distinction is carried instead by a **signed predicate** — the
+adoption record below names, by predicate type, which of the artifact's
+evidence is the vendor's assertion and which is the platform's observation —
+rather than by a naming convention a reader has to know.
+
+`compliance.attestation.vendored.sbom` turns generation off; it is on by
+default because the alternative is an artifact no control can ever look
+inside. It costs a pull of the whole image into an application namespace,
+which is why it is a knob at all.
+
+### 18.4 The adoption is the evidence no vendor can supply
+
+`https://kitchen.bermos.dev/attestation/artifact-adoption/v1` is a Kitchen
+predicate because no standard covers it, and the reason no standard covers it
+is that it is **not a claim about the artifact**. It is a claim about this
+installation's relationship to the artifact: which upstream reference it was
+taken from, which digest that resolved to, who admitted it, when, and what
+became of the vendor's own signature.
+
+An upstream can say what it built; only this installation can say that on the
+fourteenth of March a named person pointed a named project at that digest. It
+is the first thing an examiner asks a vendored estate, and it is on
+`status.artifact.upstream` as an index of the signed record, for the reason
+`artifact.evidence` is an index (§5.2).
+
+`admittedBy` is never blank. It is the authenticated caller the REST API
+stamped on the acquisition where there was one, the project's creator where
+the platform acted on its own — because that is the person who pointed this
+installation at that vendor — and only failing both, the reconciler, in
+Kubernetes' own spelling for a non-human identity. A four-eyes rule whose
+first eye is nobody is a rule that cannot be answered.
+
+### 18.5 The upstream signature is a fact, with three values
+
+| Value | What it means |
+|---|---|
+| `verified` | A signature over this digest checked out under the key the project or its pulling Connection named, and named the identity required |
+| `unverifiable` | A signature is attached and the platform could not establish it is the one this project asked for. The message says which: no key configured, the key rejected it, or it names somebody else |
+| `none` | **The vendor publishes no signature.** Not a failure |
+
+The third value is the point. A great many perfectly ordinary images are
+published unsigned, and a status that could only say yes or no would report an
+unsigned image and a bad signature in the same word — which is how a
+compliance surface comes to be ignored.
+
+**An identity alone can never produce `verified`.** A keyless signature
+carries a certificate, and a certificate is a claim by whoever issued it;
+believing one requires chaining it to Fulcio's root and checking the
+transparency log, neither of which this platform does. Reading a subject out of
+an unchained certificate and calling the signature verified would be evidence
+worse than none — so an installation that names an identity and no key is told
+`unverifiable`, and the message says exactly what it would take. Key-based
+verification is complete on its own: the bytes either check out under that key
+or they do not, and no trust root, transparency log or network is involved.
+
+Whose signature is expected is declared on the image source
+(`spec.source.image.signature`, or a workload's own) or once on the pulling
+Connection, where it belongs when a whole registry is one vendor's. The image
+wins over the Connection **whole** rather than field by field: a half-merged
+requirement — this image's identity checked against that registry's key — is a
+rule nobody wrote.
+
+### 18.6 The three commit-shaped rules stay inert, and stay honest
+
+`require-pull-request`, `require-independent-review` and `no-self-approval`
+are claims about a change under review. A vendored artifact does not satisfy
+them, **must not be made to appear to**, and an environment that requires one
+is an environment vendored software may not land on.
+
+That is a correct outcome, and it has to read as a deliberate one rather than
+as a bug. So each of them fires with its own message naming the rule and why
+it cannot be satisfied — "a review is a claim about a commit under review, and
+a vendored artifact has none" — and pointing at the two questions a vendored
+digest *can* answer. Nothing substitutes: the adoption record is never offered
+as a review, and no rule is quietly satisfied by it.
+
+`require-pull-request` is the one of the three that fires **only** for a
+vendored artifact. Its id belongs to a control that runs before a build — a
+project that requires review has its direct pushes refused by the reconciler,
+long before the engine sees anything (§8.8) — and there is deliberately no
+engine-side rule for a built artifact, because two implementations of one
+requirement is how two answers to one question come about. But that control
+never runs for an acquisition: there is no commit to ask a provider about. So
+an environment that required it would silently require nothing of exactly the
+artifacts it was written to keep out, and the engine is where that is said
+instead.
+
+### 18.7 The two rules a vendored digest can answer
+
+Both are in the default bundle, both are inert unless an environment turns
+them on, and both have stable ids like every other rule — requirements,
+exceptions and stored decisions all name rules by these strings, and renaming
+one silently disconnects them.
+
+| Rule id | Demands | Tuned by |
+|---|---|---|
+| `upstream-signature-verified` | The vendor's own signature on every vendored image of the release verified against the key this installation configured | `upstream-signature-verified = "true"`, and optionally `upstreamSignatureIdentity` — the identity the platform must have checked against |
+| `digest-approved-by-someone-else` | Whoever is moving a vendored digest into this environment is not whoever admitted it onto the platform | `digest-approved-by-someone-else = "true"` |
+
+`upstream-signature-verified` fires differently on each of the three signature
+values, because "the vendor publishes no signature" and "the signature did not
+check out" are different findings and an operator sent to look at the wrong
+one wastes an afternoon. It is inert for a release of images the platform
+built: a built artifact has no upstream, and the questions asked of one are
+`require-provenance` and the review rules.
+
+`digest-approved-by-someone-else` is **the four-eyes control for software
+nobody here wrote**, and it is a different question from the three above
+rather than a substitute for them. It does not claim anybody reviewed the
+code; it claims two people were involved in it arriving here, which is what an
+auditor actually wants for a vendored estate. It compares `input.requestedBy`
+— who is asking for this move — against the adoption record's `admittedBy`,
+and it fires both when they are the same person and when the platform has no
+record of who admitted the digest at all.
+
+It asks nothing on a rescan. `requestedBy` is empty when nobody is asking — a
+scheduled re-evaluation of what is already deployed is not a request by anyone
+— and a four-eyes rule fired against nobody would report every vendored
+environment as drifting every hour, for a question that was asked and answered
+at promotion.
+
+A unit can be **half vendored**: an upstream image as one workload and a
+sidecar built from a repository as another, in one Release. So the input
+carries a list rather than a flag, each entry naming its workload, and every
+refusal above names the workload rather than the release.
+
+### 18.8 Where the evidence goes, and when it cannot
+
+Evidence is attached to the artifact's own digest in the artifact's own
+repository, with the credential the image is pulled with — the rule §5.2 sets
+for a built artifact, and for the same reason: evidence the platform could
+attach where it cannot pull would be sitting next to somebody else's artifact.
+
+**A vendor's public registry does not accept writes from its readers.** For an
+image pulled from one there is nowhere to attach anything, `status.artifact.
+message` says so, and the artifact carries no attested evidence. That is §5.4's
+consequence model rather than a silent gap — the artifact still deploys, and
+what it cannot do is satisfy a policy that requires evidence — but it is a real
+narrowing and it is stated rather than implied: **the harvest, the countersign
+and the generated bill of materials work for a registry this platform can
+write to** (a private Harbor or GHCR mirror, the bundled registry), and not for
+Docker Hub's copy of somebody else's image.
+
+The facts on `status.artifact.upstream` are recorded either way, because they
+cost no registry write. So the two questions a vendored digest can answer —
+who brought it in, and did the signature check out — are answerable about a
+public image nobody can attach anything to, and §18.7's rules work there.
+Mirroring vendored images into the platform's own registry is #306's own noted
+follow-up and is what closes the rest of it.
+
+### 18.9 The awkward parts, said out loud
+
+- **A vendor's own signature on its attestations is not checked.** Only that
+  the statement describes the deployed digest. The platform holds no key for
+  the vendor's DSSE envelopes and does not invent one; the *image* signature
+  is the question that gets a real answer, in §18.5.
+- **Keyless signatures are not chained.** No Fulcio root, no Rekor inclusion
+  proof. An identity without a configured key reads `unverifiable`, which is
+  the only honest answer this platform can give, and the message says so.
+- **A generated bill of materials is a scanner's view of an image, not the
+  publisher's account of what went into it.** Two scanners disagree about the
+  contents of an image far more often than either admits, which is why the
+  generator is recorded on `observedSBOM.generator` beside the document.
+- **The rescan covers a vendored artifact through the release's own image.**
+  For a wholly vendored project that is exactly the vendored digest and the
+  pass works unchanged. For a *mixed* unit the sweep still scans the release's
+  own image alone, which is issue #350 and not this one — that is stated here
+  rather than left to be discovered.
+- **A digest-pinned project is never asked about a moved tag**, because there
+  is no tag; and nothing here polls a registry. What produces a second
+  acquisition is #308.

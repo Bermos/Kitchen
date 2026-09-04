@@ -84,6 +84,26 @@ is what builds authenticate against:
  "credential": {"username": "robot$kitchen", "password": "…"}}
 ```
 
+A `dockerRegistry` a vendored image is *pulled* through may also declare
+whose signature on those images is acceptable, once for the whole registry
+rather than on every image that comes from it:
+
+```json
+{"name": "vendor-ghcr", "provider": "dockerRegistry",
+ "config": {"url": "ghcr.io/vendor",
+            "signature": {"publicKeySecret": "vendor-signing-key",
+                          "identity": "releases@vendor.example"}},
+ "credential": {"username": "robot", "password": "…"}}
+```
+
+`publicKeySecret` names a Secret in the platform namespace holding the key
+under `public.pem`, and it is what makes a `verified` result reachable at all;
+an identity with no key beside it reads `unverifiable`, because a keyless
+signature's certificate is a claim by whoever issued it and this platform
+holds no root to chain it to. What an image source declares for itself wins
+over this, whole rather than field by field. The three answers and what each
+means are [COMPLIANCE.md §18.5](../COMPLIANCE.md).
+
 Which credential each registry wants is a how-to rather than a reference, and
 lives in [Image registries](../REGISTRIES.md): the one Kitchen ships, GitHub
 Container Registry — where the token must be a **classic** PAT with

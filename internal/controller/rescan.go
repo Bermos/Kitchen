@@ -800,8 +800,9 @@ func (s *RescanSweeper) attest(
 // evidence is. So a rescan replaces the vulnerability-scan entry rather than
 // appending one: a daily scan appending forever would turn a pointer into a
 // log, and the log already exists in the registry and in the decision store.
-// The source is `platform` because the platform ran the scanner, which is what
-// that word has always meant here.
+// The claim is the platform's own, because the platform ran the scanner: that
+// is `platform` on an artifact it built and `platform-observed` on one it only
+// pulled, which is the same distinction in the two vocabularies (#309).
 //
 // Best-effort: the evidence is attached and the decision is about to be
 // recorded either way, and a build that has been pruned has no index to keep.
@@ -841,7 +842,7 @@ func (s *RescanSweeper) indexEvidence(
 	entry := kitchenv1alpha1.ArtifactEvidence{
 		PredicateType: attestation.PredicateVulnerabilityScan,
 		Manifest:      manifest,
-		Source:        sourcePlatform,
+		Source:        claimantFor(artifact),
 	}
 	for index, existing := range artifact.Evidence {
 		if existing.PredicateType != entry.PredicateType {

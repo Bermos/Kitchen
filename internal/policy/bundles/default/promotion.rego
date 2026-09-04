@@ -39,6 +39,33 @@ pull_request_type := "https://kitchen.bermos.dev/attestation/pull-request-approv
 
 vulnerability_scan_type := "https://kitchen.bermos.dev/attestation/vulnerability-scan/v1"
 
+# --- vendored software ------------------------------------------------------
+# Every image of this release that somebody else built (#309). The field is
+# absent for a release of images the platform built, so `vendored` is empty
+# and every rule below is inert — which is what "inert unless the facts it
+# judges are present" means here.
+#
+# A unit can be half vendored: an upstream image as one workload and a sidecar
+# built from a repository as another. So this is a list, each entry naming its
+# workload, and the refusals below name the workload rather than the release.
+vendored := object.get(object.get(input, "release", {}), "vendored", [])
+
+anything_vendored if count(vendored) > 0
+
+# The name a message calls one of them. `web` is the project's own image,
+# which is what the process list, the Release and the dashboard all call it.
+vendored_name(artifact) := name if {
+	name := object.get(artifact, "workload", "")
+	name != ""
+}
+
+vendored_name(artifact) := "web" if object.get(artifact, "workload", "") == ""
+
+# What a vendored unit is, in the words a refusal uses. It lists the images
+# rather than saying "this release", because on a mixed unit the answer to
+# "which part of this was not built here" is the whole of the finding.
+vendored_images := concat(", ", sort([name | some artifact in vendored; name := vendored_name(artifact)]))
+
 # --- require-provenance -----------------------------------------------------
 # Demands: the artifact carries builder provenance (SLSA v1 or v0.2) among its
 # attested evidence. Tuned by: parameters["require-provenance"] = "true".
@@ -109,7 +136,23 @@ deny contains {
 	"message": "no attestation asserts this change was independently reviewed",
 } if {
 	enabled("require-independent-review")
+	not anything_vendored
 	not independently_reviewed
+}
+
+# The vendored half of the same rule. It is a separate clause with a separate
+# message because the two findings are different facts: "nobody reviewed this
+# change" is a gap somebody can close, and "this artifact has no change to
+# review" is a property of what it is. Nothing here is ever satisfied by a
+# substitute claim — see the note above deny for why an artifact with no
+# commit stays refused rather than being waved through on the adoption record.
+deny contains {"rule": "require-independent-review", "message": message} if {
+	enabled("require-independent-review")
+	anything_vendored
+	message := sprintf(
+		"this environment requires an independent review, and %s was published by somebody else: a review is a claim about a commit under review, and a vendored artifact has none. Nothing substitutes for it — the questions a vendored digest can answer are upstream-signature-verified and digest-approved-by-someone-else",
+		[vendored_images],
+	)
 }
 
 independently_reviewed if {
@@ -128,9 +171,140 @@ deny contains {
 	"message": "the recorded review shows the author approving their own change",
 } if {
 	enabled("no-self-approval")
+	not anything_vendored
 	some entry in evidence
 	object.get(entry, "predicateType", "") == pull_request_type
 	object.get(object.get(entry, "predicate", {}), "selfApproved", false) == true
+}
+
+deny contains {"rule": "no-self-approval", "message": message} if {
+	enabled("no-self-approval")
+	anything_vendored
+	message := sprintf(
+		"this environment forbids self-approval, and %s was published by somebody else: there is no review record to read an approver out of. The four-eyes question a vendored digest can answer is digest-approved-by-someone-else",
+		[vendored_images],
+	)
+}
+
+# --- require-pull-request ---------------------------------------------------
+# The third commit-shaped rule, and the only one that fires **for a vendored
+# artifact alone**.
+#
+# Its id belongs to a control that runs before a build: a project that requires
+# review has its direct pushes refused by the reconciler, long before the
+# engine sees anything (internal/controller/sourceprovenance.go, and
+# docs/COMPLIANCE.md §8.8). There is deliberately no engine-side rule for a
+# built artifact, because a second implementation of one requirement is how two
+# answers to one question come about.
+#
+# But that control never runs for an acquisition — there is no commit to ask a
+# provider about — so an environment that requires it would silently require
+# nothing of exactly the artifacts it was written to keep out. This clause is
+# where it is said instead, at the one place a vendored artifact can be
+# refused. Tuned by: parameters["require-pull-request"] = "true".
+deny contains {"rule": "require-pull-request", "message": message} if {
+	enabled("require-pull-request")
+	anything_vendored
+	message := sprintf(
+		"this environment requires changes to arrive through a reviewed pull request, and %s was published by somebody else: there is no commit and no request, and the platform will not invent one",
+		[vendored_images],
+	)
+}
+
+# --- upstream-signature-verified --------------------------------------------
+# Demands: the vendor's own signature on every vendored image of this release
+# verified against the key this installation configured. Tuned by:
+# parameters["upstream-signature-verified"] = "true", and optionally
+# parameters["upstreamSignatureIdentity"] — the identity the signature had to
+# name, matched against the one the platform actually checked against.
+#
+# Three facts can come back and each fires differently, because "the vendor
+# publishes no signature" is not the same finding as "the signature did not
+# check out" and an operator sent to look at the wrong one wastes an afternoon.
+#
+# It is inert for a release of images the platform built: a built artifact has
+# no upstream, and the questions asked of one are require-provenance and the
+# review rules above.
+upstream_identity := lower(trim_space(object.get(parameters, "upstreamSignatureIdentity", "")))
+
+deny contains {"rule": "upstream-signature-verified", "message": message} if {
+	enabled("upstream-signature-verified")
+	some artifact in vendored
+	object.get(artifact, "signature", "") == "none"
+	message := sprintf(
+		"%s is published without a signature, and this environment requires the upstream signature to verify",
+		[vendored_name(artifact)],
+	)
+}
+
+deny contains {"rule": "upstream-signature-verified", "message": message} if {
+	enabled("upstream-signature-verified")
+	some artifact in vendored
+	not object.get(artifact, "signature", "") in {"none", "verified"}
+	message := sprintf(
+		"the upstream signature on %s did not verify: the platform recorded it as %q",
+		[vendored_name(artifact), object.get(artifact, "signature", "unrecorded")],
+	)
+}
+
+# A signature that verified against the wrong signer is not this environment's
+# signature. The identity is compared against the one the *platform* checked
+# against — the configured expectation — and never against a subject read out
+# of the certificate, which is a claim by whoever wrote the certificate.
+deny contains {"rule": "upstream-signature-verified", "message": message} if {
+	enabled("upstream-signature-verified")
+	upstream_identity != ""
+	some artifact in vendored
+	object.get(artifact, "signature", "") == "verified"
+	lower(trim_space(object.get(artifact, "signatureIdentity", ""))) != upstream_identity
+	message := sprintf(
+		"the upstream signature on %s verified against %q, and this environment requires %q",
+		[
+			vendored_name(artifact),
+			object.get(artifact, "signatureIdentity", "no named identity"),
+			upstream_identity,
+		],
+	)
+}
+
+# --- digest-approved-by-someone-else ----------------------------------------
+# Demands: whoever is moving a vendored digest into this environment is not
+# whoever admitted it onto the platform. Tuned by:
+# parameters["digest-approved-by-someone-else"] = "true".
+#
+# This is the four-eyes control for software nobody here wrote, and it is a
+# **different question** from the three above rather than a substitute for
+# them. It does not claim anybody reviewed the code; it claims two people were
+# involved in it arriving here, which is the control an auditor actually asks
+# a vendored estate for.
+#
+# It asks nothing on a rescan. `requestedBy` is empty when nobody is asking —
+# a scheduled re-evaluation of what is already deployed is not a request by
+# anyone — and a four-eyes rule fired against nobody would report every
+# vendored environment as drifting every hour, for a question that was asked
+# and answered at promotion.
+requester := lower(trim_space(object.get(input, "requestedBy", "")))
+
+deny contains {"rule": "digest-approved-by-someone-else", "message": message} if {
+	enabled("digest-approved-by-someone-else")
+	requester != ""
+	some artifact in vendored
+	object.get(artifact, "admittedBy", "") == ""
+	message := sprintf(
+		"the platform has no record of who admitted %s, so it cannot establish that somebody other than %s approved it",
+		[vendored_name(artifact), object.get(input, "requestedBy", "the requester")],
+	)
+}
+
+deny contains {"rule": "digest-approved-by-someone-else", "message": message} if {
+	enabled("digest-approved-by-someone-else")
+	requester != ""
+	some artifact in vendored
+	lower(trim_space(object.get(artifact, "admittedBy", ""))) == requester
+	message := sprintf(
+		"%s was admitted onto the platform by %s, who is also requesting this move: this environment requires the digest to be approved by somebody else",
+		[vendored_name(artifact), object.get(artifact, "admittedBy", "")],
+	)
 }
 
 # --- max-severity -----------------------------------------------------------
