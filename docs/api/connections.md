@@ -317,6 +317,21 @@ repositories it was granted. There is no CLI command for it: `kitchen api GET
 projects create` needs no picker — it takes the repository from the checkout
 it is run in, or from `--repo`.
 
+**It is not scoped to the caller, and there is nothing to scope it with.** The
+platform holds one credential per connection and none per person, so "what may
+*this* signed-in account see" is a question it has no token to ask the provider;
+a `Connection` carries no organisation, owner or group to narrow the answer to
+either, and its `config` is the API URL and nothing more. A filter applied here
+rather than by the provider would be a listing that only looks scoped — every
+name is still one request away — so none is applied. The narrower answer is a
+feature and not a policy change: a per-account git credential, or a link step
+that obtains one, is what it would take. Until then the requirement is what
+bounds it — `any person`, because creating a project needs this field filled
+in, and a CI key has no project to create (#331, #222).
+
+What *is* bounded is the preflight below: it answers only about the
+repositories this listing carries.
+
 ### What the platform makes of a repository
 
 ```sh
@@ -367,7 +382,8 @@ wants:
 | `"detected": false` with `message` | The directory was read and not recognised, the root directory is not there, or the connection is not a source of repositories. `files` says what the verdict was reached from |
 | `"unreadable": true` with `message` | The repository itself could not be read: it is not there, or this connection's credential cannot see it. The one verdict that is not about the build context |
 | `400` | No `repo`, or no `ref` for a repository the provider names no default branch of |
-| `502` | The provider refused or could not be reached |
+| `403` | The repository is not one this connection lists, so nothing about it was read. It says nothing about whether the repository exists |
+| `502` | The provider refused or could not be reached, including when it would not list |
 
 `unreadable` is a separate answer because it used to be the same one. Every
 provider answers `404` both for a path that is not in a repository and for a
@@ -384,6 +400,32 @@ Like the listing above it, this asks for **a person**: it reads a repository
 through the platform's own credential rather than the caller's, and the form
 it is the third field of is one a CI key may not submit. A key is refused with
 `403`.
+
+**And it answers only about repositories the connection lists.** Reading a
+repository's contents through the platform's credential is not the same act as
+being told its name, so a repository the picker above would not have offered is
+refused with a `403` naming the connection — otherwise anybody who may create a
+project, which is anybody signed in on their first day, could pull the file
+listing of any repository the installation's token happens to reach, one
+guessed name at a time. The check is the listing itself rather than a cheaper
+question that might disagree with it, which has three consequences worth
+knowing:
+
+- A provider with no listing behind it — `gitlab`, `gitea` — leaves nothing to
+  check against, and its repositories are read as they always were. That is the
+  honest gap rather than a filter invented for them.
+- A listing cut short at its cap refuses a repository past the cap even where
+  the credential could read it. The refusal says so outright, because somebody
+  told only that the connection does not list it would go looking for a fault
+  in the token.
+- The preflight is one provider listing plus the reads it already made, so a
+  connection on a large organisation answers it a little slower than it did.
+
+Creating a project on a repository the connection does not list is still
+possible — `POST /projects` names its own repository and does not consult the
+picker. The difference is attribution: a project is an object with a name, a
+creator who becomes its `admin` and a line in the audit trail, where a
+preflight is a question anybody can ask and nothing records.
 
 `detected: false` is not an error and does not stop a project being created:
 the build strategy can be set afterwards, and the build is still what decides.

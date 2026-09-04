@@ -778,12 +778,7 @@ func (s *Server) listConnectionRepositories(w http.ResponseWriter, req *http.Req
 	defer cancel()
 	listing, err := lister.ListRepositories(listCtx)
 	if err != nil {
-		// The provider's own words, which is where a rejected or
-		// under-scoped token says so. A dropdown that cannot be filled is not
-		// the platform failing, so it reads as a bad gateway rather than a
-		// 500, and the form still takes a typed name.
-		writeJSON(w, http.StatusBadGateway, errorBody{Error: fmt.Sprintf(
-			"connection %q could not list repositories: %s", connection.Name, err.Error())})
+		writeRepositoryListingError(w, connection, err)
 		return
 	}
 
@@ -802,6 +797,63 @@ func (s *Server) listConnectionRepositories(w http.ResponseWriter, req *http.Req
 		Items:     items,
 		Truncated: listing.Truncated,
 	})
+}
+
+// writeRepositoryListingError renders a provider that would not list. The
+// provider's own words are what a rejected or under-scoped token says so in,
+// and a dropdown that cannot be filled is not the platform failing — so it
+// reads as a bad gateway rather than a 500, and the form still takes a typed
+// name.
+func writeRepositoryListingError(w http.ResponseWriter, connection *kitchenv1alpha1.Connection, err error) {
+	writeJSON(w, http.StatusBadGateway, errorBody{Error: fmt.Sprintf(
+		"connection %q could not list repositories: %s", connection.Name, err.Error())})
+}
+
+// repositoryOffer is what a connection's own listing makes of one repository
+// name, and it is the whole of what the preflight beside the listing is
+// allowed to read: a route that reads a repository's contents through the
+// platform's credential answers about the repositories that credential is
+// meant to offer and about nothing else (#331).
+type repositoryOffer struct {
+	// Enumerable is whether the provider can be asked for a listing at all.
+	// False leaves nothing to check against — gitlab and gitea have no
+	// listing behind them today — and the caller reads the repository as it
+	// always did.
+	Enumerable bool
+	// Listed is whether the listing carried this repository.
+	Listed bool
+	// Truncated is whether the listing stopped at its cap, which is the one
+	// case where not being in it is a fact about the cap rather than about
+	// what the credential is meant to offer.
+	Truncated bool
+}
+
+// offeredRepository asks a connection's own listing about one repository, by
+// walking exactly the listing the route above answers with. "One the listing
+// would have returned" is a statement about that listing, so it is settled by
+// asking it rather than by a second, cheaper question that could disagree
+// with it — a repository the picker never offered must not be readable
+// through the preflight, and one it did offer must not be refused by it.
+func offeredRepository(ctx context.Context, git gitprovider.Provider, repo string) (repositoryOffer, error) {
+	lister, ok := gitprovider.Repositories(git)
+	if !ok {
+		return repositoryOffer{}, nil
+	}
+	listing, err := lister.ListRepositories(ctx)
+	if err != nil {
+		return repositoryOffer{}, err
+	}
+	offer := repositoryOffer{Enumerable: true, Truncated: listing.Truncated}
+	for _, candidate := range listing.Repositories {
+		// Repository names are not case-sensitive at any of these providers,
+		// and a name pasted as "Acme/Shop" is the same repository the listing
+		// spells "acme/shop".
+		if strings.EqualFold(candidate.FullName, repo) {
+			offer.Listed = true
+			break
+		}
+	}
+	return offer, nil
 }
 
 // validRedisURL checks that a redis connection's credential is an address
