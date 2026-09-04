@@ -61,3 +61,58 @@ jobs:
           # waiting for and a failure to reach the site is not somebody else's
           # red pull request.
           verify: false
+
+  govulncheck:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    # Advisory reports are not the branch's to fix, so this job does not gate:
+    # a report here is a fact about the world on the day the job ran, not a
+    # fact about the branch, so a blocking job would turn a pull request red
+    # for an advisory published between two pushes and hold a release for a
+    # reason nobody on the branch can fix. That is the same failure mode the
+    # linter's config check was turned off for, above. The job therefore
+    # reports and does not gate: the finding lands in the step summary, where
+    # it is read without opening a log, and the branch that *introduces* a
+    # reachable advisory still shows it next to the diff that brought it in.
+    continue-on-error: true
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # Pinned like golangci-lint above, so the job's verdict changes when the
+      # tree changes or the database moves, never because the tool did.
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
+
+      - name: Scan for reachable advisories
+        run: |
+          echo '## govulncheck' >> "$GITHUB_STEP_SUMMARY"
+          # `run:` is bash -e, so the non-zero exit has to be caught here
+          # rather than read from $? on the next line.
+          status=0
+          govulncheck ./... > govulncheck.txt 2>&1 || status=$?
+          cat govulncheck.txt
+          if [ "$status" -eq 0 ]; then
+            echo 'No advisory has a symbol this code reaches.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # 3 is govulncheck's "findings"; anything else is the tool or the
+          # database being unreachable, which says nothing about the tree.
+          if [ "$status" -eq 3 ]; then
+            echo 'Reachable advisories. Bump the modules they name, or say in the' >> "$GITHUB_STEP_SUMMARY"
+            echo 'pull request why the reachable symbol is not a path this platform runs.' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "govulncheck could not complete (exit $status); the scan says nothing about this branch." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          {
+            echo
+            echo '```'
+            cat govulncheck.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
