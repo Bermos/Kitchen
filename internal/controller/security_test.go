@@ -280,7 +280,7 @@ func TestTheVolumeGroupReachesEveryWorkloadThatMountsAClaim(t *testing.T) {
 		"task":    {Name: "migrate", Type: kitchenv1alpha1.ProcessTask},
 	} {
 		t.Run(name, func(t *testing.T) {
-			spec := processPodSpec(release, project, nil, process, mounts)
+			spec := processPodSpec("env", release, project, nil, process, mounts)
 			assertVolumeIsWritable(t, spec)
 		})
 	}

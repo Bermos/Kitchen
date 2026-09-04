@@ -275,6 +275,7 @@ give.
 | `kitchen processes` | The workloads an environment runs besides its web process; (`runs`, `run`) one workload's run history and running it now — a scheduled job off its schedule, or a deploy task again; (`set`, `rm`) declaring one workload of the project and taking one off | `GET /environments/{name}/processes`, `GET`/`POST /environments/{name}/processes/{process}/runs`, `GET`/`PATCH /projects/{name}` |
 | `kitchen env list/set/rm` | The project's environment variables | `PATCH /projects/{name}/env` |
 | `kitchen secret list/set/rm` | The project's own secrets — credentials the platform did not mint | `GET /projects/{name}/secrets`, `PUT`/`DELETE /projects/{name}/secrets/{secret}` |
+| `kitchen files list/set/rm` | The configuration files the project places into its workloads — what software the platform did not build is configured by | `GET /projects/{name}`, `PATCH /projects/{name}`, `PUT /projects/{name}/files/{file}` |
 | `kitchen rollback` | Put an environment back on an earlier release, saying what that changes first | `GET /releases/{name}/config-diff`, `PATCH /environments/{name}` |
 | `kitchen promote` | Ask for a release to land on an environment; the policy decides | `POST /projects/{name}/promotions` |
 | `kitchen promotions` | What promotions were asked for and what became of them | `GET /projects/{name}/promotions`, `GET /promotions/{name}` |
@@ -498,6 +499,46 @@ kitchen env set --from-secret SMTP_PASSWORD=kitchen-project-secrets:SMTP_PASSWOR
 
 Unlike a variable, a rotated secret reaches what is already running: the
 platform restarts whatever reads it.
+
+### Configuration files
+
+Software written for this platform is configured by variables. Software
+somebody else wrote is often configured by a file at a fixed path — Home
+Assistant's `configuration.yaml`, Gitea's `app.ini` — and that is what these
+place (see [the API reference](api/files.md)).
+
+```sh
+kitchen files list
+kitchen files set configuration --path /config/configuration.yaml \
+  --content-file ./configuration.yaml
+kitchen files set configuration --content-file ./configuration.yaml   # just the content
+kitchen files set configuration --workloads web,worker                # just who reads it
+kitchen files set app-ini --path /data/conf/app.ini --secret \
+  --content-file ./app.ini
+kitchen files rm configuration --yes
+```
+
+`set` both adds a file and changes one, because it is the same write, and any
+part left out keeps what it had. The content comes from `--content-file`,
+`--content-stdin` or `--content`, and is stored **exactly as written** — the
+trailing newline included, unlike a secret's value, because a file has one and
+a credential does not. Nothing is substituted into it from the environment;
+[the API page](api/files.md#why-they-are-not-templated-from-the-environment)
+says why that is a decision.
+
+`--workloads` names the workloads that read it — `web` for the web process, and
+a workload's own name for anything the project runs. Left out, everything gets
+it.
+
+`--secret` says the content is a credential. It then travels on a route of its
+own and nothing answers it again: `kitchen files list` prints the whole list
+and, for a secret file, a digest and a byte count rather than the file. A file
+the platform holds no content for is printed as `secret, not set`, which is
+worth seeing — the workloads that read it will not start until it has some.
+
+A plain file lands in the next release, like a variable. A secret file's
+content reaches what is already running: the platform restarts whatever reads
+it.
 
 ### Logs
 
@@ -1322,6 +1363,7 @@ cannot write it carries on and exchanges every time.
 | Acquiring a new digest | No command; `kitchen api POST /projects/{name}/acquisitions` | The ordinary case needs no caller at all — the platform polls, and a moved tag produces the acquisition on its own. What is left is "check now", which is a button on a screen, and "take exactly this digest", which is a vendor's own pipeline calling one endpoint with one key at the end of its publish. Neither is about *this checkout*, which is what every command here is: `kitchen deploy` deploys the commit in the working directory, and a project with no repository has no working directory to be in. A `--image-digest` flag on `deploy` would be a second meaning for a command whose whole shape — link a directory, read its HEAD, follow the build — assumes the first |
 | A workload's vendored image | `kitchen processes set <name> --image <ref>`, and `kitchen api` for a whole list | It is one more key on a record; `--image` and `--image-connection` set it on the one workload named, and a list of six workloads is still a JSON body |
 | Declaring workloads at all | `kitchen processes set` and `kitchen processes rm`, one workload at a time | [#299](https://github.com/Bermos/Kitchen/issues/299) filed no command for this because `kitchen.json` was the real surface and `kitchen api` carried the rest. That reasoning holds exactly as long as there is a file: a project whose source is an image has no repository and no file, so the API, the dashboard and this command are not a fallback for it — they are the only route, and "reachable through `kitchen api`" is a lower bar than the platform sets for anything done routinely ([#310](https://github.com/Bermos/Kitchen/issues/310)). The objection is answered rather than ignored: nothing here composes a *list* of records on a command line |
+| A project's configuration files | `kitchen files list/set/rm`, one file at a time | The content of a config file is a *file*, which is the one kind of value a terminal is better at than a form: it is already on disk, it is too long to type, and `--content-file` is the whole interaction. Leaving it to `kitchen api` would mean hand-assembling a JSON document with a file's bytes escaped into it, which nobody does twice. One file at a time, read-modify-write, the way `env set` works and for the same reason: the API keeps the content of a file whose `content` a request leaves out, so the whole list can be sent back by a client that was never shown a secret file's |
 | A project's settings | No command; `kitchen api PATCH /projects/{name}` | One JSON body written occasionally by an admin — a port, a replica count, a health check, a security posture, arguments, a classification, the Dockerfile stage to ship (which `projects create` does carry, since the first build starts with the project). A flag per field would be a second surface to keep in step with the first, and a list of records with commands and schedules in it has no flag-shaped spelling worth having |
 | The platform commands | Declared the dashboard's for now, in `--help`, in `kitchen schema` and in a refusal that names the screen | A key is a role on one project and those routes need the operator role, so no credential this CLI can store runs them — and `kitchen api` carries the same token, so it is no way round a *role*. Shipping them published and silently unrunnable was the state [#208](https://github.com/Bermos/Kitchen/issues/208) found; a platform-scoped key is the real answer and is [#349](https://github.com/Bermos/Kitchen/issues/349), designed with [#318](https://github.com/Bermos/Kitchen/issues/318) because both decide what a key is |
 | Account management | No command, and none possible | Changing a password, or ending a session, is done at the identity provider against its session cookie — and this CLI holds a key, never a session. It is not an endpoint `kitchen api` reaches either, because that reaches the operator API and these are not on it ([AUTH.md](AUTH.md), "Managing an account") |

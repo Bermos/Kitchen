@@ -82,6 +82,21 @@ type RepoConfig struct {
 	// +listType=map
 	// +listMapKey=name
 	Processes []ProcessSpec `json:"processes,omitempty"`
+
+	// Files are the configuration files it declared. Like the variables and
+	// unlike the processes they merge by name onto the project's, because a
+	// project may hold a *secret* file the repository is not allowed to
+	// write: a list that replaced would take the declaration away and leave
+	// the application without the credential file it starts on.
+	//
+	// They carry content and never secrecy, for the reason the variables
+	// carry literals and never a reference: the file is committed to a
+	// repository anybody who can open a pull request may write, so a
+	// declaration in it is public by construction.
+	// +optional
+	// +listType=map
+	// +listMapKey=name
+	Files []ConfigFile `json:"files,omitempty"`
 }
 
 // RepoBuildConfig is the build half of kitchen.json. It is deliberately not
@@ -223,6 +238,12 @@ func (c *RepoConfig) Declares() []string {
 	for _, variable := range c.Env {
 		fields = append(fields, "env."+variable.Name)
 	}
+	// A file is named one by one, the way a variable is and unlike the
+	// process list: the two merge by name, so "the file declared this one"
+	// is the fact a screen needs beside each row.
+	for _, file := range c.Files {
+		fields = append(fields, "files."+file.Name)
+	}
 	if len(c.Processes) > 0 {
 		fields = append(fields, "processes")
 	}
@@ -238,6 +259,16 @@ func (c *RepoConfig) DeclaresEnv(name string) bool {
 		return false
 	}
 	return slices.ContainsFunc(c.Env, func(v EnvVar) bool { return v.Name == name })
+}
+
+// DeclaresFile reports whether the file declared the named configuration
+// file, which is what the dashboard and `kitchen files list` read to mark one
+// as the repository's rather than the project's.
+func (c *RepoConfig) DeclaresFile(name string) bool {
+	if c == nil {
+		return false
+	}
+	return slices.ContainsFunc(c.Files, func(f ConfigFile) bool { return f.Name == name })
 }
 
 // String names the file and what it set, for a log line or an audit detail.

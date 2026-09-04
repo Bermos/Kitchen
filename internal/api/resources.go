@@ -94,7 +94,8 @@ func (s *Server) getProject(w http.ResponseWriter, req *http.Request) {
 		s.writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, newProjectView(project, s.roleOn(req.Context(), project)))
+	ctx := req.Context()
+	writeJSON(w, http.StatusOK, s.withFileContent(ctx, project, newProjectView(project, s.roleOn(ctx, project))))
 }
 
 // createProjectRequest is everything the create flow asks for: a name, a
@@ -590,6 +591,43 @@ type patchProjectRequest struct {
 	// rule the port and the replica count follow, and it is what makes a
 	// rollback exact.
 	Processes *[]processRequest `json:"processes,omitempty"`
+	// Files replaces the project's configuration files wholesale, in the
+	// same read-modify-write bargain the variables make: a file whose
+	// `content` the request leaves out keeps the content it has, which is
+	// what lets a client that was never shown a secret file's content send
+	// the rest of the list back.
+	//
+	// An empty list removes every file. A file marked `secret` carries no
+	// content here at all — that is
+	// PUT /projects/{name}/files/{file}, which no response reads back — and
+	// sending one with content is refused rather than stored in the clear.
+	//
+	// Like the process list it is the project's declaration, so it reaches an
+	// environment only through the next Release. A file is frozen into the
+	// snapshot for exactly that reason: a rollback restores the file its
+	// release ran with.
+	Files *[]fileRequest `json:"files,omitempty"`
+}
+
+// fileRequest and the validation behind it live in internal/appconfig, for
+// the reason processRequest does: a repository's kitchen.json is a second way
+// to declare the same file, and one shape is the only way two validators
+// agree.
+type fileRequest = appconfig.File
+
+// filesFromRequest turns the request's files into the spec's. `stored` is
+// what the project holds — consulted only for the content of a file whose
+// request left it out — and `processes` the workloads a file may name.
+func filesFromRequest(
+	requests []fileRequest,
+	stored []kitchenv1alpha1.ConfigFile,
+	processes []kitchenv1alpha1.ProcessSpec,
+) ([]kitchenv1alpha1.ConfigFile, error) {
+	names := make([]string, 0, len(processes))
+	for _, process := range processes {
+		names = append(names, process.Name)
+	}
+	return appconfig.Files(requests, stored, names)
 }
 
 // criticalityFromRequest validates one criticality value, empty meaning
@@ -1050,6 +1088,17 @@ func (s *Server) patchProject(w http.ResponseWriter, req *http.Request) {
 		}
 		project.Spec.Processes = processes
 	}
+	// After the workloads, so that one request may add a worker and a file
+	// for it: the names a file may mention are the ones this project will
+	// have when the write lands, not the ones it had when it arrived.
+	if body.Files != nil {
+		files, err := filesFromRequest(*body.Files, project.Spec.Files, project.Spec.Processes)
+		if err != nil {
+			badRequest(w, "%s", err.Error())
+			return
+		}
+		project.Spec.Files = files
+	}
 	var nextClass *kitchenv1alpha1.DataClass
 	if body.DataClass != nil {
 		class, err := dataClassFromRequest(*body.DataClass)
@@ -1093,10 +1142,21 @@ func (s *Server) patchProject(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// The content the platform holds for a secret file the project no longer
+	// declares goes with the declaration. It is done after the write rather
+	// than before it, so that a settings PATCH that fails leaves the
+	// credential where it was.
+	if body.Files != nil {
+		if err := s.pruneProjectFiles(ctx, project); err != nil {
+			s.writeError(w, err)
+			return
+		}
+	}
+
 	caller, _ := CallerFrom(ctx)
 	s.log().Info("project settings changed through the api",
 		"project", project.Name, "caller", callerName(caller))
-	writeJSON(w, http.StatusOK, newProjectView(project, s.roleOn(ctx, project)))
+	writeJSON(w, http.StatusOK, s.withFileContent(ctx, project, newProjectView(project, s.roleOn(ctx, project))))
 }
 
 // patchProjectEnv is the developer's half of a project: its environment
@@ -2041,6 +2101,7 @@ func changedProjectFields(body patchProjectRequest, continuity continuityChange)
 		{"notRequestDriven", body.NotRequestDriven != nil},
 		{"promotionStages", body.PromotionStages != nil},
 		{"processes", body.Processes != nil},
+		{"files", body.Files != nil},
 		{"dataClass", body.DataClass != nil},
 	} {
 		if field.changed {

@@ -282,6 +282,11 @@ func (r *EnvironmentReconciler) reconcileProcesses(
 // environment's resolved variables, the registry credential the image needs to
 // be pulled, and the process's own command and resources.
 func processPodSpec(
+	// envName is the environment this workload belongs to, which is the only
+	// thing here that is not the Release's: the plain configuration files are
+	// placed per environment, since two environments of one project run two
+	// releases and so two versions of one file.
+	envName string,
 	release *kitchenv1alpha1.Release,
 	project *kitchenv1alpha1.Project,
 	podEnv []corev1.EnvVar,
@@ -339,6 +344,11 @@ func processPodSpec(
 	// with another command, so a posture that described only the web process
 	// would describe a third of the workloads the project ships.
 	applySecurityContext(&pod, &pod.Containers[0], release.Spec.ConfigSnapshot.Runtime.Security)
+	// The configuration files this release hands *this* workload, which is
+	// the ones that named it and the ones that named nobody. A worker, a
+	// service, a scheduled run and a deploy-time task all get them: a unit is
+	// one application, and its configuration file is the application's.
+	configFilesOnPod(&pod, envName, configFilesOf(release, process.Name))
 	return pod
 }
 
@@ -406,7 +416,12 @@ func (r *EnvironmentReconciler) applyWorkerDeployment(
 			}}
 		}
 		deploy.Spec.Template.Labels = podLabels
-		deploy.Spec.Template.Spec = processPodSpec(release, project, podEnv, process, mounts)
+		deploy.Spec.Template.Spec = processPodSpec(env.Name, release, project, podEnv, process, mounts)
+		// The digest of the plain files it reads, for the reason the web
+		// process carries one: a release differing only in a file's content
+		// would otherwise leave a running worker on the old file for ever.
+		applyConfigFilesRevision(&deploy.Spec.Template.ObjectMeta,
+			configFilesRevision(configFilesOf(release, process.Name)))
 		var err error
 		rotation, err = stampSecretsRevision(ctx, r.Client, appNS, &deploy.Spec.Template)
 		return err
@@ -522,7 +537,10 @@ func (r *EnvironmentReconciler) applyCronJob(
 		cron.Spec.JobTemplate.Spec.BackoffLimit = ptr.To(runBackoffLimit)
 		cron.Spec.JobTemplate.Spec.ActiveDeadlineSeconds = ptr.To(process.TimeoutSeconds())
 		cron.Spec.JobTemplate.Spec.Template.Labels = childLabels
-		podSpec := processPodSpec(release, project, podEnv, process, mounts)
+		podSpec := processPodSpec(env.Name, release, project, podEnv, process, mounts)
+		// A scheduled run needs no digest of anything: its next run is a new
+		// pod, which reads whatever the file holds when it starts.
+		//
 		// Never, not OnFailure: with a backoff limit of zero a restarting
 		// container would retry inside a Job that can never fail, which is
 		// exactly the silent failure this feature exists to end.

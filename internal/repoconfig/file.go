@@ -44,6 +44,31 @@ type File struct {
 	Env        map[string]Value    `json:"env,omitempty"`
 	PreviewEnv map[string]Value    `json:"previewEnv,omitempty"`
 	Processes  []appconfig.Process `json:"processes,omitempty"`
+	Files      []FileConfigFile    `json:"files,omitempty"`
+}
+
+// FileConfigFile is one entry of `files`: a configuration file the commit
+// carries, mounted into the workloads it names.
+//
+// It is not [appconfig.File], and the difference is the point. That shape
+// carries `secret`, and a repository may not declare a secret file for
+// exactly the reason it may not point a variable at a credential: this file
+// is committed, so what is in it is public, and a declaration that the
+// platform holds a credential for this path is a claim about the project's
+// standing rather than about the code. `content` is required here for the
+// same reason it is optional there — a file has nowhere else to put it, and
+// "keep whatever is stored" is not a thing a commit can mean.
+type FileConfigFile struct {
+	Name      string   `json:"name"`
+	Path      string   `json:"path"`
+	Content   string   `json:"content"`
+	Workloads []string `json:"workloads,omitempty"`
+
+	// Secret is here only so that it can be refused by name, the way
+	// build.rootDirectory is. It is the first thing somebody will reach for
+	// after reading about secret files in the API docs, and "unknown field"
+	// would be a true answer that explains nothing.
+	Secret *bool `json:"secret,omitempty"`
 }
 
 // FileBuild is the `build` object.
@@ -146,7 +171,57 @@ func (f File) config() (*kitchenv1alpha1.RepoConfig, error) {
 	}
 	config.Processes = processes
 
+	files, err := f.filesConfig(processes)
+	if err != nil {
+		return nil, err
+	}
+	config.Files = files
+
 	return config, nil
+}
+
+// filesConfig validates the `files` list. The workload names it may mention
+// are the ones this same file declares plus the web process: a file read at
+// build time cannot see the project it is about to be merged onto, and a
+// commit that names a workload only the project knows about would pass here
+// and be refused by the merge, which is a worse place to find out.
+func (f File) filesConfig(processes []kitchenv1alpha1.ProcessSpec) ([]kitchenv1alpha1.ConfigFile, error) {
+	if len(f.Files) == 0 {
+		return nil, nil
+	}
+	requests := make([]appconfig.File, 0, len(f.Files))
+	for _, declared := range f.Files {
+		if declared.Secret != nil {
+			return nil, fmt.Errorf(
+				"%w: files[%q] sets secret — a file in %s is committed, so everything in it is public, and the "+
+					"platform holding a credential for a project is not something a commit gets to declare. "+
+					"Declare the secret file in the dashboard or with `kitchen files set --secret`, and leave it "+
+					"out of this file",
+				ErrInvalid, declared.Name, FileName)
+		}
+		if declared.Content == "" {
+			return nil, fmt.Errorf(
+				"%w: files[%q] has no content — a file declared in %s carries what is in it, since there is "+
+					"nowhere else for a committed declaration to have put it",
+				ErrInvalid, declared.Name, FileName)
+		}
+		content := declared.Content
+		requests = append(requests, appconfig.File{
+			Name:      declared.Name,
+			Path:      declared.Path,
+			Content:   &content,
+			Workloads: declared.Workloads,
+		})
+	}
+	names := make([]string, 0, len(processes))
+	for _, process := range processes {
+		names = append(names, process.Name)
+	}
+	files, err := appconfig.Files(requests, nil, names)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrInvalid, err)
+	}
+	return files, nil
 }
 
 func (f File) buildConfig() (*kitchenv1alpha1.RepoBuildConfig, error) {

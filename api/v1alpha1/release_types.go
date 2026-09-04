@@ -40,6 +40,21 @@ type ConfigSnapshot struct {
 	// +listType=map
 	// +listMapKey=name
 	Processes []ProcessSpec `json:"processes,omitempty"`
+
+	// Files are the configuration files this release's workloads are handed,
+	// frozen for the same reason the variables are and with one difference
+	// that matters: a plain file's *content* is frozen here, so rolling back
+	// restores the file that release ran with, byte for byte.
+	//
+	// A secret file's content is not here and cannot be — it is a
+	// credential, held where no response reads it back, and a Release is
+	// read by everyone who may read the project. A rollback restores the
+	// declaration and the file's current content, which is the same bargain
+	// a variable bound to a secret already makes.
+	// +optional
+	// +listType=map
+	// +listMapKey=name
+	Files []ConfigFile `json:"files,omitempty"`
 }
 
 // ReleaseSpec is an immutable snapshot: an image digest plus the configuration

@@ -145,6 +145,7 @@ func TestPublishedSchemaMatchesTheFileTheParserAccepts(t *testing.T) {
 	compare(t, "runtime.security", reflect.TypeFor[appconfig.Security](),
 		root.Properties["runtime"].Properties["security"], root)
 	compare(t, "processes[]", reflect.TypeFor[appconfig.Process](), *root.Properties["processes"].Items, root)
+	compare(t, "files[]", reflect.TypeFor[FileConfigFile](), *root.Properties["files"].Items, root)
 	compare(t, "processes[].health", reflect.TypeFor[appconfig.Health](), root.Defs["process"].Properties["health"], root)
 }
 

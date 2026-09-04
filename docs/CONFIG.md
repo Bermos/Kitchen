@@ -271,6 +271,53 @@ zero is the project's policy because only the web process is idled — see
 [the Project's `scaleToZero`](CRDS.md) for why, and what to do when one
 workload must stay warm.
 
+### `files`
+
+The configuration files this commit places into its workloads — what software
+configured by a file at a fixed path rather than by environment variables
+needs, and [the same declaration the API takes](api/files.md).
+
+```json
+{
+  "files": [
+    {
+      "name": "configuration",
+      "path": "/config/configuration.yaml",
+      "content": "logger: info\nhttp:\n  server_port: 8123\n"
+    },
+    {
+      "name": "worker-conf",
+      "path": "/etc/worker.toml",
+      "content": "queue = \"jobs\"\n",
+      "workloads": ["worker"]
+    }
+  ]
+}
+```
+
+Each file is mounted **read-only at its path**, into every workload it names —
+`web` for the web process, and a workload's own name for anything in
+[`processes`](#processes). A file that names none reaches all of them, which is
+what a vendored application's single config file wants. Only that one path is
+replaced; the rest of the directory stays as the image left it.
+
+`content` is **required here**, unlike on the API, because a committed
+declaration has nowhere else to have put it. The file is placed exactly as
+written — nothing is substituted into it from the environment, and
+[the API page](api/files.md#why-they-are-not-templated-from-the-environment)
+says why that is a decision rather than a gap.
+
+Declaring `files` **merges onto the project's list by name**, unlike
+`processes` and like `env`. The reason is `env`'s rather than symmetry: a
+project may hold a *secret* file — one whose content is a credential the
+platform keeps where nothing reads it back — and a list that replaced would
+take the declaration away and leave the application starting without it. A
+name this file declares that the project holds as a secret fails the build,
+for the same reason a variable may not shadow a bound one.
+
+They are frozen into the release with everything else, so a rollback restores
+the file that release ran with.
+
 ## What it cannot set
 
 The file lives in a repository, and **a preview builds a commit from a pull
@@ -293,6 +340,12 @@ the project's standing in the platform.
   whether previews exist and whether they are protected: all of it is the
   project's owners' and the operator's. A repository arguing about them is the
   argument this rule exists to refuse.
+- **No secret configuration file.** [`files`](#files) declares a file and its
+  content; it cannot mark one `secret`, which is refused by name. Whether the
+  platform holds a credential for this project is the project's standing
+  rather than a fact about the code, and the declaration would be a claim a
+  pull request got to make. A secret file is declared in the dashboard or with
+  `kitchen files set --secret`.
 - **Not the root directory**, for the reason in [Where it goes](#where-it-goes).
 - **Not the git connection, the repository, the production branch or the
   registry.** A file cannot say which repository it is in.
@@ -349,6 +402,7 @@ file is read before the build and the release is written after it.
 | **The file wins for what it names** | A value written in a file that is read on every build is a value that takes effect, or the file is decoration. The alternative — the dashboard wins, the file is a default — means committing a change to it usually does nothing, silently, which is the worst of the three options. |
 | **It is per commit, not a write to the project** | The file configures the build that read it and the release that build produced. It never writes back to the Project, so there is no loop between two writers and no moment where a merged pull request has silently changed a setting for the environment that is already running. |
 | **`env` merges, `processes` replaces** | The two lists fail differently. An unbound variable is an application that cannot reach its database; a stale worker is a command that may no longer exist. Merging is right for the first and wrong for the second. |
+| **`files` merges, like `env`** | For `env`'s reason and not for symmetry: a project may hold a secret file this file may not declare, and replacing the list would take that declaration away. The failure would be an application starting without the credential file it is configured by, which is the same shape an unbound variable has. |
 | **The values are not answered back** | `config` on a build names the settings, not what they were set to. They are already in the release's snapshot and on the environment, and a second copy is a second thing to disagree with the first. |
 | **No `buildCommand` or `outputDirectory`** | Kitchen has neither concept: a buildpacks build runs the project's own `build` script and the framework decides the directory a static site is served from, and a Dockerfile build is the Dockerfile. Adding them to this file would be adding them to the platform, which is a different change with a different argument. |
 | **The schema is hand-written and checked against the parser** | The wording is half of what the schema is for, so it is not generated — and `internal/repoconfig/schema_test.go` fails when a key exists on one side and not the other, which is the only way the two can drift. |

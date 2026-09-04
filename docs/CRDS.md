@@ -689,6 +689,16 @@ spec:
       concurrencyPolicy: Forbid         # Allow | Forbid | Replace
       previews: false                   # unset means off for a worker and a
                                         # cron, and on for a service and a task
+  files:                                # configuration files, for software that
+    - name: configuration               # is configured by one rather than by
+      path: /config/configuration.yaml  # variables. Absolute, naming the file
+      content: |                        # itself: only that path is replaced
+        logger: info
+      workloads: [web]                  # who reads it; omit and everything does
+    - name: app-ini                     # a file whose content is a credential:
+      path: /data/conf/app.ini          # it is held in a Secret the API writes
+      secret: true                      # and no response ever reads back, so
+                                        # `content` is refused here
 status:
   conditions: [...]                     # Ready, Previews, SourceConnected, RegistryConnected,
                                         # WebhookRegistered, InitialBuild. The middle three
@@ -703,6 +713,19 @@ status:
                                         # It is also what keeps a registry that stays down to one
                                         # failed acquisition rather than one every interval
 ```
+
+`files` is what software the platform did not build is configured by (#311).
+It is configuration rather than storage — small, changing with a deploy, and
+frozen into every Release, so a rollback restores the file that release ran
+with. Each is mounted read-only at its path into every workload it names, and
+into all of them where it names none; only that one path is replaced, so the
+rest of the directory stays as the image left it. Nothing is substituted into
+it from the environment, deliberately —
+[docs/api/files.md](api/files.md#why-they-are-not-templated-from-the-environment)
+says why. A file marked `secret` carries no `content` here: the API writes it
+into `kitchen-project-files-<project>`, which the reconciler mirrors into the
+application namespace beside the project's secrets, and no route reads it
+back.
 
 `initialBuildRef` is what makes a new project deploy without waiting for a
 push: the reconciler resolves the production branch's tip and creates one
@@ -1224,15 +1247,28 @@ spec:                                   # fully immutable (CEL rule on the CRD)
     - name: api                         # to, for one with a build of its own
       image: harbor.example.com/kitchen/my-shop-api@sha256:9f2c...
   configSnapshot:                       # frozen copy of Project.spec.env,
-    env: [...]                          # runtime and processes
+    env: [...]                          # runtime, processes and files
     runtime: { port: 3000, resources: {...} }   # port resolved: a project that
                                                 # named none gets the detected
                                                 # framework's, frozen here
     processes: [...]                    # the other workloads as they
                                         # stood at build time
+    files: [...]                        # the configuration files, content and
+                                        # all — except a secret one's, which is
+                                        # a credential and is not in here
 status:
   environments: [my-shop-production, my-shop-pr-42]   # where it's live (informational)
 ```
+
+`configSnapshot.files` freezes a *plain* configuration file's content, which is
+what makes a rollback restore the file that release ran with byte for byte.
+Every workload's pod template carries a digest of the files it reads
+(`kitchen.bermos.dev/config-files-revision`), so a release differing only in a
+file's content still rolls the workloads that read it — without it the platform
+would rewrite the file and nothing would restart. A *secret* file's content is
+deliberately not here: a Release is readable by everyone who may read the
+project, so the snapshot carries the declaration and the content stays in the
+Secret, mounted from it and covered by the secrets digest beside it.
 
 `workloads` is the other half of what makes a rollback exact for a project that
 ships more than one image. The snapshot freezes what each workload *is*; this

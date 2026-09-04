@@ -1320,6 +1320,7 @@ func (r *BuildReconciler) succeed(
 		Env:       project.Spec.Env,
 		Runtime:   runtimeFor(project, build),
 		Processes: project.Spec.Processes,
+		Files:     project.Spec.Files,
 	}, build.Status.Config)
 	if err != nil {
 		return r.fail(ctx, build, project, reasonConfigInvalid, err.Error())

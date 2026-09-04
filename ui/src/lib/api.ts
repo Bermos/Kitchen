@@ -44,6 +44,39 @@ export interface ProjectSecret {
   reference: KeyRef;
 }
 
+/**
+ * One configuration file a project places into its workloads (#311): what
+ * software the platform did not build is configured by.
+ *
+ * `content` is present for a plain file and absent — never empty — for a
+ * secret one, so "there is nothing to show you" and "the file is empty" are
+ * different answers. `contentHash` and `size` are what the platform will say
+ * about a secret file's content, and are absent until one has been written,
+ * which is the state that stops the workloads reading it from starting.
+ */
+export interface ConfigFile {
+  name: string;
+  path: string;
+  /** The workloads that mount it — "web" and the project's own. Empty is
+   * every workload of the project. */
+  workloads?: string[];
+  secret?: boolean;
+  content?: string;
+  contentHash?: string;
+  size?: number;
+}
+
+/** One configuration file as written. A file whose `content` is left out
+ * keeps what the platform holds, which is what lets a client that was never
+ * shown a secret file's content send the rest of the list back. */
+export interface ConfigFileWrite {
+  name: string;
+  path: string;
+  content?: string;
+  secret?: boolean;
+  workloads?: string[];
+}
+
 /** One environment variable as written. Nothing reads a value back, so an
  * absent `value` keeps the stored one and an empty one clears it. */
 export interface EnvVarWrite {
@@ -214,6 +247,10 @@ export interface Project {
    * an environment actually runs is its release's list, on
    * GET /environments/{name}/processes. */
   processes?: Process[];
+  /** The configuration files this project places into its workloads. A plain
+   * file carries its content; a secret one carries a digest of what the
+   * platform holds and never the content. */
+  files?: ConfigFile[];
   /** The project's staged pipeline, in promotion order. Absent for the
    * default build-straight-to-production flow. Stages are topology — what
    * each environment demands lives on the Environment's requirements. */
@@ -319,6 +356,11 @@ export interface ProjectSettings {
    * them all. It is the same decision as the replica count and the resources,
    * so it is the same route and the same role. */
   processes?: ProcessWrite[];
+  /** Replace the project's configuration files wholesale; `[]` removes them
+   * all. A file whose `content` is left out keeps what the platform holds,
+   * and a secret file carries none at all — that goes to
+   * PUT /projects/{name}/files/{file}, which no response reads back. */
+  files?: ConfigFileWrite[];
   /** Reclassify the project's data; "" removes the classification. Always
    * allowed — environments rated below the new class read as non-compliant
    * in the inventory and at promotion, rather than the correction being
@@ -3541,6 +3583,14 @@ export const api = {
   projectSecrets: (project: string) => list<ProjectSecret>(`/projects/${project}/secrets`)(),
   setProjectSecret: (project: string, name: string, value: string) =>
     request<ProjectSecret>("PUT", `/projects/${project}/secrets/${encodeURIComponent(name)}`, { value }),
+  // The content of a project's *secret* configuration file. Like a secret's
+  // value it travels one way — the answer is the declaration and a digest of
+  // what was stored, never the file — and there is no route to read one,
+  // which is why there is no `getProjectFile` here to call. Removing a file
+  // is taking it off `files` on the settings PATCH, which takes the content
+  // with it.
+  setProjectFile: (project: string, name: string, content: string) =>
+    request<ConfigFile>("PUT", `/projects/${project}/files/${encodeURIComponent(name)}`, { content }),
   // Answers 204, or 409 naming the environment variables that still read it —
   // which is the sentence the screen shows rather than swallows.
   deleteProjectSecret: (project: string, name: string) =>

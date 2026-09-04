@@ -111,9 +111,51 @@
       "type": "array",
       "description": "The workloads this project runs besides its web process: workers, services, scheduled jobs, and the tasks that run once per deploy before any of the release takes traffic. Declaring this replaces the project's whole list rather than merging into it — a worker the commit no longer names is one whose command may no longer be in the image.",
       "items": { "$ref": "#/$defs/process" }
+    },
+    "files": {
+      "type": "array",
+      "description": "The configuration files this commit places into its workloads. Software the platform did not build is often configured by a file at a fixed path rather than by environment variables — Home Assistant's configuration.yaml, Gitea's app.ini — and this is where one is declared. Each is mounted read-only at its path into every workload it names, and is frozen into the release, so a rollback restores the file that release ran with. Declaring one merges onto the project's list by name, unlike processes: a project may hold a secret file this file may not declare, and a list that replaced would take it away. A file is placed exactly as written — nothing is substituted into it from the environment.",
+      "items": { "$ref": "#/$defs/configFile" }
     }
   },
   "$defs": {
+    "configFile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "path", "content"],
+      "description": "One configuration file: what is in it, where it goes, and which of this project's workloads read it.",
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[-._a-zA-Z0-9]+$",
+          "maxLength": 253,
+          "description": "A name for the file, and the key every surface refers to it by — letters, digits, '-', '_' and '.'. It is not the path, so a file that moves keeps its name.",
+          "examples": ["configuration", "app-ini"]
+        },
+        "path": {
+          "type": "string",
+          "pattern": "^/([^/]+/)*[^/]+$",
+          "maxLength": 1024,
+          "description": "Where the file appears inside the container: absolute, and naming the file itself rather than the directory holding it. Only that one path is replaced; the rest of the directory stays the image's.",
+          "examples": ["/config/configuration.yaml", "/data/gitea/conf/app.ini"]
+        },
+        "content": {
+          "type": "string",
+          "maxLength": 131072,
+          "description": "The file, verbatim. It is required here, unlike on the API, because a committed declaration has nowhere else to have put it."
+        },
+        "workloads": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "The workloads that mount the file: \"web\" for the web process, and the name of any workload this file declares. Leave it out and every workload of the project gets it.",
+          "examples": [["web"], ["web", "worker"]]
+        },
+        "secret": {
+          "type": "boolean",
+          "description": "Refused here, and described so that the refusal is findable rather than arriving as an unknown field. This file is committed, so everything in it is public, and whether the platform holds a credential for a project is not something a commit gets to declare — set a secret file in the dashboard or with `kitchen files set --secret`."
+        }
+      }
+    },
     "security": {
       "type": "object",
       "additionalProperties": false,

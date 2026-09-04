@@ -369,6 +369,17 @@ reaches another, for a workload built from its own directory of the
 repository, for which of them a preview runs, and for reading what an
 environment is actually running.
 
+`files` is what the project's workloads are configured by when a variable will
+not do — software the platform did not build is usually configured by a file
+at a fixed path. It is on this route for the same reason `processes` is: what
+this project runs, and what it is configured with, is one decision made by one
+person at one role. The write replaces the whole list, and a file whose
+`content` the request leaves out keeps what the platform holds — which is what
+lets a client that was never shown a *secret* file's content send the rest of
+the list back. See [Configuration files](files.md) for the fields, for why
+secrecy is a flag rather than a second list, for why nothing is templated into
+a file, and for the route a secret file's content is written on.
+
 `dataClass` classifies the data the project handles — `public`, `internal`,
 `confidential` or `strictlyConfidential`, in ascending order; `""` removes
 the classification, and absent means unclassified, shown as such and never
